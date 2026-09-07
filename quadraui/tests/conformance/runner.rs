@@ -24,7 +24,7 @@ use std::fmt::Write as _;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use quadraui::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport};
-use quadraui::{AppLogic, Backend, BackendCaps, Reaction, UiEvent, WidgetId};
+use quadraui::{AppLogic, Backend, BackendCaps, ColorDepth, Reaction, UiEvent, WidgetId};
 
 use super::schema::{parse_named_key, Scenario, Step};
 
@@ -913,7 +913,10 @@ mod tests {
         // Written out exhaustively (no `..empty()`) so a new capability
         // field is a compile error here rather than quietly weakening
         // "maximally capable" to "capable of the fields that existed when
-        // this was written".
+        // this was written". `color_depth` is not part of the bool
+        // vocabulary `names()`/`vocabulary()` draw from (see
+        // `BackendCaps::color_depth`'s doc) — `TrueColor` here is just
+        // "some valid value", not a capability declaration.
         let every_cap = BackendCaps {
             mouse: true,
             scroll: true,
@@ -926,6 +929,7 @@ mod tests {
             file_dialogs: true,
             native_dialogs: true,
             notifications: true,
+            color_depth: ColorDepth::TrueColor,
         };
         assert_eq!(
             every_cap.names(),

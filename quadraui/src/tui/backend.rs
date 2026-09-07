@@ -191,6 +191,13 @@ pub struct TuiBackend {
     /// disambiguate tab 3's target from tab 0's the way it can for
     /// uniquely-labeled text.
     tab_bar_layouts: HashMap<WidgetId, (QRect, TabBarLayout)>,
+    /// Colour fidelity this backend's rasterisers should quantise to —
+    /// see [`crate::backend::ColorDepth`]. Detected from the process
+    /// environment (`COLORTERM`/`TERM`) at construction time via
+    /// [`super::caps::detect_color_depth`]; overridable via
+    /// [`Self::set_color_depth`] for tests and hosts that already know
+    /// their terminal's real capability (quadraui#826).
+    color_depth: crate::backend::ColorDepth,
 }
 
 impl TuiBackend {
@@ -219,7 +226,24 @@ impl TuiBackend {
             focused_activity_bar: None,
             last_cursor_position: None,
             tab_bar_layouts: HashMap::new(),
+            color_depth: super::caps::detect_color_depth(),
         }
+    }
+
+    /// The colour depth [`Backend::backend_caps`] currently reports —
+    /// see [`crate::backend::ColorDepth`] and [`Self::set_color_depth`].
+    pub fn color_depth(&self) -> crate::backend::ColorDepth {
+        self.color_depth
+    }
+
+    /// Override the detected colour depth. Real hosts never need this —
+    /// [`Self::new`] already detects it from the environment — but tests
+    /// that want to force a specific SGR shape (quadraui#826's Tier-3 pty
+    /// fixture, or any in-process test asserting quantised output) call
+    /// this to pin the value instead of depending on the process's real
+    /// `TERM`/`COLORTERM`.
+    pub fn set_color_depth(&mut self, depth: crate::backend::ColorDepth) {
+        self.color_depth = depth;
     }
 
     /// Enter the frame-scope: stash the `&mut Frame<'_>` pointer for
@@ -1000,6 +1024,7 @@ impl Backend for TuiBackend {
             scroll: true,
             drag: true,
             text_selection: true,
+            color_depth: self.color_depth,
             ..crate::backend::BackendCaps::empty()
         }
     }

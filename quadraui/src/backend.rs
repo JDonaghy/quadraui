@@ -151,6 +151,43 @@ pub enum PointerShape {
     Resize(ResizeEdge),
 }
 
+/// Colour fidelity a render target actually supports (quadraui#826).
+///
+/// Unlike every `bool` field on [`BackendCaps`], this is not a "this
+/// backend implements method X" promise — it's a runtime-detected (or
+/// test-overridden) property of the *output device* a frame paints to.
+/// GTK/Win-GUI/macOS are pixel-native, so they always report
+/// [`Self::TrueColor`]. TUI is the one backend where this varies: a
+/// real terminal may be 24-bit (`COLORTERM=truecolor`/`24bit`), 256-colour
+/// (`TERM` containing `256color` — including inside tmux without
+/// passthrough, which is the common case that motivated this), or
+/// 16-colour ANSI (everything else — the conservative fallback for an
+/// unrecognised `TERM`). See `crate::tui::caps::detect_color_depth` for
+/// the detection logic and `crate::tui::color` for the SGR-quantisation
+/// this value drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorDepth {
+    /// 16-colour ANSI (SGR 30-37 / 90-97). The safe fallback for a
+    /// terminal this backend cannot positively identify as supporting
+    /// more.
+    Ansi16,
+    /// 8-bit / 256-colour indexed (SGR `38;5;n` / `48;5;n`).
+    Indexed256,
+    /// 24-bit truecolor (SGR `38;2;r;g;b` / `48;2;r;g;b`). quadraui's
+    /// only behavior before quadraui#826, and still the default for
+    /// every non-terminal backend.
+    TrueColor,
+}
+
+impl Default for ColorDepth {
+    /// `TrueColor` — matches quadraui's pre-#826 unconditional behavior
+    /// (so a caller that never touches this field sees no change) and is
+    /// the honest value for every pixel-native backend (GTK/Win/macOS).
+    fn default() -> Self {
+        Self::TrueColor
+    }
+}
+
 /// What a backend actually implements, beyond the required trait surface.
 ///
 /// quadraui#492: several `Backend` methods take a no-op (or `false`)
@@ -292,6 +329,19 @@ pub struct BackendCaps {
     /// notification rather than silently discarding it. Not mechanically
     /// checkable, same as [`Self::file_dialogs`].
     pub notifications: bool,
+    /// This render target's actual colour fidelity — see [`ColorDepth`].
+    /// Not part of the bool-capability vocabulary below ([`Self::names`] /
+    /// [`Self::has`] / [`Self::vocabulary`] / `ALL_NAMES`): those model
+    /// "does this backend implement optional surface X", a static
+    /// per-backend fact `tests/conformance/caps.rs` can mechanically
+    /// check by asking whether a method was overridden. This field is a
+    /// runtime-detected (or test-overridden) property of the terminal
+    /// the process happens to be running in, so it has no "overridden
+    /// method" to check against and is exempt from that machinery —
+    /// see `backend_caps_tests::all_names_lists_every_field_exactly_once`'s
+    /// exhaustive destructure below for where it is still forced into
+    /// view.
+    pub color_depth: ColorDepth,
 }
 
 /// A capability name paired with the accessor that reads it off a
@@ -315,6 +365,7 @@ impl BackendCaps {
             file_dialogs: false,
             native_dialogs: false,
             notifications: false,
+            color_depth: ColorDepth::TrueColor,
         }
     }
 
@@ -2740,6 +2791,12 @@ mod backend_caps_tests {
         // here. A field missing from `ALL_NAMES` would otherwise be
         // invisible to `names()`/`has()`/`vocabulary()` — and so to every
         // scenario `requires` gate and to the C0 honesty check.
+        //
+        // `color_depth` is the one deliberate exception: it is not a
+        // bool capability (see its doc comment on `BackendCaps`), so it
+        // is named here — forcing a future field addition to make a
+        // conscious choice about which bucket it belongs in — but
+        // intentionally left out of `SETTERS`/`want`/`ALL_NAMES`.
         let BackendCaps {
             mouse: _,
             scroll: _,
@@ -2752,6 +2809,7 @@ mod backend_caps_tests {
             file_dialogs: _,
             native_dialogs: _,
             notifications: _,
+            color_depth: _,
         } = BackendCaps::empty();
 
         let want: Vec<&str> = SETTERS.iter().map(|(n, _)| *n).collect();

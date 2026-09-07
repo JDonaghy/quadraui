@@ -42,6 +42,14 @@ struct PtyExample {
     _master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
     parser: Arc<Mutex<vt100::Parser>>,
+    // Every byte the child has written so far, verbatim — `vt100::Parser`
+    // is a *screen model*, and deliberately abstracts away exactly the
+    // thing quadraui#826's SGR-depth fixtures need to observe: the raw
+    // escape-sequence bytes (`38;2;…` truecolor vs `38;5;…` indexed) a
+    // real terminal receives. `screen_text()`/`wait_for` stay the
+    // content-only assertions every other test here already used; the raw
+    // log is additive, read via `raw_contains`/`wait_for_raw`.
+    raw: Arc<Mutex<Vec<u8>>>,
 }
 
 /// How long to wait for the example to render / react before giving up.
@@ -51,8 +59,19 @@ const WAIT: Duration = Duration::from_secs(60);
 
 impl PtyExample {
     /// Spawns `cargo run --quiet --example <name> --features tui` inside a
-    /// freshly opened PTY sized `cols`x`rows`.
+    /// freshly opened PTY sized `cols`x`rows`, with `TERM=xterm-256color`
+    /// and no `COLORTERM` — every pre-#826 caller's environment, and
+    /// (quadraui#826) the exact environment the issue's acceptance
+    /// criteria name for the indexed-SGR fixture.
     fn spawn(name: &str, cols: u16, rows: u16) -> Self {
+        Self::spawn_with_env(name, cols, rows, &[("TERM", "xterm-256color")])
+    }
+
+    /// Same as [`Self::spawn`], but with `extra_env` applied *after* the
+    /// `TERM=xterm-256color` default — so a caller can override `TERM`
+    /// and/or add `COLORTERM` to exercise a different
+    /// [`quadraui::ColorDepth`] detection outcome (quadraui#826).
+    fn spawn_with_env(name: &str, cols: u16, rows: u16, extra_env: &[(&str, &str)]) -> Self {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -67,6 +86,9 @@ impl PtyExample {
         cmd.args(["run", "--quiet", "--example", name, "--features", "tui"]);
         cmd.cwd(env!("CARGO_MANIFEST_DIR"));
         cmd.env("TERM", "xterm-256color");
+        for (key, value) in extra_env {
+            cmd.env(key, value);
+        }
 
         let child = pair
             .slave
@@ -85,6 +107,8 @@ impl PtyExample {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
         let parser_bg = Arc::clone(&parser);
         let writer_bg = Arc::clone(&writer);
+        let raw = Arc::new(Mutex::new(Vec::new()));
+        let raw_bg = Arc::clone(&raw);
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -93,6 +117,7 @@ impl PtyExample {
                     Ok(n) => {
                         let chunk = &buf[..n];
                         parser_bg.lock().unwrap().process(chunk);
+                        raw_bg.lock().unwrap().extend_from_slice(chunk);
                         // Answer `ESC [ 6 n` (cursor position report) the way
                         // a real terminal would — see the struct doc. Without
                         // this, `Terminal::new()` fails immediately on a
@@ -113,6 +138,7 @@ impl PtyExample {
             writer,
             _master: master,
             child,
+            raw,
             parser,
         }
     }
@@ -136,6 +162,28 @@ impl PtyExample {
         let deadline = Instant::now() + timeout;
         loop {
             if self.screen_text().contains(needle) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Whether the raw byte stream observed so far contains `needle`
+    /// verbatim — for asserting on exact SGR escape sequences (quadraui#826),
+    /// which `screen_text()` can't see (it's `vt100`'s parsed *content*,
+    /// not the bytes that produced it).
+    fn raw_contains(&self, needle: &[u8]) -> bool {
+        contains_subslice(&self.raw.lock().unwrap(), needle)
+    }
+
+    /// Polls the raw byte stream until it contains `needle`, or times out.
+    fn wait_for_raw(&self, needle: &[u8], timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.raw_contains(needle) {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -257,5 +305,148 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
     assert!(
         ex.wait_exit(WAIT),
         "chat example did not exit after Ctrl+C — raw-mode teardown or event loop may be hanging"
+    );
+}
+
+// ─── tui_pipeline: colour-depth SGR quantisation (quadraui#826) ───────────
+//
+// Before #826, `tui::run` wrapped its `CrosstermBackend` directly — every
+// frame emitted 24-bit truecolor SGR (`38;2;r;g;b`) unconditionally,
+// regardless of what the terminal on the other end of the pty actually
+// supported. These three fixtures drive the real `tui::run` event loop
+// (not a unit-tested `quantize()` call) over a real pty and read the raw
+// escape-sequence bytes it emits — `screen_text()`/`vt100::Color` can't
+// tell a `38;2;…` byte sequence from a `38;5;…` one, since `vt100`
+// resolves both down to a colour, not an SGR family.
+//
+// All three assert on the exact combined `SetColors` sequence
+// `draw_pipeline_view` paints stage names with: `Theme::default()`'s
+// `(foreground, surface_bg)` pair, `(220,220,220)` / `(28,32,44)`. The
+// four quantised numbers below (`253`/`234` for `Indexed256`, `7`/`0` for
+// `Ansi16`) are pinned independently in
+// `src/tui/color.rs`'s
+// `theme_default_pipeline_colors_quantise_to_the_values_the_pty_fixture_expects`
+// unit test — if quadraui's own palette math ever drifts, that much
+// faster in-process test catches it before this pty test would.
+
+/// The exact combined-`SetColors` SGR sequence `draw_pipeline_view` emits
+/// for `(fg, bg)` at 24-bit truecolor: `Theme::default().foreground` =
+/// `Color::rgb(220, 220, 220)`, `.surface_bg` = `Color::rgb(28, 32, 44)`.
+const TRUECOLOR_PIPELINE_SGR: &[u8] = b"\x1b[38;2;220;220;220;48;2;28;32;44m";
+
+/// The nearest indexed-256 quantisation of the same pair —
+/// `rgb_to_indexed256(220,220,220) == 253` (grayscale ramp),
+/// `rgb_to_indexed256(28,32,44) == 234` (grayscale ramp).
+const INDEXED256_PIPELINE_SGR: &[u8] = b"\x1b[38;5;253;48;5;234m";
+
+/// The nearest 16-colour (`Ansi16`) quantisation of the same pair —
+/// `rgb_to_ansi16(220,220,220) == Gray` (SGR index 7),
+/// `rgb_to_ansi16(28,32,44) == Black` (SGR index 0).
+const ANSI16_PIPELINE_SGR: &[u8] = b"\x1b[38;5;7;48;5;0m";
+
+/// Acceptance item 2: `TERM=xterm-256color` with no `COLORTERM` set — the
+/// common case (plain SSH, tmux without passthrough) #826 was filed
+/// against — must emit indexed SGR, never truecolor. This is exactly
+/// `PtyExample::spawn`'s default environment (unchanged by #826, since it
+/// was already the right fixture environment), so this test is the RED
+/// case from the issue turned GREEN: before #826's `DepthLimitedBackend`
+/// wrapper existed, this assertion would have failed against the
+/// unconditional-truecolor `38;2;…` output.
+#[test]
+fn tui_pipeline_under_256color_term_emits_indexed_sgr_not_truecolor() {
+    let mut ex = PtyExample::spawn("tui_pipeline", 100, 30);
+
+    assert!(
+        ex.wait_for("Deploy", WAIT),
+        "example did not render expected pipeline stages over the pty; screen:\n{}",
+        ex.screen_text()
+    );
+
+    assert!(
+        ex.wait_for_raw(INDEXED256_PIPELINE_SGR, WAIT),
+        "TERM=xterm-256color with no COLORTERM did not produce the expected indexed SGR \
+         sequence {:?} — output stayed (or never became) indexed",
+        String::from_utf8_lossy(INDEXED256_PIPELINE_SGR)
+    );
+    assert!(
+        !ex.raw_contains(b"38;2;"),
+        "TERM=xterm-256color with no COLORTERM still emitted truecolor SGR (`38;2;…`) — \
+         this is the exact bug #826 reports: truecolor unconditionally, even on a terminal \
+         that only declared 256-colour support"
+    );
+
+    ex.send(b"q");
+    assert!(
+        ex.wait_exit(WAIT),
+        "example did not exit after 'q' — raw-mode teardown or event loop may be hanging"
+    );
+}
+
+/// Acceptance item 4: a truecolor terminal (`COLORTERM=truecolor`) must
+/// stay byte-identical to pre-#826 output — the `DepthLimitedBackend`
+/// wrapper's `ColorDepth::TrueColor` arm is a pure pass-through, so this
+/// asserts the exact 24-bit SGR sequence still appears, unchanged.
+#[test]
+fn tui_pipeline_with_colorterm_truecolor_is_byte_identical_to_before() {
+    let mut ex = PtyExample::spawn_with_env(
+        "tui_pipeline",
+        100,
+        30,
+        &[("TERM", "xterm-256color"), ("COLORTERM", "truecolor")],
+    );
+
+    assert!(
+        ex.wait_for("Deploy", WAIT),
+        "example did not render expected pipeline stages over the pty; screen:\n{}",
+        ex.screen_text()
+    );
+
+    assert!(
+        ex.wait_for_raw(TRUECOLOR_PIPELINE_SGR, WAIT),
+        "COLORTERM=truecolor did not produce the exact pre-#826 24-bit SGR sequence {:?}",
+        String::from_utf8_lossy(TRUECOLOR_PIPELINE_SGR)
+    );
+
+    ex.send(b"q");
+    assert!(
+        ex.wait_exit(WAIT),
+        "example did not exit after 'q' — raw-mode teardown or event loop may be hanging"
+    );
+}
+
+/// Acceptance item 3: the `Ansi16` path exists and is reachable, not just
+/// unit-tested. `TERM=xterm` (no `256color`, no `COLORTERM`) is the
+/// conservative-fallback case — a terminal this backend cannot positively
+/// identify as supporting more than 16 colours.
+#[test]
+fn tui_pipeline_under_plain_xterm_emits_ansi16_sgr() {
+    let mut ex = PtyExample::spawn_with_env("tui_pipeline", 100, 30, &[("TERM", "xterm")]);
+
+    assert!(
+        ex.wait_for("Deploy", WAIT),
+        "example did not render expected pipeline stages over the pty; screen:\n{}",
+        ex.screen_text()
+    );
+
+    assert!(
+        ex.wait_for_raw(ANSI16_PIPELINE_SGR, WAIT),
+        "plain TERM=xterm did not produce the expected 16-colour SGR sequence {:?}",
+        String::from_utf8_lossy(ANSI16_PIPELINE_SGR)
+    );
+    assert!(
+        !ex.raw_contains(b"38;2;"),
+        "plain TERM=xterm emitted truecolor SGR (`38;2;…`) — should have quantised to Ansi16"
+    );
+    assert!(
+        !ex.raw_contains(INDEXED256_PIPELINE_SGR),
+        "plain TERM=xterm reused the 256-colour quantisation ({:?}) instead of actually \
+         taking the Ansi16 path",
+        String::from_utf8_lossy(INDEXED256_PIPELINE_SGR)
+    );
+
+    ex.send(b"q");
+    assert!(
+        ex.wait_exit(WAIT),
+        "example did not exit after 'q' — raw-mode teardown or event loop may be hanging"
     );
 }
