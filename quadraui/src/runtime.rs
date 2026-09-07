@@ -573,6 +573,192 @@ impl ResizeDebouncer {
     }
 }
 
+/// Thread-safe inbox for [`UiEvent::User`] payloads (issue #831).
+///
+/// Every backend's own event queue — `GtkBackend::events` /
+/// `MacBackend::events` / `WinBackend::events`, all
+/// `Rc<RefCell<VecDeque<UiEvent>>>` — is deliberately `!Send`: nothing
+/// outside the owning thread can touch it, which is exactly the
+/// architectural gap #831 tracks ("zero mpsc/Waker/channel in any
+/// runner"). `UserEventQueue` is the `Send + Sync` staging area a
+/// background thread *can* touch. Each backend owns one `Arc<Self>`,
+/// clones it into the closure [`crate::Backend::waker`] hands out, and
+/// drains it back into `UiEvent::User` on the owning thread — the same
+/// place it already drains its native event source (TUI's
+/// `poll_events`/`wait_events`; GTK/macOS/Windows' live dispatch path).
+///
+/// TUI is the only backend that can drain this purely by polling more
+/// often — see `Backend::waker`'s doc for why GTK/macOS/Windows also need
+/// a native "run this on the UI thread" nudge (`glib::MainContext::invoke`,
+/// `dispatch2::DispatchQueue::main`, `PostMessageW`) alongside the queue
+/// itself.
+pub(crate) struct UserEventQueue {
+    inbox: std::sync::Mutex<
+        std::collections::VecDeque<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    >,
+}
+
+impl UserEventQueue {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            inbox: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    /// Push one payload. Called from the closure `Backend::waker` hands
+    /// out — may run on any thread, including the owning one.
+    pub(crate) fn push(&self, payload: std::sync::Arc<dyn std::any::Any + Send + Sync>) {
+        // A poisoned lock means some other thread panicked while holding
+        // it; recovering the inner guard is safe here since a
+        // `VecDeque::push_back` can't leave the queue torn.
+        let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+        inbox.push_back(payload);
+    }
+
+    /// Drain every queued payload into `UiEvent::User`, appended to `out`
+    /// in FIFO order. Called on the backend's owning thread only.
+    pub(crate) fn drain_into(&self, out: &mut Vec<UiEvent>) {
+        let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+        out.extend(
+            inbox
+                .drain(..)
+                .map(|payload| UiEvent::User(crate::event::UserPayload::from_arc(payload))),
+        );
+    }
+}
+
+/// Wraps a `!Send` value — a GTK widget handle, an AppKit/Win32 handle —
+/// so it can be captured by the `Send + Sync` closure [`crate::Backend::waker`]
+/// hands out (issue #831).
+///
+/// GTK/macOS/Windows all need the same shape to make their native
+/// "run this on the UI thread" primitive
+/// (`glib::MainContext::invoke`, `dispatch2::DispatchQueue::main`,
+/// `PostMessageW`) actually do something useful once it wakes: the
+/// callback it runs needs a handle to *something* owned by the UI thread
+/// (a widget to redraw, a backend/app pair to dispatch through), and
+/// every one of those handles (`Rc<RefCell<_>>`, a GTK/GObject wrapper) is
+/// deliberately `!Send` — by construction, the same architectural fact
+/// that motivates `UserEventQueue` existing as a separate `Send + Sync`
+/// staging area in the first place.
+///
+/// The soundness argument is the same one `dispatch2::MainThreadBound`
+/// documents for its own identical wrapper: the value only ever
+/// originates from, and is only ever read back on, the UI thread — the
+/// native primitive's whole contract is "this callback runs on the thread
+/// that owns the loop". [`Self::get`] additionally asserts that in debug
+/// builds (`debug_assert_eq!`) rather than trusting it silently, so a
+/// future call site that violates the invariant panics loudly on the
+/// thread that got it wrong instead of racing `Rc`'s refcount from two
+/// threads at once.
+#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+pub(crate) struct MainThreadBound<T> {
+    value: T,
+    owner: std::thread::ThreadId,
+}
+
+// SAFETY: `value` is only ever read via `get`, which asserts (debug) that
+// the calling thread matches `owner` — the thread `new` was called from.
+// Every caller of `get` in this crate does so from inside a callback a
+// native "run this on the main/UI thread" primitive scheduled, which by
+// that primitive's own contract only ever runs on `owner`. The wrapper
+// itself never dereferences `T` on any other thread.
+#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+unsafe impl<T> Send for MainThreadBound<T> {}
+// SAFETY: shared access (`&self` in `get`) is read-only and carries the
+// same thread-identity assertion as the `Send` impl above.
+#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+unsafe impl<T> Sync for MainThreadBound<T> {}
+
+#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+impl<T> MainThreadBound<T> {
+    /// Wrap `value`, capturing the current thread as its only valid
+    /// future accessor. Call this from the UI thread, before the value
+    /// crosses into a `Send`-only context.
+    pub(crate) fn new(value: T) -> Self {
+        Self {
+            value,
+            owner: std::thread::current().id(),
+        }
+    }
+
+    /// Recover the wrapped value. Panics (debug builds only) if called
+    /// from any thread other than the one that constructed this.
+    pub(crate) fn get(&self) -> &T {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.owner,
+            "MainThreadBound accessed off its owning thread"
+        );
+        &self.value
+    }
+}
+
+#[cfg(test)]
+mod user_event_queue_tests {
+    use super::UserEventQueue;
+    use crate::UiEvent;
+    use std::sync::Arc;
+
+    #[test]
+    fn drain_into_is_empty_when_nothing_pushed() {
+        let q = UserEventQueue::new();
+        let mut out = Vec::new();
+        q.drain_into(&mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn push_then_drain_round_trips_fifo() {
+        let q = UserEventQueue::new();
+        q.push(Arc::new(1_i32));
+        q.push(Arc::new(2_i32));
+
+        let mut out = Vec::new();
+        q.drain_into(&mut out);
+        assert_eq!(out.len(), 2);
+        let values: Vec<i32> = out
+            .iter()
+            .map(|ev| match ev {
+                UiEvent::User(payload) => *payload.downcast_ref::<i32>().unwrap(),
+                other => panic!("expected UiEvent::User, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(values, vec![1, 2], "payloads must drain in push order");
+
+        // Draining clears the queue.
+        let mut out2 = Vec::new();
+        q.drain_into(&mut out2);
+        assert!(out2.is_empty());
+    }
+
+    /// The whole point of #831: a payload pushed from a background thread
+    /// must be observable on another thread via `drain_into` — this is
+    /// the plumbing every backend's `waker()` closure relies on.
+    #[test]
+    fn push_from_background_thread_is_observed_after_join() {
+        let q = UserEventQueue::new();
+        let q2 = Arc::clone(&q);
+        let handle = std::thread::spawn(move || {
+            q2.push(Arc::new("from background".to_string()));
+        });
+        handle.join().unwrap();
+
+        let mut out = Vec::new();
+        q.drain_into(&mut out);
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            UiEvent::User(payload) => {
+                assert_eq!(
+                    payload.downcast_ref::<String>().map(String::as_str),
+                    Some("from background")
+                );
+            }
+            other => panic!("expected UiEvent::User, got {other:?}"),
+        }
+    }
+}
+
 // `ReactionSink` / `apply_outcome` only exist under the same gate as their
 // definitions above (`gtk`, or `macos` on a real macOS host) — see those
 // items' doc comments for why. Kept as a separate `mod` (rather than

@@ -34,20 +34,23 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use core_graphics::base::CGFloat;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
+use dispatch2::{DispatchQueue, MainThreadBound};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSCursor, NSEvent, NSWindow};
+use objc2_foundation::MainThreadMarker;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{Backend, EditorPaintResult, PointerShape, ResizeEdge};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
-use crate::event::{Point, Rect, UiEvent, Viewport};
+use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::modal_stack::ModalStack;
 use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -233,7 +236,27 @@ pub struct MacBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
+    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
+    /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]
+    /// drains it into `UiEvent::User` alongside `events`, on the AppKit
+    /// main thread, same as any other queued event.
+    user_events: Arc<crate::runtime::UserEventQueue>,
+    /// Set once by `macos::run::run` via [`Self::set_wake_callback`],
+    /// right after the `QuadraView` exists — see that method's doc for
+    /// what it stores and why `waker()` needs a handle to it rather than
+    /// touching AppKit directly. `None` until then (e.g. a `MacBackend`
+    /// constructed directly by a test, never handed to `macos::run`);
+    /// `waker()`'s returned closure is a documented no-op in that case.
+    wake_callback: WakeCallback,
 }
+
+/// The wake-target [`MacBackend::waker`] invokes (issue #831) — see
+/// [`MacBackend::set_wake_callback`]'s doc for what installs it and why
+/// it's shaped this way. Named to keep `MacBackend`'s field declaration
+/// (and `clippy::type_complexity`) readable — mirrors
+/// `gtk::backend::WakeCallback`.
+type WakeCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn()>>>>;
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
 /// [`DoubleClickDetector`].
@@ -393,6 +416,8 @@ impl MacBackend {
             nerd_fonts_enabled: false,
             text_selection: crate::text_selection::TextSelectionState::default(),
             focus: crate::focus::FocusManager::new(),
+            user_events: crate::runtime::UserEventQueue::new(),
+            wake_callback: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -402,6 +427,22 @@ impl MacBackend {
     /// / [`Backend::set_cursor`] (#498) — mirrors `GtkBackend::set_window`.
     pub(crate) fn set_window(&mut self, window: Retained<NSWindow>) {
         self.window = Some(window);
+    }
+
+    /// Install the closure [`Backend::waker`]'s returned handle invokes on
+    /// the AppKit main thread (issue #831). `macos::run::run` calls this
+    /// once, right after constructing the `QuadraView`, with a closure
+    /// that calls `view.setNeedsDisplay(true)` — the same
+    /// `ReactionSink::request_redraw` path `EventOutcome::Redraw` already
+    /// uses for every other event, so a background-thread wake schedules a
+    /// repaint through one call site rather than a second bespoke one.
+    /// `mtm` proves the call happens on the main thread, matching
+    /// [`dispatch2::MainThreadBound::new`]'s contract.
+    ///
+    /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
+    /// ignores it) — `run` only ever calls this once per backend instance.
+    pub(crate) fn set_wake_callback(&self, callback: Rc<dyn Fn()>, mtm: MainThreadMarker) {
+        let _ = self.wake_callback.set(MainThreadBound::new(callback, mtm));
     }
 
     /// Stash the raw press `NSEvent`. Called by `macos::run`'s
@@ -843,7 +884,16 @@ impl Backend for MacBackend {
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
-        self.events.borrow_mut().drain(..).collect()
+        let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
+        // Issue #831: fold in any `UiEvent::User` payloads a background
+        // thread queued via `waker()` since the last drain. Unconditional,
+        // matching `TuiBackend`/`GtkBackend::poll_events` — `macos::run`'s
+        // `paint` closure calls this on every repaint, and `waker()`'s
+        // `DispatchQueue::main().exec_async` nudge (see that method's doc)
+        // schedules exactly such a repaint out-of-band the moment a
+        // background thread wakes.
+        self.user_events.drain_into(&mut out);
+        out
     }
 
     fn wait_events(&mut self, _timeout: Duration) -> Vec<UiEvent> {
@@ -856,6 +906,55 @@ impl Backend for MacBackend {
         // identical to `poll_events` — and works because the standard
         // app flow goes through `super::run`.
         self.poll_events()
+    }
+
+    /// See [`Backend::waker`]'s doc for the full cross-backend contract.
+    /// macOS's implementation, like GTK's, can't rely on a bounded poll
+    /// alone: `macos::run`'s `paint` closure only drains
+    /// [`Self::poll_events`] when AppKit actually calls `drawRect:`, and
+    /// nothing periodic forces that — unlike GTK's 33ms idle timer or
+    /// TUI's bounded `wait_events(timeout)`, a `MacBackend` app with no
+    /// unrelated user input or timer would never repaint at all, so a
+    /// background result would sit in the queue forever with nothing to
+    /// surface it. `dispatch2::DispatchQueue::main().exec_async` is GCD's
+    /// own thread-safe "run this on the main thread" primitive — the piece
+    /// #831 found missing crate-wide.
+    ///
+    /// The dispatched closure can't touch `Rc<RefCell<MacBackend>>`/
+    /// `Rc<RefCell<App>>`/the `QuadraView` directly (none are `Send`, and
+    /// AppKit's own `NSObject` types are main-thread-only by design in
+    /// `objc2` — `waker()` only has `&self` in any case, no handle to the
+    /// app or view at all). It instead calls back into
+    /// [`Self::wake_callback`], the `Rc<dyn Fn()>` `macos::run::run`
+    /// installs via [`Self::set_wake_callback`] that calls
+    /// `view.setNeedsDisplay(true)` — the same repaint request
+    /// [`crate::runtime::ReactionSink::request_redraw`] issues for every
+    /// other event. [`dispatch2::MainThreadBound`] is what makes carrying
+    /// that `!Send` closure across the `Send + Sync` boundary `waker()`'s
+    /// return type demands sound — see its doc for the argument (mirrors
+    /// [`crate::runtime::MainThreadBound`], GTK/Windows' homegrown
+    /// equivalent — macOS uses `dispatch2`'s own audited version instead
+    /// since it's already a dependency here for `exec_async`).
+    fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
+        let queue = Arc::clone(&self.user_events);
+        let wake_callback = Arc::clone(&self.wake_callback);
+        Arc::new(move |payload: UserPayload| {
+            queue.push(payload.into_arc());
+            let wake_callback = Arc::clone(&wake_callback);
+            DispatchQueue::main().exec_async(move || {
+                if let Some(bound) = wake_callback.get() {
+                    // SAFETY: `exec_async`'s closure is guaranteed by GCD's
+                    // own contract to run on the main queue's thread — the
+                    // real, OS-level main thread for a process that has
+                    // called `NSApplicationMain`/run an `NSApplication`,
+                    // which every `macos::run::run` caller has by the time
+                    // `set_wake_callback` could have installed anything
+                    // here to call.
+                    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                    (bound.get(mtm))();
+                }
+            });
+        })
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -3163,6 +3262,56 @@ mod tests {
         assert!(matches!(evs[1], UiEvent::WindowFocused(true)));
         // Second drain yields nothing.
         assert!(b.poll_events().is_empty());
+    }
+
+    // ── Background-thread wake (issue #831) ─────────────────────────────
+    //
+    // `MacBackend::waker`'s `DispatchQueue::main().exec_async` half needs a
+    // real, running `NSApplication` main-queue pump to observe — a plain
+    // `cargo test` process never drains the main dispatch queue, so
+    // asserting on `wake_callback` actually firing here would be
+    // meaningless (unlike GTK's `MainContext::invoke`, GCD gives no
+    // "no owner, run synchronously" fallback). That half is exercised by
+    // `macos.yml`'s real `macos-latest` runner instead. What's
+    // host-independent and testable here is the `UserEventQueue` plumbing
+    // every platform's `waker()` shares.
+
+    /// A payload pushed from a background thread through the closure
+    /// `Backend::waker()` hands out lands in `poll_events()`'s output as a
+    /// `UiEvent::User` — the same `Send + Sync` staging queue every
+    /// backend's `waker()` shares (`crate::runtime::UserEventQueue`).
+    #[test]
+    fn waker_payload_reaches_poll_events_as_user_event() {
+        let backend = MacBackend::new();
+        let waker = Backend::waker(&backend);
+
+        let handle = std::thread::spawn(move || {
+            waker(crate::UserPayload::new("from background".to_string()));
+        });
+        handle.join().expect("background thread must not panic");
+
+        let mut backend = backend;
+        let events = backend.poll_events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::User(payload) => {
+                assert_eq!(
+                    payload.downcast_ref::<String>().map(String::as_str),
+                    Some("from background")
+                );
+            }
+            other => panic!("expected UiEvent::User, got {other:?}"),
+        }
+    }
+
+    /// Before `set_wake_callback` is ever called (a `MacBackend`
+    /// constructed directly, never handed to `macos::run`), `waker()`
+    /// must not panic — it silently has nothing to wake.
+    #[test]
+    fn waker_is_a_safe_no_op_before_wake_callback_is_installed() {
+        let backend = MacBackend::new();
+        let waker = Backend::waker(&backend);
+        waker(crate::UserPayload::new(1_i32));
     }
 
     #[test]

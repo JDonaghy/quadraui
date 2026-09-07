@@ -752,6 +752,12 @@ impl crate::Backend for RecordingBackend {
     fn wait_events(&mut self, _t: std::time::Duration) -> Vec<UiEvent> {
         Vec::new()
     }
+    fn waker(&self) -> std::sync::Arc<dyn Fn(crate::UserPayload) + Send + Sync> {
+        // `RecordingBackend` never runs an event loop for a `waker` call to
+        // wake — it's a synchronous call recorder for unit tests, not a
+        // live runner. No-op, matching `poll_events`/`wait_events` above.
+        std::sync::Arc::new(|_payload| {})
+    }
     fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
     fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {

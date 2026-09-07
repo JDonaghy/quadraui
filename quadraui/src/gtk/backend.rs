@@ -39,10 +39,12 @@
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gtk4::cairo::Context;
 use gtk4::gdk;
+use gtk4::glib;
 use gtk4::pango;
 use gtk4::prelude::*;
 
@@ -58,7 +60,7 @@ use crate::{
     CommandLine, DragState, FieldKind, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
     ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, StatusBar,
     TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView,
-    UiEvent, Viewport,
+    UiEvent, UserPayload, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -93,6 +95,11 @@ pub(crate) struct PaintedText {
     pub(crate) text: String,
     pub(crate) bounds: QRect,
 }
+
+/// The wake-target [`GtkBackend::waker`] invokes (issue #831) — see
+/// [`GtkBackend::set_wake_callback`]'s doc for what installs it and why
+/// it's shaped this way.
+type WakeCallback = Arc<std::sync::OnceLock<crate::runtime::MainThreadBound<Rc<dyn Fn()>>>>;
 
 /// GTK backend implementing [`quadraui::Backend`].
 ///
@@ -336,6 +343,20 @@ pub struct GtkBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
+    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
+    /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]
+    /// drains it into `UiEvent::User` alongside `events`, on the GTK main
+    /// thread, same as any other queued event.
+    user_events: Arc<crate::runtime::UserEventQueue>,
+    /// Set once by `gtk::run::run_with` via [`Self::set_wake_callback`],
+    /// right after the periodic event-drain closure exists — see that
+    /// closure's call site for why `waker()` needs a handle to it rather
+    /// than reimplementing the drain inline. `None` until then (e.g. a
+    /// `GtkBackend` constructed directly by a test, never handed to
+    /// `gtk::run`); [`Self::waker`]'s returned closure is a documented
+    /// no-op in that case, mirroring `RecordingBackend::waker`.
+    wake_callback: WakeCallback,
 }
 
 /// Cached state from the most recent successful [`GtkBackend::draw_terminal`]
@@ -444,7 +465,26 @@ impl GtkBackend {
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
             double_click_folding: true,
             focus: crate::focus::FocusManager::new(),
+            user_events: crate::runtime::UserEventQueue::new(),
+            wake_callback: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Install the closure [`Backend::waker`]'s returned handle invokes on
+    /// the GTK main thread (issue #831). `gtk::run::run_with` calls this
+    /// once, right after building the periodic event-drain closure it also
+    /// registers as a `glib::timeout_add_local` source — the same closure,
+    /// reused, so a background-thread wake and the ordinary 33ms poll
+    /// funnel through one dispatch path rather than two that could drift.
+    ///
+    /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
+    /// ignores it) — `run_with` only ever calls this once per backend
+    /// instance, so a second call would only happen from a test wiring
+    /// two runners to the same backend, which isn't a supported shape.
+    pub(crate) fn set_wake_callback(&self, callback: Rc<dyn Fn()>) {
+        let _ = self
+            .wake_callback
+            .set(crate::runtime::MainThreadBound::new(callback));
     }
 
     /// Store the top-level window handle. Called once by `gtk::run::activate`
@@ -1379,6 +1419,14 @@ impl Backend for GtkBackend {
         // signal-callback producers; until then this is always empty.
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         self.apply_accelerators(&mut out);
+        // Issue #831: fold in any `UiEvent::User` payloads a background
+        // thread queued via `waker()` since the last drain. Unconditional,
+        // matching `TuiBackend::poll_events` — `gtk::run::run_with`'s
+        // periodic 33ms timer already calls this every tick regardless of
+        // whether `events` had anything in it, and `waker()`'s
+        // `MainContext::invoke` nudge (see that method's doc) runs this
+        // same drain out-of-band the moment a background thread wakes.
+        self.user_events.drain_into(&mut out);
         out
     }
 
@@ -1397,7 +1445,45 @@ impl Backend for GtkBackend {
         // event flow.
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         self.apply_accelerators(&mut out);
+        self.user_events.drain_into(&mut out);
         out
+    }
+
+    /// See [`Backend::waker`]'s doc for the full cross-backend contract.
+    /// GTK's implementation, unlike TUI's, can't rely on a short bounded
+    /// poll alone: `gtk::run::run_with`'s periodic drain only fires every
+    /// 33ms, and — more importantly — `glib::MainContext::iteration`
+    /// genuinely blocks between GLib main-loop wakeups with no fixed
+    /// ceiling when the loop has nothing else scheduled, unlike TUI's
+    /// `wait_events(timeout)` which always returns within `timeout`
+    /// regardless. `glib::MainContext::invoke` is GLib's own
+    /// purpose-built thread-safe "run this on the loop's owning thread,
+    /// waking it if it's currently blocked" primitive — precisely the
+    /// piece #831 found missing crate-wide.
+    ///
+    /// The invoked closure can't reach `Rc<RefCell<GtkBackend>>`/
+    /// `Rc<RefCell<App>>` directly (neither is `Send`, and `waker()` only
+    /// has `&self` in any case — it has no handle to the app at all). It
+    /// instead calls back into [`Self::wake_callback`], the same
+    /// `Rc<dyn Fn()>` `gtk::run::run_with` also hands to its periodic
+    /// timer — see [`Self::set_wake_callback`]'s doc for why they share
+    /// one closure. [`crate::runtime::MainThreadBound`] is what makes
+    /// carrying that `!Send` closure across the `Send + Sync` boundary
+    /// `waker()`'s return type demands sound — see its doc for the
+    /// argument.
+    fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
+        let queue = Arc::clone(&self.user_events);
+        let main_context = glib::MainContext::default();
+        let wake_callback = Arc::clone(&self.wake_callback);
+        Arc::new(move |payload: UserPayload| {
+            queue.push(payload.into_arc());
+            let wake_callback = Arc::clone(&wake_callback);
+            main_context.invoke(move || {
+                if let Some(bound) = wake_callback.get() {
+                    (bound.get())();
+                }
+            });
+        })
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -4091,6 +4177,70 @@ mod tests {
         backend.push_event(crate::UiEvent::WindowFocused(true));
         let q = backend.events_handle();
         assert_eq!(q.borrow().len(), 1);
+    }
+
+    // ── Background-thread wake (issue #831) ─────────────────────────────
+
+    /// A payload pushed from a background thread through the closure
+    /// `Backend::waker()` hands out lands in `poll_events()`'s output as a
+    /// `UiEvent::User` — the same `Send + Sync` staging queue every
+    /// backend's `waker()` shares (`crate::runtime::UserEventQueue`),
+    /// exercised end-to-end against a real `GtkBackend` instance rather
+    /// than the queue alone.
+    #[test]
+    fn waker_payload_reaches_poll_events_as_user_event() {
+        let mut backend = GtkBackend::new();
+        let waker = Backend::waker(&backend);
+
+        let handle = std::thread::spawn(move || {
+            waker(crate::UserPayload::new("from background".to_string()));
+        });
+        handle.join().expect("background thread must not panic");
+
+        let events = Backend::poll_events(&mut backend);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            crate::UiEvent::User(payload) => {
+                assert_eq!(
+                    payload.downcast_ref::<String>().map(String::as_str),
+                    Some("from background")
+                );
+            }
+            other => panic!("expected UiEvent::User, got {other:?}"),
+        }
+    }
+
+    /// `set_wake_callback` installs the handle `waker()`'s returned
+    /// closure invokes via `glib::MainContext::invoke` — no live GTK main
+    /// loop is running in this test process, so per `MainContext::invoke`'s
+    /// own documented contract ("if the main context currently has no
+    /// owner, `func` is called directly from inside this function") the
+    /// callback fires synchronously, letting this assert without spinning
+    /// an actual main loop.
+    #[test]
+    fn waker_invokes_installed_wake_callback() {
+        let backend = GtkBackend::new();
+        let called = Rc::new(Cell::new(false));
+        let called_from_callback = called.clone();
+        backend.set_wake_callback(Rc::new(move || called_from_callback.set(true)));
+
+        let waker = Backend::waker(&backend);
+        waker(crate::UserPayload::new(()));
+
+        assert!(
+            called.get(),
+            "waker() must invoke the wake_callback installed via set_wake_callback"
+        );
+    }
+
+    /// Before `set_wake_callback` is ever called (a `GtkBackend`
+    /// constructed directly, never handed to `gtk::run`), `waker()` must
+    /// not panic — it silently has nothing to wake.
+    #[test]
+    fn waker_is_a_safe_no_op_before_wake_callback_is_installed() {
+        let backend = GtkBackend::new();
+        let waker = Backend::waker(&backend);
+        waker(crate::UserPayload::new(1_i32));
     }
 
     /// #776: GTK reserves room for its `ScrolledWindow` overlay

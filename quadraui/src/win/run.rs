@@ -607,6 +607,12 @@ mod win32 {
     const MK_RBUTTON: usize = 0x0002;
     const MK_MBUTTON: usize = 0x0010;
 
+    // `WM_QUADRAUI_USER_EVENT` (issue #831) is defined in
+    // `crate::win::backend` (`WinBackend::waker` — the producer — needs
+    // it too, so it lives next to that field rather than being
+    // duplicated).
+    use crate::win::backend::WM_QUADRAUI_USER_EVENT;
+
     /// Live modifier state for the message currently being dispatched,
     /// via `GetKeyState` — see `super::events`' module docs on why Win32
     /// needs a per-message read here rather than a bitmask carried on the
@@ -1411,6 +1417,27 @@ mod win32 {
                 } else {
                     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
                 }
+            }
+            WM_QUADRAUI_USER_EVENT => {
+                // Issue #831: `WinBackend::waker()` posted this to wake a
+                // possibly-`GetMessageW`-blocked loop after a background
+                // thread queued one or more `UiEvent::User` payloads.
+                // `wndproc` already holds everything a live producer would
+                // need (`ws`, `hwnd`) — unlike GTK's `MainContext::invoke`
+                // callback, which has no such handle and needs the
+                // `wake_callback` indirection (see `GtkBackend::waker`'s
+                // doc) — so this drains and dispatches directly, the same
+                // `dispatch` helper every other message in this match uses.
+                let events = ws.state.borrow_mut().backend.drain_user_events();
+                for event in events {
+                    if dispatch(ws, hwnd, event) == Reaction::Exit {
+                        unsafe {
+                            let _ = DestroyWindow(hwnd);
+                        }
+                        break;
+                    }
+                }
+                LRESULT(0)
             }
             WM_CLOSE => {
                 // Reached both from the title bar's close button and

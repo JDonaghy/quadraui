@@ -231,6 +231,17 @@ pub struct TuiBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
+    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
+    /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]/
+    /// [`Self::wait_events`] drain it into `UiEvent::User`, appended after
+    /// whatever crossterm produced this call, on every call — TUI's
+    /// existing bounded poll interval (`tui::run::POLL_TIMEOUT`, 16ms in
+    /// the live runner) already gives a background wake a short enough
+    /// maximum latency that no native interrupt of the blocking crossterm
+    /// read is needed, unlike GTK/macOS/Windows (see `Backend::waker`'s
+    /// doc for why those three need more).
+    user_events: std::sync::Arc<crate::runtime::UserEventQueue>,
 }
 
 impl TuiBackend {
@@ -263,6 +274,7 @@ impl TuiBackend {
             kitty_keyboard: super::caps::detect_kitty_keyboard(),
             mouse_enabled: true,
             focus: crate::focus::FocusManager::new(),
+            user_events: crate::runtime::UserEventQueue::new(),
         }
     }
 
@@ -300,6 +312,19 @@ impl TuiBackend {
     /// asserting the flag reaches an app).
     pub fn set_kitty_keyboard(&mut self, supported: bool) {
         self.kitty_keyboard = supported;
+    }
+
+    /// Drain pending [`crate::UiEvent::User`] payloads without touching
+    /// crossterm — the same [`Self::user_events`] queue [`Backend::poll_events`]/
+    /// [`Backend::wait_events`] fold in, exposed standalone for
+    /// [`super::testing::TuiDriver`] (issue #831). The driver runs against
+    /// ratatui's `TestBackend`, never a live terminal, so it has no
+    /// crossterm event source to poll for a background-thread wake to ride
+    /// in on — this lets it observe the wake directly instead.
+    pub(crate) fn drain_user_events(&mut self) -> Vec<UiEvent> {
+        let mut out = Vec::new();
+        self.user_events.drain_into(&mut out);
+        out
     }
 
     /// Whether mouse reporting is active this session — see
@@ -1204,6 +1229,11 @@ impl Backend for TuiBackend {
         let mut out = self.apply_dispatch(coalesced);
         self.apply_accelerators(&mut out);
         self.double_click.process(&mut out);
+        // Issue #831: fold in any `UiEvent::User` payloads a background
+        // thread queued via `waker()` since the last drain. Unconditional
+        // (not gated on `raw` being non-empty) so a background-only wake
+        // with no concurrent keyboard/mouse activity still surfaces here.
+        self.user_events.drain_into(&mut out);
         out
     }
 
@@ -1219,7 +1249,14 @@ impl Backend for TuiBackend {
             let mut raw = Vec::new();
             match ratatui::crossterm::event::read() {
                 Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
-                Err(_) => return Vec::new(),
+                Err(_) => {
+                    // Issue #831: even a crossterm read error shouldn't
+                    // drop a background wake that arrived in the same
+                    // window — still surface anything already queued.
+                    let mut out = Vec::new();
+                    self.user_events.drain_into(&mut out);
+                    return out;
+                }
             }
             // Drain the rest of the queue without blocking.
             while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
@@ -1234,9 +1271,31 @@ impl Backend for TuiBackend {
             let mut out = self.apply_dispatch(coalesced);
             self.apply_accelerators(&mut out);
             self.double_click.process(&mut out);
+            self.user_events.drain_into(&mut out);
             return out;
         }
-        Vec::new()
+        // Issue #831: crossterm timed out with no native input, but a
+        // background thread may have called `waker()` during the wait —
+        // this is the primary path a pure background-thread wake takes,
+        // since it has no crossterm event of its own to ride in on.
+        let mut out = Vec::new();
+        self.user_events.drain_into(&mut out);
+        out
+    }
+
+    /// See [`crate::Backend::waker`]'s doc for the full cross-backend
+    /// contract. TUI's implementation is the simplest of the four: the
+    /// live runner's `wait_events` call already blocks for at most
+    /// [`super::run::POLL_TIMEOUT`] (16ms) before looping back around, so
+    /// feeding the payload into [`Self::user_events`] — drained
+    /// unconditionally by both [`Self::poll_events`] and
+    /// [`Self::wait_events`] above — is sufficient on its own; there is no
+    /// blocking native read to interrupt the way GTK/macOS/Windows have.
+    fn waker(&self) -> std::sync::Arc<dyn Fn(crate::UserPayload) + Send + Sync> {
+        let queue = std::sync::Arc::clone(&self.user_events);
+        std::sync::Arc::new(move |payload: crate::UserPayload| {
+            queue.push(payload.into_arc());
+        })
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -2703,6 +2762,13 @@ mod tests {
         }
         fn wait_events(&mut self, _t: Duration) -> Vec<UiEvent> {
             Vec::new()
+        }
+        fn waker(&self) -> std::sync::Arc<dyn Fn(crate::UserPayload) + Send + Sync> {
+            // `MockBackend` only records `draw_*` calls for assertions — no
+            // event loop for a wake to reach. No-op, matching `poll_events`/
+            // `wait_events` above. Real cross-thread wake delivery is
+            // covered against `TuiBackend` itself, not this recorder.
+            std::sync::Arc::new(|_payload| {})
         }
         fn register_accelerator(&mut self, _a: &Accelerator) {}
         fn unregister_accelerator(&mut self, _id: &AcceleratorId) {}

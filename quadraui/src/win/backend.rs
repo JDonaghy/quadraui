@@ -111,7 +111,7 @@ use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Key, ListView, Modifiers, Palette,
-    ParsedBinding, StatusBar, TabBar, Terminal, TextDisplay, TooltipChrome, TreeView,
+    ParsedBinding, StatusBar, TabBar, Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
 };
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
@@ -131,7 +131,7 @@ use super::services::WinPlatformServices;
 #[cfg(target_os = "windows")]
 use windows::core::Result as WinResult;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
@@ -148,8 +148,8 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, LoadCursorW, SetCursor, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
-    IDC_SIZEWE,
+    GetClientRect, LoadCursorW, PostMessageW, SetCursor, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS,
+    IDC_SIZENWSE, IDC_SIZEWE,
 };
 
 #[cfg(target_os = "windows")]
@@ -264,6 +264,28 @@ struct Surface {
 /// within, so this reuses the same heuristic value macOS settled on rather
 /// than inventing a third unverified constant.
 const WIN_DOUBLE_CLICK_RADIUS: f32 = 4.0;
+
+/// Custom `wndproc` message issue #831's [`WinBackend::waker`] posts via
+/// `PostMessageW` to wake a possibly-`GetMessageW`-blocked message loop
+/// from a background thread. `win::run`'s `wndproc` match arm on this
+/// value is what actually drains and dispatches — see that arm's doc.
+/// `WM_APP` (`0x8000`) through `0xBFFF` is the range Win32 reserves for
+/// application-defined messages; the `windows` crate has no `WM_APP`
+/// constant of its own (it's a `<winuser.h>` numeric convention, not a
+/// real API), so this is defined locally, same as `win::run`'s
+/// `MK_LBUTTON`/`MK_RBUTTON`/`MK_MBUTTON`.
+///
+/// Only ever read from `win::run`'s `wndproc`, which is itself entirely
+/// `#[cfg(target_os = "windows")]`-gated (unlike this file, which compiles
+/// cross-platform per this crate's "type-check the `cfg(windows)` arms
+/// everywhere" posture — see the crate-level docs on `src/win/`). A
+/// non-Windows `cargo check --features win` therefore never compiles that
+/// consumer at all, which would otherwise read as dead code; it isn't —
+/// `ci.yml`'s `tui + win` matrix job's `windows-latest` leg is what
+/// actually compiles `wndproc` and proves this value round-trips through
+/// a live `PostMessageW`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) const WM_QUADRAUI_USER_EVENT: u32 = 0x8000 + 1;
 
 pub struct WinBackend {
     viewport: Viewport,
@@ -461,6 +483,13 @@ pub struct WinBackend {
     /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
     /// read elsewhere via [`Backend::focus_manager`].
     focus: crate::focus::FocusManager,
+    /// Thread-safe inbox for [`crate::UiEvent::User`] payloads (issue
+    /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. Not
+    /// `target_os`-gated: the queue itself has no WinAPI dependency, same
+    /// rationale as `events` above; only [`Self::waker`]'s
+    /// `PostMessageW` nudge needs a real host to actually wake a live
+    /// message loop.
+    user_events: std::sync::Arc<crate::runtime::UserEventQueue>,
 }
 
 impl WinBackend {
@@ -505,7 +534,26 @@ impl WinBackend {
             nerd_fonts_enabled: false,
             last_error: None,
             focus: crate::focus::FocusManager::new(),
+            user_events: crate::runtime::UserEventQueue::new(),
         }
+    }
+
+    /// Drain pending [`crate::UiEvent::User`] payloads — the same
+    /// [`Self::user_events`] queue [`Backend::poll_events`] folds in,
+    /// exposed standalone so `win::run`'s `WM_QUADRAUI_USER_EVENT` handler
+    /// (issue #831) can drain-and-dispatch directly without going through
+    /// the otherwise-vestigial `poll_events`/`wait_events` pair (see that
+    /// pair's doc for why the live `wndproc` doesn't normally call them).
+    ///
+    /// Only called from `wndproc`, which is entirely
+    /// `#[cfg(target_os = "windows")]`-gated — see [`WM_QUADRAUI_USER_EVENT`]'s
+    /// doc for why that reads as dead code on a non-Windows `cargo check`
+    /// and isn't.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn drain_user_events(&mut self) -> Vec<UiEvent> {
+        let mut out = Vec::new();
+        self.user_events.drain_into(&mut out);
+        out
     }
 
     /// Update the cached DirectWrite line height (in DIPs). Mirrors
@@ -1335,6 +1383,14 @@ impl Backend for WinBackend {
     fn poll_events(&mut self) -> Vec<UiEvent> {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         self.apply_accelerators(&mut out);
+        // Issue #831: fold in any `UiEvent::User` payloads a background
+        // thread queued via `waker()` since the last drain. The live
+        // `wndproc` doesn't actually call this method (see this method's
+        // doc) — its `WM_QUADRAUI_USER_EVENT` handler calls
+        // `Self::drain_user_events` directly instead — but this keeps
+        // `poll_events` itself correct for any other caller (a driver, a
+        // test) the same way `TuiBackend`/`GtkBackend::poll_events` do.
+        self.user_events.drain_into(&mut out);
         out
     }
 
@@ -1354,6 +1410,63 @@ impl Backend for WinBackend {
     /// what actually waits.
     fn wait_events(&mut self, _timeout: Duration) -> Vec<UiEvent> {
         self.poll_events()
+    }
+
+    /// See [`Backend::waker`]'s doc for the full cross-backend contract.
+    /// A live `GetMessageW` loop blocks *indefinitely* for the next Win32
+    /// message with no timeout at all — the most severe case of the four
+    /// backends (TUI/GTK both re-poll on a bounded interval regardless;
+    /// see `Backend::waker`'s doc). `PostMessageW` is Win32's own
+    /// documented thread-safe "queue a message for this window, waking a
+    /// blocked `GetMessageW`" primitive, posting
+    /// [`WM_QUADRAUI_USER_EVENT`] — `win::run`'s `wndproc` match arm on
+    /// that value is what actually drains [`Self::user_events`] and
+    /// dispatches, since `wndproc` already has direct access to the app/
+    /// backend state a live message carries with it (unlike GTK, which
+    /// needs the `MainThreadBound`/`wake_callback` indirection because its
+    /// wake primitive's callback has no such access — see
+    /// `GtkBackend::waker`'s doc).
+    ///
+    /// `self.hwnd` is `None` until [`Self::attach_surface`] runs (or on
+    /// any non-Windows host, where it never exists at all — see that
+    /// field's doc) — the closure is a documented no-op in that case,
+    /// same posture as `RecordingBackend::waker` and
+    /// `GtkBackend::waker`'s "no `wake_callback` installed yet" case: a
+    /// payload still lands in [`Self::user_events`] for any later
+    /// `poll_events` caller, there is just no live window to nudge yet.
+    fn waker(&self) -> std::sync::Arc<dyn Fn(UserPayload) + Send + Sync> {
+        let queue = std::sync::Arc::clone(&self.user_events);
+        #[cfg(target_os = "windows")]
+        {
+            // `HWND` wraps a raw pointer and isn't `Send`, but the numeric
+            // handle value is — Win32 handles are opaque integers the OS
+            // resolves, not memory this process dereferences directly, so
+            // round-tripping through `isize` and reconstructing `HWND` on
+            // the other side is exactly as valid as the original value.
+            // `PostMessageW` is documented safe to call against a window
+            // owned by a different thread than the caller (that's its
+            // entire purpose here).
+            let hwnd_raw: Option<isize> = self.hwnd.map(|h| h.0 as isize);
+            std::sync::Arc::new(move |payload: UserPayload| {
+                queue.push(payload.into_arc());
+                if let Some(raw) = hwnd_raw {
+                    unsafe {
+                        let _ = PostMessageW(
+                            Some(HWND(raw as *mut core::ffi::c_void)),
+                            WM_QUADRAUI_USER_EVENT,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::sync::Arc::new(move |payload: UserPayload| {
+                queue.push(payload.into_arc());
+            })
+        }
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -3685,6 +3798,46 @@ mod tests {
         // Second drain yields nothing — draining doesn't panic on an
         // empty queue either.
         assert!(b.poll_events().is_empty());
+    }
+
+    // ── Background-thread wake (issue #831) ─────────────────────────────
+    //
+    // `WinBackend::waker`'s `PostMessageW` half only exists under
+    // `cfg(target_os = "windows")` and needs a real `HWND`/message loop to
+    // exercise for real (that's `ci.yml`'s windows-latest leg's job, via
+    // `wndproc`'s `WM_QUADRAUI_USER_EVENT` arm). What's host-independent
+    // and testable here is the `UserEventQueue` plumbing every platform's
+    // `waker()` shares — `self.hwnd` is `None` on this host regardless
+    // (never attached to a real window), which is exactly the "no live
+    // window to nudge yet" branch `waker`'s doc describes.
+
+    /// A payload pushed from a background thread through the closure
+    /// `Backend::waker()` hands out lands in `poll_events()`'s output as a
+    /// `UiEvent::User`, even with no `HWND` attached (`self.hwnd == None`
+    /// on every host this test runs on) — the queue half of `waker()`
+    /// doesn't depend on a live window at all.
+    #[test]
+    fn waker_payload_reaches_poll_events_as_user_event() {
+        let backend = WinBackend::new();
+        let waker = Backend::waker(&backend);
+
+        let handle = std::thread::spawn(move || {
+            waker(crate::UserPayload::new("from background".to_string()));
+        });
+        handle.join().expect("background thread must not panic");
+
+        let mut backend = backend;
+        let events = backend.poll_events();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            UiEvent::User(payload) => {
+                assert_eq!(
+                    payload.downcast_ref::<String>().map(String::as_str),
+                    Some("from background")
+                );
+            }
+            other => panic!("expected UiEvent::User, got {other:?}"),
+        }
     }
 
     #[test]

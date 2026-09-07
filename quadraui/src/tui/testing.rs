@@ -213,6 +213,47 @@ impl<A: AppLogic> TuiDriver<A> {
         result
     }
 
+    /// Deliver every [`UiEvent::User`] payload queued via
+    /// [`crate::Backend::waker`] since the last call, through the same
+    /// production dispatch pipeline [`Self::dispatch`] uses (issue #831).
+    ///
+    /// Unlike `dispatch`, this doesn't take an event — it drains
+    /// [`TuiBackend::drain_user_events`] (the same `user_events` queue the
+    /// live runner's `poll_events`/`wait_events` fold in) and dispatches
+    /// whatever a background thread queued via `backend().waker()` in the
+    /// meantime. This is the driver-tier proof that a background thread
+    /// can wake the UI at all: call `backend().waker()` to get the
+    /// `Send + Sync` closure, invoke it from a spawned thread, join, then
+    /// call this to observe the delivery — see `tests::` in this module
+    /// for the full round trip.
+    pub fn pump_user_events(&mut self) -> Reaction {
+        if self.core.exited() {
+            return Reaction::Exit;
+        }
+        let events = self.core.backend_mut().drain_user_events();
+        let mut result = Reaction::Continue;
+        for ev in events {
+            let outcome = {
+                let (backend, app) = self.core.parts_mut();
+                dispatch_event(ev, backend, app)
+            };
+            match outcome {
+                EventOutcome::Continue => {}
+                EventOutcome::Redraw => {
+                    self.render();
+                    if result == Reaction::Continue {
+                        result = Reaction::Redraw;
+                    }
+                }
+                EventOutcome::Exit => {
+                    self.core.mark_exited();
+                    return Reaction::Exit;
+                }
+            }
+        }
+        result
+    }
+
     /// Press a key (no modifiers).
     pub fn press(&mut self, key: Key) -> Reaction {
         DriverInput::press(self, key)
@@ -1536,6 +1577,132 @@ mod tests {
         assert!(
             driver.tab_center(&bar_id, 1).is_some(),
             "tab 1 (the scroll target) should still be visible"
+        );
+    }
+
+    // ── Background-thread wake (issue #831) ─────────────────────────────
+    //
+    // Before `Backend::waker` existed, there was no `Send`-safe way to get
+    // a value from a background thread into the app at all — every
+    // runner was poll-only (grep any `run.rs` for `mpsc`/`Waker`/
+    // `channel(`: zero hits). These tests are the driver-tier proof this
+    // is fixed for TUI: a real `std::thread::spawn`'d thread calls the
+    // closure `Backend::waker` hands out, and the payload it carries
+    // reaches `AppLogic::handle` and changes what's rendered — the same
+    // production `dispatch_event` pipeline every other driver test in this
+    // module exercises, not a bypass.
+
+    /// Renders whatever string the most recent `UiEvent::User` carried, or
+    /// "waiting" if none has arrived yet — so the test can assert on a
+    /// *rendered* screen change, not just that `handle` was called.
+    struct BackgroundResultApp {
+        last: String,
+    }
+
+    impl BackgroundResultApp {
+        fn new() -> Self {
+            Self {
+                last: "waiting".to_string(),
+            }
+        }
+    }
+
+    impl AppLogic for BackgroundResultApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_text_display(
+                Rect::new(0.0, 0.0, 40.0, 1.0),
+                &crate::TextDisplay {
+                    id: QWidgetId::new("result"),
+                    lines: vec![crate::TextDisplayLine {
+                        spans: vec![crate::types::StyledSpan::plain(self.last.clone())],
+                        decoration: Default::default(),
+                        timestamp: None,
+                    }],
+                    scroll_offset: 0,
+                    auto_scroll: true,
+                    max_lines: 0,
+                    has_focus: false,
+                    title: None,
+                    show_scrollbar: false,
+                },
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            match event {
+                UiEvent::User(payload) => {
+                    if let Some(text) = payload.downcast_ref::<String>() {
+                        self.last = text.clone();
+                        Reaction::Redraw
+                    } else {
+                        Reaction::Continue
+                    }
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    /// Calling the closure `Backend::waker()` returns from another thread
+    /// delivers a `UiEvent::User` that reaches `AppLogic::handle` and
+    /// produces a rendered change — observed RED before issue #831 (no
+    /// `waker` existed to call at all; the only way to see a background
+    /// result was to re-check the app's own state from `tick()` on
+    /// whatever cadence the backend happened to poll at).
+    #[test]
+    fn waker_delivers_background_thread_result_to_rendered_output() {
+        let mut driver = TuiDriver::new(BackgroundResultApp::new(), 40, 3);
+        assert!(
+            driver.screen_contains("waiting"),
+            "initial render should show the placeholder"
+        );
+
+        let waker = driver.backend().waker();
+        let handle = std::thread::spawn(move || {
+            waker(crate::UserPayload::new("done from background".to_string()));
+        });
+        handle.join().expect("background thread must not panic");
+
+        let reaction = driver.pump_user_events();
+        assert_eq!(
+            reaction,
+            Reaction::Redraw,
+            "delivering the queued UiEvent::User must trigger a redraw"
+        );
+        assert!(
+            driver.screen_contains("done from background"),
+            "the background thread's payload must reach rendered output"
+        );
+        assert!(
+            !driver.screen_contains("waiting"),
+            "the placeholder must be gone once the real result renders"
+        );
+    }
+
+    /// The closure `waker()` returns is reusable and thread-agnostic: two
+    /// separate background threads can each call it once, and both
+    /// payloads are delivered in the order they were pushed.
+    #[test]
+    fn waker_delivers_multiple_background_payloads_in_order() {
+        let mut driver = TuiDriver::new(BackgroundResultApp::new(), 40, 3);
+
+        let waker1 = driver.backend().waker();
+        let waker2 = driver.backend().waker();
+        let t1 = std::thread::spawn(move || {
+            waker1(crate::UserPayload::new("first".to_string()));
+        });
+        t1.join().unwrap();
+        let t2 = std::thread::spawn(move || {
+            waker2(crate::UserPayload::new("second".to_string()));
+        });
+        t2.join().unwrap();
+
+        driver.pump_user_events();
+        assert!(
+            driver.screen_contains("second"),
+            "the later payload must win — both were delivered in push order"
         );
     }
 }

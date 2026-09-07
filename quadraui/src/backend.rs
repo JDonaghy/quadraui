@@ -66,10 +66,11 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::dispatch::DragState;
-use crate::event::{Point, Rect, UiEvent, Viewport};
+use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusManager;
 use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
@@ -766,6 +767,69 @@ pub trait Backend: sealed::Sealed {
     /// Block for up to `timeout` waiting for at least one event. Returns an
     /// empty `Vec` on timeout. Used by apps that don't want to busy-poll.
     fn wait_events(&mut self, timeout: Duration) -> Vec<UiEvent>;
+
+    /// Return a `Send + Sync` handle a **background thread** can call to
+    /// deliver a value to the app and wake this backend's event loop so the
+    /// value is observed promptly — issue #831.
+    ///
+    /// Every other `Backend` method requires `&mut self` or `&self` on the
+    /// thread that owns the event loop; this is the one exception,
+    /// deliberately shaped for a thread that has neither. Call the
+    /// returned closure with a [`UserPayload`] from any thread (including
+    /// the owning one) at any time, including before the event loop has
+    /// started or after the app has exited (a call after exit is simply
+    /// dropped — there is no receiver left to observe it):
+    ///
+    /// ```ignore
+    /// let waker = backend.waker();
+    /// std::thread::spawn(move || {
+    ///     let result = do_expensive_work();
+    ///     waker(UserPayload::new(result));
+    /// });
+    /// ```
+    ///
+    /// The backend wakes its event loop and delivers the payload as
+    /// [`UiEvent::User`] to [`crate::runner::AppLogic::handle`] — see that
+    /// variant's doc for the full contract and why this closes a real gap
+    /// rather than a cosmetic one: **before this method existed, every
+    /// runner was poll-only** (grep any `run.rs` for `mpsc`/`Waker`/
+    /// `channel(` — issue #831 found zero), so an app doing background I/O
+    /// had no way to be told a result was ready except by re-checking its
+    /// own state from [`crate::runner::AppLogic::tick`] on whatever cadence
+    /// the backend happens to poll at. That cadence isn't uniform, and for
+    /// two of the four backends it doesn't exist at all absent unrelated
+    /// activity:
+    /// - TUI polls every 16ms (`tui::run::POLL_TIMEOUT`) regardless —
+    ///   `waker` only tightens *when* a background result is folded into
+    ///   that already-frequent poll, it doesn't newly enable delivery.
+    /// - GTK polls every 33ms (`gtk::run::run_with`'s idle timer) — same
+    ///   shape as TUI, coarser interval.
+    /// - **macOS and Windows call [`crate::runner::AppLogic::tick`] not at
+    ///   all today** — macOS only drains its event queue from inside a
+    ///   paint pass, and Windows' `wndproc` dispatches directly per Win32
+    ///   message with no idle timer of its own (see each `run.rs`'s module
+    ///   doc). Without a live redraw or an unrelated native event, a
+    ///   background result on either backend would otherwise never reach
+    ///   the app at all. `waker`'s closure is what forces the wake on
+    ///   these two: GTK/macOS/Windows implementations use their native
+    ///   thread-safe "run this on the UI thread" primitive
+    ///   (`glib::MainContext::invoke`, `dispatch2::DispatchQueue::main`,
+    ///   `PostMessageW`, respectively) precisely because none of the three
+    ///   has anything else that reliably runs soon after being poked from
+    ///   off-thread. TUI's implementation only needs to feed the payload
+    ///   into the queue its existing bounded poll already drains.
+    ///
+    /// Implementations must be safe to call from any thread, at any time,
+    /// any number of times, including concurrently with each other and
+    /// with the owning thread's own use of `self` — that's the entire
+    /// point of handing out a `Send + Sync` closure instead of a method on
+    /// `&self`/`&mut self`. Backends satisfy this by never touching their
+    /// own `!Send` event queue (`Rc<RefCell<VecDeque<UiEvent>>>` on GTK/
+    /// macOS/Windows) directly from the returned closure; they stage into
+    /// a `Send + Sync` inbox instead ([`crate::runtime::UserEventQueue`])
+    /// and drain that inbox back on the owning thread, the same place they
+    /// already drain their native event source.
+    fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync>;
 
     /// Register an accelerator. The backend stores it and emits
     /// [`UiEvent::Accelerator`] when the native key event matches.

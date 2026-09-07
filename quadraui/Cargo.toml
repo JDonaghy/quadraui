@@ -94,6 +94,7 @@ macos = [
     "dep:core-text",
     "dep:core-foundation",
     "dep:arboard",
+    "dep:dispatch2",
 ]
 
 [dependencies]
@@ -179,6 +180,13 @@ objc2-foundation = { version = "0.3", optional = true, features = [
 core-graphics = { version = "0.23", optional = true }
 core-text = { version = "20.1", optional = true }
 core-foundation = { version = "0.9", optional = true }
+# Issue #831: `DispatchQueue::main().exec_async` is the safe, GCD-native
+# "run this on the main thread" primitive `MacBackend::waker` uses to wake
+# a background-thread-queued `UiEvent::User` — same purpose as `glib::
+# MainContext::invoke` on GTK and `PostMessageW` on Win. `MainThreadBound`
+# (also from this crate) is what lets `waker()`'s `Send + Sync` closure
+# carry a handle to the `!Send` `QuadraView` across that boundary soundly.
+dispatch2 = { version = "0.3", optional = true }
 
 # Windows-only optional dep. Gated on `target_os = "windows"` so the `win`
 # feature is a no-op on other platforms (mirrors the macOS block above).

@@ -10,10 +10,16 @@
 //!
 //! Every `UiEvent` satisfies:
 //! - `Debug + Clone + PartialEq + Serialize + Deserialize` — see
-//!   `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §2 for rationale.
+//!   `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §2 for rationale. One
+//!   variant, [`Self::User`], satisfies the `Serialize`/`Deserialize`/
+//!   `PartialEq` half only nominally — see [`UserPayload`]'s doc for why
+//!   an opaque `Any` payload can't do better and what its impls actually
+//!   do instead.
 //! - Owned data only — no closures, no non-`'static` references. A `UiEvent`
 //!   can be logged, replayed, serialised for a plugin boundary, or sent
-//!   across threads with no ceremony.
+//!   across threads with no ceremony. [`Self::User`] is the one exception
+//!   to "serialised for a plugin boundary" — it's an in-process-only
+//!   handoff by design (issue #831).
 //! - Mouse events carry `Option<WidgetId>` — the backend does hit-testing
 //!   **before** emitting so apps dispatch on widget identity.
 //!
@@ -48,7 +54,10 @@
 //! for GTK/Win, tracked as a gap elsewhere for macOS/TUI).
 
 use serde::{Deserialize, Serialize};
+use std::any::Any;
+use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::types::{Modifiers, WidgetId};
 use crate::{
@@ -227,6 +236,109 @@ pub struct BackendNativeEvent {
     /// Opaque payload. Apps choosing to handle this variant parse it
     /// per-backend.
     pub payload: String,
+}
+
+// ─── Background-thread wake payload (issue #831) ───────────────────────────
+
+/// Opaque payload carried by [`UiEvent::User`].
+///
+/// Every other `UiEvent` variant satisfies this module's documented
+/// invariant — `Debug + Clone + PartialEq + Serialize + Deserialize` — for
+/// free, via the enum-level `#[derive(..)]`. An arbitrary app value can't:
+/// a boxed trait object has no generic `Clone` (the vtable doesn't carry
+/// one), no generic equality, and nothing to serialise into. `UserPayload`
+/// is a hand-rolled wrapper that satisfies the same four traits by
+/// necessity rather than by content:
+///
+/// - **`Clone`** — wraps `Arc<dyn Any + Send + Sync>` rather than
+///   `Box<dyn Any + Send>`, so cloning bumps a refcount instead of
+///   requiring the erased payload to know how to duplicate itself. This is
+///   also what makes a `UiEvent::User` cross-thread-safe *after* delivery
+///   (`Send + Sync`), on top of `Backend::waker`'s closure needing `Send`
+///   to be called from a background thread in the first place.
+/// - **`PartialEq`** — pointer identity ([`Arc::ptr_eq`]), the only
+///   equality relation that makes sense for an erased type with no `Eq`
+///   bound of its own.
+/// - **`Debug`** — a fixed placeholder; the payload's real shape is opaque
+///   by design.
+/// - **`Serialize`/`Deserialize`** — both fail at the call site with a
+///   descriptive error instead of failing to compile. `UiEvent::User` is
+///   an in-process-only handoff (a background thread's result, delivered
+///   through [`crate::Backend::waker`]) — it never legitimately crosses a
+///   JSON boundary (a conformance scenario replay, a plugin wire format),
+///   so there is no "right" wire representation to invent. A caller that
+///   accidentally serialises a `Vec<UiEvent>` containing one gets a clear
+///   error naming the cause instead of a silently-dropped field or a type
+///   that doesn't compile for every other, genuinely serialisable variant.
+pub struct UserPayload(Arc<dyn Any + Send + Sync>);
+
+impl UserPayload {
+    /// Wrap `value` for delivery as `UiEvent::User` — see
+    /// [`crate::Backend::waker`] for the intended background-thread usage.
+    pub fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    /// Attempt to recover the original value. Returns `None` if `T` doesn't
+    /// match the concrete type [`Self::new`] was called with.
+    pub fn downcast_ref<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+
+    /// Crate-internal constructor for backends draining their own
+    /// already-erased staging queue (`crate::runtime::UserEventQueue`)
+    /// straight into a `UiEvent::User`.
+    pub(crate) fn from_arc(payload: Arc<dyn Any + Send + Sync>) -> Self {
+        Self(payload)
+    }
+
+    /// Crate-internal inverse of [`Self::from_arc`] — recovers the raw
+    /// `Arc` so a `Backend::waker` closure can push it straight into
+    /// [`crate::runtime::UserEventQueue`] without re-wrapping.
+    pub(crate) fn into_arc(self) -> Arc<dyn Any + Send + Sync> {
+        self.0
+    }
+}
+
+impl fmt::Debug for UserPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("UserPayload").field(&"<opaque>").finish()
+    }
+}
+
+impl Clone for UserPayload {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl PartialEq for UserPayload {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Serialize for UserPayload {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        Err(serde::ser::Error::custom(
+            "UiEvent::User carries an opaque Arc<dyn Any> payload and cannot be serialised",
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for UserPayload {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom(
+            "UiEvent::User cannot be deserialised — it is an in-process-only \
+             background-thread wake payload, never a wire value",
+        ))
+    }
 }
 
 // ─── The main event enum ────────────────────────────────────────────────────
@@ -507,6 +619,29 @@ pub enum UiEvent {
     /// Backend-specific event the crate couldn't normalise. Apps ignore
     /// unless they want to special-case a platform.
     BackendNative(BackendNativeEvent),
+
+    // ── Background-thread wake (issue #831) ─────────────────────────────
+    /// An app-defined value delivered from a background thread through
+    /// [`crate::Backend::waker`].
+    ///
+    /// Before #831, every runner was poll-only: an app doing I/O had no
+    /// way to be told a background task finished short of checking its own
+    /// channel/flag from [`crate::runner::AppLogic::tick`] on whatever
+    /// cadence the backend happens to poll at (TUI: every 16ms; GTK: every
+    /// 33ms; macOS/Windows: never, absent a live redraw or native event —
+    /// see `Backend::waker`'s doc for why that made this the more
+    /// consequential gap on those two). `waker()` returns a `Send + Sync`
+    /// closure any thread can call with a [`UserPayload`]; the backend
+    /// wakes its event loop and delivers the payload as `UiEvent::User` to
+    /// [`crate::runner::AppLogic::handle`], the same way any other event
+    /// reaches the app — no polling required on the app's part.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`]
+    /// — there is no widget to hit-test or focus to route through, since
+    /// the value didn't originate from input. Apps downcast the payload
+    /// via [`UserPayload::downcast_ref`] against whatever concrete type
+    /// they handed to [`UserPayload::new`] on the producing thread.
+    User(UserPayload),
 }
 
 // ─── Shared constructors (issue #495) ───────────────────────────────────────
@@ -585,6 +720,85 @@ pub fn scroll(dx: f32, dy_native_down_positive: f32, x: f32, y: f32) -> UiEvent 
 pub fn window_resized(width: f32, height: f32, scale: f32) -> UiEvent {
     UiEvent::WindowResized {
         viewport: Viewport::new(width, height, scale),
+    }
+}
+
+#[cfg(test)]
+mod user_payload_tests {
+    use super::*;
+
+    #[test]
+    fn downcast_ref_recovers_the_original_type() {
+        let payload = UserPayload::new(42_i32);
+        assert_eq!(payload.downcast_ref::<i32>(), Some(&42));
+        assert_eq!(payload.downcast_ref::<String>(), None);
+    }
+
+    #[test]
+    fn clone_is_a_shallow_arc_clone_not_a_deep_copy() {
+        let payload = UserPayload::new(String::from("hello"));
+        let cloned = payload.clone();
+        // Both point at the exact same allocation — cloning a `UserPayload`
+        // must not require the erased inner type to implement `Clone`.
+        assert_eq!(
+            cloned.downcast_ref::<String>(),
+            payload.downcast_ref::<String>()
+        );
+        assert_eq!(payload, cloned, "a clone must be `==` to its source");
+    }
+
+    #[test]
+    fn partial_eq_is_pointer_identity_not_structural() {
+        let a = UserPayload::new(1_i32);
+        let b = UserPayload::new(1_i32);
+        assert_ne!(
+            a, b,
+            "two payloads with equal contents but distinct allocations must not be equal — \
+             there is no generic structural equality for an erased Any"
+        );
+        let a_clone = a.clone();
+        assert_eq!(a, a_clone, "a clone of the same allocation must be equal");
+    }
+
+    #[test]
+    fn debug_never_panics_and_never_exposes_raw_content() {
+        let payload = UserPayload::new("do not leak me".to_string());
+        let rendered = format!("{payload:?}");
+        assert!(
+            !rendered.contains("do not leak me"),
+            "Debug must print a placeholder, not the erased payload's contents"
+        );
+    }
+
+    #[test]
+    fn serialize_fails_with_a_descriptive_error_instead_of_panicking() {
+        let payload = UserPayload::new(1_i32);
+        let err = serde_json::to_string(&payload)
+            .expect_err("UiEvent::User payloads must not be serialisable");
+        assert!(err.to_string().contains("cannot be serialised"));
+    }
+
+    #[test]
+    fn deserialize_fails_with_a_descriptive_error_instead_of_panicking() {
+        let err = serde_json::from_str::<UserPayload>("null")
+            .expect_err("UiEvent::User must never be constructible from wire data");
+        assert!(err.to_string().contains("cannot be deserialised"));
+    }
+
+    /// The whole point of #831: a `UserPayload` must round-trip through a
+    /// `UiEvent::User` and back out through the crate's own `Clone`/
+    /// `PartialEq`/`Debug` derive on the enum — i.e. adding this variant
+    /// didn't require weakening any of `UiEvent`'s other documented
+    /// invariants for every *other* variant.
+    #[test]
+    fn user_event_clones_and_compares_via_the_wrapped_payload() {
+        let ev = UiEvent::User(UserPayload::new(7_i32));
+        let cloned = ev.clone();
+        assert_eq!(ev, cloned);
+        match &cloned {
+            UiEvent::User(payload) => assert_eq!(payload.downcast_ref::<i32>(), Some(&7)),
+            other => panic!("expected UiEvent::User, got {other:?}"),
+        }
     }
 }
 

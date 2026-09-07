@@ -913,23 +913,33 @@ fn activate<A: AppLogic + 'static>(
     // backend's queue exists as a forward-compat seam — any future
     // signal handlers that push directly to `events_handle()` get
     // drained here on each idle tick.
+    //
+    // Issue #831: this closure is also `GtkBackend::waker`'s wake target
+    // (via `set_wake_callback` below), not just the periodic timer's body
+    // — pulled into a named `Rc<dyn Fn()>` so a background-thread wake and
+    // the ordinary 33ms poll funnel through one dispatch path instead of
+    // two that could drift. See `GtkBackend::waker`'s doc for why the
+    // invoked-on-wake path can't just reimplement this inline: it only has
+    // `&self` on the backend, no handle to `app`/`da`/`window` of its own.
     let drain_da = da.clone();
     let drain_window = window.clone();
     // Cloned (rather than moved) so `app`/`backend` stay available below
     // for the quadraui#450 headless smoke-mode hook.
     let drain_app = app.clone();
     let drain_backend = backend.clone();
-    glib::timeout_add_local(Duration::from_millis(33), move || {
+    let drain_pump_depth = pump_depth.clone();
+    let drain_and_tick: Rc<dyn Fn()> = Rc::new(move || {
         // #427 re-entrancy guard: this is the callback that produced the
         // original crash report. A file dialog's nested `pump_until_ready`
         // loop (invoked from `app.handle` above, while `backend` is still
-        // held mutably borrowed by that call) services *this* GLib timer
-        // source too — without the guard, `backend.borrow_mut()` below
-        // double-borrows and panics inside a non-unwindable GLib callback
-        // frame, aborting the process. Skip this tick entirely and let the
-        // next one (after the dialog closes) pick up any pending events.
-        if pump_depth.is_pumping() {
-            return glib::ControlFlow::Continue;
+        // held mutably borrowed by that call) services *this* source too
+        // — without the guard, `backend.borrow_mut()` below double-borrows
+        // and panics inside a non-unwindable GLib callback frame, aborting
+        // the process. Skip this tick entirely and let the next one
+        // (after the dialog closes, or the next `waker()` call) pick up
+        // any pending events.
+        if drain_pump_depth.is_pumping() {
+            return;
         }
         let events = drain_backend.borrow_mut().poll_events();
         for ev in events {
@@ -950,9 +960,23 @@ fn activate<A: AppLogic + 'static>(
             app_mut.tick(&mut *backend_mut)
         };
         apply_reaction(tick_reaction, &drain_da, &drain_window);
-
-        glib::ControlFlow::Continue
     });
+
+    // Issue #831: install this closure as `waker()`'s wake target before
+    // the timer below ever fires, so a background thread that calls the
+    // waker between `run_with` starting and the first 33ms tick still
+    // reaches it.
+    backend
+        .borrow()
+        .set_wake_callback(Rc::clone(&drain_and_tick));
+
+    {
+        let drain_and_tick = Rc::clone(&drain_and_tick);
+        glib::timeout_add_local(Duration::from_millis(33), move || {
+            drain_and_tick();
+            glib::ControlFlow::Continue
+        });
+    }
 
     window.present();
 
