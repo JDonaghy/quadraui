@@ -172,6 +172,23 @@ cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
 - **Runs as a real CI gate**, not an operator-only tier like the GTK
   live-app smoke below. A pty is a kernel device, not a display server —
   no Xvfb, no compositor, works headlessly anywhere `openpty` does.
+- **Byte-exact escape-sequence assertions are `#[cfg(unix)]`** — the
+  `sgr_color_depth` module (quadraui#826's SGR colour-depth fixtures),
+  which reads the raw master-side bytes via `raw_contains`/`wait_for_raw`
+  rather than the parsed screen. On Unix, `openpty(3)` is a kernel byte
+  pipe: what the child writes is what the master reads, so those bytes
+  really are "what a terminal would receive from our app". On Windows,
+  `portable-pty` is backed by ConPTY (`CreatePseudoConsole`), which puts
+  a whole conhost terminal emulator in between — the master reads
+  conhost's re-serialised repaint of its own text buffer, with its own
+  SGR encoding and batching, not the child's bytes. Content-level
+  assertions (`wait_for`/`screen_text`) survive that round trip and stay
+  cross-platform; byte-exact ones cannot. **If you add a raw-byte
+  assertion, put it in that module.** The platform-independent half of
+  the same claim — that a painted cell is actually quantised to the
+  detected depth — lives in `src/tui/color.rs`'s
+  `pipeline_theme_pair_quantises_through_a_real_draw_at_every_depth`,
+  which does run on Windows.
 
 ## GtkDriver example-driver tests (end-to-end, in-process)
 
