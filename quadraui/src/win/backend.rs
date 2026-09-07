@@ -1423,8 +1423,8 @@ impl Backend for WinBackend {
     /// that value is what actually drains [`Self::user_events`] and
     /// dispatches, since `wndproc` already has direct access to the app/
     /// backend state a live message carries with it (unlike GTK, which
-    /// needs the `MainThreadBound`/`wake_callback` indirection because its
-    /// wake primitive's callback has no such access — see
+    /// needs the `WakeId`/thread-local `wake_callback` indirection because
+    /// its wake primitive's callback has no such access — see
     /// `GtkBackend::waker`'s doc).
     ///
     /// `self.hwnd` is `None` until [`Self::attach_surface`] runs (or on

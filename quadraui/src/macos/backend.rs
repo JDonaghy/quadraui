@@ -255,12 +255,12 @@ pub struct MacBackend {
 /// [`MacBackend::set_wake_callback`]'s doc for what installs it and why
 /// it's shaped this way. Named to keep `MacBackend`'s field declaration
 /// (and `clippy::type_complexity`) readable — mirrors
-/// `gtk::backend::WakeCallback` in shape and intent only: the name is
-/// deliberately duplicated per backend module (this one wraps
-/// `dispatch2::MainThreadBound`, GTK's wraps the hand-rolled
-/// `crate::runtime::MainThreadBound`), each private to its own module, so
-/// a search for "the" `WakeCallback` type will find two unrelated
-/// definitions — that's intentional, not a naming collision to fix.
+/// `gtk::backend`'s wake plumbing in intent only, not in shape: this one
+/// wraps the `!Send` `Rc` in `dispatch2::MainThreadBound` (upstream's
+/// audited wrapper — it carries a `MainThreadMarker` proof and
+/// re-dispatches its own `Drop` back to the main thread), whereas GTK
+/// never lets the `Rc` cross a thread boundary at all, parking it in a
+/// thread-local keyed by an integer id.
 type WakeCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn()>>>>;
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
@@ -936,14 +936,17 @@ impl Backend for MacBackend {
     /// [`crate::runtime::ReactionSink::request_redraw`] issues for every
     /// other event. [`dispatch2::MainThreadBound`] is what makes carrying
     /// that `!Send` closure across the `Send + Sync` boundary `waker()`'s
-    /// return type demands sound — see its doc for the argument (mirrors
-    /// `crate::runtime::MainThreadBound`, GTK's homegrown equivalent —
-    /// macOS uses `dispatch2`'s own audited version instead since it's
-    /// already a dependency here for `exec_async`, and Windows needs no
-    /// such wrapper at all because `wndproc` already holds the state its
-    /// `PostMessageW` wake dispatches through). Not an intra-doc link:
-    /// `runtime::MainThreadBound` is `#[cfg(feature = "gtk")]`, so it
-    /// doesn't exist in a `macos`-only build.
+    /// return type demands sound — see its doc for the argument. macOS
+    /// uses `dispatch2`'s own audited wrapper (already a dependency here
+    /// for `exec_async`) rather than anything homegrown, precisely because
+    /// the hard part is the terminal drop: `MainThreadBound` stores its
+    /// value in a `ManuallyDrop` and re-dispatches `T`'s destructor back
+    /// to the main thread via `run_on_main`. The other two backends dodge
+    /// the question instead of answering it — GTK keeps its `Rc` in a
+    /// main-thread thread-local and sends only an integer id
+    /// (`gtk::backend::WAKE_CALLBACKS`), and Windows needs no wrapper at
+    /// all because `wndproc` already holds the state its `PostMessageW`
+    /// wake dispatches through.
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
         let queue = Arc::clone(&self.user_events);
         let wake_callback = Arc::clone(&self.wake_callback);

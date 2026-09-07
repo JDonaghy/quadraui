@@ -96,15 +96,66 @@ pub(crate) struct PaintedText {
     pub(crate) bounds: QRect,
 }
 
-/// The wake-target [`GtkBackend::waker`] invokes (issue #831) — see
-/// [`GtkBackend::set_wake_callback`]'s doc for what installs it and why
-/// it's shaped this way. Named the same as, but unrelated to,
-/// `macos::backend::WakeCallback` — each is private to its own module and
-/// wraps a different `MainThreadBound` (this one the hand-rolled
-/// `crate::runtime::MainThreadBound`, macOS's the real
-/// `dispatch2::MainThreadBound`); the duplicate name is deliberate, not a
-/// naming collision to fix.
-type WakeCallback = Arc<std::sync::OnceLock<crate::runtime::MainThreadBound<Rc<dyn Fn()>>>>;
+/// Names one `GtkBackend`'s slot in [`WAKE_CALLBACKS`] (issue #831).
+///
+/// This is the *entire* payload [`GtkBackend::waker`]'s returned closure
+/// carries across the thread boundary: a plain integer, trivially
+/// `Send + Sync + Copy`. The `!Send` wake target it names never leaves
+/// the thread that installed it — see [`WAKE_CALLBACKS`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct WakeId(u64);
+
+impl WakeId {
+    /// Hand out an id no other `GtkBackend` in this process has held.
+    /// Process-wide (not per-thread) so an id is unambiguous even though
+    /// the map it keys is thread-local — a stale id from a dropped
+    /// backend can therefore never alias a live one's callback.
+    fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+thread_local! {
+    /// Wake targets installed by [`GtkBackend::set_wake_callback`], keyed
+    /// by [`WakeId`] — the `Rc<dyn Fn()>` that
+    /// `gtk::run::run_with`'s periodic drain closure also is (issue #831).
+    ///
+    /// **Thread-local on purpose, and that is the whole soundness
+    /// argument.** `waker()` must return a `Send + Sync` closure, but the
+    /// only thing worth waking is a handle owned by the GTK main thread
+    /// (`Rc<RefCell<GtkBackend>>`/`Rc<RefCell<App>>` — deliberately
+    /// `!Send`, the same architectural fact that makes
+    /// [`crate::runtime::UserEventQueue`] a separate `Send + Sync`
+    /// staging area). Rather than smuggle that `Rc` through a hand-rolled
+    /// `unsafe impl Send` wrapper — which has to answer "what happens when
+    /// the last handle is dropped on a background thread?", and answers it
+    /// either by racing `Rc`'s non-atomic refcount (unsound) or by
+    /// blocking on the main loop (deadlocks whenever that loop isn't
+    /// running) — the `Rc` simply never crosses the boundary at all. A
+    /// background thread carries a `u64`; the lookup happens on whatever
+    /// thread `glib::MainContext::invoke` runs the closure on, and only
+    /// the installing thread's map has an entry, so a lookup from any
+    /// other thread misses and no-ops instead of touching the `Rc`.
+    ///
+    /// The miss case is not a lost event: the payload is already in
+    /// [`GtkBackend::user_events`] before the wake is even attempted, so
+    /// `gtk::run::run_with`'s 33ms drain still delivers it — a wake that
+    /// lands on the wrong thread degrades latency, never correctness.
+    static WAKE_CALLBACKS: std::cell::RefCell<HashMap<WakeId, Rc<dyn Fn()>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Clone out the wake target `id` names, if this thread is the one that
+/// installed it. Clones (rather than calling under the map's borrow) so a
+/// callback that reaches back into this map — a nested drain that drops
+/// or constructs a `GtkBackend`, say — can't hit a `RefCell` double-borrow
+/// panic inside a non-unwindable GLib callback frame.
+fn wake_callback_for(id: WakeId) -> Option<Rc<dyn Fn()>> {
+    WAKE_CALLBACKS
+        .try_with(|slots| slots.borrow().get(&id).map(Rc::clone))
+        .unwrap_or(None)
+}
 
 /// GTK backend implementing [`quadraui::Backend`].
 ///
@@ -354,14 +405,35 @@ pub struct GtkBackend {
     /// drains it into `UiEvent::User` alongside `events`, on the GTK main
     /// thread, same as any other queued event.
     user_events: Arc<crate::runtime::UserEventQueue>,
-    /// Set once by `gtk::run::run_with` via [`Self::set_wake_callback`],
-    /// right after the periodic event-drain closure exists — see that
-    /// closure's call site for why `waker()` needs a handle to it rather
-    /// than reimplementing the drain inline. `None` until then (e.g. a
-    /// `GtkBackend` constructed directly by a test, never handed to
-    /// `gtk::run`); [`Self::waker`]'s returned closure is a documented
-    /// no-op in that case, mirroring `RecordingBackend::waker`.
-    wake_callback: WakeCallback,
+    /// This backend's slot in [`WAKE_CALLBACKS`], filled once by
+    /// `gtk::run::run_with` via [`Self::set_wake_callback`] right after
+    /// the periodic event-drain closure exists — see that closure's call
+    /// site for why `waker()` needs a handle to it rather than
+    /// reimplementing the drain inline. The slot stays empty until then
+    /// (e.g. a `GtkBackend` constructed directly by a test, never handed
+    /// to `gtk::run`); [`Self::waker`]'s returned closure is a documented
+    /// no-op in that case, mirroring `RecordingBackend::waker`. Cleared
+    /// again by this type's [`Drop`].
+    wake_id: WakeId,
+}
+
+/// Releases this backend's [`WAKE_CALLBACKS`] slot (issue #831), so the
+/// installed `Rc<dyn Fn()>` — and everything it captures, which for
+/// `gtk::run::run_with` is the whole app/backend graph — doesn't outlive
+/// the backend it was installed for.
+///
+/// Always runs on the installing thread: `GtkBackend` holds `Rc`s and
+/// GTK/GObject handles, so it is `!Send` and can only be dropped where it
+/// was built. A [`Self::waker`] handle still alive on a background thread
+/// keeps nothing here alive — it holds a [`WakeId`], not a reference —
+/// so it can't resurrect the entry either; its later lookups simply miss.
+impl Drop for GtkBackend {
+    fn drop(&mut self) {
+        // `try_with`: during thread teardown `WAKE_CALLBACKS` may already
+        // be destroyed if a `GtkBackend` is itself parked in a
+        // thread-local. Nothing to clean up in that case.
+        let _ = WAKE_CALLBACKS.try_with(|slots| slots.borrow_mut().remove(&self.wake_id));
+    }
 }
 
 /// Cached state from the most recent successful [`GtkBackend::draw_terminal`]
@@ -471,7 +543,7 @@ impl GtkBackend {
             double_click_folding: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
-            wake_callback: Arc::new(std::sync::OnceLock::new()),
+            wake_id: WakeId::next(),
         }
     }
 
@@ -482,14 +554,22 @@ impl GtkBackend {
     /// reused, so a background-thread wake and the ordinary 33ms poll
     /// funnel through one dispatch path rather than two that could drift.
     ///
-    /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
-    /// ignores it) — `run_with` only ever calls this once per backend
-    /// instance, so a second call would only happen from a test wiring
-    /// two runners to the same backend, which isn't a supported shape.
+    /// A second call is a no-op — `run_with` only ever calls this once per
+    /// backend instance, so a second call would only happen from a test
+    /// wiring two runners to the same backend, which isn't a supported
+    /// shape; the first installed target wins, as it did when this slot
+    /// was a `OnceLock`.
+    ///
+    /// `callback` is stored in the [`WAKE_CALLBACKS`] thread-local of the
+    /// calling thread — which must therefore be the GTK main thread, as it
+    /// is for the sole production caller (`gtk::run::activate`, running
+    /// inside `GtkApplication`'s `activate` signal). See that
+    /// thread-local's doc for why the `!Send` `Rc` is parked there instead
+    /// of being carried by [`Self::waker`]'s returned closure.
     pub(crate) fn set_wake_callback(&self, callback: Rc<dyn Fn()>) {
-        let _ = self
-            .wake_callback
-            .set(crate::runtime::MainThreadBound::new(callback));
+        let _ = WAKE_CALLBACKS.try_with(|slots| {
+            slots.borrow_mut().entry(self.wake_id).or_insert(callback);
+        });
     }
 
     /// Store the top-level window handle. Called once by `gtk::run::activate`
@@ -1469,23 +1549,29 @@ impl Backend for GtkBackend {
     /// The invoked closure can't reach `Rc<RefCell<GtkBackend>>`/
     /// `Rc<RefCell<App>>` directly (neither is `Send`, and `waker()` only
     /// has `&self` in any case — it has no handle to the app at all). It
-    /// instead calls back into [`Self::wake_callback`], the same
-    /// `Rc<dyn Fn()>` `gtk::run::run_with` also hands to its periodic
-    /// timer — see [`Self::set_wake_callback`]'s doc for why they share
-    /// one closure. [`crate::runtime::MainThreadBound`] is what makes
-    /// carrying that `!Send` closure across the `Send + Sync` boundary
-    /// `waker()`'s return type demands sound — see its doc for the
-    /// argument.
+    /// instead calls back into the `Rc<dyn Fn()>` `gtk::run::run_with`
+    /// also hands to its periodic timer — see [`Self::set_wake_callback`]'s
+    /// doc for why they share one closure.
+    ///
+    /// The returned closure carries only `Send + Sync` state: the payload
+    /// queue's `Arc`, the `MainContext` handle, and a bare [`WakeId`]
+    /// integer. The `!Send` wake target itself stays parked in the GTK
+    /// main thread's [`WAKE_CALLBACKS`] map and is looked up by id *after*
+    /// `invoke` has already put us back on that thread — so no `Rc` ever
+    /// crosses a thread boundary, and there is no `unsafe impl Send`
+    /// wrapper (nor its unanswerable "which thread drops it?" question)
+    /// anywhere in this path. See [`WAKE_CALLBACKS`]'s doc for the full
+    /// argument, including why a lookup miss costs latency rather than the
+    /// event.
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
         let queue = Arc::clone(&self.user_events);
         let main_context = glib::MainContext::default();
-        let wake_callback = Arc::clone(&self.wake_callback);
+        let wake_id = self.wake_id;
         Arc::new(move |payload: UserPayload| {
             queue.push(payload.into_arc());
-            let wake_callback = Arc::clone(&wake_callback);
             main_context.invoke(move || {
-                if let Some(bound) = wake_callback.get() {
-                    (bound.get())();
+                if let Some(callback) = wake_callback_for(wake_id) {
+                    callback();
                 }
             });
         })
@@ -4215,13 +4301,40 @@ mod tests {
         }
     }
 
+    /// Run `f` while this thread owns the default GLib main context, so
+    /// the `glib::MainContext::invoke` inside `waker()` takes its
+    /// synchronous path (`g_main_context_invoke_full` calls the closure
+    /// inline when the calling thread *is* the context's owner) instead of
+    /// queueing an idle source no one in a bare `cargo test` process would
+    /// ever dispatch.
+    ///
+    /// Without this, "did the wake fire?" assertions are a race against
+    /// the rest of the harness: `invoke`'s other inline path needs the
+    /// context to have *no* owner, and cargo runs these tests in parallel
+    /// with others that acquire it for microseconds at a time (any
+    /// `poll_events` → `MainContext::iteration`). That lost race showed up
+    /// as roughly a 1-in-25 spurious failure of the assertion below.
+    /// Acquiring first turns it into the deterministic owner path.
+    fn with_owned_main_context<R>(f: impl FnOnce() -> R) -> R {
+        let ctx = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(_guard) = ctx.acquire() {
+                return f();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "another thread held the default GLib main context for 10s"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     /// `set_wake_callback` installs the handle `waker()`'s returned
-    /// closure invokes via `glib::MainContext::invoke` — no live GTK main
-    /// loop is running in this test process, so per `MainContext::invoke`'s
-    /// own documented contract ("if the main context currently has no
-    /// owner, `func` is called directly from inside this function") the
-    /// callback fires synchronously, letting this assert without spinning
-    /// an actual main loop.
+    /// closure invokes via `glib::MainContext::invoke`; owning the context
+    /// for the duration (see [`with_owned_main_context`]) makes that
+    /// invocation synchronous, so this asserts without spinning an actual
+    /// GTK main loop.
     #[test]
     fn waker_invokes_installed_wake_callback() {
         let backend = GtkBackend::new();
@@ -4230,7 +4343,7 @@ mod tests {
         backend.set_wake_callback(Rc::new(move || called_from_callback.set(true)));
 
         let waker = Backend::waker(&backend);
-        waker(crate::UserPayload::new(()));
+        with_owned_main_context(|| waker(crate::UserPayload::new(())));
 
         assert!(
             called.get(),
@@ -4246,6 +4359,87 @@ mod tests {
         let backend = GtkBackend::new();
         let waker = Backend::waker(&backend);
         waker(crate::UserPayload::new(1_i32));
+    }
+
+    /// The blocking finding from #831's review round, pinned as a test.
+    ///
+    /// A `waker()` handle is `Send + Sync`, so the *last* handle to it can
+    /// die on a background thread — an ordinary occurrence (a worker
+    /// finishing after the app has begun tearing down). Nothing in that
+    /// drop may touch the `!Send` `Rc<dyn Fn()>` wake target, because
+    /// decrementing `Rc`'s non-atomic refcount from two threads at once is
+    /// a real data race, not a lint. The strong count seen from this (the
+    /// installing) thread is the direct observable: it must be untouched
+    /// by anything the background thread did.
+    ///
+    /// It also must not *block*: an earlier revision forwarded the drop to
+    /// the GTK main loop and waited for it, which hung forever whenever no
+    /// live main loop was there to dispatch the forwarded drop. `join()`
+    /// returning at all is that half of the assertion.
+    #[test]
+    fn dropping_the_last_waker_handle_off_thread_never_touches_the_wake_callback() {
+        let backend = GtkBackend::new();
+        let callback: Rc<dyn Fn()> = Rc::new(|| {});
+        backend.set_wake_callback(Rc::clone(&callback));
+        let installed = Rc::strong_count(&callback);
+        assert_eq!(installed, 2, "one clone here, one in the thread-local");
+
+        let waker = Backend::waker(&backend);
+        std::thread::spawn(move || drop(waker))
+            .join()
+            .expect("dropping the last waker handle off-thread must not panic or hang");
+
+        assert_eq!(
+            Rc::strong_count(&callback),
+            installed,
+            "a background thread dropping its waker handle must not touch the UI thread's Rc"
+        );
+
+        // ...and the wake target is still installed and callable here.
+        assert!(super::wake_callback_for(backend.wake_id).is_some());
+    }
+
+    /// Two backends on one thread keep separate wake targets — the
+    /// thread-local map is shared, so the [`WakeId`] keying is what stops
+    /// one backend's `waker()` from firing another's callback.
+    #[test]
+    fn each_backend_wakes_only_its_own_callback() {
+        let first = GtkBackend::new();
+        let second = GtkBackend::new();
+        let first_calls = Rc::new(Cell::new(0));
+        let second_calls = Rc::new(Cell::new(0));
+        let f = first_calls.clone();
+        first.set_wake_callback(Rc::new(move || f.set(f.get() + 1)));
+        let s = second_calls.clone();
+        second.set_wake_callback(Rc::new(move || s.set(s.get() + 1)));
+
+        with_owned_main_context(|| Backend::waker(&second)(crate::UserPayload::new(())));
+
+        assert_eq!(first_calls.get(), 0, "first backend must not be woken");
+        assert_eq!(second_calls.get(), 1, "second backend must be woken once");
+    }
+
+    /// Dropping a `GtkBackend` releases its wake-target slot, so the
+    /// installed closure — which in `gtk::run::run_with` captures the
+    /// whole app/backend graph — doesn't outlive the backend, and a
+    /// long-lived process that builds many backends doesn't accumulate
+    /// them.
+    #[test]
+    fn dropping_the_backend_releases_its_wake_callback_slot() {
+        let callback: Rc<dyn Fn()> = Rc::new(|| {});
+        let backend = GtkBackend::new();
+        let wake_id = backend.wake_id;
+        backend.set_wake_callback(Rc::clone(&callback));
+        assert_eq!(Rc::strong_count(&callback), 2);
+
+        drop(backend);
+
+        assert_eq!(
+            Rc::strong_count(&callback),
+            1,
+            "the thread-local's clone must be released with the backend"
+        );
+        assert!(super::wake_callback_for(wake_id).is_none());
     }
 
     /// #776: GTK reserves room for its `ScrolledWindow` overlay
