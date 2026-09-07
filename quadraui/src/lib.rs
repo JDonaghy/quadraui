@@ -357,8 +357,8 @@ pub use primitives::drop_zone::{
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
     DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorHit, EditorLayout, EditorLine,
-    EditorSelection, GitLineStatus, SelectionKind as EditorSelectionKind, SpellMark,
-    Style as EditorStyle, StyledSpan as EditorStyledSpan,
+    EditorSelection, EditorStyledSpan, GitLineStatus, SelectionKind as EditorSelectionKind,
+    SpellMark, Style as EditorStyle,
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
@@ -379,13 +379,25 @@ pub use primitives::menu_bar::{
 pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_lines, Minimap, MinimapGrid, MinimapHit, MinimapLayout,
-    MinimapLine, MinimapSizing, MinimapSpan, SyntaxSpan, VisibleMinimapLine,
+    MinimapLine, MinimapSizing, MinimapSpan, VisibleMinimapLine,
 };
+// #822: `SyntaxSpan` was merged into `MinimapSpan` (byte-identical
+// four-field structs). `SyntaxSpan` survives as a `#[deprecated]` `pub
+// type` alias in `minimap.rs` — see that module's doc for why. Re-exported
+// here (rather than dropping the re-export) is the point: `vimcode`
+// constructs `quadraui::SyntaxSpan` directly with no version pin on this
+// crate. `#[allow(deprecated)]` because a `pub use` of a deprecated item
+// is itself a `deprecated`-lint use site, and this crate denies that
+// lint in-repo (`RUSTFLAGS: -D warnings`) — see CLAUDE.md's "the
+// `deprecated` lint is denied in-repo and allowed downstream" section
+// for why that split is deliberate.
+#[allow(deprecated)]
+pub use primitives::minimap::SyntaxSpan;
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
-    HeaderHit, InlineInput, LayoutMetrics as MsvLayoutMetrics, MultiSectionView,
-    MultiSectionViewHit, MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux,
-    SectionBody, SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
+    HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit,
+    MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux, SectionBody,
+    SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
 };
 pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,

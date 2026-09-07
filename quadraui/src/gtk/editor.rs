@@ -38,7 +38,7 @@
 
 use crate::primitives::editor::{
     CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLayout, EditorLine, EditorSelection,
-    GitLineStatus, SelectionKind, StyledSpan,
+    EditorStyledSpan, GitLineStatus, SelectionKind,
 };
 use crate::theme::Theme;
 use crate::types::Color;
@@ -582,7 +582,7 @@ fn pango_u16(c: Color) -> (u16, u16, u16) {
 
 /// Build a Pango `AttrList` from the editor primitive's byte-range
 /// spans. Mirrors `vimcode::gtk::draw::build_pango_attrs`.
-fn build_pango_attrs(spans: &[StyledSpan]) -> AttrList {
+fn build_pango_attrs(spans: &[EditorStyledSpan]) -> AttrList {
     let attrs = AttrList::new();
     for span in spans {
         let (fr, fg_g, fb) = pango_u16(span.style.fg);
@@ -833,7 +833,7 @@ mod tests {
             raw_text: "let x = width; // note".into(),
             gutter_text: "  1".into(),
             spans: vec![
-                StyledSpan {
+                EditorStyledSpan {
                     start_byte: 0,
                     end_byte: 3,
                     style: Style {
@@ -841,7 +841,7 @@ mod tests {
                         ..plain
                     },
                 }, // "let"
-                StyledSpan {
+                EditorStyledSpan {
                     start_byte: 8,
                     end_byte: 13,
                     style: Style {
@@ -849,7 +849,7 @@ mod tests {
                         ..plain
                     },
                 }, // "width"
-                StyledSpan {
+                EditorStyledSpan {
                     start_byte: 15,
                     end_byte: 22,
                     style: Style {

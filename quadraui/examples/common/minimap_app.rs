@@ -23,8 +23,8 @@
 
 use quadraui::{
     aggregate_spans, sample_lines, AppLogic, Backend, Color, InteractionState, Key, Minimap,
-    MinimapGrid, MinimapHit, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    SyntaxSpan, UiEvent, WidgetId,
+    MinimapGrid, MinimapHit, MinimapSpan, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Rows of the buffer visible in the (non-minimap) editor viewport —
@@ -85,20 +85,20 @@ impl MinimapApp {
         // A couple of illustrative syntax spans — "fn" in one colour,
         // comments in another — aggregated down to whatever cell size
         // this backend actually paints.
-        let raw_spans: Vec<SyntaxSpan> = lines
+        let raw_spans: Vec<MinimapSpan> = lines
             .iter()
             .enumerate()
             .filter_map(|(idx, l)| {
                 let trimmed = l.text.trim_start();
                 if trimmed.starts_with("fn") {
-                    Some(SyntaxSpan {
+                    Some(MinimapSpan {
                         line_idx: idx,
                         start_col: 0,
                         end_col: 2,
                         color: Color::rgb(80, 160, 255),
                     })
                 } else if trimmed.starts_with("//") {
-                    Some(SyntaxSpan {
+                    Some(MinimapSpan {
                         line_idx: idx,
                         start_col: 4,
                         end_col: l.text.len(),

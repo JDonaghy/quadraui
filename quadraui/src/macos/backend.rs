@@ -65,7 +65,7 @@ use crate::primitives::form::FormLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
-    LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
+    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -590,7 +590,9 @@ impl MacBackend {
     }
 
     /// Return the current active text selection, if any.
-    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    pub(crate) fn active_text_selection(
+        &self,
+    ) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.text_selection.active_text_selection()
     }
 
@@ -726,7 +728,7 @@ impl Default for MacBackend {
 }
 
 impl crate::runtime::PreprocessBackend for MacBackend {
-    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.active_text_selection()
     }
 
@@ -1782,7 +1784,7 @@ impl Backend for MacBackend {
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
         super::multi_section_view::mac_msv_layout(view, rect, self.current_line_height)
     }
-    fn msv_metrics(&self) -> LayoutMetrics {
+    fn msv_metrics(&self) -> MsvLayoutMetrics {
         super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {

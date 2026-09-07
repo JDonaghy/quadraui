@@ -18,16 +18,20 @@
 //! primitive's data layer is now complete; rasterisers land in
 //! Stages 1C (TUI) and 1D (GTK).
 //!
-//! ## Naming clash with `quadraui::StyledSpan`
+//! ## Former naming clash with `quadraui::StyledSpan` (#822)
 //!
 //! `quadraui::types::StyledSpan` is owned-text and serde-friendly —
 //! used by Lua-pluggable surfaces that need text the plugin can read.
-//! This module's [`StyledSpan`] is byte-range based (offsets into the
-//! line's `raw_text`) — necessary for the editor paint where
+//! This module's [`EditorStyledSpan`] is byte-range based (offsets into
+//! the line's `raw_text`) — necessary for the editor paint where
 //! tree-sitter / LSP / search highlighting all produce byte ranges.
-//! Both shapes coexist; this one is reachable as
-//! `quadraui::primitives::editor::StyledSpan` to avoid the clash at
-//! the crate root.
+//! Both shapes coexist; this one used to be defined as `StyledSpan` too
+//! (reachable as `quadraui::primitives::editor::StyledSpan`, distinct
+//! from `quadraui::types::StyledSpan` only by module path — ambiguous
+//! to read and to import). It is now defined as `EditorStyledSpan`,
+//! matching the name the crate root already re-exported it under; the
+//! old name survives as a `#[deprecated]` `pub type` alias in this
+//! module per `PRIMITIVE_RULES.md` rule 8.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -135,7 +139,7 @@ pub struct EditorSelection {
 // ─── Style ──────────────────────────────────────────────────────────────────
 
 /// Per-span text style used by the editor's byte-range
-/// [`StyledSpan`]. Mirrors `vimcode::render::Style`, with
+/// [`EditorStyledSpan`]. Mirrors `vimcode::render::Style`, with
 /// `font_scale` narrowed from `f64` → `f32` so derives of
 /// `PartialEq` / `Serialize` work without `Eq` blocking us.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -151,7 +155,7 @@ pub struct Style {
     pub font_scale: f32,
 }
 
-// ─── StyledSpan (byte-range) ────────────────────────────────────────────────
+// ─── EditorStyledSpan (byte-range) ──────────────────────────────────────────
 
 /// A styled byte-range within a line's text.
 ///
@@ -162,11 +166,20 @@ pub struct Style {
 /// of `quadraui::types::StyledSpan`) would lose alignment with these
 /// upstream sources.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StyledSpan {
+pub struct EditorStyledSpan {
     pub start_byte: usize,
     pub end_byte: usize,
     pub style: Style,
 }
+
+/// Pre-#822 name of [`EditorStyledSpan`]. Renamed to resolve a same-crate
+/// name clash with [`crate::types::StyledSpan`] (a different, owned-text
+/// shape) — both were called `StyledSpan`, ambiguous to read and to
+/// import. Kept as a source-compatible alias per `PRIMITIVE_RULES.md`
+/// rule 8; the crate root's `EditorStyledSpan` re-export is unaffected
+/// (it already used this name).
+#[deprecated(since = "0.0.1", note = "renamed to `EditorStyledSpan` (#822)")]
+pub type StyledSpan = EditorStyledSpan;
 
 // ─── DiagnosticMark ─────────────────────────────────────────────────────────
 
@@ -206,7 +219,7 @@ pub struct EditorLine {
     pub gutter_text: String,
     /// Syntax-highlight + search-match spans (byte-offset based, into
     /// `raw_text`).
-    pub spans: Vec<StyledSpan>,
+    pub spans: Vec<EditorStyledSpan>,
     /// Buffer line index this rendered row corresponds to. Used by
     /// click handlers to map screen row → buffer line.
     pub line_idx: usize,
@@ -627,7 +640,7 @@ mod tests {
             lines: vec![EditorLine {
                 raw_text: "let x = 1;".into(),
                 gutter_text: "  1".into(),
-                spans: vec![StyledSpan {
+                spans: vec![EditorStyledSpan {
                     start_byte: 0,
                     end_byte: 3,
                     style: Style {

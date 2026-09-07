@@ -246,7 +246,7 @@ mod tests {
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::editor::{
-        CursorPos, EditorCursor, EditorLine, Style, StyledSpan as ESpan,
+        CursorPos, EditorCursor, EditorLine, EditorStyledSpan as ESpan, Style,
     };
     use crate::theme::Theme;
     use crate::Backend;

@@ -31,7 +31,7 @@ use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormLayout,
 };
 use crate::primitives::multi_section_view::{
-    LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
+    MsvLayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
 use crate::primitives::tree::TreeRowMeasure;
 use crate::{
@@ -157,7 +157,7 @@ struct PanelScrollDrag {
 
 struct BackendInfo {
     line_height: f32,
-    metrics: LayoutMetrics,
+    metrics: MsvLayoutMetrics,
 }
 
 enum SectionController {
@@ -425,7 +425,7 @@ impl SidebarSystem {
     /// Cache backend-specific layout info so [`Self::handle_cached`] can
     /// compute layouts without a Backend reference. Call once at init, or
     /// again if `line_height` changes (font/DPI change).
-    pub fn set_backend_info(&mut self, line_height: f32, metrics: LayoutMetrics) {
+    pub fn set_backend_info(&mut self, line_height: f32, metrics: MsvLayoutMetrics) {
         self.backend_info = Some(BackendInfo {
             line_height,
             metrics,
@@ -519,7 +519,7 @@ impl SidebarSystem {
         event: &UiEvent,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
         backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         self.cached_viewport_rows = None;
@@ -637,7 +637,7 @@ impl SidebarSystem {
     fn compute_layout(
         &self,
         rect: Rect,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
         lh: f32,
     ) -> (MultiSectionViewLayout, Vec<usize>) {
         let (view, map) = self.build_view();
@@ -678,7 +678,7 @@ impl SidebarSystem {
         key: &Key,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         match self.navigation_mode {
             NavigationMode::Scroll => self.handle_key_scroll(key, rect, lh, metrics),
@@ -691,7 +691,7 @@ impl SidebarSystem {
         key: &Key,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         match key {
             Key::Named(NamedKey::Up) => {
@@ -724,7 +724,7 @@ impl SidebarSystem {
         key: &Key,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let vim = self
             .focus
@@ -762,7 +762,7 @@ impl SidebarSystem {
         delta: isize,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let vr = self.active_viewport_rows(rect, lh, metrics);
         self.move_selection_by(delta, vr)
@@ -792,7 +792,7 @@ impl SidebarSystem {
         to_start: bool,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let vr = self.active_viewport_rows(rect, lh, metrics);
         self.jump_selection_to_edge_by(to_start, vr)
@@ -923,7 +923,7 @@ impl SidebarSystem {
         }
     }
 
-    fn active_viewport_rows(&mut self, rect: Rect, lh: f32, metrics: &LayoutMetrics) -> usize {
+    fn active_viewport_rows(&mut self, rect: Rect, lh: f32, metrics: &MsvLayoutMetrics) -> usize {
         let Some(idx) = self.focus.active() else {
             return 0;
         };
@@ -942,7 +942,7 @@ impl SidebarSystem {
         section: usize,
         rect: Rect,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> usize {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let Some(msv_idx) = map.iter().position(|&s| s == section) else {
@@ -1058,7 +1058,7 @@ impl SidebarSystem {
         x: f32,
         y: f32,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
         backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
@@ -1248,7 +1248,7 @@ impl SidebarSystem {
         x: f32,
         y: f32,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
         _backend: Option<&dyn Backend>,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
@@ -1286,7 +1286,7 @@ impl SidebarSystem {
         rect: Rect,
         position: Point,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> SidebarEvent {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let (view, _) = self.build_view();
@@ -1376,14 +1376,14 @@ impl SidebarSystem {
         }
     }
 
-    fn scroll_panel(&mut self, rect: Rect, dy: f32, lh: f32, metrics: &LayoutMetrics) {
+    fn scroll_panel(&mut self, rect: Rect, dy: f32, lh: f32, metrics: &MsvLayoutMetrics) {
         let (layout, _) = self.compute_layout(rect, metrics, lh);
         let total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
         let max = (total - rect.height).max(0.0);
         self.panel_scroll = (self.panel_scroll + dy).clamp(0.0, max);
     }
 
-    fn scroll_to_active_section(&mut self, rect: Rect, lh: f32, metrics: &LayoutMetrics) {
+    fn scroll_to_active_section(&mut self, rect: Rect, lh: f32, metrics: &MsvLayoutMetrics) {
         let Some(idx) = self.focus.active() else {
             return;
         };
@@ -1422,7 +1422,7 @@ impl SidebarSystem {
         rect: Rect,
         rows: isize,
         lh: f32,
-        metrics: &LayoutMetrics,
+        metrics: &MsvLayoutMetrics,
     ) -> bool {
         let (layout, map) = self.compute_layout(rect, metrics, lh);
         let msv_idx = match layout.hit_test(position.x, position.y) {
@@ -1445,7 +1445,7 @@ impl SidebarSystem {
         true
     }
 
-    fn scroll_active(&mut self, rect: Rect, delta: isize, lh: f32, metrics: &LayoutMetrics) {
+    fn scroll_active(&mut self, rect: Rect, delta: isize, lh: f32, metrics: &MsvLayoutMetrics) {
         let Some(idx) = self.focus.active() else {
             return;
         };
@@ -2336,7 +2336,7 @@ mod tests {
     // ── TUI scrollbar thumb drag (#241) ─────────────────────────────────
     //
     // TUI mode passes mouse coordinates in cell units (1 cell per row)
-    // and `LayoutMetrics::scrollbar_size = 1.0`. The drag-travel math in
+    // and `MsvLayoutMetrics::scrollbar_size = 1.0`. The drag-travel math in
     // `drag_to` must produce a non-zero per-section scroll change for a
     // 1-cell mouse drag, the same way it does for a 1-line GTK drag.
     //
@@ -2355,7 +2355,7 @@ mod tests {
         ss.set_active_section(Some(0));
         ss.set_scroll_mode(ScrollMode::PerSection);
 
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2432,7 +2432,7 @@ mod tests {
         ss.set_rows(3, fake_rows("bp", 0));
         ss.set_scroll_mode(ScrollMode::WholePanel);
 
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2487,7 +2487,7 @@ mod tests {
         ss.set_active_section(Some(0));
         ss.set_scroll_mode(ScrollMode::PerSection);
 
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2548,7 +2548,7 @@ mod tests {
         ss.set_rows(0, fake_rows("r", 200));
         ss.set_scroll_mode(ScrollMode::WholePanel);
 
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2601,7 +2601,7 @@ mod tests {
         ss.set_rows(0, fake_rows("r", 200));
         ss.set_scroll_mode(ScrollMode::WholePanel);
 
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2688,7 +2688,7 @@ mod tests {
         ss.set_rows(2, fake_rows("c", 12));
         ss.set_scroll_mode(ScrollMode::WholePanel);
 
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2949,7 +2949,7 @@ mod tests {
     // ── Header click-to-collapse tests ──────────────────────────────────
 
     /// Rect, line-height, and metrics used by all header-click tests.
-    fn collapse_click_setup() -> (Rect, f32, LayoutMetrics) {
+    fn collapse_click_setup() -> (Rect, f32, MsvLayoutMetrics) {
         let rect = Rect {
             x: 0.0,
             y: 0.0,
@@ -2958,7 +2958,7 @@ mod tests {
         };
         let lh = 20.0;
         // header_size matches lh so section-0 header occupies y ∈ [0, 20).
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             header_size: 20.0,
             divider_size: 0.0,
             scrollbar_size: 0.0,
@@ -3045,8 +3045,8 @@ mod tests {
         // the scroll-routing tests that hover over section 1.
         ss.set_active_section(Some(0));
         // Provide backend info so handle_cached works.
-        // lh=1.0, default LayoutMetrics (header_size=1.0, scrollbar_size=1.0).
-        ss.set_backend_info(1.0, LayoutMetrics::default());
+        // lh=1.0, default MsvLayoutMetrics (header_size=1.0, scrollbar_size=1.0).
+        ss.set_backend_info(1.0, MsvLayoutMetrics::default());
         ss
     }
 
@@ -3055,7 +3055,7 @@ mod tests {
     /// scroll-event positions for the routing tests.
     fn section_body_y(ss: &SidebarSystem, section_idx: usize, rect: Rect) -> f32 {
         let lh = 1.0_f32;
-        let metrics = LayoutMetrics::default();
+        let metrics = MsvLayoutMetrics::default();
         let (layout, map) = ss.compute_layout(rect, &metrics, lh);
         let msv_idx = map.iter().position(|&s| s == section_idx).unwrap();
         let body_b = layout.sections[msv_idx].body_bounds;
@@ -3100,7 +3100,7 @@ mod tests {
         ss.set_rows(0, fake_rows("t", 20));
         ss.set_rows(1, fake_rows("b", 20));
         ss.set_active_section(Some(1)); // section 1 is active
-        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss.set_backend_info(1.0, MsvLayoutMetrics::default());
 
         let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
         let y0 = section_body_y(&ss, 0, rect);
@@ -3328,7 +3328,7 @@ mod tests {
     fn reveal_selects_the_target_row() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 50));
-        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss.set_backend_info(1.0, MsvLayoutMetrics::default());
         let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
 
         assert_eq!(ss.selected_path(0), None);
@@ -3349,7 +3349,7 @@ mod tests {
     fn reveal_expands_a_collapsed_section() {
         let mut ss = SidebarSystem::new(sample_defs());
         ss.set_rows(0, fake_rows("v", 50));
-        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss.set_backend_info(1.0, MsvLayoutMetrics::default());
         ss.set_collapsed(0, true);
         assert!(ss.is_collapsed(0));
         let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
@@ -3376,7 +3376,7 @@ mod tests {
         ss.set_rows(0, fake_rows("v", 50));
         ss.set_active_section(Some(0));
         let lh = 1.0_f32;
-        let metrics = LayoutMetrics::default();
+        let metrics = MsvLayoutMetrics::default();
         ss.set_backend_info(lh, metrics);
         let rect = Rect::new(0.0, 0.0, 20.0, 40.0);
 
@@ -3426,7 +3426,7 @@ mod tests {
             "reveal without backend info must not change selection"
         );
 
-        ss.set_backend_info(1.0, LayoutMetrics::default());
+        ss.set_backend_info(1.0, MsvLayoutMetrics::default());
         ss.reveal(0, &vec![999], rect); // path not present among rows
         assert_eq!(
             ss.selected_path(0),

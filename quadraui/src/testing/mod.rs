@@ -967,7 +967,7 @@ impl crate::Backend for RecordingBackend {
     fn msv_layout(&self, _r: Rect, _v: &crate::MultiSectionView) -> crate::MultiSectionViewLayout {
         unimplemented!("RecordingBackend has no MultiSectionView layout algorithm")
     }
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
         unimplemented!("RecordingBackend has no MultiSectionView metrics")
     }
     /// Union note: `tree_controller::MockBackend`'s body wins —

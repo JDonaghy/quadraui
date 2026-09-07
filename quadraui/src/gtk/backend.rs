@@ -866,7 +866,9 @@ impl GtkBackend {
     }
 
     /// Return the current active text selection, if any.
-    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    pub(crate) fn active_text_selection(
+        &self,
+    ) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.text_selection.active_text_selection()
     }
 
@@ -1144,7 +1146,7 @@ impl Default for GtkBackend {
 }
 
 impl crate::runtime::PreprocessBackend for GtkBackend {
-    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.active_text_selection()
     }
 
@@ -2857,7 +2859,7 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_msv_layout(view, rect, self.current_line_height)
     }
 
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 

@@ -62,7 +62,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use super::text::{blend, fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
+    Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
@@ -76,7 +76,7 @@ use crate::types::{Color, StyledText};
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
 /// (#499) — identical math across every pixel backend.
-pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> LayoutMetrics {
+pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> MsvLayoutMetrics {
     crate::primitives::layout_metrics::msv_metrics(line_height as f64, allow_resize)
 }
 

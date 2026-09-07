@@ -83,7 +83,7 @@ use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
-    LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
+    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -923,7 +923,9 @@ impl WinBackend {
     }
 
     /// Return the current active text selection, if any.
-    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    pub(crate) fn active_text_selection(
+        &self,
+    ) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.text_selection.active_text_selection()
     }
 
@@ -1115,7 +1117,7 @@ impl Default for WinBackend {
 }
 
 impl crate::runtime::PreprocessBackend for WinBackend {
-    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.active_text_selection()
     }
 
@@ -2352,7 +2354,7 @@ impl Backend for WinBackend {
     /// `GtkBackend::msv_metrics`'s identical shortcut. Callers that need
     /// the resize-aware divider size should go through
     /// [`Self::msv_layout`] instead.
-    fn msv_metrics(&self) -> LayoutMetrics {
+    fn msv_metrics(&self) -> MsvLayoutMetrics {
         #[cfg(target_os = "windows")]
         {
             super::multi_section_view::win_msv_metrics(self.current_line_height, false)

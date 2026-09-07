@@ -114,24 +114,19 @@ pub struct MinimapSpan {
     pub color: Color,
 }
 
-/// A raw syntax-highlight span at buffer granularity — the *input* to
-/// [`aggregate_spans`]. Distinct from [`MinimapSpan`], the aggregated
-/// output: many `SyntaxSpan`s can fold into one `MinimapSpan`.
-///
-/// `line_idx` uses the same [`Minimap::lines`]-index space as
-/// [`MinimapSpan::line_idx`] (see that field's doc) — callers building
-/// spans from raw buffer syntax highlighting map buffer line numbers to
-/// `lines` indices themselves (mirroring how [`sample_lines`] already
-/// requires the caller to pre-select which buffer lines are sampled).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct SyntaxSpan {
-    pub line_idx: usize,
-    pub start_col: usize,
-    pub end_col: usize,
-    pub color: Color,
-}
+/// Pre-#822 name for the raw syntax-highlight span passed into
+/// [`aggregate_spans`]. `SyntaxSpan` and [`MinimapSpan`] were
+/// byte-identical four-field structs — one named for the *input* to
+/// `aggregate_spans`, the other for its *output* — with nothing in the
+/// type system actually preventing either from being used as the other
+/// (all fields `pub`, no invariant enforced by construction). Merged
+/// into a single type per `PRIMITIVE_RULES.md` rule 8; this alias keeps
+/// old call sites (and the `quadraui::SyntaxSpan` crate-root re-export)
+/// source-compatible.
+#[deprecated(since = "0.0.1", note = "merged into `MinimapSpan` (#822)")]
+pub type SyntaxSpan = MinimapSpan;
 
-/// The region [`aggregate_spans`] folds raw [`SyntaxSpan`]s into.
+/// The region [`aggregate_spans`] folds raw [`MinimapSpan`]s into.
 ///
 /// `rows` / `cols` bound the output grid (spans outside it are dropped);
 /// `lines_per_row` / `cols_per_cell` say how many buffer lines / columns
@@ -517,7 +512,7 @@ pub fn sample_lines(buffer_lines: &[&str], target_rows: usize) -> Vec<MinimapLin
         .collect()
 }
 
-/// Fold raw [`SyntaxSpan`]s into a per-cell dominant colour, at whatever
+/// Fold raw [`MinimapSpan`]s into a per-cell dominant colour, at whatever
 /// granularity `grid` describes (see [`MinimapGrid`]).
 ///
 /// Each input span contributes its column length as weight to every
@@ -529,7 +524,7 @@ pub fn sample_lines(buffer_lines: &[&str], target_rows: usize) -> Vec<MinimapLin
 /// Returns one [`MinimapSpan`] per non-empty cell, sorted by
 /// `(line_idx, start_col)`. Cells with no overlapping span are omitted —
 /// callers fall back to a default colour when painting.
-pub fn aggregate_spans(spans: &[SyntaxSpan], grid: MinimapGrid) -> Vec<MinimapSpan> {
+pub fn aggregate_spans(spans: &[MinimapSpan], grid: MinimapGrid) -> Vec<MinimapSpan> {
     if grid.rows == 0 || grid.cols == 0 || grid.lines_per_row == 0 || grid.cols_per_cell == 0 {
         return Vec::new();
     }
@@ -1026,33 +1021,33 @@ mod tests {
     /// 4 lines x 4 columns: line0 is half red / half blue; lines 1-3 are
     /// solid red, blue, blue. Shared across the GTK (1x1) and TUI (4x2)
     /// grid tests so both exercise the exact same input.
-    fn sample_spans() -> Vec<SyntaxSpan> {
+    fn sample_spans() -> Vec<MinimapSpan> {
         vec![
-            SyntaxSpan {
+            MinimapSpan {
                 line_idx: 0,
                 start_col: 0,
                 end_col: 2,
                 color: red(),
             },
-            SyntaxSpan {
+            MinimapSpan {
                 line_idx: 0,
                 start_col: 2,
                 end_col: 4,
                 color: blue(),
             },
-            SyntaxSpan {
+            MinimapSpan {
                 line_idx: 1,
                 start_col: 0,
                 end_col: 4,
                 color: red(),
             },
-            SyntaxSpan {
+            MinimapSpan {
                 line_idx: 2,
                 start_col: 0,
                 end_col: 4,
                 color: blue(),
             },
-            SyntaxSpan {
+            MinimapSpan {
                 line_idx: 3,
                 start_col: 0,
                 end_col: 4,

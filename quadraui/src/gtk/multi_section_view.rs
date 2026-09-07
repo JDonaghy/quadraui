@@ -25,7 +25,7 @@ use gtk4::pango;
 use super::{cairo_rgb, draw_list, draw_message_list, draw_tree};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
+    Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
@@ -37,7 +37,7 @@ use crate::types::StyledText;
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
 /// (#499) — identical math across every pixel backend.
-pub fn metrics_for(line_height: f64, allow_resize: bool) -> LayoutMetrics {
+pub fn metrics_for(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
     crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
 }
 

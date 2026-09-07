@@ -53,8 +53,14 @@ use crate::types::WidgetId;
 ///
 /// Lifted from the byte-identical `GtkTextSelection`/`TuiTextSelection`
 /// (#741) — every field and its meaning is unchanged from those two.
+///
+/// Named `ActiveTextSelection` (not just `TextSelection`) to avoid a
+/// same-crate name clash with the unrelated, differently-shaped
+/// [`crate::primitives::rich_text_popup::TextSelection`] (#822) — this one
+/// is `pub(crate)` (no downstream reaches it directly), so the rename
+/// needed no deprecated alias.
 #[derive(Debug, Clone)]
-pub(crate) struct TextSelection {
+pub(crate) struct ActiveTextSelection {
     pub region: WidgetId,
     pub anchor: Point,
     pub focus: Point,
@@ -73,7 +79,7 @@ pub(crate) struct TextSelectionState {
     pub text_regions: Vec<TextRegion>,
     /// Finalised selection (may persist after mouse-up). `None` when no
     /// selection is active.
-    active_selection: Option<TextSelection>,
+    active_selection: Option<ActiveTextSelection>,
     /// The id of the most-recently focused/hovered `TextRegion` — used by
     /// [`Self::select_all_text_region`] to resolve the Ctrl-A target.
     /// Updated by [`Self::set_active_text_selection`] (a drag produced a
@@ -104,7 +110,7 @@ impl TextSelectionState {
     }
 
     /// Return the current active text selection, if any.
-    pub fn active_text_selection(&self) -> Option<&TextSelection> {
+    pub fn active_text_selection(&self) -> Option<&ActiveTextSelection> {
         self.active_selection.as_ref()
     }
 
@@ -115,7 +121,7 @@ impl TextSelectionState {
     /// target even after the drag has ended.
     pub fn set_active_text_selection(&mut self, region: WidgetId, anchor: Point, focus: Point) {
         self.last_text_region_id = Some(region.clone());
-        self.active_selection = Some(TextSelection {
+        self.active_selection = Some(ActiveTextSelection {
             region,
             anchor,
             focus,
