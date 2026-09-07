@@ -62,11 +62,16 @@ use crate::UiEvent;
 /// [`ColorDepth::TrueColor`]: crate::backend::ColorDepth::TrueColor
 type LiveBackend = DepthLimitedBackend<CrosstermBackend<io::Stdout>>;
 
-/// Default poll timeout — 16 ms ≈ 60 fps. The runner sleeps inside
-/// `wait_events(timeout)` waiting for input; on timeout the loop
-/// continues which gives the app a chance to redraw if its state
-/// advanced asynchronously.
-const POLL_TIMEOUT: Duration = Duration::from_millis(16);
+/// Idle-poll ceiling (quadraui#832) — see
+/// [`crate::runtime::IDLE_POLL_CEILING`]'s doc for the full rationale.
+/// Before #832 this was a fixed 16ms (≈60fps) poll *every* iteration
+/// regardless of whether anything was scheduled; it's now only the upper
+/// bound the loop falls back to when nothing has called
+/// [`Backend::request_frame_in`] (directly, or via
+/// [`crate::runner::Reaction::RedrawAfter`]) — a scheduled frame shortens
+/// the actual `wait_events` timeout to just the remaining time until its
+/// deadline.
+const POLL_TIMEOUT_CEILING: Duration = crate::runtime::IDLE_POLL_CEILING;
 
 /// Runtime configuration for [`run_with`]. `Default` matches [`run`]'s
 /// previously-hardcoded behaviour, so `run_with(app, RunConfig::default())`
@@ -270,8 +275,24 @@ fn run_inner<A: AppLogic>(
             needs_redraw = false;
         }
 
-        // Drain events. `wait_events` blocks for up to POLL_TIMEOUT.
-        let events = backend.wait_events(POLL_TIMEOUT);
+        // Drain events. `wait_events` blocks for up to `timeout` —
+        // quadraui#832: no longer a fixed `POLL_TIMEOUT_CEILING` every
+        // iteration. Shortened to the nearer of (a) any pending
+        // `Backend::request_frame_in`/`Reaction::RedrawAfter` deadline and
+        // (b) the still-pending debounced-resize deadline below, so
+        // neither loses its old promptness now that the idle case can
+        // wait much longer.
+        let mut timeout = backend.frame_poll_timeout(POLL_TIMEOUT_CEILING);
+        if let Some(d) = resize_deadline {
+            timeout = timeout.min(d.saturating_duration_since(Instant::now()));
+        }
+        let events = backend.wait_events(timeout);
+        // Clear an elapsed frame deadline *before* dispatching this
+        // batch's events or calling `tick` — see
+        // `crate::runtime::FrameScheduler::clear_if_due`'s doc for why the
+        // order matters (a fresh request made by either must survive
+        // this).
+        backend.clear_frame_deadline_if_due();
         for event in events {
             // Debounce PTY-thrashing resize storms: coalesce the burst to
             // the latest size and defer dispatch until the drag settles.
@@ -286,6 +307,7 @@ fn run_inner<A: AppLogic>(
             match dispatch_event(event, backend, app) {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => needs_redraw = true,
+                EventOutcome::RedrawAfter(d) => backend.request_frame_in(d),
                 EventOutcome::Exit => return Ok(()),
             }
         }
@@ -297,6 +319,7 @@ fn run_inner<A: AppLogic>(
                 match dispatch_event(UiEvent::WindowResized { viewport }, backend, app) {
                     EventOutcome::Continue => {}
                     EventOutcome::Redraw => needs_redraw = true,
+                    EventOutcome::RedrawAfter(d) => backend.request_frame_in(d),
                     EventOutcome::Exit => return Ok(()),
                 }
             }
@@ -308,6 +331,7 @@ fn run_inner<A: AppLogic>(
         match app.tick(backend) {
             Reaction::Continue => {}
             Reaction::Redraw => needs_redraw = true,
+            Reaction::RedrawAfter(d) => backend.request_frame_in(d),
             Reaction::Exit => return Ok(()),
         }
     }

@@ -799,25 +799,36 @@ pub trait Backend: sealed::Sealed {
     /// the backend happens to poll at. That cadence isn't uniform, and for
     /// two of the four backends it doesn't exist at all absent unrelated
     /// activity:
-    /// - TUI polls every 16ms (`tui::run::POLL_TIMEOUT`) regardless —
-    ///   `waker` only tightens *when* a background result is folded into
-    ///   that already-frequent poll, it doesn't newly enable delivery.
-    /// - GTK polls every 33ms (`gtk::run::run_with`'s idle timer) — same
+    /// - TUI polled every 16ms (`tui::run::POLL_TIMEOUT`) regardless —
+    ///   `waker` only tightened *when* a background result was folded into
+    ///   that already-frequent poll, it didn't newly enable delivery.
+    /// - GTK polled every 33ms (`gtk::run::run_with`'s idle timer) — same
     ///   shape as TUI, coarser interval.
-    /// - **macOS and Windows call [`crate::runner::AppLogic::tick`] not at
-    ///   all today** — macOS only drains its event queue from inside a
-    ///   paint pass, and Windows' `wndproc` dispatches directly per Win32
-    ///   message with no idle timer of its own (see each `run.rs`'s module
-    ///   doc). Without a live redraw or an unrelated native event, a
-    ///   background result on either backend would otherwise never reach
-    ///   the app at all. `waker`'s closure is what forces the wake on
-    ///   these two: GTK/macOS/Windows implementations use their native
-    ///   thread-safe "run this on the UI thread" primitive
-    ///   (`glib::MainContext::invoke`, `dispatch2::DispatchQueue::main`,
-    ///   `PostMessageW`, respectively) precisely because none of the three
-    ///   has anything else that reliably runs soon after being poked from
-    ///   off-thread. TUI's implementation only needs to feed the payload
-    ///   into the queue its existing bounded poll already drains.
+    /// - **macOS and Windows called [`crate::runner::AppLogic::tick`] not
+    ///   at all** — macOS only drained its event queue from inside a
+    ///   paint pass, and Windows' `wndproc` dispatched directly per Win32
+    ///   message with no idle timer of its own. Without a live redraw or
+    ///   an unrelated native event, a background result on either backend
+    ///   would otherwise never reach the app at all. `waker`'s closure is
+    ///   what forced the wake on these two: GTK/macOS/Windows
+    ///   implementations use their native thread-safe "run this on the UI
+    ///   thread" primitive (`glib::MainContext::invoke`,
+    ///   `dispatch2::DispatchQueue::main`, `PostMessageW`, respectively)
+    ///   precisely because none of the three has anything else that
+    ///   reliably runs soon after being poked from off-thread. TUI's
+    ///   implementation only needed to feed the payload into the queue its
+    ///   existing bounded poll already drains.
+    ///
+    /// **Since quadraui#832** ([`Self::request_frame_in`]), the fixed-
+    /// cadence part of that list is history rather than current
+    /// behavior: TUI/GTK's unconditional polls are gone (both now poll a
+    /// much coarser fallback ceiling, `crate::runtime::IDLE_POLL_CEILING`,
+    /// 250ms — see that constant's doc), and macOS/Windows gained their
+    /// first `tick` invocations ever, but *only* when something
+    /// (a native event or a `request_frame_in` deadline) asks for one —
+    /// this method's own latency contract is unchanged by any of that:
+    /// a `waker` call still forces a prompt wake exactly as described
+    /// above, independent of whatever cadence (if any) `tick` runs on.
     ///
     /// Implementations must be safe to call from any thread, at any time,
     /// any number of times, including concurrently with each other and
@@ -830,6 +841,53 @@ pub trait Backend: sealed::Sealed {
     /// and drain that inbox back on the owning thread, the same place they
     /// already drain their native event source.
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync>;
+
+    /// Arm a scheduled wake: after `delay`, make sure the event loop wakes
+    /// up and [`crate::runner::AppLogic::tick`] (or the app's `handle`
+    /// dispatch, for whichever native event the wake rides in on) runs
+    /// again — issue #832.
+    ///
+    /// This is [`Self::waker`]'s sibling for the other half of the
+    /// pre-#832 gap that method's doc describes: before #832, TUI and GTK
+    /// each polled unconditionally (16ms / 33ms) regardless of whether
+    /// anything was scheduled, burning CPU on a fully idle app, while
+    /// macOS and Windows didn't call `tick` *at all* absent some
+    /// unrelated native event to ride in on. `waker` fixed "a background
+    /// thread has a result, deliver it promptly"; this method fixes "the
+    /// app itself knows it wants to be woken again in `delay`, without
+    /// resorting to a fixed poll cadence to eventually notice" — a
+    /// spinner's next frame, a caret blink toggle, a countdown tick.
+    ///
+    /// Called by the runner from [`crate::runner::Reaction::RedrawAfter`]
+    /// (via [`crate::runner::AppLogic::tick`]/`handle`'s return value) —
+    /// apps normally reach this indirectly by returning that `Reaction`
+    /// rather than calling it directly, but nothing stops a direct call
+    /// (e.g. from [`crate::runner::AppLogic::setup`], which has no
+    /// `Reaction` return value of its own, to bootstrap a self-rearming
+    /// animation chain before the first native event arrives).
+    ///
+    /// Per the doc on [`crate::runner::Reaction::RedrawAfter`]: the
+    /// backend may wake earlier than `delay` for unrelated reasons (a
+    /// native event, a `waker` call, another still-pending request) but
+    /// never later, and is not required to cancel or coalesce overlapping
+    /// requests — calling this every tick while the app has ongoing
+    /// time-driven state (the chained-rearm pattern) is the intended
+    /// usage, not redundant.
+    ///
+    /// # Per-backend mechanism
+    ///
+    /// "A scheduled frame and a thread wake are the same mechanism on
+    /// most backends" (the issue's framing): GTK/macOS/Windows implement
+    /// this with a real native one-shot timer
+    /// (`glib::timeout_add_local_once` / `dispatch_after` / `SetTimer`)
+    /// whose fire callback invokes the *same* wake path [`Self::waker`]
+    /// posts to from a background thread. TUI is the exception — it has
+    /// no native run loop to arm a timer against (its "event loop" is
+    /// just [`Self::wait_events`] called in a `loop {}`), so its
+    /// implementation records the deadline and folds it into the next
+    /// `wait_events` call's timeout instead; see
+    /// `crate::runtime::FrameScheduler`.
+    fn request_frame_in(&self, delay: Duration);
 
     /// Register an accelerator. The backend stores it and emits
     /// [`UiEvent::Accelerator`] when the native key event matches.

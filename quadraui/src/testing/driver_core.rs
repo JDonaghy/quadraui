@@ -182,6 +182,12 @@ impl<B, A> DriverCore<B, A> {
                 render(&mut self.backend, &self.app);
                 Reaction::Redraw
             }
+            // quadraui#832: no render (the whole point of `RedrawAfter`
+            // is deferring one), and no driver-side timer to arm either
+            // — a headless driver has no event loop for a scheduled
+            // wake to interrupt. Pass the deadline through so a test
+            // that wants to assert on it can.
+            EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
             EventOutcome::Exit => {
                 self.exited = true;
                 Reaction::Exit

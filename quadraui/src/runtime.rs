@@ -88,10 +88,18 @@ use crate::{
     WidgetId,
 };
 
+// `EventOutcome::RedrawAfter` (quadraui#832) needs `Duration` unconditionally
+// wherever `EventOutcome` itself compiles — matching `mod runtime`'s own gate
+// in `lib.rs` (`any(tui, gtk, macos&&target_os=macos, win)`), *not* the
+// narrower `all(win, target_os = "windows")` the resize-debounce items below
+// use. `win`'s compile-check leg builds this module on Linux too (see
+// `lib.rs`'s comment on `mod runtime`), so gating this import to
+// `target_os = "windows"` would leave `EventOutcome` unable to resolve
+// `Duration` under a plain `--features win` on a non-Windows host.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
-    all(feature = "win", target_os = "windows"),
+    feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
 use std::time::Duration;
@@ -114,6 +122,9 @@ pub(crate) enum EventOutcome {
     Continue,
     /// State changed; schedule a redraw before the next event drain.
     Redraw,
+    /// No redraw needed now; schedule a wake (and another `tick`/dispatch
+    /// pass) after `Duration` — see [`Reaction::RedrawAfter`] (quadraui#832).
+    RedrawAfter(Duration),
     /// The app requested exit.
     Exit,
 }
@@ -123,6 +134,7 @@ impl From<Reaction> for EventOutcome {
         match r {
             Reaction::Continue => EventOutcome::Continue,
             Reaction::Redraw => EventOutcome::Redraw,
+            Reaction::RedrawAfter(d) => EventOutcome::RedrawAfter(d),
             Reaction::Exit => EventOutcome::Exit,
         }
     }
@@ -144,6 +156,22 @@ pub(crate) trait ReactionSink {
     fn request_redraw(&self);
     /// Tear down / close.
     fn request_exit(&self);
+    /// Arm a scheduled wake — see [`Backend::request_frame_in`]
+    /// (quadraui#832). `&self`, matching the other two methods and
+    /// [`Backend::request_frame_in`]/[`Backend::waker`] themselves:
+    /// macOS's implementor (`QuadraView`) is an `objc2` `NSObject`
+    /// subclass, which is only ever handed out as `&self` (Objective-C
+    /// objects use reference-counted, shared-ownership semantics —
+    /// there is no exclusive `&mut` on one), so this trait can't require
+    /// `&mut self` without losing that impl entirely. Every
+    /// implementation reaches whatever backend state it needs to mutate
+    /// through interior mutability instead (a `Cell`/`RefCell`/GTK's
+    /// `WAKE_CALLBACKS` thread-local), the same way `request_redraw`/
+    /// `request_exit` already do.
+    ///
+    /// [`Backend::request_frame_in`]: crate::backend::Backend::request_frame_in
+    /// [`Backend::waker`]: crate::backend::Backend::waker
+    fn request_frame_in(&self, delay: Duration);
 }
 
 /// Apply an outcome — an [`EventOutcome`] or anything that converts into
@@ -155,6 +183,7 @@ pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl Reacti
     match outcome.into() {
         EventOutcome::Continue => {}
         EventOutcome::Redraw => sink.request_redraw(),
+        EventOutcome::RedrawAfter(d) => sink.request_frame_in(d),
         EventOutcome::Exit => sink.request_exit(),
     }
 }
@@ -483,7 +512,12 @@ where
     let outcome: EventOutcome = app.handle(event, backend).into();
     if force_redraw {
         match outcome {
-            EventOutcome::Continue => EventOutcome::Redraw,
+            // The selection-highlight update this event caused needs to
+            // land on screen now, regardless of what the app's own
+            // `Reaction` says about *its* state — including a deferred
+            // `RedrawAfter`, which only speaks to when the app wants to
+            // be woken again, not whether this frame needs a repaint.
+            EventOutcome::Continue | EventOutcome::RedrawAfter(_) => EventOutcome::Redraw,
             other => other,
         }
     } else {
@@ -521,6 +555,30 @@ where
     all(feature = "macos", target_os = "macos")
 ))]
 pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
+
+/// Fallback idle-poll bound for backends that keep a coarse "call `tick`
+/// even with nothing scheduled" cadence (quadraui#832) — TUI and GTK.
+///
+/// Before #832 both polled unconditionally, TUI every 16ms
+/// (`tui::run::POLL_TIMEOUT`) and GTK every 33ms (`gtk::run::run_with`'s
+/// idle timer) — burning CPU waking a fully idle app 60-30 times a
+/// second. [`crate::runner::Reaction::RedrawAfter`] +
+/// [`crate::backend::Backend::request_frame_in`] replace that for any app
+/// that opts in with a *precise* scheduled wake, but this constant stays
+/// as the ceiling for apps that don't: an idle-poll fallback is still
+/// needed because at least one existing behavior relies on `tick` being
+/// called periodically with no explicit request — `examples/common/
+/// terminal_app.rs`'s embedded terminal notices new PTY output by
+/// polling from `tick`, and that background reader thread predates #831
+/// and has no `Backend::waker` wired to it (a natural follow-up, not
+/// this issue's scope). 250ms is a deliberate, order-of-magnitude
+/// reduction from both old constants (6x fewer wakes than TUI's 16ms, 7x
+/// fewer than GTK's 33ms) while keeping that fallback path — and
+/// `Backend::waker`'s own latency on TUI specifically, which has no
+/// native way to interrupt a blocked `crossterm::event::poll` early, see
+/// that method's doc — bounded to a quarter second instead of unbounded.
+#[cfg(any(feature = "tui", feature = "gtk"))]
+pub(crate) const IDLE_POLL_CEILING: Duration = Duration::from_millis(250);
 
 /// Trailing-edge resize-event coalescing (quadraui#437, extracted for
 /// #496; adopted by macOS/Windows in #780): stores the most recent
@@ -570,6 +628,82 @@ impl ResizeDebouncer {
     /// caller's own timer has determined the burst settled.
     pub(crate) fn take(&mut self) -> Option<Viewport> {
         self.pending.take()
+    }
+}
+
+/// TUI's [`Backend::request_frame_in`] bookkeeping (quadraui#832).
+///
+/// TUI has no native run loop of its own to arm a timer against — its
+/// "event loop" is [`tui::run::run_inner`]'s own `loop {}` blocking on
+/// `crossterm::event::poll(timeout)` — so unlike GTK/macOS/Windows
+/// (each of which schedules a real one-shot native timer,
+/// `glib::timeout_add_local_once`/`dispatch_after`/`SetTimer`, from
+/// inside `Backend::request_frame_in` itself), TUI's implementation just
+/// records the deadline here and folds it into the *next* `poll_timeout`
+/// call — the run loop is what actually "waits" for it.
+///
+/// Coalesces to the earliest outstanding deadline: a later call never
+/// pushes a sooner one back, matching
+/// [`crate::runner::Reaction::RedrawAfter`]'s documented contract.
+///
+/// `Cell`-based (not a plain field) so every method takes `&self`, not
+/// `&mut self` — matching [`Backend::request_frame_in`]'s own `&self`
+/// (the same shape as [`Backend::waker`], and required so its GTK/macOS
+/// implementations, which need only a *shared* backend reference, and
+/// TUI's, which needs to mutate this deadline, can share one trait
+/// signature).
+///
+/// [`Backend::request_frame_in`]: crate::backend::Backend::request_frame_in
+/// [`Backend::waker`]: crate::backend::Backend::waker
+/// [`tui::run::run_inner`]: crate::tui::run
+#[cfg(feature = "tui")]
+pub(crate) struct FrameScheduler {
+    deadline: std::cell::Cell<Option<std::time::Instant>>,
+}
+
+#[cfg(feature = "tui")]
+impl FrameScheduler {
+    pub(crate) const fn new() -> Self {
+        Self {
+            deadline: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Arm (or tighten) the pending deadline to `delay` from now.
+    pub(crate) fn request(&self, delay: Duration) {
+        let candidate = std::time::Instant::now() + delay;
+        self.deadline.set(Some(match self.deadline.get() {
+            Some(d) if d <= candidate => d,
+            _ => candidate,
+        }));
+    }
+
+    /// How long the run loop may safely block in `wait_events` before it
+    /// needs to re-check state: the time remaining until the pending
+    /// deadline, clamped to `ceiling` — or `ceiling` itself if nothing is
+    /// pending.
+    pub(crate) fn poll_timeout(&self, ceiling: Duration) -> Duration {
+        match self.deadline.get() {
+            Some(d) => d
+                .saturating_duration_since(std::time::Instant::now())
+                .min(ceiling),
+            None => ceiling,
+        }
+    }
+
+    /// Clear the deadline if it has passed. Call once per loop iteration
+    /// right after `wait_events` returns, *before* dispatching that
+    /// batch's events or calling `tick` — so a fresh `request` made from
+    /// either can't be immediately clobbered by this clearing a deadline
+    /// it already fired.
+    pub(crate) fn clear_if_due(&self) {
+        if self
+            .deadline
+            .get()
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            self.deadline.set(None);
+        }
     }
 }
 
@@ -733,6 +867,7 @@ mod reaction_sink_tests {
     struct RecordingSink {
         redraws: std::cell::Cell<u32>,
         exits: std::cell::Cell<u32>,
+        frame_requests: std::cell::RefCell<Vec<Duration>>,
     }
 
     impl RecordingSink {
@@ -740,6 +875,7 @@ mod reaction_sink_tests {
             Self {
                 redraws: std::cell::Cell::new(0),
                 exits: std::cell::Cell::new(0),
+                frame_requests: std::cell::RefCell::new(Vec::new()),
             }
         }
     }
@@ -751,6 +887,9 @@ mod reaction_sink_tests {
         fn request_exit(&self) {
             self.exits.set(self.exits.get() + 1);
         }
+        fn request_frame_in(&self, delay: Duration) {
+            self.frame_requests.borrow_mut().push(delay);
+        }
     }
 
     #[test]
@@ -759,6 +898,7 @@ mod reaction_sink_tests {
         apply_outcome(EventOutcome::Continue, &sink);
         assert_eq!(sink.redraws.get(), 0);
         assert_eq!(sink.exits.get(), 0);
+        assert!(sink.frame_requests.borrow().is_empty());
     }
 
     #[test]
@@ -782,6 +922,33 @@ mod reaction_sink_tests {
         let sink = RecordingSink::new();
         apply_outcome(Reaction::Redraw, &sink);
         assert_eq!(sink.redraws.get(), 1);
+    }
+
+    /// quadraui#832: `RedrawAfter` must reach `request_frame_in`, not
+    /// `request_redraw` — the whole point is *not* forcing a repaint now.
+    #[test]
+    fn apply_outcome_redraw_after_calls_request_frame_in_not_redraw() {
+        let sink = RecordingSink::new();
+        apply_outcome(EventOutcome::RedrawAfter(Duration::from_millis(100)), &sink);
+        assert_eq!(
+            sink.redraws.get(),
+            0,
+            "RedrawAfter must not force an immediate redraw"
+        );
+        assert_eq!(
+            *sink.frame_requests.borrow(),
+            vec![Duration::from_millis(100)]
+        );
+    }
+
+    #[test]
+    fn apply_outcome_accepts_a_raw_redraw_after_reaction() {
+        let sink = RecordingSink::new();
+        apply_outcome(Reaction::RedrawAfter(Duration::from_millis(50)), &sink);
+        assert_eq!(
+            *sink.frame_requests.borrow(),
+            vec![Duration::from_millis(50)]
+        );
     }
 }
 
@@ -864,6 +1031,123 @@ mod resize_debouncer_tests {
         assert!(
             d.take().is_none(),
             "take() must not yield a second dispatch for the same burst"
+        );
+    }
+}
+
+/// `FrameScheduler` exists only under `feature = "tui"` — see its doc for
+/// why GTK/macOS/Windows use a real native one-shot timer instead.
+#[cfg(all(test, feature = "tui"))]
+mod frame_scheduler_tests {
+    use super::*;
+
+    #[test]
+    fn no_request_polls_the_full_ceiling() {
+        let s = FrameScheduler::new();
+        assert_eq!(
+            s.poll_timeout(Duration::from_millis(250)),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn a_request_shorter_than_the_ceiling_shortens_the_poll_timeout() {
+        let s = FrameScheduler::new();
+        s.request(Duration::from_millis(10));
+        // The exact remaining duration is timing-sensitive (a few
+        // microseconds elapse between `request` and `poll_timeout`), but
+        // it must be positive and well under the ceiling.
+        let timeout = s.poll_timeout(Duration::from_millis(250));
+        assert!(
+            timeout <= Duration::from_millis(10) && timeout > Duration::ZERO,
+            "expected a short bounded timeout, got {timeout:?}"
+        );
+    }
+
+    #[test]
+    fn a_request_longer_than_the_ceiling_is_clamped_to_it() {
+        let s = FrameScheduler::new();
+        s.request(Duration::from_secs(10));
+        assert_eq!(
+            s.poll_timeout(Duration::from_millis(250)),
+            Duration::from_millis(250)
+        );
+    }
+
+    /// A later, *sooner* request must win — the earliest deadline always
+    /// governs, matching `Reaction::RedrawAfter`'s documented contract.
+    #[test]
+    fn coalesces_to_the_earliest_deadline() {
+        let s = FrameScheduler::new();
+        s.request(Duration::from_secs(10));
+        s.request(Duration::from_millis(5));
+        let timeout = s.poll_timeout(Duration::from_secs(60));
+        assert!(
+            timeout <= Duration::from_millis(5),
+            "a sooner request must shorten the deadline, got {timeout:?}"
+        );
+    }
+
+    /// A later, *later* request must not push a sooner one back.
+    #[test]
+    fn a_later_looser_request_does_not_override_a_sooner_one() {
+        let s = FrameScheduler::new();
+        s.request(Duration::from_millis(5));
+        s.request(Duration::from_secs(10));
+        let timeout = s.poll_timeout(Duration::from_secs(60));
+        assert!(
+            timeout <= Duration::from_millis(5),
+            "the earlier, sooner deadline must still govern, got {timeout:?}"
+        );
+    }
+
+    #[test]
+    fn clear_if_due_is_a_noop_before_the_deadline() {
+        let s = FrameScheduler::new();
+        s.request(Duration::from_secs(60));
+        s.clear_if_due();
+        // Still armed — the ceiling-clamped timeout stays short of the
+        // ceiling (i.e. governed by the still-pending deadline), not the
+        // full ceiling a cleared scheduler would report.
+        assert!(s.poll_timeout(Duration::from_millis(1)) <= Duration::from_millis(1));
+        assert!(s.deadline.get().is_some());
+    }
+
+    #[test]
+    fn clear_if_due_clears_a_past_deadline() {
+        let s = FrameScheduler::new();
+        // A zero-length request is due immediately.
+        s.request(Duration::ZERO);
+        std::thread::sleep(Duration::from_millis(1));
+        s.clear_if_due();
+        assert!(s.deadline.get().is_none());
+        assert_eq!(
+            s.poll_timeout(Duration::from_millis(250)),
+            Duration::from_millis(250)
+        );
+    }
+
+    /// This is quadraui#832's core acceptance criterion made concrete:
+    /// with nothing scheduled, the number of wake-ups over a fixed
+    /// interval is bounded by the (much coarser) idle ceiling, not the
+    /// pre-#832 unconditional 16ms poll — RED against the old constant,
+    /// GREEN against `IDLE_POLL_CEILING`.
+    #[test]
+    fn idle_wakeups_over_one_second_are_bounded_by_the_ceiling_not_the_old_16ms_poll() {
+        let s = FrameScheduler::new();
+        let ceiling = IDLE_POLL_CEILING;
+        let interval = Duration::from_secs(1);
+
+        let old_poll_timeout_ms = 16u128; // pre-#832 `tui::run::POLL_TIMEOUT`
+        let old_wakeups = interval.as_millis() / old_poll_timeout_ms;
+        let new_wakeups = interval.as_millis() / s.poll_timeout(ceiling).as_millis();
+
+        assert_eq!(old_wakeups, 62, "sanity check on the pre-#832 baseline");
+        assert!(
+            new_wakeups < old_wakeups / 4,
+            "expected the new idle ceiling ({ceiling:?}) to cut wakeups \
+             over {interval:?} to well under a quarter of the old \
+             unconditional-poll baseline ({old_wakeups}); got {new_wakeups}"
         );
     }
 }

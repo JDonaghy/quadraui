@@ -758,6 +758,10 @@ impl crate::Backend for RecordingBackend {
         // live runner. No-op, matching `poll_events`/`wait_events` above.
         std::sync::Arc::new(|_payload| {})
     }
+    fn request_frame_in(&self, _delay: std::time::Duration) {
+        // No event loop to wake, same rationale as `waker` above — a
+        // scheduled-frame request has nothing to arm against.
+    }
     fn register_accelerator(&mut self, _a: &crate::Accelerator) {}
     fn unregister_accelerator(&mut self, _id: &crate::AcceleratorId) {}
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {

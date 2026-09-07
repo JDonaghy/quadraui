@@ -200,8 +200,21 @@ impl<A: AppLogic> TuiDriver<A> {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => {
                     self.render();
+                    // `Redraw` always wins: it outranks both `Continue`
+                    // and a not-yet-fired `RedrawAfter` from an earlier
+                    // event in this same batch.
+                    result = Reaction::Redraw;
+                }
+                // quadraui#832: arm the same bookkeeping the live runner
+                // would via `Backend::request_frame_in` — harmless on a
+                // driver with no real timer loop, and lets a test assert
+                // on `backend().frame_poll_timeout(..)` afterward. Never
+                // downgrades an already-stronger `result` (a `Redraw`
+                // from an earlier event in this batch).
+                EventOutcome::RedrawAfter(d) => {
+                    self.core.backend_mut().request_frame_in(d);
                     if result == Reaction::Continue {
-                        result = Reaction::Redraw;
+                        result = Reaction::RedrawAfter(d);
                     }
                 }
                 EventOutcome::Exit => {
@@ -241,8 +254,13 @@ impl<A: AppLogic> TuiDriver<A> {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => {
                     self.render();
+                    result = Reaction::Redraw;
+                }
+                // quadraui#832 — see `Self::dispatch`'s identical arm.
+                EventOutcome::RedrawAfter(d) => {
+                    self.core.backend_mut().request_frame_in(d);
                     if result == Reaction::Continue {
-                        result = Reaction::Redraw;
+                        result = Reaction::RedrawAfter(d);
                     }
                 }
                 EventOutcome::Exit => {

@@ -178,8 +178,13 @@ impl<A: AppLogic> TuiVtDriver<A> {
                 EventOutcome::Continue => {}
                 EventOutcome::Redraw => {
                     self.render();
+                    result = Reaction::Redraw;
+                }
+                // quadraui#832 — see `TuiDriver::dispatch`'s identical arm.
+                EventOutcome::RedrawAfter(d) => {
+                    self.backend.request_frame_in(d);
                     if result == Reaction::Continue {
-                        result = Reaction::Redraw;
+                        result = Reaction::RedrawAfter(d);
                     }
                 }
                 EventOutcome::Exit => {

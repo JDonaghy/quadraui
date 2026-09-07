@@ -1577,6 +1577,34 @@ impl Backend for GtkBackend {
         })
     }
 
+    /// See [`Backend::request_frame_in`]'s doc for the cross-backend
+    /// contract (quadraui#832). Unlike [`Self::waker`] — which runs on a
+    /// background thread and so must hop onto the GTK main thread via
+    /// `glib::MainContext::invoke` before it can touch anything — this
+    /// method already runs on the GTK main thread — called synchronously
+    /// from event/tick handling — so it can arm a
+    /// real one-shot timer directly: `glib::source::timeout_add_local_once`,
+    /// the same primitive `gtk::run::run_with`'s resize-settle debounce
+    /// uses. The fired callback reaches back into the app/backend graph
+    /// through the *same* [`WAKE_CALLBACKS`] lookup `waker()`'s invoked
+    /// closure uses — a scheduled frame and a thread wake really are the
+    /// same mechanism here, just armed from two different starting
+    /// threads.
+    ///
+    /// No dedup/cancellation against an already-armed request — see
+    /// [`crate::runner::Reaction::RedrawAfter`]'s doc for why an
+    /// occasional extra, harmless early wake is an accepted tradeoff for
+    /// not needing to track "is there already a sooner one pending" state
+    /// here.
+    fn request_frame_in(&self, delay: Duration) {
+        let wake_id = self.wake_id;
+        glib::source::timeout_add_local_once(delay, move || {
+            if let Some(callback) = wake_callback_for(wake_id) {
+                callback();
+            }
+        });
+    }
+
     fn register_accelerator(&mut self, acc: &Accelerator) {
         self.accelerators.insert(acc.id.clone(), acc.clone());
         self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
@@ -4359,6 +4387,36 @@ mod tests {
         let backend = GtkBackend::new();
         let waker = Backend::waker(&backend);
         waker(crate::UserPayload::new(1_i32));
+    }
+
+    /// quadraui#832: `request_frame_in` must be callable — before or
+    /// after `set_wake_callback` — without panicking. `glib::source::
+    /// timeout_add_local_once` only *schedules* the one-shot timer; it
+    /// returns immediately without running the main loop, so this is
+    /// safe to call from a plain unit test with no GTK application or
+    /// running loop behind it, same posture as `waker_is_a_safe_no_op_
+    /// before_wake_callback_is_installed` above.
+    ///
+    /// Deliberately doesn't pump `glib::MainContext::default()` to prove
+    /// the timer actually *fires`: that context is one process-wide
+    /// object shared by every test in this binary, and earlier draft of
+    /// this test (`ctx.iteration(true)` in a loop) crashed the whole test
+    /// binary (`SIGABRT`, "already acquired by another thread" /
+    /// GLib-internal aborts) racing concurrently-running tests for
+    /// ownership — mirroring why this file has no analogous "does the
+    /// resize-settle timer actually fire" unit test either (see
+    /// `gtk::run`'s `RESIZE_TIMER_ID`/`timeout_add_local_once` call):
+    /// that tier of proof belongs to a live/example-driven test, not a
+    /// `cargo test --lib` unit test contending for the global context.
+    #[test]
+    fn request_frame_in_does_not_panic_with_or_without_a_wake_callback_installed() {
+        let backend = GtkBackend::new();
+        Backend::request_frame_in(&backend, Duration::from_millis(50));
+
+        let fired = Rc::new(Cell::new(false));
+        let fired_from_callback = Rc::clone(&fired);
+        backend.set_wake_callback(Rc::new(move || fired_from_callback.set(true)));
+        Backend::request_frame_in(&backend, Duration::from_millis(50));
     }
 
     /// The blocking finding from #831's review round, pinned as a test.

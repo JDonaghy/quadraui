@@ -107,6 +107,13 @@ extern "C" {
 /// `Box<dyn Fn>` smart pointers.
 type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
 type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
+/// Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` (quadraui#832)
+/// — the third leg of the type-erased-closure trio, alongside `paint`/
+/// `handle` above. Fired by [`MacBackend::request_frame_in`]'s
+/// scheduled-wake timer via [`MacBackend::set_tick_callback`], not
+/// called on any fixed cadence — macOS never called `tick` at all before
+/// #832 (see [`crate::backend::Backend::waker`]'s doc for that history).
+type TickFn = Box<dyn Fn() -> Reaction + 'static>;
 
 // `EventOutcome` — what the caller should do after [`dispatch_event`]
 // handles one event — is defined once in `crate::runtime` and shared by
@@ -221,6 +228,11 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             match runtime::preprocess_event(ev, backend, app) {
                 EventOutcome::Exit => return EventOutcome::Exit,
                 EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+                EventOutcome::RedrawAfter(d) => {
+                    if matches!(outcome, EventOutcome::Continue) {
+                        outcome = EventOutcome::RedrawAfter(d);
+                    }
+                }
                 EventOutcome::Continue => {}
             }
         }
@@ -256,6 +268,11 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             match step {
                 EventOutcome::Exit => return EventOutcome::Exit,
                 EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+                EventOutcome::RedrawAfter(d) => {
+                    if matches!(outcome, EventOutcome::Continue) {
+                        outcome = EventOutcome::RedrawAfter(d);
+                    }
+                }
                 EventOutcome::Continue => {}
             }
         }
@@ -349,6 +366,8 @@ pub(crate) struct QuadraViewIvars {
     backend: Rc<RefCell<MacBackend>>,
     paint: PaintFn,
     handle: HandleFn,
+    /// See [`TickFn`]'s doc (quadraui#832).
+    tick: TickFn,
     /// Resize-settle debounce state (quadraui#780) — see
     /// [`crate::runtime::ResizeDebouncer`]'s doc. `view_frame_did_change`
     /// calls `note()` on every AppKit frame-change notification;
@@ -665,6 +684,7 @@ impl QuadraView {
         backend: Rc<RefCell<MacBackend>>,
         paint: PaintFn,
         handle: HandleFn,
+        tick: TickFn,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(QuadraViewIvars {
@@ -672,6 +692,7 @@ impl QuadraView {
             backend,
             paint,
             handle,
+            tick,
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             resize_timer: RefCell::new(None),
         });
@@ -697,6 +718,17 @@ impl QuadraView {
         self.apply_reaction(reaction);
     }
 
+    /// Fire `AppLogic::tick` and act on the returned [`Reaction`]
+    /// (quadraui#832). The [`MacBackend::set_tick_callback`] target a
+    /// [`MacBackend::request_frame_in`] timer invokes once its delay
+    /// elapses — never called on any fixed cadence, mirroring
+    /// [`Self::dispatch`]'s "translate, then apply" shape for the tick
+    /// path instead of an event.
+    fn dispatch_tick(&self) {
+        let reaction = (self.ivars().tick)();
+        self.apply_reaction(reaction);
+    }
+
     /// Apply a [`Reaction`] — delegates to the shared
     /// [`runtime::apply_outcome`] (quadraui#496) via this view's
     /// [`ReactionSink`] impl below.
@@ -718,6 +750,10 @@ impl ReactionSink for QuadraView {
         // SAFETY: `terminate:` on NSApp on the main thread is the
         // documented exit path.
         app.terminate(None);
+    }
+
+    fn request_frame_in(&self, delay: std::time::Duration) {
+        self.ivars().backend.borrow().request_frame_in(delay);
     }
 }
 
@@ -846,8 +882,27 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
             ) {
                 EventOutcome::Continue => Reaction::Continue,
                 EventOutcome::Redraw => Reaction::Redraw,
+                // quadraui#832: pass the deadline through unchanged —
+                // `dispatch`/`apply_reaction` routes it to
+                // `ReactionSink::request_frame_in` exactly like any other
+                // `Reaction::RedrawAfter`.
+                EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
                 EventOutcome::Exit => Reaction::Exit,
             }
+        })
+    };
+
+    // ── App tick hook (quadraui#832) ──────────────────────────────
+    // Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` — see
+    // `TickFn`'s doc for why this exists at all (macOS never called
+    // `tick` before #832).
+    let tick: TickFn = {
+        let app = app.clone();
+        let backend = backend.clone();
+        Box::new(move || -> Reaction {
+            let mut backend_mut = backend.borrow_mut();
+            let mut app_mut = app.borrow_mut();
+            app_mut.tick(&mut *backend_mut)
         })
     };
 
@@ -882,7 +937,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     // opt into a CSD titlebar).
     backend.borrow_mut().set_window(window.clone());
 
-    let view = QuadraView::new(mtm, backend.clone(), paint, handle);
+    let view = QuadraView::new(mtm, backend.clone(), paint, handle, tick);
     window.setContentView(Some(&view));
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
@@ -899,6 +954,15 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     backend
         .borrow()
         .set_wake_callback(Rc::new(move || view_for_wake.request_redraw()), mtm);
+
+    // quadraui#832: install the tick target `MacBackend::request_frame_in`'s
+    // scheduled timer invokes once its delay elapses — mirrors the wake
+    // wiring immediately above, but reaches `dispatch_tick` (fires
+    // `AppLogic::tick`) instead of a bare repaint request.
+    let view_for_tick = view.clone();
+    backend
+        .borrow()
+        .set_tick_callback(Rc::new(move || view_for_tick.dispatch_tick()), mtm);
 
     // WindowResized wiring (#486): opt the view into frame-change
     // notifications and observe them on itself via `viewFrameDidChange:`.
