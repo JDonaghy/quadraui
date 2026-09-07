@@ -183,19 +183,29 @@ dispatched there specifically so you can run your own code; do not settle for
 `cargo check`.
 
 ```bash
+# test — real execution on the Windows host, driven from this Linux shell.
+# Prefer this form: it is the same command as below with none of the three
+# env vars left to memory. Extra args are forwarded (`--doc`, `--test <name>`,
+# `-- --nocapture`).
+tools/win-test.sh
+
 # build
 RUSTFLAGS="-C target-feature=+crt-static" \
   cargo xwin build --target x86_64-pc-windows-msvc -p quadraui --features win
 
-# test — real execution on the Windows host, driven from this Linux shell
+# what tools/win-test.sh runs, spelled out — use this only if you need to vary
+# the cargo line, and then keep ALL THREE env vars
 RUSTFLAGS="-C target-feature=+crt-static" \
 RUSTDOCFLAGS="-C target-feature=+crt-static" \
 CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
   cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
 ```
 
-All three env vars are mandatory, and every one of these traps has already cost real
-time — none of them produces an error that points at its own cause:
+**Run `tools/win-test.sh` rather than retyping the raw command.** All three env
+vars are mandatory and every one of them has now been dropped at least once by
+someone copying the command out of a doc — including by #832's own smoke run,
+which reported "9 of 11 doctests failed" and looked for the bug in the diff.
+None of these traps produces an error that points at its own cause:
 
 1. **`-C target-feature=+crt-static`, in *both* `RUSTFLAGS` and `RUSTDOCFLAGS`.** The
    host has no `vcruntime140.dll` (no VC++ redistributable; installing one needs a UAC
@@ -208,9 +218,21 @@ time — none of them produces an error that points at its own cause:
    library docs rather than at the missing flag. Setting both makes the doctest leg
    pass (verified on `dell64`, 2026-09-07).
 2. **`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env`.** `cargo xwin test` silently
-   injects a `wine` runner and dies with `could not execute process 'wine ...'`.
-   Override it and `binfmt_misc` (registered for the PE `MZ` magic) does the exec
-   directly; wine is never needed. stdout and exit codes round-trip intact.
+   injects a `wine` runner — it is hard-coded for `test`/`run`, there is no flag that
+   turns it off, and there is no wine on this host. Override it and `binfmt_misc`
+   (registered for the PE `MZ` magic) does the exec directly; wine is never needed.
+   stdout and exit codes round-trip intact. **The two halves of the run fail
+   differently, and the doctest half does not mention wine at all:** regular test
+   targets die with `could not execute process 'wine ...'`, but `rustdoc` gets the
+   same runner passed as `--runtool` and reports only
+   `Couldn't run the test: No such file or directory (os error 2)` under each
+   doctest — `9 failed` out of 11, the two survivors being the `compile` /
+   `compile fail` doctests that are never executed. That is the *same 9-of-11
+   count* as the trap #1 `RUSTDOCFLAGS` failure, so the count alone does not tell
+   you which variable you dropped; read the per-test line. A `.cargo/config.toml`
+   cannot fix this for you either — cargo-xwin injects the runner into cargo's
+   *environment*, and env beats config, so a `runner` key there is silently ignored
+   (verified on `dell64`, 2026-09-07). Use `tools/win-test.sh`.
 3. **CWD becomes `C:\Windows`.** Launching a PE from a WSL path prints `UNC paths
    are not supported. Defaulting to Windows directory.`, so relative paths in tests
    resolve there. Use `CARGO_MANIFEST_DIR` or absolute paths.

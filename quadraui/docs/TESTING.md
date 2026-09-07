@@ -889,17 +889,33 @@ var: `rustdoc` compiles each doctest itself and reads **`RUSTDOCFLAGS`**,
 not `RUSTFLAGS`. Set both and the doctest leg passes:
 
 ```console
-$ RUSTFLAGS="-C target-feature=+crt-static" \
-  RUSTDOCFLAGS="-C target-feature=+crt-static" \
-  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
-  cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
+$ tools/win-test.sh
 ...
    Doc-tests quadraui
 test result: ok. 11 passed; 0 failed; 22 ignored; ...
 ```
 
-CLAUDE.md's *Win-GUI* block now documents that third variable, and
-`tests/quality_gate_docs.rs` asserts it stays there. The residual
+**Run the doctest leg through `tools/win-test.sh`, not by retyping the
+env-var prefix.** The Windows run needs three environment variables and
+the doctest leg is the part that notices when one is missing — while
+all 20 integration-test targets sail past. Worse, *two different*
+missing variables produce the *same* headline number, `9 failed` out of
+11 (the two survivors are the `compile` / `compile fail` doctests,
+which are never executed), so the count alone cannot tell you which:
+
+| Missing variable | What each failing doctest prints |
+|---|---|
+| `RUSTDOCFLAGS="-C target-feature=+crt-static"` | `Test executable failed (exit status: 53)` |
+| `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env` | `Couldn't run the test: No such file or directory (os error 2)` — rustdoc got cargo-xwin's hard-coded `wine` as its `--runtool`, and there is no wine on this host |
+
+Both were hit for real: the first by #832's own smoke run, which
+reported "9 of 11 doctests failed" and sent a worker looking in the
+diff. The wrapper exists so neither can happen again;
+`tests/quality_gate_docs.rs` asserts it keeps setting all three
+variables and keeps running the same cargo line CLAUDE.md documents.
+Note that a `.cargo/config.toml` would *not* have prevented the second
+one — cargo-xwin injects the runner into cargo's environment, and env
+beats config. The residual
 flake seen on the same host — a lone `<binary>.exe: Invalid argument`
 from a freshly-linked, unsigned PE — is **not** this bug and is not a
 build defect either: it is the Windows host's Device Guard / Smart App
