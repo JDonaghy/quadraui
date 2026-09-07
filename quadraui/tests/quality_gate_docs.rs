@@ -1,7 +1,10 @@
 //! CLAUDE.md's copy-paste command blocks must stay true: the "Quality Gate"
 //! block in sync with the commands `.github/workflows/ci.yml` actually runs
 //! (#19 follow-up), and the "Win-GUI" block carrying every environment
-//! variable the cross-compiled Windows run needs (#832 follow-up).
+//! variable the cross-compiled Windows run needs (#832 follow-up) — along
+//! with `tools/win-test.sh`, the wrapper that exists so those variables do
+//! not have to be copied by hand at all, and which must therefore keep
+//! setting all of them and keep running the command the doc says it runs.
 //!
 //! Why this is a *test* and not a review checklist: the gate block is the
 //! first thing every agent and every human copies before committing, and it
@@ -249,4 +252,118 @@ fn claude_md_win_gui_test_command_carries_every_required_env_var() {
              than relaxing this assertion."
         );
     }
+}
+
+/// Path of the wrapper that exists precisely so none of
+/// [`REQUIRED_XWIN_TEST_ENV`] has to be remembered.
+const WIN_TEST_SCRIPT: &str = "tools/win-test.sh";
+
+fn win_test_script() -> String {
+    fs::read_to_string(repo_root().join(WIN_TEST_SCRIPT))
+        .unwrap_or_else(|e| panic!("{WIN_TEST_SCRIPT} is readable: {e}"))
+}
+
+/// The `cargo xwin test …` portion of a single command, from `cargo`
+/// onwards, with `"$@"` (the script's argument forwarding) dropped and
+/// cosmetic whitespace collapsed. `None` if there is no such command.
+fn cargo_xwin_test_tail(command: &str) -> Option<String> {
+    let start = command.find("cargo xwin test")?;
+    Some(normalise(&command[start..].replace("\"$@\"", "")))
+}
+
+/// The command [`WIN_TEST_SCRIPT`] actually executes — the `exec` line, not
+/// the several mentions of `cargo xwin test` in its explanatory header, which
+/// a naive "first match" search would pick up instead.
+fn scripted_win_test_command(script: &str) -> Option<String> {
+    script
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .find(|line| line.starts_with("exec ") && line.contains("cargo xwin test"))
+        .and_then(cargo_xwin_test_tail)
+}
+
+/// The wrapper must set every variable the raw command needs. This is the
+/// same list the CLAUDE.md assertion uses, so the doc and the script cannot
+/// drift apart: adding a fourth trap to `REQUIRED_XWIN_TEST_ENV` fails both
+/// until both are updated.
+#[test]
+fn win_test_script_sets_every_required_env_var() {
+    let script = win_test_script();
+
+    for (var, consequence) in REQUIRED_XWIN_TEST_ENV {
+        assert!(
+            script.contains(var),
+            "{WIN_TEST_SCRIPT} does not set `{var}`.\n\nWithout it, \
+             {consequence}.\n\nThe whole point of this wrapper is that a \
+             worker (or a smoke run) cannot lose one of these by copying the \
+             command out of a doc — #832's smoke run lost one and reported \
+             `9 of 11 doctests failed` as if the diff were at fault."
+        );
+    }
+
+    assert!(
+        script.contains("\"$@\""),
+        "{WIN_TEST_SCRIPT} must forward its arguments verbatim (`\"$@\"`) so \
+         `--doc`, `--test <name>` and `-- --nocapture` still work; otherwise \
+         anyone needing to narrow the run drops back to the raw command and \
+         straight back into the missing-env-var trap."
+    );
+}
+
+/// The wrapper and the spelled-out command in CLAUDE.md must run the *same*
+/// cargo invocation. If they diverge, the doc stops describing the script and
+/// one of the two silently tests something else (a different target triple, a
+/// different feature set, a different package).
+#[test]
+fn win_test_script_and_claude_md_run_the_same_cargo_command() {
+    let claude_md = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("CLAUDE.md exists");
+
+    let documented = win_gui_invocations(&claude_md)
+        .iter()
+        .find_map(|c| cargo_xwin_test_tail(c))
+        .expect(
+            "CLAUDE.md's Win-GUI block still spells out one `cargo xwin test` \
+             invocation — the wrapper documents what it runs, it does not \
+             replace the explanation",
+        );
+
+    let scripted = scripted_win_test_command(&win_test_script()).unwrap_or_else(|| {
+        panic!(
+            "{WIN_TEST_SCRIPT} no longer ends in an `exec cargo xwin test …` \
+             line — if the wrapper's shape changed, teach this parser the new \
+             shape rather than deleting the assertion."
+        )
+    });
+
+    assert_eq!(
+        scripted, documented,
+        "\n{WIN_TEST_SCRIPT} runs:\n  {scripted}\nbut CLAUDE.md documents:\n  \
+         {documented}\n\nThese must match. Whichever one you meant to change, \
+         change the other too — a wrapper that quietly tests a different \
+         target or feature set than the doc claims is worse than no wrapper."
+    );
+}
+
+/// A wrapper nobody can execute is a wrapper nobody uses. `cfg(unix)` because
+/// this test target is also compiled and run for `x86_64-pc-windows-msvc`
+/// (that is the very run this script drives), where the mode bits are absent
+/// and meaningless.
+#[test]
+#[cfg(unix)]
+fn win_test_script_is_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = repo_root().join(WIN_TEST_SCRIPT);
+    let mode = fs::metadata(&path)
+        .unwrap_or_else(|e| panic!("{WIN_TEST_SCRIPT} exists: {e}"))
+        .permissions()
+        .mode();
+
+    assert!(
+        mode & 0o111 != 0,
+        "{WIN_TEST_SCRIPT} is not executable (mode {mode:o}); CLAUDE.md tells \
+         the reader to run `{WIN_TEST_SCRIPT}` directly. Restore the bit with \
+         `git update-index --chmod=+x {WIN_TEST_SCRIPT}`."
+    );
 }
