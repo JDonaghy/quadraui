@@ -176,6 +176,41 @@ mod tests {
     const W: f32 = 240.0;
     const H: f32 = 120.0;
 
+    /// Paint `panel` via the shared
+    /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
+    /// through a [`RawSidebarPanelSurface`] over `surface`'s headless
+    /// target — the same adapter the deprecated [`draw_sidebar_panel`]
+    /// shim uses, exercised here directly so these tests don't trip the
+    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
+    /// `win::panel`'s and `win::scrollbar`'s identical test-migration
+    /// note).
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        line_height: f32,
+        rect: Rect,
+        panel: &SidebarPanel,
+        hovered_toolbar_id: Option<&WidgetId>,
+        pressed_toolbar_id: Option<&WidgetId>,
+    ) -> SidebarPanelLayout {
+        let theme = Theme::default();
+        surface
+            .paint(|target| {
+                let mut raw = RawSidebarPanelSurface { target, dwrite };
+                crate::primitives::sidebar_panel::native_surface_paint::paint(
+                    panel,
+                    &mut raw,
+                    &theme,
+                    rect,
+                    line_height,
+                    hovered_toolbar_id,
+                    pressed_toolbar_id,
+                );
+            })
+            .map(|_| win_sidebar_panel_layout(dwrite, line_height, rect, panel))
+            .expect("paint sidebar panel")
+    }
+
     fn mk_action(id: &str, label: &str) -> ToolbarButton {
         ToolbarButton::Action {
             id: WidgetId::new(id),
@@ -220,12 +255,7 @@ mod tests {
         let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        let layout = surface
-            .paint(|target| {
-                draw_sidebar_panel(target, &dwrite, line_height, rect, &panel, None, None);
-            })
-            .map(|_| win_sidebar_panel_layout(&dwrite, line_height, rect, &panel))
-            .expect("paint sidebar panel");
+        let layout = paint(&surface, &dwrite, line_height, rect, &panel, None, None);
 
         let tb = layout.toolbar_bounds.expect("toolbar slot reserved");
         let hit = layout.hit_test(tb.x + 2.0, tb.y + tb.height / 2.0);
@@ -245,12 +275,7 @@ mod tests {
         let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
         let rect = Rect::new(10.0, 5.0, W - 10.0, H - 5.0);
 
-        let layout = surface
-            .paint(|target| {
-                draw_sidebar_panel(target, &dwrite, line_height, rect, &panel, None, None);
-            })
-            .map(|_| win_sidebar_panel_layout(&dwrite, line_height, rect, &panel))
-            .expect("paint sidebar panel");
+        let layout = paint(&surface, &dwrite, line_height, rect, &panel, None, None);
 
         assert!(layout.toolbar_bounds.is_none());
         assert_eq!(layout.content_bounds, rect);
@@ -274,12 +299,7 @@ mod tests {
         let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
-        let painted = surface
-            .paint(|target| {
-                draw_sidebar_panel(target, &dwrite, line_height, rect, &panel, None, None);
-            })
-            .map(|_| win_sidebar_panel_layout(&dwrite, line_height, rect, &panel))
-            .expect("paint");
+        let painted = paint(&surface, &dwrite, line_height, rect, &panel, None, None);
         let no_paint = win_sidebar_panel_layout(&dwrite, line_height, rect, &panel);
         assert_eq!(painted, no_paint);
     }
