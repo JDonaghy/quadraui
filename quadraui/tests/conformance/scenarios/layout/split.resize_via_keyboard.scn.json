@@ -1,0 +1,18 @@
+{
+  "id": "split.resize_via_keyboard",
+  "fixture": "split_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Keyboard-only equivalent of dragging the split divider (quadraui#828): [ and ] nudge the ratio by the same amount a drag would, with no mouse step anywhere in this scenario." },
+    { "assert_screen_has": "ratio: 50%" },
+    { "type_char": "]" },
+    { "type_char": "]" },
+    { "assert_screen_has": "ratio: 60%" },
+    { "type_char": "[" },
+    { "type_char": "[" },
+    { "type_char": "[" },
+    { "type_char": "[" },
+    { "assert_screen_has": "ratio: 40%" }
+  ]
+}

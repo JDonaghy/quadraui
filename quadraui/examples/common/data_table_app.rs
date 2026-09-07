@@ -7,6 +7,8 @@
 //! - `d` — toggle sort direction
 //! - `f` — toggle the pinned footer/summary row (#432)
 //! - `H` / `←`, `L` / `→` — scroll horizontally by 5 units (#550)
+//! - `PageDown` / `PageUp` — page down/up a full screen (keyboard
+//!   equivalent of clicking the scrollbar track, #828)
 //! - `q` / `Esc` — quit
 //!
 //! Horizontal scrolling only has anywhere to go when the terminal is
@@ -404,6 +406,19 @@ impl AppLogic for DataTableApp {
                     }
                     Key::Named(NamedKey::End) => {
                         self.selected = Some(total.saturating_sub(1));
+                    }
+                    // Keyboard equivalent of clicking above/below the
+                    // scrollbar thumb (a "page" jump) — #828: the mouse-only
+                    // scrollbar track click had no key path.
+                    Key::Named(NamedKey::PageDown) => {
+                        let vis = self.visible_rows(backend).max(1);
+                        let cur = self.selected.unwrap_or(0);
+                        self.selected = Some((cur + vis).min(total.saturating_sub(1)));
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        let vis = self.visible_rows(backend).max(1);
+                        let cur = self.selected.unwrap_or(0);
+                        self.selected = Some(cur.saturating_sub(vis));
                     }
                     Key::Char('H') | Key::Named(NamedKey::Left) => {
                         self.h_scroll = (self.h_scroll - 5.0).max(0.0);

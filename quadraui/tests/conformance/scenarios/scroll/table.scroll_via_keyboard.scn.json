@@ -1,0 +1,18 @@
+{
+  "id": "table.scroll_via_keyboard",
+  "fixture": "data_table_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 16 },
+  "steps": [
+    { "note": "Keyboard-only equivalent of dragging the vertical scrollbar thumb / clicking its track (quadraui#828): Home/End (and j/k/PageUp/PageDown for finer steps) reach every scroll position with no mouse step anywhere in this scenario. Compare table.scroll_under_cursor, the same range covered by mouse wheel." },
+    { "assert_screen_has": "api-gateway-5f6c8d-9mn2q" },
+    { "assert_absent": "worker-batch-7b9c4-kl3m8" },
+    { "press": "End" },
+    { "assert_screen_has": "worker-batch-7b9c4-kl3m8" },
+    { "assert_absent": "api-gateway-5f6c8d-9mn2q" },
+    { "note": "Scrolling back the same distance restores the original view — the keyboard path is symmetric, not a one-way ratchet, matching the mouse wheel's own round-trip." },
+    { "press": "Home" },
+    { "assert_screen_has": "api-gateway-5f6c8d-9mn2q" },
+    { "assert_absent": "worker-batch-7b9c4-kl3m8" }
+  ]
+}

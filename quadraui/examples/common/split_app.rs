@@ -6,6 +6,8 @@
 //!
 //! Controls:
 //! - drag divider             resize panes
+//! - [ / ]                    resize panes by 5% (keyboard equivalent of
+//!                             dragging the divider — quadraui#828)
 //! - v                        toggle Horizontal / Vertical
 //! - r                        reset ratio to 0.5
 //! - q / Esc                  quit
@@ -14,6 +16,11 @@ use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, Split,
     SplitDirection, SplitHit, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
+
+/// Ratio delta per `[`/`]` keypress — the keyboard equivalent of nudging
+/// the divider a small distance by mouse (quadraui#828: Tier-1 gestures
+/// must all have a key path, not just a drag one).
+const KEYBOARD_RESIZE_STEP: f32 = 0.05;
 
 pub struct SplitApp {
     ratio: f32,
@@ -55,7 +62,7 @@ impl SplitApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " drag divider | v=toggle | r=reset | q=quit ".into(),
+                text: " drag divider or [/] | v=toggle | r=reset | q=quit ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -164,6 +171,20 @@ impl AppLogic for SplitApp {
                 ..
             } => {
                 self.ratio = 0.5;
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('['),
+                ..
+            } => {
+                self.ratio = (self.ratio - KEYBOARD_RESIZE_STEP).clamp(0.05, 0.95);
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char(']'),
+                ..
+            } => {
+                self.ratio = (self.ratio + KEYBOARD_RESIZE_STEP).clamp(0.05, 0.95);
                 Reaction::Redraw
             }
             UiEvent::MouseDown { position, .. } => {

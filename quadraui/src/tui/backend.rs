@@ -207,6 +207,24 @@ pub struct TuiBackend {
     /// [`crate::backend::BackendCaps::kitty_keyboard`] — see that field's
     /// doc for why this exists.
     kitty_keyboard: bool,
+    /// Whether mouse reporting is actually active for this session.
+    /// Defaults to `true`; [`super::run::run_with`] sets this to `false`
+    /// when the caller opts into `RunConfig { mouse: false, .. }` — the
+    /// "capture refused" `no-mouse` mode (quadraui#828) — so the terminal
+    /// never gets `EnableMouseCapture` and every Tier-1 gesture must have
+    /// a key path instead.
+    ///
+    /// Deliberately **not** folded into
+    /// [`crate::backend::BackendCaps::mouse`]/`scroll`/`drag`: those three
+    /// are a static per-backend-*type* fact
+    /// (`tests/conformance/caps.rs`'s `source_parsed_caps_match_the_running_backend`
+    /// mechanically parses `backend_caps()`'s source for literal `: true,`
+    /// declarations and would flag a field that reads from `self` as
+    /// drift), the same distinction that already keeps
+    /// [`Self::kitty_keyboard`] a plain inherent accessor rather than
+    /// folded into the bool-capability vocabulary. Read via
+    /// [`Self::mouse_enabled`].
+    mouse_enabled: bool,
 }
 
 impl TuiBackend {
@@ -237,6 +255,7 @@ impl TuiBackend {
             tab_bar_layouts: HashMap::new(),
             color_depth: super::caps::detect_color_depth(),
             kitty_keyboard: super::caps::detect_kitty_keyboard(),
+            mouse_enabled: true,
         }
     }
 
@@ -274,6 +293,23 @@ impl TuiBackend {
     /// asserting the flag reaches an app).
     pub fn set_kitty_keyboard(&mut self, supported: bool) {
         self.kitty_keyboard = supported;
+    }
+
+    /// Whether mouse reporting is active this session — see
+    /// [`Self::set_mouse_enabled`]'s doc for why this is a plain inherent
+    /// accessor rather than a [`crate::backend::BackendCaps`] field.
+    pub fn mouse_enabled(&self) -> bool {
+        self.mouse_enabled
+    }
+
+    /// Override whether this session has mouse reporting.
+    /// [`super::run::run_with`] calls this with `false` when the caller
+    /// opts into `no-mouse` mode (`RunConfig { mouse: false, .. }`,
+    /// quadraui#828), so the terminal is never asked to enable mouse
+    /// capture. Also the hook a test uses to simulate "capture refused"
+    /// without a real terminal.
+    pub fn set_mouse_enabled(&mut self, enabled: bool) {
+        self.mouse_enabled = enabled;
     }
 
     /// Enter the frame-scope: stash the `&mut Frame<'_>` pointer for
@@ -1226,10 +1262,23 @@ impl Backend for TuiBackend {
     ///   `EnableMouseCapture` on entry, and
     ///   `tui::events::crossterm_mouse_to_uievent` maps
     ///   `MouseEventKind::{Down,Up,Drag,ScrollUp,ScrollDown,…}` to the
-    ///   matching `UiEvent`, so all three input kinds are real.
+    ///   matching `UiEvent`, so all three input kinds are real *when this
+    ///   backend type's usual runner is used*. This is a static
+    ///   per-backend-type fact, not this session's actual configuration —
+    ///   see [`Self::mouse_enabled`] for the runtime answer:
+    ///   `tui::run::run_with(app, RunConfig { mouse: false, .. })`
+    ///   (`no-mouse` mode, quadraui#828, for hosts where capture is
+    ///   refused or unavailable) never negotiates capture with the
+    ///   terminal at all, so no mouse-derived `UiEvent` ever arrives that
+    ///   session even though this field still reads `true` — the same
+    ///   split [`Self::kitty_keyboard`] already draws between "can this
+    ///   backend type" and "is it active right now".
     /// - `text_selection`: `register_text_region` /
     ///   `cancel_text_selection_drag` are both overridden below —
-    ///   mouse-drag selection highlight is real.
+    ///   mouse-drag selection highlight is real. Also reachable with no
+    ///   mouse at all, via Ctrl-A (select-all) plus Ctrl-C (see
+    ///   `crate::runtime::preprocess_event`'s Ctrl-A interception) — the
+    ///   `no-mouse` mode key path for Tier-1's drag-select gesture.
     /// - everything else: **not** declared. No window to
     ///   drag/resize/maximize, no native pointer glyph, no native menu,
     ///   no IME positioning, and every `PlatformServices` dialog method
@@ -4929,5 +4978,48 @@ mod tests {
             "a click at the painted scrollbar track's origin must resolve via editor_layout's \
              own hit_test as VScrollbar"
         );
+    }
+
+    // ── mouse_enabled / `no-mouse` mode (quadraui#828) ──────────────────
+
+    /// `TuiBackend::new()` defaults to mouse reporting enabled — matches
+    /// [`super::run::RunConfig::default`] (`mouse: true`), so a backend
+    /// nobody has called `set_mouse_enabled` on behaves exactly as it did
+    /// before `no-mouse` mode existed. `backend_caps().mouse` stays `true`
+    /// regardless (it is the static per-backend-*type* fact, not this
+    /// session's config — see `backend_caps`'s doc).
+    #[test]
+    fn mouse_enabled_defaults_to_true() {
+        let backend = TuiBackend::new();
+        assert!(backend.mouse_enabled());
+        assert!(backend.backend_caps().mouse);
+    }
+
+    /// `set_mouse_enabled(false)` — what `run_with(app, RunConfig { mouse:
+    /// false, .. })` calls before entering the frame loop — flips the
+    /// session-level accessor without touching `backend_caps()`, which
+    /// stays a static per-backend-type declaration (see
+    /// `mouse_enabled` field's doc for why `tests/conformance/caps.rs`'s
+    /// source-parsing check requires that split).
+    #[test]
+    fn set_mouse_enabled_false_is_a_session_level_toggle_only() {
+        let mut backend = TuiBackend::new();
+        backend.set_mouse_enabled(false);
+        assert!(!backend.mouse_enabled());
+        assert!(
+            backend.backend_caps().mouse,
+            "backend_caps().mouse is a static per-backend-type fact, unaffected by \
+             set_mouse_enabled"
+        );
+    }
+
+    /// Round-trip: re-enabling restores the original state —
+    /// `set_mouse_enabled` is a plain toggle, not a one-way ratchet.
+    #[test]
+    fn set_mouse_enabled_true_restores_state() {
+        let mut backend = TuiBackend::new();
+        backend.set_mouse_enabled(false);
+        backend.set_mouse_enabled(true);
+        assert!(backend.mouse_enabled());
     }
 }

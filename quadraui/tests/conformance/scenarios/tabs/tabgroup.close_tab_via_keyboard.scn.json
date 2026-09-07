@@ -1,0 +1,16 @@
+{
+  "id": "tabgroup.close_tab_via_keyboard",
+  "fixture": "tab_group_demo",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Keyboard-only equivalent of clicking a tab's × (quadraui#828): Ctrl-W closes the active tab in the focused pane, promoting the next tab in the same pane — same outcome as tabgroup.close_tab, with no mouse step anywhere in this scenario." },
+    { "assert_screen_has": "main.rs content" },
+    { "assert_screen_has": "lib.rs" },
+    { "ctrl_char": "w" },
+    { "assert_absent": "main.rs" },
+    { "assert_screen_has": "lib.rs content" },
+    { "note": "The second pane is untouched by a close in the first." },
+    { "assert_screen_has": "Cargo.toml content" }
+  ]
+}
