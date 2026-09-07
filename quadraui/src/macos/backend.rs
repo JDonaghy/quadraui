@@ -1931,24 +1931,16 @@ impl Backend for MacBackend {
         )
     }
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_split called outside enter_frame_scope",
+        let layout = super::split::mac_split_layout(
+            split,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
         );
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::split::draw_split(
-                ctx,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                split,
-                &theme,
-            )
-        }
+        crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
+        layout
     }
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
         super::split::mac_split_layout(

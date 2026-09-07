@@ -141,7 +141,13 @@ pub use sidebar_panel::gtk_sidebar_panel_layout;
 #[allow(deprecated)]
 pub use sidebar_panel::draw_sidebar_panel;
 pub use spinner::{draw_spinner, gtk_spinner_layout};
-pub use split::{draw_split, gtk_split_layout};
+pub use split::gtk_split_layout;
+// #864: `draw_split` is `#[deprecated]` — see `split::draw_split`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[allow(deprecated)]
+pub use split::draw_split;
 // #863: `draw_split_tree` is `#[deprecated]` — see
 // `split_tree::draw_split_tree`'s doc for why the shim exists and why
 // re-exporting it here (rather than dropping the re-export) is the

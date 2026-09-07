@@ -1,18 +1,19 @@
 //! macOS rasteriser for [`crate::Split`].
 //!
-//! Mirrors [`crate::gtk::split::draw_split`]: paints only the divider
-//! as a filled rectangle. Pane content is the app's responsibility —
-//! the rasteriser returns the resolved [`SplitLayout`] so the host can
-//! paint into `first_bounds` / `second_bounds` and route clicks via
-//! `hit_test`.
+//! Painting moved to the shared
+//! [`crate::primitives::split::native_surface_paint::paint`] (#864,
+//! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
+//! module doc for why the three per-backend copies were found to be
+//! already identical (no divergence). This module now carries
+//! [`mac_split_layout`], [`RawSplitSurface`], and the deprecated
+//! [`draw_split`] compatibility shim over the shared paint, mirroring
+//! `macos::split_tree::RawSplitTreeSurface` (#863, slice 6/9).
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 
 use crate::event::Rect as QRect;
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// 4-point divider thickness, matching GTK.
 const DIVIDER_PX: f32 = 4.0;
@@ -23,13 +24,103 @@ pub fn mac_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitL
     split.layout(bounds, SplitMeasure::new(DIVIDER_PX))
 }
 
-/// Draw a [`Split`] divider onto `ctx`. Returns the layout for host
-/// click/drag dispatch. Pane content is NOT painted.
+/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
+/// `CGContextRef`, used only by the deprecated [`draw_split`] shim below
+/// — a split's paint calls exactly one verb (`surface_fill_rect`, once
+/// for the divider), so every other method is `unreachable!()`. Mirrors
+/// `macos::split_tree::RawSplitTreeSurface`'s identical pattern (#863).
+pub(crate) struct RawSplitSurface {
+    pub(crate) ctx: CGContextRef,
+}
+
+impl crate::native_surface::NativeSurface for RawSplitSurface {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawSplitSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawSplitSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawSplitSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawSplitSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawSplitSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawSplitSurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
+        // pass — see this struct's construction site.
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Split::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("Split::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Split::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("Split::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("Split::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("Split::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces
+/// the pre-#864 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_split` reference rather than going
+/// through [`crate::Backend::draw_split`] — the sanctioned entry point,
+/// and the one every in-tree call site already uses, which is why this
+/// shim has no in-repo caller left to trip the `-D warnings`-denied
+/// `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
+#[allow(clippy::too_many_arguments)]
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_split` instead — this free function is a compatibility shim over the shared #864 implementation"
+)]
 pub unsafe fn draw_split(
     ctx: CGContextRef,
     x: f64,
@@ -40,43 +131,9 @@ pub unsafe fn draw_split(
     theme: &Theme,
 ) -> SplitLayout {
     let layout = mac_split_layout(split, x, y, w, h);
-    let d = layout.divider_bounds;
-    fill_rect(
-        ctx,
-        d.x as f64,
-        d.y as f64,
-        d.width as f64,
-        d.height as f64,
-        theme.separator,
-    );
+    let mut surface = RawSplitSurface { ctx };
+    crate::primitives::split::native_surface_paint::paint(&layout, &mut surface, theme);
     layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

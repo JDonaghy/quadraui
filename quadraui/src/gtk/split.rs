@@ -1,12 +1,16 @@
 //! GTK rasteriser for [`crate::Split`].
 //!
-//! Paints only the divider as a filled rectangle — pane content is the
-//! app's responsibility. The divider thickness is derived from
-//! `line_height` (4px default at typical font sizes).
+//! Painting moved to the shared
+//! [`crate::primitives::split::native_surface_paint::paint`] (#864,
+//! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
+//! module doc for why the three per-backend copies were found to be
+//! already identical (no divergence). This module now carries
+//! [`gtk_split_layout`], [`RawSplitSurface`], and the deprecated
+//! [`draw_split`] compatibility shim over the shared paint, mirroring
+//! `gtk::split_tree::RawSplitTreeSurface` (#863, slice 6/9).
 
 use gtk4::cairo::Context;
 
-use super::set_source;
 use crate::event::Rect;
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
 use crate::theme::Theme;
@@ -19,9 +23,106 @@ pub fn gtk_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitL
     split.layout(bounds, SplitMeasure::new(GTK_DIVIDER_PX))
 }
 
-/// Draw a [`Split`] divider onto `cr`. Returns the layout for host
-/// click/drag dispatch. Pane content is NOT painted.
+/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
+/// Cairo context, used by the deprecated [`draw_split`] shim below — a
+/// split's paint calls exactly one verb (`surface_fill_rect`, once for
+/// the divider), so every other method is `unreachable!()`. Mirrors
+/// `gtk::split_tree::RawSplitTreeSurface`'s identical pattern (#863).
+pub(crate) struct RawSplitSurface<'a> {
+    pub(crate) cr: &'a Context,
+}
+
+impl crate::native_surface::NativeSurface for RawSplitSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawSplitSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawSplitSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawSplitSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawSplitSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawSplitSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawSplitSurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // Dividers are always opaque `theme.separator` — `set_source`
+        // (not `_rgba`) matches this module's pre-migration behaviour
+        // exactly, unlike `gtk::scrollbar`'s translucent-overlay fill.
+        super::set_source(self.cr, color);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.fill().ok();
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Split::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("Split::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("Split::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("Split::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("Split::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("Split::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces
+/// the pre-#864 signature exactly for any external caller that held a
+/// direct `quadraui::gtk::draw_split` reference rather than going
+/// through [`crate::Backend::draw_split`] — the sanctioned entry point,
+/// and the one every in-tree call site already uses, which is why this
+/// shim has no in-repo caller left to trip the `-D warnings`-denied
+/// `deprecated` lint.
 #[allow(clippy::too_many_arguments)]
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_split` instead — this free function is a compatibility shim over the shared #864 implementation"
+)]
 pub fn draw_split(
     cr: &Context,
     x: f64,
@@ -32,17 +133,8 @@ pub fn draw_split(
     theme: &Theme,
 ) -> SplitLayout {
     let layout = gtk_split_layout(split, x, y, w, h);
-
-    let div = &layout.divider_bounds;
-    set_source(cr, theme.separator);
-    cr.rectangle(
-        div.x as f64,
-        div.y as f64,
-        div.width as f64,
-        div.height as f64,
-    );
-    cr.fill().ok();
-
+    let mut surface = RawSplitSurface { cr };
+    crate::primitives::split::native_surface_paint::paint(&layout, &mut surface, theme);
     layout
 }
 

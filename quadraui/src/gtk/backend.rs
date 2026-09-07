@@ -3133,18 +3133,14 @@ impl Backend for GtkBackend {
 
     fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
         let theme = self.current_theme;
-        let (cr, _layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_split called outside enter_frame_scope");
-        let layout = crate::gtk::draw_split(
-            cr,
+        let layout = crate::gtk::gtk_split_layout(
+            split,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-            split,
-            &theme,
         );
+        crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
         // #492: `Split` paints a divider only — no text of its own — so a
         // registered zone is the only way this frame is attributable to
         // the primitive rather than indistinguishable from the trait's

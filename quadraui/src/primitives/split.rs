@@ -198,6 +198,176 @@ impl Split {
     }
 }
 
+// ── NativeSurface paint (#864, Phase 2d slice 7/9 of the NativeSurface
+// milestone, child of #811) ────────────────────────────────────────────
+//
+// Before this, `gtk::draw_split` (Cairo), `macos::split::draw_split`
+// (Core Graphics) and `win::split::draw_split` (Direct2D) each
+// independently painted the same divider-only chrome with their own
+// drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
+// §5). `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of
+// any one backend's drawing API.
+//
+// Re-verified while migrating, per this issue's "re-verify before you
+// implement": all three deleted copies painted exactly one filled
+// rectangle — `layout.divider_bounds` in the opaque `theme.separator`
+// colour — and nothing else (pane content is explicitly the host's
+// job, not the rasteriser's, on every backend). GTK used `set_source`
+// (opaque, no alpha channel); macOS's `CGContextSetRGBFillColor` and
+// Windows's `ID2D1SolidColorBrush` both pass a real alpha channel, but
+// since `theme.separator` is always fully opaque (`Color::rgb`, not
+// `rgba`) the three are pixel-identical. **No divergence found** — same
+// conclusion as `primitives::split_tree`'s identical migration (#863,
+// slice 6/9), which shares this exact divider-fill shape.
+//
+// One difference worth naming, though it isn't a paint divergence: the
+// pre-migration `win::split::draw_split` always painted with
+// `Theme::default()` rather than any live theme (`WinBackend` doesn't
+// carry one through to chrome rasterisers yet — see that module's old
+// "# Theme" doc section, mirrored now in `win::split`'s module doc).
+// `Backend::draw_split`'s Windows arm preserves that by passing
+// `Theme::default()` to this fn explicitly, same as `draw_split_tree`'s
+// migration did.
+//
+// Unlike `draw_scrollbar`/`draw_panel`, geometry (pane rects + divider
+// placement) was ALREADY the single shared [`Split::layout`] before
+// this issue — only the *paint* half (filling `divider_bounds`) was
+// triplicated. `paint` therefore takes an already-resolved
+// [`SplitLayout`] (the same convention as
+// `primitives::split_tree::native_surface_paint::paint`), not the raw
+// `Split` + bounds — callers compute the layout once and reuse it for
+// both paint and hit-test.
+//
+// `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
+// — only *called* once a real pixel backend is compiled in, exercised
+// by each backend's own `Backend::draw_split` call site plus this
+// module's own `RecordingSurface` tests on every leg that enables one
+// of the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::SplitLayout;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+
+    /// Paint a [`SplitLayout`]'s divider onto `surface` as a filled
+    /// rectangle in `theme.separator`. `layout` must be the same
+    /// [`SplitLayout`] the caller uses for hit-testing (typically
+    /// `Backend::split_layout`'s return value, or the value this fn's
+    /// own caller — `Backend::draw_split` — returns) so paint and
+    /// hit-test can never disagree. Pane content is NOT painted —
+    /// every backend leaves `first_bounds`/`second_bounds` to the host,
+    /// same contract as before this migration.
+    pub(crate) fn paint(layout: &SplitLayout, surface: &mut dyn NativeSurface, theme: &Theme) {
+        surface.surface_fill_rect(layout.divider_bounds, theme.separator);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Rect as QRect, Viewport};
+        use crate::primitives::split::{Split, SplitDirection, SplitMeasure};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every `surface_fill_rect` call — mirrors
+        /// `primitives::split_tree`'s `RecordingSurface` test double,
+        /// scoped to just the verb this primitive uses, so this test
+        /// runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(QRect, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn surface_fill_rect(&mut self, rect: QRect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: QRect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: QRect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: QRect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: QRect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn two_pane(direction: SplitDirection) -> Split {
+            Split {
+                id: WidgetId::new("s"),
+                direction,
+                ratio: 0.5,
+                first_min: 0.0,
+                second_min: 0.0,
+            }
+        }
+
+        #[test]
+        fn paints_exactly_the_divider_rect_in_theme_separator() {
+            let split = two_pane(SplitDirection::Horizontal);
+            let layout = split.layout(QRect::new(0.0, 0.0, 200.0, 100.0), SplitMeasure::new(4.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+
+            assert_eq!(surface.fills.len(), 1, "split paints chrome only");
+            assert_eq!(surface.fills[0], (layout.divider_bounds, theme.separator));
+        }
+
+        #[test]
+        fn vertical_direction_paints_the_same_divider_bounds() {
+            let split = two_pane(SplitDirection::Vertical);
+            let layout = split.layout(QRect::new(0.0, 0.0, 100.0, 200.0), SplitMeasure::new(4.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+
+            assert_eq!(surface.fills.len(), 1);
+            assert_eq!(surface.fills[0].0, layout.divider_bounds);
+        }
+
+        #[test]
+        fn non_zero_origin_divider_bounds_are_painted_absolute() {
+            let split = two_pane(SplitDirection::Horizontal);
+            let layout = split.layout(QRect::new(7.0, 13.0, 200.0, 100.0), SplitMeasure::new(4.0));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&layout, &mut surface, &theme);
+
+            assert_eq!(surface.fills[0].0, layout.divider_bounds);
+            assert!(surface.fills[0].0.x >= 7.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
