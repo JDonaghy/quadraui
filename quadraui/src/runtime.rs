@@ -592,6 +592,31 @@ impl ResizeDebouncer {
 /// a native "run this on the UI thread" nudge (`glib::MainContext::invoke`,
 /// `dispatch2::DispatchQueue::main`, `PostMessageW`) alongside the queue
 /// itself.
+///
+/// **Nothing `!Send` is stored here or anywhere else on the `waker()`
+/// path in this module.** The nudge a backend schedules needs a handle to
+/// something the UI thread owns, and every such handle (`Rc<RefCell<_>>`,
+/// a GTK/GObject wrapper) is `!Send`. Each backend keeps that handle on
+/// its own side of the boundary rather than smuggling it through a
+/// hand-rolled `unsafe impl Send` wrapper here:
+/// - **GTK** parks the `Rc<dyn Fn()>` in a thread-local keyed by an
+///   integer id (`gtk::backend::WAKE_CALLBACKS`) and lets `waker()`'s
+///   closure carry only the id.
+/// - **macOS** uses upstream `dispatch2::MainThreadBound`, which carries
+///   an `MainThreadMarker` proof and re-dispatches its own `Drop` back to
+///   the main thread.
+/// - **Windows** needs no indirection at all: `wndproc` already holds the
+///   app/backend state when the posted `WM_QUADRAUI_USER_EVENT` is
+///   dispatched.
+///
+/// An earlier revision of #831 did have a `MainThreadBound` here — a bare
+/// `unsafe impl Send/Sync` over an `Rc`. It was removed rather than
+/// repaired: with the derived `Drop` it raced `Rc`'s non-atomic refcount
+/// whenever the last handle died on a background thread, and forwarding
+/// that drop back through `MainContext::invoke` (as `dispatch2` does
+/// through `run_on_main`) traded the race for a hang any time the GTK main
+/// loop wasn't running to dispatch the forwarded drop. Don't reintroduce
+/// it; keep `!Send` state on the thread that owns it.
 pub(crate) struct UserEventQueue {
     inbox: std::sync::Mutex<
         std::collections::VecDeque<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
@@ -623,269 +648,6 @@ impl UserEventQueue {
             inbox
                 .drain(..)
                 .map(|payload| UiEvent::User(crate::event::UserPayload::from_arc(payload))),
-        );
-    }
-}
-
-/// Wraps a `!Send` value — a GTK widget handle, an `Rc<RefCell<_>>` app
-/// pair — so it can be captured by the `Send + Sync` closure
-/// [`crate::Backend::waker`] hands out (issue #831).
-///
-/// **GTK-only, deliberately.** The wrapper exists to make a native
-/// "run this on the UI thread" primitive do something useful once it
-/// wakes: the callback it schedules needs a handle to *something* owned
-/// by the UI thread (a widget to redraw, a backend/app pair to dispatch
-/// through), and every such handle (`Rc<RefCell<_>>`, a GTK/GObject
-/// wrapper) is deliberately `!Send` — the same architectural fact that
-/// motivates `UserEventQueue` existing as a separate `Send + Sync`
-/// staging area in the first place. Only `glib::MainContext::invoke`
-/// has that shape *and* no ready-made wrapper:
-///
-/// - **macOS** needs the identical shape but gets it from upstream —
-///   `MacBackend::waker` uses `dispatch2::MainThreadBound`, which ships
-///   with `dispatch2::DispatchQueue::main` and carries an
-///   `MainThreadMarker` proof rather than a thread-id assertion. Don't
-///   substitute this type there.
-/// - **Windows** doesn't need the indirection at all: `PostMessageW`
-///   wakes the loop by queueing a real Win32 message, and `wndproc`
-///   already holds the app/backend state when that message is
-///   dispatched, so there is nothing to carry across the thread boundary
-///   (see `WinBackend::waker`'s doc).
-///
-/// Keep this `#[cfg(feature = "gtk")]`. Widening it to `win` makes the
-/// type dead code on a Windows host — `cargo clippy --features win`
-/// under `-D warnings` fails on `dead_code`, which is not reproducible
-/// from a Linux `cargo check --features win` because the `cfg` arm
-/// wouldn't have been active there in the first place.
-///
-/// **The soundness argument is *not* identical to
-/// `dispatch2::MainThreadBound`'s** — an earlier version of this doc
-/// claimed it was, which was wrong, and the gap was exactly what made
-/// that earlier version unsound. `dispatch2::MainThreadBound` stores its
-/// value in a `ManuallyDrop<T>` and gives itself a custom `Drop` impl that
-/// re-dispatches `T`'s actual drop back onto the main thread; a bare
-/// `unsafe impl Send/Sync` with the *derived* `Drop` (drop `T` wherever
-/// the wrapper itself happens to get dropped) is not sound in general,
-/// because nothing stops that from running on a background thread while
-/// another live handle to the same `!Send` value (e.g. another `Rc`
-/// clone) is concurrently touched on its home thread — a real data race
-/// on `Rc`'s non-atomic refcount, not merely a lint violation. This type
-/// now mirrors `dispatch2`'s shape for the same reason: `value` is stored
-/// in a [`std::mem::ManuallyDrop`] and [`Self`] has a real [`Drop`] impl
-/// (below) that only ever runs `T`'s destructor on `owner` — synchronously
-/// if [`Self`] is already being dropped there, or forwarded via
-/// `glib::MainContext::invoke` (the same primitive `GtkBackend::waker`
-/// uses to wake the loop) and blocked on otherwise. That block mirrors
-/// `dispatch2::MainThreadBound`'s own documented trade-off: it can
-/// deadlock if the owning thread's main loop isn't running (or is itself
-/// blocked on a lock the dropping thread holds). Accepted here for the
-/// same reason `dispatch2` accepts it — there's no other way to guarantee
-/// `T` is only ever touched on `owner` once it can be dropped from
-/// anywhere.
-///
-/// With that in place, the rest of the invariant holds exactly as before:
-/// the value only ever originates from, and is only ever read or dropped
-/// on, the UI thread — the native primitive's whole contract is "this
-/// callback runs on the thread that owns the loop". [`Self::get`]
-/// additionally asserts that in debug builds (`debug_assert_eq!`) rather
-/// than trusting it silently, so a future call site that violates the
-/// invariant panics loudly on the thread that got it wrong instead of
-/// racing `Rc`'s refcount from two threads at once.
-///
-/// `T: 'static` (new with the `Drop` impl): the forwarded-drop closure
-/// handed to `glib::MainContext::invoke` must itself be `'static` — that
-/// primitive's own bound — so anything it can reach, including `T`, must
-/// be too. Every real caller already wraps a `'static` value
-/// (`Rc<dyn Fn()>`, whose `dyn Fn()` carries an implicit `'static` bound),
-/// so this doesn't narrow what this type can hold in practice.
-#[cfg(feature = "gtk")]
-pub(crate) struct MainThreadBound<T: 'static> {
-    value: std::mem::ManuallyDrop<T>,
-    owner: std::thread::ThreadId,
-}
-
-// SAFETY: `value` is only ever read via `get`, which asserts (debug) that
-// the calling thread matches `owner` — the thread `new` was called from.
-// Every caller of `get` in this crate does so from inside a callback a
-// native "run this on the main/UI thread" primitive scheduled, which by
-// that primitive's own contract only ever runs on `owner`. `value` is
-// also only ever *dropped* on `owner` — see the `Drop` impl below, which
-// is the piece that makes this `unsafe impl` sound rather than merely
-// convenient. The wrapper itself never dereferences `T` on any other
-// thread, for read or for drop.
-#[cfg(feature = "gtk")]
-unsafe impl<T> Send for MainThreadBound<T> {}
-// SAFETY: shared access (`&self` in `get`) is read-only and carries the
-// same thread-identity assertion as the `Send` impl above.
-#[cfg(feature = "gtk")]
-unsafe impl<T> Sync for MainThreadBound<T> {}
-
-#[cfg(feature = "gtk")]
-impl<T> MainThreadBound<T> {
-    /// Wrap `value`, capturing the current thread as its only valid
-    /// future accessor. Call this from the UI thread, before the value
-    /// crosses into a `Send`-only context.
-    pub(crate) fn new(value: T) -> Self {
-        Self {
-            value: std::mem::ManuallyDrop::new(value),
-            owner: std::thread::current().id(),
-        }
-    }
-
-    /// Recover the wrapped value. Panics (debug builds only) if called
-    /// from any thread other than the one that constructed this.
-    pub(crate) fn get(&self) -> &T {
-        debug_assert_eq!(
-            std::thread::current().id(),
-            self.owner,
-            "MainThreadBound accessed off its owning thread"
-        );
-        &self.value
-    }
-}
-
-/// Carries a `MainThreadBound<T>`'s `value` field across the thread
-/// boundary for exactly as long as it takes the invoked closure in
-/// [`MainThreadBound`]'s `Drop` impl to run and drop it — never
-/// dereferenced off `owner`, only moved. See that `Drop` impl for why
-/// this needs to exist at all rather than capturing a plain reference.
-#[cfg(feature = "gtk")]
-struct SendOnDrop<T>(*mut std::mem::ManuallyDrop<T>);
-
-// SAFETY: never dereferenced except by the one closure `MainThreadBound`'s
-// `Drop` impl hands to `glib::MainContext::invoke`, which — per that
-// primitive's contract — only runs on the main context's owning thread
-// (the same `owner` every other access to the pointee is restricted to),
-// or is run synchronously by the dropping thread itself when nothing owns
-// the context yet (see that `Drop` impl's doc for why that residual case
-// is still safe).
-#[cfg(feature = "gtk")]
-unsafe impl<T> Send for SendOnDrop<T> {}
-
-#[cfg(feature = "gtk")]
-impl<T: 'static> Drop for MainThreadBound<T> {
-    fn drop(&mut self) {
-        if !std::mem::needs_drop::<T>() {
-            // `ManuallyDrop<T>` has no drop glue of its own for a `T`
-            // that has none either — nothing to run on any thread, so
-            // there's nothing to forward.
-            return;
-        }
-        if std::thread::current().id() == self.owner {
-            // Fast path: already on the owning thread. Drop in place —
-            // safe exactly as it would be for a bare `T` field, and this
-            // `Drop::drop` runs at most once, so this is the only place
-            // `self.value` is ever touched after construction.
-            // SAFETY: see above.
-            unsafe { std::mem::ManuallyDrop::drop(&mut self.value) };
-            return;
-        }
-        // Off the owning thread: never touch `T` here directly (that's
-        // the entire point of this wrapper). Hand `T`'s actual drop to a
-        // closure `glib::MainContext::invoke` runs back on the owning
-        // thread — the same primitive `GtkBackend::waker` already uses to
-        // wake the loop from a background thread — and block until it
-        // completes, mirroring `dispatch2::MainThreadBound`'s `Drop` (see
-        // this type's doc for the accepted deadlock trade-off).
-        //
-        // `invoke` requires a `'static` closure, which a plain `&mut
-        // self.value` borrow can't satisfy (its lifetime ends when this
-        // `drop` call returns, and the memory behind `self` may be freed
-        // right after). Carry a raw pointer instead and rendezvous on a
-        // channel so `self` — and the memory the pointer targets — stays
-        // alive on this thread until the invoked closure signals it's
-        // done.
-        let ptr = SendOnDrop(&mut self.value as *mut _);
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        gtk4::glib::MainContext::default().invoke(move || {
-            let ptr = ptr;
-            // SAFETY: this closure runs on `self.owner` — per
-            // `glib::MainContext::invoke`'s contract, either because the
-            // context's owner thread dispatches it, or (if the context
-            // currently has no owner at all, e.g. the main loop has
-            // already stopped) it runs synchronously right here, in
-            // which case nothing is concurrently touching the pointee
-            // from an owning thread either, so dropping it in the
-            // calling thread is equally safe. `ptr.0` still points at a
-            // live `self.value` because the dropping thread is blocked
-            // on `done_rx.recv()` below until `done_tx.send` completes,
-            // and this is the only place `self.value` is ever dropped.
-            unsafe { std::mem::ManuallyDrop::drop(&mut *ptr.0) };
-            let _ = done_tx.send(());
-        });
-        let _ = done_rx.recv();
-    }
-}
-
-/// Regression coverage for the `Drop` impl above — the blocking finding
-/// from #831's review round: a bare `unsafe impl Send/Sync` with no
-/// custom `Drop` would drop `T` wherever `MainThreadBound<T>` itself
-/// happened to be dropped, including off `owner`. These tests exercise
-/// both `Drop::drop` branches directly (rather than through
-/// `GtkBackend::waker`, which only ever constructs/drops on one thread in
-/// its own tests) and assert the wrapped value's own destructor runs
-/// exactly once either way.
-#[cfg(all(test, feature = "gtk"))]
-mod main_thread_bound_tests {
-    use super::MainThreadBound;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    /// Records how many times (and, for the cross-thread test, that it
-    /// happened at all) its value has been dropped, via a shared counter
-    /// rather than `self` state — the whole point is to observe the drop
-    /// from outside the thread it actually ran on.
-    struct DropRecorder(Arc<AtomicUsize>);
-
-    impl Drop for DropRecorder {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    #[test]
-    fn drop_on_owner_thread_runs_inner_drop_exactly_once() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let bound = MainThreadBound::new(DropRecorder(Arc::clone(&count)));
-        assert_eq!(count.load(Ordering::SeqCst), 0, "not dropped yet");
-
-        drop(bound); // constructed and dropped on this same (owner) thread
-        assert_eq!(
-            count.load(Ordering::SeqCst),
-            1,
-            "dropping on the owning thread must run T's destructor exactly once"
-        );
-    }
-
-    /// The scenario the finding describes: something holding the last
-    /// reference to a `MainThreadBound<T>` drops it from a thread other
-    /// than the one that constructed it. Before this fix that ran `T`'s
-    /// destructor right there on the background thread with no
-    /// synchronization against the owning thread at all — exactly the
-    /// data race the finding flagged. This test doesn't spin up a live
-    /// `glib` main loop (see `waker_invokes_installed_wake_callback` in
-    /// `gtk::backend` for why that's unnecessary: `MainContext::invoke`
-    /// runs its closure synchronously whenever the default context has no
-    /// current owner, which is always true in a bare `cargo test`
-    /// process), so this mainly pins down that the cross-thread path
-    /// doesn't panic, hang, double-drop, or silently never drop —
-    /// whichever thread the closure actually runs on.
-    #[test]
-    fn drop_off_owner_thread_runs_inner_drop_exactly_once_and_does_not_hang() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let bound = MainThreadBound::new(DropRecorder(Arc::clone(&count)));
-
-        let handle = std::thread::spawn(move || {
-            drop(bound); // dropped on a thread that isn't `owner`
-        });
-        handle
-            .join()
-            .expect("dropping off the owning thread must not panic or deadlock");
-
-        assert_eq!(
-            count.load(Ordering::SeqCst),
-            1,
-            "the forwarded drop must still run T's destructor exactly once"
         );
     }
 }
