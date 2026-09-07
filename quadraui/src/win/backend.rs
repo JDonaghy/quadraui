@@ -2517,13 +2517,16 @@ impl Backend for WinBackend {
         todo!("Direct2D scrollbar rasteriser (no surface attached yet)")
     }
 
-    /// #726: real Direct2D rasteriser via `win::drop_overlay` once a
-    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
-    /// "surface not attached yet" fallback posture.
+    /// #865: paint via the shared
+    /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
+    /// once a surface is attached — mirrors [`Self::draw_scrollbar`].
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture.
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
         #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.surface {
-            super::drop_overlay::draw_drop_overlay(&surface.target, overlay, &self.current_theme);
+        if self.surface.is_some() {
+            let theme = self.current_theme;
+            crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
             return;
         }
         #[cfg(not(target_os = "windows"))]

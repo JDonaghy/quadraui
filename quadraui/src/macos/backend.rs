@@ -1882,14 +1882,8 @@ impl Backend for MacBackend {
     }
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_drop_overlay called outside enter_frame_scope",
-        );
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::drop_overlay::draw_drop_overlay(ctx, overlay, &theme) }
+        crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
     }
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         let ctx = self.current_cg();

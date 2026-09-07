@@ -272,6 +272,257 @@ pub fn drop_zone_overlay(
     }
 }
 
+// ── NativeSurface paint (#865, Phase 2d slice 8/9 of the NativeSurface
+// milestone, #811 / #785) ───────────────────────────────────────────────
+//
+// Before this, `gtk::draw_drop_overlay` (Cairo), `macos::drop_overlay::
+// draw_drop_overlay` (Core Graphics) and `win::drop_overlay::
+// draw_drop_overlay` (Direct2D) each independently painted the same
+// highlight-rect + insertion-bar geometry with their own drawing API.
+// `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of
+// any one backend's drawing API — same shape as `scrollbar`'s #811
+// slice 1/9 migration (commit `2a47547`).
+//
+// ## The one divergence this migration found (re-verified, reported here
+// rather than silently resolved — CLAUDE.md's "re-verify before you
+// implement")
+//
+// GTK's `cr.set_source_rgba` and macOS's `CGContextSetRGBFillColor` both
+// painted the highlight tint as a *real* alpha-blended fill straight onto
+// whatever the frame already had underneath. Windows's pre-migration
+// `win::drop_overlay::draw_drop_overlay` did not: its render target is
+// created with `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN`, so that module's
+// author CPU-premixed the tint against `theme.background` via
+// `win::text::blend` before an opaque fill — a real behavioural
+// difference from GTK/macOS (a halo of `theme.background` rather than a
+// blend of *actual* content) whenever a drop overlay paints over
+// anything other than bare theme background (an editor, a terminal, a
+// panel header).
+//
+// That is the same class of bug quadraui#791 fixed for
+// `win::scrollbar::draw_scrollbar` — but unlike scrollbar's migration
+// (slice 1/9), where the win side had *already* been fixed independently
+// before the migration started, drop_overlay's win-side premix was still
+// live going into this slice. `NativeSurface::surface_fill_rect` itself
+// — the shared verb this `paint` fn calls — has painted a real alpha
+// blend on every one of the three pixel backends since #791 (Windows)
+// and slice 1/9 (GTK's `cr.set_source_rgba` fix; macOS's
+// `CGContextSetRGBFillColor` already did). Routing this primitive's
+// paint through the (already-correct) shared verb therefore *fixes*
+// Windows's drop-overlay highlight to match GTK/macOS's real-blend
+// behaviour, rather than reproducing the old CPU-premix — the opposite
+// direction of slice 1/9's GTK fix, landing at the same shared verb. See
+// `win::drop_overlay`'s module doc for how the deprecated shim's test
+// suite pins the corrected behaviour.
+//
+// `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note —
+// only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_drop_overlay` call sites plus this
+// module's own `RecordingSurface` tests on every leg that enables one of
+// the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::DropOverlay;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// `color` with its alpha channel replaced by `alpha` (`0.0`-`1.0`).
+    fn with_alpha(color: Color, alpha: f32) -> Color {
+        Color::rgba(
+            color.r,
+            color.g,
+            color.b,
+            (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
+        )
+    }
+
+    /// Paint a [`DropOverlay`] onto `surface`: a translucent highlight
+    /// rect at [`DropOverlay::HIGHLIGHT_ALPHA`] and/or a solid insertion
+    /// bar widened to at least [`DropOverlay::MIN_BAR_THICKNESS`], both
+    /// in `theme.accent_fg`. `ghost_position` is not painted here — no
+    /// backend renders a ghost label (see the per-backend module docs),
+    /// so callers that want one draw it themselves on top.
+    pub(crate) fn paint(overlay: &DropOverlay, surface: &mut dyn NativeSurface, theme: &Theme) {
+        if let Some(h) = overlay.highlight {
+            if h.width > 0.0 && h.height > 0.0 {
+                surface.surface_fill_rect(
+                    h,
+                    with_alpha(theme.accent_fg, DropOverlay::HIGHLIGHT_ALPHA),
+                );
+            }
+        }
+
+        if let Some(bar) = overlay.insertion_bar {
+            if bar.height > 0.0 {
+                let widened = crate::event::Rect::new(
+                    bar.x,
+                    bar.y,
+                    bar.width.max(DropOverlay::MIN_BAR_THICKNESS),
+                    bar.height,
+                );
+                surface.surface_fill_rect(widened, theme.accent_fg);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Rect, Viewport};
+        use crate::Image;
+
+        /// Records every `surface_fill_rect` call — mirrors
+        /// `primitives::scrollbar`'s `RecordingSurface` test double,
+        /// scoped to just the verb this primitive uses, so this test
+        /// runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        /// Regression pinning this migration's found divergence: the
+        /// highlight must carry real alpha (`Color::a < 255`), matching
+        /// GTK/macOS's pre-migration behaviour and *correcting*
+        /// Windows's pre-migration CPU-premix (see this module's doc).
+        #[test]
+        fn highlight_paints_with_real_alpha_not_opaque() {
+            let overlay = DropOverlay {
+                highlight: Some(Rect::new(10.0, 10.0, 50.0, 30.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&overlay, &mut surface, &theme);
+
+            assert_eq!(
+                surface.fills.len(),
+                1,
+                "expected exactly the highlight fill"
+            );
+            let (rect, color) = surface.fills[0];
+            assert_eq!(rect, Rect::new(10.0, 10.0, 50.0, 30.0));
+            assert!(
+                color.a < 255,
+                "highlight fill must carry real alpha, got opaque a={}",
+                color.a
+            );
+        }
+
+        #[test]
+        fn insertion_bar_paints_opaque() {
+            let overlay = DropOverlay {
+                highlight: None,
+                insertion_bar: Some(Rect::new(40.0, 0.0, 2.0, 20.0)),
+                ghost_position: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&overlay, &mut surface, &theme);
+
+            assert_eq!(surface.fills.len(), 1, "expected exactly the bar fill");
+            let (_, color) = surface.fills[0];
+            assert_eq!(
+                color, theme.accent_fg,
+                "insertion bar is solid theme.accent_fg"
+            );
+        }
+
+        #[test]
+        fn insertion_bar_widens_to_min_thickness() {
+            let overlay = DropOverlay {
+                highlight: None,
+                insertion_bar: Some(Rect::new(40.0, 0.0, 0.0, 20.0)),
+                ghost_position: None,
+            };
+            let mut surface = RecordingSurface::default();
+            paint(&overlay, &mut surface, &Theme::default());
+
+            let (rect, _) = surface.fills[0];
+            assert_eq!(rect.width, DropOverlay::MIN_BAR_THICKNESS);
+        }
+
+        #[test]
+        fn zero_size_highlight_paints_nothing() {
+            let overlay = DropOverlay {
+                highlight: Some(Rect::new(10.0, 10.0, 0.0, 0.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            };
+            let mut surface = RecordingSurface::default();
+            paint(&overlay, &mut surface, &Theme::default());
+            assert!(surface.fills.is_empty());
+        }
+
+        #[test]
+        fn empty_overlay_paints_nothing() {
+            let overlay = DropOverlay {
+                highlight: None,
+                insertion_bar: None,
+                ghost_position: None,
+            };
+            let mut surface = RecordingSurface::default();
+            paint(&overlay, &mut surface, &Theme::default());
+            assert!(surface.fills.is_empty());
+        }
+
+        #[test]
+        fn both_highlight_and_bar_paint_two_fills() {
+            let overlay = DropOverlay {
+                highlight: Some(Rect::new(0.0, 0.0, 20.0, 20.0)),
+                insertion_bar: Some(Rect::new(40.0, 0.0, 2.0, 20.0)),
+                ghost_position: None,
+            };
+            let mut surface = RecordingSurface::default();
+            paint(&overlay, &mut surface, &Theme::default());
+            assert_eq!(surface.fills.len(), 2);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
