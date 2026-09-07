@@ -3,11 +3,14 @@
 //! Painting moved to the shared
 //! [`crate::primitives::split::native_surface_paint::paint`] (#864,
 //! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for why the three per-backend copies were found to be
-//! already identical (no divergence). This module now carries
-//! [`mac_split_layout`], [`RawSplitSurface`], and the deprecated
-//! [`draw_split`] compatibility shim over the shared paint, mirroring
-//! `macos::split_tree::RawSplitTreeSurface` (#863, slice 6/9).
+//! module doc for a reported divergence between this module and GTK's:
+//! macOS's `CGContextSetRGBFillColor` (via `ns_fill_rect`) always
+//! honoured a translucent `theme.separator`, while pre-migration GTK
+//! did not — this module's behaviour is unchanged by the migration.
+//! This module now carries [`mac_split_layout`], [`RawSplitSurface`],
+//! and the deprecated [`draw_split`] compatibility shim over the shared
+//! paint, mirroring `macos::split_tree::RawSplitTreeSurface` (#863,
+//! slice 6/9).
 
 use core_graphics::sys::CGContextRef;
 

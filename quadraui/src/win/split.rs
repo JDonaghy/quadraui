@@ -3,11 +3,14 @@
 //! Painting moved to the shared
 //! [`crate::primitives::split::native_surface_paint::paint`] (#864,
 //! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for why the three per-backend copies were found to be
-//! already identical (no divergence). This module now carries
-//! [`win_split_layout`], [`RawSplitSurface`], and the deprecated
-//! [`draw_split`] compatibility shim over the shared paint, mirroring
-//! `win::split_tree::RawSplitTreeSurface` (#863, slice 6/9).
+//! module doc for a reported divergence between this module and GTK's:
+//! Windows's `ID2D1SolidColorBrush` (via `super::text::fill_rect`)
+//! always honoured a translucent `theme.separator`, while pre-migration
+//! GTK did not — this module's behaviour is unchanged by the migration.
+//! This module now carries [`win_split_layout`], [`RawSplitSurface`],
+//! and the deprecated [`draw_split`] compatibility shim over the shared
+//! paint, mirroring `win::split_tree::RawSplitTreeSurface` (#863,
+//! slice 6/9).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod split;` and `backend.rs`'s module
