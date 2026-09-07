@@ -78,11 +78,30 @@ pub enum Reaction {
     ///
     /// ```ignore
     /// fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+    ///     if self.job.is_running() {
+    ///         // Nothing has changed on screen yet — the job is still
+    ///         // going — but re-check in ~100ms rather than waiting for
+    ///         // whatever idle cadence (if any) the backend has.
+    ///         return Reaction::RedrawAfter(Duration::from_millis(100));
+    ///     }
+    ///     Reaction::Continue
+    /// }
+    /// ```
+    ///
+    /// If the same tick *also* has something to paint right now — the
+    /// usual animation case, where each wake advances a visible frame —
+    /// this variant on its own is the wrong tool: it schedules the wake
+    /// but skips the repaint. Paint *and* schedule by calling
+    /// [`Backend::request_frame_in`] directly and returning
+    /// [`Reaction::Redraw`], as `examples/common/chat_demo.rs`'s
+    /// thinking-spinner countdown does:
+    ///
+    /// ```ignore
+    /// fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
     ///     if self.busy {
     ///         self.spinner_frame = self.spinner_frame.wrapping_add(1);
-    ///         // Redraw now, and make sure `tick` runs again in ~100ms
-    ///         // even if no native event arrives in the meantime.
-    ///         return Reaction::RedrawAfter(Duration::from_millis(100));
+    ///         backend.request_frame_in(Duration::from_millis(100));
+    ///         return Reaction::Redraw; // paints the new frame now
     ///     }
     ///     Reaction::Continue
     /// }

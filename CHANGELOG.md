@@ -115,6 +115,19 @@ release time.
   consumers today (neither `coord-tui` nor `vimcode` exhaustively matches
   a `Reaction` value; grep in the PR body), guarding against a future
   variant addition being one.
+- `tui::testing::TuiDriver::tick` (issue #832) — runs one
+  `AppLogic::tick` and applies its `Reaction` exactly as the live TUI
+  loop does. Without it a driver test could only reach an app's
+  event-driven half, so time-driven state (spinner frame, caret blink,
+  countdown, background-job poll) was untestable headlessly.
+- `tui::TuiBackend::frame_requests` / `TuiBackend::pending_frame_delay`
+  (issue #832) — test-facing observers of `Backend::request_frame_in`:
+  how many wakes an app asked for, and how long until the next one. An
+  app that chains its own frames and one that free-rides on a fixed idle
+  poll paint identical screens, so this is the only way a `TuiDriver`
+  test can tell them apart. All three additions are purely additive —
+  no consumer hits for either symbol in `coord-tui` or `vimcode` (grep in
+  the PR body).
 
 ### Changed
 

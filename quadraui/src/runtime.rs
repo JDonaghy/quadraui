@@ -659,6 +659,15 @@ impl ResizeDebouncer {
 #[cfg(feature = "tui")]
 pub(crate) struct FrameScheduler {
     deadline: std::cell::Cell<Option<std::time::Instant>>,
+    /// Total number of [`Self::request`] calls since construction — the
+    /// observable behind [`crate::tui::TuiBackend::frame_requests`]. A
+    /// monotonic counter rather than a "was a frame requested" flag
+    /// because the behaviour worth testing is the *chained re-arm* (an
+    /// app that asks again on every tick while its animation runs, and
+    /// stops asking when it finishes); `deadline` alone can't show that,
+    /// since coalescing means four requests at the same interval leave
+    /// exactly the same deadline one request would.
+    requests: std::cell::Cell<u64>,
 }
 
 #[cfg(feature = "tui")]
@@ -666,16 +675,35 @@ impl FrameScheduler {
     pub(crate) const fn new() -> Self {
         Self {
             deadline: std::cell::Cell::new(None),
+            requests: std::cell::Cell::new(0),
         }
     }
 
     /// Arm (or tighten) the pending deadline to `delay` from now.
     pub(crate) fn request(&self, delay: Duration) {
+        self.requests.set(self.requests.get().saturating_add(1));
         let candidate = std::time::Instant::now() + delay;
         self.deadline.set(Some(match self.deadline.get() {
             Some(d) if d <= candidate => d,
             _ => candidate,
         }));
+    }
+
+    /// How many times [`Self::request`] has been called since
+    /// construction. Never reset — [`Self::clear_if_due`] clears the
+    /// deadline, not the count.
+    pub(crate) fn requests(&self) -> u64 {
+        self.requests.get()
+    }
+
+    /// Time remaining until the pending deadline, or `None` when nothing
+    /// is armed. Unlike [`Self::poll_timeout`] this doesn't clamp to a
+    /// ceiling and doesn't conflate "nothing scheduled" with "scheduled
+    /// far out" — the distinction a test needs.
+    pub(crate) fn pending_delay(&self) -> Option<Duration> {
+        self.deadline
+            .get()
+            .map(|d| d.saturating_duration_since(std::time::Instant::now()))
     }
 
     /// How long the run loop may safely block in `wait_events` before it
