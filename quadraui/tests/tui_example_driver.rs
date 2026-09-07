@@ -447,6 +447,111 @@ fn text_input_click_moves_cursor_to_the_clicked_line() {
     );
 }
 
+// ─── TextInputDemo: selection, delete-over-selection, undo/redo (#833) ──────
+//
+// #833 acceptance: `TextInput` gets real insert/delete/cursor/selection
+// behaviour through `apply(EditOp)`, plus undo/redo bound to the
+// long-declared-but-unused `KeyBinding::Undo`/`Redo` accelerator names.
+// These assert against **rendered** screen content each time (never the
+// primitive's fields directly) so they catch a wiring break between the
+// demo's key handling and what actually reaches the screen.
+
+#[test]
+fn text_input_shift_left_selects_and_backspace_deletes_the_selection() {
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    for c in "hello".chars() {
+        driver.type_char(c);
+    }
+    assert!(
+        driver.screen_contains("hello"),
+        "typed text should render:\n{}",
+        driver.screen()
+    );
+
+    // Shift+Left twice selects the last two characters ("lo").
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Left),
+        modifiers: shift,
+        repeat: false,
+    });
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Left),
+        modifiers: shift,
+        repeat: false,
+    });
+    driver.press_named(NamedKey::Backspace);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("hel") && !after.contains("hello"),
+        "backspace over a selection should delete the whole selection, leaving \"hel\":\n{after}"
+    );
+    assert!(
+        after.contains("col 4"),
+        "cursor should land right after \"hel\" (col 4):\n{after}"
+    );
+}
+
+#[test]
+fn text_input_ctrl_z_undoes_typed_text_rendered_on_screen() {
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    for c in "hi".chars() {
+        driver.type_char(c);
+    }
+    assert!(
+        driver.screen_contains("hi"),
+        "typed text should render:\n{}",
+        driver.screen()
+    );
+
+    driver.ctrl_char('z');
+
+    let after = driver.screen();
+    assert!(
+        after.contains("col 2"),
+        "Ctrl+Z should undo the last keystroke (\"hi\" -> \"h\"), leaving cursor at col 2:\n{after}"
+    );
+    assert!(
+        !after.contains("hi"),
+        "the second typed char should no longer be on screen after undo:\n{after}"
+    );
+}
+
+#[test]
+fn text_input_ctrl_shift_z_redoes_after_undo() {
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    for c in "hi".chars() {
+        driver.type_char(c);
+    }
+    driver.ctrl_char('z'); // undo the second char -> "h"
+    assert!(
+        driver.screen_contains("col 2"),
+        "after one undo, cursor should be back at col 2:\n{}",
+        driver.screen()
+    );
+
+    // Ctrl+Shift+Z (Redo's canonical binding).
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('z'),
+        modifiers: Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+
+    let after = driver.screen();
+    assert!(
+        after.contains("hi") && after.contains("col 3"),
+        "Ctrl+Shift+Z should redo the undone keystroke, restoring \"hi\":\n{after}"
+    );
+}
+
 // ─── DiffViewApp: click routes through DiffViewGeometry::hit_test (#818) ────
 
 /// #818 acceptance: clicking a diff row resolves through

@@ -171,6 +171,7 @@ pub mod testing;
 pub mod text_util;
 pub mod theme;
 pub mod types;
+pub mod undo;
 
 // ── Terminal engine (PTY + vt100 + scrollback) ───────────────────────────────
 // Gated behind the `terminal` feature so non-terminal consumers don't pull in
@@ -454,7 +455,7 @@ pub use primitives::text_display::{
     TextDisplayLineMeasure, VisibleTextDisplayLine,
 };
 pub use primitives::text_input::{
-    TextInput, TextInputHit, TextInputLayout, TextInputMeasure, VisibleTextInputLine,
+    EditOp, TextInput, TextInputHit, TextInputLayout, TextInputMeasure, VisibleTextInputLine,
 };
 pub use primitives::toast::{
     ToastAction, ToastCorner, ToastHit, ToastItem, ToastMeasure, ToastSeverity, ToastStack,
@@ -481,6 +482,7 @@ pub use types::{
     Badge, Color, Decoration, Icon, Modifiers, SelectionMode, StyledSpan, StyledText, TreePath,
     TreeStyle, WidgetId,
 };
+pub use undo::UndoStack;
 
 // Phase B.1 re-exports.
 pub use accelerator::{

@@ -177,16 +177,9 @@ mod layout_tests {
     /// `rect.y`, not left at (0, 0) — the case that hides a
     /// LOCAL/ABSOLUTE mixup.
     fn round_trip_at(x: f32, y: f32) {
-        let ti = TextInput {
-            id: WidgetId::new("ti"),
-            lines: vec!["hello".into()],
-            cursor_line: 0,
-            cursor_col: 0,
-            placeholder: None,
-            scroll_offset: 0,
-            scroll_col: 0,
-            has_focus: true,
-        };
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = vec!["hello".into()];
+        ti.has_focus = true;
         let rect = crate::event::Rect::new(x, y, 40.0, 20.0);
         let layout = gtk_text_input_layout(&ti, rect, 10.0, 8.0);
 

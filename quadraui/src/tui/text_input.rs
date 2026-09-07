@@ -126,16 +126,10 @@ mod tests {
     }
 
     fn mk_input(lines: Vec<&str>) -> TextInput {
-        TextInput {
-            id: WidgetId::new("ti"),
-            lines: lines.into_iter().map(String::from).collect(),
-            cursor_line: 0,
-            cursor_col: 0,
-            placeholder: None,
-            scroll_offset: 0,
-            scroll_col: 0,
-            has_focus: true,
-        }
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.lines = lines.into_iter().map(String::from).collect();
+        ti.has_focus = true;
+        ti
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
