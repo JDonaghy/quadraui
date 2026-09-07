@@ -66,6 +66,14 @@ fn ui_crate_design_md() -> String {
     read(crate_root().join("docs/UI_CRATE_DESIGN.md"))
 }
 
+fn clipboard_md() -> String {
+    read(crate_root().join("docs/CLIPBOARD.md"))
+}
+
+fn tui_services_rs() -> String {
+    read(crate_root().join("src/tui/services.rs"))
+}
+
 /// Number of primitive modules declared in `src/primitives/mod.rs`. This is
 /// the crate's own definition of "how many primitives exist" — the same
 /// thing a `pub mod` grep would show a human, just automated so the docs
@@ -368,6 +376,79 @@ fn walk_rs_files(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+// ── Clipboard docs vs. the clipboard code (#331) ─────────────────────────
+//
+// #331 was reported as "Ctrl-A + Ctrl-C doesn't reach the clipboard inside
+// tmux". The code was already right — `TuiClipboard::write_text` detects
+// `$TMUX` and emits a DCS-passthrough-wrapped OSC 52 alongside the raw one
+// — but the tmux configuration both forms depend on (`set-clipboard on` /
+// `allow-passthrough on`) was documented only in a private module comment,
+// so from a user's seat the feature was indistinguishable from broken.
+// `docs/CLIPBOARD.md` is the fix. These tests keep it pinned to the code
+// it describes, so a future change to the emission strategy can't leave
+// the troubleshooting steps quietly pointing at the wrong knob.
+
+#[test]
+fn clipboard_doc_names_both_tmux_knobs_the_code_depends_on() {
+    let doc = clipboard_md();
+    for knob in ["set-clipboard on", "allow-passthrough on"] {
+        assert!(
+            doc.contains(knob),
+            "docs/CLIPBOARD.md no longer mentions `{knob}`. quadraui emits \
+             BOTH a raw OSC 52 sequence (gated by tmux's `set-clipboard`) \
+             and a DCS-passthrough-wrapped copy (gated by \
+             `allow-passthrough`), so a user whose copy silently fails \
+             needs both names to diagnose it. If the emission strategy \
+             changed so one of these is genuinely no longer required, \
+             update the doc's tmux section deliberately rather than \
+             dropping the name."
+        );
+    }
+}
+
+#[test]
+fn tui_clipboard_still_emits_the_tmux_passthrough_the_doc_promises() {
+    // The two halves of the tmux story in `docs/CLIPBOARD.md`: detection
+    // off `$TMUX`, and the DCS passthrough wrapper it enables. If either
+    // disappears from the code, the doc is lying about what happens
+    // inside tmux and #331 regresses into an undiagnosable bug report.
+    let src = tui_services_rs();
+    assert!(
+        src.contains("\"TMUX\""),
+        "src/tui/services.rs no longer reads $TMUX. docs/CLIPBOARD.md tells \
+         users the tmux passthrough copy is emitted automatically when \
+         `$TMUX` is set — if detection moved elsewhere, repoint this test \
+         and the doc at wherever it lives now."
+    );
+    assert!(
+        src.contains("Ptmux;"),
+        "src/tui/services.rs no longer emits tmux's DCS passthrough \
+         introducer (`ESC P tmux ;`). That wrapper is the leg that works \
+         under `allow-passthrough on`, and docs/CLIPBOARD.md documents it \
+         as one of the two forms every copy sends (#331)."
+    );
+}
+
+#[test]
+fn clipboard_doc_lists_every_native_clipboard_tool_the_code_tries() {
+    // The doc's troubleshooting step 5 tells users to check for these
+    // tools by name. A tool added to (or dropped from) the candidate list
+    // without a doc update sends people looking for the wrong binary.
+    let src = tui_services_rs();
+    let doc = clipboard_md();
+    for tool in ["wl-copy", "xclip", "xsel"] {
+        assert_eq!(
+            src.contains(tool),
+            doc.contains(tool),
+            "`{tool}` appears in exactly one of src/tui/services.rs and \
+             docs/CLIPBOARD.md. The doc's native-tool leg table and its \
+             troubleshooting steps name these binaries so a user can check \
+             `which {tool}` — they have to be the same set the code \
+             actually spawns."
+        );
+    }
 }
 
 // ── One root README ──────────────────────────────────────────────────────

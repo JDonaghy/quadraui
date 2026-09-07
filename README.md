@@ -143,6 +143,11 @@ declarative descriptions + layout + dual rasterisers. The most-used ones:
 - [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) —
   pitfalls discovered while building the Win-GUI backend; apply when
   building macOS or any future native backend.
+- [`quadraui/docs/CLIPBOARD.md`](quadraui/docs/CLIPBOARD.md) — how TUI
+  copy reaches the system clipboard (arboard / OSC 52 / native tool),
+  the tmux `set-clipboard on` + `allow-passthrough on` requirement, and
+  a troubleshooting order for "Ctrl-C showed `Copied:` but nothing was
+  copied" (#331).
 - [`quadraui/docs/IME_INPUT_PROPOSAL.md`](quadraui/docs/IME_INPUT_PROPOSAL.md) —
   IME/composition input model proposal (issue #502): `UiEvent` preedit
   contract, GTK `IMContext` / macOS `NSTextInputClient` / Windows TSF
