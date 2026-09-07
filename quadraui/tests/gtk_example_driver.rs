@@ -14,7 +14,7 @@
 #![cfg(feature = "gtk")]
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
-use quadraui::{Key, Modifiers, NamedKey, Reaction, UiEvent};
+use quadraui::{Key, Modifiers, NamedKey, Reaction, Theme, UiEvent};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -44,6 +44,10 @@ use menu_bar_app::MenuBarApp;
 #[allow(dead_code)]
 mod workspace_demo;
 use workspace_demo::WorkspaceDemo;
+
+#[path = "../examples/common/split_app.rs"]
+mod split_app;
+use split_app::SplitApp;
 
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
@@ -599,4 +603,168 @@ fn workspace_ctrl_tab_cycles_and_wraps() {
             "Ctrl+Tab should step (and wrap) to {expected}"
         );
     }
+}
+
+// ─── SplitApp: the shared `NativeSurface` divider paint (#864) ───────────────
+//
+// Driver-tier cover for `primitives::split::native_surface_paint::paint`,
+// the one shared implementation that replaced `gtk::draw_split`'s,
+// `macos::split::draw_split`'s and `win::split::draw_split`'s three
+// separate divider fills (#864, `NativeSurface` Phase 2d slice 7/9, child
+// of #811). The macOS and Windows halves of that path have their own
+// in-crate pixel tests, but neither compiles on the Linux `gtk` CI leg —
+// these are the tests that actually run there, driving the *same*
+// backend-agnostic `SplitApp` the `gtk_split` example runs through
+// `GtkBackend::draw_split` -> the shared paint, and asserting on real
+// Cairo pixels rather than on a recorded call list.
+//
+// `Split` paints no text at all (see `GtkDriver::painted_texts`' doc), so
+// `find`/`screen_contains` can't locate the divider the way every other
+// test in this file locates its target. Scanning for the divider's own
+// painted colour is the equivalent move — still derived from the surface,
+// never a hardcoded coordinate.
+
+/// Longest contiguous run of `theme.separator`-coloured pixels along row
+/// `y`, as `(start_x, len)`. `None` if the row has none.
+fn separator_run_in_row(driver: &mut GtkDriver<SplitApp>, y: i32) -> Option<(i32, i32)> {
+    let sep = Theme::default().separator;
+    let mut best: Option<(i32, i32)> = None;
+    let mut run_start: Option<i32> = None;
+    for x in 0..=W {
+        let hit = x < W && driver.pixel(x, y) == (sep.r, sep.g, sep.b);
+        match (hit, run_start) {
+            (true, None) => run_start = Some(x),
+            (false, Some(s)) => {
+                let len = x - s;
+                if best.is_none_or(|(_, bl)| len > bl) {
+                    best = Some((s, len));
+                }
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+    best
+}
+
+/// Column twin of [`separator_run_in_row`] — `(start_y, len)` down `x`.
+fn separator_run_in_col(driver: &mut GtkDriver<SplitApp>, x: i32) -> Option<(i32, i32)> {
+    let sep = Theme::default().separator;
+    let mut best: Option<(i32, i32)> = None;
+    let mut run_start: Option<i32> = None;
+    // Stop above the status bar, which is chrome this primitive doesn't own.
+    let limit = H - 40;
+    for y in 0..=limit {
+        let hit = y < limit && driver.pixel(x, y) == (sep.r, sep.g, sep.b);
+        match (hit, run_start) {
+            (true, None) => run_start = Some(y),
+            (false, Some(s)) => {
+                let len = y - s;
+                if best.is_none_or(|(_, bl)| len > bl) {
+                    best = Some((s, len));
+                }
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+    best
+}
+
+/// The shared paint fills exactly `SplitLayout::divider_bounds` in
+/// `theme.separator` and nothing else — a vertical band, one divider
+/// thickness wide, roughly centred for the app's default 0.5 ratio, with
+/// both panes left untouched (pane content is the host's job on every
+/// backend, before and after #864).
+#[test]
+fn split_divider_paints_a_separator_band_through_the_shared_native_surface_path() {
+    let mut driver = GtkDriver::new(SplitApp::new(), W, H);
+    // Well below the pane labels' one-line-high status bars, well above
+    // the bottom status bar.
+    let row = H / 2;
+
+    let (x, len) = separator_run_in_row(&mut driver, row)
+        .expect("GtkBackend::draw_split should paint a separator-coloured divider band");
+
+    assert!(
+        (3..=6).contains(&len),
+        "divider band should be one divider thickness wide (GTK_DIVIDER_PX = 4), got {len}px",
+    );
+    // Default ratio is 0.5, so the band sits near the middle — asserted as
+    // a broad window, not an exact pixel, so font metrics can't break it.
+    let centre = x as f32 + len as f32 / 2.0;
+    assert!(
+        (centre - W as f32 / 2.0).abs() < 20.0,
+        "0.5 ratio should centre the divider, got centre={centre}",
+    );
+
+    // Panes are unpainted by the primitive: a column well inside the first
+    // pane has no separator pixels at all.
+    assert_eq!(
+        separator_run_in_col(&mut driver, 20),
+        None,
+        "split paints chrome only — the first pane must be left to the host",
+    );
+}
+
+/// Toggling direction re-runs the same shared paint against the other
+/// `SplitDirection`'s `divider_bounds`: the band stops being a column and
+/// becomes a row. Catches a paint that ignored the resolved layout.
+#[test]
+fn split_toggling_direction_repaints_the_divider_as_a_horizontal_band() {
+    let mut driver = GtkDriver::new(SplitApp::new(), W, H);
+    assert_eq!(
+        separator_run_in_col(&mut driver, 20),
+        None,
+        "horizontal split has no divider pixels in the first pane's column",
+    );
+
+    driver.type_char('v');
+
+    let (y, len) = separator_run_in_col(&mut driver, 20)
+        .expect("a Vertical split's divider spans the full width, so column x=20 crosses it");
+    assert!(
+        (3..=6).contains(&len),
+        "divider band should be one divider thickness tall, got {len}px",
+    );
+    assert!(
+        y > 0 && y < H - 40,
+        "the divider band should sit inside the split area, got y={y}",
+    );
+}
+
+/// Paint↔hit-test round trip across the shared path: a drag that starts on
+/// the *painted* divider must be recognised as `SplitHit::Divider` by the
+/// layout that painted it, and the next frame must repaint the band at the
+/// new ratio. A paint that drifted from `Backend::split_layout`'s geometry
+/// would fail here even though both halves looked right in isolation.
+#[test]
+fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
+    let mut driver = GtkDriver::new(SplitApp::new(), W, H);
+    assert!(
+        driver.screen_contains("ratio: 50% (H)"),
+        "starts centred 50/50",
+    );
+
+    let row = H / 2;
+    let (before_x, before_len) =
+        separator_run_in_row(&mut driver, row).expect("divider should be painted");
+    let grab_x = before_x as f32 + before_len as f32 / 2.0;
+
+    let target_x = grab_x - 150.0;
+    driver.drag(grab_x, row as f32, target_x, row as f32);
+
+    let (after_x, after_len) = separator_run_in_row(&mut driver, row)
+        .expect("divider should still be painted after the drag");
+    let after_centre = after_x as f32 + after_len as f32 / 2.0;
+
+    assert!(
+        after_centre < grab_x - 100.0,
+        "dragging 150px left should move the painted divider left by roughly that much: \
+         before={grab_x}, after={after_centre}",
+    );
+    assert!(
+        !driver.screen_contains("ratio: 50% (H)"),
+        "the status bar ratio should follow the divider away from 50%",
+    );
 }
