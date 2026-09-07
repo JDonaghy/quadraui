@@ -47,7 +47,17 @@ use crate::runtime::{ResizeDebouncer, RESIZE_SETTLE};
 // `crate::runtime` (quadraui#496).
 pub(crate) use crate::runtime::EventOutcome;
 use crate::tui::backend::TuiBackend;
+use crate::tui::color::DepthLimitedBackend;
 use crate::UiEvent;
+
+/// The concrete backend the live runner paints through: a real
+/// `CrosstermBackend` over stdout, wrapped in [`DepthLimitedBackend`] so
+/// every frame's SGR output is quantised to the terminal's actual colour
+/// depth (quadraui#826) — [`ColorDepth::TrueColor`] making that wrapper a
+/// no-op pass-through for the common truecolor case.
+///
+/// [`ColorDepth::TrueColor`]: crate::backend::ColorDepth::TrueColor
+type LiveBackend = DepthLimitedBackend<CrosstermBackend<io::Stdout>>;
 
 /// Default poll timeout — 16 ms ≈ 60 fps. The runner sleeps inside
 /// `wait_events(timeout)` waiting for input; on timeout the loop
@@ -90,11 +100,14 @@ pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
     // `run()` and the runner won't double-push.
     let kbd_enhanced = push_keyboard_enhancement(&mut stdout);
 
-    let crossterm_backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(crossterm_backend)?;
-    terminal.clear()?;
-
     let mut backend = TuiBackend::new();
+    let crossterm_backend = CrosstermBackend::new(stdout);
+    // Quantise every frame's SGR to what this terminal actually supports
+    // (quadraui#826) — `backend.color_depth()` was detected from
+    // `COLORTERM`/`TERM` inside `TuiBackend::new()` above.
+    let depth_limited = DepthLimitedBackend::new(crossterm_backend, backend.color_depth());
+    let mut terminal = Terminal::new(depth_limited)?;
+    terminal.clear()?;
 
     // Run the app inside `catch_unwind` so a panic in app code
     // doesn't leave the terminal in a broken state.
@@ -122,7 +135,7 @@ pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
 }
 
 fn run_inner<A: AppLogic>(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<LiveBackend>,
     backend: &mut TuiBackend,
     app: &mut A,
 ) -> io::Result<()> {
@@ -342,7 +355,7 @@ fn push_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
     .is_ok()
 }
 
-fn pop_keyboard_enhancement(backend: &mut CrosstermBackend<io::Stdout>) -> io::Result<()> {
+fn pop_keyboard_enhancement(backend: &mut LiveBackend) -> io::Result<()> {
     use ratatui::crossterm::event::PopKeyboardEnhancementFlags;
     execute!(backend, PopKeyboardEnhancementFlags)
 }
