@@ -225,16 +225,14 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         };
         let mut outcome = EventOutcome::Continue;
         for ev in dispatched {
-            match runtime::preprocess_event(ev, backend, app) {
-                EventOutcome::Exit => return EventOutcome::Exit,
-                EventOutcome::Redraw => outcome = EventOutcome::Redraw,
-                EventOutcome::RedrawAfter(d) => {
-                    if matches!(outcome, EventOutcome::Continue) {
-                        outcome = EventOutcome::RedrawAfter(d);
-                    }
-                }
-                EventOutcome::Continue => {}
+            let step = runtime::preprocess_event(ev, backend, app);
+            if matches!(step, EventOutcome::Exit) {
+                return EventOutcome::Exit;
             }
+            // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen
+            // in this batch rather than the first non-`Continue` one — see
+            // `EventOutcome::merge`'s doc for why that distinction matters.
+            outcome = outcome.merge(step);
         }
         return outcome;
     }
@@ -265,16 +263,12 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             } else {
                 dispatch_event(ev, backend, app, caret_visible, caret_pause)
             };
-            match step {
-                EventOutcome::Exit => return EventOutcome::Exit,
-                EventOutcome::Redraw => outcome = EventOutcome::Redraw,
-                EventOutcome::RedrawAfter(d) => {
-                    if matches!(outcome, EventOutcome::Continue) {
-                        outcome = EventOutcome::RedrawAfter(d);
-                    }
-                }
-                EventOutcome::Continue => {}
+            if matches!(step, EventOutcome::Exit) {
+                return EventOutcome::Exit;
             }
+            // quadraui#832: earliest `RedrawAfter` wins — see
+            // `EventOutcome::merge`'s doc.
+            outcome = outcome.merge(step);
         }
         return outcome;
     }

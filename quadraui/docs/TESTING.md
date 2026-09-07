@@ -886,7 +886,17 @@ here reported `cargo xwin test`'s **doctest** binaries failing with exit
 with `crt-static` set, and guessed that `rustdoc`'s harness doesn't
 inherit `RUSTFLAGS`. That guess was right, and the fix is one more env
 var: `rustdoc` compiles each doctest itself and reads **`RUSTDOCFLAGS`**,
-not `RUSTFLAGS`. Set both and the doctest leg passes:
+not `RUSTFLAGS`. The full command, all three variables required:
+
+```bash
+RUSTFLAGS="-C target-feature=+crt-static" \
+RUSTDOCFLAGS="-C target-feature=+crt-static" \
+CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
+  cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
+```
+
+`tools/win-test.sh` wraps exactly that line so none of the three has to be
+retyped from memory:
 
 ```console
 $ tools/win-test.sh
@@ -911,17 +921,28 @@ which are never executed), so the count alone cannot tell you which:
 Both were hit for real: the first by #832's own smoke run, which
 reported "9 of 11 doctests failed" and sent a worker looking in the
 diff. The wrapper exists so neither can happen again;
-`tests/quality_gate_docs.rs` asserts it keeps setting all three
-variables and keeps running the same cargo line CLAUDE.md documents.
+`tests/quality_gate_docs.rs` asserts `tools/win-test.sh` keeps setting all
+three variables and keeps running the same cargo line spelled out above.
 Note that a `.cargo/config.toml` would *not* have prevented the second
 one — cargo-xwin injects the runner into cargo's environment, and env
-beats config. The residual
-flake seen on the same host — a lone `<binary>.exe: Invalid argument`
-from a freshly-linked, unsigned PE — is **not** this bug and is not a
-build defect either: it is the Windows host's Device Guard / Smart App
-Control refusing execution while it resolves the binary's reputation,
-which `binfmt_misc` surfaces as `EINVAL`. Re-run the command; see
-CLAUDE.md's trap #5.
+beats config.
+
+**A fifth trap, unrelated to the above: `<binary>.exe: Invalid argument`
+is the Windows host's code-integrity policy, not a broken build.** A
+freshly-linked, unsigned `.exe` is sometimes refused by Device Guard /
+Smart App Control while its reputation is still being resolved;
+`binfmt_misc` surfaces that refusal as `EINVAL`, so the shell prints
+`…exe: Invalid argument` and cargo reports `test failed` for a test
+binary that never ran a single test. Confirm it with
+`/mnt/c/Windows/System32/cmd.exe /c "<C:\ path to a copy> --list"`, which
+prints the real reason (`was blocked by your organization's Device Guard
+policy`); diffing the PE headers against a binary that *does* run will
+show nothing, because nothing is wrong with it. **Remedy: re-run the
+command.** The block clears on its own — the identical bytes exec fine a
+minute later. It is intermittent and picks different victims each run
+(doctest binaries especially, since each is freshly linked into a new
+`/tmp` dir), so treat a lone `Invalid argument` as a flake and only
+investigate if the *same* target fails a re-run.
 
 ### Manual pass checklist
 

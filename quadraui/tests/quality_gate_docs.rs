@@ -1,10 +1,18 @@
-//! CLAUDE.md's copy-paste command blocks must stay true: the "Quality Gate"
+//! Copy-paste command blocks must stay true: CLAUDE.md's "Quality Gate"
 //! block in sync with the commands `.github/workflows/ci.yml` actually runs
-//! (#19 follow-up), and the "Win-GUI" block carrying every environment
-//! variable the cross-compiled Windows run needs (#832 follow-up) — along
-//! with `tools/win-test.sh`, the wrapper that exists so those variables do
-//! not have to be copied by hand at all, and which must therefore keep
-//! setting all of them and keep running the command the doc says it runs.
+//! (#19 follow-up), and `docs/TESTING.md`'s canonical `cargo xwin test`
+//! command — the one carrying every environment variable the
+//! cross-compiled Windows run needs (#832 follow-up) — in sync with
+//! `tools/win-test.sh`, the wrapper that exists so those variables do not
+//! have to be copied by hand at all, and which must therefore keep setting
+//! all of them and keep running the command the doc says it runs.
+//!
+//! The Win-GUI checks below read `quadraui/docs/TESTING.md` rather than the
+//! repo-root `CLAUDE.md` deliberately: CLAUDE.md is the repo's own
+//! coordinator-owned rulebook (only the coordinator edits it — see
+//! CLAUDE.md's own "Development Workflow" section), so the authoritative,
+//! worker-editable copy of this command lives in TESTING.md instead. Keep
+//! it that way rather than pointing these assertions back at CLAUDE.md.
 //!
 //! Why this is a *test* and not a review checklist: the gate block is the
 //! first thing every agent and every human copies before committing, and it
@@ -38,6 +46,14 @@ fn repo_root() -> PathBuf {
         .parent()
         .expect("quadraui crate dir always has a parent (the repo root)")
         .to_path_buf()
+}
+
+/// `quadraui/docs/TESTING.md` — the worker-editable home of the Win-GUI
+/// `cargo xwin test` command (see this file's module docs for why this is
+/// not `CLAUDE.md`).
+fn testing_md() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/TESTING.md");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()))
 }
 
 /// Collapse runs of whitespace to single spaces so the doc block may align
@@ -142,35 +158,34 @@ fn claude_md_quality_gate_never_recommends_a_bare_workspace_test() {
     }
 }
 
-/// The blank-line-separated chunks of the fenced ```bash block(s) under
-/// CLAUDE.md's `## Win-GUI: building and testing for real` heading. Each
+/// The blank-line-separated chunks of every fenced ` ```bash ` block in a
+/// markdown document (any heading — this is used against
+/// `docs/TESTING.md`'s Win-GUI playbook, not a single fixed section). Each
 /// chunk is one copy-pasteable invocation — its `\`-continued env prefix
 /// plus the `cargo` line — with comments and blank lines dropped.
-fn win_gui_invocations(claude_md: &str) -> Vec<String> {
+/// Deliberately narrower than "any fence": ` ```console ` transcript blocks
+/// mix in `$ ` prompts and captured output, not commands, so they are
+/// excluded rather than requiring a prompt-stripping pass.
+fn bash_fenced_invocations(markdown: &str) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
     let mut current: Vec<String> = Vec::new();
-    let mut in_section = false;
     let mut in_fence = false;
 
-    for raw in claude_md.lines() {
+    for raw in markdown.lines() {
         let line = raw.trim();
 
-        if !in_fence && line.starts_with("## ") {
-            in_section = line == "## Win-GUI: building and testing for real";
-            continue;
-        }
-        if !in_section {
+        if !in_fence {
+            if line == "```bash" {
+                in_fence = true;
+            }
             continue;
         }
         if line.starts_with("```") {
-            in_fence = !in_fence;
+            in_fence = false;
             if !current.is_empty() {
                 chunks.push(current.join(" "));
                 current.clear();
             }
-            continue;
-        }
-        if !in_fence {
             continue;
         }
         if line.is_empty() || line.starts_with('#') {
@@ -216,17 +231,18 @@ const REQUIRED_XWIN_TEST_ENV: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn claude_md_win_gui_test_command_carries_every_required_env_var() {
-    let claude_md = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("CLAUDE.md exists");
-    let invocations = win_gui_invocations(&claude_md);
+fn testing_md_win_gui_test_command_carries_every_required_env_var() {
+    let testing_md = testing_md();
+    let invocations = bash_fenced_invocations(&testing_md);
 
-    // Guard the parser: a renamed heading or reformatted fence must fail
-    // loudly here rather than vacuously pass on an empty chunk list.
+    // Guard the parser: a reformatted fence must fail loudly here rather
+    // than vacuously pass on an empty chunk list.
     assert!(
         !invocations.is_empty(),
-        "parsed no commands out of CLAUDE.md's `## Win-GUI: building and \
-         testing for real` block — the heading or its ```bash fence probably \
-         moved; fix this parser rather than deleting the assertion."
+        "parsed no commands out of any ```bash fence in docs/TESTING.md — \
+         the Win-GUI playbook's canonical command block probably moved or \
+         its fence language changed; fix this parser rather than deleting \
+         the assertion."
     );
 
     let test_cmds: Vec<&String> = invocations
@@ -237,7 +253,7 @@ fn claude_md_win_gui_test_command_carries_every_required_env_var() {
         test_cmds.len(),
         1,
         "expected exactly one documented `cargo xwin test` invocation in \
-         CLAUDE.md's Win-GUI block, found {}: {test_cmds:#?}",
+         docs/TESTING.md's Win-GUI playbook, found {}: {test_cmds:#?}",
         test_cmds.len(),
     );
     let cmd = test_cmds[0];
@@ -245,7 +261,7 @@ fn claude_md_win_gui_test_command_carries_every_required_env_var() {
     for (var, consequence) in REQUIRED_XWIN_TEST_ENV {
         assert!(
             cmd.contains(var),
-            "CLAUDE.md's documented Windows test command is missing \
+            "docs/TESTING.md's documented Windows test command is missing \
              `{var}`:\n  {cmd}\n\nWithout it, {consequence}.\n\nEvery one of \
              these has already cost a session, because none of them produces \
              an error that names its own cause. Restore the variable rather \
@@ -284,9 +300,9 @@ fn scripted_win_test_command(script: &str) -> Option<String> {
 }
 
 /// The wrapper must set every variable the raw command needs. This is the
-/// same list the CLAUDE.md assertion uses, so the doc and the script cannot
-/// drift apart: adding a fourth trap to `REQUIRED_XWIN_TEST_ENV` fails both
-/// until both are updated.
+/// same list the `docs/TESTING.md` assertion uses, so the doc and the script
+/// cannot drift apart: adding a fourth trap to `REQUIRED_XWIN_TEST_ENV` fails
+/// both until both are updated.
 #[test]
 fn win_test_script_sets_every_required_env_var() {
     let script = win_test_script();
@@ -311,21 +327,19 @@ fn win_test_script_sets_every_required_env_var() {
     );
 }
 
-/// The wrapper and the spelled-out command in CLAUDE.md must run the *same*
-/// cargo invocation. If they diverge, the doc stops describing the script and
-/// one of the two silently tests something else (a different target triple, a
-/// different feature set, a different package).
+/// The wrapper and the spelled-out command in `docs/TESTING.md` must run the
+/// *same* cargo invocation. If they diverge, the doc stops describing the
+/// script and one of the two silently tests something else (a different
+/// target triple, a different feature set, a different package).
 #[test]
-fn win_test_script_and_claude_md_run_the_same_cargo_command() {
-    let claude_md = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("CLAUDE.md exists");
-
-    let documented = win_gui_invocations(&claude_md)
+fn win_test_script_and_testing_md_run_the_same_cargo_command() {
+    let documented = bash_fenced_invocations(&testing_md())
         .iter()
         .find_map(|c| cargo_xwin_test_tail(c))
         .expect(
-            "CLAUDE.md's Win-GUI block still spells out one `cargo xwin test` \
-             invocation — the wrapper documents what it runs, it does not \
-             replace the explanation",
+            "docs/TESTING.md's Win-GUI playbook still spells out one \
+             `cargo xwin test` invocation — the wrapper documents what it \
+             runs, it does not replace the explanation",
         );
 
     let scripted = scripted_win_test_command(&win_test_script()).unwrap_or_else(|| {
@@ -338,10 +352,11 @@ fn win_test_script_and_claude_md_run_the_same_cargo_command() {
 
     assert_eq!(
         scripted, documented,
-        "\n{WIN_TEST_SCRIPT} runs:\n  {scripted}\nbut CLAUDE.md documents:\n  \
-         {documented}\n\nThese must match. Whichever one you meant to change, \
-         change the other too — a wrapper that quietly tests a different \
-         target or feature set than the doc claims is worse than no wrapper."
+        "\n{WIN_TEST_SCRIPT} runs:\n  {scripted}\nbut docs/TESTING.md \
+         documents:\n  {documented}\n\nThese must match. Whichever one you \
+         meant to change, change the other too — a wrapper that quietly \
+         tests a different target or feature set than the doc claims is \
+         worse than no wrapper."
     );
 }
 
@@ -362,8 +377,8 @@ fn win_test_script_is_executable() {
 
     assert!(
         mode & 0o111 != 0,
-        "{WIN_TEST_SCRIPT} is not executable (mode {mode:o}); CLAUDE.md tells \
-         the reader to run `{WIN_TEST_SCRIPT}` directly. Restore the bit with \
-         `git update-index --chmod=+x {WIN_TEST_SCRIPT}`."
+        "{WIN_TEST_SCRIPT} is not executable (mode {mode:o}); docs/TESTING.md \
+         tells the reader to run `{WIN_TEST_SCRIPT}` directly. Restore the bit \
+         with `git update-index --chmod=+x {WIN_TEST_SCRIPT}`."
     );
 }

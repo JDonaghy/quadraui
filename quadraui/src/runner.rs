@@ -128,6 +128,34 @@ pub enum Reaction {
     Exit,
 }
 
+impl Reaction {
+    /// Combine two `Reaction`s produced within the same synthesized-event
+    /// batch (e.g. a driver's `dispatch_all`/`pump_user_events` folding
+    /// several `UiEvent`s from one gesture into the single `Reaction` it
+    /// returns) into the one the caller should act on.
+    ///
+    /// `Exit` always wins, `Redraw` beats `RedrawAfter` (paint *now* is at
+    /// least as good as a future wake), and two `RedrawAfter`s keep the
+    /// *earlier* deadline — mirroring `crate::runtime::FrameScheduler`'s
+    /// own coalescing. That last case is the one worth spelling out:
+    /// "first non-`Continue` wins" (this method's predecessor at every
+    /// call site) silently drops a shorter, more urgent deadline that
+    /// arrives after a longer one in the same batch, producing a wake
+    /// later than the app explicitly asked for — narrower than this
+    /// variant's own doc promise that the backend "never" wakes later.
+    #[cfg_attr(not(any(feature = "tui", feature = "gtk")), allow(dead_code))]
+    pub(crate) fn merge(self, next: Reaction) -> Reaction {
+        match (self, next) {
+            (Reaction::Exit, _) | (_, Reaction::Exit) => Reaction::Exit,
+            (Reaction::Redraw, _) | (_, Reaction::Redraw) => Reaction::Redraw,
+            (Reaction::RedrawAfter(a), Reaction::RedrawAfter(b)) => Reaction::RedrawAfter(a.min(b)),
+            (Reaction::RedrawAfter(d), Reaction::Continue)
+            | (Reaction::Continue, Reaction::RedrawAfter(d)) => Reaction::RedrawAfter(d),
+            (Reaction::Continue, Reaction::Continue) => Reaction::Continue,
+        }
+    }
+}
+
 /// Trait an app implements to plug into [`crate::tui::run`] /
 /// [`crate::gtk::run`].
 ///
@@ -251,5 +279,62 @@ pub trait AppLogic {
     /// already has this data on hand from building its `ScreenLayout`.
     fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
         Vec::new()
+    }
+}
+
+/// [`Reaction::merge`] — the `Reaction`-side twin of the fix covered by
+/// `runtime::event_outcome_merge_tests`; see that module's doc for the
+/// review finding this closes (quadraui#832: batch-dispatch loops used to
+/// keep the *first* `RedrawAfter` seen rather than the *earliest*
+/// deadline).
+#[cfg(test)]
+mod reaction_merge_tests {
+    use super::*;
+
+    #[test]
+    fn exit_beats_everything_either_order() {
+        assert_eq!(Reaction::Continue.merge(Reaction::Exit), Reaction::Exit);
+        assert_eq!(Reaction::Exit.merge(Reaction::Redraw), Reaction::Exit);
+        assert_eq!(
+            Reaction::RedrawAfter(Duration::from_millis(5)).merge(Reaction::Exit),
+            Reaction::Exit
+        );
+    }
+
+    #[test]
+    fn redraw_beats_redraw_after_either_order() {
+        assert_eq!(
+            Reaction::RedrawAfter(Duration::from_millis(5)).merge(Reaction::Redraw),
+            Reaction::Redraw
+        );
+        assert_eq!(
+            Reaction::Redraw.merge(Reaction::RedrawAfter(Duration::from_millis(5))),
+            Reaction::Redraw
+        );
+    }
+
+    #[test]
+    fn continue_is_the_identity() {
+        assert_eq!(
+            Reaction::Continue.merge(Reaction::Continue),
+            Reaction::Continue
+        );
+        assert_eq!(
+            Reaction::Continue.merge(Reaction::RedrawAfter(Duration::from_millis(5))),
+            Reaction::RedrawAfter(Duration::from_millis(5))
+        );
+    }
+
+    /// The actual regression: a shorter deadline arriving *after* a longer
+    /// one in the same batch must still win — "first wins" would have kept
+    /// whichever arrived first, dropping the shorter one about half the
+    /// time.
+    #[test]
+    fn two_redraw_afters_keep_the_earlier_deadline_regardless_of_arrival_order() {
+        let long = Reaction::RedrawAfter(Duration::from_millis(100));
+        let short = Reaction::RedrawAfter(Duration::from_millis(5));
+
+        assert_eq!(long.merge(short), short);
+        assert_eq!(short.merge(long), short);
     }
 }

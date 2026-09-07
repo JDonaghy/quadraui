@@ -196,33 +196,27 @@ impl<A: AppLogic> TuiDriver<A> {
                 let (backend, app) = self.core.parts_mut();
                 dispatch_event(ev, backend, app)
             };
-            match outcome {
+            match &outcome {
                 EventOutcome::Continue => {}
-                EventOutcome::Redraw => {
-                    self.render();
-                    // `Redraw` always wins: it outranks both `Continue`
-                    // and a not-yet-fired `RedrawAfter` from an earlier
-                    // event in this same batch.
-                    result = Reaction::Redraw;
-                }
+                EventOutcome::Redraw => self.render(),
                 // quadraui#832: arm the same bookkeeping the live runner
                 // would via `Backend::request_frame_in` — harmless on a
                 // driver with no real timer loop, and lets a test assert
                 // on `backend().frame_requests()` /
-                // `backend().pending_frame_delay()` afterward. Never
-                // downgrades an already-stronger `result` (a `Redraw`
-                // from an earlier event in this batch).
+                // `backend().pending_frame_delay()` afterward.
                 EventOutcome::RedrawAfter(d) => {
-                    self.core.backend_mut().request_frame_in(d);
-                    if result == Reaction::Continue {
-                        result = Reaction::RedrawAfter(d);
-                    }
+                    self.core.backend_mut().request_frame_in(*d);
                 }
                 EventOutcome::Exit => {
                     self.core.mark_exited();
                     return Reaction::Exit;
                 }
             }
+            // quadraui#832: `Redraw` always wins over `RedrawAfter`, and
+            // two `RedrawAfter`s in the same batch keep the *earlier*
+            // deadline rather than whichever arrived first — see
+            // `Reaction::merge`'s doc.
+            result = result.merge(outcome.into());
         }
         result
     }
@@ -251,24 +245,20 @@ impl<A: AppLogic> TuiDriver<A> {
                 let (backend, app) = self.core.parts_mut();
                 dispatch_event(ev, backend, app)
             };
-            match outcome {
+            match &outcome {
                 EventOutcome::Continue => {}
-                EventOutcome::Redraw => {
-                    self.render();
-                    result = Reaction::Redraw;
-                }
+                EventOutcome::Redraw => self.render(),
                 // quadraui#832 — see `Self::dispatch`'s identical arm.
                 EventOutcome::RedrawAfter(d) => {
-                    self.core.backend_mut().request_frame_in(d);
-                    if result == Reaction::Continue {
-                        result = Reaction::RedrawAfter(d);
-                    }
+                    self.core.backend_mut().request_frame_in(*d);
                 }
                 EventOutcome::Exit => {
                     self.core.mark_exited();
                     return Reaction::Exit;
                 }
             }
+            // quadraui#832 — see `Self::dispatch`'s identical merge.
+            result = result.merge(outcome.into());
         }
         result
     }

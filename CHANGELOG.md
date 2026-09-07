@@ -143,6 +143,19 @@ release time.
 
 ### Fixed
 
+- `Reaction`/`EventOutcome` batch-dispatch merging (issue #832 review
+  follow-up): `macos::run::dispatch_event`'s drag-dispatch loops,
+  `win::run`'s `route_mouse_down`/`route_mouse_move`/`route_mouse_up`,
+  and the `GtkDriver`/`TuiDriver`/`TuiVtDriver` test harnesses' batch
+  dispatch used to keep the *first* non-`Continue` outcome seen when
+  folding several synthesized events into one result, so a shorter,
+  more urgent `RedrawAfter` arriving after a longer one in the same
+  batch was silently dropped — a wake later than the app asked for,
+  narrower than `Reaction::RedrawAfter`'s own doc promise that the
+  backend "never" wakes later. `Reaction::merge`/`EventOutcome::merge`
+  now coalesce to the *earliest* deadline instead, mirroring
+  `runtime::FrameScheduler::request`; covered by new unit tests
+  (`runner::reaction_merge_tests`, `runtime::event_outcome_merge_tests`).
 - TUI: a real Escape keypress landing in the same terminal read as an
   adjacent SGR mouse report (motion, click, or drag) could leak the
   report's tail as literal characters into whatever had focus — e.g.
