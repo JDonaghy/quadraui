@@ -932,9 +932,13 @@ impl Backend for MacBackend {
     /// other event. [`dispatch2::MainThreadBound`] is what makes carrying
     /// that `!Send` closure across the `Send + Sync` boundary `waker()`'s
     /// return type demands sound — see its doc for the argument (mirrors
-    /// [`crate::runtime::MainThreadBound`], GTK/Windows' homegrown
-    /// equivalent — macOS uses `dispatch2`'s own audited version instead
-    /// since it's already a dependency here for `exec_async`).
+    /// `crate::runtime::MainThreadBound`, GTK's homegrown equivalent —
+    /// macOS uses `dispatch2`'s own audited version instead since it's
+    /// already a dependency here for `exec_async`, and Windows needs no
+    /// such wrapper at all because `wndproc` already holds the state its
+    /// `PostMessageW` wake dispatches through). Not an intra-doc link:
+    /// `runtime::MainThreadBound` is `#[cfg(feature = "gtk")]`, so it
+    /// doesn't exist in a `macos`-only build.
     fn waker(&self) -> Arc<dyn Fn(UserPayload) + Send + Sync> {
         let queue = Arc::clone(&self.user_events);
         let wake_callback = Arc::clone(&self.wake_callback);
