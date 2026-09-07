@@ -225,6 +225,12 @@ pub struct TuiBackend {
     /// folded into the bool-capability vocabulary. Read via
     /// [`Self::mouse_enabled`].
     mouse_enabled: bool,
+    /// Single owner of keyboard focus (issue #830) — see
+    /// [`crate::focus`]'s module doc. Mutated only by the shared
+    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
+    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
+    /// read elsewhere via [`Backend::focus_manager`].
+    focus: crate::focus::FocusManager,
 }
 
 impl TuiBackend {
@@ -256,6 +262,7 @@ impl TuiBackend {
             color_depth: super::caps::detect_color_depth(),
             kitty_keyboard: super::caps::detect_kitty_keyboard(),
             mouse_enabled: true,
+            focus: crate::focus::FocusManager::new(),
         }
     }
 
@@ -831,6 +838,10 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
         self.focused_activity_bar_id()
     }
 
+    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
+        &mut self.focus
+    }
+
     fn match_keypress(
         &self,
         key: &crate::Key,
@@ -1250,6 +1261,23 @@ impl Backend for TuiBackend {
 
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
         self.drag_state.clone()
+    }
+
+    fn focus_manager(&self) -> &crate::focus::FocusManager {
+        &self.focus
+    }
+
+    fn draw_focus_ring(&mut self, rect: QRect) {
+        let theme = self.current_theme;
+        let area = q_rect_to_ratatui(rect);
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_focus_ring called outside enter_frame_scope");
+        crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
+        // #492 C0 contract §5b: a chrome-only paint (no text of its own)
+        // is only "observable" via a registered zone — mirrors
+        // `draw_terminal_divider`'s identical registration above.
+        self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
     fn services(&self) -> &dyn PlatformServices {
@@ -2640,6 +2668,7 @@ mod tests {
         services: MockServices,
         viewport: Viewport,
         theme: crate::Theme,
+        focus: crate::focus::FocusManager,
     }
 
     impl MockBackend {
@@ -2651,6 +2680,7 @@ mod tests {
                 services: MockServices::new(),
                 viewport: Viewport::new(80.0, 24.0, 1.0),
                 theme: crate::Theme::default(),
+                focus: crate::focus::FocusManager::new(),
             }
         }
     }
@@ -2682,6 +2712,10 @@ mod tests {
         fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
             self.drag_state.clone()
         }
+        fn focus_manager(&self) -> &crate::focus::FocusManager {
+            &self.focus
+        }
+        fn draw_focus_ring(&mut self, _r: QRect) {}
         fn services(&self) -> &dyn PlatformServices {
             &self.services
         }

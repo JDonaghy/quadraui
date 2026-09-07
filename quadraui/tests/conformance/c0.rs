@@ -437,6 +437,16 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        method: "draw_focus_ring",
+        needle: None,
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            b.draw_focus_ring(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 3.0));
+            let _ = area;
+        },
+    },
+    Case {
         method: "draw_drop_overlay",
         needle: None,
         paint: |b, area| {

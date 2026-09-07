@@ -37,7 +37,8 @@
 //! associated type is retained as a compatibility seam.
 
 use crate::backend::Backend;
-use crate::event::UiEvent;
+use crate::event::{Rect, UiEvent};
+use crate::types::WidgetId;
 
 /// Tells the runner what to do after `handle` returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,5 +131,34 @@ pub trait AppLogic {
     /// setting.
     fn natural_scroll(&self) -> bool {
         false
+    }
+
+    /// Opt into the shared runner-owned [`crate::focus::FocusManager`]
+    /// (issue #830): the current frame's Tab/Shift+Tab order, as
+    /// `(WidgetId, Rect)` pairs in cycle order — typically
+    /// [`crate::frame::ScreenLayout::tab_stops`]'s output, for an app
+    /// that builds its screen that way.
+    ///
+    /// Defaults to empty, meaning **Tab/Shift+Tab pass through to
+    /// [`Self::handle`] completely unclaimed**, exactly as before #830 —
+    /// zero behavior change for every app that doesn't override this.
+    ///
+    /// Once this returns a non-empty list, the runner claims
+    /// Tab/Shift+Tab globally: the shared pipeline
+    /// ([`crate::runtime::preprocess_event`]) intercepts them, cycles
+    /// [`crate::Backend::focus_manager`], and delivers
+    /// [`crate::UiEvent::FocusChanged`] to [`Self::handle`] instead of
+    /// the raw key press — see that event's doc for the exact contract,
+    /// including why a widget that treats literal Tab as input (a code
+    /// editor's indent command, say) should stay out of this list, or
+    /// this method should return `[]` while that widget holds focus.
+    ///
+    /// Called on `&self` (no interior mutability required) both when a
+    /// Tab/Shift+Tab keystroke arrives and once per frame after
+    /// `render`, to resolve the focused widget's rect for
+    /// [`crate::Backend::draw_focus_ring`] — cheap for an app that
+    /// already has this data on hand from building its `ScreenLayout`.
+    fn tab_stops(&self, _area: Self::AreaId) -> Vec<(WidgetId, Rect)> {
+        Vec::new()
     }
 }

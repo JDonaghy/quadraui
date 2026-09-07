@@ -80,10 +80,12 @@
 //!   the full list and the driver-tier tests that pin each one down.
 
 use crate::desktop::{is_paste_keypress, PasteModifier};
+use crate::focus::FocusManager;
 use crate::runner::AppLogic;
 use crate::text_selection::ActiveTextSelection;
 use crate::{
-    AcceleratorId, ActivityBarEvent, Key, Modifiers, MouseButton, Point, UiEvent, WidgetId,
+    AcceleratorId, ActivityBarEvent, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent,
+    WidgetId,
 };
 
 #[cfg(any(
@@ -215,6 +217,12 @@ pub(crate) trait PreprocessBackend {
     /// `Backend::draw_activity_bar` call, if any.
     fn focused_activity_bar_id(&self) -> Option<&WidgetId>;
 
+    /// Mutable access to this backend's [`FocusManager`] (issue #830) —
+    /// the counterpart to the read-only `Backend::focus_manager`. Only
+    /// [`preprocess_event`]'s Tab/Shift+Tab intercept calls this; see
+    /// `crate::focus`'s module doc for why that's the single writer.
+    fn focus_manager_mut(&mut self) -> &mut FocusManager;
+
     /// Look up a registered `Global`-scope accelerator for `key`+`modifiers`.
     fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId>;
 
@@ -272,9 +280,20 @@ pub(crate) trait PreprocessBackend {
 ///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
 ///    normal `handle` — `ShellAdapter`'s built-in activity-bar keyboard
 ///    cursor depends on this.
-/// 3. `KeyPressed` matching a registered `Global`-scope accelerator:
+/// 3. Tab / Shift+Tab focus cycling (issue #830), only when
+///    [`AppLogic::tab_stops`] returns non-empty for the current frame:
+///    sync [`FocusManager`]'s tab order, cycle it
+///    ([`FocusManager::focus_next`]/[`FocusManager::focus_prev`] —
+///    `NamedKey::BackTab`, or `NamedKey::Tab` with Shift held, retreats;
+///    plain `NamedKey::Tab` advances), and deliver
+///    `UiEvent::FocusChanged` instead of the raw key press. Ctrl/Alt/Cmd
+///    held is left alone (reserved for app-level chords like
+///    `TabGroupController`'s Ctrl-Tab pane switching). While an app's
+///    `tab_stops` stays empty — the default — this step never fires and
+///    Tab/Shift+Tab pass through unchanged, exactly as before #830.
+/// 4. `KeyPressed` matching a registered `Global`-scope accelerator:
 ///    rewrite to `UiEvent::Accelerator`.
-/// 4. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
+/// 5. Ctrl-C ([`PreprocessBackend::is_copy_keypress`]) with an active
 ///    text selection: copy it to the clipboard, clear it, and deliver
 ///    `UiEvent::TextCopied` instead of forwarding the raw key press —
 ///    forwarding it could trigger quit/copy-all handlers, and
@@ -288,27 +307,27 @@ pub(crate) trait PreprocessBackend {
 ///    misconfigured tmux swallows the copy entirely (#331). Apps should
 ///    word their copy confirmation accordingly; see
 ///    `quadraui/docs/CLIPBOARD.md`.
-/// 5. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
+/// 6. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
 ///    [`PreprocessBackend::paste_modifier`]): read the clipboard and
 ///    deliver `UiEvent::ClipboardPaste` instead of forwarding the raw key
 ///    press.
-/// 6. Middle-click (`MouseDown` with `MouseButton::Middle`): read the
+/// 7. Middle-click (`MouseDown` with `MouseButton::Middle`): read the
 ///    PRIMARY selection and deliver `UiEvent::ClipboardPaste` — the
 ///    X11/Wayland "paste what was last selected" convention, distinct
 ///    from the CLIPBOARD selection Ctrl-V reads. Every backend but GTK's
 ///    `Clipboard` impl answers `None` here (see
 ///    [`crate::backend::Clipboard::read_primary_selection`]'s default),
 ///    so this step is a safe no-op everywhere else.
-/// 7. Ctrl-A: select the entire content of the most-recently focused
+/// 8. Ctrl-A: select the entire content of the most-recently focused
 ///    `TextRegion`, if one is registered.
-/// 8. `MouseDown` or `DoubleClick`: clear the displayed selection
+/// 9. `MouseDown` or `DoubleClick`: clear the displayed selection
 ///    highlight — a fresh drag (or a folded double-click landing on the
 ///    same spot) may be starting/finishing and shouldn't show a stale
 ///    highlight from the previous interaction. Never cancels an
 ///    in-progress drag — `clear_selection_display` only clears the
 ///    rendered overlay (see its doc).
-/// 9. `TextSelectionChanged`: update the backend's active selection and
-///    force a redraw.
+/// 10. `TextSelectionChanged`: update the backend's active selection and
+///     force a redraw.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -341,7 +360,38 @@ where
         }
     }
 
-    // ── 3. Global accelerator dispatch ─────────────────────────────────
+    // ── 3. Tab / Shift+Tab focus cycling (issue #830) ───────────────────
+    if let UiEvent::KeyPressed {
+        key: Key::Named(named @ (NamedKey::Tab | NamedKey::BackTab)),
+        modifiers,
+        ..
+    } = &event
+    {
+        if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
+            let stops = app.tab_stops(A::AreaId::default());
+            if !stops.is_empty() {
+                backend.focus_manager_mut().sync_tab_order(&stops);
+                let retreat = matches!(named, NamedKey::BackTab) || modifiers.shift;
+                let fm = backend.focus_manager_mut();
+                let changed = if retreat {
+                    fm.focus_prev()
+                } else {
+                    fm.focus_next()
+                };
+                if changed {
+                    let focused = backend.focus_manager().focused().cloned();
+                    return app.handle(UiEvent::FocusChanged(focused), backend).into();
+                }
+                // Claimed but no-op (e.g. a single-widget tab order) —
+                // swallow it rather than letting it fall through to
+                // `app.handle` as a raw KeyPressed once an app has
+                // opted in at all.
+                return EventOutcome::Continue;
+            }
+        }
+    }
+
+    // ── 4. Global accelerator dispatch ─────────────────────────────────
     let event = if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
         match backend.match_keypress(key, *modifiers) {
             Some(id) => UiEvent::Accelerator(id, *modifiers),
@@ -351,7 +401,7 @@ where
         event
     };
 
-    // ── 4. Ctrl-C interception (copy active text selection) ────────────
+    // ── 5. Ctrl-C interception (copy active text selection) ────────────
     if let UiEvent::KeyPressed {
         ref key,
         ref modifiers,
@@ -366,7 +416,7 @@ where
         }
     }
 
-    // ── 5. Ctrl-V / Ctrl-Shift-V interception (paste) ───────────────────
+    // ── 6. Ctrl-V / Ctrl-Shift-V interception (paste) ───────────────────
     if let UiEvent::KeyPressed {
         ref key,
         ref modifiers,
@@ -381,7 +431,7 @@ where
         }
     }
 
-    // ── 6. Middle-click interception (PRIMARY-selection paste) ──────────
+    // ── 7. Middle-click interception (PRIMARY-selection paste) ──────────
     if let UiEvent::MouseDown {
         button: MouseButton::Middle,
         ..
@@ -392,7 +442,7 @@ where
         }
     }
 
-    // ── 7. Ctrl-A interception (select-all for text regions) ────────────
+    // ── 8. Ctrl-A interception (select-all for text regions) ────────────
     if let UiEvent::KeyPressed {
         key: Key::Char('a') | Key::Char('A'),
         modifiers,
@@ -409,7 +459,7 @@ where
         }
     }
 
-    // ── 8. MouseDown / DoubleClick: clear the displayed selection ───────
+    // ── 9. MouseDown / DoubleClick: clear the displayed selection ───────
     if matches!(
         event,
         UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
@@ -417,7 +467,7 @@ where
         backend.clear_selection_display();
     }
 
-    // ── 9. TextSelectionChanged: update active selection while dragging ─
+    // ── 10. TextSelectionChanged: update active selection while dragging ─
     let mut force_redraw = false;
     if let UiEvent::TextSelectionChanged {
         ref region,

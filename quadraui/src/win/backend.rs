@@ -455,6 +455,12 @@ pub struct WinBackend {
     /// — only the `EndDraw` call that would ever populate it needs a
     /// real host.
     last_error: Option<BackendError>,
+    /// Single owner of keyboard focus (issue #830) — see
+    /// [`crate::focus`]'s module doc. Mutated only by the shared
+    /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
+    /// via [`crate::runtime::PreprocessBackend::focus_manager_mut`];
+    /// read elsewhere via [`Backend::focus_manager`].
+    focus: crate::focus::FocusManager,
 }
 
 impl WinBackend {
@@ -498,6 +504,7 @@ impl WinBackend {
             text_selection: crate::text_selection::TextSelectionState::default(),
             nerd_fonts_enabled: false,
             last_error: None,
+            focus: crate::focus::FocusManager::new(),
         }
     }
 
@@ -1154,6 +1161,10 @@ impl crate::runtime::PreprocessBackend for WinBackend {
         self.focused_activity_bar_id()
     }
 
+    fn focus_manager_mut(&mut self) -> &mut crate::focus::FocusManager {
+        &mut self.focus
+    }
+
     fn match_keypress(
         &self,
         key: &crate::Key,
@@ -1386,6 +1397,16 @@ impl Backend for WinBackend {
 
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>> {
         self.drag_state.clone()
+    }
+
+    fn focus_manager(&self) -> &crate::focus::FocusManager {
+        &self.focus
+    }
+
+    fn draw_focus_ring(&mut self, rect: Rect) {
+        let theme = self.current_theme;
+        self.surface_stroke_rect(rect, theme.accent_fg, crate::focus::FOCUS_RING_STROKE_WIDTH);
+        self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
     // ─── Error reporting (issue #507, D-009) ────────────────────────────

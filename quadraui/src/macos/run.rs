@@ -148,7 +148,8 @@ type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 ///   so an in-progress drag ends cleanly.
 ///
 /// Everything else — double-click folding, ActivityBar keyboard-focus
-/// redirect, global accelerator rewrite, Ctrl-C copy, Cmd-V/Cmd-Shift-V
+/// redirect, Tab/Shift+Tab focus cycling (#830), global accelerator
+/// rewrite, Ctrl-C copy, Cmd-V/Cmd-Shift-V
 /// paste, middle-click PRIMARY-selection paste (a no-op on macOS — see
 /// [`crate::backend::Clipboard::read_primary_selection`]'s default),
 /// Ctrl-A select-all, selection-display clearing, `TextSelectionChanged`
@@ -285,7 +286,8 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     }
 
     // Everything else — double-click folding, ActivityBar redirect,
-    // accelerators, Ctrl-C/Cmd-V/middle-click/Ctrl-A, selection-display
+    // Tab/Shift+Tab focus cycling (#830), accelerators,
+    // Ctrl-C/Cmd-V/middle-click/Ctrl-A, selection-display
     // clearing, TextSelectionChanged — is the shared pipeline. See this
     // function's doc.
     runtime::preprocess_event(event, backend, app)
@@ -304,8 +306,23 @@ pub(crate) fn render_frame<A: AppLogic>(
     ctx: CGContextRef,
 ) {
     backend.begin_frame(viewport);
+    // Issue #830: resolve the currently-focused widget's rect (if any)
+    // from this frame's tab stops before entering the frame scope.
+    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
+        app.tab_stops(<A as AppLogic>::AreaId::default())
+            .into_iter()
+            .find(|(stop_id, _)| *stop_id == id)
+            .map(|(_, rect)| rect)
+    });
     backend.enter_frame_scope(ctx, |b| {
         app.render(b, <A as AppLogic>::AreaId::default());
+        // After app.render: paint the focus-ring convention (#830), same
+        // reasoning as `apply_selection_highlight` below for staying
+        // inside this closure — `MacBackend::current_cg` is only
+        // non-null here.
+        if let Some(rect) = focus_ring_rect {
+            b.draw_focus_ring(rect);
+        }
         // After app.render: overlay the text-selection highlight on top of
         // the rendered content (#803) — mirrors gtk::run::render_frame's
         // `apply_selection_highlight(cr)` call and win::run::render_frame's

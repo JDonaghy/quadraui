@@ -159,6 +159,7 @@
 
 pub mod diagnostics;
 pub mod diff;
+pub mod focus;
 pub mod frame;
 pub mod interaction;
 pub mod layout;
@@ -314,6 +315,7 @@ mod desktop;
 mod text_selection;
 
 pub use diff::compute_hunks;
+pub use focus::FocusManager;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,

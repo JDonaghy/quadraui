@@ -483,6 +483,63 @@ impl<'a> ScreenLayout<'a> {
         hit_map
     }
 
+    /// Tab order for this frame, as `(WidgetId, Rect)` pairs in reading
+    /// order (top-to-bottom, then left-to-right by rect origin) — the
+    /// shared source of truth [`crate::focus::FocusManager::sync_tab_order`]
+    /// cycles through (issue #830). An app that builds its screen via
+    /// `ScreenLayout` hands this straight to
+    /// [`crate::runner::AppLogic::tab_stops`]; see that method's doc for
+    /// the opt-in contract.
+    ///
+    /// Only surfaces that carry both a plain `rect` and an owning
+    /// [`WidgetId`] participate. Excluded, deliberately:
+    /// - Transient overlays (`Tooltip`, `ContextMenu`, `Dialog`,
+    ///   `Completions`, `RichTextPopup`, `FindReplace`, `Toast`) —
+    ///   these already own their own internal focus/dismiss handling
+    ///   while open, and being modal, nothing behind them should be
+    ///   Tab-reachable anyway.
+    /// - Structural chrome (`Split`, `Scrollbar`) — containers/controls
+    ///   with no independent focusable identity of their own.
+    pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
+        let mut stops: Vec<(WidgetId, Rect)> = self
+            .surfaces
+            .iter()
+            .filter_map(|s| match s {
+                Surface::Editor { rect, editor } => Some((editor.id.clone(), *rect)),
+                Surface::TabBar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
+                Surface::StatusBar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
+                Surface::ActivityBar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
+                Surface::CommandLine { rect, cmd } => Some((cmd.id.clone(), *rect)),
+                Surface::Terminal { rect, term } => Some((term.id.clone(), *rect)),
+                Surface::TextDisplay { rect, td } => Some((td.id.clone(), *rect)),
+                Surface::MultiSectionView { rect, view } => Some((view.id.clone(), *rect)),
+                Surface::Tree { rect, tree } => Some((tree.id.clone(), *rect)),
+                Surface::List { rect, list } => Some((list.id.clone(), *rect)),
+                Surface::Form { rect, form } => Some((form.id.clone(), *rect)),
+                Surface::MenuBar { rect, bar } => Some((bar.id.clone(), *rect)),
+                Surface::Panel { rect, panel } => Some((panel.id.clone(), *rect)),
+                Surface::Palette { rect, palette } => Some((palette.id.clone(), *rect)),
+                Surface::DataTable { rect, table, .. } => Some((table.id.clone(), *rect)),
+                Surface::Chart { rect, chart, .. } => Some((chart.id.clone(), *rect)),
+                Surface::Split { .. }
+                | Surface::Scrollbar { .. }
+                | Surface::Tooltip { .. }
+                | Surface::ContextMenu { .. }
+                | Surface::Dialog { .. }
+                | Surface::Completions { .. }
+                | Surface::FindReplace { .. }
+                | Surface::RichTextPopup { .. }
+                | Surface::Toast { .. } => None,
+            })
+            .collect();
+        stops.sort_by(|(_, a), (_, b)| {
+            a.y.partial_cmp(&b.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        stops
+    }
+
     /// Compute the hit-test rect/zone for a single surface at index `idx`.
     /// Shared by [`Self::draw`] and [`Self::hit_map`] so the two stay in
     /// lock-step by construction.
@@ -764,6 +821,90 @@ mod tests {
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
         assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
+    }
+
+    /// Issue #830: `tab_stops` derives Tab order from geometry (reading
+    /// order), not push order — the whole point of deriving it from
+    /// `ScreenLayout` rather than an app hand-maintaining a list.
+    #[test]
+    fn tab_stops_sorts_by_reading_order_not_push_order() {
+        let editor = Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 10.0, 100.0, 20.0),
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 0,
+            max_col: 0,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        };
+        let palette = Palette {
+            id: "pal".into(),
+            title: String::new(),
+            query: String::new(),
+            query_cursor: 0,
+            items: Vec::new(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: false,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: crate::primitives::palette::PaletteMode::List,
+        };
+        let split = crate::primitives::split::Split {
+            id: "split".into(),
+            direction: crate::primitives::split::SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+
+        let mut layout = ScreenLayout::new();
+        // Pushed in the "wrong" (bottom-to-top) order — `tab_stops` must
+        // still resolve reading order (top-to-bottom) from the rects.
+        layout.push(Surface::Editor {
+            rect: editor.rect,
+            editor: &editor,
+        });
+        layout.push(Surface::Palette {
+            rect: Rect::new(0.0, 0.0, 50.0, 5.0),
+            palette: &palette,
+        });
+        // Structural chrome: must not appear in tab order at all.
+        layout.push(Surface::Split {
+            rect: Rect::new(0.0, 30.0, 100.0, 1.0),
+            split: &split,
+        });
+
+        let stops = layout.tab_stops();
+
+        assert_eq!(
+            stops.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["pal", "ed"],
+            "palette (y=0) must sort before the editor (y=10), regardless of push order"
+        );
+        assert!(
+            !stops.iter().any(|(id, _)| id.as_str() == "split"),
+            "Split is structural chrome, not a tab stop"
+        );
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

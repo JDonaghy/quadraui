@@ -175,7 +175,8 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 /// exercises the exact pre-processing a real keypress gets.
 ///
 /// The pre-processing itself — double-click folding, ActivityBar
-/// keyboard-focus redirect, global accelerator rewrite, Ctrl-C copy,
+/// keyboard-focus redirect, Tab/Shift+Tab focus cycling (#830),
+/// global accelerator rewrite, Ctrl-C copy,
 /// Ctrl-V/Ctrl-Shift-V paste, middle-click PRIMARY-selection paste
 /// (a no-op on Windows — see
 /// [`crate::backend::Clipboard::read_primary_selection`]'s default),
@@ -349,6 +350,17 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
 pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewport: Viewport) {
     backend.begin_frame(viewport);
     app.render(backend, Default::default());
+    // After app.render: paint the focus-ring convention (#830) — mirrors
+    // the other three runners' post-render overlay ordering.
+    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
+        app.tab_stops(<A as AppLogic>::AreaId::default())
+            .into_iter()
+            .find(|(stop_id, _)| *stop_id == id)
+            .map(|(_, rect)| rect)
+    });
+    if let Some(rect) = focus_ring_rect {
+        backend.draw_focus_ring(rect);
+    }
     // After app.render: overlay the text-selection highlight on top of the
     // rendered content (#741) — mirrors `gtk::run::render_frame`'s
     // `apply_selection_highlight(cr)` call and `TuiBackend::run`'s
@@ -842,6 +854,7 @@ mod win32 {
 
     /// Dispatch `event` through [`super::dispatch_event`] (the shared
     /// pre-processing funnel — ActivityBar keyboard-focus redirect,
+    /// Tab/Shift+Tab focus cycling (#830),
     /// global accelerator matching, then `app.handle`, quadraui#707),
     /// then honour the returned outcome: a redraw invalidates the whole
     /// client area so the next message-loop iteration repaints via
