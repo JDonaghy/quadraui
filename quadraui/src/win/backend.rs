@@ -1753,11 +1753,8 @@ impl Backend for WinBackend {
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::palette` once a
-    /// surface is attached — `Palette` has no layout-passthrough trait
-    /// method (unlike `ContextMenu`/`Dialog`), so `win::win_palette_layout`
-    /// is computed internally by the rasteriser itself. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
-    /// fallback posture.
+    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
+    /// "surface not attached yet" fallback posture.
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
@@ -1773,6 +1770,23 @@ impl Backend for WinBackend {
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, palette);
         todo!("Direct2D palette rasteriser (no surface attached yet)")
+    }
+
+    /// Pure geometry (issue #818) — needs no live surface, unlike
+    /// [`Self::draw_palette`], so this doesn't gate on one being attached.
+    /// `win::palette` itself is Windows-only (real `Direct2D`/`DirectWrite`
+    /// types), same `#[cfg(target_os = "windows")]` split every other
+    /// method on this impl uses to stay a type-check-only stub elsewhere.
+    fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
+        #[cfg(target_os = "windows")]
+        {
+            super::palette::win_palette_layout(rect, palette, self.current_line_height)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, palette);
+            todo!("Direct2D palette layout (Windows-only)")
+        }
     }
 
     /// #734: see [`Self::draw_status_bar`]'s doc for the "surface not

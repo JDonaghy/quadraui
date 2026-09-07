@@ -6,8 +6,8 @@
 //! scroll auto-clamp, and placeholder rendering.
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    TextInput, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 
 pub struct TextInputDemo {
@@ -123,6 +123,22 @@ impl TextInputDemo {
         self.input.cursor_col = self.input.lines[self.input.cursor_line].chars().count();
     }
 
+    /// Same `input_rect` geometry `render` uses — shared so
+    /// `handle`'s click routing can't drift from where the primitive
+    /// was actually painted (quadraui#818).
+    fn input_rect(backend: &dyn Backend) -> Rect {
+        let viewport = backend.viewport();
+        let lh = backend.line_height();
+        let status_h = lh;
+        let pad = lh;
+        Rect::new(
+            pad,
+            pad,
+            viewport.width - pad * 2.0,
+            viewport.height - status_h - pad * 2.0,
+        )
+    }
+
     fn status(&self) -> StatusBar {
         let cursor = format!(
             " line {} col {} — Esc to quit ",
@@ -176,8 +192,33 @@ impl AppLogic for TextInputDemo {
         backend.draw_text_input(input_rect, &self.input);
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
+            // Click routing (#818): move the cursor to the clicked line
+            // via `TextInputLayout::hit_test` — the same layout `render`
+            // just painted from.
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => {
+                let rect = Self::input_rect(backend);
+                let layout = backend.text_input_layout(rect, &self.input);
+                match layout.hit_test(position.x, position.y) {
+                    TextInputHit::Line { line_idx } => {
+                        self.input.cursor_line = line_idx;
+                        let len = self.input.lines[line_idx].chars().count();
+                        self.input.cursor_col = self.input.cursor_col.min(len);
+                        Reaction::Redraw
+                    }
+                    TextInputHit::EmptyArea => {
+                        self.input.cursor_line = self.input.lines.len().saturating_sub(1);
+                        self.input.cursor_col =
+                            self.input.lines[self.input.cursor_line].chars().count();
+                        Reaction::Redraw
+                    }
+                }
+            }
             UiEvent::KeyPressed { key, .. } => match key {
                 Key::Named(NamedKey::Escape) => Reaction::Exit,
                 Key::Named(NamedKey::Enter) => {

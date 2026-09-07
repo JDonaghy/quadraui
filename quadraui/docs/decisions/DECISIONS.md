@@ -710,15 +710,53 @@ built from scratch today would be a parallel reimplementation, not an
 extraction, with no guarantee it matches what `draw_palette` actually
 paints.
 
-**Decision: do not add `Backend::palette_layout` in this PR.** Fixing
-`gtk::draw_palette` to consume `PaletteLayout.visible_items[i].bounds`
-directly (eliminating the independent `rows_y` recomputation) and
-refactoring `tui::draw_palette` to route through `Palette::layout()`
-are both rendering-behavior changes, not trait-symmetry ones — real
-work, tracked as a follow-up, that must land *before* a `palette_layout`
-trait method can honestly claim to match its `draw_palette` twin. Rule
-5 exists precisely so a new `*_layout` method is never the first thing
-to notice a paint function's internal layout was already lying.
+**Decision (superseded by #818 — see below): do not add
+`Backend::palette_layout` in this PR.** Fixing `gtk::draw_palette` to
+consume `PaletteLayout.visible_items[i].bounds` directly (eliminating
+the independent `rows_y` recomputation) and refactoring
+`tui::draw_palette` to route through `Palette::layout()` are both
+rendering-behavior changes, not trait-symmetry ones — real work, tracked
+as a follow-up, that must land *before* a `palette_layout` trait method
+can honestly claim to match its `draw_palette` twin. Rule 5 exists
+precisely so a new `*_layout` method is never the first thing to notice
+a paint function's internal layout was already lying.
+
+**Resolved by quadraui#818.** Both follow-ups landed together with the
+trait method, in this order:
+
+1. `tui::palette::tui_palette_layout` was added from scratch, calling
+   `Palette::layout()` for the first time on TUI — title/query/item hit
+   regions now come from the same call `draw_palette` itself would need
+   to make to agree with it (`draw_palette` still paints its own cell
+   grid independently for now; a paint/hit-test parity test asserts they
+   agree rather than a full paint-path refactor, since that's a larger,
+   separate rendering change). TUI's `PaletteLayout::scrollbar` is
+   deliberately always `None` — TUI's scrollbar glyph has no draggable
+   thumb and no equivalent to `fit_thumb`'s continuous-track formula, so
+   reporting one would just add a *new* disagreeing formula, the exact
+   failure mode this decision exists to prevent.
+2. `gtk::draw_palette` was fixed to consume
+   `PaletteLayout.visible_items[i].bounds` and
+   `PaletteLayout.scrollbar.{track,thumb}` directly instead of the
+   independently-derived `rows_y + i * line_height` / `thumb_ratio`
+   formulas — closing both the 1px item-row drift named above and a
+   second, same-class drift in the scrollbar thumb position that the
+   original audit didn't name. `gtk::palette::gtk_palette_layout` is now
+   the shared geometry function both `draw_palette` and
+   `Backend::palette_layout` call.
+
+`win_palette_layout` / `mac_palette_layout` already consumed
+`PaletteLayout` directly (no drift found in either), so `Backend::palette_layout`
+wires straight into them. Coordinate frame is **LOCAL** — matching what
+all four backends' free functions already returned natively (`Palette::layout`
+itself takes no origin argument), not the ABSOLUTE frame this doc's other
+"interactive chrome" entries use; converting all four to ABSOLUTE just to
+match a table entry would have been the exact kind of gratuitous
+rendering-behavior change rule 4 above warns against. See
+`Backend::palette_layout`'s own doc comment for the full contract and
+`compose::dual_mode_palette::DualModePaletteController::handle_mouse` for
+the first consumer (palette mouse clicks previously never reached any
+controller at all — a second, independent gap #818 also closed).
 
 ### Decision: the convention table
 

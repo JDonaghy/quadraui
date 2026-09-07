@@ -31,8 +31,51 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::palette::{Palette, PaletteMode};
+use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
 use crate::theme::Theme;
+
+/// Compute the TUI [`Palette`] layout — the shared geometry this
+/// module's [`draw_palette`] paints from and `Backend::palette_layout`
+/// (#818) exposes for hit-testing, so the two can't drift the way they
+/// used to (see `docs/decisions/DECISIONS.md` D-007, "Palette: deferred,
+/// not missed" — this closes it for TUI).
+///
+/// Row heights mirror `draw_palette`'s own cell-grid math exactly:
+/// title is always 1 row; the query area is 2 rows (query row +
+/// separator) when `show_query` and not [`PaletteMode::Input`], 1 row
+/// alone in `Input` mode (no separator), 0 rows when `!show_query`; one
+/// bottom-border row is reserved by shrinking the viewport height passed
+/// to [`Palette::layout`] rather than by title/query height, matching
+/// `draw_palette`'s `items_row_end = (y_end - 1) - create_reserved`.
+///
+/// Coordinate frame: **LOCAL** — `(0, 0)` is `area`'s own top-left
+/// corner, matching [`Palette::layout`]'s native contract (same
+/// convention `mac_palette_layout` / `win_palette_layout` already use).
+///
+/// **Scrollbar is deliberately omitted** (`scrollbar_width = 0.0`):
+/// TUI paints its scrollbar as a single glyph inside the last item
+/// column (`sb_col = list_w - 1`), using a whole-row thumb formula
+/// (`thumb_len = visible_rows² / total`) that has no equivalent in
+/// [`Palette::layout`]'s continuous-track `PaletteScrollbar` — reporting
+/// a `ScrollbarThumb`/`ScrollbarTrack` hit region here would invent a
+/// second, disagreeing formula (exactly the drift class D-007 exists to
+/// avoid) for a click target TUI has never made draggable. This is a
+/// real, documented gap, not a placeholder.
+pub fn tui_palette_layout(area: Rect, palette: &Palette) -> PaletteLayout {
+    let w = area.width as f32;
+    let h = (area.height as f32 - 1.0).max(0.0); // reserve the bottom border row
+    let title_h = 1.0;
+    let query_h = if !palette.show_query {
+        0.0
+    } else if palette.mode == PaletteMode::Input {
+        1.0
+    } else {
+        2.0 // query row + separator row
+    };
+    palette.layout(w, h, title_h, query_h, 0.0, 1.0, |_| {
+        PaletteItemMeasure::new(1.0)
+    })
+}
 
 /// Draw a [`Palette`] modal into `area` on `buf`.
 ///
@@ -756,6 +799,87 @@ mod tests {
         );
         // Row 1 should still have the query prompt.
         assert_eq!(cell_char(&buf, 1, 1), '>', "query prompt in Input mode");
+    }
+
+    // ── #818: tui_palette_layout / draw_palette parity ──────────────────
+    //
+    // Paint into a buffer, find where a glyph actually lands, then
+    // hit_test that exact cell and assert it resolves to the region the
+    // paint pass used it for — the round-trip harness PRIMITIVE_RULES.md
+    // rule 4 asks for, verifying `tui_palette_layout` doesn't drift from
+    // `draw_palette`.
+
+    #[test]
+    fn layout_title_region_covers_the_painted_title_row() {
+        let area = Rect::new(0, 0, 20, 10);
+        let p = make_palette();
+        let mut buf = Buffer::empty(area);
+        draw_palette(&mut buf, area, &p, &Theme::default(), false);
+        // Title text painted at row 0 (verified by existing border test).
+        let layout = tui_palette_layout(area, &p);
+        assert_eq!(
+            layout.hit_test(5.0, 0.0),
+            crate::primitives::palette::PaletteHit::Title
+        );
+    }
+
+    #[test]
+    fn layout_query_region_covers_the_painted_query_row() {
+        let area = Rect::new(0, 0, 20, 10);
+        let p = make_palette();
+        let mut buf = Buffer::empty(area);
+        draw_palette(&mut buf, area, &p, &Theme::default(), false);
+        // Query prompt "> " painted at row 1 (see `paints_query_with_prompt`).
+        assert_eq!(cell_char(&buf, 1, 1), '>');
+        let layout = tui_palette_layout(area, &p);
+        assert_eq!(
+            layout.hit_test(1.0, 1.0),
+            crate::primitives::palette::PaletteHit::Query
+        );
+    }
+
+    #[test]
+    fn layout_item_region_matches_the_painted_item_row() {
+        let area = Rect::new(0, 0, 20, 10);
+        let p = make_palette();
+        let mut buf = Buffer::empty(area);
+        draw_palette(&mut buf, area, &p, &Theme::default(), false);
+        // First item ("foo") painted at row 3 (items_row0 = y0+3 when
+        // show_query and not Input mode).
+        assert!((0..20).any(|x| cell_char(&buf, x, 3) == 'f'));
+        let layout = tui_palette_layout(area, &p);
+        assert_eq!(
+            layout.hit_test(5.0, 3.0),
+            crate::primitives::palette::PaletteHit::Item(0)
+        );
+    }
+
+    #[test]
+    fn layout_reserves_the_bottom_border_row() {
+        let area = Rect::new(0, 0, 20, 10);
+        let p = make_palette();
+        let layout = tui_palette_layout(area, &p);
+        // Row 9 (y_end - 1) is the bottom border in `draw_palette` — no
+        // hit region should claim it.
+        assert_eq!(
+            layout.hit_test(5.0, 9.0),
+            crate::primitives::palette::PaletteHit::Empty
+        );
+    }
+
+    #[test]
+    fn layout_input_mode_has_no_separator_row_reserved() {
+        let area = Rect::new(0, 0, 20, 8);
+        let mut p = make_palette();
+        p.mode = crate::primitives::palette::PaletteMode::Input;
+        p.items = vec![];
+        let layout = tui_palette_layout(area, &p);
+        // Query area is 1 row tall in Input mode — row 1 is Query, and
+        // there is no dedicated item area to claim row 2.
+        assert_eq!(
+            layout.hit_test(1.0, 1.0),
+            crate::primitives::palette::PaletteHit::Query
+        );
     }
 
     #[test]

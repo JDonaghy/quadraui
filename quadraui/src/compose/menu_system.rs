@@ -809,6 +809,11 @@ mod tests {
         }
         fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
         fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
+        fn palette_layout(&self, r: Rect, p: &crate::Palette) -> crate::PaletteLayout {
+            p.layout(r.width, r.height, 0.0, 0.0, 0.0, 1.0, |_| {
+                crate::PaletteItemMeasure::new(1.0)
+            })
+        }
         fn draw_settings_chrome(
             &mut self,
             _r: Rect,

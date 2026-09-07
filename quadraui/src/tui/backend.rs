@@ -1135,6 +1135,10 @@ impl Backend for TuiBackend {
         crate::tui::draw_palette(frame.buffer_mut(), area, palette, &theme, nerd_fonts);
     }
 
+    fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
+        crate::tui::tui_palette_layout(q_rect_to_ratatui(rect), palette)
+    }
+
     fn draw_settings_chrome(
         &mut self,
         rect: QRect,
@@ -2442,6 +2446,9 @@ mod tests {
                 rect,
                 item_count: palette.items.len(),
             });
+        }
+        fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
+            crate::tui::tui_palette_layout(q_rect_to_ratatui(rect), palette)
         }
 
         // The other 7 trait methods are unimplemented — this mock only

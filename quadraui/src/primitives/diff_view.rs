@@ -333,6 +333,24 @@ pub struct DiffViewGeometry {
     pub lines: Vec<DiffDisplayLine>,
 }
 
+/// Hit-test classification for a click against a [`DiffViewGeometry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewHit {
+    /// Click landed on a real diff row. `row_idx` indexes
+    /// [`DiffView::flat_rows`], matching [`DiffLineContent::Row`].
+    /// `pane` is `Some` in [`DiffMode::SideBySide`] when the click falls
+    /// within the row's `left`/`right` sub-rect, `None` in
+    /// [`DiffMode::Unified`] or when it lands on the divider column.
+    Row {
+        row_idx: usize,
+        pane: Option<DiffPane>,
+    },
+    /// Click landed on a synthesized unified hunk header.
+    UnifiedHeader { hunk_idx: usize },
+    /// Click missed every display line.
+    Empty,
+}
+
 impl DiffViewGeometry {
     /// The [`DiffViewLayout`] scroll-clamp summary for this geometry —
     /// every backend's `draw_diff_view` returns this.
@@ -341,6 +359,38 @@ impl DiffViewGeometry {
             visible_rows: self.visible_rows,
             total_rows: self.total_rows,
         }
+    }
+
+    /// Hit-test a click at `(x, y)` against [`Self::lines`] (quadraui#818).
+    ///
+    /// Coordinate frame: **ABSOLUTE** — matches every `bounds` field on
+    /// [`DiffDisplayLine`], which already carry the `viewport` rect
+    /// passed to [`DiffView::layout`].
+    pub fn hit_test(&self, x: f32, y: f32) -> DiffViewHit {
+        for line in &self.lines {
+            let b = line.bounds;
+            if !(x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) {
+                continue;
+            }
+            return match line.content {
+                DiffLineContent::UnifiedHeader { hunk_idx } => {
+                    DiffViewHit::UnifiedHeader { hunk_idx }
+                }
+                DiffLineContent::Row { row_idx } => {
+                    let pane = match (line.left, line.right) {
+                        (Some(left), _) if x >= left.x && x < left.x + left.width => {
+                            Some(DiffPane::Left)
+                        }
+                        (_, Some(right)) if x >= right.x && x < right.x + right.width => {
+                            Some(DiffPane::Right)
+                        }
+                        _ => None,
+                    };
+                    DiffViewHit::Row { row_idx, pane }
+                }
+            };
+        }
+        DiffViewHit::Empty
     }
 }
 
@@ -857,5 +907,70 @@ mod tests {
             ],
         };
         assert_eq!(unified_hunk_header(&hunk), "@@ -5,2 +7,2 @@");
+    }
+
+    // ── #818: hit_test ───────────────────────────────────────────────────
+
+    #[test]
+    fn hit_test_side_by_side_left_pane_returns_row_and_left_pane() {
+        let view = two_hunk_view(DiffMode::SideBySide);
+        let geometry = view.layout(Rect::new(0.0, 0.0, 40.0, 10.0), 1.0);
+        match geometry.hit_test(2.0, 0.5) {
+            DiffViewHit::Row { row_idx, pane } => {
+                assert_eq!(row_idx, 0);
+                assert_eq!(pane, Some(DiffPane::Left));
+            }
+            other => panic!("expected Row hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hit_test_side_by_side_right_pane_returns_right() {
+        let view = two_hunk_view(DiffMode::SideBySide);
+        let geometry = view.layout(Rect::new(0.0, 0.0, 40.0, 10.0), 1.0);
+        let panes = geometry.panes.expect("side-by-side has panes");
+        let x_in_right = panes.divider_x + DIFF_DIVIDER_W + 1.0;
+        match geometry.hit_test(x_in_right, 0.5) {
+            DiffViewHit::Row { row_idx, pane } => {
+                assert_eq!(row_idx, 0);
+                assert_eq!(pane, Some(DiffPane::Right));
+            }
+            other => panic!("expected Row hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hit_test_unified_header_returns_hunk_idx() {
+        let view = two_hunk_view(DiffMode::Unified);
+        let geometry = view.layout(Rect::new(0.0, 0.0, 40.0, 10.0), 1.0);
+        // Unified sequence: [Header(0), Row(0), Row(1), Header(1), Row(2), Row(3)].
+        assert_eq!(
+            geometry.hit_test(2.0, 0.5),
+            DiffViewHit::UnifiedHeader { hunk_idx: 0 }
+        );
+        assert_eq!(
+            geometry.hit_test(2.0, 3.5),
+            DiffViewHit::UnifiedHeader { hunk_idx: 1 }
+        );
+    }
+
+    #[test]
+    fn hit_test_unified_row_has_no_pane() {
+        let view = two_hunk_view(DiffMode::Unified);
+        let geometry = view.layout(Rect::new(0.0, 0.0, 40.0, 10.0), 1.0);
+        match geometry.hit_test(2.0, 1.5) {
+            DiffViewHit::Row { row_idx, pane } => {
+                assert_eq!(row_idx, 0);
+                assert_eq!(pane, None);
+            }
+            other => panic!("expected Row hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hit_test_outside_all_lines_is_empty() {
+        let view = two_hunk_view(DiffMode::SideBySide);
+        let geometry = view.layout(Rect::new(0.0, 0.0, 40.0, 10.0), 1.0);
+        assert_eq!(geometry.hit_test(2.0, 99.0), DiffViewHit::Empty);
     }
 }

@@ -1861,6 +1861,16 @@ impl Backend for GtkBackend {
         );
     }
 
+    fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
+        crate::gtk::gtk_palette_layout(
+            rect.width as f64,
+            rect.height as f64,
+            palette,
+            self.current_line_height,
+        )
+        .0
+    }
+
     fn draw_settings_chrome(
         &mut self,
         rect: QRect,

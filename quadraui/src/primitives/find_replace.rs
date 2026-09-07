@@ -246,6 +246,67 @@ pub struct FindReplacePanel {
     pub hit_regions: Vec<(FrHitRegion, FindReplaceClickTarget)>,
 }
 
+/// Hit-test classification for a click against a [`FindReplacePanel`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindReplaceHit {
+    /// Click landed on a clickable target.
+    Target(FindReplaceClickTarget),
+    /// Click missed every hit region (e.g. the borders, the non-clickable
+    /// match-count text, or outside the panel entirely).
+    Empty,
+}
+
+impl FindReplacePanel {
+    /// Hit-test a click at surface-native `(x, y)` against
+    /// [`Self::hit_regions`] (quadraui#818).
+    ///
+    /// `content_origin` is the absolute position of the panel's content
+    /// corner — inside the 1-cell/1px border — the same `(content_x,
+    /// content_y)` every backend already derives when painting (see
+    /// `native_surface_paint::paint`'s `Metrics` and
+    /// `tui::draw_find_replace`'s `(x + 1, y + 1)`). `char_width` /
+    /// `line_height` are the backend's per-cell metrics. Passing the
+    /// caller's own resolved origin/metrics — rather than re-deriving
+    /// the popup position here — keeps this in lock-step with each
+    /// backend's paint position without duplicating that placement
+    /// arithmetic (which differs across backends: TUI's `group_bounds`
+    /// is content-relative and needs an `editor_left` offset; GTK/macOS/
+    /// Win's is already absolute).
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `(x, y)` is compared directly
+    /// against `content_origin`, no further adjustment by the caller.
+    pub fn hit_test(
+        &self,
+        x: f32,
+        y: f32,
+        content_origin: (f32, f32),
+        char_width: f32,
+        line_height: f32,
+    ) -> FindReplaceHit {
+        if char_width <= 0.0 || line_height <= 0.0 {
+            return FindReplaceHit::Empty;
+        }
+        let (ox, oy) = content_origin;
+        if x < ox || y < oy {
+            return FindReplaceHit::Empty;
+        }
+        let col = ((x - ox) / char_width).floor() as u32;
+        let row = ((y - oy) / line_height).floor() as u32;
+        let Ok(col) = u16::try_from(col) else {
+            return FindReplaceHit::Empty;
+        };
+        let Ok(row) = u16::try_from(row) else {
+            return FindReplaceHit::Empty;
+        };
+        for (region, target) in &self.hit_regions {
+            if region.row == row && col >= region.col && col < region.col + region.width {
+                return FindReplaceHit::Target(*target);
+            }
+        }
+        FindReplaceHit::Empty
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // NativeSurface Phase 2b (#809): shared paint implementation
 // ─────────────────────────────────────────────────────────────────────
@@ -883,6 +944,97 @@ mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             paint(&panel, &mut surface, &theme);
         }
+    }
+}
+
+// ── #818: hit_test (ungated — no NativeSurface feature needed) ─────────────
+
+#[cfg(test)]
+mod hit_test_tests {
+    use super::*;
+
+    fn panel(show_replace: bool) -> FindReplacePanel {
+        let (hit_regions, _input_width) = compute_hit_regions(50, show_replace, "1 of 3", 2, 2);
+        FindReplacePanel {
+            query: "needle".into(),
+            replacement: String::new(),
+            show_replace,
+            focus: 0,
+            cursor: 0,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: Rect::new(0.0, 0.0, 600.0, 200.0),
+            panel_width: 50,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions,
+        }
+    }
+
+    #[test]
+    fn hit_test_chevron_at_content_origin() {
+        let p = panel(false);
+        // Chevron region: col 0..2, row 0 — content_origin (10,10), 8x16 cells.
+        let hit = p.hit_test(11.0, 12.0, (10.0, 10.0), 8.0, 16.0);
+        assert_eq!(hit, FindReplaceHit::Target(FindReplaceClickTarget::Chevron));
+    }
+
+    #[test]
+    fn hit_test_toggle_case_on_find_row() {
+        let p = panel(false);
+        // ToggleCase sits right after the find input; find its column
+        // from the computed regions rather than hardcoding it.
+        let (region, _) = p
+            .hit_regions
+            .iter()
+            .find(|(_, t)| matches!(t, FindReplaceClickTarget::ToggleCase))
+            .expect("ToggleCase region present");
+        let x = 10.0 + (region.col as f32 + 0.5) * 8.0;
+        let y = 10.0 + (region.row as f32 + 0.5) * 16.0;
+        let hit = p.hit_test(x, y, (10.0, 10.0), 8.0, 16.0);
+        assert_eq!(
+            hit,
+            FindReplaceHit::Target(FindReplaceClickTarget::ToggleCase)
+        );
+    }
+
+    #[test]
+    fn hit_test_replace_row_only_present_when_show_replace() {
+        let p = panel(true);
+        let (region, _) = p
+            .hit_regions
+            .iter()
+            .find(|(_, t)| matches!(t, FindReplaceClickTarget::ReplaceCurrent))
+            .expect("ReplaceCurrent region present when show_replace");
+        let x = 10.0 + (region.col as f32 + 0.5) * 8.0;
+        let y = 10.0 + (region.row as f32 + 0.5) * 16.0;
+        assert_eq!(
+            p.hit_test(x, y, (10.0, 10.0), 8.0, 16.0),
+            FindReplaceHit::Target(FindReplaceClickTarget::ReplaceCurrent)
+        );
+    }
+
+    #[test]
+    fn hit_test_miss_returns_empty() {
+        let p = panel(false);
+        assert_eq!(
+            p.hit_test(0.0, 0.0, (10.0, 10.0), 8.0, 16.0),
+            FindReplaceHit::Empty
+        );
+    }
+
+    #[test]
+    fn hit_test_zero_metrics_returns_empty() {
+        let p = panel(false);
+        assert_eq!(
+            p.hit_test(11.0, 12.0, (10.0, 10.0), 0.0, 16.0),
+            FindReplaceHit::Empty
+        );
     }
 }
 

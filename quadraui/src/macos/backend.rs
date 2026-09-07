@@ -1279,6 +1279,17 @@ impl Backend for MacBackend {
         }
     }
 
+    fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
+        super::palette::mac_palette_layout(
+            palette,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            self.current_line_height,
+        )
+    }
+
     fn draw_settings_chrome(
         &mut self,
         rect: Rect,
