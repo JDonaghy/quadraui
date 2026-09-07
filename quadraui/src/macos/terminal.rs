@@ -42,7 +42,7 @@ mod tests {
 
     fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
         TerminalCell {
-            ch,
+            text: ch.to_string(),
             fg,
             bg,
             bold: false,
@@ -374,7 +374,7 @@ mod tests {
         fn row(s: &str, fg: Color, bg: Color) -> Vec<TerminalCell> {
             s.chars()
                 .map(|ch| TerminalCell {
-                    ch,
+                    text: ch.to_string(),
                     fg,
                     bg,
                     bold: false,

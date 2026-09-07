@@ -4663,7 +4663,7 @@ mod tests {
     fn terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal() {
         let backend = TuiBackend::new();
         let cell = crate::TerminalCell {
-            ch: 'x',
+            text: "x".to_string(),
             fg: crate::Color::rgb(200, 200, 200),
             bg: crate::Color::rgb(20, 20, 20),
             bold: false,

@@ -1141,7 +1141,7 @@ mod tests {
 
         fn cell(ch: char) -> TerminalCell {
             TerminalCell {
-                ch,
+                text: ch.to_string(),
                 fg: Color::rgb(255, 255, 255),
                 bg: Color::rgb(0, 0, 0),
                 bold: false,

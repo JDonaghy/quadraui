@@ -86,12 +86,20 @@ impl TerminalScrollbar {
     }
 }
 
-/// One styled cell in a `Terminal`. Carries the rendered character, RGB
-/// foreground/background, attributes, and overlay flags (cursor /
-/// selection / find match) that the backend interprets visually.
+/// One styled cell in a `Terminal`. Carries the rendered grapheme
+/// cluster, RGB foreground/background, attributes, and overlay flags
+/// (cursor / selection / find match) that the backend interprets
+/// visually.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalCell {
-    pub ch: char,
+    /// The cell's full grapheme cluster — a base character plus any
+    /// combining marks (accents, etc.) vt100 appended to it, e.g. `"a"`,
+    /// `"日"`, or `"e\u{0301}"`. **Not** guaranteed to be a single
+    /// `char`: use [`TerminalCell::cell_width`] rather than
+    /// `text.chars().count()` to measure it. Blank / never-written cells
+    /// store a single space (`" "`), matching vt100's own convention for
+    /// an empty cell (quadraui#337).
+    pub text: String,
     pub fg: Color,
     pub bg: Color,
     #[serde(default)]
@@ -113,6 +121,24 @@ pub struct TerminalCell {
     /// Cell is part of the currently-selected find match (bright highlight).
     #[serde(default)]
     pub is_find_active: bool,
+}
+
+impl TerminalCell {
+    /// Display width of this cell's grapheme cluster in terminal columns
+    /// — `1` for ordinary text, `2` for CJK / emoji / other fullwidth
+    /// glyphs. Combining marks trailing the base character add no width.
+    ///
+    /// Deliberately *derived* from `text` rather than cached in a
+    /// separate field: `text` is the single source of truth, so there is
+    /// no way for a cell's stored width to drift from its own content.
+    /// Delegates to [`crate::text_util::display_width`] — the same
+    /// `unicode-width`-backed table vt100 itself consults when it
+    /// decides whether to reserve a spacer column for a wide character
+    /// (quadraui#337), so this always agrees with vt100's own column
+    /// accounting for cells built by [`crate::terminal_engine`].
+    pub fn cell_width(&self) -> u16 {
+        crate::text_util::display_width(&self.text) as u16
+    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -518,7 +544,7 @@ mod native_surface_paint {
                 // placeholder, so claim it here rather than letting it
                 // paint its own (mismatched) background over the
                 // glyph's right half (#439/#500).
-                let (cell_w, cols_advanced) = wide_cell_advance(cell.ch, char_width as f64);
+                let (cell_w, cols_advanced) = wide_cell_advance(&cell.text, char_width as f64);
                 let cell_w = cell_w as f32;
                 let is_wide = cols_advanced == 2;
 
@@ -528,8 +554,8 @@ mod native_surface_paint {
                 let (cell_bg, cell_fg) = resolve_cell_style(cell, theme);
                 surface.surface_fill_rect(Rect::new(cell_x, row_y, cell_w, line_height), cell_bg);
 
-                if cell.ch != ' ' && cell.ch != '\0' {
-                    let s = cell.ch.to_string();
+                if cell.text != " " && cell.text != "\0" && !cell.text.is_empty() {
+                    let s = cell.text.as_str();
                     let cell_rect = Rect::new(cell_x, row_y, cell_w, line_height);
                     let scale_x = if is_wide {
                         // The font each backend falls back to for
@@ -537,14 +563,14 @@ mod native_surface_paint {
                         // exactly two cells — scale it to fill `cell_w`
                         // instead of leaving a ragged gap or overlap
                         // (#439 follow-up / #500 / #703).
-                        let (natural_w, _) = surface.surface_measure_text(&s);
+                        let (natural_w, _) = surface.surface_measure_text(s);
                         wide_glyph_x_scale(natural_w as f64, cell_w as f64) as f32
                     } else {
                         1.0
                     };
                     surface.surface_draw_text_run_styled(
                         cell_rect,
-                        &s,
+                        s,
                         cell_fg,
                         cell.bold,
                         cell.italic,
@@ -653,7 +679,7 @@ mod native_surface_paint {
 
         fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
             TerminalCell {
-                ch,
+                text: ch.to_string(),
                 fg,
                 bg,
                 bold: false,
@@ -824,6 +850,96 @@ mod native_surface_paint {
             assert!(
                 surface.fills.iter().any(|&(_, c)| c == theme.separator),
                 "expected a fill in theme.separator, fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        // ── Grapheme clusters (quadraui#337) ────────────────────────────
+
+        /// A combining mark appended to a base character (e.g. `e` +
+        /// U+0301 COMBINING ACUTE ACCENT) must reach the rasteriser as one
+        /// glyph run, not just the base character — dropping the mark is
+        /// exactly the "combining marks are dropped" defect #337
+        /// describes for the old `ch: char` cell shape.
+        #[test]
+        fn combining_mark_grapheme_paints_as_one_glyph_run() {
+            let fg = Color::rgb(255, 255, 255);
+            let bg = Color::rgb(0, 0, 0);
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![vec![TerminalCell {
+                    text: "e\u{0301}".to_string(),
+                    ..cell('e', fg, bg)
+                }]],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            assert!(
+                surface
+                    .styled_runs
+                    .iter()
+                    .any(|(_, t, ..)| t == "e\u{0301}"),
+                "expected the full grapheme cluster painted as one run, got {:?}",
+                surface.styled_runs,
+            );
+        }
+
+        /// A combining-mark grapheme is still a single (narrow) column —
+        /// the trailing mark must not be double-counted as a second
+        /// character's worth of width.
+        #[test]
+        fn combining_mark_grapheme_advances_a_single_column() {
+            let fg = Color::rgb(255, 255, 255);
+            let bg = Color::rgb(0, 0, 0);
+            let row = vec![
+                TerminalCell {
+                    text: "e\u{0301}".to_string(),
+                    ..cell('e', fg, bg)
+                },
+                cell('B', fg, Color::rgb(9, 9, 9)),
+            ];
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![row],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|&(r, c)| r.x == 10.0 && c == Color::rgb(9, 9, 9)),
+                "second cell should start at x=10 (one column over), fills were {:?}",
                 surface.fills,
             );
         }
@@ -1006,7 +1122,7 @@ mod tests {
 
     fn cell(ch: char) -> TerminalCell {
         TerminalCell {
-            ch,
+            text: ch.to_string(),
             fg: Color::rgb(255, 255, 255),
             bg: Color::rgb(0, 0, 0),
             bold: false,
@@ -1017,6 +1133,33 @@ mod tests {
             is_find_match: false,
             is_find_active: false,
         }
+    }
+
+    // ── TerminalCell::cell_width (quadraui#337) ─────────────────────────
+
+    #[test]
+    fn cell_width_narrow_text_is_one() {
+        assert_eq!(cell('a').cell_width(), 1);
+        assert_eq!(cell(' ').cell_width(), 1);
+    }
+
+    #[test]
+    fn cell_width_wide_cjk_is_two() {
+        assert_eq!(cell('日').cell_width(), 2);
+        assert_eq!(cell('中').cell_width(), 2);
+    }
+
+    #[test]
+    fn cell_width_combining_mark_does_not_add_width() {
+        let c = TerminalCell {
+            text: "e\u{0301}".to_string(),
+            ..cell('e')
+        };
+        assert_eq!(
+            c.cell_width(),
+            1,
+            "base char + combining accent is still one column"
+        );
     }
 
     fn grid(rows: &[&str]) -> Terminal {
@@ -1086,7 +1229,7 @@ mod tests {
             cells: vec![
                 vec![
                     TerminalCell {
-                        ch: '$',
+                        text: "$".to_string(),
                         fg: Color::rgb(200, 200, 200),
                         bg: Color::rgb(20, 20, 20),
                         bold: true,
@@ -1098,7 +1241,10 @@ mod tests {
                         is_find_active: false,
                     },
                     TerminalCell {
-                        ch: ' ',
+                        // Base char + combining acute accent — a
+                        // multi-codepoint grapheme cluster, not just a
+                        // single `char` (quadraui#337).
+                        text: "e\u{0301}".to_string(),
                         fg: Color::rgb(200, 200, 200),
                         bg: Color::rgb(20, 20, 20),
                         bold: false,
@@ -1111,7 +1257,7 @@ mod tests {
                     },
                 ],
                 vec![TerminalCell {
-                    ch: 'm',
+                    text: "m".to_string(),
                     fg: Color::rgb(255, 100, 50),
                     bg: Color::rgb(20, 20, 20),
                     bold: false,
@@ -1135,7 +1281,7 @@ mod tests {
         let term = Terminal {
             id: WidgetId::new("t"),
             cells: vec![vec![TerminalCell {
-                ch: 'x',
+                text: "x".to_string(),
                 fg: Color::rgb(200, 200, 200),
                 bg: Color::rgb(20, 20, 20),
                 bold: false,
@@ -1186,7 +1332,7 @@ mod tests {
 
     fn make_term(rows: usize, cols: usize) -> Terminal {
         let cell = TerminalCell {
-            ch: ' ',
+            text: " ".to_string(),
             fg: Color::rgb(200, 200, 200),
             bg: Color::rgb(20, 20, 20),
             bold: false,

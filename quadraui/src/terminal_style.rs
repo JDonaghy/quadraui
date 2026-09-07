@@ -79,7 +79,7 @@
 //! primitive (`cr.rectangle` / `CGContextFillRect` / `FillRectangle`).
 
 use crate::primitives::terminal::TerminalCell;
-use crate::text_util::is_wide_char;
+use crate::text_util::display_width;
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -114,19 +114,25 @@ pub fn resolve_cell_style(cell: &TerminalCell, theme: &Theme) -> (Color, Color) 
 /// Pixel box width and grid-column stride for one cell in a pixel-based
 /// rasteriser's per-row paint loop.
 ///
-/// Returns `(cell_w, cols_advanced)`. When `ch` classifies as a wide
-/// glyph (double-width per [`crate::text_util::is_wide_char`]), it
-/// claims its own column plus the following vt100-supplied blank
-/// continuation column: `cell_w = char_width * 2.0`, `cols_advanced =
-/// 2`. Every other cell advances by exactly one column at `char_width`.
+/// Returns `(cell_w, cols_advanced)`. When `text` (the cell's full
+/// grapheme cluster, [`TerminalCell::text`]) classifies as a wide glyph
+/// (double-width per [`crate::text_util::display_width`]), it claims its
+/// own column plus the following vt100-supplied blank continuation
+/// column: `cell_w = char_width * 2.0`, `cols_advanced = 2`. Every other
+/// cell advances by exactly one column at `char_width`. `display_width`
+/// (rather than measuring only the first `char`) is what keeps this
+/// correct for a grapheme cluster — a wide base character followed by
+/// zero-width combining marks still sums to 2, and a narrow base
+/// character with trailing combining marks still sums to 1
+/// (quadraui#337).
 ///
 /// Callers walk a row with an index (`while col < row.len()`), painting
 /// the background across `cell_w` and then stepping `col += cols`, so
 /// the continuation column is claimed rather than independently
 /// painted on top of the glyph — see this module's doc comment. Not
 /// used by the TUI rasteriser.
-pub fn wide_cell_advance(ch: char, char_width: f64) -> (f64, usize) {
-    if is_wide_char(ch) {
+pub fn wide_cell_advance(text: &str, char_width: f64) -> (f64, usize) {
+    if display_width(text) >= 2 {
         (char_width * 2.0, 2)
     } else {
         (char_width, 1)
@@ -191,7 +197,7 @@ mod tests {
 
     fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
         TerminalCell {
-            ch,
+            text: ch.to_string(),
             fg,
             bg,
             bold: false,
@@ -286,14 +292,30 @@ mod tests {
 
     #[test]
     fn narrow_char_advances_one_column() {
-        assert_eq!(wide_cell_advance('a', 10.0), (10.0, 1));
-        assert_eq!(wide_cell_advance(' ', 10.0), (10.0, 1));
+        assert_eq!(wide_cell_advance("a", 10.0), (10.0, 1));
+        assert_eq!(wide_cell_advance(" ", 10.0), (10.0, 1));
     }
 
     #[test]
     fn wide_char_advances_two_columns_at_double_width() {
-        assert_eq!(wide_cell_advance('日', 10.0), (20.0, 2));
-        assert_eq!(wide_cell_advance('中', 9.0), (18.0, 2));
+        assert_eq!(wide_cell_advance("日", 10.0), (20.0, 2));
+        assert_eq!(wide_cell_advance("中", 9.0), (18.0, 2));
+    }
+
+    /// A narrow base character with a trailing combining mark (a
+    /// multi-codepoint grapheme cluster) is still one column — the
+    /// combining mark must not be counted as extra width
+    /// (quadraui#337).
+    #[test]
+    fn combining_mark_grapheme_advances_one_column() {
+        assert_eq!(wide_cell_advance("e\u{0301}", 10.0), (10.0, 1));
+    }
+
+    /// A wide base character followed by zero-width combining marks
+    /// still advances two columns.
+    #[test]
+    fn wide_char_with_combining_mark_advances_two_columns() {
+        assert_eq!(wide_cell_advance("日\u{0301}", 10.0), (20.0, 2));
     }
 
     // ── wide_glyph_x_scale (#500, lifted from GTK by #703) ─────────────
