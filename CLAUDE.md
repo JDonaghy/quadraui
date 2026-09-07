@@ -34,7 +34,6 @@ line-level confirmation — not the first move.
 - `quadraui/docs/PRIMITIVE_RULES.md` — the 8 rules for adding/changing primitives + maturity levels. **Rule 8 (public-API lifecycle) is mandatory reading before removing or renaming anything `pub`.**
 - `quadraui/docs/CONSUMER_PATTERNS.md` — MSV debug-sidebar and SC panel recipes. **Read when working on consumer integrations.**
 - `quadraui/docs/TESTING.md` — coverage taxonomy, backend testability requirement, quality gate commands. **Read when writing tests.**
-- `quadraui/docs/CLIPBOARD.md` — the three legs of TUI clipboard copy, the tmux/SSH gating that silently swallows OSC 52, and a troubleshooting order. **Read before touching any copy/paste path or diagnosing a "copy didn't work" report.**
 - `quadraui/docs/LESSONS.md` — durable rules from real failures + "What NOT to do." **Read at session start; apply as you work.**
 
 ## Cross-backend portability commitment
