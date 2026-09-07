@@ -75,10 +75,12 @@ use crate::runner::{AppLogic, Reaction};
 use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, paint_frame, EventOutcome};
-use crate::{
-    ButtonMask, InteractionState, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta,
-    UiEvent,
-};
+// `InteractionState`'s only use site here is in `#[cfg(test)]` below, so it
+// is referred to as `crate::InteractionState` there rather than imported at
+// module scope — a non-test `cargo clippy --features tui,terminal` compiles
+// this module but not its test block, and would reject the import as unused
+// under `-D warnings`.
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent};
 
 /// `io::Write` sink that feeds every byte `CrosstermBackend` emits straight
 /// into a `vt100::Parser` — the "terminal" on the other end of the ANSI
@@ -505,7 +507,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &InteractionState::new(),
+                &crate::InteractionState::new(),
             );
         }
 

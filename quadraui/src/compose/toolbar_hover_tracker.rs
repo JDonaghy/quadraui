@@ -35,11 +35,10 @@
 //!     }
 //!
 //!     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-//!         backend.draw_toolbar(
+//!         backend.draw_toolbar_interactive(
 //!             self.bar_rect(backend),
 //!             &self.bar(),
-//!             self.hover.hovered_id(),
-//!             None,
+//!             &InteractionState::from_parts(self.hover.hovered_id().cloned(), None),
 //!         );
 //!     }
 //! }
