@@ -888,6 +888,18 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
     window.makeFirstResponder(Some(view.as_super()));
     window.makeKeyAndOrderFront(None);
 
+    // Issue #831: install the wake target `MacBackend::waker()` invokes
+    // (via `dispatch2::DispatchQueue::main().exec_async`) when a
+    // background thread delivers a `UiEvent::User` — schedule the same
+    // repaint request any other event's `Reaction::Redraw` would, so
+    // `poll_events` (drained from inside the `paint` closure above) gets a
+    // chance to observe the queued payload promptly instead of waiting for
+    // unrelated user input or a timer to trigger the next `drawRect:`.
+    let view_for_wake = view.clone();
+    backend
+        .borrow()
+        .set_wake_callback(Rc::new(move || view_for_wake.request_redraw()), mtm);
+
     // WindowResized wiring (#486): opt the view into frame-change
     // notifications and observe them on itself via `viewFrameDidChange:`.
     // SAFETY: `view` is a valid, retained `QuadraView` (an `NSObject`

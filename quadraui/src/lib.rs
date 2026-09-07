@@ -494,7 +494,7 @@ pub use backend::{
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
-    MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, Viewport,
+    MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
 };
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
