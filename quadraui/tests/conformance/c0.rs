@@ -625,6 +625,7 @@ pub const CASES: &[Case] = &[
                 bold: false,
                 italic: false,
                 underline: false,
+                dim: false,
                 selected: false,
                 is_cursor: false,
                 is_find_match: false,

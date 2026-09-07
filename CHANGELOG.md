@@ -99,6 +99,10 @@ release time.
   test in `quadraui/tests/tui_example_driver.rs`.
 - `CONTRIBUTING.md` — human-oriented contributor guide (project layout,
   local setup, the quality-gate commands, PR expectations).
+- `TerminalCell::dim` — carries SGR 2 (faint) from vt100's `Cell::dim()`
+  (tracked since vt100 0.16; this crate's pinned floor). Additive field,
+  `#[serde(default)]`, no consumer struct-literal hits in `coord-tui` or
+  `vimcode` (grep in the PR body).
 
 ### Changed
 
@@ -123,6 +127,17 @@ release time.
   `TuiBackend::poll_events`/`wait_events` now reconstitute any such
   leaked report back into the mouse event it should have decoded as
   before dispatch ever sees it; the standalone `Escape` is preserved.
+- Embedded terminal: faint/dim text (SGR 2, e.g. claude's autosuggestion
+  ghost-text) now renders visually distinct instead of at full
+  brightness (#345). `terminal_engine::TerminalSession::to_terminal`
+  reads vt100's `Cell::dim()` into the new `TerminalCell::dim` field;
+  `terminal_style::resolve_cell_style` — the one place every backend
+  (tui/gtk/macos/win) resolves a cell's paint colours — blends a dim
+  cell's foreground 50% toward its resolved background. No new
+  `Backend`/`NativeSurface` surface area: faint has no font-weight
+  equivalent, so it's folded into colour resolution rather than added
+  as a fourth per-backend text-run attribute alongside bold/italic/
+  underline.
 
 ### Deprecated
 

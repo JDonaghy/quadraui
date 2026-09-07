@@ -108,6 +108,18 @@ pub struct TerminalCell {
     pub italic: bool,
     #[serde(default)]
     pub underline: bool,
+    /// SGR 2 (faint/dim) — `vt100::Cell::dim()`, tracked since vt100
+    /// 0.16 (this crate's pinned floor; vt100 0.15.x silently dropped
+    /// SGR 2 entirely, which is why quadraui#345 was originally filed
+    /// as "blocked on vt100"). Rasterisers don't apply a separate font
+    /// attribute for it (unlike bold/italic/underline): faint text has
+    /// no font-weight equivalent, so
+    /// [`crate::terminal_style::resolve_cell_style`] folds it into the
+    /// resolved foreground colour instead, blending toward the
+    /// resolved background so it reads as "faded" on both dark and
+    /// light themes (quadraui#345).
+    #[serde(default)]
+    pub dim: bool,
     /// Cell is part of the user's mouse selection.
     #[serde(default)]
     pub selected: bool,
@@ -685,6 +697,7 @@ mod native_surface_paint {
                 bold: false,
                 italic: false,
                 underline: false,
+                dim: false,
                 selected: false,
                 is_cursor: false,
                 is_find_match: false,
@@ -804,6 +817,48 @@ mod native_surface_paint {
 
             let (_, _, _, bold, italic, underline, _) = surface.styled_runs[0];
             assert!(bold && italic && underline);
+        }
+
+        /// A `dim` cell reaches the styled run with its foreground already
+        /// blended toward the background — `paint` sources `cell_fg` from
+        /// [`crate::terminal_style::resolve_cell_style`], the single place
+        /// SGR 2 (faint) is applied (quadraui#345), so every pixel backend
+        /// (GTK/macOS/win, all routed through this shared `paint`) gets the
+        /// dimmed colour for free with no per-backend styling flag.
+        #[test]
+        fn dim_flag_dims_the_color_reaching_the_styled_run() {
+            let fg = Color::rgb(200, 200, 200);
+            let bg = Color::rgb(0, 0, 0);
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![vec![TerminalCell {
+                    dim: true,
+                    ..cell('X', fg, bg)
+                }]],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            let (_, _, color, _, _, _, _) = surface.styled_runs[0];
+            assert_eq!(
+                color,
+                Color::rgb(100, 100, 100),
+                "dim cell's glyph color must be blended 50% toward its background"
+            );
         }
 
         #[test]
@@ -1128,6 +1183,7 @@ mod tests {
             bold: false,
             italic: false,
             underline: false,
+            dim: false,
             selected: false,
             is_cursor: false,
             is_find_match: false,
@@ -1235,6 +1291,7 @@ mod tests {
                         bold: true,
                         italic: false,
                         underline: false,
+                        dim: false,
                         selected: false,
                         is_cursor: false,
                         is_find_match: false,
@@ -1250,6 +1307,7 @@ mod tests {
                         bold: false,
                         italic: false,
                         underline: false,
+                        dim: false,
                         selected: false,
                         is_cursor: true,
                         is_find_match: false,
@@ -1263,6 +1321,7 @@ mod tests {
                     bold: false,
                     italic: false,
                     underline: true,
+                    dim: false,
                     selected: true,
                     is_cursor: false,
                     is_find_match: true,
@@ -1287,6 +1346,7 @@ mod tests {
                 bold: false,
                 italic: false,
                 underline: false,
+                dim: false,
                 selected: false,
                 is_cursor: false,
                 is_find_match: false,
@@ -1338,6 +1398,7 @@ mod tests {
             bold: false,
             italic: false,
             underline: false,
+            dim: false,
             selected: false,
             is_cursor: false,
             is_find_match: false,
