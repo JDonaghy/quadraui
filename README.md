@@ -72,9 +72,9 @@ can otherwise mistake for shipped work.
 
 **Accessibility — no assistive-technology support at all.** There is zero
 AccessKit, AT-SPI, UI Automation or NSAccessibility code in the crate. A
-screen reader sees nothing. `docs/UI_CRATE_DESIGN.md` decision #6 planned
-`a11y_role` / `a11y_label` data fields on every primitive with platform
-wiring to follow; the data fields are groundwork only and do not
+screen reader sees nothing. `docs/UI_CRATE_DESIGN.md` decision #6 called
+for `a11y_role` / `a11y_label` data fields on every primitive with
+platform wiring to follow; the data fields are groundwork only and do not
 constitute AT support even once they land (quadraui#835). Full
 integration is a multi-backend programme, not a patch. This rules
 quadraui out where a Section 508 / EN 301 549 / WCAG obligation applies.
@@ -91,8 +91,9 @@ unbuilt.
 for East-Asian character width via `unicode-width`, and that is the
 whole of it. There is no right-to-left layout, no bidirectional
 reordering, and no shaping for scripts that need it, so Arabic, Hebrew,
-and Indic text render incorrectly rather than partially. This is not
-planned; treat it as a scope boundary rather than a gap awaiting a fix.
+and Indic text render incorrectly rather than partially. No work is
+scheduled for it; treat it as a scope boundary rather than a gap awaiting
+a fix.
 
 ## Workspace
 
