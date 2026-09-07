@@ -2299,36 +2299,32 @@ impl Backend for MacBackend {
         )
     }
 
+    /// #866: paint via the shared
+    /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
+    /// see that fn's doc for the two named divergences (row/header text
+    /// vertical alignment; header-label ellipsize vs. hard-clip) found
+    /// while unifying `gtk::diff_view::draw_diff_view`,
+    /// `macos::diff_view::draw_diff_view` and
+    /// `win::diff_view::draw_diff_view` into one implementation.
     fn draw_diff_view(
         &mut self,
         rect: Rect,
         view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_diff_view called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_diff_view requires set_current_font");
+        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // each debug_assert their own `!ctx.is_null()` internally — see
+        // `Self::surface_fill_rect` — so this method needs no separate
+        // ctx/font fetch of its own, matching `Self::draw_status_bar`'s
+        // #860 shape.
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::diff_view::draw_diff_view(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                view,
-                &theme,
-                line_height,
-            )
-        }
+        let line_height = self.current_line_height as f32;
+        crate::primitives::diff_view::native_surface_paint::paint(
+            view,
+            self,
+            &theme,
+            rect,
+            line_height,
+        )
     }
 
     fn sidebar_panel_layout(

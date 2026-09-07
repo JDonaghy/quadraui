@@ -1,67 +1,150 @@
 //! macOS (Core Graphics + Core Text) rasteriser for
 //! [`crate::primitives::diff_view::DiffView`].
 //!
-//! Port of [`crate::gtk::diff_view::draw_diff_view`] — same colour
-//! mapping, same row-kind semantics, same [`DiffViewLayout`] return
-//! value, so scroll clamping behaves identically on both backends. Row/
-//! pane geometry and the scroll-clamped visible-line window come from
-//! [`DiffView::layout`] — the shared layout API lifted out of three
-//! near-identical backend copies (issue #737). This module only converts
-//! the resulting DIP-agnostic `f32` geometry to `f64` points and paints;
-//! it does not re-derive positions.
+//! Painting moved to the shared
+//! [`crate::primitives::diff_view::native_surface_paint::paint`] (#866,
+//! `NativeSurface` Phase 2d slice 9/9) — see that fn's doc for the two
+//! named divergences (row/header text vertical alignment; header-label
+//! ellipsize vs. hard-clip) found while unifying
+//! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
+//! and `win::diff_view::draw_diff_view` into one implementation. This
+//! module now only carries [`RawMacDiffViewSurface`] and the deprecated
+//! [`draw_diff_view`] compatibility shim over it, mirroring
+//! `macos::status_bar::RawMacStatusBarSurface` (#860).
 //!
-//! Before this landed, `MacBackend::draw_diff_view` painted nothing and
+//! Before #737 landed, `MacBackend::draw_diff_view` painted nothing and
 //! returned `visible_rows: 0`, which silently pinned every host's scroll
-//! clamp to zero (quadraui#484 §4).
+//! clamp to zero (quadraui#484 §4) — the shared paint below inherits
+//! that fix via [`DiffView::layout`].
 //!
-//! # Side-by-side layout
+//! # Safety
 //!
-//! - Left pane width = `(w - 1) / 2` points (divider is 1 point wide).
-//! - Right pane = remaining width.
-//! - Per-row background fills cover the full pane width so padding rows
-//!   stay visually distinct from content rows.
-//!
-//! # Unified layout
-//!
-//! - `@@ ... @@` hunk headers drawn in `theme.accent_fg`.
-//! - `-` / `+` / ` ` prefix + full-width background fill per row.
+//! `unsafe` here is confined to [`RawMacDiffViewSurface`]'s trait impl,
+//! which forwards to [`super::backend::ns_fill_rect`]/[`ns_push_clip`]/
+//! [`ns_pop_clip`](super::backend::ns_pop_clip) and [`super::text::draw_text`] —
+//! each requires a valid `CGContextRef` borrowed for the duration of the
+//! call, the same contract [`RawMacDiffViewSurface`]'s constructor sites
+//! (the deprecated [`draw_diff_view`] shim, and this module's own tests)
+//! uphold.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
-use crate::event::Rect as ERect;
-use crate::primitives::diff_view::{
-    row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
-    DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
-};
+use crate::native_surface::NativeSurface;
+use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
-/// Text inset from a pane's left edge.
-const TEXT_PAD: f64 = 4.0;
-/// Text inset used in unified mode (tighter, matching the GTK twin).
-const UNIFIED_PAD: f64 = 2.0;
-
-/// Convert an `f32` DIP-agnostic rect from [`DiffView::layout`] to point
-/// `f64`s.
-fn pt_rect(r: ERect) -> (f64, f64, f64, f64) {
-    (r.x as f64, r.y as f64, r.width as f64, r.height as f64)
+/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
+/// used only by the deprecated [`draw_diff_view`] shim below — mirrors
+/// `macos::status_bar::RawMacStatusBarSurface`'s identical pattern
+/// (#860).
+struct RawMacDiffViewSurface<'a> {
+    ctx: CGContextRef,
+    font: &'a CTFont,
 }
 
-/// Draw a [`DiffView`] into the region `(x, y, w, h)` on `ctx`.
-///
-/// `line_height` is the point height of one text row (supplied by the
-/// backend from its current font metrics).
-///
-/// Returns [`DiffViewLayout`] for scroll clamping.
+impl NativeSurface for RawMacDiffViewSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawMacDiffViewSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawMacDiffViewSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawMacDiffViewSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawMacDiffViewSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawMacDiffViewSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (w, h) = super::text::measure_text(self.font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
+        // pass — see this struct's construction site.
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("DiffView::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        // SAFETY: `self.ctx` is the caller-supplied context passed to
+        // `draw_diff_view`, valid for the duration of the shim call.
+        unsafe {
+            super::text::draw_text(
+                self.ctx,
+                self.font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                super::backend::ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("DiffView::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, rect: crate::Rect) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
+    }
+
+    fn surface_pop_clip(&mut self) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_pop_clip(self.ctx) };
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("DiffView::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#866, CLAUDE.md rule 8): reproduces
+/// the pre-#866 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_diff_view` reference rather than going
+/// through [`crate::Backend::draw_diff_view`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
 /// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
 /// Calling with a freed or null pointer is UB.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_diff_view` instead — this free function is a compatibility shim over the shared #866 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_diff_view(
     ctx: CGContextRef,
@@ -74,231 +157,14 @@ pub unsafe fn draw_diff_view(
     theme: &Theme,
     line_height: f64,
 ) -> DiffViewLayout {
-    let viewport = ERect::new(x as f32, y as f32, w as f32, h as f32);
-    let geometry = view.layout(viewport, line_height as f32);
-
-    if w <= 0.0 || h <= 0.0 || line_height <= 0.0 {
-        return geometry.as_layout();
-    }
-
-    fill_rect(ctx, x, y, w, h, theme.background);
-
-    match view.mode {
-        DiffMode::SideBySide => draw_side_by_side(ctx, font, view, theme, &geometry),
-        DiffMode::Unified => draw_unified(ctx, font, view, theme, &geometry),
-    }
-
-    geometry.as_layout()
-}
-
-// ── Side-by-side ─────────────────────────────────────────────────────────────
-
-unsafe fn draw_side_by_side(
-    ctx: CGContextRef,
-    font: &CTFont,
-    view: &DiffView,
-    theme: &Theme,
-    geometry: &DiffViewGeometry,
-) {
-    let flat = view.flat_rows();
-
-    if let Some(header) = &geometry.header {
-        let (lx, ly, lw, lh) = pt_rect(header.left);
-        let (rx, _ry, rw, _rh) = pt_rect(header.right);
-        let (dx, dy, dw, dh) = pt_rect(header.divider);
-
-        fill_rect(ctx, lx, ly, lw + dw + rw, lh, theme.header_bg);
-        fill_rect(ctx, dx, dy, dw, dh, theme.border_fg);
-
-        if let Some(label) = &view.left_label {
-            clipped_text(
-                ctx,
-                font,
-                label,
-                lx + TEXT_PAD,
-                ly,
-                lx,
-                ly,
-                lw,
-                lh,
-                theme.header_fg,
-            );
-        }
-        if let Some(label) = &view.right_label {
-            clipped_text(
-                ctx,
-                font,
-                label,
-                rx + TEXT_PAD,
-                ly,
-                rx,
-                ly,
-                rw,
-                lh,
-                theme.header_fg,
-            );
-        }
-    }
-
-    for line in &geometry.lines {
-        let DiffLineContent::Row { row_idx } = line.content else {
-            continue;
-        };
-        let row = flat[row_idx];
-        let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
-
-        let (lx, ly, lw, lh) = pt_rect(line.left.expect("side-by-side row has left bounds"));
-        let (rx, ry, rw, rh) = pt_rect(line.right.expect("side-by-side row has right bounds"));
-        let (dx, dy, dw, dh) = pt_rect(line.divider.expect("side-by-side row has divider bounds"));
-
-        fill_rect(ctx, lx, ly, lw, lh, left_bg);
-        fill_rect(ctx, rx, ry, rw, rh, right_bg);
-        fill_rect(ctx, dx, dy, dw, dh, theme.border_fg);
-
-        if let Some(text) = &row.left {
-            clipped_text(ctx, font, text, lx + TEXT_PAD, ly, lx, ly, lw, lh, left_fg);
-        }
-        if let Some(text) = &row.right {
-            clipped_text(ctx, font, text, rx + TEXT_PAD, ry, rx, ry, rw, rh, right_fg);
-        }
-    }
-}
-
-// ── Unified ──────────────────────────────────────────────────────────────────
-
-unsafe fn draw_unified(
-    ctx: CGContextRef,
-    font: &CTFont,
-    view: &DiffView,
-    theme: &Theme,
-    geometry: &DiffViewGeometry,
-) {
-    let flat = view.flat_rows();
-
-    for line in &geometry.lines {
-        let (rx, ry, rw, rh) = pt_rect(line.bounds);
-
-        match line.content {
-            DiffLineContent::UnifiedHeader { hunk_idx } => {
-                let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
-                fill_rect(ctx, rx, ry, rw, rh, theme.background);
-                clipped_text(
-                    ctx,
-                    font,
-                    &header_text,
-                    rx + UNIFIED_PAD,
-                    ry,
-                    rx,
-                    ry,
-                    rw,
-                    rh,
-                    theme.accent_fg,
-                );
-            }
-            DiffLineContent::Row { row_idx } => {
-                let row = flat[row_idx];
-                let (prefix, fg, bg) = unified_row_style(row.kind, theme);
-
-                fill_rect(ctx, rx, ry, rw, rh, bg);
-
-                let prefix_str = prefix.to_string();
-                draw_text(
-                    ctx,
-                    font,
-                    &prefix_str,
-                    rx + UNIFIED_PAD,
-                    ry,
-                    color_to_cg(fg),
-                );
-                let (prefix_w, _) = measure_text(font, &prefix_str);
-
-                let text = unified_row_text(row);
-                let text_x = rx + UNIFIED_PAD + prefix_w + TEXT_PAD;
-                clipped_text(
-                    ctx,
-                    font,
-                    text,
-                    text_x,
-                    ry,
-                    text_x,
-                    ry,
-                    (rw - (text_x - rx)).max(0.0),
-                    rh,
-                    fg,
-                );
-            }
-        }
-    }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Paint `text` at `(tx, ty)` clipped to `(cx, cy, cw, ch)`.
-///
-/// Core Text has no `EllipsizeMode`; clipping is the macOS equivalent of
-/// the GTK twin's `cr.clip()` + `set_ellipsize` pair.
-#[allow(clippy::too_many_arguments)]
-unsafe fn clipped_text(
-    ctx: CGContextRef,
-    font: &CTFont,
-    text: &str,
-    tx: f64,
-    ty: f64,
-    cx: f64,
-    cy: f64,
-    cw: f64,
-    ch: f64,
-    color: Color,
-) {
-    if cw <= 0.0 || ch <= 0.0 || text.is_empty() {
-        return;
-    }
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(cx, cy, cw, ch));
-    draw_text(ctx, font, text, tx, ty, color_to_cg(color));
-    CGContextRestoreGState(ctx);
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
+    let mut surface = RawMacDiffViewSurface { ctx, font };
+    crate::primitives::diff_view::native_surface_paint::paint(
+        view,
+        &mut surface,
+        theme,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
+        line_height as f32,
     )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -308,6 +174,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
+    use crate::primitives::diff_view::DiffMode;
     use crate::types::WidgetId;
     use crate::Backend;
 
@@ -346,6 +213,11 @@ mod tests {
             .expect("fixture should contain the requested row kind")
     }
 
+    /// Paint `view` via the real [`Backend::draw_diff_view`] trait
+    /// method — which now routes through the shared `native_surface_paint::paint`
+    /// — rather than the deprecated free-function shim, so these tests
+    /// don't trip the `-D warnings`-denied `deprecated` lint (CLAUDE.md
+    /// rule 3; mirrors `gtk::backend`'s identical test-migration note).
     fn paint_via_backend(view: &DiffView, rect: QRect) -> (BitmapSurface, DiffViewLayout, f64) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(1.0, 1.0, 1.0, 1.0);
