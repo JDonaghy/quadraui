@@ -586,6 +586,477 @@ impl DiffView {
     }
 }
 
+// ── NativeSurface paint (#866, Phase 2d slice 9/9 of the NativeSurface
+// milestone, #811 / #785) ───────────────────────────────────────────────
+//
+// Before this, `gtk::diff_view::draw_diff_view` (Cairo + Pango),
+// `macos::diff_view::draw_diff_view` (Core Graphics + Core Text) and
+// `win::diff_view::draw_diff_view` (Direct2D + DirectWrite) each
+// independently painted the same row/pane geometry (already unified by
+// #737's `DiffView::layout`) with their own drawing API. `paint` below is
+// the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API — same shape as `scrollbar`'s #811 slice 1/9
+// migration (commit `2a47547`).
+//
+// ## Divergences found (re-verified, reported here rather than silently
+// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
+// acceptance bar)
+//
+// 1. **Row/header text vertical alignment.** `gtk::diff_view` vertically
+//    centred every text draw within its row's `line_height` band
+//    (`ly + (lh - text_h) / 2.0`, both for the pane header labels and for
+//    row content). `macos::diff_view` and `win::diff_view` both drew
+//    flush to the row's *top* edge instead: `macos::text::draw_text`'s
+//    `y` parameter is documented as "the requested **top** of the glyph"
+//    (it shifts down by the font's ascent internally), and
+//    `win::text::create_text_format` never calls
+//    `IDWriteTextFormat::SetParagraphAlignment`, so DirectWrite defaults
+//    to top alignment too. Every already-migrated primitive that draws a
+//    fixed-height row through [`crate::native_surface::NativeSurface::surface_draw_text_run`]
+//    (`status_bar`, `text_display`) draws at the row rect's own `y` with
+//    no manual centring offset, so that is this trait method's
+//    established contract — `paint` below follows it (top alignment on
+//    all three backends) rather than reproducing GTK's one-off centring.
+//    Net effect: GTK's row/header text now sits at the top of its row
+//    instead of vertically centred — a visible, if small (line_height
+//    closely tracks glyph height), change on GTK only.
+// 2. **Header-label overflow handling.** `gtk::diff_view` ellipsized an
+//    overflowing `left_label`/`right_label` with Pango's
+//    `EllipsizeMode::End` (a trailing "…"). `macos::diff_view` and
+//    `win::diff_view` both hard-clipped instead (`CGContextClipToRect` /
+//    `D2D1_DRAW_TEXT_OPTIONS_CLIP`), cutting the glyph run off exactly at
+//    the pane edge with no ellipsis. `NativeSurface` has no ellipsize
+//    verb, so `paint` hard-clips header labels on every backend — the
+//    macOS/Windows behaviour. An overlong label on GTK now hard-clips
+//    instead of ellipsizing.
+//
+// `#[allow(dead_code)]`: see `primitives::scrollbar`'s identical note —
+// only *called* once a real pixel backend is compiled in, exercised by
+// each backend's own `Backend::draw_diff_view` call sites plus this
+// module's own `RecordingSurface` tests on every leg that enables one of
+// the three cfg'd features.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{
+        row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
+        DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
+    };
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// Text inset from a pane's left edge — mirrors every deleted
+    /// per-backend `TEXT_PAD`/`TEXT_PAD_DIP` constant (all `4.0`).
+    const TEXT_PAD: f32 = 4.0;
+    /// Text inset used in unified mode — mirrors every deleted
+    /// per-backend `UNIFIED_PAD`/`UNIFIED_PAD_DIP` constant (all `2.0`).
+    const UNIFIED_PAD: f32 = 2.0;
+
+    /// Paint a [`DiffView`] into `rect` on `surface`, returning
+    /// [`DiffViewLayout`] for scroll clamping — same contract as every
+    /// deleted per-backend `draw_diff_view`.
+    pub(crate) fn paint(
+        view: &DiffView,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+    ) -> DiffViewLayout {
+        let geometry = view.layout(rect, line_height);
+        if rect.width <= 0.0 || rect.height <= 0.0 || line_height <= 0.0 {
+            return geometry.as_layout();
+        }
+
+        surface.surface_fill_rect(rect, theme.background);
+
+        match view.mode {
+            DiffMode::SideBySide => paint_side_by_side(view, surface, theme, &geometry),
+            DiffMode::Unified => paint_unified(view, surface, theme, &geometry),
+        }
+
+        geometry.as_layout()
+    }
+
+    /// Paint `text` clipped to `rect`, inset by `pad` on its left edge and
+    /// top-aligned within `rect` (see this module's doc, divergence 1). A
+    /// non-positive `rect` or empty `text` paints nothing — mirrors
+    /// `macos::diff_view`'s pre-migration `clipped_text` guard.
+    fn paint_clipped_text(
+        surface: &mut dyn NativeSurface,
+        rect: Rect,
+        pad: f32,
+        text: &str,
+        color: Color,
+    ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 || text.is_empty() {
+            return;
+        }
+        surface.surface_push_clip(rect);
+        surface.surface_draw_text_run(
+            Rect::new(
+                rect.x + pad,
+                rect.y,
+                (rect.width - pad).max(0.0),
+                rect.height,
+            ),
+            text,
+            color,
+        );
+        surface.surface_pop_clip();
+    }
+
+    fn paint_side_by_side(
+        view: &DiffView,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        geometry: &DiffViewGeometry,
+    ) {
+        let flat = view.flat_rows();
+
+        if let Some(header) = &geometry.header {
+            let strip = Rect::new(
+                header.left.x,
+                header.left.y,
+                header.left.width + header.divider.width + header.right.width,
+                header.left.height,
+            );
+            surface.surface_fill_rect(strip, theme.header_bg);
+            surface.surface_fill_rect(header.divider, theme.border_fg);
+
+            if let Some(label) = &view.left_label {
+                paint_clipped_text(surface, header.left, TEXT_PAD, label, theme.header_fg);
+            }
+            if let Some(label) = &view.right_label {
+                paint_clipped_text(surface, header.right, TEXT_PAD, label, theme.header_fg);
+            }
+        }
+
+        for line in &geometry.lines {
+            let DiffLineContent::Row { row_idx } = line.content else {
+                continue;
+            };
+            let row = flat[row_idx];
+            let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
+
+            let left_r = line.left.expect("side-by-side row has left bounds");
+            let right_r = line.right.expect("side-by-side row has right bounds");
+            let divider_r = line.divider.expect("side-by-side row has divider bounds");
+
+            surface.surface_fill_rect(left_r, left_bg);
+            surface.surface_fill_rect(right_r, right_bg);
+            surface.surface_fill_rect(divider_r, theme.border_fg);
+
+            if let Some(text) = &row.left {
+                paint_clipped_text(surface, left_r, TEXT_PAD, text, left_fg);
+            }
+            if let Some(text) = &row.right {
+                paint_clipped_text(surface, right_r, TEXT_PAD, text, right_fg);
+            }
+        }
+    }
+
+    fn paint_unified(
+        view: &DiffView,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        geometry: &DiffViewGeometry,
+    ) {
+        let flat = view.flat_rows();
+
+        for line in &geometry.lines {
+            let bounds = line.bounds;
+
+            match line.content {
+                DiffLineContent::UnifiedHeader { hunk_idx } => {
+                    let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
+                    surface.surface_fill_rect(bounds, theme.background);
+                    paint_clipped_text(surface, bounds, UNIFIED_PAD, &header_text, theme.accent_fg);
+                }
+                DiffLineContent::Row { row_idx } => {
+                    let row = flat[row_idx];
+                    let (prefix, fg, bg) = unified_row_style(row.kind, theme);
+                    surface.surface_fill_rect(bounds, bg);
+
+                    let prefix_str = prefix.to_string();
+                    let (prefix_w, _) = surface.surface_measure_text(&prefix_str);
+                    surface.surface_draw_text_run(
+                        Rect::new(
+                            bounds.x + UNIFIED_PAD,
+                            bounds.y,
+                            prefix_w.max(1.0),
+                            bounds.height,
+                        ),
+                        &prefix_str,
+                        fg,
+                    );
+
+                    let text = unified_row_text(row);
+                    let text_x = bounds.x + UNIFIED_PAD + prefix_w + TEXT_PAD;
+                    let text_rect = Rect::new(
+                        text_x,
+                        bounds.y,
+                        (bounds.x + bounds.width - text_x).max(0.0),
+                        bounds.height,
+                    );
+                    paint_clipped_text(surface, text_rect, 0.0, text, fg);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::diff_view::{DiffHunk, DiffRow, DiffRowKind};
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues — mirrors
+        /// `primitives::chart`/`primitives::text_display`'s own
+        /// `RecordingSurface` (#810/#865).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+            clip_pushes: Vec<Rect>,
+            clip_pops: usize,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample_view(mode: DiffMode) -> DiffView {
+            DiffView {
+                id: WidgetId::new("diff"),
+                left: "one\ntwo\n".into(),
+                right: "one\nTWO\n".into(),
+                left_label: None,
+                right_label: None,
+                hunks: vec![DiffHunk {
+                    left_start: 1,
+                    right_start: 1,
+                    rows: vec![
+                        DiffRow {
+                            left: Some("one".into()),
+                            right: Some("one".into()),
+                            kind: DiffRowKind::Same,
+                        },
+                        DiffRow {
+                            left: Some("two".into()),
+                            right: Some("TWO".into()),
+                            kind: DiffRowKind::Changed,
+                        },
+                    ],
+                }],
+                mode,
+                editability: Default::default(),
+                scroll_offset: 0,
+                focused_pane: Default::default(),
+                has_focus: false,
+            }
+        }
+
+        #[test]
+        fn zero_size_rect_paints_nothing() {
+            let view = sample_view(DiffMode::SideBySide);
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                16.0,
+            );
+            assert_eq!(layout.visible_rows, 0);
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        #[test]
+        fn side_by_side_paints_row_backgrounds_and_divider() {
+            let view = sample_view(DiffMode::SideBySide);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 32.0),
+                16.0,
+            );
+
+            // 1 full-view background + (left, right, divider) per row × 2 rows.
+            assert_eq!(surface.fills.len(), 1 + 3 * 2);
+        }
+
+        /// Regression for divergence 1: text paints top-aligned (`y` equal
+        /// to the pane rect's own `y`), not vertically centred within
+        /// `line_height` the way GTK's pre-migration copy did.
+        #[test]
+        fn row_text_paints_clipped_and_top_aligned() {
+            let view = sample_view(DiffMode::SideBySide);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 32.0),
+                16.0,
+            );
+
+            assert_eq!(surface.clip_pushes.len(), surface.clip_pops);
+            assert!(!surface.text_runs.is_empty());
+            let (rect, text, _) = &surface.text_runs[0];
+            assert_eq!(text, "one");
+            assert_eq!(
+                rect.y, 0.0,
+                "row 0 text must be top-aligned at the row's own y"
+            );
+        }
+
+        /// Regression for divergence 2: an overlong header label clips
+        /// (pushes a clip at the header strip's own bounds) rather than
+        /// ellipsizing.
+        #[test]
+        fn header_label_paints_clipped_not_ellipsized() {
+            let mut view = sample_view(DiffMode::SideBySide);
+            view.left_label = Some("a/very/long/path/that/would/overflow.rs".into());
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 40.0, 32.0),
+                16.0,
+            );
+
+            assert_eq!(layout.visible_rows, 1, "header steals one row");
+            assert_eq!(surface.clip_pushes.len(), surface.clip_pops);
+            assert!(
+                surface.clip_pushes.iter().any(|r| r.height == 16.0),
+                "header label clip uses the header strip's own height"
+            );
+        }
+
+        #[test]
+        fn unified_mode_paints_hunk_header_and_prefix() {
+            let view = sample_view(DiffMode::Unified);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                16.0,
+            );
+
+            assert_eq!(layout.total_rows, view.total_rows() + view.hunks.len());
+            let header_text = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t.starts_with("@@"))
+                .map(|(_, t, _)| t.clone())
+                .expect("hunk header text painted");
+            assert_eq!(header_text, "@@ -1,2 +1,2 @@");
+
+            // The `Changed` row's unified prefix is `-`.
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "-"));
+        }
+
+        /// A padding row (`None` on one side) must not push/pop a clip for
+        /// the missing side — mirrors every pre-migration backend's `if
+        /// let Some(text)` guard.
+        #[test]
+        fn padding_row_paints_no_clip_for_missing_side() {
+            let view = DiffView {
+                id: WidgetId::new("diff"),
+                left: String::new(),
+                right: String::new(),
+                left_label: None,
+                right_label: None,
+                hunks: vec![DiffHunk {
+                    left_start: 1,
+                    right_start: 1,
+                    rows: vec![DiffRow {
+                        left: Some("x".into()),
+                        right: None,
+                        kind: DiffRowKind::Removed,
+                    }],
+                }],
+                mode: DiffMode::SideBySide,
+                editability: Default::default(),
+                scroll_offset: 0,
+                focused_pane: Default::default(),
+                has_focus: false,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 16.0),
+                16.0,
+            );
+
+            assert_eq!(surface.text_runs.len(), 1);
+            assert_eq!(surface.text_runs[0].1, "x");
+            assert_eq!(surface.clip_pushes.len(), 1);
+            assert_eq!(surface.clip_pops, 1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

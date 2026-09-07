@@ -3640,25 +3640,25 @@ impl Backend for GtkBackend {
         result
     }
 
+    /// #866: paint via the shared
+    /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
+    /// see that fn's doc for the two named divergences (row/header text
+    /// vertical alignment; header-label ellipsize vs. hard-clip) found
+    /// while unifying `gtk::diff_view::draw_diff_view`,
+    /// `macos::diff_view::draw_diff_view` and
+    /// `win::diff_view::draw_diff_view` into one implementation.
     fn draw_diff_view(
         &mut self,
         rect: QRect,
         view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_diff_view called outside enter_frame_scope");
-        crate::gtk::draw_diff_view(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
+        let line_height = self.current_line_height as f32;
+        crate::primitives::diff_view::native_surface_paint::paint(
             view,
+            self,
             &theme,
+            rect,
             line_height,
         )
     }
@@ -6094,8 +6094,14 @@ mod tests {
     /// Issue #506 review fix: `diff_view_layout` is claimed to be
     /// "verified byte-for-byte against each backend's real paint
     /// formula" — this test (and its unified-mode sibling below) makes
-    /// that claim true for GTK. `gtk::draw_diff_view` returns its
-    /// `DiffViewLayout` directly, so this compares the no-paint default
+    /// that claim true for GTK. Since #866, painting goes through
+    /// `Backend::draw_diff_view` (the shared
+    /// `primitives::diff_view::native_surface_paint::paint`), not the
+    /// deprecated `gtk::draw_diff_view` free-function shim — routing
+    /// through the real trait method here avoids tripping the `-D
+    /// warnings`-denied `deprecated` lint (CLAUDE.md rule 3), matching
+    /// `gtk_backend_editor_layout_matches_draw_editor_gutter_and_text_geometry`'s
+    /// own `enter_frame_scope` shape. This compares the no-paint default
     /// body against the exact value the real paint path produced, in
     /// `SideBySide` mode with a header row reserved.
     #[test]
@@ -6112,17 +6118,11 @@ mod tests {
         let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
-        let painted = crate::gtk::draw_diff_view(
-            &cr,
-            &pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            &view,
-            &backend.current_theme,
-            backend.current_line_height,
-        );
+        let painted = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            *painted.borrow_mut() = Some(b.draw_diff_view(rect, &view));
+        });
+        let painted = painted.into_inner().expect("layout captured");
 
         assert_eq!(
             no_paint, painted,
@@ -6151,17 +6151,11 @@ mod tests {
         let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
-        let painted = crate::gtk::draw_diff_view(
-            &cr,
-            &pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            &view,
-            &backend.current_theme,
-            backend.current_line_height,
-        );
+        let painted = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            *painted.borrow_mut() = Some(b.draw_diff_view(rect, &view));
+        });
+        let painted = painted.into_inner().expect("layout captured");
 
         assert_eq!(
             no_paint, painted,

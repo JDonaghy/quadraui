@@ -1,25 +1,16 @@
 //! Direct2D / DirectWrite rasteriser for
 //! [`crate::primitives::diff_view::DiffView`] (#737).
 //!
-//! Mirrors the gtk/macos/tui twins' structure: [`DiffView::layout`] (the
-//! shared layout API lifted out of three near-identical backend copies by
-//! #737) resolves pane widths, the divider position, the optional header
-//! strip, and the scroll-clamped visible-line window — this module only
-//! converts that DIP-agnostic `f32` geometry to paint calls via
-//! [`fill_rect`]/[`DWrite::draw_text`].
-//!
-//! The `row kind → colour` tables are **not** duplicated here either.
-//! They lived three times over (gtk, macos, tui) before #737; #713's
-//! primitive-first rule forbids a fourth copy, so this rasteriser calls
-//! [`crate::primitives::diff_view::row_colors`] (side-by-side) /
-//! [`crate::primitives::diff_view::unified_row_style`] (unified) — same
-//! as every other backend, migrated in the same PR.
-//!
-//! Unlike the GTK/macOS twins, no explicit clip bracket is needed around
-//! pane/row text: [`DWrite::draw_text`] already paints with
-//! `D2D1_DRAW_TEXT_OPTIONS_CLIP` against the rect it's handed (see
-//! `win::text`'s module doc), so an overlong line is clipped by
-//! construction rather than by a `push_clip`/`pop_clip` bracket.
+//! Painting moved to the shared
+//! [`crate::primitives::diff_view::native_surface_paint::paint`] (#866,
+//! `NativeSurface` Phase 2d slice 9/9) — see that fn's doc for the two
+//! named divergences (row/header text vertical alignment; header-label
+//! ellipsize vs. hard-clip) found while unifying
+//! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
+//! and `win::diff_view::draw_diff_view` into one implementation. This
+//! module now only carries [`RawWinDiffViewSurface`] and the deprecated
+//! [`draw_diff_view`] compatibility shim over it, mirroring
+//! `win::status_bar::RawWinStatusBarSurface` (#860).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod diff_view;` and `backend.rs`'s
@@ -37,31 +28,103 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+use super::text::{pop_clip, push_clip, DWrite};
 use crate::event::Rect;
-use crate::primitives::diff_view::{
-    row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
-    DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
-};
+use crate::native_surface::NativeSurface;
+use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::theme::Theme;
 
-/// Text inset from a pane's left edge, DIPs. Mirrors the GTK/macOS twins'
-/// `TEXT_PAD` constant.
-const TEXT_PAD_DIP: f32 = 4.0;
-/// Text inset used in unified mode (tighter, matching the GTK/macOS twins).
-const UNIFIED_PAD_DIP: f32 = 2.0;
-
-/// `rect` shrunk by `pad` DIPs on its left edge — the DirectWrite
-/// equivalent of the GTK/macOS twins' `x + TEXT_PAD` move-to, since
-/// [`DWrite::draw_text`] takes the whole layout box rather than a cursor
-/// position.
-fn inset_left(r: Rect, pad: f32) -> Rect {
-    Rect::new(r.x + pad, r.y, (r.width - pad).max(0.0), r.height)
+/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget` +
+/// [`DWrite`], used only by the deprecated [`draw_diff_view`] shim below
+/// and by this module's own tests — mirrors
+/// `win::status_bar::RawWinStatusBarSurface`'s identical pattern (#860),
+/// extended with clip push/pop, which this primitive's paint actually
+/// uses.
+pub(crate) struct RawWinDiffViewSurface<'a> {
+    pub(crate) target: &'a ID2D1RenderTarget,
+    pub(crate) dwrite: &'a DWrite,
 }
 
-/// Draw a [`DiffView`] into `rect` (DIPs, target-relative) on `target`.
-/// Returns [`DiffViewLayout`] for scroll clamping — same contract as the
-/// GTK/macOS/TUI twins' `draw_diff_view`.
+impl NativeSurface for RawWinDiffViewSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawWinDiffViewSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawWinDiffViewSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawWinDiffViewSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawWinDiffViewSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawWinDiffViewSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        let _ = super::text::fill_rect(self.target, rect, color);
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("DiffView::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
+        let _ = self.dwrite.draw_text(self.target, text, rect, color);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("DiffView::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, rect: crate::Rect) {
+        push_clip(self.target, rect);
+    }
+
+    fn surface_pop_clip(&mut self) {
+        pop_clip(self.target);
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("DiffView::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#866, CLAUDE.md rule 8): reproduces
+/// the pre-#866 signature exactly for any external caller that held a
+/// direct `quadraui::win::draw_diff_view` reference rather than going
+/// through [`crate::Backend::draw_diff_view`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_diff_view` instead — this free function is a compatibility shim over the shared #866 implementation"
+)]
 pub fn draw_diff_view(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -70,144 +133,21 @@ pub fn draw_diff_view(
     theme: &Theme,
     line_height: f32,
 ) -> DiffViewLayout {
-    let geometry = view.layout(rect, line_height);
-
-    if rect.width <= 0.0 || rect.height <= 0.0 || line_height <= 0.0 {
-        return geometry.as_layout();
-    }
-
-    let _ = fill_rect(target, rect, theme.background);
-
-    match view.mode {
-        DiffMode::SideBySide => draw_side_by_side(target, dwrite, view, theme, &geometry),
-        DiffMode::Unified => draw_unified(target, dwrite, view, theme, &geometry),
-    }
-
-    geometry.as_layout()
-}
-
-// ── Side-by-side ─────────────────────────────────────────────────────────────
-
-fn draw_side_by_side(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    view: &DiffView,
-    theme: &Theme,
-    geometry: &DiffViewGeometry,
-) {
-    let flat = view.flat_rows();
-
-    if let Some(header) = &geometry.header {
-        let strip = Rect::new(
-            header.left.x,
-            header.left.y,
-            header.left.width + header.divider.width + header.right.width,
-            header.left.height,
-        );
-        let _ = fill_rect(target, strip, theme.header_bg);
-        let _ = fill_rect(target, header.divider, theme.border_fg);
-
-        if let Some(label) = &view.left_label {
-            let _ = dwrite.draw_text(
-                target,
-                label,
-                inset_left(header.left, TEXT_PAD_DIP),
-                theme.header_fg,
-            );
-        }
-        if let Some(label) = &view.right_label {
-            let _ = dwrite.draw_text(
-                target,
-                label,
-                inset_left(header.right, TEXT_PAD_DIP),
-                theme.header_fg,
-            );
-        }
-    }
-
-    for line in &geometry.lines {
-        let DiffLineContent::Row { row_idx } = line.content else {
-            continue;
-        };
-        let row = flat[row_idx];
-        let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
-
-        let left_r = line.left.expect("side-by-side row has left bounds");
-        let right_r = line.right.expect("side-by-side row has right bounds");
-        let divider_r = line.divider.expect("side-by-side row has divider bounds");
-
-        let _ = fill_rect(target, left_r, left_bg);
-        let _ = fill_rect(target, right_r, right_bg);
-        let _ = fill_rect(target, divider_r, theme.border_fg);
-
-        if let Some(text) = &row.left {
-            let _ = dwrite.draw_text(target, text, inset_left(left_r, TEXT_PAD_DIP), left_fg);
-        }
-        if let Some(text) = &row.right {
-            let _ = dwrite.draw_text(target, text, inset_left(right_r, TEXT_PAD_DIP), right_fg);
-        }
-    }
-}
-
-// ── Unified ──────────────────────────────────────────────────────────────────
-
-fn draw_unified(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    view: &DiffView,
-    theme: &Theme,
-    geometry: &DiffViewGeometry,
-) {
-    let flat = view.flat_rows();
-
-    for line in &geometry.lines {
-        match line.content {
-            DiffLineContent::UnifiedHeader { hunk_idx } => {
-                let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
-                let _ = fill_rect(target, line.bounds, theme.background);
-                let _ = dwrite.draw_text(
-                    target,
-                    &header_text,
-                    inset_left(line.bounds, UNIFIED_PAD_DIP),
-                    theme.accent_fg,
-                );
-            }
-            DiffLineContent::Row { row_idx } => {
-                let row = flat[row_idx];
-                let (prefix, fg, bg) = unified_row_style(row.kind, theme);
-                let _ = fill_rect(target, line.bounds, bg);
-
-                let prefix_str = prefix.to_string();
-                let prefix_w = dwrite
-                    .measure_text(&prefix_str)
-                    .map(|(w, _)| w)
-                    .unwrap_or(0.0);
-                let _ = dwrite.draw_text(
-                    target,
-                    &prefix_str,
-                    inset_left(line.bounds, UNIFIED_PAD_DIP),
-                    fg,
-                );
-
-                let text = unified_row_text(row);
-                let text_x = line.bounds.x + UNIFIED_PAD_DIP + prefix_w + TEXT_PAD_DIP;
-                let text_rect = Rect::new(
-                    text_x,
-                    line.bounds.y,
-                    (line.bounds.x + line.bounds.width - text_x).max(0.0),
-                    line.bounds.height,
-                );
-                let _ = dwrite.draw_text(target, text, text_rect, fg);
-            }
-        }
-    }
+    let mut surface = RawWinDiffViewSurface { target, dwrite };
+    crate::primitives::diff_view::native_surface_paint::paint(
+        view,
+        &mut surface,
+        theme,
+        rect,
+        line_height,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::diff::compute_hunks;
-    use crate::primitives::diff_view::DiffRowKind;
+    use crate::primitives::diff_view::{DiffMode, DiffRowKind};
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
@@ -241,6 +181,36 @@ mod tests {
             .expect("fixture should contain the requested row kind")
     }
 
+    /// Paint `view` via the shared
+    /// [`crate::primitives::diff_view::native_surface_paint::paint`]
+    /// through a [`RawWinDiffViewSurface`] over `surface`'s headless
+    /// target — the same adapter the deprecated [`draw_diff_view`] shim
+    /// uses, exercised here directly so these tests don't trip the
+    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
+    /// `win::status_bar`'s identical test-migration note).
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        rect: Rect,
+        view: &DiffView,
+        theme: &Theme,
+        line_height: f32,
+    ) -> DiffViewLayout {
+        surface
+            .paint(|target| {
+                let mut raw = RawWinDiffViewSurface { target, dwrite };
+                crate::primitives::diff_view::native_surface_paint::paint(
+                    view,
+                    &mut raw,
+                    theme,
+                    rect,
+                    line_height,
+                );
+            })
+            .map(|_| view.layout(rect, line_height).as_layout())
+            .expect("paint diff view")
+    }
+
     /// C0 smoke: `draw_diff_view` must actually paint text + a
     /// scroll-clamp-usable layout rather than panicking or hitting a
     /// `todo!()` (#737's acceptance bar — "draw_diff_view survives C0
@@ -256,12 +226,7 @@ mod tests {
         let view = sample_view(DiffMode::SideBySide);
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        let layout = surface
-            .paint(|target| {
-                draw_diff_view(target, &dwrite, rect, &view, &theme, LINE_HEIGHT);
-            })
-            .map(|_| view.layout(rect, LINE_HEIGHT).as_layout())
-            .expect("paint diff view");
+        let layout = paint(&surface, &dwrite, rect, &view, &theme, LINE_HEIGHT);
 
         assert!(layout.visible_rows > 0);
         assert_eq!(layout.total_rows, view.total_rows());
@@ -292,11 +257,7 @@ mod tests {
         let view = sample_view(DiffMode::SideBySide);
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        surface
-            .paint(|target| {
-                draw_diff_view(target, &dwrite, rect, &view, &theme, LINE_HEIGHT);
-            })
-            .expect("paint diff view");
+        paint(&surface, &dwrite, rect, &view, &theme, LINE_HEIGHT);
 
         let changed = first_row_of(&view, DiffRowKind::Changed);
         let geometry = view.layout(rect, LINE_HEIGHT);
@@ -334,11 +295,7 @@ mod tests {
             .fill_rect(Rect::new(0.0, 0.0, W, H), Color::rgb(255, 255, 255))
             .expect("fill sentinel background");
 
-        surface
-            .paint(|target| {
-                draw_diff_view(target, &dwrite, rect, &view, &theme, LINE_HEIGHT);
-            })
-            .expect("paint diff view");
+        paint(&surface, &dwrite, rect, &view, &theme, LINE_HEIGHT);
 
         let geometry = view.layout(rect, LINE_HEIGHT);
         let panes = geometry.panes.expect("side-by-side has panes");
@@ -377,12 +334,7 @@ mod tests {
         let view = sample_view(DiffMode::Unified);
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        let layout = surface
-            .paint(|target| {
-                draw_diff_view(target, &dwrite, rect, &view, &theme, LINE_HEIGHT);
-            })
-            .map(|_| view.layout(rect, LINE_HEIGHT).as_layout())
-            .expect("paint diff view");
+        let layout = paint(&surface, &dwrite, rect, &view, &theme, LINE_HEIGHT);
 
         let hunk_count = view.hunks.len();
         assert!(hunk_count > 0, "fixture should produce at least one hunk");
@@ -404,12 +356,7 @@ mod tests {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let theme = Theme::default();
 
-        let painted = surface
-            .paint(|target| {
-                draw_diff_view(target, &dwrite, rect, &view, &theme, LINE_HEIGHT);
-            })
-            .map(|_| view.layout(rect, LINE_HEIGHT).as_layout())
-            .expect("paint");
+        let painted = paint(&surface, &dwrite, rect, &view, &theme, LINE_HEIGHT);
         let no_paint = view.layout(rect, LINE_HEIGHT).as_layout();
         assert_eq!(painted, no_paint);
     }
@@ -431,11 +378,7 @@ mod tests {
             .fill_rect(Rect::new(0.0, 0.0, W, H), Color::rgb(255, 255, 255))
             .expect("fill background");
 
-        surface
-            .paint(|target| {
-                draw_diff_view(target, &dwrite, rect, &view, &theme, LINE_HEIGHT);
-            })
-            .expect("paint diff view");
+        paint(&surface, &dwrite, rect, &view, &theme, LINE_HEIGHT);
 
         let px = surface.pixel_at(1, 1);
         assert_eq!(

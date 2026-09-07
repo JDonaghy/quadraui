@@ -3078,20 +3078,32 @@ impl Backend for WinBackend {
     /// #737: `diff_view_layout` is **not** overridden on this backend —
     /// see `win::diff_view`'s module doc for why the trait default stays
     /// the honest answer even after the shared `DiffView::layout` landed.
+    ///
+    /// #866: paint via the shared
+    /// [`crate::primitives::diff_view::native_surface_paint::paint`]
+    /// once a surface is attached — mirrors [`Self::draw_scrollbar`]. See
+    /// that fn's doc for the two named divergences (row/header text
+    /// vertical alignment; header-label ellipsize vs. hard-clip) found
+    /// while unifying `gtk::diff_view::draw_diff_view`,
+    /// `macos::diff_view::draw_diff_view` and
+    /// `win::diff_view::draw_diff_view` into one implementation. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
     fn draw_diff_view(
         &mut self,
         rect: Rect,
         view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::diff_view::draw_diff_view(
-                &surface.target,
-                dwrite,
-                rect,
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            let line_height = self.current_line_height;
+            return crate::primitives::diff_view::native_surface_paint::paint(
                 view,
-                &self.current_theme,
-                self.current_line_height,
+                self,
+                &theme,
+                rect,
+                line_height,
             );
         }
         #[cfg(not(target_os = "windows"))]
