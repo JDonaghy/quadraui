@@ -74,6 +74,26 @@
 //! and in both downstream consumers. Retiring them is its own
 //! rule-3 sequence.
 //!
+//! ## What is deliberately not owned by the runner (yet)
+//!
+//! Issue #819's fix description asks for `InteractionState` to be "owned
+//! and updated by the runner from `MouseMoved`/`MouseDown`, read by
+//! rasterisers" — i.e. `quadraui::{tui,gtk,macos,win}::run` would hold
+//! the single instance and every `AppLogic` would just read it. This PR
+//! does not do that: `run.rs` in any backend holds no `InteractionState`
+//! today. Every consumer that uses this type
+//! (`examples/common/toolbar_app.rs`, `full_chrome_demo.rs`,
+//! `multi_tree.rs`, `sidebar_panel_app.rs`) owns and feeds its own
+//! instance by hand inside its own `AppLogic::handle`, the same shape of
+//! boilerplate the bespoke trackers it replaces required — just against
+//! one shared type instead of several bespoke ones. Moving ownership
+//! into the runner is a real architectural change (it means threading
+//! `&InteractionState` through `AppLogic::render`'s signature, which is
+//! `pub` surface every backend and both downstream consumers implement),
+//! not just a refactor of this module, and is left as follow-up work:
+//! give the runner ownership of one `InteractionState` per frame and
+//! drop the per-app copies above.
+//!
 //! ## Usage
 //!
 //! ```

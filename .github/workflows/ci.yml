@@ -511,7 +511,17 @@ jobs:
       # status. With --no-fail-fast, cargo still runs (and reports) every
       # target, and the step still fails overall if anything failed.
       - name: Test (gtk + tui features)
+        # Same narrowed override as the tui job's "Test (tui feature)"
+        # step, and for the same reason (#819): the sealed
+        # `quadraui/tests/acceptance.rs` / `tests/acceptance/**` slices
+        # call the now-`#[deprecated]` positional `Backend::draw_status_bar`,
+        # workers may not edit either sealed path, and `cargo test
+        # --workspace` compiles that target under this job's `gtk,tui`
+        # features too. Only `deprecated` is relaxed; every other lint
+        # stays denied.
         run: cargo test --features gtk,tui --workspace --exclude kubeui --no-fail-fast
+        env:
+          RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (gtk + tui features)
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
       # `gtk_terminal` declares `required-features = ["gtk", "terminal"]`
