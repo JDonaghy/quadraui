@@ -130,21 +130,32 @@ release time.
   the PR body).
 - `quadraui::undo::UndoStack<T>` (issue #833) — a generic, snapshot-based
   undo/redo stack, reusable by any primitive (not just `TextInput`).
-- `TextInput::apply(EditOp)` (issue #833) — the primitive's first real
-  editing behaviour: insert, delete, cursor movement, and shift-to-select
-  selection, plus `EditOp::Undo`/`EditOp::Redo` backed by a private
-  `UndoStack`. `EditOp::from_key` maps a plain keypress to the op it
-  means; `EditOp::from_key_binding` wires the long-declared
+- `TextEditor` + `TextEditor::apply(EditOp)` (issue #833) — the
+  `TextInput` primitive's first real editing behaviour: insert, delete,
+  cursor movement, and shift-to-select selection, plus
+  `EditOp::Undo`/`EditOp::Redo` backed by a bounded `UndoStack` (200
+  steps). `TextEditor::selection_range`/`selected_text`/
+  `selection_anchor`/`set_selection_anchor` read and drive the selection.
+  `EditOp::from_key` maps a plain keypress to the op it means;
+  `EditOp::from_key_binding` wires the long-declared
   `KeyBinding::Undo`/`Redo`/`SelectAll` accelerator names (previously
-  unconsumed) to real behaviour. New `TextInput::selection_anchor` field
-  (`#[serde(default)]`, additive) and `TextInput::selection_range`/
-  `selected_text` read helpers. Before this, every consumer (including
+  unconsumed) to real behaviour. Before this, every consumer (including
   this crate's own `examples/common/text_input_demo.rs`) hand-rolled
-  insert/backspace/cursor-movement logic itself. `TextInput` also gained
-  a new *private* field (`undo_stack`) — see `## Downstream impact` in
-  the PR body: any exhaustive external `TextInput { .. }` struct literal
-  (as opposed to `TextInput::new(id)` + field assignment) no longer
-  compiles.
+  insert/backspace/cursor-movement logic itself.
+
+  **`TextInput`'s own field list is unchanged, deliberately** — this is
+  fully additive for downstream consumers, with no migration required.
+  `TextEditor` is a wrapper (`Deref`/`DerefMut` to the wrapped
+  `TextInput`, plus a public `input` field) precisely so that the two
+  pieces of live editing state, the selection anchor and the undo
+  history, do *not* become new `TextInput` fields. Adding **any** field
+  to `TextInput` — `pub` or private — breaks external exhaustive
+  `TextInput { .. }` struct literals (`E0063` / `E0451` respectively;
+  `..Default::default()` does not rescue the private case), and
+  `vimcode`'s `src/render.rs::sc_commit_message_to_text_input()` is a
+  live such call site. See `## Downstream impact` in the PR body for the
+  grep, and the new `quadraui/tests/downstream_struct_literals.rs`, which
+  fails this repo's own CI if a future change re-breaks that literal.
 
 ### Changed
 

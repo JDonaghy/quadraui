@@ -19,11 +19,13 @@
 //! `char_width` a second time (#733's acceptance bar — "no geometry
 //! re-derived in `win/`").
 //!
-//! `TextInput` gained a `selection_anchor` field under #833, but this
-//! rasteriser doesn't paint a selection highlight yet — only the cursor
-//! bar, matching `gtk::text_input`'s own (pre-#833) cursor-only contract.
-//! Painting the selection range is tracked as follow-up work alongside
-//! the other backends.
+//! `TextInput` still carries no selection range (#833 put the selection
+//! anchor on the `TextEditor` wrapper, not on the primitive — see that
+//! type's doc), so unlike a full editor there is no selection highlight
+//! to paint here — only the cursor bar, matching `gtk::text_input`'s own
+//! cursor-only contract. Painting a selection range is follow-up work
+//! across all backends, and will take the range as an argument rather
+//! than read it off `TextInput`.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod text_input;` and `backend.rs`'s
