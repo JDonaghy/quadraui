@@ -848,6 +848,50 @@ impl GtkBackend {
         })
     }
 
+    /// Shared body for `Backend::draw_toolbar` (deprecated, positional
+    /// `hovered_id`/`pressed_id`) and `Backend::draw_toolbar_interactive`
+    /// (issue #819, reads the same two values out of an
+    /// [`crate::InteractionState`]) — kept as one function so the two
+    /// trait methods can never drift apart while `draw_toolbar` is still
+    /// alive per `CLAUDE.md` rule 3.
+    fn draw_toolbar_impl(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        hovered_id: Option<&crate::types::WidgetId>,
+        pressed_id: Option<&crate::types::WidgetId>,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_toolbar called outside enter_frame_scope");
+        // #416: action labels and `Toolbar::Action` icon glyphs are chrome,
+        // not editor content — mirrors `Self::draw_list`/`Self::draw_tree`'s
+        // save/swap/restore. Before this, `draw_toolbar` painted with
+        // whatever font the shared layout happened to carry into the frame
+        // (typically the editor font, set once at frame start in
+        // `gtk/run.rs`), which has no Nerd-Font fallback family, so an
+        // icon glyph in `ToolbarButton::Action.icon` could render as
+        // tofu/blank depending on what else is installed.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let layout = crate::gtk::draw_toolbar(
+            cr,
+            pango_layout,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            &theme,
+            hovered_id,
+            pressed_id,
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        layout
+    }
+
     // ── Text selection ─────────────────────────────────────────────────────
     //
     // The region registry + active-selection state machine itself lives in
@@ -3497,35 +3541,16 @@ impl Backend for GtkBackend {
         hovered_id: Option<&crate::types::WidgetId>,
         pressed_id: Option<&crate::types::WidgetId>,
     ) -> crate::primitives::toolbar::ToolbarLayout {
-        let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_toolbar called outside enter_frame_scope");
-        // #416: action labels and `Toolbar::Action` icon glyphs are chrome,
-        // not editor content — mirrors `Self::draw_list`/`Self::draw_tree`'s
-        // save/swap/restore. Before this, `draw_toolbar` painted with
-        // whatever font the shared layout happened to carry into the frame
-        // (typically the editor font, set once at frame start in
-        // `gtk/run.rs`), which has no Nerd-Font fallback family, so an
-        // icon glyph in `ToolbarButton::Action.icon` could render as
-        // tofu/blank depending on what else is installed.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let layout = crate::gtk::draw_toolbar(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            &theme,
-            hovered_id,
-            pressed_id,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        layout
+        self.draw_toolbar_impl(rect, bar, hovered_id, pressed_id)
+    }
+
+    fn draw_toolbar_interactive(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        self.draw_toolbar_impl(rect, bar, interaction.hovered(), interaction.pressed())
     }
 
     fn toolbar_layout(
@@ -5656,7 +5681,8 @@ mod tests {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_toolbar(rect, &bar, None, None).visible_items[0]
+                b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
+                    .visible_items[0]
                     .bounds
                     .width
             })
@@ -5710,7 +5736,9 @@ mod tests {
         Backend::set_ui_font(&mut backend, "Sans 40");
 
         let painted = backend.enter_frame_scope(&cr, &layout, |b| {
-            b.draw_toolbar(rect, &bar, None, None).visible_items[0].bounds
+            b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
+                .visible_items[0]
+                .bounds
         });
         // Outside the frame scope — the click-time path.
         let hit_tested = Backend::toolbar_layout(&backend, rect, &bar).visible_items[0].bounds;

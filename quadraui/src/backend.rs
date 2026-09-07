@@ -70,6 +70,7 @@ use std::time::Duration;
 
 use crate::dispatch::DragState;
 use crate::event::{Point, Rect, UiEvent, Viewport};
+use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
@@ -1966,12 +1967,46 @@ pub trait Backend: sealed::Sealed {
     /// can route clicks via `layout.hit_test(x, y)` without re-deriving
     /// metrics. Same coordinate frame as [`Self::toolbar_layout`]
     /// (ABSOLUTE).
+    ///
+    /// # Deprecated (issue #819)
+    ///
+    /// Superseded by [`Self::draw_toolbar_interactive`], which takes an
+    /// [`InteractionState`] keyed by [`WidgetId`] instead of two
+    /// positional `Option<&WidgetId>` slots. Kept — fully implemented,
+    /// not a stub — per `CLAUDE.md` rule 3's two-PR deprecate-then-remove
+    /// protocol: both `coord-tui` and `vimcode` call this method
+    /// directly today, so removing it outright would break their builds
+    /// on the next `develop` pull. Migrate call sites to
+    /// `draw_toolbar_interactive` and file the removal PR once both
+    /// consumers have moved off this one.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `draw_toolbar_interactive` (reads hover/pressed from an `InteractionState` keyed by `WidgetId`) instead — issue #819"
+    )]
     fn draw_toolbar(
         &mut self,
         rect: Rect,
         bar: &Toolbar,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
+    ) -> ToolbarLayout;
+
+    /// Draw a [`Toolbar`], reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`] rather than two
+    /// positional `Option<&WidgetId>` slots (issue #819). Otherwise
+    /// identical to the deprecated [`Self::draw_toolbar`] this
+    /// supersedes — same paint, same [`ToolbarLayout`] return, same
+    /// ABSOLUTE coordinate frame as [`Self::toolbar_layout`].
+    ///
+    /// Every in-tree backend implements this by reading
+    /// `interaction.hovered()` / `interaction.pressed()` and painting
+    /// exactly what `draw_toolbar(rect, bar, hovered_id, pressed_id)`
+    /// used to — this is a new call shape, not a new visual behavior.
+    fn draw_toolbar_interactive(
+        &mut self,
+        rect: Rect,
+        bar: &Toolbar,
+        interaction: &InteractionState,
     ) -> ToolbarLayout;
 
     /// Compute toolbar layout without painting. Hosts call this after
