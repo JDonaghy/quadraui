@@ -34,7 +34,8 @@
 //! ```
 
 use crate::{
-    Backend, Key, Modifiers, NamedKey, Palette, PaletteItem, PaletteMode, Rect, UiEvent, WidgetId,
+    Backend, Key, Modifiers, MouseButton, NamedKey, Palette, PaletteHit, PaletteItem, PaletteMode,
+    Rect, UiEvent, WidgetId,
 };
 
 /// What happened after [`DualModePaletteController::handle`] processed an
@@ -205,6 +206,66 @@ impl DualModePaletteController {
             _ => DualModePaletteEvent::Ignored,
         };
         // Sync scroll after any selection change.
+        if matches!(result, DualModePaletteEvent::Consumed) {
+            self.sync_scroll(visible_rows);
+        }
+        result
+    }
+
+    /// Drive the state machine with a mouse `UiEvent` — the click-routing
+    /// twin of [`Self::handle`], which only understands keyboard and
+    /// paste events (issue #818: the palette's mouse handling never
+    /// reached the controller at all). Call this from `AppLogic::handle`
+    /// alongside [`Self::handle`]; a non-mouse event, or a mouse event
+    /// that misses every hit region, returns
+    /// [`DualModePaletteEvent::Ignored`].
+    ///
+    /// `rect` must be the same popup rect passed to [`Self::render`] this
+    /// frame, and `backend` supplies the same metrics `render` painted
+    /// with — the click is resolved through [`Backend::palette_layout`]
+    /// (added by this issue specifically so this method has a
+    /// hit-testable, paint-matching geometry to call, per
+    /// `docs/decisions/DECISIONS.md` D-007).
+    ///
+    /// Coordinate frame: `position` is **ABSOLUTE** (surface-native,
+    /// matching every other `UiEvent::MouseDown`); `Backend::palette_layout`
+    /// returns **LOCAL** coordinates, so `rect.x`/`rect.y` are subtracted
+    /// here before hit-testing — `PRIMITIVE_RULES.md`'s coordinate-frame
+    /// convention.
+    ///
+    /// Only [`PaletteHit::Item`] is wired up today: a click selects that
+    /// row (mirrors arrow-key selection, does not confirm it — confirming
+    /// still requires `Enter`). Title/query/scrollbar/create/preview
+    /// clicks are intentionally `Ignored` for now; a future issue can
+    /// extend this match arm by arm without touching the plumbing this
+    /// issue adds.
+    pub fn handle_mouse(
+        &mut self,
+        event: &UiEvent,
+        backend: &dyn Backend,
+        rect: Rect,
+        visible_rows: usize,
+    ) -> DualModePaletteEvent {
+        let UiEvent::MouseDown {
+            button: MouseButton::Left,
+            position,
+            ..
+        } = event
+        else {
+            return DualModePaletteEvent::Ignored;
+        };
+
+        let palette = self.build_palette();
+        let layout = backend.palette_layout(rect, &palette);
+        let hit = layout.hit_test(position.x - rect.x, position.y - rect.y);
+
+        let result = match hit {
+            PaletteHit::Item(idx) if idx < self.items.len() => {
+                self.selected = idx;
+                DualModePaletteEvent::Consumed
+            }
+            _ => DualModePaletteEvent::Ignored,
+        };
         if matches!(result, DualModePaletteEvent::Consumed) {
             self.sync_scroll(visible_rows);
         }
@@ -791,5 +852,103 @@ mod tests {
         assert_eq!(ctrl.selected(), 2);
         ctrl.set_items(vec![item("x")]);
         assert_eq!(ctrl.selected(), 0);
+    }
+
+    // ── #818: mouse routes through the controller ───────────────────────
+
+    fn mouse_down(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: crate::Point { x, y },
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// `RecordingBackend::palette_layout` lays out with `line_height`
+    /// (default `1.0`) rows: title at row 0, query at row 1, items from
+    /// row 2 — same shape `RecordingBackend::new()` uses everywhere else
+    /// in this crate's compose tests.
+    fn recording_backend() -> crate::testing::RecordingBackend {
+        crate::testing::RecordingBackend::new()
+    }
+
+    #[test]
+    fn mouse_click_on_item_selects_it() {
+        let items = vec![item("a"), item("b"), item("c")];
+        let mut ctrl = DualModePaletteController::new("T", None, items);
+        assert_eq!(ctrl.selected(), 0);
+
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        // title(row 0) + query(row 1) -> items start at row 2; item 2 is
+        // at row 4.
+        let ev = ctrl.handle_mouse(&mouse_down(5.0, 4.5), &backend, rect, 10);
+
+        assert_eq!(ev, DualModePaletteEvent::Consumed);
+        assert_eq!(
+            ctrl.selected(),
+            2,
+            "clicking item 2's row must update the selection"
+        );
+    }
+
+    #[test]
+    fn mouse_click_on_item_selects_it_at_nonzero_rect_origin() {
+        // Regression guard (LESSONS.md): a LOCAL/ABSOLUTE frame mixup is
+        // invisible when `rect`'s origin is `(0, 0)` — this test's rect
+        // starts elsewhere so a missing `rect.x`/`rect.y` subtraction
+        // would fail it.
+        let items = vec![item("a"), item("b"), item("c")];
+        let mut ctrl = DualModePaletteController::new("T", None, items);
+
+        let backend = recording_backend();
+        let rect = Rect::new(5.0, 3.0, 40.0, 20.0);
+        // Item 2's row is local y=4, so absolute y = rect.y + 4 = 7.
+        let ev = ctrl.handle_mouse(&mouse_down(10.0, 7.5), &backend, rect, 10);
+
+        assert_eq!(ev, DualModePaletteEvent::Consumed);
+        assert_eq!(ctrl.selected(), 2);
+    }
+
+    #[test]
+    fn mouse_click_outside_any_region_is_ignored() {
+        let items = vec![item("a"), item("b")];
+        let mut ctrl = DualModePaletteController::new("T", None, items);
+
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let ev = ctrl.handle_mouse(&mouse_down(5.0, 99.0), &backend, rect, 10);
+
+        assert_eq!(ev, DualModePaletteEvent::Ignored);
+        assert_eq!(ctrl.selected(), 0);
+    }
+
+    #[test]
+    fn non_mouse_event_is_ignored_by_handle_mouse() {
+        let mut ctrl = DualModePaletteController::new("T", None, vec![item("a")]);
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let ev = ctrl.handle_mouse(&key_ev(Key::Char('a')), &backend, rect, 10);
+        assert_eq!(ev, DualModePaletteEvent::Ignored);
+    }
+
+    #[test]
+    fn right_click_is_ignored() {
+        let mut ctrl = DualModePaletteController::new("T", None, vec![item("a")]);
+        let backend = recording_backend();
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let ev = ctrl.handle_mouse(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Right,
+                position: crate::Point { x: 5.0, y: 2.5 },
+                modifiers: Modifiers::default(),
+            },
+            &backend,
+            rect,
+            10,
+        );
+        assert_eq!(ev, DualModePaletteEvent::Ignored);
     }
 }

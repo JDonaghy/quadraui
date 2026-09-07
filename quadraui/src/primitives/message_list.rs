@@ -24,6 +24,7 @@
 //! * `spans` non-empty → render each span in its own fg / bold / italic;
 //!   apply `scale` (GTK `AttrFloat::new_scale`, TUI ignores it).
 
+use crate::event::Rect;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +88,82 @@ impl MessageRow {
 
     fn default_scale() -> f32 {
         1.0
+    }
+}
+
+/// Declarative description of a scrollable styled-row list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MessageList {
+    pub id: WidgetId,
+    pub rows: Vec<MessageRow>,
+    /// Index of the first row to draw at the top of the visible area.
+    /// Backends clamp this to `rows.len() - visible_rows` so overscroll
+    /// at the end pins the last message instead of leaving blank space.
+    #[serde(default)]
+    pub scroll_top: usize,
+}
+
+/// Backend-supplied row-height measurement for [`MessageList::hit_test`].
+/// Both rasterisers (`tui::draw_message_list`, `gtk::draw_message_list`)
+/// paint every row at a uniform `line_height` — see their module docs —
+/// so this mirrors the one number each already threads through.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MessageListMeasure {
+    pub line_height: f32,
+}
+
+impl MessageListMeasure {
+    pub fn new(line_height: f32) -> Self {
+        Self { line_height }
+    }
+
+    /// Build from the backend's own [`crate::backend::Metrics`]
+    /// (`backend.measure()`), matching the other `*Measure::from_metrics`
+    /// constructors (quadraui#817).
+    pub fn from_metrics(m: &crate::backend::Metrics) -> Self {
+        Self::new(m.line_height)
+    }
+}
+
+/// Hit-test classification for a click against a [`MessageList`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageListHit {
+    /// Click landed on a row. Index into [`MessageList::rows`].
+    Row(usize),
+    /// Click missed every row — outside `rect`, or in the blank tail
+    /// below the last painted row.
+    Empty,
+}
+
+impl MessageList {
+    /// Hit-test a click at surface-native `(x, y)` against this list,
+    /// painted into `rect` with `measure.line_height`-tall uniform rows
+    /// starting at [`Self::scroll_top`] (quadraui#818) — the same walk
+    /// `tui::draw_message_list` / `gtk::draw_message_list` use to
+    /// position each row.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `(x, y)` is compared directly
+    /// against `rect`, matching `text_input_layout`'s convention.
+    pub fn hit_test(
+        &self,
+        rect: Rect,
+        measure: MessageListMeasure,
+        x: f32,
+        y: f32,
+    ) -> MessageListHit {
+        if measure.line_height <= 0.0 {
+            return MessageListHit::Empty;
+        }
+        if x < rect.x || x >= rect.x + rect.width || y < rect.y || y >= rect.y + rect.height {
+            return MessageListHit::Empty;
+        }
+        let row_offset = ((y - rect.y) / measure.line_height) as usize;
+        let idx = self.scroll_top + row_offset;
+        if idx < self.rows.len() {
+            MessageListHit::Row(idx)
+        } else {
+            MessageListHit::Empty
+        }
     }
 }
 
@@ -199,16 +276,62 @@ mod tests {
         );
         assert_eq!(row.text, "legacy");
     }
-}
 
-/// Declarative description of a scrollable styled-row list.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MessageList {
-    pub id: WidgetId,
-    pub rows: Vec<MessageRow>,
-    /// Index of the first row to draw at the top of the visible area.
-    /// Backends clamp this to `rows.len() - visible_rows` so overscroll
-    /// at the end pins the last message instead of leaving blank space.
-    #[serde(default)]
-    pub scroll_top: usize,
+    // ── #818: hit_test ───────────────────────────────────────────────────
+
+    fn list_with_rows(n: usize, scroll_top: usize) -> MessageList {
+        MessageList {
+            id: WidgetId::new("ml"),
+            rows: (0..n)
+                .map(|i| MessageRow::new(format!("row{i}"), Color::rgb(0, 0, 0), 0.0))
+                .collect(),
+            scroll_top,
+        }
+    }
+
+    #[test]
+    fn hit_test_returns_row_index_at_scroll_offset() {
+        let list = list_with_rows(10, 2);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let measure = MessageListMeasure::new(1.0);
+        // Row 1 of the viewport (y in [1,2)) maps to rows[scroll_top + 1] = rows[3].
+        assert_eq!(
+            list.hit_test(rect, measure, 5.0, 1.5),
+            MessageListHit::Row(3)
+        );
+    }
+
+    #[test]
+    fn hit_test_below_last_row_is_empty() {
+        let list = list_with_rows(2, 0);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let measure = MessageListMeasure::new(1.0);
+        // Row index 3 (y in [3,4)) has no backing message row.
+        assert_eq!(
+            list.hit_test(rect, measure, 5.0, 3.5),
+            MessageListHit::Empty
+        );
+    }
+
+    #[test]
+    fn hit_test_outside_rect_is_empty() {
+        let list = list_with_rows(5, 0);
+        let rect = Rect::new(10.0, 10.0, 40.0, 5.0);
+        let measure = MessageListMeasure::new(1.0);
+        assert_eq!(
+            list.hit_test(rect, measure, 0.0, 0.0),
+            MessageListHit::Empty
+        );
+    }
+
+    #[test]
+    fn hit_test_zero_line_height_is_empty() {
+        let list = list_with_rows(5, 0);
+        let rect = Rect::new(0.0, 0.0, 40.0, 5.0);
+        let measure = MessageListMeasure::new(0.0);
+        assert_eq!(
+            list.hit_test(rect, measure, 1.0, 1.0),
+            MessageListHit::Empty
+        );
+    }
 }

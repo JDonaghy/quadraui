@@ -151,7 +151,15 @@ impl AppLogic for PaletteDualModeApp {
             };
             let visible_rows = popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS);
 
-            let ev = picker.handle(&event, visible_rows);
+            // Mouse events route through `handle_mouse` (#818 — clicking a
+            // palette entry now reaches the controller); everything else
+            // (keyboard, paste) keeps going through `handle`.
+            let ev = match &event {
+                UiEvent::MouseDown { .. } => {
+                    picker.handle_mouse(&event, backend, popup_rect, visible_rows)
+                }
+                _ => picker.handle(&event, visible_rows),
+            };
             match ev {
                 DualModePaletteEvent::ItemConfirmed { idx } => {
                     // Recompute filtered list from current query to map idx

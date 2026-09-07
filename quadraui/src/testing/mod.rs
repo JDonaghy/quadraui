@@ -810,6 +810,14 @@ impl crate::Backend for RecordingBackend {
     fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {
         self.record("draw_palette");
     }
+    fn palette_layout(&self, r: Rect, p: &crate::Palette) -> crate::PaletteLayout {
+        let lh = self.line_height;
+        let title_h = lh;
+        let query_h = if p.show_query { lh } else { 0.0 };
+        p.layout(r.width, r.height, title_h, query_h, 0.0, 1.0, |_| {
+            crate::PaletteItemMeasure::new(lh)
+        })
+    }
     fn draw_settings_chrome(
         &mut self,
         _r: Rect,

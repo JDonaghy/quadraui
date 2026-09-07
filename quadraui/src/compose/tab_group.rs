@@ -107,8 +107,8 @@ use crate::backend::BackendWidget;
 use crate::compose::focus_group::FocusGroup;
 use crate::event::Rect;
 use crate::primitives::drop_zone::{
-    compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
-    DropZoneKind,
+    drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
+    DropZoneHit, DropZoneKind,
 };
 use crate::primitives::split::{Split, SplitDirection};
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
@@ -1395,7 +1395,13 @@ impl TabGroupController {
         self.dragging_tab.as_ref()?;
         let groups = self.drop_group_rects();
         let tab_bar_h = self.strip_height();
-        let zone = compute_drop_zone(x, y, &groups, tab_bar_h);
+        // Routed through `drop_zone_hit_test` (quadraui#818) rather than
+        // `compute_drop_zone` directly — same geometry, but this is now
+        // the primitive's canonical hit-test entry point.
+        let zone = match drop_zone_hit_test(x, y, &groups, tab_bar_h) {
+            DropZoneHit::Zone(z) => Some(z),
+            DropZoneHit::Empty => None,
+        };
         if let Some(drag) = &mut self.dragging_tab {
             drag.current_zone = zone.clone();
             drag.cursor_x = x;
@@ -1475,7 +1481,7 @@ impl TabGroupController {
         };
         let groups = self.drop_group_rects();
         let tab_bar_h = self.strip_height();
-        let Some(zone) = compute_drop_zone(x, y, &groups, tab_bar_h) else {
+        let DropZoneHit::Zone(zone) = drop_zone_hit_test(x, y, &groups, tab_bar_h) else {
             return Vec::new();
         };
 
@@ -1692,13 +1698,17 @@ impl TabGroupController {
     /// Compute the drop zone at `(cursor_x, cursor_y)` using the cached
     /// group rects from the last render.
     ///
-    /// Convenience wrapper around [`crate::compute_drop_zone`] that derives
-    /// `tab_bar_height` from the stored strip bounds. Returns `None` before
-    /// the first render or when the cursor is outside all groups.
+    /// Convenience wrapper around [`crate::primitives::drop_zone::drop_zone_hit_test`]
+    /// that derives `tab_bar_height` from the stored strip bounds. Returns
+    /// `None` before the first render or when the cursor is outside all
+    /// groups.
     pub fn drop_zone_at(&self, cursor_x: f32, cursor_y: f32) -> Option<DropZone> {
         let groups = self.drop_group_rects();
         let tab_bar_h = self.strip_height();
-        compute_drop_zone(cursor_x, cursor_y, &groups, tab_bar_h)
+        match drop_zone_hit_test(cursor_x, cursor_y, &groups, tab_bar_h) {
+            DropZoneHit::Zone(z) => Some(z),
+            DropZoneHit::Empty => None,
+        }
     }
 }
 

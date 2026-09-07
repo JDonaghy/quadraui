@@ -346,11 +346,12 @@ pub use primitives::dialog::{
 };
 pub use primitives::diff_view::{
     DiffDisplayLine, DiffEditability, DiffHeaderGeometry, DiffHunk, DiffLineContent, DiffMode,
-    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewGeometry, DiffViewLayout,
+    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewGeometry, DiffViewHit,
+    DiffViewLayout,
 };
 pub use primitives::drop_zone::{
-    compute_drop_zone, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
-    DropZoneKind,
+    compute_drop_zone, drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay,
+    DropZone, DropZoneHit, DropZoneKind,
 };
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
@@ -360,13 +361,13 @@ pub use primitives::editor::{
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
-    FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
+    FindReplaceHit, FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
 };
 pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,
 };
-pub use primitives::image::{Image, ImageFit, ImageLayout, ImageSource};
+pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListView, ListViewEvent, ListViewHit, ListViewLayout,
     VisibleListItem,
@@ -374,7 +375,7 @@ pub use primitives::list::{
 pub use primitives::menu_bar::{
     MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout, VisibleMenuBarItem,
 };
-pub use primitives::message_list::{MessageList, MessageRow};
+pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_lines, Minimap, MinimapGrid, MinimapHit, MinimapLayout,
     MinimapLine, MinimapSizing, MinimapSpan, SyntaxSpan, VisibleMinimapLine,

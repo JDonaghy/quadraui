@@ -112,8 +112,8 @@ use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, StatusBar, TabBar, Terminal,
-    TextDisplay, TreeView,
+    Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, PaletteLayout, StatusBar,
+    TabBar, Terminal, TextDisplay, TreeView,
 };
 
 /// Which edge or corner of a window a resize gesture originates from.
@@ -1083,6 +1083,31 @@ pub trait Backend: sealed::Sealed {
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
+
+    /// Compute the palette layout without painting — the no-paint twin
+    /// of [`Self::draw_palette`] (issue #818). Added deliberately later
+    /// than sibling `<name>_layout` methods: see
+    /// `docs/decisions/DECISIONS.md` D-007 "Palette: deferred, not
+    /// missed" for why shipping this before fixing a latent 1px item-row
+    /// drift in `gtk::draw_palette` (and TUI's `draw_palette` never
+    /// calling [`Palette::layout`] at all) would have made that drift
+    /// externally visible the moment a host trusted this for
+    /// hit-testing. Both are fixed as of this method landing — every
+    /// backend's `palette_layout` now shares its row/column arithmetic
+    /// with its own `draw_palette` (`tui_palette_layout`,
+    /// `gtk_palette_layout`, `mac_palette_layout`, `win_palette_layout`).
+    ///
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
+    /// at `rect`'s top-left, matching [`Palette::layout`]'s native
+    /// contract. Callers subtract `rect.x` / `rect.y` from an absolute
+    /// click coordinate before calling [`PaletteLayout::hit_test`]
+    /// (`PRIMITIVE_RULES.md`'s coordinate-frame convention).
+    ///
+    /// TUI's implementation never reports [`PaletteLayout::scrollbar`]
+    /// (always `None`) — see `tui::palette::tui_palette_layout`'s doc for
+    /// why reporting one would invent a second thumb-position formula
+    /// disagreeing with what TUI actually paints.
+    fn palette_layout(&self, rect: Rect, palette: &Palette) -> PaletteLayout;
 
     /// Draw settings-panel chrome: a 2-row strip with a header row and a
     /// search input row, designed to sit immediately above a [`Form`]

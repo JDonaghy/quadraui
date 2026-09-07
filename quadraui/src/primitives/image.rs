@@ -108,6 +108,33 @@ pub struct ImageLayout {
     pub bounds: Rect,
 }
 
+/// Hit-test classification for clicks against an [`Image`] widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageHit {
+    /// Click landed on the image's resolved paint bounds.
+    Image,
+    /// Click missed the image's paint bounds — e.g. inside letterbox
+    /// space [`ImageFit::Contain`] leaves empty, or entirely outside the
+    /// widget's rect.
+    Empty,
+}
+
+impl ImageLayout {
+    /// Hit-test a click at `(x, y)` against this layout's resolved
+    /// [`Self::bounds`] (quadraui#818).
+    ///
+    /// Coordinate frame: **ABSOLUTE** — same frame as [`Self::bounds`],
+    /// which already carries the `bounds` rect passed to [`Image::layout`].
+    pub fn hit_test(&self, x: f32, y: f32) -> ImageHit {
+        let b = self.bounds;
+        if x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height {
+            ImageHit::Image
+        } else {
+            ImageHit::Empty
+        }
+    }
+}
+
 impl Image {
     /// Compute where this image should paint within `bounds`, honoring
     /// `fit`. Pure geometry — no decoding, so it works identically
@@ -226,5 +253,19 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 40.0, 20.0);
         let layout = image(ImageFit::Contain, Some((0, 100))).layout(bounds);
         assert_eq!(layout.bounds, bounds);
+    }
+
+    #[test]
+    fn hit_test_inside_resolved_bounds_is_image() {
+        let bounds = Rect::new(5.0, 5.0, 40.0, 20.0);
+        let layout = image(ImageFit::Fill, Some((100, 50))).layout(bounds);
+        assert_eq!(layout.hit_test(10.0, 10.0), ImageHit::Image);
+    }
+
+    #[test]
+    fn hit_test_outside_resolved_bounds_is_empty() {
+        let bounds = Rect::new(5.0, 5.0, 40.0, 20.0);
+        let layout = image(ImageFit::Fill, Some((100, 50))).layout(bounds);
+        assert_eq!(layout.hit_test(0.0, 0.0), ImageHit::Empty);
     }
 }

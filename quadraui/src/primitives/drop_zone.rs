@@ -133,6 +133,34 @@ pub fn compute_drop_zone(
     None
 }
 
+/// Hit-test classification for a cursor position against a set of
+/// [`DropGroupRect`]s (quadraui#818).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DropZoneHit {
+    /// Cursor is over a live drop zone.
+    Zone(DropZone),
+    /// Cursor is outside every group.
+    Empty,
+}
+
+/// Hit-test a cursor position against `groups`, following this
+/// primitive's `Empty`-variant convention on top of [`compute_drop_zone`]
+/// (quadraui#818). Identical arguments and behaviour to
+/// [`compute_drop_zone`] — this only wraps its `Option` result in a
+/// [`DropZoneHit`] so `DropZone`, like every other primitive, has a
+/// `hit_test` entry point with a named miss case instead of `None`.
+pub fn drop_zone_hit_test(
+    cursor_x: f32,
+    cursor_y: f32,
+    groups: &[DropGroupRect],
+    tab_bar_height: f32,
+) -> DropZoneHit {
+    match compute_drop_zone(cursor_x, cursor_y, groups, tab_bar_height) {
+        Some(zone) => DropZoneHit::Zone(zone),
+        None => DropZoneHit::Empty,
+    }
+}
+
 /// Compute the insertion index from cursor x and tab slot positions.
 /// Finds the midpoint of each tab; cursor left of midpoint inserts
 /// before, right inserts after.
@@ -323,6 +351,29 @@ mod tests {
     fn cursor_outside_all_groups() {
         let groups = vec![group(0.0, 0.0, 100.0, 80.0, &[])];
         assert!(compute_drop_zone(200.0, 200.0, &groups, 20.0).is_none());
+    }
+
+    // ── #818: hit_test ───────────────────────────────────────────────────
+
+    #[test]
+    fn hit_test_returns_zone_for_center_drop() {
+        let groups = vec![group(0.0, 0.0, 100.0, 80.0, &[])];
+        match drop_zone_hit_test(50.0, 50.0, &groups, 20.0) {
+            DropZoneHit::Zone(zone) => {
+                assert_eq!(zone.kind, DropZoneKind::Center);
+                assert_eq!(zone.group_idx, 0);
+            }
+            DropZoneHit::Empty => panic!("expected a zone hit"),
+        }
+    }
+
+    #[test]
+    fn hit_test_outside_all_groups_is_empty() {
+        let groups = vec![group(0.0, 0.0, 100.0, 80.0, &[])];
+        assert_eq!(
+            drop_zone_hit_test(200.0, 200.0, &groups, 20.0),
+            DropZoneHit::Empty
+        );
     }
 
     #[test]

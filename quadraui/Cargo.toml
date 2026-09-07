@@ -1013,3 +1013,16 @@ required-features = ["tui"]
 name = "gtk_workspace"
 path = "examples/gtk_workspace.rs"
 required-features = ["gtk"]
+
+# #818 — MessageList / FindReplacePanel gained `hit_test` and had no prior
+# example at all; no GTK counterpart exists yet (see the PR's downstream
+# notes), so only the `tui_*` entry exists here.
+[[example]]
+name = "tui_message_list"
+path = "examples/tui_message_list.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "tui_find_replace"
+path = "examples/tui_find_replace.rs"
+required-features = ["tui"]

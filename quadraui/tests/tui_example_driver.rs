@@ -56,8 +56,12 @@ mod data_table_app;
 mod demo;
 #[path = "../examples/common/dialog_table_demo.rs"]
 mod dialog_table_demo;
+#[path = "../examples/common/diff_view_demo.rs"]
+mod diff_view_demo;
 #[path = "../examples/common/file_dialog_demo.rs"]
 mod file_dialog_demo;
+#[path = "../examples/common/find_replace_app.rs"]
+mod find_replace_app;
 #[path = "../examples/common/folder_picker_app.rs"]
 mod folder_picker_app;
 #[path = "../examples/common/form_all_fields.rs"]
@@ -84,6 +88,8 @@ mod markdown_demo;
 mod menu_bar_app;
 #[path = "../examples/common/message_dialog_demo.rs"]
 mod message_dialog_demo;
+#[path = "../examples/common/message_list_demo.rs"]
+mod message_list_demo;
 #[path = "../examples/common/mini_app.rs"]
 mod mini_app;
 #[path = "../examples/common/minimap_app.rs"]
@@ -145,7 +151,9 @@ use clipboard_demo::ClipboardDemo;
 use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
+use diff_view_demo::DiffViewApp;
 use file_dialog_demo::FileDialogDemo;
+use find_replace_app::FindReplaceApp;
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_groups::FormGroupsApp;
@@ -159,6 +167,7 @@ use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
 use menu_bar_app::MenuBarApp;
 use message_dialog_demo::MessageDialogDemo;
+use message_list_demo::MessageListApp;
 use mini_app::MiniApp;
 use minimap_app::MinimapApp;
 use modal_occlusion_demo::ModalOcclusionDemo;
@@ -402,6 +411,79 @@ fn text_input_backspace_deletes_a_char() {
     );
 }
 
+/// #818 acceptance: clicking a `TextInput` line moves the cursor there —
+/// `TextInputLayout::hit_test` reaching a real click, not just a unit
+/// test against the primitive in isolation.
+#[test]
+fn text_input_click_moves_cursor_to_the_clicked_line() {
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    driver.type_char('a');
+    driver.type_char('b');
+    driver.press_named(NamedKey::Enter);
+    driver.type_char('c');
+    driver.type_char('d');
+    let before = driver.screen();
+    assert!(
+        before.contains("line 2"),
+        "cursor should be on line 2 after typing two lines:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("ab")
+        .unwrap_or_else(|| panic!("line 'ab' must be visible:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("line 1"),
+        "clicking the first line's row should move the cursor there:\n{after}"
+    );
+}
+
+// ─── DiffViewApp: click routes through DiffViewGeometry::hit_test (#818) ────
+
+/// #818 acceptance: clicking a diff row resolves through
+/// `DiffView::layout` + `DiffViewGeometry::hit_test` and is reported in
+/// the status bar — a real click, not just a unit test against the
+/// primitive in isolation.
+#[test]
+fn diff_view_click_on_a_row_reports_it_in_the_status_bar() {
+    let mut driver = TuiDriver::new(DiffViewApp::new(), 100, 30);
+    let before = driver.screen();
+    assert!(
+        before.contains("click a row"),
+        "status bar should show the hint before any click:\n{before}"
+    );
+
+    let (x, y) = driver.find("multiply").unwrap_or_else(|| {
+        panic!("'multiply' (a Same row, present on both sides) must be visible:\n{before}")
+    });
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("clicked row"),
+        "clicking a diff row should report it in the status bar:\n{after}"
+    );
+}
+
+/// A click past the last painted row (below the diff content, still
+/// inside the diff-view rect) resolves to `DiffViewHit::Empty` rather
+/// than silently matching the nearest row.
+#[test]
+fn diff_view_click_below_content_is_empty() {
+    let mut driver = TuiDriver::new(DiffViewApp::new(), 100, 30);
+    // Row 28 is well past this demo's ~9-line diff content but still
+    // inside the 29-row diff area (viewport height 30 minus the 1-row
+    // status bar).
+    driver.click(5.0, 28.0);
+    assert!(
+        driver.screen_contains("clicked empty area"),
+        "clicking past the diff content should report an empty hit:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── ClipboardDemo: native-tool fallback leg (#398) ─────────────────────────
 
 #[test]
@@ -549,6 +631,121 @@ fn message_dialog_demo_escape_exits() {
     assert!(!driver.exited());
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the demo");
+}
+
+// ─── MessageListApp: click routes through MessageList::hit_test (#818) ──────
+
+/// #818 acceptance: clicking a message row resolves through
+/// `MessageList::hit_test` and is reported in the status bar — a real
+/// click, not just a unit test against the primitive in isolation.
+#[test]
+fn message_list_click_on_a_row_reports_it_in_the_status_bar() {
+    let mut driver = TuiDriver::new(MessageListApp::new(), 100, 30);
+    let before = driver.screen();
+    assert!(
+        before.contains("click a row"),
+        "status bar should show the hint before any click:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("row 0:")
+        .unwrap_or_else(|| panic!("'row 0:' must be visible on startup:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("clicked row 0"),
+        "clicking the first row should report row 0 in the status bar:\n{after}"
+    );
+}
+
+/// Scrolling with `j` shifts which row a given screen position resolves
+/// to — proving the click routes through `scroll_top`, not a fixed
+/// index.
+#[test]
+fn message_list_click_after_scrolling_resolves_the_shifted_row() {
+    let mut driver = TuiDriver::new(MessageListApp::new(), 100, 30);
+    for _ in 0..3 {
+        driver.type_char('j');
+    }
+    let (x, y) = driver
+        .find("row 3:")
+        .unwrap_or_else(|| panic!("'row 3:' should now be the top row after scrolling"));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("clicked row 3"),
+        "after scrolling by 3, the top row's click should resolve to row 3:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn message_list_demo_q_exits() {
+    let mut driver = TuiDriver::new(MessageListApp::new(), 100, 30);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the message list demo");
+}
+
+// ─── FindReplaceApp: click routes through FindReplacePanel::hit_test (#818) ─
+
+/// #818 acceptance: clicking a toggle button resolves through
+/// `FindReplacePanel::hit_test` and is reported in the status bar — a
+/// real click, not just a unit test against the primitive in isolation.
+#[test]
+fn find_replace_click_on_toggle_case_reports_it() {
+    let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        before.contains("click a button"),
+        "status bar should show the hint before any click:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("Aa")
+        .unwrap_or_else(|| panic!("the 'Aa' case-toggle glyph must be visible:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("clicked ToggleCase"),
+        "clicking the 'Aa' glyph should report ToggleCase in the status bar:\n{after}"
+    );
+}
+
+/// The chevron click toggles the replace row on — a second row of
+/// buttons (preserve-case, replace-current, replace-all) becomes
+/// visible, proving `hit_regions` were rebuilt after the state change.
+#[test]
+fn find_replace_click_chevron_reveals_replace_row() {
+    let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        !before.contains("R1"),
+        "replace row should be hidden initially:\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("\u{25b6}")
+        .unwrap_or_else(|| panic!("the closed-state chevron must be visible:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("clicked Chevron"),
+        "clicking the chevron should report it in the status bar:\n{after}"
+    );
+    assert!(
+        after.contains("R1"),
+        "the replace row's 'R1' glyph should now be visible:\n{after}"
+    );
+}
+
+#[test]
+fn find_replace_demo_q_exits() {
+    let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the find/replace demo");
 }
 
 // ─── AppState (demo): tab switching ─────────────────────────────────────────
@@ -1458,6 +1655,37 @@ fn palette_dual_mode_tab_switches_to_input_mode() {
     assert!(
         !after.contains("develop"),
         "item rows should be hidden in Input mode:\n{after}"
+    );
+}
+
+/// #818 acceptance: palette mouse events reach the controller — clicking
+/// a palette entry changes the selection (the `▶ ` marker moves to the
+/// clicked row), not just arrow keys. Before this issue,
+/// `DualModePaletteController::handle` never matched on
+/// `UiEvent::MouseDown` at all, so a click here was a silent no-op.
+#[test]
+fn palette_dual_mode_click_selects_item() {
+    let mut driver = TuiDriver::new(PaletteDualModeApp::new(), 100, 30);
+
+    let before = driver.screen();
+    assert!(
+        before.contains("▶ main"),
+        "selection starts on the first branch ('main'):\n{before}"
+    );
+
+    let (x, y) = driver
+        .find("develop")
+        .unwrap_or_else(|| panic!("branch 'develop' must be visible:\n{before}"));
+    driver.click(x, y);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("▶ develop"),
+        "clicking 'develop' should move the selection marker to its row:\n{after}"
+    );
+    assert!(
+        !after.contains("▶ main"),
+        "the previous selection marker should move off 'main':\n{after}"
     );
 }
 
@@ -5059,6 +5287,31 @@ fn clicking_the_first_menu_item_past_the_icon_slot_still_hits_it() {
     assert!(
         driver.screen_contains("activated: &File"),
         "clicking File's shifted position should still activate it:\n{}",
+        driver.screen()
+    );
+}
+
+/// #818 acceptance: clicking the logo image reaches
+/// `ImageLayout::hit_test` — a real click, not just a unit test against
+/// `Image::layout` in isolation. Uses `find_bounds`'s full-span center
+/// (not `find`'s leftmost-cell center) because the clickable region is
+/// `Image::layout`'s `Contain`-fit sub-rect, which — on TUI, where the
+/// fallback text is centered in the *full* reserved icon column rather
+/// than the letterboxed image geometry — only overlaps the middle of the
+/// painted "[Q]" glyphs, not their first cell.
+#[test]
+fn clicking_the_logo_image_activates_it() {
+    let mut driver = TuiDriver::new(ImageApp::new(), 100, 10);
+    let bounds = driver
+        .find_bounds("[Q]")
+        .expect("the '[Q]' fallback glyph should be visible");
+    driver.click(
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
+    assert!(
+        driver.screen_contains("clicked logo"),
+        "clicking the logo should route through ImageLayout::hit_test:\n{}",
         driver.screen()
     );
 }

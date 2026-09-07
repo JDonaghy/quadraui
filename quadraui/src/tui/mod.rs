@@ -94,7 +94,7 @@ pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 pub use message_list::draw_message_list;
 pub use minimap::{draw_minimap, tui_minimap_layout};
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
-pub use palette::draw_palette;
+pub use palette::{draw_palette, tui_palette_layout};
 pub use panel::{draw_panel, tui_panel_layout};
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub use progress::{draw_progress, tui_progress_layout};

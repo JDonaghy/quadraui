@@ -112,7 +112,7 @@ pub use minimap::{draw_minimap, gtk_minimap_layout};
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
-pub use palette::draw_palette;
+pub use palette::{draw_palette, gtk_palette_layout};
 pub use panel::gtk_panel_layout;
 // #859: `draw_panel` is `#[deprecated]` — see `panel::draw_panel`'s doc
 // for why the shim exists and why re-exporting it here (rather than

@@ -18,12 +18,13 @@ use std::cell::Cell;
 
 use quadraui::backend::Backend;
 use quadraui::diff::compute_hunks;
-use quadraui::event::{Key, NamedKey, Rect, UiEvent};
+use quadraui::event::{Key, MouseButton, NamedKey, Rect, UiEvent};
 use quadraui::primitives::diff_view::{
-    DiffEditability, DiffMode, DiffPane, DiffView, DiffViewLayout,
+    DiffEditability, DiffMode, DiffPane, DiffView, DiffViewHit, DiffViewLayout,
 };
 use quadraui::runner::{AppLogic, Reaction};
-use quadraui::types::WidgetId;
+use quadraui::types::{Color, WidgetId};
+use quadraui::{StatusBar, StatusBarSegment};
 
 const LEFT: &str = "\
 fn add(a: i32, b: i32) -> i32 {
@@ -62,6 +63,10 @@ pub struct DiffViewApp {
     /// Cached layout from the last rendered frame, used for scroll clamping.
     /// Wrapped in `Cell` so `render(&self, ...)` can update it.
     last_layout: Cell<DiffViewLayout>,
+    /// Human-readable description of the last click, shown in the status
+    /// bar (#818 — proves `DiffViewGeometry::hit_test` reaches a real
+    /// click, not just a unit test against the primitive in isolation).
+    last_click: Option<String>,
 }
 
 impl DiffViewApp {
@@ -87,6 +92,35 @@ impl DiffViewApp {
                 visible_rows: 24,
                 total_rows: 0,
             }),
+            last_click: None,
+        }
+    }
+
+    /// Diff-view rect (viewport minus the 1-row status bar at the
+    /// bottom). Shared by `render` and `handle` so paint and
+    /// click-routing can't disagree (same rule the other demos in this
+    /// module follow — see `text_input_demo::TextInputDemo::input_rect`).
+    fn diff_rect(backend: &dyn Backend) -> Rect {
+        let vp = backend.viewport();
+        let lh = backend.line_height();
+        Rect::new(0.0, 0.0, vp.width, (vp.height - lh).max(0.0))
+    }
+
+    fn status_bar(&self) -> StatusBar {
+        let msg = match &self.last_click {
+            Some(m) => format!(" {m} "),
+            None => " click a row — j/k scroll, m toggles mode, q quits ".into(),
+        };
+        StatusBar {
+            id: WidgetId::new("diff-view-status"),
+            left_segments: vec![StatusBarSegment {
+                text: msg,
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
         }
     }
 }
@@ -102,18 +136,57 @@ impl AppLogic for DiffViewApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
-        let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
+        let rect = Self::diff_rect(backend);
         let layout = backend.draw_diff_view(rect, &self.view);
         self.last_layout.set(layout);
+
+        let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
+        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let visible = self.last_layout.get().visible_rows.max(1);
         // Use layout.total_rows (not view.total_rows()) so the scroll
         // ceiling accounts for @@ header lines in unified mode.
         let total = self.last_layout.get().total_rows;
 
         match event {
+            // Click routing (#818): resolve the click through
+            // `DiffView::layout` + `DiffViewGeometry::hit_test` — the
+            // same geometry `render` just painted from — and report
+            // what was hit in the status bar.
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => {
+                let rect = Self::diff_rect(backend);
+                let lh = backend.line_height();
+                let geometry = self.view.layout(rect, lh);
+                self.last_click = Some(match geometry.hit_test(position.x, position.y) {
+                    DiffViewHit::Row { row_idx, pane } => {
+                        let rows = self.view.flat_rows();
+                        let kind = rows
+                            .get(row_idx)
+                            .map(|r| format!("{:?}", r.kind))
+                            .unwrap_or_else(|| "?".into());
+                        match pane {
+                            Some(DiffPane::Left) => {
+                                format!("clicked row {row_idx} ({kind}) [left pane]")
+                            }
+                            Some(DiffPane::Right) => {
+                                format!("clicked row {row_idx} ({kind}) [right pane]")
+                            }
+                            None => format!("clicked row {row_idx} ({kind})"),
+                        }
+                    }
+                    DiffViewHit::UnifiedHeader { hunk_idx } => {
+                        format!("clicked hunk header {hunk_idx}")
+                    }
+                    DiffViewHit::Empty => "clicked empty area".into(),
+                });
+                Reaction::Redraw
+            }
             // Scroll down — j or Down arrow.
             UiEvent::KeyPressed {
                 key: Key::Char('j'),

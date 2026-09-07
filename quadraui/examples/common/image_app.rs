@@ -27,8 +27,9 @@
 //! - q / Esc              quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Image, ImageFit, ImageSource, Key, MenuBar, MenuBarHit, MenuBarItem,
-    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Image, ImageFit, ImageHit, ImageSource, Key, MenuBar, MenuBarHit,
+    MenuBarItem, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
+    WidgetId,
 };
 
 const LOGO_PNG: &[u8] = include_bytes!("../assets/quadra_logo.png");
@@ -143,7 +144,16 @@ impl AppLogic for ImageApp {
                 position,
                 ..
             } => {
-                let (_full, _icon_rect, items_rect) = self.bar_rects(backend);
+                let (_full, icon_rect, items_rect) = self.bar_rects(backend);
+                // Logo click routing (#818): `Image::layout` + `ImageLayout::hit_test`
+                // — the logo's `Contain` fit letterboxes within `icon_rect`,
+                // so only the actual scaled-image sub-rect is clickable,
+                // not the full reserved icon column.
+                let image_layout = self.logo().layout(icon_rect);
+                if image_layout.hit_test(position.x, position.y) == ImageHit::Image {
+                    self.last_action = Some("clicked logo".into());
+                    return Reaction::Redraw;
+                }
                 let layout = backend.menu_bar_layout(items_rect, &self.menu_bar);
                 if let MenuBarHit::Item(idx) = layout.hit_test(position.x, position.y) {
                     self.last_action =

@@ -13,9 +13,77 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteMode};
+use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
 use crate::text_util::safe_prefix;
 use crate::theme::Theme;
+
+/// Scrollbar width in pixels — shared by [`gtk_palette_layout`] and
+/// [`draw_palette`] so the two can't disagree on it.
+const SB_W: f64 = 6.0;
+
+/// Bottom margin reserved below the item list before the popup's own
+/// bottom edge (there is no bottom border row on GTK the way TUI has
+/// one — this is purely breathing room).
+const BOTTOM_INSET: f64 = 4.0;
+
+/// Compute the GTK [`Palette`] layout — the shared geometry
+/// [`draw_palette`] paints from and `Backend::palette_layout` (#818)
+/// exposes for hit-testing, so the two can't drift the way they used to
+/// (see `docs/decisions/DECISIONS.md` D-007, "Palette: deferred, not
+/// missed" — this closes it for GTK: `draw_palette` used to paint item
+/// rows at an independently-derived `rows_y + i * line_height` instead
+/// of this struct's own `visible_items[i].bounds.y`, under-reporting the
+/// real paint position by the query/list separator's 1px whenever
+/// `show_query` was true).
+///
+/// `query_h` bakes in that 1px separator stroke [`draw_palette`] paints
+/// just below the query row, so [`PaletteLayout`]'s own `items_top`
+/// (`title_height + query_height`) lands exactly on the first painted
+/// item row.
+///
+/// Row count is floored to whole rows *before* calling [`Palette::layout`]
+/// (matching `draw_palette`'s pre-#818 arithmetic) so the item list never
+/// paints — or hit-tests — a partial last row.
+///
+/// Coordinate frame: **LOCAL** — `(0, 0)` is the popup's own top-left
+/// corner, matching [`Palette::layout`]'s native contract (same
+/// convention `mac_palette_layout` / `win_palette_layout` already use).
+/// Returns the layout alongside `rows_h` (the item area's full row
+/// capacity in pixels, already floored) — `draw_palette` needs it for
+/// the scrollbar track / preview-pane / create-row positions that sit
+/// below the last item, which aren't otherwise exposed as a single
+/// [`PaletteLayout`] field.
+pub fn gtk_palette_layout(
+    w: f64,
+    h: f64,
+    palette: &Palette,
+    line_height: f64,
+) -> (PaletteLayout, f64) {
+    let title_h = line_height as f32;
+    let query_h = if palette.show_query {
+        line_height as f32 + 1.0
+    } else {
+        0.0
+    };
+    let has_create = palette.create_label.is_some();
+    let create_reserved = if has_create { line_height } else { 0.0 };
+    let items_top = (title_h + query_h) as f64;
+    let raw_items_h = (h - items_top - BOTTOM_INSET - create_reserved).max(0.0);
+    let visible_rows = (raw_items_h / line_height) as usize;
+    let rows_h = visible_rows as f64 * line_height;
+    let viewport_h = items_top + rows_h + create_reserved;
+
+    let layout = palette.layout(
+        w as f32,
+        viewport_h as f32,
+        title_h,
+        query_h,
+        SB_W as f32,
+        8.0,
+        |_| PaletteItemMeasure::new(line_height as f32),
+    );
+    (layout, rows_h)
+}
 
 /// Draw a [`Palette`] modal into `(x, y, w, h)` on `cr`.
 ///
@@ -69,40 +137,38 @@ pub fn draw_palette(
     let has_preview = palette.preview.is_some();
     let list_w = if has_preview { (w * 0.4).round() } else { w };
 
-    const BOTTOM_INSET: f64 = 4.0;
-    let (sep_y, rows_y) = if palette.show_query {
-        let s = y + 2.0 * line_height;
-        (s, s + 1.0)
+    // Separator paint position — not part of any `PaletteHit` region, so
+    // it's fine for this to stay an independent formula (see
+    // `gtk_palette_layout`'s doc for the fields that *are* shared to
+    // avoid drift).
+    let sep_y = if palette.show_query {
+        y + 2.0 * line_height
     } else {
-        let s = y + line_height;
-        (s, s)
+        y + line_height
     };
-    let has_create = palette.create_label.is_some();
-    let create_reserved = if has_create { line_height } else { 0.0 };
-    let rows_h_raw = ((y + h) - rows_y - BOTTOM_INSET - create_reserved).max(0.0);
-    let visible_rows = (rows_h_raw / line_height) as usize;
-    let rows_h = visible_rows as f64 * line_height;
-    let total = palette.items.len();
-    let has_scrollbar = total > visible_rows;
-    const SB_W: f64 = 6.0;
-    let content_w = if has_scrollbar { list_w - SB_W } else { list_w };
 
     // `Palette::layout` keeps the selected item visible internally (see
     // #711) — no backend-side scroll clamp needed here.
-    let query_h = if palette.show_query {
-        line_height as f32
-    } else {
-        0.0
-    };
-    let palette_layout = palette.layout(
-        w as f32,
-        (rows_y + rows_h - y) as f32,
-        line_height as f32,
-        query_h,
-        SB_W as f32,
-        8.0,
-        |_| PaletteItemMeasure::new(line_height as f32),
-    );
+    let (palette_layout, rows_h) = gtk_palette_layout(w, h, palette, line_height);
+
+    // `items_top` (title_height + query_height, LOCAL) read back from the
+    // layout's own bounds rather than recomputed — the same fix applied
+    // to the item rows below, applied here too so `rows_y` (used for the
+    // scrollbar/preview/create-row positions outside `PaletteLayout`)
+    // can't drift from it either.
+    let items_top = palette_layout
+        .query_bounds
+        .map(|b| (b.y + b.height) as f64)
+        .or_else(|| palette_layout.title_bounds.map(|b| (b.y + b.height) as f64))
+        .unwrap_or(0.0);
+    let rows_y = y + items_top;
+
+    let content_w = palette_layout.item_list_width as f64
+        - if palette_layout.scrollbar.is_some() {
+            SB_W
+        } else {
+            0.0
+        };
 
     // ── Title row ─────────────────────────────────────────────────────
     if let Some(title_bounds) = palette_layout.title_bounds {
@@ -188,10 +254,13 @@ pub fn draw_palette(
     cr.rectangle(x, rows_y, content_w, rows_h);
     cr.clip();
 
-    for (render_i, vis_item) in palette_layout.visible_items.iter().enumerate() {
+    for vis_item in &palette_layout.visible_items {
         let item = &palette.items[vis_item.item_idx];
-        let row_y = rows_y + render_i as f64 * line_height;
-        let row_h = line_height;
+        // Consume the layout's own bounds directly — issue #818 / D-007's
+        // fix for the 1px item-row drift this used to recompute
+        // independently as `rows_y + render_i * line_height`.
+        let row_y = y + vis_item.bounds.y as f64;
+        let row_h = vis_item.bounds.height as f64;
         let is_selected = vis_item.item_idx == palette.selected_idx && palette.has_focus;
 
         if is_selected {
@@ -307,27 +376,33 @@ pub fn draw_palette(
     layout.set_attributes(None);
 
     // ── Scrollbar ─────────────────────────────────────────────────────
-    if has_scrollbar && visible_rows > 0 {
-        let sb_x = x + list_w - SB_W;
-        let sb_track_y = rows_y;
-        let sb_track_h = rows_h;
-
+    // Painted straight from the layout's own track/thumb rects — issue
+    // #818's fix applies here too: this used to recompute a *different*
+    // thumb-position formula (`thumb_ratio` / `scroll_frac`) than
+    // `Palette::layout`'s internal `fit_thumb`, so a host hit-testing
+    // `PaletteHit::ScrollbarThumb` against the struct would have
+    // disagreed with where this function actually painted it.
+    if let Some(sb) = &palette_layout.scrollbar {
+        let track_x = x + sb.track.x as f64;
+        let track_y = y + sb.track.y as f64;
         cr.set_source_rgb(bg.0 * 0.7, bg.1 * 0.7, bg.2 * 0.7);
-        cr.rectangle(sb_x, sb_track_y, SB_W, sb_track_h);
+        cr.rectangle(
+            track_x,
+            track_y,
+            sb.track.width as f64,
+            sb.track.height as f64,
+        );
         cr.fill().ok();
 
-        let thumb_ratio = visible_rows as f64 / total as f64;
-        let thumb_h = (sb_track_h * thumb_ratio).max(8.0);
-        let max_scroll = total.saturating_sub(visible_rows) as f64;
-        let scroll_frac = if max_scroll > 0.0 {
-            palette_layout.resolved_scroll_offset as f64 / max_scroll
-        } else {
-            0.0
-        };
-        let thumb_y = sb_track_y + scroll_frac * (sb_track_h - thumb_h);
-
+        let thumb_x = x + sb.thumb.x as f64;
+        let thumb_y = y + sb.thumb.y as f64;
         cr.set_source_rgb(border.0, border.1, border.2);
-        cr.rectangle(sb_x + 1.0, thumb_y, SB_W - 2.0, thumb_h);
+        cr.rectangle(
+            thumb_x + 1.0,
+            thumb_y,
+            (sb.thumb.width as f64 - 2.0).max(0.0),
+            sb.thumb.height as f64,
+        );
         cr.fill().ok();
     }
 

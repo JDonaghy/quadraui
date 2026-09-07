@@ -110,6 +110,25 @@ pub struct TextInputLayout {
     pub placeholder_active: bool,
 }
 
+impl TextInputLayout {
+    /// Hit-test a click at surface-native coordinates `(x, y)` against
+    /// this layout's `hit_regions`.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — matches [`TextInputLayout`]'s own
+    /// convention (`bounds`/`content_bounds`/`hit_regions` all carry
+    /// `rect.x`/`rect.y`, per `PRIMITIVE_RULES.md`'s coordinate-frame
+    /// table). Returns [`TextInputHit::EmptyArea`] when `(x, y)` falls
+    /// outside every region (quadraui#818).
+    pub fn hit_test(&self, x: f32, y: f32) -> TextInputHit {
+        for (rect, hit) in &self.hit_regions {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+                return hit.clone();
+            }
+        }
+        TextInputHit::EmptyArea
+    }
+}
+
 /// Per-line measurement supplied by the backend.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextInputMeasure {
@@ -413,6 +432,28 @@ mod tests {
             .iter()
             .find(|(_, h)| matches!(h, TextInputHit::EmptyArea));
         assert!(empty.is_some());
+    }
+
+    #[test]
+    fn hit_test_line_returns_line_idx() {
+        let ti = input(vec!["a", "b", "c"]);
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        // Row 1 (0-indexed) is line_idx 1, at content_y=1.0 + 1*row_h=1.0.
+        assert_eq!(l.hit_test(5.0, 2.0), TextInputHit::Line { line_idx: 1 });
+    }
+
+    #[test]
+    fn hit_test_below_last_line_returns_empty_area() {
+        let ti = input(vec!["only"]);
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        assert_eq!(l.hit_test(5.0, 8.0), TextInputHit::EmptyArea);
+    }
+
+    #[test]
+    fn hit_test_outside_bounds_returns_empty_area() {
+        let ti = input(vec!["only"]);
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        assert_eq!(l.hit_test(-5.0, -5.0), TextInputHit::EmptyArea);
     }
 
     #[test]
