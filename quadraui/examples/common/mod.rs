@@ -30,6 +30,10 @@
 //!   (#596) mounted inside an `AppShell` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.
+//! - [`FocusDemo`] (in [`focus_demo`]) — two lists + a status bar whose
+//!   Tab/Shift+Tab order is derived from `ScreenLayout::tab_stops` and
+//!   cycled by the runner-owned `FocusManager` (#830), with the backend
+//!   painting the focus ring. Used by `tui_focus_ring` / `gtk_focus_ring`.
 //! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
 //!   list. `KeyMap`/`KeyContext` were demoted here from
 //!   `quadraui::compose` by #825 (zero adopters); this module is a
@@ -61,6 +65,7 @@ pub mod diff_view_demo;
 pub mod editor_font_demo;
 pub mod file_dialog_demo;
 pub mod find_replace_app;
+pub mod focus_demo;
 pub mod folder_picker_app;
 pub mod form_all_fields;
 pub mod form_groups;
@@ -121,6 +126,7 @@ pub use diff_view_demo::DiffViewApp;
 pub use editor_font_demo::EditorFontDemo;
 pub use file_dialog_demo::FileDialogDemo;
 pub use find_replace_app::FindReplaceApp;
+pub use focus_demo::FocusDemo;
 pub use folder_picker_app::FolderPickerApp;
 pub use form_all_fields::FormAllFieldsApp;
 pub use form_groups::FormGroupsApp;
