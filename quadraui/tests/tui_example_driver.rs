@@ -552,6 +552,56 @@ fn text_input_ctrl_shift_z_redoes_after_undo() {
     );
 }
 
+/// Regression test: the demo's `handle()` used to reject *every*
+/// `KeyPressed` with `ctrl`/`cmd` held before ever calling
+/// `EditOp::from_key`, which made `EditOp::from_key`'s documented
+/// Ctrl+Home/Ctrl+End -> MoveDocStart/MoveDocEnd mapping unreachable
+/// through the shipped demo. The guard now only rejects Ctrl/Cmd held on
+/// a `Key::Char` (so Ctrl+<letter> combos don't get typed as literal
+/// characters), letting named keys like Home/End reach `from_key` with
+/// their modifiers intact.
+#[test]
+fn text_input_ctrl_home_end_move_to_doc_start_and_end() {
+    let mut driver = TuiDriver::new(TextInputDemo::new(), 100, 30);
+    driver.press_named(NamedKey::Enter); // line 1 -> line 2
+    for c in "hi".chars() {
+        driver.type_char(c);
+    }
+    assert!(
+        driver.screen_contains("line 2"),
+        "cursor should be on line 2 before Ctrl+Home:\n{}",
+        driver.screen()
+    );
+
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Home),
+        modifiers: Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+    let after_home = driver.screen();
+    assert!(
+        after_home.contains("line 1") && after_home.contains("col 1"),
+        "Ctrl+Home should move the cursor to the very start of the buffer:\n{after_home}"
+    );
+
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::End),
+        modifiers: Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+    let after_end = driver.screen();
+    assert!(
+        after_end.contains("line 2") && after_end.contains("col 3"),
+        "Ctrl+End should move the cursor to the very end of the buffer:\n{after_end}"
+    );
+}
+
 // ─── DiffViewApp: click routes through DiffViewGeometry::hit_test (#818) ────
 
 /// #818 acceptance: clicking a diff row resolves through

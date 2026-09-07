@@ -12,14 +12,14 @@
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Color, EditOp,
     InteractionState, Key, KeyBinding, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TextInput, TextInputHit, UiEvent, WidgetId,
+    StatusBarSegment, TextInput, TextInputHit, UiEvent, UndoableTextInput, WidgetId,
 };
 
 const UNDO_ACCEL: &str = "text_input_demo.undo";
 const REDO_ACCEL: &str = "text_input_demo.redo";
 
 pub struct TextInputDemo {
-    input: TextInput,
+    input: UndoableTextInput,
 }
 
 impl TextInputDemo {
@@ -31,7 +31,9 @@ impl TextInputDemo {
                 .into(),
         );
         input.has_focus = true;
-        Self { input }
+        Self {
+            input: UndoableTextInput::new(input),
+        }
     }
 
     /// Same `input_rect` geometry `render` uses — shared so
@@ -175,11 +177,15 @@ impl AppLogic for TextInputDemo {
                     return Reaction::Exit;
                 }
                 // Plain typing and cursor movement (with Shift-to-select)
-                // go through `EditOp::from_key`; Ctrl+<letter> combos
-                // that aren't accelerators (none needed here — Undo/Redo
-                // are handled above as accelerators) fall through to
-                // `Reaction::Continue`.
-                if modifiers.ctrl || modifiers.cmd {
+                // go through `EditOp::from_key`, which already maps
+                // Ctrl+Home/End to MoveDocStart/MoveDocEnd. Only
+                // Ctrl/Cmd+<character> combos (copy/paste/etc. — none
+                // needed here, since Undo/Redo are handled above as
+                // accelerators) are rejected before `from_key`, so they
+                // don't get typed as literal characters; named keys like
+                // Home/End still reach `from_key` with their modifiers
+                // intact.
+                if matches!(key, Key::Char(_)) && (modifiers.ctrl || modifiers.cmd) {
                     return Reaction::Continue;
                 }
                 match EditOp::from_key(&key, modifiers) {

@@ -28,12 +28,20 @@
 //! way, wiring those long-declared-but-unused names (see
 //! `accelerator.rs`'s module doc) to real behaviour.
 //!
-//! Undo/redo is a [`crate::undo::UndoStack`] of buffer snapshots, private
-//! to `TextInput` and excluded from (de)serialization — history is
-//! runtime-only, not part of a `TextInput`'s durable value. Every
-//! content-mutating op records the pre-mutation snapshot; pure cursor
-//! movement does not, so moving the cursor between two edits doesn't
-//! split them into separate undo steps.
+//! `TextInput::apply` on its own has no memory of `Undo`/`Redo` — every
+//! field on `TextInput` is `pub` so external crates can still build one
+//! with a plain struct literal (see the *Downstream consumers* policy in
+//! this repo's `CLAUDE.md`: a private field on a `pub` struct breaks that
+//! construction path with no workaround, not even `..Default::default()`).
+//! Adding an undo history *as a `TextInput` field* would have done exactly
+//! that, so history instead lives in the opt-in wrapper
+//! [`UndoableTextInput`], which owns a [`crate::undo::UndoStack`] of
+//! buffer snapshots and forwards everything except `Undo`/`Redo` to the
+//! wrapped `TextInput::apply`. `TextInput::apply(EditOp::Undo | EditOp::Redo)`
+//! is a documented no-op (returns `false`) — wrap in `UndoableTextInput`
+//! to get real undo/redo. Every content-mutating op records the
+//! pre-mutation snapshot; pure cursor movement does not, so moving the
+//! cursor between two edits doesn't split them into separate undo steps.
 
 use serde::{Deserialize, Serialize};
 
@@ -46,10 +54,10 @@ use crate::undo::UndoStack;
 /// lines are empty strings. Cursor is `(line, col)` in *char columns*
 /// (not bytes); the rasterisers convert as needed.
 ///
-/// `PartialEq`/`Eq` are hand-implemented (below) rather than derived —
-/// they compare content/cursor/selection only, excluding `undo_stack`
-/// (runtime-only history; see the field doc).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `PartialEq`/`Eq` are derived: every field here is content/cursor/
+/// selection state with no runtime-only history attached (see
+/// [`UndoableTextInput`] for why undo history is *not* a field here).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {
     pub id: WidgetId,
     /// One entry per logical line. Newlines are implicit between
@@ -97,30 +105,7 @@ pub struct TextInput {
     /// [`Self::selection_range`].
     #[serde(default)]
     pub selection_anchor: Option<(usize, usize)>,
-    /// Undo/redo history — see the module doc and [`EditOp`]. Runtime-only:
-    /// skipped by (de)serialization (a freshly deserialized `TextInput`
-    /// starts with empty history, same as [`Self::new`]), and excluded
-    /// from equality (two buffers with identical content/cursor/selection
-    /// are equal regardless of how their history was built up).
-    #[serde(skip)]
-    undo_stack: UndoStack<TextInputSnapshot>,
 }
-
-impl PartialEq for TextInput {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.lines == other.lines
-            && self.cursor_line == other.cursor_line
-            && self.cursor_col == other.cursor_col
-            && self.placeholder == other.placeholder
-            && self.scroll_offset == other.scroll_offset
-            && self.scroll_col == other.scroll_col
-            && self.has_focus == other.has_focus
-            && self.selection_anchor == other.selection_anchor
-    }
-}
-
-impl Eq for TextInput {}
 
 impl TextInput {
     pub fn new(id: WidgetId) -> Self {
@@ -134,7 +119,6 @@ impl TextInput {
             scroll_col: 0,
             has_focus: false,
             selection_anchor: None,
-            undo_stack: UndoStack::new(),
         }
     }
 }
@@ -303,19 +287,6 @@ impl TextInput {
         self.selection_anchor = snap.selection_anchor;
     }
 
-    /// Run a content-mutating closure, recording an undo snapshot first
-    /// — but only keeping it if `f` actually reports a change, so a
-    /// no-op edit (backspace at the very start of the buffer, delete at
-    /// the very end) doesn't waste an undo step.
-    fn record_and(&mut self, f: impl FnOnce(&mut Self) -> bool) -> bool {
-        let snap = self.snapshot();
-        let changed = f(self);
-        if changed {
-            self.undo_stack.record(snap);
-        }
-        changed
-    }
-
     /// The selection as an ordered `(start, end)` pair of `(line, col)`
     /// positions, or `None` if no selection is active (`selection_anchor`
     /// is `None`, or equals the current cursor position).
@@ -392,8 +363,8 @@ impl TextInput {
     }
 
     /// Delete the active selection, if any. Returns whether anything was
-    /// deleted. Does **not** record undo itself — callers wrap this in
-    /// [`Self::record_and`].
+    /// deleted. Does **not** record undo itself — that's
+    /// [`UndoableTextInput::apply`]'s job.
     fn delete_selection_raw(&mut self) -> bool {
         match self.selection_range() {
             Some((start, end)) => {
@@ -501,30 +472,44 @@ impl TextInput {
     /// Apply one [`EditOp`], mutating this `TextInput` in place. Returns
     /// whether anything actually changed (useful for deciding whether a
     /// redraw is needed).
+    ///
+    /// [`EditOp::Undo`]/[`EditOp::Redo`] are documented no-ops here — a
+    /// bare `TextInput` keeps no history (see the module doc). Wrap in
+    /// [`UndoableTextInput`] to get real undo/redo.
     pub fn apply(&mut self, op: EditOp) -> bool {
         match op {
-            EditOp::InsertChar(ch) => self.record_and(|s| {
-                s.delete_selection_raw();
-                s.insert_char_raw(ch);
+            EditOp::InsertChar(ch) => {
+                self.delete_selection_raw();
+                self.insert_char_raw(ch);
                 true
-            }),
-            EditOp::InsertText(text) => self.record_and(|s| s.replace_selection_and_insert(&text)),
-            EditOp::DeleteBackward => self.record_and(|s| {
-                if s.delete_selection_raw() {
+            }
+            EditOp::InsertText(text) => self.replace_selection_and_insert(&text),
+            EditOp::DeleteBackward => {
+                if self.delete_selection_raw() {
                     true
                 } else {
-                    s.delete_backward_raw()
+                    self.delete_backward_raw()
                 }
-            }),
-            EditOp::DeleteForward => self.record_and(|s| {
-                if s.delete_selection_raw() {
+            }
+            EditOp::DeleteForward => {
+                if self.delete_selection_raw() {
                     true
                 } else {
-                    s.delete_forward_raw()
+                    self.delete_forward_raw()
                 }
-            }),
-            EditOp::DeleteSelection => self.record_and(|s| s.delete_selection_raw()),
+            }
+            EditOp::DeleteSelection => self.delete_selection_raw(),
             EditOp::MoveLeft { extend } => {
+                // An unmodified arrow press while a selection is active
+                // collapses to the selection's near edge instead of also
+                // taking a step from the cursor's (moving-end) position —
+                // otherwise a single Left press after a rightward
+                // shift-selection would visually jump two characters.
+                if !extend {
+                    if let Some((start, _end)) = self.selection_range() {
+                        return self.move_cursor_to(start, false);
+                    }
+                }
                 let (line, col) = (self.cursor_line, self.cursor_col);
                 let target = if col > 0 {
                     (line, col - 1)
@@ -536,6 +521,12 @@ impl TextInput {
                 self.move_cursor_to(target, extend)
             }
             EditOp::MoveRight { extend } => {
+                // See `MoveLeft`: collapses to the selection's far edge.
+                if !extend {
+                    if let Some((_start, end)) = self.selection_range() {
+                        return self.move_cursor_to(end, false);
+                    }
+                }
                 let (line, col) = (self.cursor_line, self.cursor_col);
                 let len = self.line_len(line);
                 let target = if col < len {
@@ -590,27 +581,112 @@ impl TextInput {
                     true
                 }
             }
+            // A bare `TextInput` has no history to undo/redo — see this
+            // method's doc and [`UndoableTextInput`].
+            EditOp::Undo | EditOp::Redo => false,
+        }
+    }
+}
+
+/// Bounded so a long-lived `TextInput` (e.g. a persistent chat input, or
+/// a large commit-message buffer) doesn't accumulate unbounded history —
+/// each undo step clones the full `lines: Vec<String>`. 200 steps is
+/// generous for interactive editing while keeping worst-case memory
+/// proportional to a small constant times the buffer size, not to how
+/// long the widget has been alive.
+const UNDO_HISTORY_LIMIT: usize = 200;
+
+/// Opt-in undo/redo wrapper around a [`TextInput`].
+///
+/// `TextInput` itself carries no history (see the module doc: adding one
+/// as a private `TextInput` field would have broken external struct-
+/// literal construction of `TextInput`, which every field being `pub`
+/// exists to keep working). `UndoableTextInput` owns the history instead,
+/// via a bounded [`crate::undo::UndoStack`] of buffer snapshots, and
+/// forwards every [`EditOp`] to [`TextInput::apply`] except `Undo`/`Redo`,
+/// which it serves from its own stack.
+///
+/// Access the wrapped `TextInput` through the public `input` field, or
+/// through `Deref`/`DerefMut` (so `.lines`, `.layout(..)`,
+/// `.selection_range()`, etc. all work directly on an `UndoableTextInput`
+/// without an extra `.input`).
+#[derive(Debug, Clone)]
+pub struct UndoableTextInput {
+    pub input: TextInput,
+    undo_stack: UndoStack<TextInputSnapshot>,
+}
+
+impl UndoableTextInput {
+    pub fn new(input: TextInput) -> Self {
+        Self {
+            input,
+            undo_stack: UndoStack::with_limit(UNDO_HISTORY_LIMIT),
+        }
+    }
+
+    /// Apply one [`EditOp`]. `Undo`/`Redo` are served from this wrapper's
+    /// history; every other op is forwarded to [`TextInput::apply`], with
+    /// a pre-mutation snapshot recorded first for content-mutating ops
+    /// (insert/delete) so undo can restore it. Pure cursor/selection
+    /// movement is not recorded, so moving the cursor between two edits
+    /// doesn't split them into separate undo steps. Returns whether
+    /// anything actually changed.
+    pub fn apply(&mut self, op: EditOp) -> bool {
+        match op {
             EditOp::Undo => {
-                let current = self.snapshot();
+                let current = self.input.snapshot();
                 match self.undo_stack.undo(current) {
                     Some(prev) => {
-                        self.restore(prev);
+                        self.input.restore(prev);
                         true
                     }
                     None => false,
                 }
             }
             EditOp::Redo => {
-                let current = self.snapshot();
+                let current = self.input.snapshot();
                 match self.undo_stack.redo(current) {
                     Some(next) => {
-                        self.restore(next);
+                        self.input.restore(next);
                         true
                     }
                     None => false,
                 }
             }
+            other => {
+                let content_mutating = matches!(
+                    other,
+                    EditOp::InsertChar(_)
+                        | EditOp::InsertText(_)
+                        | EditOp::DeleteBackward
+                        | EditOp::DeleteForward
+                        | EditOp::DeleteSelection
+                );
+                if content_mutating {
+                    let snap = self.input.snapshot();
+                    let changed = self.input.apply(other);
+                    if changed {
+                        self.undo_stack.record(snap);
+                    }
+                    changed
+                } else {
+                    self.input.apply(other)
+                }
+            }
         }
+    }
+}
+
+impl std::ops::Deref for UndoableTextInput {
+    type Target = TextInput;
+    fn deref(&self) -> &TextInput {
+        &self.input
+    }
+}
+
+impl std::ops::DerefMut for UndoableTextInput {
+    fn deref_mut(&mut self) -> &mut TextInput {
+        &mut self.input
     }
 }
 
@@ -1184,6 +1260,45 @@ mod tests {
     }
 
     #[test]
+    fn unmodified_left_after_selection_lands_on_near_edge() {
+        // Selecting rightward then pressing plain Left should land the
+        // cursor exactly on the selection's start, not one further step
+        // left of the (moving-end) cursor position.
+        let mut ti = input(vec!["hello"]);
+        ti.apply(EditOp::MoveRight { extend: true });
+        ti.apply(EditOp::MoveRight { extend: true }); // selects "he", cursor at col 2
+        assert!(ti.apply(EditOp::MoveLeft { extend: false }));
+        assert_eq!((ti.cursor_line, ti.cursor_col), (0, 0));
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
+    fn unmodified_right_after_selection_lands_on_far_edge() {
+        // Same as above, mirrored: plain Right lands on the selection's
+        // end rather than stepping one further right of the cursor.
+        let mut ti = input(vec!["hello"]);
+        ti.apply(EditOp::MoveRight { extend: true });
+        ti.apply(EditOp::MoveRight { extend: true }); // selects "he", cursor at col 2
+        assert!(ti.apply(EditOp::MoveRight { extend: false }));
+        assert_eq!((ti.cursor_line, ti.cursor_col), (0, 2));
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
+    fn unmodified_left_after_leftward_selection_lands_on_near_edge() {
+        // Selecting *leftward* (cursor is the near edge already) then
+        // pressing plain Left should still land on the selection start —
+        // exercising the anchor > cursor ordering in `selection_range`.
+        let mut ti = input(vec!["hello"]);
+        ti.cursor_col = 3;
+        ti.apply(EditOp::MoveLeft { extend: true });
+        ti.apply(EditOp::MoveLeft { extend: true }); // selects "el" (cols 1..3), cursor at col 1
+        assert!(ti.apply(EditOp::MoveLeft { extend: false }));
+        assert_eq!((ti.cursor_line, ti.cursor_col), (0, 1));
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
     fn select_all_selects_entire_buffer() {
         let mut ti = input(vec!["ab", "cde"]);
         assert!(ti.apply(EditOp::SelectAll));
@@ -1233,11 +1348,22 @@ mod tests {
         assert_eq!(ti.selected_text().as_deref(), Some("abc\ndef"));
     }
 
-    // ── undo / redo ───────────────────────────────────────────────────
+    // ── undo / redo (via `UndoableTextInput` — see its module doc for
+    //    why history is not a `TextInput` field) ─────────────────────
+
+    #[test]
+    fn bare_text_input_apply_treats_undo_redo_as_no_ops() {
+        // `TextInput::apply` alone (no wrapper) keeps no history at all —
+        // it's a documented no-op, not just "nothing recorded yet".
+        let mut ti = TextInput::new(WidgetId::new("ti"));
+        ti.apply(EditOp::InsertChar('h'));
+        assert!(!ti.apply(EditOp::Undo));
+        assert_eq!(ti.lines, vec!["h".to_string()]);
+    }
 
     #[test]
     fn undo_reverts_last_insert() {
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
         ti.apply(EditOp::InsertChar('h'));
         ti.apply(EditOp::InsertChar('i'));
         assert_eq!(ti.lines, vec!["hi".to_string()]);
@@ -1249,13 +1375,13 @@ mod tests {
 
     #[test]
     fn undo_with_no_history_is_a_no_op() {
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
         assert!(!ti.apply(EditOp::Undo));
     }
 
     #[test]
     fn redo_restores_undone_edit() {
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
         ti.apply(EditOp::InsertChar('h'));
         ti.apply(EditOp::Undo);
         assert_eq!(ti.lines, vec!["".to_string()]);
@@ -1265,7 +1391,7 @@ mod tests {
 
     #[test]
     fn new_edit_after_undo_clears_redo_history() {
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
         ti.apply(EditOp::InsertChar('a'));
         ti.apply(EditOp::Undo);
         ti.apply(EditOp::InsertChar('b'));
@@ -1280,7 +1406,7 @@ mod tests {
     fn cursor_movement_does_not_create_an_undo_step() {
         // Typing, then moving, then undoing should undo the typing — not
         // a no-op "undo the move" step.
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
         ti.apply(EditOp::InsertChar('a'));
         ti.apply(EditOp::MoveLeft { extend: false });
         assert!(ti.apply(EditOp::Undo));
@@ -1289,7 +1415,7 @@ mod tests {
 
     #[test]
     fn undo_restores_selection_state() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = UndoableTextInput::new(input(vec!["hello"]));
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true }); // selects "he"
         ti.apply(EditOp::DeleteSelection);
@@ -1297,6 +1423,22 @@ mod tests {
         assert!(ti.apply(EditOp::Undo));
         assert_eq!(ti.lines, vec!["hello".to_string()]);
         assert_eq!(ti.selection_range(), Some(((0, 0), (0, 2))));
+    }
+
+    #[test]
+    fn undo_history_is_bounded() {
+        // Regression test for the unbounded-memory concern: recording
+        // more than `UNDO_HISTORY_LIMIT` steps evicts the oldest ones
+        // instead of growing forever.
+        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        for _ in 0..UNDO_HISTORY_LIMIT + 50 {
+            ti.apply(EditOp::InsertChar('a'));
+        }
+        let mut undone = 0;
+        while ti.apply(EditOp::Undo) {
+            undone += 1;
+        }
+        assert_eq!(undone, UNDO_HISTORY_LIMIT);
     }
 
     // ── EditOp::from_key / from_key_binding ──────────────────────────
@@ -1374,16 +1516,23 @@ mod tests {
 
     #[test]
     fn equality_ignores_undo_history() {
-        let mut a = TextInput::new(WidgetId::new("ti"));
-        let mut b = TextInput::new(WidgetId::new("ti"));
-        // `a` reaches "x" directly; `b` reaches "x" via an extra
-        // insert-then-undo round trip, leaving `b`'s redo stack non-empty
-        // (unlike `a`'s). Content is identical; history is not.
+        // `TextInput` carries no history at all (see `UndoableTextInput`'s
+        // module doc for why), so its `PartialEq` never has history to
+        // ignore in the first place. Demonstrate that at the wrapper
+        // level: `a` reaches "x" directly, `b` reaches "x" via an extra
+        // insert-then-undo round trip that leaves `b`'s redo stack
+        // non-empty (unlike `a`'s) — the wrapped `TextInput`s are still
+        // equal.
+        let mut a = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut b = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
         a.apply(EditOp::InsertChar('x'));
         b.apply(EditOp::InsertChar('x'));
         b.apply(EditOp::InsertChar('y'));
         b.apply(EditOp::Undo);
         assert_eq!(a.lines, b.lines);
-        assert_eq!(a, b, "equality must compare content, not undo history");
+        assert_eq!(
+            a.input, b.input,
+            "equality must compare content, not undo history"
+        );
     }
 }
