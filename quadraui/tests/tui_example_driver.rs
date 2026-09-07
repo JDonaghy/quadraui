@@ -3863,6 +3863,99 @@ fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
     );
 }
 
+// ─── ChatDemo (quadraui#832): the "thinking" spinner schedules its own frames ─
+//
+// Before #832 every backend polled on a fixed cadence (TUI 16ms, GTK 33ms) and
+// called `tick` on every timeout, so `ChatDemo`'s thinking countdown advanced
+// for free. That cadence is gone — TUI/GTK now poll a coarse 250ms fallback
+// ceiling and macOS/Windows have no idle poll at all — so the demo has to ask
+// for each of its own frames via `Backend::request_frame_in`.
+//
+// That request is invisible on the painted screen: an app that re-arms itself
+// every 100ms and one that free-rides on an idle poll render byte-identical
+// frames and return identical `Reaction`s. `TuiBackend::frame_requests()` is
+// what makes the difference observable, so a regression that dropped either
+// `request_frame_in` call from `chat_demo.rs` — leaving a spinner that freezes
+// on macOS/Windows and stutters at 250ms on TUI/GTK — would fail here instead
+// of shipping.
+
+#[test]
+fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_lands() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    // Idle: nothing animating, so nothing scheduled.
+    assert_eq!(
+        driver.backend().frame_requests(),
+        0,
+        "an idle ChatDemo must not schedule frames"
+    );
+    assert_eq!(driver.backend().pending_frame_delay(), None);
+    assert_eq!(
+        driver.tick(),
+        Reaction::Continue,
+        "ticking an idle ChatDemo has nothing to redraw"
+    );
+    assert_eq!(driver.backend().frame_requests(), 0);
+
+    for c in "ping".chars() {
+        driver.type_char(c);
+    }
+    driver.ctrl_char('s');
+
+    // Submitting starts the 5-tick "thinking" delay and arms the first wake
+    // from `handle` — not from `tick`, which hasn't run yet.
+    assert_eq!(
+        driver.backend().frame_requests(),
+        1,
+        "submitting should arm exactly one frame before any tick runs"
+    );
+    let armed = driver
+        .backend()
+        .pending_frame_delay()
+        .expect("submit should leave a frame scheduled");
+    assert!(
+        armed <= std::time::Duration::from_millis(100),
+        "the armed wake should be the demo's ~100ms spinner cadence, got {armed:?}"
+    );
+
+    // Four more ticks still counting down: each repaints *and* re-arms, so the
+    // spinner keeps rotating without any fixed backend cadence to ride on.
+    for n in 1..=4 {
+        assert_eq!(
+            driver.tick(),
+            Reaction::Redraw,
+            "tick {n} of the countdown should repaint the rotating spinner"
+        );
+        assert_eq!(
+            driver.backend().frame_requests(),
+            1 + n,
+            "tick {n} should chain the next wake rather than assume one"
+        );
+    }
+
+    // The fifth tick delivers the reply and stops asking: the animation is
+    // over, so a further wake would be a busy-loop.
+    assert_eq!(driver.tick(), Reaction::Redraw);
+    assert!(
+        driver.screen_contains("Echo: ping"),
+        "the simulated assistant reply should land on the final countdown tick:\n{}",
+        driver.screen()
+    );
+    assert_eq!(
+        driver.backend().frame_requests(),
+        5,
+        "the tick that finishes the reply must not chain another wake"
+    );
+
+    // Back to idle — still no new requests, and the app goes quiet.
+    assert_eq!(driver.tick(), Reaction::Continue);
+    assert_eq!(
+        driver.backend().frame_requests(),
+        5,
+        "an idle ChatDemo must not keep scheduling frames after the reply"
+    );
+}
+
 // ─── SidebarPanelApp (issue #305): sidebar item click updates main panel ────
 //
 // Clicking a task row is handled by `SidebarPanelApp::handle`'s `MouseDown`

@@ -208,7 +208,8 @@ impl<A: AppLogic> TuiDriver<A> {
                 // quadraui#832: arm the same bookkeeping the live runner
                 // would via `Backend::request_frame_in` — harmless on a
                 // driver with no real timer loop, and lets a test assert
-                // on `backend().frame_poll_timeout(..)` afterward. Never
+                // on `backend().frame_requests()` /
+                // `backend().pending_frame_delay()` afterward. Never
                 // downgrades an already-stronger `result` (a `Redraw`
                 // from an earlier event in this batch).
                 EventOutcome::RedrawAfter(d) => {
@@ -270,6 +271,54 @@ impl<A: AppLogic> TuiDriver<A> {
             }
         }
         result
+    }
+
+    /// Run one [`AppLogic::tick`], applying its [`Reaction`] exactly as
+    /// the live runner's loop does (quadraui#832).
+    ///
+    /// The live TUI loop calls `app.tick(backend)` once after every event
+    /// batch — including the empty batch a bare poll timeout produces —
+    /// and matches the returned `Reaction` the same four ways
+    /// [`Self::dispatch`] matches an `EventOutcome`: nothing on
+    /// `Continue`, repaint on `Redraw`, `Backend::request_frame_in` on
+    /// `RedrawAfter`, latch `exited` on `Exit`. See `tui::run::run_inner`.
+    ///
+    /// Time-driven app state — a spinner frame, a caret blink, a
+    /// countdown, a background-job poll — lives entirely in `tick`, so
+    /// without this a driver test can only ever observe an app's
+    /// event-driven half. Nothing here *waits*: the driver has no event
+    /// loop and no real timer, so a test drives the animation by calling
+    /// this once per frame it wants to advance rather than sleeping. Pair
+    /// it with [`TuiBackend::frame_requests`] /
+    /// [`TuiBackend::pending_frame_delay`] (via [`Self::backend`]) to
+    /// assert on the *scheduling* the app asked for, which is otherwise
+    /// invisible from the painted screen.
+    ///
+    /// Short-circuits to [`Reaction::Exit`] once the app has exited,
+    /// matching [`Self::dispatch`].
+    pub fn tick(&mut self) -> Reaction {
+        if self.core.exited() {
+            return Reaction::Exit;
+        }
+        let reaction = {
+            let (backend, app) = self.core.parts_mut();
+            app.tick(backend)
+        };
+        match reaction {
+            Reaction::Continue => Reaction::Continue,
+            Reaction::Redraw => {
+                self.render();
+                Reaction::Redraw
+            }
+            Reaction::RedrawAfter(d) => {
+                self.core.backend_mut().request_frame_in(d);
+                Reaction::RedrawAfter(d)
+            }
+            Reaction::Exit => {
+                self.core.mark_exited();
+                Reaction::Exit
+            }
+        }
     }
 
     /// Press a key (no modifiers).

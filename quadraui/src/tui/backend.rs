@@ -255,7 +255,11 @@ pub struct TuiBackend {
     /// [`Self::frame_poll_timeout`]/[`Self::clear_frame_deadline_if_due`],
     /// to compute the next `wait_events` timeout.
     /// [`crate::tui::testing::TuiDriver`]'s headless loop is scripted
-    /// rather than timer-driven, so it never reads this field.
+    /// rather than timer-driven, so it never *waits* on this deadline —
+    /// but it does arm it (its `dispatch`/`pump_user_events`/`tick` call
+    /// `request_frame_in` exactly where the live loop does), and tests
+    /// read it back through [`Self::frame_requests`] /
+    /// [`Self::pending_frame_delay`].
     frame_scheduler: crate::runtime::FrameScheduler,
 }
 
@@ -315,6 +319,39 @@ impl TuiBackend {
     /// [`crate::runtime::FrameScheduler::clear_if_due`].
     pub(crate) fn clear_frame_deadline_if_due(&mut self) {
         self.frame_scheduler.clear_if_due();
+    }
+
+    /// How many times [`Backend::request_frame_in`] has been called on
+    /// this backend since it was constructed (quadraui#832).
+    ///
+    /// Real hosts never need this — it exists so a headless
+    /// [`crate::tui::testing::TuiDriver`] test can assert on an app's
+    /// *scheduling* behaviour, which is otherwise invisible: an app that
+    /// re-arms itself every tick and one that relies on a fixed idle
+    /// cadence paint identical screens and return identical
+    /// [`crate::Reaction`]s. Counting the calls (rather than reading
+    /// [`Self::pending_frame_delay`]) is what makes the chained-re-arm
+    /// pattern testable, because repeated requests at the same interval
+    /// coalesce to one deadline — see
+    /// [`crate::runtime::FrameScheduler`].
+    ///
+    /// Monotonic: a fired deadline clears the pending wake, not the
+    /// count.
+    pub fn frame_requests(&self) -> u64 {
+        self.frame_scheduler.requests()
+    }
+
+    /// Time remaining until the pending [`Backend::request_frame_in`]
+    /// deadline, or `None` when no frame is scheduled (quadraui#832).
+    ///
+    /// The companion to [`Self::frame_requests`]: that one proves *how
+    /// often* an app asked, this one proves *what interval* it asked
+    /// for. Also test-facing — the live runner uses the `pub(crate)`
+    /// [`Self::frame_poll_timeout`] instead, which clamps to the idle
+    /// ceiling and so can't distinguish "nothing scheduled" from
+    /// "scheduled beyond the ceiling".
+    pub fn pending_frame_delay(&self) -> Option<Duration> {
+        self.frame_scheduler.pending_delay()
     }
 
     /// Override the detected colour depth. Real hosts never need this —
