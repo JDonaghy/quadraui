@@ -341,8 +341,8 @@ pub const CASES: &[Case] = &[
             let cw = b.char_width();
             let lh = b.line_height();
             let anchor = Rect::new(0.0, 0.0, area.width, lh);
-            let tooltip =
-                Tooltip::new(id("tooltip"), "c0tip").with_placement(TooltipPlacement::Bottom);
+            let mut tooltip = Tooltip::new(id("tooltip"), "c0tip");
+            tooltip.placement = TooltipPlacement::Bottom;
             // Room for a border on all sides plus the whole label — a box
             // measured to exactly `border + text + border` leaves no
             // padding and clips the last glyph.
@@ -363,8 +363,8 @@ pub const CASES: &[Case] = &[
             let cw = b.char_width();
             let lh = b.line_height();
             let anchor = Rect::new(0.0, 0.0, area.width, lh);
-            let tooltip = Tooltip::new(id("tooltip-chrome"), "c0chrome")
-                .with_placement(TooltipPlacement::Bottom);
+            let mut tooltip = Tooltip::new(id("tooltip-chrome"), "c0chrome");
+            tooltip.placement = TooltipPlacement::Bottom;
             let measure = TooltipMeasure::new(cw * 12.0, lh * 3.0);
             let layout = tooltip.layout(anchor, area, measure, lh);
             b.draw_tooltip_with_chrome(

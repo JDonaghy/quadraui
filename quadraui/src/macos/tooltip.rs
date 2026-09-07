@@ -308,9 +308,7 @@ mod tests {
             resolved_placement: ResolvedPlacement::Bottom,
         };
         let mut chrome = TooltipChrome::new(border);
-        if let Some(t) = title {
-            chrome = chrome.with_title(t);
-        }
+        chrome.title = title.map(str::to_string);
         (layout, chrome)
     }
 

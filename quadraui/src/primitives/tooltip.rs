@@ -71,16 +71,33 @@
 //! against this change — nothing to migrate, so no companion consumer PR
 //! and no `#[deprecated]` shim are required.
 //!
+//! ## `with_*` builder deprecation (issue #824)
+//!
+//! [`Tooltip`]'s `with_styled_lines` / `with_placement` / `with_bg` /
+//! `with_fg` and [`TooltipChrome`]'s `with_border` / `with_title` are
+//! `#[deprecated]` now: every one of those fields is already `pub`, so
+//! the builder was pure convenience sugar around a field write, not
+//! something that guarded an invariant. Set the field directly instead —
+//! `TooltipChrome` is `#[non_exhaustive]` + `Default` already, so it *is*
+//! the options-struct shape this issue asks for, and a future chrome/
+//! tooltip field is additive either way. `Tooltip` itself stays a plain,
+//! non-`#[non_exhaustive]` struct per the exhaustive-literal reasoning
+//! above — that part of #824's "adding a field must not break" goal
+//! already lives on `TooltipChrome`, which is why new tooltip knobs have
+//! gone there (`#541`) rather than onto `Tooltip` since.
+//!
 //! Usage:
 //!
 //! ```
-//! # use quadraui::{Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, WidgetId, Rect};
-//! let tip = Tooltip::new(WidgetId::new("hover"), "Hover hint");
+//! # use quadraui::{Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, WidgetId, Rect};
+//! let mut tip = Tooltip::new(WidgetId::new("hover"), "Hover hint");
+//! tip.placement = TooltipPlacement::Top;
 //! let anchor = Rect::new(0.0, 0.0, 10.0, 1.0);
 //! let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
 //! let measure = TooltipMeasure::new(20.0, 3.0);
 //! let layout = tip.layout(anchor, viewport, measure, 0.0);
-//! let chrome = TooltipChrome::new(TooltipBorder::Sides);
+//! let mut chrome = TooltipChrome::new(TooltipBorder::Sides);
+//! chrome.title = Some("Hover hint".to_string());
 //! // `backend.draw_tooltip_with_chrome(&tip, &layout, &chrome);`
 //! assert_eq!(chrome.border, TooltipBorder::Sides);
 //! ```
@@ -283,8 +300,11 @@ impl TooltipLayout {
 /// and it means future chrome knobs — a corner radius, a border colour
 /// override — are additive rather than the very breaking change this type
 /// exists to avoid. Construct with [`TooltipChrome::new`] /
-/// [`TooltipChrome::default`] and the `with_*` builders; the fields stay
-/// `pub` for reading.
+/// [`TooltipChrome::default`], then set `border` / `title` directly —
+/// both fields are `pub` and the type is already `#[non_exhaustive]` +
+/// `Default`, so it *is* the options struct (quadraui#824); the
+/// `with_border` / `with_title` builders that used to be the only way to
+/// reach those fields are deprecated shims now.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TooltipChrome {
@@ -308,6 +328,10 @@ impl TooltipChrome {
     }
 
     /// Set the border chrome.
+    #[deprecated(
+        since = "0.0.1",
+        note = "set the `border` field directly on a `TooltipChrome` value instead — the type is `#[non_exhaustive]` + `Default` already (quadraui#824)"
+    )]
     pub fn with_border(mut self, border: TooltipBorder) -> Self {
         self.border = border;
         self
@@ -315,6 +339,10 @@ impl TooltipChrome {
 
     /// Set a title, centred into the top border row when `border` is
     /// [`TooltipBorder::Full`]. Ignored by `Sides` and `None`.
+    #[deprecated(
+        since = "0.0.1",
+        note = "set the `title` field directly on a `TooltipChrome` value instead — the type is `#[non_exhaustive]` + `Default` already (quadraui#824)"
+    )]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
@@ -339,24 +367,40 @@ impl Tooltip {
 
     /// Set `styled_lines` (per-span-coloured multi-line content, in place
     /// of `text`).
+    #[deprecated(
+        since = "0.0.1",
+        note = "set the `styled_lines` field directly on the `Tooltip` value instead — all of its fields are already `pub` (quadraui#824)"
+    )]
     pub fn with_styled_lines(mut self, styled_lines: Vec<StyledText>) -> Self {
         self.styled_lines = Some(styled_lines);
         self
     }
 
     /// Set the preferred placement relative to the anchor.
+    #[deprecated(
+        since = "0.0.1",
+        note = "set the `placement` field directly on the `Tooltip` value instead — all of its fields are already `pub` (quadraui#824)"
+    )]
     pub fn with_placement(mut self, placement: TooltipPlacement) -> Self {
         self.placement = placement;
         self
     }
 
     /// Override the background colour (theme default otherwise).
+    #[deprecated(
+        since = "0.0.1",
+        note = "set the `bg` field directly on the `Tooltip` value instead — all of its fields are already `pub` (quadraui#824)"
+    )]
     pub fn with_bg(mut self, bg: Color) -> Self {
         self.bg = Some(bg);
         self
     }
 
     /// Override the foreground colour (theme default otherwise).
+    #[deprecated(
+        since = "0.0.1",
+        note = "set the `fg` field directly on the `Tooltip` value instead — all of its fields are already `pub` (quadraui#824)"
+    )]
     pub fn with_fg(mut self, fg: Color) -> Self {
         self.fg = Some(fg);
         self
@@ -494,17 +538,42 @@ mod tests {
     /// module doc). `TooltipChrome::default()` matches what every backend
     /// drew unconditionally before #541 introduced a choice.
     #[test]
-    fn tooltip_chrome_defaults_to_full_then_builders_override() {
+    fn tooltip_chrome_defaults_to_full_then_fields_override() {
         let chrome = TooltipChrome::default();
         assert_eq!(chrome.border, TooltipBorder::Full);
         assert_eq!(chrome.title, None);
 
-        let chrome = TooltipChrome::new(TooltipBorder::None).with_title("Hi");
+        let mut chrome = TooltipChrome::new(TooltipBorder::None);
+        chrome.title = Some("Hi".to_string());
         assert_eq!(chrome.border, TooltipBorder::None);
         assert_eq!(chrome.title.as_deref(), Some("Hi"));
 
+        chrome.border = TooltipBorder::Sides;
+        assert_eq!(chrome.border, TooltipBorder::Sides);
+    }
+
+    /// #824 shim coverage: the deprecated `with_border` / `with_title` /
+    /// `with_placement` / `with_bg` / `with_fg` / `with_styled_lines`
+    /// builders stay functional (not just present) after being marked
+    /// `#[deprecated]` — rule 8's shim contract is "keeps compiling *and*
+    /// behaving the same," not just "doesn't error."
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_with_builders_still_work() {
+        let chrome = TooltipChrome::new(TooltipBorder::None).with_title("Hi");
+        assert_eq!(chrome.title.as_deref(), Some("Hi"));
         let chrome = chrome.with_border(TooltipBorder::Sides);
         assert_eq!(chrome.border, TooltipBorder::Sides);
+
+        let tip = Tooltip::new(WidgetId::new("tip"), "Hello")
+            .with_placement(TooltipPlacement::Top)
+            .with_bg(Color::rgb(1, 2, 3))
+            .with_fg(Color::rgb(4, 5, 6))
+            .with_styled_lines(vec![StyledText::plain("styled")]);
+        assert_eq!(tip.placement, TooltipPlacement::Top);
+        assert_eq!(tip.bg, Some(Color::rgb(1, 2, 3)));
+        assert_eq!(tip.fg, Some(Color::rgb(4, 5, 6)));
+        assert!(tip.styled_lines.is_some());
     }
 
     /// #541 rule-8 guard: `TooltipLayout` must stay constructible from a

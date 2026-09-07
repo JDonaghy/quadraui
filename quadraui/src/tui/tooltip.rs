@@ -398,7 +398,7 @@ mod tests {
 
     /// `make_layout` paired with the [`TooltipChrome`] (#541) a test
     /// wants — the in-crate equivalent of `tooltip.layout(...)` plus a
-    /// `TooltipChrome::new(..).with_title(..)` sidecar.
+    /// `TooltipChrome::new(..)` sidecar with `title` set directly.
     fn layout_with(
         w: f32,
         h: f32,
@@ -406,9 +406,7 @@ mod tests {
         title: Option<&str>,
     ) -> (TooltipLayout, TooltipChrome) {
         let mut chrome = TooltipChrome::new(border);
-        if let Some(t) = title {
-            chrome = chrome.with_title(t);
-        }
+        chrome.title = title.map(str::to_string);
         (make_layout(0.0, 0.0, w, h), chrome)
     }
 

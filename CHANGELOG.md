@@ -151,3 +151,14 @@ release time.
   to resolve a bare-name clash that read as though it belonged to the
   unrelated `primitives::layout_metrics` module. Old name kept as a
   `#[deprecated]` `pub type` alias. PR 2 (shim removal), tracked in #822.
+- `primitives::tooltip::Tooltip::{with_styled_lines, with_placement,
+  with_bg, with_fg}` and `primitives::tooltip::TooltipChrome::{with_border,
+  with_title}` — `with_*` builder sprawl (#824): every one of these fields
+  is already `pub`, so the builder was sugar around a field write, not
+  something guarding an invariant. Replacement: set the field directly.
+  `TooltipChrome` is already `#[non_exhaustive]` + `Default`, so it already
+  *is* the options-struct shape #824 asks for; `Tooltip` stays a plain,
+  non-`#[non_exhaustive]` struct (per its module doc's exhaustive-literal
+  reasoning), so its fields are set the same way. Old methods kept behind
+  `#[deprecated]`, unchanged in behaviour. PR 2 (shim removal), tracked in
+  #824.
