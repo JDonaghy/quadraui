@@ -160,6 +160,7 @@
 pub mod diagnostics;
 pub mod diff;
 pub mod frame;
+pub mod interaction;
 pub mod layout;
 pub mod prelude;
 pub mod primitives;
@@ -478,6 +479,17 @@ pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
     FrameZone, ScreenLayout, Surface,
 };
+// #819: `InteractionState` — a single hover/pressed store keyed by
+// `WidgetId`, meant to replace the bespoke per-primitive trackers
+// (`ToolbarHoverTracker`, `StatusBarInteraction`) and the positional
+// `hovered_id`/`pressed_id`/`hovered_idx` arguments several `Backend`
+// methods take today. No `Backend` method or primitive signature
+// changes in this PR — see `interaction.rs`'s module doc for why (both
+// are `pub` surface with real downstream call sites, so migrating them
+// needs the two-PR deprecate-then-remove sequence `CLAUDE.md` rule 3
+// requires). `examples/common/toolbar_app.rs` demonstrates the pattern
+// as an app-owned drop-in replacement for its old ad hoc fields.
+pub use interaction::InteractionState;
 // #816: shared layout/hit-test foundation (`Anchor` for overlay
 // positioning, `visible_range_walk` replacing the per-primitive
 // `Visible*{idx, bounds}` structs). Nothing in `primitives/` consumes
