@@ -655,3 +655,114 @@ mod sgr_color_depth {
         );
     }
 }
+
+// ─── tui_pipeline: kitty keyboard protocol detection (quadraui#827) ───────
+
+/// Byte-level fixtures for #827's `BackendCaps::kitty_keyboard` detection.
+///
+/// **`#[cfg(unix)]` — deliberately, for the same transport reason as
+/// `sgr_color_depth` above, and this gate must not be removed.** Both
+/// fixtures below assert on the exact raw bytes `PushKeyboardEnhancementFlags`
+/// writes (`ESC[>11u` — `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES |
+/// REPORT_ALL_KEYS_AS_ESCAPE_CODES` = `1 | 2 | 8` = `11`), and ConPTY's
+/// re-serialising terminal emulator sits between the child and the master
+/// handle on Windows exactly as `sgr_color_depth`'s doc describes — a
+/// byte-exact match there proves nothing about quadraui's own logic.
+/// `ratatui::crossterm`'s Windows `supports_keyboard_enhancement()` is a
+/// separate, unconditional `Ok(false)` in any case — see
+/// `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade table for that row.
+///
+/// **What these fixtures actually exercise.** This harness's simulated
+/// terminal (the background reader thread in [`PtyExample::spawn`]) only
+/// ever answers the cursor-position query (`ESC[6n`); it never answers the
+/// kitty-protocol query (`ESC[?u ESC[c`) crossterm's
+/// `supports_keyboard_enhancement()` sends. That means the *live* probe
+/// always times out here (`Err`, after ~2s) — these fixtures observe
+/// `crate::tui::caps::probe_kitty_keyboard`'s **fallback to the
+/// environment heuristic**, not a real terminal answering the live query.
+/// That fallback path is exactly what a tmux session without passthrough,
+/// a mosh link, or a serial console hits too — see
+/// `docs/KITTY_KEYBOARD_PROTOCOL.md` for the full table and which rows
+/// remain genuinely untested (no real kitty/WezTerm/foot binary, no tmux,
+/// no mosh, no macOS/Windows host, is available to this fixture).
+///
+/// **Observed RED before the fix.** Before #827, `push_keyboard_enhancement`
+/// resolved an unanswered live query straight to `false`
+/// (`supports_keyboard_enhancement().unwrap_or(false)`, no environment
+/// fallback at all) — so `tui_pipeline_under_kitty_term_pushes_enhancement_flags`
+/// below would have failed even under `TERM=xterm-kitty`, the exact
+/// environment its own name promises the protocol is pushed for.
+#[cfg(unix)]
+mod kitty_keyboard_protocol {
+    use super::*;
+
+    /// The exact bytes `PushKeyboardEnhancementFlags` writes for the flag
+    /// set `crate::tui::run::push_keyboard_enhancement` requests —
+    /// `DISAMBIGUATE_ESCAPE_CODES (1) | REPORT_EVENT_TYPES (2) |
+    /// REPORT_ALL_KEYS_AS_ESCAPE_CODES (8) = 11`.
+    const PUSH_KITTY_FLAGS: &[u8] = b"\x1b[>11u";
+
+    /// `TERM=xterm-kitty` — kitty's own terminfo name, and the first signal
+    /// `detect_kitty_keyboard_from` checks. With the live query unanswered
+    /// (see the module doc), detection falls through to this heuristic,
+    /// which must land on `true` — so the example pushes the enhancement
+    /// flags, observable as the exact `ESC[>11u` sequence on the wire.
+    #[test]
+    fn tui_pipeline_under_kitty_term_pushes_enhancement_flags() {
+        let mut ex =
+            PtyExample::spawn_with_env("tui_pipeline", 100, 30, &[("TERM", "xterm-kitty")]);
+
+        assert!(
+            ex.wait_for("Deploy", WAIT),
+            "example did not render expected pipeline stages over the pty; screen:\n{}",
+            ex.screen_text()
+        );
+        assert!(
+            ex.wait_for_raw(PUSH_KITTY_FLAGS, WAIT),
+            "TERM=xterm-kitty did not push the kitty keyboard enhancement flags ({:?}) — the \
+             environment-heuristic fallback in `detect_kitty_keyboard_from` did not fire the way \
+             quadraui#827 requires",
+            String::from_utf8_lossy(PUSH_KITTY_FLAGS)
+        );
+
+        ex.send(b"q");
+        assert!(
+            ex.wait_exit(WAIT),
+            "example did not exit after 'q' — raw-mode teardown or event loop may be hanging"
+        );
+    }
+
+    /// A plain `TERM=xterm-256color` session (`PtyExample::spawn`'s
+    /// default — no `COLORTERM`, no kitty/WezTerm/foot signal) — the
+    /// common case named in `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade
+    /// table (a stock SSH session). Detection must land on `false`, so the
+    /// enhancement flags are never pushed at all.
+    #[test]
+    fn tui_pipeline_under_plain_term_does_not_push_enhancement_flags() {
+        let mut ex = PtyExample::spawn("tui_pipeline", 100, 30);
+
+        assert!(
+            ex.wait_for("Deploy", WAIT),
+            "example did not render expected pipeline stages over the pty; screen:\n{}",
+            ex.screen_text()
+        );
+        // Give the (unanswered, ~2s) live query time to time out and the
+        // fallback decision to resolve before asserting absence — a
+        // negative assertion sampled too early would pass for the wrong
+        // reason.
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            !ex.raw_contains(PUSH_KITTY_FLAGS),
+            "plain TERM=xterm-256color pushed the kitty keyboard enhancement flags ({:?}) — \
+             the environment heuristic should have stayed false with no kitty/WezTerm/foot \
+             signal present",
+            String::from_utf8_lossy(PUSH_KITTY_FLAGS)
+        );
+
+        ex.send(b"q");
+        assert!(
+            ex.wait_exit(WAIT),
+            "example did not exit after 'q' — raw-mode teardown or event loop may be hanging"
+        );
+    }
+}

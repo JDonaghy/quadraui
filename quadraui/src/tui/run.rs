@@ -6,7 +6,10 @@
 //! - Terminal raw-mode + alternate screen + mouse + bracketed-paste
 //!   setup / teardown.
 //! - Best-effort kitty keyboard-protocol push (REPORT_ALL_KEYS_AS_ESCAPE_CODES
-//!   so Ctrl+Shift+L is unambiguous from Ctrl+L).
+//!   so Ctrl+Shift+L is unambiguous from Ctrl+L), with the outcome exposed
+//!   via [`crate::backend::BackendCaps::kitty_keyboard`] (quadraui#827) so
+//!   an app can tell whether it actually worked instead of finding out by
+//!   a gesture silently never firing.
 //! - `Terminal::new` + `TuiBackend` construction.
 //! - Frame loop: [`render_frame`] (`terminal.draw(|f|
 //!   backend.enter_frame_scope(f, |b| app.render(b)))`).
@@ -101,6 +104,14 @@ pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
     let kbd_enhanced = push_keyboard_enhancement(&mut stdout);
 
     let mut backend = TuiBackend::new();
+    // Overwrite `TuiBackend::new()`'s environment-only guess with the live
+    // answer: whether the enhancement flags were actually pushed just now
+    // (quadraui#827). Before this line, `kbd_enhanced` was consulted only
+    // to decide whether to pop the flags on exit below — an app had no way
+    // to read it at all, so a gesture built on the assumption the push
+    // worked would silently never fire on a terminal where it didn't. See
+    // `crate::backend::BackendCaps::kitty_keyboard`'s doc.
+    backend.set_kitty_keyboard(kbd_enhanced);
     let crossterm_backend = CrosstermBackend::new(stdout);
     // Quantise every frame's SGR to what this terminal actually supports
     // (quadraui#826) — `backend.color_depth()` was detected from
@@ -337,11 +348,20 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 }
 
 /// Push kitty keyboard protocol flags (best-effort). Returns whether
-/// the push succeeded; the caller pops on exit only if so.
+/// the push succeeded; the caller pops on exit only if so, and (quadraui#827)
+/// records this on [`TuiBackend`] via
+/// [`crate::tui::backend::TuiBackend::set_kitty_keyboard`] so an app can
+/// read it before relying on a gesture that needs it.
+///
+/// The support check itself is [`crate::tui::caps::probe_kitty_keyboard`],
+/// not a direct `supports_keyboard_enhancement()` call — see that
+/// function's doc for why the fallback to the environment heuristic
+/// matters (a terminal that supports the protocol but sits behind a
+/// multiplexer/relay that swallows the query/response round trip must not
+/// collapse to "unsupported").
 fn push_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
     use ratatui::crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-    use ratatui::crossterm::terminal::supports_keyboard_enhancement;
-    if !supports_keyboard_enhancement().unwrap_or(false) {
+    if !super::caps::probe_kitty_keyboard() {
         return false;
     }
     execute!(

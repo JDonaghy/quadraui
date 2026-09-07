@@ -198,6 +198,15 @@ pub struct TuiBackend {
     /// [`Self::set_color_depth`] for tests and hosts that already know
     /// their terminal's real capability (quadraui#826).
     color_depth: ColorDepth,
+    /// Whether the kitty keyboard protocol is actually active — seeded
+    /// from [`super::caps::detect_kitty_keyboard`]'s cheap environment
+    /// heuristic at construction time, then overwritten by
+    /// [`super::run::run`] via [`Self::set_kitty_keyboard`] once it has
+    /// [`super::caps::probe_kitty_keyboard`]'s live, authoritative answer
+    /// (quadraui#827). Exposed to apps via
+    /// [`crate::backend::BackendCaps::kitty_keyboard`] — see that field's
+    /// doc for why this exists.
+    kitty_keyboard: bool,
 }
 
 impl TuiBackend {
@@ -227,6 +236,7 @@ impl TuiBackend {
             last_cursor_position: None,
             tab_bar_layouts: HashMap::new(),
             color_depth: super::caps::detect_color_depth(),
+            kitty_keyboard: super::caps::detect_kitty_keyboard(),
         }
     }
 
@@ -244,6 +254,26 @@ impl TuiBackend {
     /// `TERM`/`COLORTERM`.
     pub fn set_color_depth(&mut self, depth: ColorDepth) {
         self.color_depth = depth;
+    }
+
+    /// The kitty-keyboard-protocol state [`Backend::backend_caps`]
+    /// currently reports — see
+    /// [`crate::backend::BackendCaps::kitty_keyboard`] and
+    /// [`Self::set_kitty_keyboard`].
+    pub fn kitty_keyboard(&self) -> bool {
+        self.kitty_keyboard
+    }
+
+    /// Override the kitty-keyboard-protocol flag. [`super::run::run`]
+    /// calls this once at startup with
+    /// [`super::caps::probe_kitty_keyboard`]'s live answer, overwriting
+    /// the environment-only guess [`Self::new`] seeded it with. Also the
+    /// hook a test (or a host that already knows its terminal's real
+    /// capability) uses to pin the value without touching a real terminal
+    /// (quadraui#827's Tier-3 pty fixture, or any in-process test
+    /// asserting the flag reaches an app).
+    pub fn set_kitty_keyboard(&mut self, supported: bool) {
+        self.kitty_keyboard = supported;
     }
 
     /// Enter the frame-scope: stash the `&mut Frame<'_>` pointer for
@@ -1216,6 +1246,7 @@ impl Backend for TuiBackend {
             drag: true,
             text_selection: true,
             color_depth: self.color_depth,
+            kitty_keyboard: self.kitty_keyboard,
             ..crate::backend::BackendCaps::empty()
         }
     }
