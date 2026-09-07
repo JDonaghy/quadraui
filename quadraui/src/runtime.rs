@@ -280,6 +280,14 @@ pub(crate) trait PreprocessBackend {
 ///    forwarding it could trigger quit/copy-all handlers, and
 ///    `ClipboardPaste` would wrongly insert text. The app's own
 ///    `Reaction` to `TextCopied` is folded through unchanged.
+///
+///    `TextCopied` is emitted **unconditionally**, right after
+///    `write_text` returns `()`. It means "the copy was attempted", not
+///    "the system clipboard now holds this text" — on the TUI backend
+///    every clipboard leg is best-effort and silent on failure, and a
+///    misconfigured tmux swallows the copy entirely (#331). Apps should
+///    word their copy confirmation accordingly; see
+///    `quadraui/docs/CLIPBOARD.md`.
 /// 5. Ctrl-V / Ctrl-Shift-V ([`is_paste_keypress`], keyed off
 ///    [`PreprocessBackend::paste_modifier`]): read the clipboard and
 ///    deliver `UiEvent::ClipboardPaste` instead of forwarding the raw key

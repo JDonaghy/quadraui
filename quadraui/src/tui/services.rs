@@ -24,6 +24,15 @@
 //! on` is set. Emitting both is harmless: each config consumes the form
 //! it understands and ignores the other.
 //!
+//! **User-facing companion: [`docs/CLIPBOARD.md`].** It carries the tmux
+//! `~/.tmux.conf` snippets, the `set-clipboard external` trap, the
+//! Shift-drag mouse-selection caveat, the OSC 52 payload cap, and a
+//! troubleshooting order for "the status bar said `Copied:` but nothing
+//! was copied" (#331). Point bug reports there rather than at this
+//! module comment — none of it is diagnosable from inside the process.
+//!
+//! [`docs/CLIPBOARD.md`]: https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/CLIPBOARD.md
+//!
 //! Other services (file picker, notifications, URL open) remain no-op
 //! stubs — apps that need them supply their own `PlatformServices` or
 //! call platform APIs directly.
