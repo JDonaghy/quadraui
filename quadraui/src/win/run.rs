@@ -268,6 +268,11 @@ pub(crate) fn route_mouse_down<A: AppLogic>(
         match dispatch_event(ev, backend, app) {
             EventOutcome::Continue => {}
             EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+            EventOutcome::RedrawAfter(d) => {
+                if matches!(outcome, EventOutcome::Continue) {
+                    outcome = EventOutcome::RedrawAfter(d);
+                }
+            }
             EventOutcome::Exit => return EventOutcome::Exit,
         }
     }
@@ -298,6 +303,11 @@ pub(crate) fn route_mouse_move<A: AppLogic>(
         match dispatch_event(ev, backend, app) {
             EventOutcome::Continue => {}
             EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+            EventOutcome::RedrawAfter(d) => {
+                if matches!(outcome, EventOutcome::Continue) {
+                    outcome = EventOutcome::RedrawAfter(d);
+                }
+            }
             EventOutcome::Exit => return EventOutcome::Exit,
         }
     }
@@ -329,6 +339,11 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
         match dispatch_event(ev, backend, app) {
             EventOutcome::Continue => {}
             EventOutcome::Redraw => outcome = EventOutcome::Redraw,
+            EventOutcome::RedrawAfter(d) => {
+                if matches!(outcome, EventOutcome::Continue) {
+                    outcome = EventOutcome::RedrawAfter(d);
+                }
+            }
             EventOutcome::Exit => return EventOutcome::Exit,
         }
     }
@@ -610,8 +625,9 @@ mod win32 {
     // `WM_QUADRAUI_USER_EVENT` (issue #831) is defined in
     // `crate::win::backend` (`WinBackend::waker` — the producer — needs
     // it too, so it lives next to that field rather than being
-    // duplicated).
-    use crate::win::backend::WM_QUADRAUI_USER_EVENT;
+    // duplicated). `FRAME_TIMER_ID` (quadraui#832) is its
+    // `request_frame_in` sibling, same rationale.
+    use crate::win::backend::{FRAME_TIMER_ID, WM_QUADRAUI_USER_EVENT};
 
     /// Live modifier state for the message currently being dispatched,
     /// via `GetKeyState` — see `super::events`' module docs on why Win32
@@ -917,12 +933,50 @@ mod win32 {
         let reaction = match outcome {
             super::EventOutcome::Continue => Reaction::Continue,
             super::EventOutcome::Redraw => Reaction::Redraw,
+            // quadraui#832: arm the scheduled-wake timer. `guarded_call`
+            // above has already released its borrow of `ws.state` by
+            // this point, so a fresh `borrow_mut()` here is safe.
+            super::EventOutcome::RedrawAfter(delay) => {
+                ws.state.borrow().backend.request_frame_in(delay);
+                Reaction::Continue
+            }
             super::EventOutcome::Exit => Reaction::Exit,
         };
         if reaction == Reaction::Redraw {
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
+        }
+        reaction
+    }
+
+    /// Fire [`AppLogic::tick`] — the [`crate::win::backend::FRAME_TIMER_ID`]
+    /// `WM_TIMER` arm's target once the timer
+    /// [`crate::win::backend::WinBackend::request_frame_in`] armed has
+    /// elapsed (quadraui#832). Before #832, Windows never called `tick`
+    /// at all — it had no idle timer of its own to call it from (see
+    /// [`crate::backend::Backend::waker`]'s doc for that history). This
+    /// is the first and only entry point that does now, and only when
+    /// something explicitly asked to be woken via
+    /// `Reaction::RedrawAfter`/`request_frame_in` — there is still no
+    /// unconditional idle poll on this backend, unlike TUI/GTK's coarse
+    /// `IDLE_POLL_CEILING` fallback.
+    fn tick<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) -> Reaction {
+        let reaction = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
+            let RunState { app, backend } = run_state;
+            app.tick(backend)
+        });
+        let Some(reaction) = reaction else {
+            return Reaction::Continue;
+        };
+        match reaction {
+            Reaction::Redraw => unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            },
+            Reaction::RedrawAfter(delay) => {
+                ws.state.borrow().backend.request_frame_in(delay);
+            }
+            Reaction::Continue | Reaction::Exit => {}
         }
         reaction
     }
@@ -1391,10 +1445,12 @@ mod win32 {
                 // `run_inner`, if `QUADRAUI_WIN_SMOKE_MS` was set — see
                 // the module doc's "Headless smoke mode" section.
                 // #780: the resize-settle debounce timer armed by the
-                // `WM_SIZE` arm above. Any other timer id is none of this
-                // runner's business (no `AppLogic` today owns one, but a
-                // future one might) and falls through to `DefWindowProcW`
-                // untouched.
+                // `WM_SIZE` arm above.
+                // #832: `FRAME_TIMER_ID` — the scheduled-wake timer armed
+                // by `WinBackend::request_frame_in`, itself reached via
+                // `Reaction::RedrawAfter`/`EventOutcome::RedrawAfter`.
+                // Any other timer id is none of this runner's business
+                // and falls through to `DefWindowProcW` untouched.
                 if wparam.0 == SMOKE_TIMER_ID {
                     unsafe {
                         let _ = KillTimer(Some(hwnd), SMOKE_TIMER_ID);
@@ -1412,6 +1468,21 @@ mod win32 {
                     // `RESIZE_SETTLE` — dispatch the coalesced size now.
                     if let Some(viewport) = ws.resize_debouncer.borrow_mut().take() {
                         dispatch(ws, hwnd, UiEvent::WindowResized { viewport });
+                    }
+                    LRESULT(0)
+                } else if wparam.0 == FRAME_TIMER_ID {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), FRAME_TIMER_ID);
+                    }
+                    // The scheduled wake this timer existed for has
+                    // arrived — run `tick` (quadraui#832). `tick` itself
+                    // re-arms a fresh timer via `request_frame_in` if it
+                    // wants to be woken again (the chained-rearm pattern
+                    // `Reaction::RedrawAfter`'s doc describes).
+                    if tick(ws, hwnd) == Reaction::Exit {
+                        unsafe {
+                            let _ = DestroyWindow(hwnd);
+                        }
                     }
                     LRESULT(0)
                 } else {

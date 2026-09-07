@@ -41,7 +41,7 @@ use core_graphics::base::CGFloat;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
-use dispatch2::{DispatchQueue, MainThreadBound};
+use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSCursor, NSEvent, NSWindow};
 use objc2_foundation::MainThreadMarker;
@@ -249,6 +249,14 @@ pub struct MacBackend {
     /// constructed directly by a test, never handed to `macos::run`);
     /// `waker()`'s returned closure is a documented no-op in that case.
     wake_callback: WakeCallback,
+    /// Set once by `macos::run::run` via [`Self::set_tick_callback`]
+    /// (quadraui#832), right after the `QuadraView` exists — same shape
+    /// as [`Self::wake_callback`], but wired to `view.dispatch_tick()`
+    /// (fires `AppLogic::tick`) instead of a bare repaint request.
+    /// [`Self::request_frame_in`]'s `DispatchQueue::main().after` closure
+    /// looks this up when the scheduled delay elapses. `None` until then,
+    /// same "no-op, not a panic" posture as `wake_callback`.
+    tick_callback: WakeCallback,
 }
 
 /// The wake-target [`MacBackend::waker`] invokes (issue #831) — see
@@ -423,6 +431,7 @@ impl MacBackend {
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback: Arc::new(std::sync::OnceLock::new()),
+            tick_callback: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -448,6 +457,19 @@ impl MacBackend {
     /// ignores it) — `run` only ever calls this once per backend instance.
     pub(crate) fn set_wake_callback(&self, callback: Rc<dyn Fn()>, mtm: MainThreadMarker) {
         let _ = self.wake_callback.set(MainThreadBound::new(callback, mtm));
+    }
+
+    /// Install the closure [`Self::request_frame_in`]'s scheduled-wake
+    /// timer invokes once its delay elapses (quadraui#832).
+    /// `macos::run::run` calls this once, right after constructing the
+    /// `QuadraView`, with a closure that calls `view.dispatch_tick()` —
+    /// firing `AppLogic::tick` and applying its `Reaction`, same as
+    /// [`Self::set_wake_callback`]'s closure does for `request_redraw`.
+    ///
+    /// A second call is a no-op ([`std::sync::OnceLock::set`] silently
+    /// ignores it) — `run` only ever calls this once per backend instance.
+    pub(crate) fn set_tick_callback(&self, callback: Rc<dyn Fn()>, mtm: MainThreadMarker) {
+        let _ = self.tick_callback.set(MainThreadBound::new(callback, mtm));
     }
 
     /// Stash the raw press `NSEvent`. Called by `macos::run`'s
@@ -967,6 +989,38 @@ impl Backend for MacBackend {
                 }
             });
         })
+    }
+
+    /// See [`Backend::request_frame_in`]'s doc for the cross-backend
+    /// contract (quadraui#832). Runs synchronously on the main thread
+    /// (called directly from event/tick handling, never from a
+    /// background thread), but still needs [`Self::tick_callback`]'s
+    /// `MainThreadBound` indirection rather than capturing `view`/`app`
+    /// state directly: `DispatchQueue::after`'s closure type is bounded
+    /// `Send` regardless of when it actually runs (GCD's Rust binding
+    /// can't statically prove "this queue happens to be the main one, so
+    /// a `!Send` capture is fine"), the same restriction [`Self::waker`]
+    /// works around — this just reaches the *tick* target instead of the
+    /// *redraw* one.
+    ///
+    /// A no-op if [`Self::tick_callback`] hasn't been installed yet (a
+    /// `MacBackend` never handed to `macos::run::run`, or a call during
+    /// the narrow window before `run` installs it) — the scheduled
+    /// closure below simply finds nothing to call, same posture as
+    /// `waker`'s own "no callback yet" case.
+    fn request_frame_in(&self, delay: Duration) {
+        let tick_callback = Arc::clone(&self.tick_callback);
+        let Ok(when) = DispatchTime::try_from(delay) else {
+            return;
+        };
+        let _ = DispatchQueue::main().after(when, move || {
+            if let Some(bound) = tick_callback.get() {
+                // SAFETY: see `waker`'s identical comment above — `after`
+                // guarantees this closure runs on the main queue's thread.
+                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                (bound.get(mtm))();
+            }
+        });
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {

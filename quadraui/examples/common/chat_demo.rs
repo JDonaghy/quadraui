@@ -17,11 +17,25 @@
 //! - `PageUp` / `PageDown` — scroll the transcript.
 //! - `Esc` — clear the input, or quit when the input is already empty.
 //! - `q` / `Ctrl+C` — quit immediately.
+//!
+//! **quadraui#832**: the "thinking" spinner's per-frame countdown
+//! (`Self::tick`) demonstrates [`Backend::request_frame_in`] — while
+//! still counting down, `tick` explicitly re-arms itself at a precise
+//! ~100ms cadence instead of assuming the runner will call `tick` again
+//! soon on its own, which is no longer guaranteed once nothing else is
+//! scheduled (see that method's doc, and `Spinner`'s module doc for why
+//! this stays app-driven `frame_idx` rather than a primitive-owned
+//! timer — quadraui#825).
 
 use quadraui::{
     AppLogic, Backend, ChatController, ChatControllerEvent, ChatRole, ChatTurn, Color, Key,
     Reaction, Rect, StyledText, UiEvent,
 };
+use std::time::Duration;
+
+/// Cadence for the "thinking" spinner's animation frame while
+/// `thinking_ticks > 0` — see [`ChatDemo::tick`].
+const THINKING_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Demo app wrapping a `ChatController`.
 ///
@@ -114,6 +128,10 @@ impl AppLogic for ChatDemo {
                 // Queue a simulated reply (delivered after a few ticks).
                 self.pending_reply = Some(format!("Echo: {text}"));
                 self.thinking_ticks = 5;
+                // quadraui#832: arm the first precise wake here rather
+                // than waiting on the runner's coarse idle-poll fallback
+                // for it — see `Self::tick`'s matching call.
+                backend.request_frame_in(THINKING_TICK_INTERVAL);
                 self.sync_controller();
                 Reaction::Redraw
             }
@@ -136,7 +154,7 @@ impl AppLogic for ChatDemo {
         }
     }
 
-    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
         if self.thinking_ticks > 0 {
             self.thinking_ticks -= 1;
             // Advance spinner animation by one frame each tick.
@@ -152,6 +170,12 @@ impl AppLogic for ChatDemo {
                         line_scales: Vec::new(),
                     });
                 }
+            } else {
+                // quadraui#832: still counting down — ask to be woken
+                // again at a precise interval instead of relying on
+                // whatever idle cadence (if any) the runner happens to
+                // poll at.
+                backend.request_frame_in(THINKING_TICK_INTERVAL);
             }
             self.sync_controller();
             return Reaction::Redraw;

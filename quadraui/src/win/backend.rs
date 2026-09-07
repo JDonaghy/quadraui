@@ -148,8 +148,8 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, LoadCursorW, PostMessageW, SetCursor, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE,
+    GetClientRect, LoadCursorW, PostMessageW, SetCursor, SetTimer, IDC_ARROW, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE,
 };
 
 #[cfg(target_os = "windows")]
@@ -286,6 +286,18 @@ const WIN_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 /// a live `PostMessageW`.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const WM_QUADRAUI_USER_EVENT: u32 = 0x8000 + 1;
+
+/// `SetTimer`/`KillTimer`'s `nIDEvent` for [`WinBackend::request_frame_in`]'s
+/// one-shot scheduled-wake timer (quadraui#832) — the sibling of
+/// [`WM_QUADRAUI_USER_EVENT`] for a scheduled frame rather than a
+/// cross-thread wake. Distinct from `win::run`'s `SMOKE_TIMER_ID` (1) and
+/// `RESIZE_TIMER_ID` (2) — Win32 timer ids are scoped per-`hwnd`, and any
+/// of the three can legitimately be live on the same window at once.
+/// `win::run`'s `wndproc` `WM_TIMER` arm on this id is what actually
+/// kills the timer and re-dispatches, mirroring `WM_QUADRAUI_USER_EVENT`'s
+/// arm.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) const FRAME_TIMER_ID: usize = 3;
 
 pub struct WinBackend {
     viewport: Viewport,
@@ -1520,6 +1532,46 @@ impl Backend for WinBackend {
             std::sync::Arc::new(move |payload: UserPayload| {
                 queue.push(payload.into_arc());
             })
+        }
+    }
+
+    /// See [`Backend::request_frame_in`]'s doc for the cross-backend
+    /// contract (quadraui#832). Unlike [`Self::waker`] this always runs
+    /// synchronously on the thread that owns the message loop — called
+    /// directly from event/tick handling, never from a background
+    /// thread — so it needs none of `waker`'s cross-thread `AtomicIsize`
+    /// live-mirror machinery: a plain read of `self.hwnd` is safe.
+    /// Arms [`FRAME_TIMER_ID`] via `SetTimer`, the same Win32
+    /// one-shot-timer primitive `win::run`'s resize-settle debounce uses;
+    /// `win::run::wndproc`'s `WM_TIMER` arm on that id is what actually
+    /// fires `AppLogic::tick`/re-dispatches, mirroring `WM_QUADRAUI_USER_EVENT`'s
+    /// arm for `waker`.
+    ///
+    /// A no-op before [`Self::attach_surface`] has ever run (`self.hwnd`
+    /// is still `None`) — same posture as `waker`'s "no window to nudge
+    /// yet" case, except here there is no queued payload to preserve for
+    /// later delivery: a `request_frame_in` call with no window is simply
+    /// lost, matching [`crate::runner::Reaction::RedrawAfter`]'s "may
+    /// wake earlier... but never required to fire at all before a native
+    /// event exists to carry it" posture — there is no event loop yet for
+    /// an unattached backend to wake.
+    fn request_frame_in(&self, delay: Duration) {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(hwnd) = self.hwnd {
+                unsafe {
+                    SetTimer(
+                        Some(hwnd),
+                        FRAME_TIMER_ID,
+                        delay.as_millis().min(u32::MAX as u128) as u32,
+                        None,
+                    );
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = delay;
         }
     }
 
@@ -3892,6 +3944,20 @@ mod tests {
             }
             other => panic!("expected UiEvent::User, got {other:?}"),
         }
+    }
+
+    /// quadraui#832: `request_frame_in` before any window is attached
+    /// (`self.hwnd == None` on every host this test runs on, including a
+    /// real Windows one that just hasn't called `attach_surface` yet)
+    /// must be a safe no-op, not a panic — mirrors `waker`'s "no wake
+    /// target yet" posture. There is nothing further to assert on a
+    /// non-Windows host: no `SetTimer` call is reachable at all here (see
+    /// `Backend::request_frame_in`'s doc for the real one-shot-timer
+    /// behavior, exercised for real only on `windows-latest`).
+    #[test]
+    fn request_frame_in_before_a_window_is_attached_does_not_panic() {
+        let backend = WinBackend::new();
+        Backend::request_frame_in(&backend, Duration::from_millis(50));
     }
 
     /// Regression test for the review finding on `WinBackend::waker`: a

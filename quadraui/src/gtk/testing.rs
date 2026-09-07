@@ -312,6 +312,12 @@ impl<A: AppLogic> GtkDriver<A> {
             match self.dispatch(ev) {
                 Reaction::Exit => return Reaction::Exit,
                 Reaction::Redraw => result = Reaction::Redraw,
+                // quadraui#832: never downgrades an earlier `Redraw`.
+                Reaction::RedrawAfter(d) => {
+                    if result == Reaction::Continue {
+                        result = Reaction::RedrawAfter(d);
+                    }
+                }
                 Reaction::Continue => {}
             }
         }

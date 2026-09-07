@@ -455,7 +455,12 @@ fn activate<A: AppLogic + 'static>(
                 let mut app_mut = app.borrow_mut();
                 dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
-            apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
+            apply_event_outcome(
+                outcome,
+                &backend.borrow(),
+                &da_for_redraw,
+                &window_for_close,
+            );
             glib::Propagation::Stop
         });
     }
@@ -552,6 +557,7 @@ fn activate<A: AppLogic + 'static>(
                 match outcome {
                     EventOutcome::Continue => {}
                     EventOutcome::Redraw => needs_redraw = true,
+                    EventOutcome::RedrawAfter(delay) => backend_mut.request_frame_in(delay),
                     EventOutcome::Exit => {
                         // `destroy()`, not `close()` (quadraui#501
                         // review — same fix as `GtkSink::request_exit`):
@@ -607,7 +613,7 @@ fn activate<A: AppLogic + 'static>(
                     let mut app_mut = app.borrow_mut();
                     dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
+                apply_event_outcome(outcome, &backend_mut, &da_for_redraw, &window_for_close);
             }
         });
     }
@@ -688,6 +694,7 @@ fn activate<A: AppLogic + 'static>(
                 match outcome {
                     EventOutcome::Continue => {}
                     EventOutcome::Redraw => needs_redraw = true,
+                    EventOutcome::RedrawAfter(delay) => backend_mut.request_frame_in(delay),
                     EventOutcome::Exit => {
                         // `destroy()`, not `close()` (quadraui#501
                         // review — same fix as `GtkSink::request_exit`):
@@ -732,7 +739,12 @@ fn activate<A: AppLogic + 'static>(
                 let mut app_mut = app.borrow_mut();
                 dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
-            apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
+            apply_event_outcome(
+                outcome,
+                &backend.borrow(),
+                &da_for_redraw,
+                &window_for_close,
+            );
             glib::Propagation::Stop
         });
     }
@@ -835,7 +847,12 @@ fn activate<A: AppLogic + 'static>(
                     let mut app_mut = app.borrow_mut();
                     dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
-                apply_event_outcome(outcome, &da_for_redraw, &window_for_close);
+                apply_event_outcome(
+                    outcome,
+                    &backend.borrow(),
+                    &da_for_redraw,
+                    &window_for_close,
+                );
             });
             resize_timer.set(Some(id));
         });
@@ -901,6 +918,10 @@ fn activate<A: AppLogic + 'static>(
                     da_for_redraw.queue_draw();
                     glib::Propagation::Stop
                 }
+                EventOutcome::RedrawAfter(delay) => {
+                    backend.borrow_mut().request_frame_in(delay);
+                    glib::Propagation::Stop
+                }
                 EventOutcome::Continue => glib::Propagation::Stop,
             }
         });
@@ -948,7 +969,7 @@ fn activate<A: AppLogic + 'static>(
                 let mut app_mut = drain_app.borrow_mut();
                 dispatch_event(ev, &mut backend_mut, &mut *app_mut)
             };
-            apply_event_outcome(outcome, &drain_da, &drain_window);
+            apply_event_outcome(outcome, &drain_backend.borrow(), &drain_da, &drain_window);
         }
 
         // Periodic tick — called after every queue drain, including
@@ -959,20 +980,37 @@ fn activate<A: AppLogic + 'static>(
             let mut app_mut = drain_app.borrow_mut();
             app_mut.tick(&mut *backend_mut)
         };
-        apply_reaction(tick_reaction, &drain_da, &drain_window);
+        apply_reaction(
+            tick_reaction,
+            &drain_backend.borrow(),
+            &drain_da,
+            &drain_window,
+        );
     });
 
     // Issue #831: install this closure as `waker()`'s wake target before
     // the timer below ever fires, so a background thread that calls the
-    // waker between `run_with` starting and the first 33ms tick still
+    // waker between `run_with` starting and the first idle tick still
     // reaches it.
     backend
         .borrow()
         .set_wake_callback(Rc::clone(&drain_and_tick));
 
+    // quadraui#832: this fallback idle tick used to be the *only* wake
+    // source and ran every 33ms unconditionally, burning CPU on a fully
+    // idle app. It's now a coarse safety net at `IDLE_POLL_CEILING`
+    // (250ms) — see that constant's doc for why a fallback still exists
+    // at all rather than being removed outright (an embedded terminal's
+    // PTY-output poll, in particular, still relies on periodic `tick`
+    // calls with no explicit `RedrawAfter` opt-in). Apps that need a
+    // tighter cadence than this — a spinner frame, a caret blink — should
+    // return `Reaction::RedrawAfter` with the exact interval they need
+    // instead of relying on this fallback's coarseness; that path arms a
+    // real one-shot timer via `GtkBackend::request_frame_in`, independent
+    // of this one.
     {
         let drain_and_tick = Rc::clone(&drain_and_tick);
-        glib::timeout_add_local(Duration::from_millis(33), move || {
+        glib::timeout_add_local(crate::runtime::IDLE_POLL_CEILING, move || {
             drain_and_tick();
             glib::ControlFlow::Continue
         });
@@ -1076,11 +1114,24 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
 }
 
 /// [`ReactionSink`] over a borrowed `DrawingArea` + `ApplicationWindow`
-/// pair — the redraw/exit target every GTK signal closure in this module
-/// applies its [`EventOutcome`] (or raw [`Reaction`]) to, via
+/// pair, plus (quadraui#832) the `GtkBackend` a `RedrawAfter` outcome
+/// arms its scheduled wake against — the redraw/exit/frame-request
+/// target every GTK signal closure in this module applies its
+/// [`EventOutcome`] (or raw [`Reaction`]) to, via
 /// [`runtime::apply_outcome`]. Replaces what used to be two near-
 /// identical hand-rolled `match` functions (quadraui#496).
+///
+/// Takes `backend: &'a GtkBackend` (a shared reference, not the
+/// `Rc<RefCell<GtkBackend>>` every call site already holds) — cheap to
+/// obtain even from a live `RefMut` several call sites already hold
+/// across the `apply_event_outcome` call (e.g. the mouse-release
+/// handler below, which processes a `Vec<UiEvent>` in a loop): a plain
+/// `&*backend_mut` reborrow, not a second `borrow_mut()`/`borrow()` on
+/// the `RefCell` that would panic against an already-live borrow.
+/// `GtkBackend::request_frame_in` only ever needs `&self` (see its doc)
+/// so this never needs more than that.
 struct GtkSink<'a> {
+    backend: &'a GtkBackend,
     da: &'a DrawingArea,
     window: &'a ApplicationWindow,
 }
@@ -1105,16 +1156,43 @@ impl ReactionSink for GtkSink<'_> {
         // programmatic exit always actually exits.
         self.window.destroy();
     }
+    fn request_frame_in(&self, delay: Duration) {
+        self.backend.request_frame_in(delay);
+    }
 }
 
-fn apply_reaction(reaction: Reaction, da: &DrawingArea, window: &ApplicationWindow) {
-    runtime::apply_outcome(reaction, &GtkSink { da, window });
+fn apply_reaction(
+    reaction: Reaction,
+    backend: &GtkBackend,
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+) {
+    runtime::apply_outcome(
+        reaction,
+        &GtkSink {
+            backend,
+            da,
+            window,
+        },
+    );
 }
 
 /// Same as [`apply_reaction`] but for the [`EventOutcome`] that
 /// [`dispatch_event`] returns.
-fn apply_event_outcome(outcome: EventOutcome, da: &DrawingArea, window: &ApplicationWindow) {
-    runtime::apply_outcome(outcome, &GtkSink { da, window });
+fn apply_event_outcome(
+    outcome: EventOutcome,
+    backend: &GtkBackend,
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+) {
+    runtime::apply_outcome(
+        outcome,
+        &GtkSink {
+            backend,
+            da,
+            window,
+        },
+    );
 }
 
 /// Render one frame into `cr` at `width`×`height` pixels.

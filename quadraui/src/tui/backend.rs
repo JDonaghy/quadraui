@@ -235,13 +235,28 @@ pub struct TuiBackend {
     /// #831) — see [`crate::runtime::UserEventQueue`]'s doc. [`Self::waker`]
     /// clones this `Arc` into the closure it hands out; [`Self::poll_events`]/
     /// [`Self::wait_events`] drain it into `UiEvent::User`, appended after
-    /// whatever crossterm produced this call, on every call — TUI's
-    /// existing bounded poll interval (`tui::run::POLL_TIMEOUT`, 16ms in
-    /// the live runner) already gives a background wake a short enough
-    /// maximum latency that no native interrupt of the blocking crossterm
-    /// read is needed, unlike GTK/macOS/Windows (see `Backend::waker`'s
-    /// doc for why those three need more).
+    /// whatever crossterm produced this call, on every call. Before
+    /// quadraui#832, TUI's live runner polled unconditionally every 16ms
+    /// (`tui::run::POLL_TIMEOUT`), which incidentally bounded a background
+    /// wake's latency without any native interrupt of the blocking
+    /// crossterm read. Since #832 the idle poll is coarser
+    /// (`crate::runtime::IDLE_POLL_CEILING`, 250ms) — still no native
+    /// interrupt exists (unlike GTK/macOS/Windows, see `Backend::waker`'s
+    /// doc for why those three need one), so a background-only wake with
+    /// no scheduled frame and no concurrent input now has up to that
+    /// ceiling of latency instead of 16ms. A documented, deliberate
+    /// tradeoff — see [`Self::request_frame_in`]'s doc.
     user_events: std::sync::Arc<crate::runtime::UserEventQueue>,
+    /// Pending [`Self::request_frame_in`] deadline (issue #832) — see
+    /// [`crate::runtime::FrameScheduler`]'s doc for why TUI needs this
+    /// where GTK/macOS/Windows instead arm a real native timer directly
+    /// from `request_frame_in`. Consulted by the live runner
+    /// (`tui::run::run_inner`) each loop iteration, via
+    /// [`Self::frame_poll_timeout`]/[`Self::clear_frame_deadline_if_due`],
+    /// to compute the next `wait_events` timeout.
+    /// [`crate::tui::testing::TuiDriver`]'s headless loop is scripted
+    /// rather than timer-driven, so it never reads this field.
+    frame_scheduler: crate::runtime::FrameScheduler,
 }
 
 impl TuiBackend {
@@ -275,6 +290,7 @@ impl TuiBackend {
             mouse_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
+            frame_scheduler: crate::runtime::FrameScheduler::new(),
         }
     }
 
@@ -282,6 +298,23 @@ impl TuiBackend {
     /// see [`crate::backend::ColorDepth`] and [`Self::set_color_depth`].
     pub fn color_depth(&self) -> ColorDepth {
         self.color_depth
+    }
+
+    /// How long the run loop may block in [`Backend::wait_events`] before
+    /// it needs to re-check state (quadraui#832) — the pending
+    /// [`Backend::request_frame_in`] deadline's remaining time, clamped to
+    /// `ceiling`, or `ceiling` itself if nothing is pending. See
+    /// [`crate::runtime::FrameScheduler::poll_timeout`].
+    pub(crate) fn frame_poll_timeout(&self, ceiling: Duration) -> Duration {
+        self.frame_scheduler.poll_timeout(ceiling)
+    }
+
+    /// Clear the pending [`Backend::request_frame_in`] deadline if it has
+    /// passed. Call once per loop iteration right after `wait_events`
+    /// returns, before dispatching events or calling `tick` — see
+    /// [`crate::runtime::FrameScheduler::clear_if_due`].
+    pub(crate) fn clear_frame_deadline_if_due(&mut self) {
+        self.frame_scheduler.clear_if_due();
     }
 
     /// Override the detected colour depth. Real hosts never need this —
@@ -1296,6 +1329,18 @@ impl Backend for TuiBackend {
         std::sync::Arc::new(move |payload: crate::UserPayload| {
             queue.push(payload.into_arc());
         })
+    }
+
+    fn request_frame_in(&self, delay: Duration) {
+        // See `crate::runtime::FrameScheduler`'s doc: TUI has no native
+        // run loop to arm a timer against, so this just records the
+        // deadline; the live runner (`tui::run::run_inner`) folds it into
+        // its next `wait_events` timeout via `Self::frame_poll_timeout`/
+        // `Self::clear_frame_deadline_if_due`. `TuiDriver`'s headless
+        // loop is scripted rather than timer-driven, so it doesn't
+        // consult this at all — a test that wants to observe a
+        // `RedrawAfter` chain calls `AppLogic::tick` directly instead.
+        self.frame_scheduler.request(delay);
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -2769,6 +2814,9 @@ mod tests {
             // `wait_events` above. Real cross-thread wake delivery is
             // covered against `TuiBackend` itself, not this recorder.
             std::sync::Arc::new(|_payload| {})
+        }
+        fn request_frame_in(&self, _delay: Duration) {
+            // No event loop to wake, same rationale as `waker` above.
         }
         fn register_accelerator(&mut self, _a: &Accelerator) {}
         fn unregister_accelerator(&mut self, _id: &AcceleratorId) {}
@@ -5121,5 +5169,65 @@ mod tests {
         backend.set_mouse_enabled(false);
         backend.set_mouse_enabled(true);
         assert!(backend.mouse_enabled());
+    }
+
+    // ── request_frame_in (quadraui#832) ─────────────────────────────────
+
+    /// With nothing requested, the poll timeout is the full ceiling —
+    /// this is the "idle app doesn't poll tightly" behavior the issue's
+    /// acceptance criterion asks for, made concrete at the `TuiBackend`
+    /// level (`tui::run::run_inner` is what actually calls
+    /// `wait_events` with this value).
+    #[test]
+    fn no_request_frame_in_call_uses_the_full_ceiling() {
+        let backend = TuiBackend::new();
+        assert_eq!(
+            backend.frame_poll_timeout(Duration::from_millis(250)),
+            Duration::from_millis(250)
+        );
+    }
+
+    /// `request_frame_in` shortens the next poll timeout to (at most) the
+    /// requested delay.
+    #[test]
+    fn request_frame_in_shortens_the_poll_timeout() {
+        let backend = TuiBackend::new();
+        Backend::request_frame_in(&backend, Duration::from_millis(10));
+        let timeout = backend.frame_poll_timeout(Duration::from_millis(250));
+        assert!(
+            timeout <= Duration::from_millis(10),
+            "expected a short timeout, got {timeout:?}"
+        );
+    }
+
+    /// `clear_frame_deadline_if_due` is a no-op before the deadline has
+    /// elapsed — the run loop must not busy-spin at a near-zero timeout
+    /// immediately after arming a longer-lived request.
+    #[test]
+    fn clear_frame_deadline_if_due_is_a_noop_before_the_deadline() {
+        let mut backend = TuiBackend::new();
+        Backend::request_frame_in(&backend, Duration::from_secs(60));
+        backend.clear_frame_deadline_if_due();
+        let timeout = backend.frame_poll_timeout(Duration::from_millis(1));
+        assert!(
+            timeout <= Duration::from_millis(1),
+            "the still-pending far-future deadline must keep governing the \
+             ceiling-clamped timeout, got {timeout:?}"
+        );
+    }
+
+    /// Once cleared, a fresh ceiling-bound timeout returns — proves
+    /// `clear_frame_deadline_if_due` actually clears rather than just
+    /// reading the deadline.
+    #[test]
+    fn clear_frame_deadline_if_due_clears_an_elapsed_deadline() {
+        let mut backend = TuiBackend::new();
+        Backend::request_frame_in(&backend, Duration::ZERO);
+        std::thread::sleep(Duration::from_millis(1));
+        backend.clear_frame_deadline_if_due();
+        assert_eq!(
+            backend.frame_poll_timeout(Duration::from_millis(250)),
+            Duration::from_millis(250)
+        );
     }
 }

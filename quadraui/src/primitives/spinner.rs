@@ -21,6 +21,26 @@
 //! already constructs and renders a real `Spinner` in its status strip
 //! (the "thinking" indicator) — not just an example. It's also the
 //! prerequisite shape for #788's timer work, per that issue.
+//!
+//! # Timer work landed on top, not inside (#832)
+//!
+//! #832 added [`crate::runner::Reaction::RedrawAfter`] +
+//! [`crate::backend::Backend::request_frame_in`] — a way for an app to
+//! ask the runner to wake it again after a precise interval, replacing
+//! the pre-#832 pattern of relying on a fixed-cadence poll to
+//! incidentally re-check timer state. Per this module's own doc above
+//! (checked, as #832 asked, before building on it): that timer work
+//! landed *around* `Spinner`, not inside it. The primitive stays exactly
+//! what #825 shaped it as — a declarative snapshot with an app-owned,
+//! app-incremented `frame_idx` and no built-in timer of its own. What
+//! changed is what drives the increment: `examples/common/chat_demo.rs`'s
+//! `tick` now calls `request_frame_in` to re-arm itself at a precise
+//! ~100ms cadence instead of assuming the runner will call `tick` again
+//! soon regardless — see that example's doc for the full before/after.
+//! A primitive-owned timer remains out of scope: it would need its own
+//! per-backend clock/thread story this module deliberately doesn't have,
+//! and every existing adopter already owns exactly the ticker cadence it
+//! wants.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};

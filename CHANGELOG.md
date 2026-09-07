@@ -103,6 +103,18 @@ release time.
   (tracked since vt100 0.16; this crate's pinned floor). Additive field,
   `#[serde(default)]`, no consumer struct-literal hits in `coord-tui` or
   `vimcode` (grep in the PR body).
+- `Reaction::RedrawAfter(Duration)` and `Backend::request_frame_in` (issue
+  #832) — a precise scheduled wake, replacing the pre-#832 pattern of an
+  app relying on a backend's fixed-cadence idle poll (TUI 16ms, GTK 33ms,
+  neither on macOS/Windows at all) to eventually re-check time-driven
+  state. TUI/GTK's idle poll is now a coarse fallback ceiling (250ms,
+  `crate::runtime::IDLE_POLL_CEILING`) rather than the primary mechanism;
+  macOS/Windows gained their first `AppLogic::tick` invocations ever,
+  fired only when something requests one. `Reaction` is now
+  `#[non_exhaustive]` — verified non-breaking for both downstream
+  consumers today (neither `coord-tui` nor `vimcode` exhaustively matches
+  a `Reaction` value; grep in the PR body), guarding against a future
+  variant addition being one.
 
 ### Changed
 

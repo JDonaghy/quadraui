@@ -36,12 +36,26 @@
 //! `FrameHitMap` hit-testing, not by multiple GTK DrawingAreas. The
 //! associated type is retained as a compatibility seam.
 
+use std::time::Duration;
+
 use crate::backend::Backend;
 use crate::event::{Rect, UiEvent};
 use crate::types::WidgetId;
 
 /// Tells the runner what to do after `handle` returns.
+///
+/// `#[non_exhaustive]` (quadraui#832): this PR adds [`Reaction::RedrawAfter`]
+/// — verified non-breaking for both downstream consumers today (neither
+/// `coord-tui` nor `vimcode` exhaustively matches a `Reaction` value; see
+/// this PR's "Downstream impact" note for the grep), but the *next*
+/// variant might not be so lucky. Marking this `#[non_exhaustive]` now
+/// costs neither consumer anything — they only ever construct
+/// `Reaction::Redraw`/`Continue`/`Exit`/`RedrawAfter` values or compare
+/// them (`assert_eq!`/`matches!`), never exhaustively match one — and
+/// forecloses this exact "is a new variant breaking" question for future
+/// additions, per `CLAUDE.md`'s public-API rule 8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Reaction {
     /// Continue the loop. Next event poll. The runner will redraw
     /// only if some other event in the same batch returned
@@ -51,6 +65,45 @@ pub enum Reaction {
     /// Force a redraw on the next loop iteration. Use after engine
     /// state mutations that need visible feedback.
     Redraw,
+    /// Don't redraw now, but wake the runner and call [`AppLogic::tick`]
+    /// again after `Duration` — sooner if some other event wakes it
+    /// first (quadraui#832).
+    ///
+    /// This is the replacement for the pre-#832 pattern of relying on a
+    /// backend's fixed-cadence idle poll to eventually notice
+    /// time-driven state (a spinner frame, a caret blink, a countdown)
+    /// and re-check it. Return this from [`AppLogic::tick`] (or
+    /// [`AppLogic::handle`]) instead of [`Reaction::Continue`] whenever
+    /// there's nothing to redraw *now* but something to redraw *later*:
+    ///
+    /// ```ignore
+    /// fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+    ///     if self.busy {
+    ///         self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    ///         // Redraw now, and make sure `tick` runs again in ~100ms
+    ///         // even if no native event arrives in the meantime.
+    ///         return Reaction::RedrawAfter(Duration::from_millis(100));
+    ///     }
+    ///     Reaction::Continue
+    /// }
+    /// ```
+    ///
+    /// Returning this every tick while busy — the chained-rearm pattern
+    /// — is the intended usage, not redundant. Backends may wake earlier
+    /// than requested for unrelated reasons (a native event, a
+    /// background [`Backend::waker`] call, another still-pending
+    /// request) but never later; they are not required to cancel or
+    /// dedupe overlapping requests, so an occasional extra wake before
+    /// its `Duration` elapses is expected and harmless — a missed one
+    /// is not. The runner implements the wake via
+    /// [`Backend::request_frame_in`]; see that method's doc for the
+    /// per-backend mechanism (native one-shot timer on GTK/macOS/
+    /// Windows, a poll-timeout bound on TUI).
+    ///
+    /// A plain `Reaction::Redraw` still redraws *this* frame — this
+    /// variant is for scheduling a *future* one without forcing the
+    /// current frame to repaint.
+    RedrawAfter(Duration),
     /// Tear down and exit the runner. The runner returns control to
     /// the caller (typically `main`).
     Exit,
@@ -95,11 +148,30 @@ pub trait AppLogic {
     /// [`Reaction`] telling the runner what to do next.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction;
 
-    /// Periodic tick. Called by the runner after each event batch
-    /// (including batches where no events arrived — i.e. on every
-    /// `wait_events` timeout). Apps implement this for timer logic,
-    /// auto-refresh, background-task polling, etc., without needing
-    /// synthetic event injection.
+    /// Periodic tick. Apps implement this for timer logic, auto-refresh,
+    /// background-task polling, etc., without needing synthetic event
+    /// injection.
+    ///
+    /// **Since quadraui#832, this is no longer called on a fixed
+    /// cadence.** Before #832, every backend polled unconditionally
+    /// (TUI every 16ms, GTK every 33ms) and called `tick` on every
+    /// timeout regardless of whether anything was scheduled — cheap to
+    /// rely on, but it burned CPU on a fully idle app. `tick` now runs:
+    /// - after every batch of native events (as before), and
+    /// - after a backend's bounded idle-poll ceiling elapses (TUI/GTK
+    ///   keep a coarse fallback so time-based work with no explicit
+    ///   opt-in — e.g. an embedded terminal's PTY-output poll — still
+    ///   makes progress; see each backend's `run.rs` for the exact
+    ///   value), and
+    /// - promptly after a [`Reaction::RedrawAfter`] deadline it
+    ///   previously returned, via [`crate::Backend::request_frame_in`].
+    ///
+    /// An app with time-driven state (spinner frame, caret blink,
+    /// countdown) should return [`Reaction::RedrawAfter`] with the exact
+    /// interval it needs instead of assuming `tick` will be called again
+    /// soon on its own — that assumption no longer holds on GTK/macOS/
+    /// Windows once nothing else is scheduled, and even where a fallback
+    /// ceiling exists it's deliberately coarser than before.
     ///
     /// Default impl is a no-op so apps that don't need periodic
     /// callbacks don't have to write boilerplate.
