@@ -39,7 +39,8 @@
 
 use crate::compose::markdown::render_markdown_to_styled;
 use crate::text_util::{
-    next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary,
+    next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary, wrap_spans,
+    WrapPolicy,
 };
 use crate::theme::Theme;
 use crate::types::StyledSpan;
@@ -156,12 +157,14 @@ struct ChatLayout {
 /// back to a mid-word hard break (e.g. with a 10-column budget
 /// `"implementation"` becomes `"implementa"` + `"tion"`).
 ///
-/// Styled turns (from
-/// [`push_turn_markdown`](Self::push_turn_markdown)) still wrap per-span
-/// at exactly `floor(width / char_width)` characters, ignoring word
-/// boundaries — [`wrap_spans`] hasn't been migrated to word-aware
-/// wrapping yet, since splitting a [`StyledSpan`] on whitespace without
-/// losing its style needs more care than the flat-text path.
+/// Styled turns (from [`push_turn_markdown`](Self::push_turn_markdown))
+/// wrap per-span at exactly the display-width budget, ignoring word
+/// boundaries — [`crate::text_util::wrap_spans`] with
+/// [`crate::text_util::WrapPolicy::Char`]. `Word` wrapping is available
+/// on the same function (markdown rendering uses it — see
+/// [`crate::compose::markdown`]) but is intentionally not used here yet;
+/// switching this call site's policy is a follow-up, not a capability
+/// gap. See issue #821.
 pub struct ChatController {
     id: WidgetId,
     // ── Per-frame data pushed by the app ──────────────────────────────
@@ -666,7 +669,7 @@ impl ChatController {
                 let lines_spans = split_spans_by_newline(&turn.text.spans);
                 for (i, line_spans) in lines_spans.iter().enumerate() {
                     let scale = turn.line_scales.get(i).copied().unwrap_or(1.0);
-                    let wrapped_groups = wrap_spans(line_spans, content_budget);
+                    let wrapped_groups = wrap_spans(line_spans, content_budget, WrapPolicy::Char);
                     for group in wrapped_groups {
                         let text: String = group.iter().map(|s| s.text.as_str()).collect();
                         rows.push(MessageRow {
@@ -1176,62 +1179,6 @@ fn split_spans_by_newline(spans: &[StyledSpan]) -> Vec<Vec<StyledSpan>> {
     }
     lines.push(current);
     lines
-}
-
-/// Wrap a flat span list at `col_budget` characters per rendered row.
-///
-/// Returns a `Vec` of per-row span lists.  Spans that cross a wrap
-/// boundary are split at the boundary — the span style (fg, bold, italic)
-/// is cloned onto both halves so styling is preserved.
-///
-/// Zero budget or empty input is handled gracefully (one group returned).
-fn wrap_spans(spans: &[StyledSpan], col_budget: usize) -> Vec<Vec<StyledSpan>> {
-    if spans.is_empty() {
-        return vec![vec![]];
-    }
-    let total_chars: usize = spans.iter().map(|s| s.text.chars().count()).sum();
-    if total_chars == 0 {
-        return vec![vec![]];
-    }
-    if col_budget == 0 || total_chars <= col_budget {
-        return vec![spans.to_vec()];
-    }
-
-    let mut result: Vec<Vec<StyledSpan>> = Vec::new();
-    let mut current_row: Vec<StyledSpan> = Vec::new();
-    let mut row_chars = 0usize;
-
-    for span in spans {
-        let chars: Vec<char> = span.text.chars().collect();
-        let mut span_start = 0usize;
-
-        while span_start < chars.len() {
-            // Flush a full row if no space remains.
-            if row_chars >= col_budget {
-                result.push(std::mem::take(&mut current_row));
-                row_chars = 0;
-            }
-            let available = col_budget - row_chars;
-            let can_take = (chars.len() - span_start).min(available);
-            if can_take > 0 {
-                let chunk: String = chars[span_start..span_start + can_take].iter().collect();
-                current_row.push(StyledSpan {
-                    text: chunk,
-                    ..span.clone()
-                });
-                row_chars += can_take;
-                span_start += can_take;
-            }
-        }
-    }
-
-    if !current_row.is_empty() {
-        result.push(current_row);
-    }
-    if result.is_empty() {
-        result.push(vec![]);
-    }
-    result
 }
 
 /// Convert a byte offset in `text` to `(line, char_col)`.
@@ -2040,6 +1987,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_transcript_rows_styled_wraps_cjk_at_display_width() {
+        // Styled (markdown) turns wrap via `text_util::wrap_spans` with
+        // `WrapPolicy::Char`, budgeting by display width (#821). 6 CJK
+        // characters are 6 chars but 12 display cells — a
+        // `chars().count()`-based budget would wrongly let them all
+        // through on one row at content_budget=6; the display-width-aware
+        // wrapper must split after 3 characters (6 cells).
+        let mut cc = ChatController::new("c");
+        let theme = crate::Theme::default();
+        cc.push_turn_markdown(ChatRole::Assistant, "**中文中文中文**", &theme);
+        let rows = cc.build_transcript_rows(8); // content_budget = 8 - 2 = 6
+        let content_rows: Vec<_> = rows.iter().filter(|r| r.indent > 0.0).collect();
+        assert_eq!(
+            content_rows.len(),
+            2,
+            "6 CJK chars (12 cells) at a 6-cell content budget must wrap to \
+             2 rows, not 1; got {}",
+            content_rows.len()
+        );
+        for row in &content_rows {
+            assert!(
+                crate::text_util::display_width(&row.text) <= 6,
+                "row {:?} exceeds the 6-cell budget",
+                row.text
+            );
+        }
+    }
+
     // ── split_spans_by_newline ────────────────────────────────────────
 
     #[test]
@@ -2071,65 +2047,11 @@ mod tests {
         assert!(lines[0].is_empty());
     }
 
-    // ── wrap_spans ────────────────────────────────────────────────────
-
-    #[test]
-    fn wrap_spans_short_line_not_split() {
-        let spans = vec![StyledSpan::plain("hello")];
-        let groups = wrap_spans(&spans, 80);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].len(), 1);
-        assert_eq!(groups[0][0].text, "hello");
-    }
-
-    #[test]
-    fn wrap_spans_splits_single_span_at_budget() {
-        let spans = vec![StyledSpan::plain("abcde")];
-        let groups = wrap_spans(&spans, 3);
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0][0].text, "abc");
-        assert_eq!(groups[1][0].text, "de");
-    }
-
-    #[test]
-    fn wrap_spans_preserves_style_on_split_chunks() {
-        let bold_span = StyledSpan {
-            text: "abcdef".to_string(),
-            fg: Some(Color::rgb(255, 0, 0)),
-            bg: None,
-            bold: true,
-            italic: false,
-            underline: false,
-        };
-        let groups = wrap_spans(&[bold_span], 4);
-        assert_eq!(groups.len(), 2);
-        assert!(groups[0][0].bold, "first chunk must retain bold");
-        assert!(groups[1][0].bold, "second chunk must retain bold");
-        assert_eq!(groups[0][0].fg, Some(Color::rgb(255, 0, 0)));
-        assert_eq!(groups[0][0].text, "abcd");
-        assert_eq!(groups[1][0].text, "ef");
-    }
-
-    #[test]
-    fn wrap_spans_multi_span_boundary() {
-        // Two 3-char spans at budget=4 → first row gets span-A (3) + one char
-        // of span-B; second row gets remaining 2 chars of span-B.
-        let a = StyledSpan::plain("abc");
-        let b = StyledSpan::plain("def");
-        let groups = wrap_spans(&[a, b], 4);
-        assert_eq!(groups.len(), 2);
-        let row0_text: String = groups[0].iter().map(|s| s.text.as_str()).collect();
-        let row1_text: String = groups[1].iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(row0_text, "abcd");
-        assert_eq!(row1_text, "ef");
-    }
-
-    #[test]
-    fn wrap_spans_empty_returns_one_empty_group() {
-        let groups = wrap_spans(&[], 80);
-        assert_eq!(groups.len(), 1);
-        assert!(groups[0].is_empty());
-    }
+    // `wrap_spans`/`WrapPolicy` themselves are unit-tested in
+    // `text_util.rs` (#821) — this module no longer owns a wrap
+    // implementation, only the `WrapPolicy::Char` call site exercised by
+    // `build_transcript_rows_styled_wraps_across_budget` and
+    // `build_transcript_rows_styled_wraps_cjk_at_display_width` below.
 
     // ── Wrap helper ───────────────────────────────────────────────────
 

@@ -453,7 +453,7 @@ pub use primitives::tree::{
 };
 pub use text_util::{
     fuzzy_score, next_char_boundary, prev_char_boundary, safe_prefix, safe_slice,
-    snap_to_char_boundary, word_wrap,
+    snap_to_char_boundary, word_wrap, wrap_spans, WrapPolicy,
 };
 pub use theme::Theme;
 pub use types::{
