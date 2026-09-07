@@ -139,9 +139,12 @@ pub fn draw_multi_section_view(
     cr.restore().ok();
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
+    // Thumb geometry comes straight from `view_layout.panel_scrollbar_thumb`
+    // (computed once, via `fit_thumb`, in `MultiSectionView::layout`) —
+    // see `paint_panel_scrollbar`'s doc for why this used to be a third,
+    // disagreeing formula (quadraui#820).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
-        let total_content: f32 = view_layout.sections.iter().map(|s| s.resolved_size).sum();
-        paint_panel_scrollbar(cr, panel_sb, view.panel_scroll, total_content, theme);
+        paint_panel_scrollbar(cr, panel_sb, view_layout.panel_scrollbar_thumb, theme);
     }
 }
 
@@ -578,13 +581,24 @@ fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, the
     cr.fill().ok();
 }
 
-/// Panel-level scrollbar with thumb size + position derived from
-/// `panel_scroll` and the total content height. Painted with solid
-/// colours (no alpha) and at the full `metrics.scrollbar_size` width
-/// so it's actually visible against dark sidebar backgrounds; alpha
-/// blending against unknown panel backgrounds was washing the thumb
-/// out in onedark.
-fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
+/// Panel-level scrollbar. Paints the track, then the thumb at
+/// `thumb_bounds` — geometry computed once by
+/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
+/// (`fit_thumb`) and published as
+/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
+///
+/// Pre-quadraui#820 this function computed thumb size/position itself
+/// from `(scroll, total_content)` with its own formula that disagreed
+/// with the layout's `fit_thumb`-based one in two ways: the caller
+/// passed `total_content` as *just* the summed section sizes, silently
+/// dropping divider strips (so the painted thumb size drifted from the
+/// hit-tested thumb whenever `allow_resize` was on and dividers were
+/// present); and even with matching totals, a hardcoded `20.0`-pixel
+/// minimum thumb here disagreed with `panel_thumb_min`'s
+/// `metrics.scrollbar_size.max(8.0)` used everywhere else. Mirrors
+/// [`paint_scrollbar`]'s (per-section) pattern of consuming
+/// pre-computed bounds instead of re-deriving them.
+fn paint_panel_scrollbar(cr: &Context, bounds: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
     let track = cairo_rgb(theme.scrollbar_track);
     let thumb = cairo_rgb(theme.scrollbar_thumb);
 
@@ -592,7 +606,7 @@ fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, t
     let by = bounds.y as f64;
     let bw = bounds.width as f64;
     let bh = bounds.height as f64;
-    if bh <= 0.0 || total <= 0.0 {
+    if bh <= 0.0 {
         return;
     }
 
@@ -600,15 +614,10 @@ fn paint_panel_scrollbar(cr: &Context, bounds: QRect, scroll: f32, total: f32, t
     cr.rectangle(bx, by, bw, bh);
     cr.fill().ok();
 
-    let visible_frac = (bh / total as f64).min(1.0);
-    let scroll_frac = if total as f64 > bh {
-        scroll as f64 / (total as f64 - bh)
-    } else {
-        0.0
+    let (thumb_y, thumb_h) = match thumb_bounds {
+        Some(t) => (t.y as f64, (t.height as f64).max(1.0)),
+        None => (by, bh),
     };
-    let thumb_h = (bh * visible_frac).max(20.0);
-    let thumb_track = (bh - thumb_h).max(0.0);
-    let thumb_y = by + thumb_track * scroll_frac;
     cr.set_source_rgb(thumb.0, thumb.1, thumb.2);
     cr.rectangle(bx, thumb_y, bw, thumb_h);
     cr.fill().ok();
@@ -649,7 +658,7 @@ fn paint_divider(cr: &Context, bounds: QRect, theme: &Theme) {
 mod tests {
     use super::*;
     use crate::primitives::multi_section_view::{
-        MultiSectionViewHit, ScrollMode, Section, SectionSize,
+        MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::types::{Color, Decoration, SelectionMode, WidgetId};
@@ -894,6 +903,96 @@ mod tests {
                     painted.0, painted.1, s.section_idx, other
                 ),
             }
+        }
+    }
+
+    /// Panel-level (`WholePanel`) scrollbar: the painted thumb pixel
+    /// matches `theme.scrollbar_thumb`, the track pixel below it matches
+    /// `theme.scrollbar_track`, and hit-testing the painted thumb pixel
+    /// agrees with the layout. Closes the paint/layout/hit-test round
+    /// trip for the GTK panel scrollbar the same way
+    /// `gtk_scrollbar_column_hits_scrollbar_not_body_when_overflowing`
+    /// does for per-section scrollbars.
+    ///
+    /// Regression coverage for quadraui#820: pre-fix, GTK's
+    /// `paint_panel_scrollbar` recomputed thumb geometry itself from
+    /// `layout.sections.iter().map(|s| s.resolved_size).sum()` (dropping
+    /// the divider strip from the total) and a hardcoded `20.0`-pixel
+    /// minimum thumb, instead of reusing `panel_scrollbar_thumb` — the
+    /// same geometry `fit_thumb` + `panel_thumb_min` already computed
+    /// for hit-testing. Both formulas' *outputs* were close enough in
+    /// pixel terms on this shape that a numeric magnitude assertion
+    /// (like the TUI regression test's cell-precision one) isn't
+    /// reliable here; what this test locks down instead is that paint
+    /// and hit-test now provably read the same `Rect`.
+    #[test]
+    fn gtk_panel_scrollbar_thumb_paints_at_layout_position() {
+        let items = [
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10",
+        ];
+        let v = MultiSectionView {
+            id: WidgetId::new("v"),
+            sections: vec![tree_section("a", &items), tree_section("b", &items)],
+            active_section: None,
+            axis: Axis::Vertical,
+            allow_resize: true,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::WholePanel,
+            has_focus: true,
+            panel_scroll: 0.0,
+        };
+        let (mut surface, layout) = paint_then_layout(&v);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let panel_sb = layout
+            .panel_scrollbar
+            .expect("11-row sections in a 200px canvas should overflow");
+        let thumb = layout
+            .panel_scrollbar_thumb
+            .expect("panel_scrollbar present implies panel_scrollbar_thumb present");
+        assert!(
+            thumb.height < panel_sb.height - 4.0,
+            "test assumes the thumb doesn't fill the whole track (thumb={thumb:?}, \
+             track={panel_sb:?})"
+        );
+
+        let theme = test_theme();
+        let gx = (panel_sb.x + panel_sb.width / 2.0).floor() as i32;
+
+        // A pixel well inside the painted thumb is the thumb colour.
+        let thumb_y = (thumb.y + 3.0).floor() as i32;
+        assert_eq!(
+            pixel(&data, stride, gx, thumb_y),
+            (
+                theme.scrollbar_thumb.r,
+                theme.scrollbar_thumb.g,
+                theme.scrollbar_thumb.b
+            ),
+            "pixel inside panel_scrollbar_thumb should be the thumb colour"
+        );
+
+        // A pixel in the track below the thumb is the track colour.
+        let track_y = (panel_sb.y + panel_sb.height - 3.0).floor() as i32;
+        assert_eq!(
+            pixel(&data, stride, gx, track_y),
+            (
+                theme.scrollbar_track.r,
+                theme.scrollbar_track.g,
+                theme.scrollbar_track.b
+            ),
+            "pixel in the track below the thumb should be the track colour"
+        );
+
+        // hit_test at the sampled thumb pixel agrees with paint.
+        match layout.hit_test(gx as f32 + 0.5, thumb_y as f32 + 0.5) {
+            MultiSectionViewHit::PanelScrollbar {
+                kind: ScrollbarHit::Thumb,
+            } => {}
+            other => panic!(
+                "hit at painted panel-thumb pixel ({}, {}) returned {:?}",
+                gx, thumb_y, other
+            ),
         }
     }
 

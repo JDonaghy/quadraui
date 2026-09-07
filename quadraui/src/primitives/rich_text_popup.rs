@@ -414,14 +414,21 @@ impl RichTextPopup {
                 border,
                 content_bounds.height,
             );
-            let thumb_h = (content_bounds.height * (max_rows as f32 / total_lines as f32))
-                .max(measure.row_height);
-            let max_thumb_top = (content_bounds.height - thumb_h).max(0.0);
-            let thumb_top_offset = if max_scroll == 0 {
-                0.0
-            } else {
-                (resolved_scroll_offset as f32 / max_scroll as f32) * max_thumb_top
-            };
+            // Thumb geometry via the one canonical formula (quadraui#820)
+            // instead of a hand-rolled restatement of it: scroll is
+            // row-indexed here, so `scroll_rows -> main-axis units` uses
+            // the same "row_main_unit" conversion `multi_section_view`'s
+            // `compute_thumb_bounds` does, then `fit_thumb` sizes and
+            // positions the thumb with `measure.row_height` as the
+            // minimum thumb length (never smaller than one row).
+            let row_main_unit = content_bounds.height / total_lines as f32;
+            let (thumb_top_offset, thumb_h) = crate::primitives::scrollbar::fit_thumb(
+                resolved_scroll_offset as f32 * row_main_unit,
+                content_bounds.height,
+                max_rows as f32 * row_main_unit,
+                content_bounds.height,
+                measure.row_height,
+            );
             let thumb = Rect::new(track.x, track.y + thumb_top_offset, border, thumb_h);
             Some(PopupScrollbar { track, thumb })
         } else {

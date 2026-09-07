@@ -380,6 +380,14 @@ pub struct MultiSectionViewLayout {
     /// Panel-level scrollbar bounds (only present in
     /// [`ScrollMode::WholePanel`] when content overflows).
     pub panel_scrollbar: Option<Rect>,
+    /// Panel-level scrollbar *thumb* bounds — sub-rect of
+    /// [`Self::panel_scrollbar`], computed via [`crate::fit_thumb`] the
+    /// same way [`SectionLayout::thumb_bounds`] is. Published here so
+    /// callers that need the thumb's exact travel distance for drag
+    /// (e.g. [`crate::compose::SidebarSystem`]) read it straight off the
+    /// layout instead of re-deriving the thumb-sizing formula themselves
+    /// (quadraui#820 — that re-derivation used to drift from this one).
+    pub panel_scrollbar_thumb: Option<Rect>,
     /// Ordered hit-region list. Iterated front-to-back by
     /// [`Self::hit_test`].
     pub hit_regions: Vec<(Rect, MultiSectionViewHit)>,
@@ -486,6 +494,7 @@ impl MultiSectionView {
                     sections: Vec::new(),
                     dividers: Vec::new(),
                     panel_scrollbar: None,
+                    panel_scrollbar_thumb: None,
                     hit_regions: Vec::new(),
                 }
             }
@@ -510,6 +519,7 @@ impl MultiSectionView {
                 sections: Vec::new(),
                 dividers: Vec::new(),
                 panel_scrollbar: None,
+                panel_scrollbar_thumb: None,
                 hit_regions: Vec::new(),
             };
         }
@@ -838,8 +848,15 @@ impl MultiSectionView {
             }
         }
 
-        // Panel-level scrollbar (WholePanel mode only).
-        let panel_scrollbar = match self.scroll_mode {
+        // Panel-level scrollbar (WholePanel mode only). Thumb geometry
+        // goes through the same canonical `fit_thumb` helper the
+        // per-section scrollbars use (`compute_thumb_bounds` below) —
+        // pre-#820 this branch hand-rolled an equivalent-but-separate
+        // formula, and `compose::SidebarSystem` re-derived it a third
+        // time for drag setup. One formula now; the thumb rect is
+        // published on the layout (`panel_scrollbar_thumb`) so drag
+        // setup can read it instead of re-deriving it.
+        let (panel_scrollbar, panel_scrollbar_thumb) = match self.scroll_mode {
             ScrollMode::WholePanel => {
                 let total_content: f32 = resolved.iter().sum::<f32>() + dividers_total;
                 if total_content > bounds.height {
@@ -850,17 +867,26 @@ impl MultiSectionView {
                         sb_w,
                         bounds.height,
                     );
-                    let thumb_frac = bounds.height / total_content;
                     let min_thumb = panel_thumb_min(&metrics);
-                    let thumb_h = (r.height * thumb_frac).max(min_thumb).min(r.height);
-                    let max_scroll = (total_content - bounds.height).max(0.0);
-                    let scroll_frac = if max_scroll > 0.0 {
-                        self.panel_scroll.clamp(0.0, max_scroll) / max_scroll
-                    } else {
-                        0.0
-                    };
-                    let travel = (r.height - thumb_h).max(0.0);
-                    let thumb_y = r.y + travel * scroll_frac;
+                    // Deliberately *not* snapped to `metrics.cell_quantum`
+                    // (unlike `compute_thumb_bounds`'s per-section thumb):
+                    // a whole-cell `quantize_thumb` pass rounds a
+                    // near-full-track thumb *up* to fill the track
+                    // exactly, zeroing `travel` and making the panel
+                    // scrollbar undraggable under a 1-row overflow — see
+                    // `tui_panel_drag_works_in_multi_tree_example_shape`.
+                    // The paint side rounds this fractional rect to cells
+                    // at render time instead (`tui::multi_section_view::
+                    // paint_panel_scrollbar`), same as the per-section
+                    // paint path's `.round()` fallback.
+                    let (thumb_start, thumb_h) = crate::primitives::scrollbar::fit_thumb(
+                        self.panel_scroll,
+                        total_content,
+                        bounds.height,
+                        r.height,
+                        min_thumb,
+                    );
+                    let thumb_y = r.y + thumb_start;
                     if thumb_y > r.y {
                         hit_regions.push((
                             Rect::new(r.x, r.y, r.width, thumb_y - r.y),
@@ -869,8 +895,9 @@ impl MultiSectionView {
                             },
                         ));
                     }
+                    let thumb_rect = Rect::new(r.x, thumb_y, r.width, thumb_h);
                     hit_regions.push((
-                        Rect::new(r.x, thumb_y, r.width, thumb_h),
+                        thumb_rect,
                         MultiSectionViewHit::PanelScrollbar {
                             kind: ScrollbarHit::Thumb,
                         },
@@ -885,12 +912,12 @@ impl MultiSectionView {
                             },
                         ));
                     }
-                    Some(r)
+                    (Some(r), Some(thumb_rect))
                 } else {
-                    None
+                    (None, None)
                 }
             }
-            ScrollMode::PerSection => None,
+            ScrollMode::PerSection => (None, None),
         };
 
         MultiSectionViewLayout {
@@ -900,6 +927,7 @@ impl MultiSectionView {
             sections: sections_out,
             dividers,
             panel_scrollbar,
+            panel_scrollbar_thumb,
             hit_regions,
         }
     }
@@ -1028,12 +1056,49 @@ fn body_scroll_state(body: &SectionBody) -> Option<(usize, usize)> {
     }
 }
 
+/// Snap a [`crate::fit_thumb`] result to whole `cell_quantum` units so
+/// paint (which rounds to integer cells in TUI) and hit-test (which
+/// otherwise sees raw fractional bounds) agree exactly. A no-op when
+/// `cell_quantum <= 0.0` (GTK's fractional-pixel bounds pass through
+/// unchanged).
+///
+/// Used by [`compute_thumb_bounds`] (per-section scrollbars) only.
+/// *Not* used for the panel-level scrollbar — see the "Deliberately
+/// not snapped" note at that branch's `fit_thumb` call in
+/// `MultiSectionView::layout_vertical` for why quantising a
+/// near-full-track panel thumb would zero out drag `travel`. Panel
+/// paint rounds its fractional rect to cells at render time instead
+/// (`tui::multi_section_view::paint_panel_scrollbar`).
+pub(crate) fn quantize_thumb(
+    thumb_start: f32,
+    thumb_len: f32,
+    track_len: f32,
+    cell_quantum: f32,
+) -> (f32, f32) {
+    if cell_quantum <= 0.0 {
+        return (thumb_start, thumb_len);
+    }
+    let q = cell_quantum;
+    let start_q = (thumb_start / q).floor() as i32;
+    let end_q = ((thumb_start + thumb_len) / q).ceil() as i32;
+    let max_end_q = (track_len / q).round() as i32;
+    let end_q = end_q.min(max_end_q);
+    let len_q = (end_q - start_q).max(1);
+    let start_q = start_q.min(max_end_q - len_q).max(0);
+    (start_q as f32 * q, len_q as f32 * q)
+}
+
 /// Compute thumb bounds for a per-section scrollbar.
 ///
-/// Mirrors `paint_panel_scrollbar`'s arithmetic so per-section and
-/// panel-level scrollbars look the same. Snaps to `cell_quantum` when
-/// set so paint and hit-test agree on integer cells (TUI). Falls
-/// through to fractional bounds when `cell_quantum == 0.0` (GTK).
+/// Shares [`crate::fit_thumb`] with the panel-level scrollbar (see the
+/// `fit_thumb` call in the `WholePanel` branch of
+/// `MultiSectionView::layout_vertical`) so both kinds of scrollbar size
+/// and position their thumb identically. Unlike the panel-level branch,
+/// this additionally snaps to `cell_quantum` via [`quantize_thumb`] when
+/// set, so paint and hit-test agree on integer cells (TUI) — per-section
+/// thumbs don't have the panel scrollbar's near-full-track drag-`travel`
+/// concern (see `quantize_thumb`'s doc), so there's no reason not to.
+/// Falls through to fractional bounds when `cell_quantum == 0.0` (GTK).
 fn compute_thumb_bounds(
     gutter: Rect,
     scroll_rows: usize,
@@ -1062,18 +1127,7 @@ fn compute_thumb_bounds(
         track_len,
         min_thumb_len,
     );
-    let (thumb_start, thumb_len) = if cell_quantum > 0.0 {
-        let q = cell_quantum;
-        let start_q = (thumb_start / q).floor() as i32;
-        let end_q = ((thumb_start + thumb_len) / q).ceil() as i32;
-        let max_end_q = (track_len / q).round() as i32;
-        let end_q = end_q.min(max_end_q);
-        let len_q = (end_q - start_q).max(1);
-        let start_q = start_q.min(max_end_q - len_q).max(0);
-        (start_q as f32 * q, len_q as f32 * q)
-    } else {
-        (thumb_start, thumb_len)
-    };
+    let (thumb_start, thumb_len) = quantize_thumb(thumb_start, thumb_len, track_len, cell_quantum);
     Rect::new(gutter.x, gutter.y + thumb_start, gutter.width, thumb_len)
 }
 

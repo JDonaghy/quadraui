@@ -169,10 +169,13 @@ pub fn draw_multi_section_view(
 
     // Panel-level scrollbar (WholePanel mode) painted outside the
     // panel clip so it isn't itself clipped — matches
-    // `mac_msv`/`gtk_msv`'s posture.
+    // `mac_msv`/`gtk_msv`'s posture. Thumb geometry comes straight from
+    // `view_layout.panel_scrollbar_thumb` (computed once, via
+    // `fit_thumb`, in `MultiSectionView::layout`) — see
+    // `paint_panel_scrollbar`'s doc for why this used to be a fourth,
+    // disagreeing formula (quadraui#820).
     if let Some(panel_sb) = view_layout.panel_scrollbar {
-        let total_content: f32 = view_layout.sections.iter().map(|s| s.resolved_size).sum();
-        paint_panel_scrollbar(target, panel_sb, view.panel_scroll, total_content, &theme);
+        paint_panel_scrollbar(target, panel_sb, view_layout.panel_scrollbar_thumb, &theme);
     }
 }
 
@@ -588,40 +591,45 @@ fn paint_section_scrollbar(
 
 /// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
 /// thumb, no blending needed since it's painted outside any body clip.
+/// Thumb geometry comes from `thumb_bounds` — computed once by
+/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
+/// (`fit_thumb`) and published as
+/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
+///
+/// Pre-quadraui#820 this function computed thumb size/position itself
+/// from `(scroll, total_content)` with its own formula that disagreed
+/// with the layout's `fit_thumb`-based one in two ways: the caller
+/// passed `total_content` as *just* the summed section sizes, silently
+/// dropping divider strips; and a hardcoded `20.0`-pixel minimum thumb
+/// here disagreed with `panel_thumb_min`'s `metrics.scrollbar_size.max(8.0)`
+/// used everywhere else. Mirrors [`paint_section_scrollbar`]'s
+/// (per-section) pattern of consuming pre-computed bounds instead of
+/// re-deriving them.
 fn paint_panel_scrollbar(
     target: &ID2D1RenderTarget,
     bounds: Rect,
-    scroll: f32,
-    total: f32,
+    thumb_bounds: Option<Rect>,
     theme: &Theme,
 ) {
-    if bounds.height <= 0.0 || total <= 0.0 {
+    if bounds.height <= 0.0 {
         return;
     }
 
     let _ = fill_rect(target, bounds, theme.scrollbar_track);
 
-    let visible_frac = (bounds.height / total).min(1.0);
-    let scroll_frac = if total > bounds.height {
-        scroll / (total - bounds.height)
-    } else {
-        0.0
+    let thumb_rect = match thumb_bounds {
+        Some(t) => Rect::new(bounds.x, t.y, bounds.width, t.height.max(1.0)),
+        None => bounds,
     };
-    let thumb_h = (bounds.height * visible_frac).max(20.0);
-    let thumb_track = (bounds.height - thumb_h).max(0.0);
-    let thumb_y = bounds.y + thumb_track * scroll_frac;
-    let _ = fill_rect(
-        target,
-        Rect::new(bounds.x, thumb_y, bounds.width, thumb_h),
-        theme.scrollbar_thumb,
-    );
+    let _ = fill_rect(target, thumb_rect, theme.scrollbar_thumb);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::multi_section_view::{
-        InlineInput, MultiSectionViewHit, ScrollMode, Section, SectionHeader, SectionSize,
+        InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionHeader,
+        SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
@@ -846,6 +854,87 @@ mod tests {
             (theme.background.r, theme.background.g, theme.background.b),
             "scrollbar gutter should paint something other than plain background",
         );
+    }
+
+    /// Panel-level (`WholePanel`) scrollbar: the painted thumb pixel
+    /// matches `theme.scrollbar_thumb`, the track pixel below it matches
+    /// `theme.scrollbar_track`, and hit-testing the painted thumb pixel
+    /// agrees with the layout. Win-side mirror of GTK's
+    /// `gtk_panel_scrollbar_thumb_paints_at_layout_position`.
+    ///
+    /// Regression coverage for quadraui#820: pre-fix, this backend's
+    /// `paint_panel_scrollbar` recomputed thumb geometry itself from
+    /// `layout.sections.iter().map(|s| s.resolved_size).sum()` (dropping
+    /// the divider strip from the total) and a hardcoded `20.0`-pixel
+    /// minimum thumb, instead of reusing `panel_scrollbar_thumb` — the
+    /// same geometry `fit_thumb` + `panel_thumb_min` already computed
+    /// for hit-testing.
+    #[test]
+    fn panel_scrollbar_thumb_paints_at_layout_position() {
+        let view = MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: vec![tree_section("alpha", 11), tree_section("beta", 11)],
+            active_section: Some(0),
+            axis: Axis::Vertical,
+            allow_resize: true,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::WholePanel,
+            has_focus: true,
+            panel_scroll: 0.0,
+        };
+        let (surface, layout) = paint_via(&view);
+        let theme = Theme::default();
+
+        let panel_sb = layout
+            .panel_scrollbar
+            .expect("two 11-row sections in a 320px-tall canvas should overflow");
+        let thumb = layout
+            .panel_scrollbar_thumb
+            .expect("panel_scrollbar present implies panel_scrollbar_thumb present");
+        assert!(
+            thumb.height < panel_sb.height - 4.0,
+            "test assumes the thumb doesn't fill the whole track (thumb={thumb:?}, \
+             track={panel_sb:?})"
+        );
+
+        let px = (panel_sb.x + panel_sb.width / 2.0) as u32;
+
+        // A pixel well inside the painted thumb is the thumb colour.
+        let thumb_py = (thumb.y + 3.0) as u32;
+        let thumb_c = surface.pixel_at(px, thumb_py);
+        assert_eq!(
+            (thumb_c.r, thumb_c.g, thumb_c.b),
+            (
+                theme.scrollbar_thumb.r,
+                theme.scrollbar_thumb.g,
+                theme.scrollbar_thumb.b
+            ),
+            "pixel inside panel_scrollbar_thumb should be the thumb colour"
+        );
+
+        // A pixel in the track below the thumb is the track colour.
+        let track_py = (panel_sb.y + panel_sb.height - 3.0) as u32;
+        let track_c = surface.pixel_at(px, track_py);
+        assert_eq!(
+            (track_c.r, track_c.g, track_c.b),
+            (
+                theme.scrollbar_track.r,
+                theme.scrollbar_track.g,
+                theme.scrollbar_track.b
+            ),
+            "pixel in the track below the thumb should be the track colour"
+        );
+
+        // hit_test at the sampled thumb pixel agrees with paint.
+        match layout.hit_test(px as f32 + 0.5, thumb_py as f32 + 0.5) {
+            MultiSectionViewHit::PanelScrollbar {
+                kind: ScrollbarHit::Thumb,
+            } => {}
+            other => panic!(
+                "hit at painted panel-thumb pixel ({}, {}) returned {:?}",
+                px, thumb_py, other
+            ),
+        }
     }
 
     #[test]
