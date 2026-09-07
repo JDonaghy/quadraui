@@ -189,6 +189,27 @@ cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
   detected depth — lives in `src/tui/color.rs`'s
   `pipeline_theme_pair_quantises_through_a_real_draw_at_every_depth`,
   which does run on Windows.
+- **Fixtures that control input *byte boundaries* are `#[cfg(unix)]` too**
+  — same ConPTY reason, mirrored onto the input direction, and the gate
+  belongs on the test rather than on a module here.
+  `tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak`
+  (quadraui#293) works only because it can glue a lone `ESC` and an SGR
+  mouse report into a single `write()`, which is the input crossterm's
+  Unix event source then has to disambiguate
+  (`parse_event(buffer, input_available)` — #293's actual mechanism). On
+  Windows crossterm never parses bytes at all: `event::source::windows`
+  reads `INPUT_RECORD`s through the console API, and ConPTY has already
+  re-parsed the master-side bytes with conhost's own VT input state
+  machine before the child sees anything. The byte boundaries the test
+  constructs therefore do not survive to the code under test, and a
+  failure there reports on conhost, not on quadraui. **Rule of thumb: if
+  a pty fixture's premise is "these exact bytes, in this exact grouping"
+  — in either direction — gate it `#[cfg(unix)]` and cover the logic
+  itself with an in-crate unit test that runs everywhere** (here:
+  `src/tui/backend.rs`'s `recover_leaked_sgr_mouse_fragments` tests).
+  Content-level pty assertions ("typing works", "the report didn't leak
+  into the transcript") stay cross-platform and still run on
+  windows-latest.
 
 ## GtkDriver example-driver tests (end-to-end, in-process)
 
