@@ -319,7 +319,14 @@ pub use sidebar_panel::draw_sidebar_panel;
 #[cfg(target_os = "windows")]
 pub use spinner::{draw_spinner, win_spinner_layout};
 #[cfg(target_os = "windows")]
-pub use split::{draw_split, win_split_layout, DIVIDER_DIP};
+pub use split::{win_split_layout, DIVIDER_DIP};
+// #864: `draw_split` is `#[deprecated]` — see `split::draw_split`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use split::draw_split;
 // #863: `draw_split_tree` is `#[deprecated]` — see
 // `split_tree::draw_split_tree`'s doc for why the shim exists and why
 // re-exporting it here (rather than dropping the re-export, or leaving

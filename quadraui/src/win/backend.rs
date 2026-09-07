@@ -2552,8 +2552,15 @@ impl Backend for WinBackend {
     /// most of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
         #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.surface {
-            return super::split::draw_split(&surface.target, rect, split);
+        if self.surface.is_some() {
+            let layout = super::split::win_split_layout(rect, split);
+            // `Theme::default()`, not `self.current_theme` — preserves
+            // the pre-#864 `win::split::draw_split` behaviour exactly
+            // (see that module's doc, "# Theme" section: `WinBackend`
+            // has no live theme wired through to split chrome yet).
+            let theme = crate::theme::Theme::default();
+            crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
+            return layout;
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, split);
