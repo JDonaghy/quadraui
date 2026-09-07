@@ -2144,6 +2144,27 @@ impl Backend for TuiBackend {
         )
     }
 
+    fn draw_toolbar_interactive(
+        &mut self,
+        rect: QRect,
+        bar: &crate::primitives::toolbar::Toolbar,
+        interaction: &crate::interaction::InteractionState,
+    ) -> crate::primitives::toolbar::ToolbarLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_toolbar_interactive called outside enter_frame_scope");
+        crate::tui::draw_toolbar(
+            frame.buffer_mut(),
+            area,
+            bar,
+            &theme,
+            interaction.hovered(),
+            interaction.pressed(),
+        )
+    }
+
     fn toolbar_layout(
         &self,
         rect: QRect,
