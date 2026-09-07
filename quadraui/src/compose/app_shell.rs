@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::types::{Color, Icon, WidgetId};
-use crate::{Backend, ButtonMask, MouseButton, Point, Rect, UiEvent};
+use crate::{Backend, ButtonMask, InteractionState, MouseButton, Point, Rect, UiEvent};
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -753,7 +753,11 @@ impl AppShell {
                     }],
                     right_segments: vec![],
                 };
-                let _ = backend.draw_status_bar(header_bounds, &header_bar, None, None);
+                let _ = backend.draw_status_bar_interactive(
+                    header_bounds,
+                    &header_bar,
+                    &InteractionState::new(),
+                );
             }
         }
 
@@ -774,7 +778,11 @@ impl AppShell {
                     }],
                     right_segments: vec![],
                 };
-                let _ = backend.draw_status_bar(row_rect, &divider_bar, None, None);
+                let _ = backend.draw_status_bar_interactive(
+                    row_rect,
+                    &divider_bar,
+                    &InteractionState::new(),
+                );
             }
         }
 

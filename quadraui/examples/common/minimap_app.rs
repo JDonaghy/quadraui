@@ -22,9 +22,9 @@
 //! - q / Esc       quit
 
 use quadraui::{
-    aggregate_spans, sample_lines, AppLogic, Backend, Color, Key, Minimap, MinimapGrid, MinimapHit,
-    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, SyntaxSpan, UiEvent,
-    WidgetId,
+    aggregate_spans, sample_lines, AppLogic, Backend, Color, InteractionState, Key, Minimap,
+    MinimapGrid, MinimapHit, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    SyntaxSpan, UiEvent, WidgetId,
 };
 
 /// Rows of the buffer visible in the (non-minimap) editor viewport —
@@ -196,7 +196,11 @@ impl AppLogic for MinimapApp {
         let _ = backend.draw_minimap(minimap_rect, &minimap);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

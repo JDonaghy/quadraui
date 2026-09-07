@@ -17,8 +17,8 @@
 //! "identity colour survives an inactive tab" half of the contract.
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, TabBar,
-    TabIcon, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TabBar, TabIcon, TabItem, UiEvent, WidgetId,
 };
 
 /// Tab labels, paired index-for-index with [`TabIconsDemo::icons`].
@@ -124,11 +124,10 @@ impl AppLogic for TabIconsDemo {
         // whole point of #620's shape.
         let icons = if self.icons_on { self.icons() } else { vec![] };
         backend.draw_tab_bar_icons(Rect::new(0.0, 0.0, viewport.width, lh), &bar, &icons, None);
-        backend.draw_status_bar(
+        backend.draw_status_bar_interactive(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
             &self.hint_bar(),
-            None,
-            None,
+            &InteractionState::new(),
         );
     }
 

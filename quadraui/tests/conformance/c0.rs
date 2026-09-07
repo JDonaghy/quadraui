@@ -41,13 +41,13 @@ use quadraui::{
     Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
     DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
     EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, Image, ImageFit, ImageSource,
-    ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine,
-    MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel, PipelineStage,
-    PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure,
-    ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize,
-    SelectionMode, Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus,
-    StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame, TabIcon,
-    TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
+    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
+    MinimapLine, MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel,
+    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
+    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree,
+    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame,
+    TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
     ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
     TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
     UiEvent, WidgetId,
@@ -87,7 +87,7 @@ pub struct Case {
 /// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
     Case {
-        method: "draw_status_bar",
+        method: "draw_status_bar_interactive",
         needle: Some("c0stat"),
         paint: |b, area| {
             let lh = b.line_height();
@@ -102,7 +102,11 @@ pub const CASES: &[Case] = &[
                 }],
                 right_segments: vec![],
             };
-            let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+            let _ = b.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                &InteractionState::new(),
+            );
         },
     },
     Case {
@@ -1003,7 +1007,7 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_toolbar",
+        method: "draw_toolbar_interactive",
         needle: Some("c0tbar"),
         paint: |b, area| {
             let lh = b.line_height();
@@ -1021,11 +1025,15 @@ pub const CASES: &[Case] = &[
                 bg: None,
                 focused_index: None,
             };
-            let _ = b.draw_toolbar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+            let _ = b.draw_toolbar_interactive(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                &InteractionState::new(),
+            );
         },
     },
     Case {
-        method: "draw_sidebar_panel",
+        method: "draw_sidebar_panel_interactive",
         needle: Some("c0sbpn"),
         paint: |b, area| {
             let toolbar = Toolbar {
@@ -1047,7 +1055,7 @@ pub const CASES: &[Case] = &[
                 toolbar: Some(toolbar),
                 toolbar_height: None,
             };
-            let _ = b.draw_sidebar_panel(area, &panel, None, None);
+            let _ = b.draw_sidebar_panel_interactive(area, &panel, &InteractionState::new());
         },
     },
     Case {
@@ -1151,6 +1159,89 @@ pub const CASES: &[Case] = &[
                 fallback_text: "c0img".to_string(),
             };
             let _ = b.draw_image(area, &image);
+        },
+    },
+    // ── Deprecated positional hover/pressed shims (issue #819) ────────
+    //
+    // `draw_status_bar` / `draw_toolbar` / `draw_sidebar_panel` are no
+    // longer implemented by any backend: they are `#[deprecated]` trait
+    // *defaults* that rebuild an `InteractionState` and forward to the
+    // `*_interactive` twin above. `cases_cover_every_draw_method_on_the_trait`
+    // requires an entry per `fn draw_*` regardless, and these earn their
+    // keep — a C0 row here is the only automated proof that the shim
+    // actually reaches a rasteriser rather than silently painting
+    // nothing, which is exactly the breakage the shim exists to prevent
+    // for `coord-tui` and `vimcode`. `#[allow(deprecated)]` is scoped to
+    // the one call in each closure, deliberately: everywhere else in
+    // this repo the `-D warnings` gate must keep rejecting these names.
+    Case {
+        method: "draw_status_bar",
+        needle: Some("c0stsh"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = StatusBar {
+                id: id("status-bar-shim"),
+                left_segments: vec![StatusBarSegment {
+                    text: " c0stsh ".to_string(),
+                    fg: Color::rgb(220, 220, 220),
+                    bg: Color::rgb(37, 37, 38),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            #[allow(deprecated)]
+            let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+        },
+    },
+    Case {
+        method: "draw_toolbar",
+        needle: Some("c0tbsh"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = Toolbar {
+                id: id("toolbar-shim"),
+                buttons: vec![ToolbarButton::Action {
+                    id: id("toolbar-shim-button"),
+                    label: "c0tbsh".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            };
+            #[allow(deprecated)]
+            let _ = b.draw_toolbar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+        },
+    },
+    Case {
+        method: "draw_sidebar_panel",
+        needle: Some("c0sbsh"),
+        paint: |b, area| {
+            let toolbar = Toolbar {
+                id: id("sidebar-shim-toolbar"),
+                buttons: vec![ToolbarButton::Action {
+                    id: id("sidebar-shim-toolbar-button"),
+                    label: "c0sbsh".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            };
+            let panel = SidebarPanel {
+                id: id("sidebar-panel-shim"),
+                toolbar: Some(toolbar),
+                toolbar_height: None,
+            };
+            #[allow(deprecated)]
+            let _ = b.draw_sidebar_panel(area, &panel, None, None);
         },
     },
 ];

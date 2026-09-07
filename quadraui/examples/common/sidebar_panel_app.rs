@@ -25,8 +25,9 @@
 //! - q / Esc                quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, SidebarPanel, SidebarPanelHit,
-    StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHoverTracker, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, SidebarPanel,
+    SidebarPanelHit, StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHoverTracker,
+    UiEvent, WidgetId,
 };
 
 const TOOLBAR_ROWS: f32 = 2.0;
@@ -201,7 +202,7 @@ impl AppLogic for SidebarPanelApp {
 
         // Title row.
         let title_rect = Rect::new(0.0, 0.0, viewport.width, lh);
-        let _ = backend.draw_status_bar(
+        let _ = backend.draw_status_bar_interactive(
             title_rect,
             &StatusBar {
                 id: WidgetId::new("title"),
@@ -214,17 +215,19 @@ impl AppLogic for SidebarPanelApp {
                 }],
                 right_segments: vec![],
             },
-            None,
-            None,
+            &InteractionState::new(),
         );
 
         // The panel itself.
         let panel_rect = Self::panel_rect(backend);
-        let layout = backend.draw_sidebar_panel(
+        // #819: one `InteractionState` in, instead of two positional
+        // ids. `ToolbarHoverTracker` keeps owning the hover bookkeeping
+        // (Gap 3, which is what this example exists to demonstrate);
+        // this adapts it into the new call shape.
+        let layout = backend.draw_sidebar_panel_interactive(
             panel_rect,
             &self.panel(),
-            self.hover.hovered_id(),
-            self.pressed.as_ref(),
+            &InteractionState::from_parts(self.hover.current(), self.pressed.clone()),
         );
 
         // Host paints into the returned content rect. Here: a list of
@@ -237,7 +240,7 @@ impl AppLogic for SidebarPanelApp {
         } else {
             "  Tasks  "
         };
-        let _ = backend.draw_status_bar(
+        let _ = backend.draw_status_bar_interactive(
             Rect::new(content.x, content.y, content.width, lh),
             &StatusBar {
                 id: WidgetId::new("content:header"),
@@ -250,8 +253,7 @@ impl AppLogic for SidebarPanelApp {
                 }],
                 right_segments: vec![],
             },
-            None,
-            None,
+            &InteractionState::new(),
         );
 
         // Row strip: each task as a single-row status bar with hover-
@@ -268,7 +270,7 @@ impl AppLogic for SidebarPanelApp {
             } else {
                 (Color::rgb(220, 220, 220), Color::rgb(20, 20, 20))
             };
-            let _ = backend.draw_status_bar(
+            let _ = backend.draw_status_bar_interactive(
                 row_rect,
                 &StatusBar {
                     id: WidgetId::new(format!("row:{i}")),
@@ -281,14 +283,17 @@ impl AppLogic for SidebarPanelApp {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &InteractionState::new(),
             );
         }
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

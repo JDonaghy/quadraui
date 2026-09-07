@@ -303,11 +303,10 @@ mod tests {
 
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_status_bar(
+            let l = b.draw_status_bar_interactive(
                 QRect::new(x, y, W as f32 - x, H as f32 - y),
                 bar,
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -444,7 +443,11 @@ mod tests {
         });
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_status_bar(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, None, None);
+            b.draw_status_bar_interactive(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+            );
         });
         backend.end_frame();
 

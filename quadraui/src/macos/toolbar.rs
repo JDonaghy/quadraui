@@ -315,11 +315,10 @@ mod tests {
 
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_toolbar(
+            let l = b.draw_toolbar_interactive(
                 QRect::new(x, y, W as f32 - x, H as f32 - y),
                 bar,
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
             *layout.borrow_mut() = Some(l);
         });

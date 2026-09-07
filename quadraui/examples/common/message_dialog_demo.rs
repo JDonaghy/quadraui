@@ -31,8 +31,9 @@
 //! - `Esc` / `q` — quit
 
 use quadraui::{
-    native_dialog_options, AppLogic, Backend, Color, Dialog, DialogButton, DialogSeverity, Key,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    native_dialog_options, AppLogic, Backend, Color, Dialog, DialogButton, DialogSeverity,
+    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct MessageDialogDemo {
@@ -114,7 +115,11 @@ impl AppLogic for MessageDialogDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

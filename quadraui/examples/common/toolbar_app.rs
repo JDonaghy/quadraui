@@ -31,8 +31,9 @@ pub struct ToolbarApp {
     last_message: String,
     /// Hovered/pressed toolbar button, keyed by `WidgetId` (issue #819).
     /// Replaces what used to be two hand-rolled `Option<WidgetId>`
-    /// fields — `interaction.hovered()` / `interaction.pressed()` feed
-    /// the same positional slots `Backend::draw_toolbar` always took.
+    /// fields, and is handed to `Backend::draw_toolbar_interactive`
+    /// whole — the rasteriser reads hover and pressed out of it rather
+    /// than taking them as two positional arguments.
     interaction: InteractionState,
     /// Index into `self.toolbar().buttons` of the keyboard-focused button,
     /// or `None` when the toolbar has no keyboard focus.
@@ -266,7 +267,7 @@ impl AppLogic for ToolbarApp {
 
         // Title row.
         let title_rect = Rect::new(0.0, 0.0, viewport.width, lh);
-        let _ = backend.draw_status_bar(
+        let _ = backend.draw_status_bar_interactive(
             title_rect,
             &StatusBar {
                 id: WidgetId::new("title"),
@@ -279,21 +280,23 @@ impl AppLogic for ToolbarApp {
                 }],
                 right_segments: vec![],
             },
-            None,
-            None,
+            &InteractionState::new(),
         );
 
         // Toolbar in the second row.
-        let _ = backend.draw_toolbar(
+        let _ = backend.draw_toolbar_interactive(
             Self::toolbar_rect(backend),
             &self.toolbar(),
-            self.interaction.hovered(),
-            self.interaction.pressed(),
+            &self.interaction,
         );
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -393,61 +396,55 @@ impl AppLogic for ToolbarApp {
             }
 
             // ── Mouse: hover / press / release ────────────────────────────
-            // `self.interaction` (an `InteractionState`, issue #819) owns
-            // the bookkeeping; each arm only supplies the hit-test this
-            // toolbar's own layout can do and reads back `hovered()` /
-            // `pressed()` for `draw_toolbar` above.
-            UiEvent::MouseMoved { .. } => {
+            // One arm, one convention (issue #819): `self.interaction`
+            // (an `InteractionState`) owns *all* hover/pressed
+            // bookkeeping for every mouse event, and `render` hands the
+            // whole thing to `draw_toolbar_interactive` above. This app
+            // supplies only the one thing the store can't know — how to
+            // resolve a screen position to a `WidgetId` against the
+            // toolbar layout it just painted.
+            //
+            // Two `InteractionState` behaviours are load-bearing here
+            // and differ from the hand-rolled arms this replaced:
+            // a non-left `MouseDown` never lights the pressed highlight,
+            // and a left `MouseDown` that misses every button clears a
+            // stale pressed id instead of leaving it lit. Both are
+            // covered by `quadraui::interaction`'s unit tests and by
+            // `toolbar_press_highlights_only_on_left_button` /
+            // `toolbar_press_then_click_empty_space_clears_the_highlight`
+            // in `tests/tui_example_driver.rs`.
+            UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
                 let rect = Self::toolbar_rect(backend);
                 let bar = self.toolbar();
                 let layout = backend.toolbar_layout(rect, &bar);
-                let changed =
-                    self.interaction
-                        .handle_mouse(&event, |x, y| match layout.hit_test(x, y) {
-                            ToolbarHit::Button(id) => Some(id),
-                            ToolbarHit::Empty => None,
-                        });
-                if changed {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
-            }
+                let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
+                    ToolbarHit::Button(id) => Some(id),
+                    ToolbarHit::Empty => None,
+                };
 
-            UiEvent::MouseDown { .. } => {
-                let rect = Self::toolbar_rect(backend);
-                let bar = self.toolbar();
-                let layout = backend.toolbar_layout(rect, &bar);
-                let changed =
-                    self.interaction
-                        .handle_mouse(&event, |x, y| match layout.hit_test(x, y) {
-                            ToolbarHit::Button(id) => Some(id),
-                            ToolbarHit::Empty => None,
-                        });
-                if changed {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
-            }
+                // Snapshot before the store consumes the event: a
+                // `MouseUp` clears `pressed`, and the click contract
+                // needs to know what *was* held.
+                let was_pressed = self.interaction.pressed().cloned();
+                let changed = self.interaction.handle_mouse(&event, hit_test);
 
-            UiEvent::MouseUp { position, .. } => {
-                let rect = Self::toolbar_rect(backend);
-                let bar = self.toolbar();
-                let layout = backend.toolbar_layout(rect, &bar);
-                let pressed = self.interaction.pressed().cloned();
-                self.interaction.handle_mouse(&event, |_, _| None);
-                if let (Some(pressed_id), ToolbarHit::Button(release_id)) =
-                    (pressed, layout.hit_test(position.x, position.y))
-                {
-                    // Fire only if release lands on the same button as
-                    // press — the standard click-versus-drag contract.
-                    if pressed_id == release_id {
-                        self.dispatch(&release_id);
+                // Release on the same button that was pressed = a click.
+                if let UiEvent::MouseUp { position, .. } = &event {
+                    if let (Some(pressed_id), ToolbarHit::Button(release_id)) =
+                        (was_pressed, layout.hit_test(position.x, position.y))
+                    {
+                        if pressed_id == release_id {
+                            self.dispatch(&release_id);
+                        }
                     }
                     return Reaction::Redraw;
                 }
-                Reaction::Redraw
+
+                if changed {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
+                }
             }
 
             UiEvent::WindowResized { .. } => Reaction::Redraw,

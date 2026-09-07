@@ -31,9 +31,9 @@
 //! - `q` / `Esc` — quit.
 
 use quadraui::{
-    AppLogic, Backend, Color, DualModePaletteController, DualModePaletteEvent, Key, NamedKey,
-    PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-    UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, DualModePaletteController, DualModePaletteEvent, InteractionState,
+    Key, NamedKey, PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment,
+    StyledSpan, StyledText, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 /// A fixed list of pretend Git branches for the demo.
@@ -131,7 +131,7 @@ impl AppLogic for PaletteDualModeApp {
         // Status bar.
         let bar_h = lh * 1.5;
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
-        backend.draw_status_bar(bar_rect, &self.status_bar(), None, None);
+        backend.draw_status_bar_interactive(bar_rect, &self.status_bar(), &InteractionState::new());
 
         // Dual-mode palette (when open).
         if let Some(ref picker) = self.picker {

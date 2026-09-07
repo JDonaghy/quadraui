@@ -24,8 +24,8 @@
 use std::path::PathBuf;
 
 use quadraui::{
-    AppLogic, Backend, Color, FolderPickerController, FolderPickerEvent, Key, NamedKey, Reaction,
-    Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, FolderPickerController, FolderPickerEvent, InteractionState, Key,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 pub struct FolderPickerApp {
@@ -135,7 +135,7 @@ impl AppLogic for FolderPickerApp {
         let bar_h = lh * 1.5;
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let bar = self.status_bar();
-        let _ = backend.draw_status_bar(bar_rect, &bar, None, None);
+        let _ = backend.draw_status_bar_interactive(bar_rect, &bar, &InteractionState::new());
 
         // Folder picker modal (when open).
         if let Some(ref picker) = self.picker {

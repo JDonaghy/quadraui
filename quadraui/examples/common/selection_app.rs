@@ -32,8 +32,8 @@
 
 use quadraui::compose::app_shell::AppShellLayout;
 use quadraui::{
-    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
-    StatusBarSegment, TextRegion, UiEvent, WidgetId,
+    Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
+    ShellContext, StatusBar, StatusBarSegment, TextRegion, UiEvent, WidgetId,
 };
 
 // ── Content ───────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ impl SelectionDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar(row_rect, &bar, None, None);
+            backend.draw_status_bar_interactive(row_rect, &bar, &InteractionState::new());
             rendered_rows = i + 1;
         }
         Rect::new(bounds.x, bounds.y, bounds.width, rendered_rows as f32 * lh)
@@ -144,7 +144,7 @@ impl ShellApp for SelectionDemo {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar(status_rect, &status_bar, None, None);
+        backend.draw_status_bar_interactive(status_rect, &status_bar, &InteractionState::new());
     }
 
     fn handle(

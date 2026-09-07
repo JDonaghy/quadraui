@@ -40,6 +40,20 @@
 //! "tui")]` / `#[cfg(feature = "gtk")]`, so a TUI-only slice never forces a
 //! GTK build.
 
+// #819: the sealed slices below still call the positional
+// `Backend::draw_status_bar(rect, bar, hovered_id, pressed_id)`, which is
+// now a `#[deprecated]` shim over `draw_status_bar_interactive`. Workers
+// may not edit anything under the repo-root `tests/acceptance/**` (see
+// CLAUDE.md), so the call sites cannot be migrated from a Work dispatch —
+// and `ci.yml`'s workflow-wide `RUSTFLAGS: -D warnings` would otherwise
+// turn that untouchable code into a hard build failure for this test
+// target alone. This allow is scoped to *this* crate and exists purely to
+// keep the seal intact; everywhere else in the repo `deprecated` is still
+// denied, and every non-sealed call site was migrated in the same PR that
+// added the shim. Remove it when the slices are re-authored at the next
+// Gate A sign-off.
+#![allow(deprecated)]
+
 #[path = "../examples/common/mod.rs"]
 mod common;
 

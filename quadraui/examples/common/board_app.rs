@@ -19,8 +19,8 @@ use std::cell::RefCell;
 
 use quadraui::{
     AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardLayout, BoardModel,
-    CardBadge, Key, MoveDir, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
-    WidgetId,
+    CardBadge, InteractionState, Key, MoveDir, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct BoardApp {
@@ -101,7 +101,11 @@ impl AppLogic for BoardApp {
         // Status bar at bottom.
         let status_h = lh;
         let status_rect = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
 
         // Board fills the rest of the screen.
         let board_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - status_h);

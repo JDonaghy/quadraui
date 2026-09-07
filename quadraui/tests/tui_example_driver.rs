@@ -1687,6 +1687,93 @@ fn toolbar_hover_paints_hover_background_at_the_cursor() {
     );
 }
 
+/// #819: `InteractionState::handle_mouse` only presses on the **left**
+/// button. The hand-rolled `matches!(UiEvent::MouseDown { .. })` arm
+/// `ToolbarApp` used before matched any button, so a right-click lit the
+/// pressed highlight. This pins the new behaviour black-box: the painted
+/// background under a right-pressed button must equal the background
+/// under a left-pressed one only if it is *not* the pressed colour, i.e.
+/// right-press must leave the cell at its resting colour while
+/// left-press must not.
+#[test]
+fn toolbar_press_highlights_only_on_the_left_button() {
+    // Two fresh drivers, deliberately: completing a click on "Filter"
+    // toggles `is_active`, which repaints the button in the *active*
+    // colour and would make "back to resting" unmeasurable afterwards.
+    // Each driver therefore sees exactly one press and no release.
+    let locate = |d: &mut TuiDriver<ToolbarApp>| {
+        let screen = d.screen();
+        d.find("Filter")
+            .unwrap_or_else(|| panic!("Filter button must be visible:\n{screen}"))
+    };
+    let bg = |d: &TuiDriver<ToolbarApp>, x: f32, y: f32| {
+        d.style_at(x as u16, y as u16)
+            .expect("Filter cell should be inside the screen")
+            .bg
+    };
+
+    let mut left = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    let (x, y) = locate(&mut left);
+    let resting = bg(&left, x, y);
+    left.mouse_down(x, y);
+    assert_ne!(
+        bg(&left, x, y),
+        resting,
+        "a left press should tint the pressed button:\n{}",
+        left.screen()
+    );
+
+    let mut right = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    let (rx, ry) = locate(&mut right);
+    assert_eq!((rx, ry), (x, y), "both drivers paint the same layout");
+    right.right_click(rx, ry);
+    assert_eq!(
+        bg(&right, rx, ry),
+        resting,
+        "a right press must not paint the pressed tint — `InteractionState` \
+         is left-button-only (#819):\n{}",
+        right.screen()
+    );
+}
+
+/// #819: a left `MouseDown` that resolves to no widget clears whatever
+/// was pressed, rather than leaving a stale highlight lit. The
+/// hand-rolled arm this replaced only *set* `pressed_id` on a hit and
+/// left it untouched on a miss, so a press → drag-off → press-on-empty
+/// sequence stranded the tint on the first button forever.
+#[test]
+fn toolbar_press_then_press_empty_space_clears_the_stale_highlight() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    let screen = driver.screen();
+    let (x, y) = driver
+        .find("Filter")
+        .unwrap_or_else(|| panic!("Filter button must be visible:\n{screen}"));
+    let bg = |d: &TuiDriver<ToolbarApp>| {
+        d.style_at(x as u16, y as u16)
+            .expect("Filter cell should be inside the screen")
+            .bg
+    };
+    let resting = bg(&driver);
+
+    driver.mouse_down(x, y);
+    assert_ne!(
+        bg(&driver),
+        resting,
+        "press should tint the button first:\n{}",
+        driver.screen()
+    );
+
+    // Press again far to the right of the last button — inside the
+    // toolbar row, but on no button at all.
+    driver.mouse_down(115.0, y);
+    assert_eq!(
+        bg(&driver),
+        resting,
+        "pressing empty space must clear the stale pressed tint (#819):\n{}",
+        driver.screen()
+    );
+}
+
 #[test]
 fn palette_dual_mode_tab_switches_to_input_mode() {
     // Pressing Tab should toggle from List mode to Input mode, which:

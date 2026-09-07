@@ -242,8 +242,11 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l =
-                b.draw_sidebar_panel(QRect::new(0.0, 0.0, W as f32, H as f32), panel, None, None);
+            let l = b.draw_sidebar_panel_interactive(
+                QRect::new(0.0, 0.0, W as f32, H as f32),
+                panel,
+                &crate::InteractionState::new(),
+            );
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();

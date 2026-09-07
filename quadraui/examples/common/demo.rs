@@ -11,8 +11,8 @@
 use std::cell::Cell;
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, TabBar,
-    TabBarSegment, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TabBar, TabBarSegment, TabItem, UiEvent, WidgetId,
 };
 
 // ─── App state ───────────────────────────────────────────────────────────────
@@ -264,7 +264,8 @@ impl AppLogic for AppState {
         let status_bar = build_status_bar(self, focused.as_deref());
         let status_h = 28.0;
         let status_rect = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
-        let _hits = backend.draw_status_bar(status_rect, &status_bar, None, None);
+        let _hits =
+            backend.draw_status_bar_interactive(status_rect, &status_bar, &InteractionState::new());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

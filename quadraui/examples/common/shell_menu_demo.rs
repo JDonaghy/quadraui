@@ -28,9 +28,9 @@
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, ContextMenuItem, Key, MenuDef, MenuEvent, MenuSystem, NamedKey, Reaction, Rect,
-    ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    Backend, Color, ContextMenuItem, InteractionState, Key, MenuDef, MenuEvent, MenuSystem,
+    NamedKey, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct ShellMenuDemo {
@@ -121,7 +121,7 @@ impl ShellAppTrait for ShellMenuDemo {
             layout.main_content_bounds.width,
             lh.min(layout.main_content_bounds.height),
         );
-        let _ = backend.draw_status_bar(status_rect, &status, None, None);
+        let _ = backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
     }
 
     fn handle(

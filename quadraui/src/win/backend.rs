@@ -1825,13 +1825,13 @@ impl Backend for WinBackend {
     /// standalone `WinBackend` no window has ever attached to yet, the
     /// same "not wired up" posture every other still-`todo!()` method
     /// here has.
-    fn draw_status_bar(
+    fn draw_status_bar_interactive(
         &mut self,
         rect: Rect,
         bar: &StatusBar,
-        hovered_id: Option<&crate::types::WidgetId>,
-        pressed_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> StatusBarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
@@ -2966,13 +2966,13 @@ impl Backend for WinBackend {
 
     /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
-    fn draw_toolbar(
+    fn draw_toolbar_interactive(
         &mut self,
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
-        hovered_id: Option<&crate::types::WidgetId>,
-        pressed_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::toolbar::ToolbarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             return super::toolbar::draw_toolbar(
@@ -3011,13 +3011,14 @@ impl Backend for WinBackend {
     /// the shared
     /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
     /// (#862) rather than a per-backend `toolbar::draw_toolbar` call.
-    fn draw_sidebar_panel(
+    fn draw_sidebar_panel_interactive(
         &mut self,
         rect: Rect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        hovered_toolbar_id: Option<&crate::types::WidgetId>,
-        pressed_toolbar_id: Option<&crate::types::WidgetId>,
+        interaction: &crate::interaction::InteractionState,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
+        let (hovered_toolbar_id, pressed_toolbar_id) =
+            (interaction.hovered(), interaction.pressed());
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let line_height = self.current_line_height;
@@ -4559,7 +4560,7 @@ mod tests {
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let layout = backend.draw_status_bar(
+            let layout = backend.draw_status_bar_interactive(
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("test:status-bar"),
@@ -4572,8 +4573,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                None,
-                None,
+                &crate::InteractionState::new(),
             );
             backend.end_frame();
             layout.visible_segments[0].bounds.width

@@ -24,9 +24,9 @@
 //! - `q` / `Esc`   quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, StyledText,
-    TreeRow, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Decoration, InteractionState, Key, NamedKey, NavigationMode,
+    Reaction, Rect, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment,
+    StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.0;
@@ -111,7 +111,11 @@ impl AppLogic for SidebarRevealDemo {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        let _ = backend.draw_status_bar(status, &self.build_status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status,
+            &self.build_status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

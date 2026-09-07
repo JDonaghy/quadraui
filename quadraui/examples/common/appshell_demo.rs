@@ -26,8 +26,8 @@ use std::rc::Rc;
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Shared handle onto the activity-bar rect the shell last handed this
@@ -159,7 +159,7 @@ impl ShellApp for AppShellDemo {
                 right_segments: vec![],
             };
             let rect = Rect::new(content.x, content.y, content.width, lh);
-            backend.draw_status_bar(rect, &label, None, None);
+            backend.draw_status_bar_interactive(rect, &label, &InteractionState::new());
         }
 
         let main_label = StatusBar {
@@ -179,7 +179,7 @@ impl ShellApp for AppShellDemo {
             layout.main_content_bounds.width,
             lh,
         );
-        backend.draw_status_bar(rect, &main_label, None, None);
+        backend.draw_status_bar_interactive(rect, &main_label, &InteractionState::new());
     }
 
     fn handle(

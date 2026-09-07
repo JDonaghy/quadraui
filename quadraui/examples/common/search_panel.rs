@@ -18,9 +18,9 @@
 //! - q / Esc to quit
 
 use quadraui::{
-    AppLogic, Backend, Color, Key, Modifiers, MultiSectionView, MultiSectionViewHit, NamedKey,
-    Reaction, Rect, Section, SectionAux, SectionBody, SectionHeader, SectionSize, StatusBar,
-    StatusBarSegment, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
+    AppLogic, Backend, Color, InteractionState, Key, Modifiers, MultiSectionView,
+    MultiSectionViewHit, NamedKey, Reaction, Rect, Section, SectionAux, SectionBody, SectionHeader,
+    SectionSize, StatusBar, StatusBarSegment, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
 use quadraui::primitives::multi_section_view::{AuxHit, InlineInput};
@@ -261,7 +261,11 @@ impl AppLogic for SearchPanelApp {
         backend.draw_multi_section_view(panel_rect, &view);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar(status_rect, &self.status_bar(), None, None);
+        let _ = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

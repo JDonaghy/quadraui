@@ -18,9 +18,9 @@
 //! - `q` / `Esc`            → quit
 
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField, FormHit, Key,
-    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusRing, Form, FormField, FormHit,
+    InteractionState, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 pub struct FormGroupsApp {
@@ -273,7 +273,11 @@ impl AppLogic for FormGroupsApp {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
         backend.draw_form(form_rect, &self.build_form());
-        let _hits = backend.draw_status_bar(status_rect, &self.build_status_bar(), None, None);
+        let _hits = backend.draw_status_bar_interactive(
+            status_rect,
+            &self.build_status_bar(),
+            &InteractionState::new(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

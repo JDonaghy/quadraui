@@ -1139,20 +1139,50 @@ pub trait Backend: sealed::Sealed {
     // Methods that produce hit-region data (clickable segments,
     // close-button rects, link rects) return it directly so callers
     // route clicks against the same data the rasteriser used to paint.
-    /// Draw a status bar. `hovered_id` and `pressed_id` carry per-frame
-    /// interaction state so the rasteriser can tint the background of the
-    /// matching clickable segment (the primitive itself carries no mouse
-    /// state — same pattern as `ActivityBar`'s `hovered_idx`). Returns
-    /// hit regions in **bar-local coordinates** (relative to `rect.x` /
-    /// `rect.y`) for each segment carrying an `action_id`. Caller
-    /// dispatches clicks against the returned list.
+    /// Draw a status bar, reading hover/pressed state from a single
+    /// [`InteractionState`] keyed by [`WidgetId`] (issue #819).
+    ///
+    /// The rasteriser tints the background of the clickable segment
+    /// whose `action_id` matches `interaction.hovered()` /
+    /// `interaction.pressed()` — the primitive itself carries no mouse
+    /// state. Returns hit regions in **bar-local coordinates**
+    /// (relative to `rect.x` / `rect.y`) for each segment carrying an
+    /// `action_id`. Caller dispatches clicks against the returned list.
+    ///
+    /// This is the implemented method; the positional
+    /// [`Self::draw_status_bar`] is a deprecated shim over it.
+    fn draw_status_bar_interactive(
+        &mut self,
+        rect: Rect,
+        bar: &StatusBar,
+        interaction: &InteractionState,
+    ) -> StatusBarLayout;
+    /// Draw a status bar with hover/pressed supplied positionally.
+    ///
+    /// # Deprecated (issue #819)
+    ///
+    /// Superseded by [`Self::draw_status_bar_interactive`], which reads
+    /// the same two values out of one [`InteractionState`] keyed by
+    /// [`WidgetId`] instead of two positional `Option<&WidgetId>`
+    /// slots. Kept as a *working* forwarding shim — not a stub — per
+    /// `CLAUDE.md` rule 3's two-PR deprecate-then-remove protocol:
+    /// `vimcode` calls this method directly today (see the PR's
+    /// *Downstream impact* section), so removing it outright would
+    /// break its build on the next `develop` pull.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `draw_status_bar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
+    )]
     fn draw_status_bar(
         &mut self,
         rect: Rect,
         bar: &StatusBar,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
-    ) -> StatusBarLayout;
+    ) -> StatusBarLayout {
+        let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
+        self.draw_status_bar_interactive(rect, bar, &interaction)
+    }
     /// Draw a tab bar. `hovered_close_tab` carries per-frame hover
     /// state so the rasteriser can paint a hover background behind the
     /// hovered tab's close glyph (the primitive itself carries no
@@ -1960,28 +1990,40 @@ pub trait Backend: sealed::Sealed {
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 
     /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
-    /// content area — distinct from `StatusBar` which is read-only).
-    /// `hovered_id` / `pressed_id` carry per-frame mouse state so the
-    /// rasteriser can tint the matching button's background (same
-    /// pattern as `StatusBar`). Returns the [`ToolbarLayout`] so hosts
-    /// can route clicks via `layout.hit_test(x, y)` without re-deriving
-    /// metrics. Same coordinate frame as [`Self::toolbar_layout`]
-    /// (ABSOLUTE).
+    /// content area — distinct from `StatusBar` which is read-only),
+    /// reading hover/pressed state from a single [`InteractionState`]
+    /// keyed by [`WidgetId`] (issue #819).
+    ///
+    /// The rasteriser tints the background of the button whose id
+    /// matches `interaction.hovered()` / `interaction.pressed()`.
+    /// Returns the [`ToolbarLayout`] so hosts can route clicks via
+    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
+    /// coordinate frame as [`Self::toolbar_layout`] (ABSOLUTE).
+    ///
+    /// This is the implemented method; the positional
+    /// [`Self::draw_toolbar`] is a deprecated shim over it.
+    fn draw_toolbar_interactive(
+        &mut self,
+        rect: Rect,
+        bar: &Toolbar,
+        interaction: &InteractionState,
+    ) -> ToolbarLayout;
+
+    /// Draw a [`Toolbar`] with hover/pressed supplied positionally.
     ///
     /// # Deprecated (issue #819)
     ///
-    /// Superseded by [`Self::draw_toolbar_interactive`], which takes an
-    /// [`InteractionState`] keyed by [`WidgetId`] instead of two
-    /// positional `Option<&WidgetId>` slots. Kept — fully implemented,
-    /// not a stub — per `CLAUDE.md` rule 3's two-PR deprecate-then-remove
-    /// protocol: both `coord-tui` and `vimcode` call this method
-    /// directly today, so removing it outright would break their builds
-    /// on the next `develop` pull. Migrate call sites to
-    /// `draw_toolbar_interactive` and file the removal PR once both
-    /// consumers have moved off this one.
+    /// Superseded by [`Self::draw_toolbar_interactive`], which reads
+    /// the same two values out of one [`InteractionState`] keyed by
+    /// [`WidgetId`] instead of two positional `Option<&WidgetId>`
+    /// slots. Kept as a *working* forwarding shim — not a stub — per
+    /// `CLAUDE.md` rule 3's two-PR deprecate-then-remove protocol: both
+    /// `coord-tui` and `vimcode` call this method directly today (see
+    /// the PR's *Downstream impact* section), so removing it outright
+    /// would break their builds on the next `develop` pull.
     #[deprecated(
         since = "0.0.1",
-        note = "use `draw_toolbar_interactive` (reads hover/pressed from an `InteractionState` keyed by `WidgetId`) instead — issue #819"
+        note = "use `draw_toolbar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
     )]
     fn draw_toolbar(
         &mut self,
@@ -1989,25 +2031,10 @@ pub trait Backend: sealed::Sealed {
         bar: &Toolbar,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
-    ) -> ToolbarLayout;
-
-    /// Draw a [`Toolbar`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`] rather than two
-    /// positional `Option<&WidgetId>` slots (issue #819). Otherwise
-    /// identical to the deprecated [`Self::draw_toolbar`] this
-    /// supersedes — same paint, same [`ToolbarLayout`] return, same
-    /// ABSOLUTE coordinate frame as [`Self::toolbar_layout`].
-    ///
-    /// Every in-tree backend implements this by reading
-    /// `interaction.hovered()` / `interaction.pressed()` and painting
-    /// exactly what `draw_toolbar(rect, bar, hovered_id, pressed_id)`
-    /// used to — this is a new call shape, not a new visual behavior.
-    fn draw_toolbar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-    ) -> ToolbarLayout;
+    ) -> ToolbarLayout {
+        let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
+        self.draw_toolbar_interactive(rect, bar, &interaction)
+    }
 
     /// Compute toolbar layout without painting. Hosts call this after
     /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
@@ -2022,16 +2049,46 @@ pub trait Backend: sealed::Sealed {
     /// host to paint into (tree / list / form / etc). Mirrors the
     /// `Panel` rasteriser contract.
     ///
-    /// `hovered_toolbar_id` / `pressed_toolbar_id` are forwarded to
-    /// the nested toolbar paint for hover / pressed tints. Same
-    /// coordinate frame as [`Self::sidebar_panel_layout`] (ABSOLUTE).
+    /// `interaction`'s hovered / pressed [`WidgetId`]s are forwarded to
+    /// the nested toolbar paint for hover / pressed tints (issue #819).
+    /// Same coordinate frame as [`Self::sidebar_panel_layout`]
+    /// (ABSOLUTE).
+    ///
+    /// This is the implemented method; the positional
+    /// [`Self::draw_sidebar_panel`] is a deprecated shim over it.
+    fn draw_sidebar_panel_interactive(
+        &mut self,
+        rect: Rect,
+        panel: &SidebarPanel,
+        interaction: &InteractionState,
+    ) -> SidebarPanelLayout;
+
+    /// Draw a [`SidebarPanel`] with toolbar hover/pressed supplied
+    /// positionally.
+    ///
+    /// # Deprecated (issue #819)
+    ///
+    /// Superseded by [`Self::draw_sidebar_panel_interactive`], which
+    /// reads the same two values out of one [`InteractionState`] keyed
+    /// by [`WidgetId`]. Kept as a *working* forwarding shim — not a
+    /// stub — per `CLAUDE.md` rule 3's two-PR deprecate-then-remove
+    /// protocol: both `coord-tui` and `vimcode` call this method
+    /// directly today (see the PR's *Downstream impact* section).
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `draw_sidebar_panel_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
+    )]
     fn draw_sidebar_panel(
         &mut self,
         rect: Rect,
         panel: &SidebarPanel,
         hovered_toolbar_id: Option<&WidgetId>,
         pressed_toolbar_id: Option<&WidgetId>,
-    ) -> SidebarPanelLayout;
+    ) -> SidebarPanelLayout {
+        let interaction =
+            InteractionState::from_parts(hovered_toolbar_id.cloned(), pressed_toolbar_id.cloned());
+        self.draw_sidebar_panel_interactive(rect, panel, &interaction)
+    }
 
     /// Compute sidebar-panel layout without painting. Hosts call this
     /// in click handlers to resolve hits to the toolbar / content /

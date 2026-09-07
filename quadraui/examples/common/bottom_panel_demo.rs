@@ -14,8 +14,8 @@ use quadraui::compose::bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
 };
 use quadraui::{
-    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
+    ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 // ── Content widgets ───────────────────────────────────────────────────────────
@@ -47,7 +47,11 @@ impl BackendWidget for TerminalContent {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar(Rect::new(rect.x, rect.y, rect.width, lh), &bar, None, None);
+        backend.draw_status_bar_interactive(
+            Rect::new(rect.x, rect.y, rect.width, lh),
+            &bar,
+            &InteractionState::new(),
+        );
     }
 }
 
@@ -78,7 +82,11 @@ impl BackendWidget for ProblemsContent {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar(Rect::new(rect.x, y, rect.width, lh), &bar, None, None);
+            backend.draw_status_bar_interactive(
+                Rect::new(rect.x, y, rect.width, lh),
+                &bar,
+                &InteractionState::new(),
+            );
         }
     }
 }
@@ -166,7 +174,11 @@ impl ShellApp for BottomPanelDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar(Rect::new(sb.x, sb.y, sb.width, lh), &bar, None, None);
+            backend.draw_status_bar_interactive(
+                Rect::new(sb.x, sb.y, sb.width, lh),
+                &bar,
+                &InteractionState::new(),
+            );
         }
 
         // Main content area: show the last event.
@@ -183,7 +195,11 @@ impl ShellApp for BottomPanelDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar(Rect::new(main.x, main.y, main.width, lh), &bar, None, None);
+            backend.draw_status_bar_interactive(
+                Rect::new(main.x, main.y, main.width, lh),
+                &bar,
+                &InteractionState::new(),
+            );
         }
     }
 
