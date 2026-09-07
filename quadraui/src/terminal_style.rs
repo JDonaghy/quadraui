@@ -89,7 +89,9 @@ use crate::types::Color;
 ///
 /// Precedence, highest first:
 /// 1. `is_cursor` — invert: bg becomes the cell's own fg, fg becomes the
-///    cell's own bg.
+///    cell's own bg. `dim` is ignored here — the cursor block is already
+///    a strong visual overlay, so faint text under it would be
+///    contradictory (full-intensity fg suddenly reads as low-contrast).
 /// 2. `is_find_active` — bg becomes [`Theme::find_active_bg`], fg
 ///    becomes [`Theme::find_active_fg`].
 /// 3. `is_find_match` — bg becomes [`Theme::find_match_bg`]; fg is left
@@ -97,9 +99,19 @@ use crate::types::Color;
 /// 4. `selected` — bg becomes `theme.selection_bg`; fg is left as the
 ///    cell's own.
 /// 5. none of the above — the cell's own `bg` / `fg`, unchanged.
+///
+/// After the ladder above resolves `(bg, fg)`, `cell.dim` (SGR 2,
+/// faint — quadraui#345) blends `fg` 50% toward the *resolved* `bg`
+/// (not necessarily the cell's own `bg`; a dim cell inside a selection
+/// or find highlight still fades toward that overlay's background) via
+/// [`dim_fg`]. This is folded into colour resolution rather than
+/// exposed as a per-backend text-run attribute like bold/italic/
+/// underline: faint has no font-weight equivalent, and blending toward
+/// the resolved background is theme-correct on both dark and light
+/// themes with zero new `NativeSurface` surface area.
 pub fn resolve_cell_style(cell: &TerminalCell, theme: &Theme) -> (Color, Color) {
-    if cell.is_cursor {
-        (cell.fg, cell.bg)
+    let (bg, fg) = if cell.is_cursor {
+        return (cell.fg, cell.bg);
     } else if cell.is_find_active {
         (theme.find_active_bg(), theme.find_active_fg())
     } else if cell.is_find_match {
@@ -108,7 +120,27 @@ pub fn resolve_cell_style(cell: &TerminalCell, theme: &Theme) -> (Color, Color) 
         (theme.selection_bg, cell.fg)
     } else {
         (cell.bg, cell.fg)
+    };
+
+    if cell.dim {
+        (bg, dim_fg(fg, bg))
+    } else {
+        (bg, fg)
     }
+}
+
+/// Blend `fg` 50% toward `bg`, per-channel. Used by [`resolve_cell_style`]
+/// to render SGR 2 (faint/dim) text — quadraui#345. Blending toward the
+/// background (rather than toward black, which is what some terminals do)
+/// keeps faint text legibly faded on light themes too, where darkening
+/// would instead *increase* contrast.
+fn dim_fg(fg: Color, bg: Color) -> Color {
+    Color::rgba(
+        ((fg.r as u16 + bg.r as u16) / 2) as u8,
+        ((fg.g as u16 + bg.g as u16) / 2) as u8,
+        ((fg.b as u16 + bg.b as u16) / 2) as u8,
+        fg.a,
+    )
 }
 
 /// Pixel box width and grid-column stride for one cell in a pixel-based
@@ -203,6 +235,7 @@ mod tests {
             bold: false,
             italic: false,
             underline: false,
+            dim: false,
             selected: false,
             is_cursor: false,
             is_find_match: false,
@@ -288,6 +321,73 @@ mod tests {
             resolve_cell_style(&c, &theme),
             (theme.find_active_bg(), theme.find_active_fg())
         );
+    }
+
+    // ── dim / faint (SGR 2, quadraui#345) ───────────────────────────────
+
+    /// A dim cell's foreground blends 50% toward its own background —
+    /// this is the core regression test for #345: faint text must no
+    /// longer render at full brightness.
+    #[test]
+    fn dim_cell_blends_fg_halfway_to_bg() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell('a', fg, bg);
+        c.dim = true;
+        let theme = Theme::default();
+        let (resolved_bg, resolved_fg) = resolve_cell_style(&c, &theme);
+        assert_eq!(resolved_bg, bg, "dim must not change the background");
+        assert_eq!(resolved_fg, Color::rgb(100, 100, 100));
+    }
+
+    /// A non-dim cell is completely unaffected by the new field — no
+    /// regression for the overwhelming majority of cells that never set
+    /// SGR 2.
+    #[test]
+    fn non_dim_cell_is_unaffected() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(10, 10, 10);
+        let c = cell('a', fg, bg);
+        assert!(!c.dim);
+        let theme = Theme::default();
+        assert_eq!(resolve_cell_style(&c, &theme), (bg, fg));
+    }
+
+    /// `dim` blends toward whichever background the overlay ladder
+    /// already picked — here the selection highlight — not the cell's
+    /// own (different) background, so faint text inside a selection
+    /// still fades toward the highlight rather than the pane's base bg.
+    #[test]
+    fn dim_blends_toward_resolved_overlay_background_not_cells_own_bg() {
+        let fg = Color::rgb(200, 200, 200);
+        let cell_bg = Color::rgb(0, 0, 0);
+        let mut c = cell('a', fg, cell_bg);
+        c.dim = true;
+        c.selected = true;
+        let theme = Theme::default();
+        let (resolved_bg, resolved_fg) = resolve_cell_style(&c, &theme);
+        assert_eq!(resolved_bg, theme.selection_bg);
+        let expected_fg = Color::rgb(
+            ((fg.r as u16 + theme.selection_bg.r as u16) / 2) as u8,
+            ((fg.g as u16 + theme.selection_bg.g as u16) / 2) as u8,
+            ((fg.b as u16 + theme.selection_bg.b as u16) / 2) as u8,
+        );
+        assert_eq!(resolved_fg, expected_fg);
+    }
+
+    /// Cursor precedence still wins over `dim` — an inverted cursor cell
+    /// renders at full contrast, not faded (see `resolve_cell_style`'s
+    /// doc for why blending under an inverted cursor would be
+    /// contradictory).
+    #[test]
+    fn dim_does_not_apply_under_cursor_overlay() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(10, 10, 10);
+        let mut c = cell('a', fg, bg);
+        c.dim = true;
+        c.is_cursor = true;
+        let theme = Theme::default();
+        assert_eq!(resolve_cell_style(&c, &theme), (fg, bg));
     }
 
     #[test]

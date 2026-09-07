@@ -87,6 +87,9 @@ struct HistCell {
     bold: bool,
     italic: bool,
     underline: bool,
+    /// SGR 2 (faint/dim) — `vt100::Cell::dim()`, tracked since vt100
+    /// 0.16 (quadraui#345).
+    dim: bool,
 }
 
 impl Default for HistCell {
@@ -98,6 +101,7 @@ impl Default for HistCell {
             bold: false,
             italic: false,
             underline: false,
+            dim: false,
         }
     }
 }
@@ -1260,6 +1264,7 @@ impl TerminalSession {
                                 bold: cell.bold(),
                                 italic: cell.italic(),
                                 underline: cell.underline(),
+                                dim: cell.dim(),
                             }
                         }
                         None => HistCell::default(),
@@ -1317,7 +1322,7 @@ impl TerminalSession {
                     .map(|c| {
                         let cu = c as u16;
 
-                        let (text, fg, bg, bold, italic, underline, is_cursor, selected) =
+                        let (text, fg, bg, bold, italic, underline, dim, is_cursor, selected) =
                             if display_r < scroll_offset {
                                 // Row is in the scrollback history.
                                 let hist_idx_signed =
@@ -1334,6 +1339,7 @@ impl TerminalSession {
                                             hc.bold,
                                             hc.italic,
                                             hc.underline,
+                                            hc.dim,
                                             false,
                                             is_selected(display_r, cu),
                                         )
@@ -1342,6 +1348,7 @@ impl TerminalSession {
                                             " ".to_string(),
                                             (229, 229, 229),
                                             (30, 30, 30),
+                                            false,
                                             false,
                                             false,
                                             false,
@@ -1359,12 +1366,13 @@ impl TerminalSession {
                                         false,
                                         false,
                                         false,
+                                        false,
                                     )
                                 }
                             } else {
                                 // Row is in the live vt100 screen.
                                 let live_r = (display_r - scroll_offset) as u16;
-                                let (text, fg, bg, bold, italic, underline) =
+                                let (text, fg, bg, bold, italic, underline, dim) =
                                     if let Some(cell) = screen.cell(live_r, cu) {
                                         let contents = cell.contents();
                                         // Full grapheme cluster (base char
@@ -1387,12 +1395,14 @@ impl TerminalSession {
                                             cell.bold(),
                                             cell.italic(),
                                             cell.underline(),
+                                            cell.dim(),
                                         )
                                     } else {
                                         (
                                             " ".to_string(),
                                             (229, 229, 229),
                                             (30, 30, 30),
+                                            false,
                                             false,
                                             false,
                                             false,
@@ -1412,6 +1422,7 @@ impl TerminalSession {
                                     bold,
                                     italic,
                                     underline,
+                                    dim,
                                     is_cursor,
                                     is_selected(display_r, cu),
                                 )
@@ -1424,6 +1435,7 @@ impl TerminalSession {
                             bold,
                             italic,
                             underline,
+                            dim,
                             selected,
                             is_cursor,
                             is_find_match: false,
@@ -3166,6 +3178,69 @@ mod tests {
         sess.send_str("exit\n");
     }
 
+    // ── SGR 2 faint/dim (quadraui#345) ──────────────────────────────────
+    //
+    // vt100 0.15.2 didn't track SGR 2 at all — quadraui#345 was filed
+    // against that gap. This repo is now pinned to vt100 ≥ 0.16 (see
+    // `Cargo.toml`), which added `Cell::dim()`; these tests cover the
+    // plumbing that reads it into `TerminalCell::dim` on both the live
+    // and history paths. The colour-blending consequence of `dim = true`
+    // (fading the resolved foreground toward the background) is covered
+    // separately by `terminal_style::tests` — this file only needs to
+    // prove the flag itself survives `build_rows()`.
+
+    /// `build_rows()`'s live-screen branch must carry vt100's SGR 2
+    /// (faint) attribute into `TerminalCell::dim`. Feeds vt100 directly
+    /// via `sess.parser` (same technique as
+    /// `build_rows_live_screen_preserves_combining_mark_grapheme`) so the
+    /// SGR sequence is exact and doesn't depend on shell echo timing.
+    #[test]
+    #[cfg(unix)]
+    fn build_rows_live_screen_carries_dim_attribute() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // ESC[2m = SGR 2 (faint/dim) → 'D'. ESC[0m resets before 'N', a
+        // normal-intensity glyph in the next column.
+        sess.parser.process(b"\x1b[2mD\x1b[0mN");
+
+        let rows = sess.build_rows(false);
+        assert!(
+            rows[0][0].dim,
+            "cell painted under SGR 2 must carry dim = true"
+        );
+        assert!(
+            !rows[0][1].dim,
+            "cell painted after SGR 0 reset must not be dim"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `build_rows()`'s history branch must also carry a captured cell's
+    /// `dim` flag — mirrors `build_rows_highlights_selection_in_history`'s
+    /// pure-unit technique (inject `HistCell`s directly, no PTY timing).
+    #[test]
+    #[cfg(unix)]
+    fn build_rows_history_carries_dim_attribute() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(6, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        let mut row = make_hist_row_content("DIM ", sess.cols);
+        row[0].dim = true;
+        sess.history.push_back(row);
+        sess.set_scroll_offset(1);
+
+        let rows = sess.build_rows(false);
+        assert!(
+            rows[0][0].dim,
+            "history cell's dim flag must survive into build_rows output"
+        );
+        assert!(!rows[0][1].dim, "non-dim history cells must stay non-dim");
+
+        sess.send_str("exit\n");
+    }
+
     /// `capture_scrolled_rows()` (the scrollback-capture path,
     /// `terminal_engine.rs` history capture — quadraui#337) must also
     /// preserve a full grapheme cluster rather than truncating to the
@@ -3185,6 +3260,26 @@ mod tests {
         assert_eq!(
             sess.history[0][0].text, "e\u{0301}",
             "combining mark must survive scrollback capture, not just 'e'"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `capture_scrolled_rows()` must also carry a captured cell's SGR 2
+    /// (faint) attribute into `HistCell::dim` (quadraui#345) — same
+    /// technique as the grapheme-cluster capture test above.
+    #[test]
+    #[cfg(unix)]
+    fn capture_scrolled_rows_preserves_dim_attribute() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 1, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        sess.process_with_capture(b"\x1b[2mD\x1b[0m\n");
+
+        assert_eq!(sess.history.len(), 1, "one row should have scrolled off");
+        assert!(
+            sess.history[0][0].dim,
+            "faint cell must survive scrollback capture as dim = true"
         );
 
         sess.send_str("exit\n");
