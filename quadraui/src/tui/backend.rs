@@ -48,7 +48,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout};
+use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, ColorDepth};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
@@ -197,7 +197,7 @@ pub struct TuiBackend {
     /// [`super::caps::detect_color_depth`]; overridable via
     /// [`Self::set_color_depth`] for tests and hosts that already know
     /// their terminal's real capability (quadraui#826).
-    color_depth: crate::backend::ColorDepth,
+    color_depth: ColorDepth,
 }
 
 impl TuiBackend {
@@ -232,7 +232,7 @@ impl TuiBackend {
 
     /// The colour depth [`Backend::backend_caps`] currently reports —
     /// see [`crate::backend::ColorDepth`] and [`Self::set_color_depth`].
-    pub fn color_depth(&self) -> crate::backend::ColorDepth {
+    pub fn color_depth(&self) -> ColorDepth {
         self.color_depth
     }
 
@@ -242,7 +242,7 @@ impl TuiBackend {
     /// fixture, or any in-process test asserting quantised output) call
     /// this to pin the value instead of depending on the process's real
     /// `TERM`/`COLORTERM`.
-    pub fn set_color_depth(&mut self, depth: crate::backend::ColorDepth) {
+    pub fn set_color_depth(&mut self, depth: ColorDepth) {
         self.color_depth = depth;
     }
 

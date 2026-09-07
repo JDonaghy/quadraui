@@ -65,10 +65,10 @@ const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 /// Squared Euclidean distance between two RGB triples — cheap and
 /// monotonic with true distance, which is all nearest-colour picking
 /// needs.
-fn dist2(a: (u8, u8, u8), b: (u8, u8, u8)) -> i64 {
-    let dr = a.0 as i64 - b.0 as i64;
-    let dg = a.1 as i64 - b.1 as i64;
-    let db = a.2 as i64 - b.2 as i64;
+fn dist2(a: (u8, u8, u8), b: (u8, u8, u8)) -> i32 {
+    let dr = a.0 as i32 - b.0 as i32;
+    let dg = a.1 as i32 - b.1 as i32;
+    let db = a.2 as i32 - b.2 as i32;
     dr * dr + dg * dg + db * db
 }
 
@@ -154,9 +154,17 @@ const ANSI16_PALETTE: [(RatatuiColor, (u8, u8, u8)); 16] = [
     (RatatuiColor::White, (255, 255, 255)),
 ];
 
-/// Nearest of the 16 basic ANSI colours for `(r, g, b)`, as the
-/// [`RatatuiColor`] named variant crossterm serialises to plain `3x`/`9x`
-/// SGR codes (never `38;5;n`).
+/// Nearest of the 16 basic ANSI colours for `(r, g, b)`.
+///
+/// This narrows the *palette* to the 16 basic ANSI colours, but does not
+/// change the *escape-sequence family*: crossterm 0.29's `Colored` `Display`
+/// impl formats every named [`RatatuiColor`] variant — including
+/// `Black..=White` — via the extended 8-bit form (`38;5;n` / `48;5;n`), the
+/// same family [`rgb_to_indexed256`] produces; there is no crossterm API
+/// path that emits classic `30-37`/`90-97` SGR codes. So this fallback
+/// helps a terminal that supports extended-256 syntax but only renders/
+/// themes 16 colours; it does not by itself help a terminal that only
+/// understands classic 3/4-bit SGR (a real vt100, a bare serial console).
 pub(crate) fn rgb_to_ansi16(r: u8, g: u8, b: u8) -> RatatuiColor {
     ANSI16_PALETTE
         .iter()

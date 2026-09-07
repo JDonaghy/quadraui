@@ -167,9 +167,14 @@ pub enum PointerShape {
 /// this value drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorDepth {
-    /// 16-colour ANSI (SGR 30-37 / 90-97). The safe fallback for a
-    /// terminal this backend cannot positively identify as supporting
-    /// more.
+    /// Palette narrowed to the 16 basic ANSI colours. The safe fallback
+    /// for a terminal this backend cannot positively identify as
+    /// supporting more. Note this narrows the *palette*, not the
+    /// escape-sequence family: crossterm emits these named colours via
+    /// the same extended `38;5;n` / `48;5;n` form as [`Self::Indexed256`]
+    /// (see `crate::tui::color::rgb_to_ansi16`), never classic `30-37` /
+    /// `90-97` codes — so this does not by itself help a terminal that
+    /// only understands classic 3/4-bit SGR.
     Ansi16,
     /// 8-bit / 256-colour indexed (SGR `38;5;n` / `48;5;n`).
     Indexed256,
