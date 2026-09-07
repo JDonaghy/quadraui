@@ -55,7 +55,14 @@ pub fn draw_focus_ring(buf: &mut Buffer, rect: RRect, theme: &Theme) {
             } else {
                 '─'
             };
-            set_cell(buf, x + col, y + h - 1, ch, fg, bg_at(buf, x + col, y + h - 1));
+            set_cell(
+                buf,
+                x + col,
+                y + h - 1,
+                ch,
+                fg,
+                bg_at(buf, x + col, y + h - 1),
+            );
         }
     }
     // Left/right borders for interior rows.

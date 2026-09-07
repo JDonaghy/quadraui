@@ -198,11 +198,7 @@ impl FocusManager {
             None if dir >= 0 => 0,
             None => len - 1,
             Some(cur) => {
-                let idx = self
-                    .tab_order
-                    .iter()
-                    .position(|w| w == cur)
-                    .unwrap_or(0) as i32;
+                let idx = self.tab_order.iter().position(|w| w == cur).unwrap_or(0) as i32;
                 (idx + dir).rem_euclid(len)
             }
         };
@@ -234,7 +230,12 @@ mod tests {
     fn stops(ids: &[&str]) -> Vec<(WidgetId, Rect)> {
         ids.iter()
             .enumerate()
-            .map(|(i, id)| (WidgetId::new(*id), Rect::new(0.0, i as f32 * 3.0, 10.0, 3.0)))
+            .map(|(i, id)| {
+                (
+                    WidgetId::new(*id),
+                    Rect::new(0.0, i as f32 * 3.0, 10.0, 3.0),
+                )
+            })
             .collect()
     }
 
@@ -303,7 +304,10 @@ mod tests {
     fn set_focus_returns_whether_changed() {
         let mut fm = FocusManager::new();
         assert!(fm.set_focus(Some(WidgetId::new("a"))));
-        assert!(!fm.set_focus(Some(WidgetId::new("a"))), "same id is a no-op");
+        assert!(
+            !fm.set_focus(Some(WidgetId::new("a"))),
+            "same id is a no-op"
+        );
         assert!(fm.set_focus(Some(WidgetId::new("b"))));
         assert!(fm.clear());
         assert!(!fm.clear(), "clearing an already-clear focus is a no-op");
@@ -347,7 +351,10 @@ mod tests {
         fm.sync_tab_order(&stops(&["only"]));
         assert!(fm.focus_next());
         assert_eq!(fm.focused(), Some(&WidgetId::new("only")));
-        assert!(!fm.focus_next(), "focusing the same single stop again is a no-op");
+        assert!(
+            !fm.focus_next(),
+            "focusing the same single stop again is a no-op"
+        );
         assert!(!fm.focus_prev());
     }
 }

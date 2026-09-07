@@ -684,6 +684,16 @@ path = "examples/gtk_frame_demo.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_focus_ring"
+path = "examples/tui_focus_ring.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_focus_ring"
+path = "examples/gtk_focus_ring.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_hit_map_recover"
 path = "examples/tui_hit_map_recover.rs"
 required-features = ["tui"]

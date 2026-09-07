@@ -62,6 +62,12 @@ mod diff_view_demo;
 mod file_dialog_demo;
 #[path = "../examples/common/find_replace_app.rs"]
 mod find_replace_app;
+// `LEFT_ID`/`RIGHT_ID`/`STATUS_ID` are consumed below, but the demo's own
+// `focus_label`/`Default` impl aren't — `examples/common/mod.rs`'s blanket
+// `#![allow(dead_code)]` doesn't reach this file's `#[path]` include.
+#[path = "../examples/common/focus_demo.rs"]
+#[allow(dead_code)]
+mod focus_demo;
 #[path = "../examples/common/folder_picker_app.rs"]
 mod folder_picker_app;
 #[path = "../examples/common/form_all_fields.rs"]
@@ -154,6 +160,7 @@ use dialog_table_demo::DialogTableDemo;
 use diff_view_demo::DiffViewApp;
 use file_dialog_demo::FileDialogDemo;
 use find_replace_app::FindReplaceApp;
+use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
 use form_groups::FormGroupsApp;
@@ -5990,6 +5997,180 @@ fn workspace_demo_middle_click_closes_a_tab_without_activating_it() {
         !driver.screen_contains("beta×"),
         "the closed document's tab is gone from the strip (the hint bar's \
          \"closed doc:beta\" text still legitimately contains \"beta\"):\n{}",
+        driver.screen()
+    );
+}
+
+// ── tui_focus_ring / FocusDemo (issue #830) ──────────────────────────────
+//
+// The acceptance bar for the runner-owned `FocusManager`: Tab traversal is
+// derived from `ScreenLayout::tab_stops`, not from an app-maintained widget
+// list, and the *rendered* focus ring is what moves. These assert on the
+// painted ring's position (never on hardcoded coordinates — the corner glyph
+// is located with `find`), so they'd go red if the ring stopped painting, if
+// the tab order stopped following geometry, or if `FocusChanged` stopped
+// firing.
+
+/// The ring's top-left corner glyph. `FocusDemo` paints no other rounded box
+/// (its lists are `bordered: false`), so this glyph appears exactly once per
+/// frame — and zero times while nothing is focused.
+const RING_CORNER: &str = "╭";
+
+fn focus_driver() -> TuiDriver<FocusDemo> {
+    TuiDriver::new(FocusDemo::new(), 60, 12)
+}
+
+fn ring_corner(driver: &TuiDriver<FocusDemo>) -> (f32, f32) {
+    driver.find(RING_CORNER).unwrap_or_else(|| {
+        panic!(
+            "expected a painted focus ring, found none:\n{}",
+            driver.screen()
+        )
+    })
+}
+
+fn shift_tab(driver: &mut TuiDriver<FocusDemo>) -> Reaction {
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Tab),
+        modifiers: Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+        repeat: false,
+    })
+}
+
+#[test]
+fn focus_demo_paints_no_ring_until_something_is_focused() {
+    let driver = focus_driver();
+    assert!(
+        driver.find(RING_CORNER).is_none(),
+        "a fresh FocusManager has `focused: None`, so no ring is painted:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("focus: none"),
+        "and the app has seen no FocusChanged yet:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn focus_demo_tab_moves_the_rendered_ring_through_the_screen_layout_order() {
+    let mut driver = focus_driver();
+
+    // Stop 1: the left list — first in reading order (y=0, smallest x).
+    driver.press_named(NamedKey::Tab);
+    let left = ring_corner(&driver);
+    assert!(
+        driver.screen_contains(&format!("focus: {LEFT_ID}")),
+        "UiEvent::FocusChanged carried the left list's id:\n{}",
+        driver.screen()
+    );
+
+    // Stop 2: the right list — same row, larger x. The *rendered* ring
+    // must have moved right, and stayed on the top row.
+    driver.press_named(NamedKey::Tab);
+    let right = ring_corner(&driver);
+    assert!(
+        right.0 > left.0 && (right.1 - left.1).abs() < f32::EPSILON,
+        "ring moved right along the top row: {left:?} -> {right:?}\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains(&format!("focus: {RIGHT_ID}")),
+        "{}",
+        driver.screen()
+    );
+
+    // Stop 3: the status bar — last in reading order (largest y).
+    driver.press_named(NamedKey::Tab);
+    let status = ring_corner(&driver);
+    assert!(
+        status.1 > left.1,
+        "ring moved down to the status bar: {left:?} -> {status:?}\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains(&format!("focus: {STATUS_ID}")),
+        "{}",
+        driver.screen()
+    );
+
+    // Wrap-around: back to stop 1, at the exact same cell it started on.
+    driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        ring_corner(&driver),
+        left,
+        "Tab wraps from the last stop back to the first:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn focus_demo_shift_tab_walks_the_ring_backwards() {
+    let mut driver = focus_driver();
+
+    // From "nothing focused", Shift+Tab lands on the *last* stop.
+    shift_tab(&mut driver);
+    let status = ring_corner(&driver);
+    assert!(
+        driver.screen_contains(&format!("focus: {STATUS_ID}")),
+        "{}",
+        driver.screen()
+    );
+
+    shift_tab(&mut driver);
+    let right = ring_corner(&driver);
+    assert!(
+        right.1 < status.1,
+        "Shift+Tab retreated from the status bar up to the right list: \
+         {status:?} -> {right:?}\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains(&format!("focus: {RIGHT_ID}")),
+        "{}",
+        driver.screen()
+    );
+
+    shift_tab(&mut driver);
+    let left = ring_corner(&driver);
+    assert!(
+        left.0 < right.0 && (left.1 - right.1).abs() < f32::EPSILON,
+        "and again leftwards along the top row: {right:?} -> {left:?}\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains(&format!("focus: {LEFT_ID}")),
+        "{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn focus_demo_ring_overlays_without_erasing_the_focused_widget() {
+    let mut driver = focus_driver();
+    // The right list's rows are painted before the ring goes over it; the
+    // ring is border-only, so the interior text survives.
+    driver.press_named(NamedKey::Tab);
+    driver.press_named(NamedKey::Tab);
+    let corner = ring_corner(&driver);
+    assert!(
+        corner.0 > 0.0,
+        "the ring is around the right-hand list, not the left one: {corner:?}\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("two"),
+        "focus ring is border-only — the focused list's own content still \
+         shows through:\n{}",
+        driver.screen()
+    );
+    // The left list's interior focus echo also survives every ring paint.
+    assert!(
+        driver.screen_contains(&format!("focus: {RIGHT_ID}")),
+        "{}",
         driver.screen()
     );
 }
