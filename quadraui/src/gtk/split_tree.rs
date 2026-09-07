@@ -1,13 +1,17 @@
 //! GTK rasteriser for [`crate::SplitTree`].
 //!
-//! Paints only the dividers as filled rectangles — leaf content is the
-//! app's responsibility, painted into the rects `SplitTreeLayout::leaves`
-//! returns. Mirrors [`super::split::draw_split`]'s divider chrome and
-//! divider thickness (4px).
+//! Painting moved to the shared
+//! [`crate::primitives::split_tree::native_surface_paint::paint`] (#863,
+//! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
+//! module doc for why the three per-backend copies were found to be
+//! already identical (no divergence). This module now carries
+//! [`gtk_split_tree_layout`], [`RawSplitTreeSurface`], and the
+//! deprecated [`draw_split_tree`] compatibility shim over the shared
+//! paint, mirroring `gtk::scrollbar::RawScrollbarSurface` (#811 slice
+//! 1/9).
 
 use gtk4::cairo::Context;
 
-use super::set_source;
 use crate::event::Rect;
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
 use crate::theme::Theme;
@@ -21,9 +25,107 @@ pub fn gtk_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -
     tree.layout(bounds, SplitTreeMeasure::new(GTK_DIVIDER_PX))
 }
 
-/// Draw a [`SplitTree`]'s dividers onto `cr`. Returns the layout for
-/// host click/drag dispatch. Leaf content is NOT painted.
+/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
+/// Cairo context, used by the deprecated [`draw_split_tree`] shim below
+/// — a split tree's paint calls exactly one verb (`surface_fill_rect`,
+/// once per divider), so every other method is `unreachable!()`. Mirrors
+/// `gtk::scrollbar::RawScrollbarSurface`'s identical pattern (#811 slice
+/// 1/9).
+pub(crate) struct RawSplitTreeSurface<'a> {
+    pub(crate) cr: &'a Context,
+}
+
+impl crate::native_surface::NativeSurface for RawSplitTreeSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawSplitTreeSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawSplitTreeSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawSplitTreeSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawSplitTreeSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawSplitTreeSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawSplitTreeSurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // Dividers are always opaque `theme.separator` — `set_source`
+        // (not `_rgba`) matches this module's pre-migration behaviour
+        // exactly, unlike `gtk::scrollbar`'s translucent-overlay fill.
+        super::set_source(self.cr, color);
+        self.cr.rectangle(
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        self.cr.fill().ok();
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("SplitTree::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("SplitTree::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("SplitTree::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("SplitTree::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("SplitTree::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("SplitTree::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
+/// the pre-#863 signature exactly for any external caller that held a
+/// direct `quadraui::gtk::draw_split_tree` reference rather than going
+/// through [`crate::Backend::draw_split_tree`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is
+/// why this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
 #[allow(clippy::too_many_arguments)]
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_split_tree` instead — this free function is a compatibility shim over the shared #863 implementation"
+)]
 pub fn draw_split_tree(
     cr: &Context,
     x: f64,
@@ -34,27 +136,8 @@ pub fn draw_split_tree(
     theme: &Theme,
 ) -> SplitTreeLayout {
     let layout = gtk_split_tree_layout(tree, x, y, w, h);
-
-    set_source(cr, theme.separator);
-    for div in &layout.dividers {
-        let (rx, ry, rw, rh) = match div.direction {
-            crate::primitives::split_tree::SplitDirection::Horizontal => (
-                div.position as f64,
-                div.cross_start as f64,
-                div.thickness as f64,
-                div.cross_size as f64,
-            ),
-            crate::primitives::split_tree::SplitDirection::Vertical => (
-                div.cross_start as f64,
-                div.position as f64,
-                div.cross_size as f64,
-                div.thickness as f64,
-            ),
-        };
-        cr.rectangle(rx, ry, rw, rh);
-    }
-    cr.fill().ok();
-
+    let mut surface = RawSplitTreeSurface { cr };
+    crate::primitives::split_tree::native_surface_paint::paint(&layout, &mut surface, theme);
     layout
 }
 

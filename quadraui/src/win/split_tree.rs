@@ -1,15 +1,18 @@
 //! Direct2D rasteriser for [`crate::primitives::split_tree::SplitTree`]
 //! (issue #740).
 //!
-//! Mirrors `gtk::split_tree`'s / `macos::split_tree`'s structure:
-//! [`SplitTree::layout`] (shared across every backend) computes leaf +
-//! divider geometry; this module paints only the dividers as filled
-//! rectangles — leaf content is the app's responsibility, same contract
-//! as every other backend. No geometry is re-derived here: both
-//! [`win_split_tree_layout`] and [`draw_split_tree`] call `SplitTree::layout`
-//! directly with the identical divider thickness [`DIVIDER_DIP`], which
-//! matches [`super::split::DIVIDER_DIP`] so a `SplitTree` and a plain
-//! `Split` line up, same as the gtk/macos twins.
+//! Painting moved to the shared
+//! [`crate::primitives::split_tree::native_surface_paint::paint`] (#863,
+//! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
+//! module doc for why the three per-backend copies were found to be
+//! already identical (no divergence). This module now carries
+//! [`win_split_tree_layout`], [`RawSplitTreeSurface`], and the
+//! deprecated [`draw_split_tree`] compatibility shim over the shared
+//! paint, mirroring `win::scrollbar::RawScrollbarSurface` (#811 slice
+//! 1/9). No geometry is re-derived: [`win_split_tree_layout`] calls
+//! `SplitTree::layout` directly with the identical divider thickness
+//! [`DIVIDER_DIP`], which matches [`super::split::DIVIDER_DIP`] so a
+//! `SplitTree` and a plain `Split` line up, same as the gtk/macos twins.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod split_tree;` and `backend.rs`'s
@@ -24,9 +27,8 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::fill_rect;
 use crate::event::Rect;
-use crate::primitives::split_tree::{SplitDirection, SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
 use crate::theme::Theme;
 
 /// Divider thickness (DIPs) — matches [`super::split::DIVIDER_DIP`], the
@@ -41,8 +43,97 @@ pub fn win_split_tree_layout(rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
     tree.layout(rect, SplitTreeMeasure::new(DIVIDER_DIP))
 }
 
-/// Draw a [`SplitTree`]'s dividers onto `target`. Returns the layout for
-/// host click/drag dispatch. Leaf content is NOT painted.
+/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
+/// `&ID2D1RenderTarget`, used only by the deprecated [`draw_split_tree`]
+/// shim below and by this module's own tests — a split tree's paint
+/// calls exactly one verb (`surface_fill_rect`, once per divider), so
+/// every other method is `unreachable!()`. Mirrors
+/// `win::scrollbar::RawScrollbarSurface`'s identical pattern (#811 slice
+/// 1/9).
+pub(crate) struct RawSplitTreeSurface<'a> {
+    pub(crate) target: &'a ID2D1RenderTarget,
+}
+
+impl crate::native_surface::NativeSurface for RawSplitTreeSurface<'_> {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawSplitTreeSurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawSplitTreeSurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawSplitTreeSurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawSplitTreeSurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawSplitTreeSurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawSplitTreeSurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        let _ = super::text::fill_rect(self.target, rect, color);
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("SplitTree::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("SplitTree::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("SplitTree::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("SplitTree::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("SplitTree::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("SplitTree::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
+/// the pre-#863 signature exactly for any external caller that held a
+/// direct `quadraui::win::draw_split_tree` reference rather than going
+/// through [`crate::Backend::draw_split_tree`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is
+/// why this shim has no in-repo caller left to trip the
+/// `-D warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_split_tree` instead — this free function is a compatibility shim over the shared #863 implementation"
+)]
 pub fn draw_split_tree(
     target: &ID2D1RenderTarget,
     rect: Rect,
@@ -50,25 +141,15 @@ pub fn draw_split_tree(
 ) -> SplitTreeLayout {
     let layout = win_split_tree_layout(rect, tree);
     let theme = Theme::default();
-
-    for div in &layout.dividers {
-        let div_rect = match div.direction {
-            SplitDirection::Horizontal => {
-                Rect::new(div.position, div.cross_start, div.thickness, div.cross_size)
-            }
-            SplitDirection::Vertical => {
-                Rect::new(div.cross_start, div.position, div.cross_size, div.thickness)
-            }
-        };
-        let _ = fill_rect(target, div_rect, theme.separator);
-    }
-
+    let mut surface = RawSplitTreeSurface { target };
+    crate::primitives::split_tree::native_surface_paint::paint(&layout, &mut surface, &theme);
     layout
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::split_tree::SplitDirection;
     use crate::types::WidgetId;
     use crate::win::testing::HeadlessSurface;
 
@@ -77,6 +158,22 @@ mod tests {
 
     fn wid(s: &str) -> WidgetId {
         WidgetId::new(s)
+    }
+
+    /// Paint `tree` via the shared
+    /// [`crate::primitives::split_tree::native_surface_paint::paint`]
+    /// through a [`RawSplitTreeSurface`] over `target` — the same
+    /// adapter the deprecated [`draw_split_tree`] shim uses, exercised
+    /// here directly so these tests don't trip the `-D
+    /// warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
+    /// `win::scrollbar`'s identical test-migration note).
+    fn paint(target: &ID2D1RenderTarget, layout: &SplitTreeLayout) {
+        let mut raw = RawSplitTreeSurface { target };
+        crate::primitives::split_tree::native_surface_paint::paint(
+            layout,
+            &mut raw,
+            &Theme::default(),
+        );
     }
 
     fn two_pane() -> SplitTree {
@@ -111,11 +208,11 @@ mod tests {
         let tree = two_pane();
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
-        let layout = surface
+        let layout = win_split_tree_layout(rect, &tree);
+        surface
             .paint(|target| {
-                draw_split_tree(target, rect, &tree);
+                paint(target, &layout);
             })
-            .map(|_| win_split_tree_layout(rect, &tree))
             .expect("paint split tree");
 
         let theme = Theme::default();
@@ -163,12 +260,12 @@ mod tests {
         let tree = two_pane();
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
+        let painted = win_split_tree_layout(rect, &tree);
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let painted = surface
+        surface
             .paint(|target| {
-                draw_split_tree(target, rect, &tree);
+                paint(target, &painted);
             })
-            .map(|_| win_split_tree_layout(rect, &tree))
             .expect("paint");
         let no_paint = win_split_tree_layout(rect, &tree);
 

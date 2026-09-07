@@ -3159,18 +3159,14 @@ impl Backend for GtkBackend {
         tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
         let theme = self.current_theme;
-        let (cr, _layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_split_tree called outside enter_frame_scope");
-        let layout = crate::gtk::draw_split_tree(
-            cr,
+        let layout = crate::gtk::gtk_split_tree_layout(
+            tree,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-            tree,
-            &theme,
         );
+        crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
         // #492: dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
         // `draw_terminal_divider` / `draw_drop_overlay`.

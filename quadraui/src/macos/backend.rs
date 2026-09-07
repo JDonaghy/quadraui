@@ -1949,24 +1949,16 @@ impl Backend for MacBackend {
         )
     }
     fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_split_tree called outside enter_frame_scope",
-        );
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::split_tree::draw_split_tree(
-                ctx,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                tree,
-                &theme,
-            )
-        }
+        let layout = super::split_tree::mac_split_tree_layout(
+            tree,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        );
+        crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
+        layout
     }
     fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
         super::split_tree::mac_split_tree_layout(
