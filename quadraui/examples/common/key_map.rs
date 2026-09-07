@@ -1,9 +1,28 @@
 //! Ordered, scope-aware key binding table (#473).
 //!
-//! [`Backend::register_accelerator`][crate::Backend::register_accelerator]
+//! # Demoted to `examples/` (#825)
+//!
+//! This was `quadraui::compose::key_map::{KeyMap, KeyContext}` — public
+//! library API — until #825's adopt-or-demote pass found **zero
+//! constructors anywhere**: not in `~/src/coord-tui` or `~/src/vimcode`
+//! (per #825's own audit, which is what named this type in the first
+//! place), and not even in this crate's own examples or tests beyond
+//! its own unit-test module. `Backend::register_accelerator` resolves
+//! `Global`-scope bindings natively; nothing in-tree ever needed the
+//! `Widget`/`Mode`-scope resolution this type exists to provide, so
+//! there was no live call site to prove the shape against. Per
+//! `docs/PRIMITIVE_RULES.md` rule 8 ("zero hits in both plus no
+//! in-tree use ⇒ remove it outright"), it came out of the crate rather
+//! than being frozen by the upcoming `v0.1.0` tag. It's kept here,
+//! working and fully tested, as a copy-paste recipe: if an app wants
+//! scope-aware key resolution, copy this file in directly. If a real
+//! consumer shows up, promote it back to `compose::key_map` — the
+//! design doesn't need to change, only its address.
+//!
+//! [`Backend::register_accelerator`](quadraui::Backend::register_accelerator)
 //! only resolves `AcceleratorScope::Global` bindings — the backend doesn't
 //! know which widget has focus or which app-defined mode is active, so
-//! [`TuiBackend::apply_accelerators`](crate::tui::TuiBackend) explicitly
+//! `TuiBackend::apply_accelerators` explicitly
 //! skips `Widget`/`Mode`-scoped entries and leaves them as raw
 //! `KeyPressed` events. Consumers that want those scopes have
 //! historically hand-rolled the guard themselves — repeating a predicate
@@ -14,7 +33,7 @@
 //! `(scope, binding, action id)` once; at each `KeyPressed` event they
 //! call [`KeyMap::resolve`] with a [`KeyContext`] describing *this
 //! frame's* focus/mode/blocked state, and get back the one
-//! [`AcceleratorId`] (if any) that should fire — no per-arm guard
+//! `AcceleratorId` (if any) that should fire — no per-arm guard
 //! clauses, no scope logic duplicated at every call site.
 //!
 //! # Ordering = priority
@@ -35,14 +54,17 @@
 //! `Modifiers`, so it works identically whether the native `KeyPressed`
 //! event came through unmodified or already had `Global` accelerators
 //! peeled off upstream by the backend. [`KeyMap::bind_accelerator`] lets
-//! apps build the table straight from the same [`Accelerator`] values they
+//! apps build the table straight from the same `Accelerator` values they
 //! already declare for `register_accelerator`, so the two paths share one
 //! source of truth instead of two.
 
-use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::event::Key;
-use crate::types::{Modifiers, WidgetId};
-use crate::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding, ParsedBinding};
+#![allow(dead_code)]
+
+use quadraui::accelerator::{key_to_binding_name, parse_binding};
+use quadraui::{
+    Accelerator, AcceleratorId, AcceleratorScope, Key, KeyBinding, Modifiers, ParsedBinding,
+    WidgetId,
+};
 
 /// One resolved row of the table: a scope, its parsed key binding, and
 /// the action it fires. Kept private — apps interact with the table
@@ -72,7 +94,7 @@ impl KeyMap {
     /// priority — see the module docs' "Ordering = priority" section.
     ///
     /// Silently skips unparseable `KeyBinding::Literal` strings, mirroring
-    /// [`Backend::register_accelerator`][crate::Backend::register_accelerator]'s
+    /// `Backend::register_accelerator`'s
     /// contract (an unparseable binding never matches rather than
     /// panicking or erroring).
     pub fn bind(
@@ -280,7 +302,7 @@ mod tests {
         let chain = [WidgetId::new("modal:confirm:input"), modal_id.clone()];
         let ctx = KeyContext::new().with_focus_chain(&chain);
         let id = map
-            .resolve(&Key::Named(crate::NamedKey::Escape), mods_none(), &ctx)
+            .resolve(&Key::Named(quadraui::NamedKey::Escape), mods_none(), &ctx)
             .unwrap();
         assert_eq!(id.as_str(), "modal.close");
     }
@@ -296,7 +318,7 @@ mod tests {
         let chain = [WidgetId::new("editor:main")];
         let ctx = KeyContext::new().with_focus_chain(&chain);
         assert_eq!(
-            map.resolve(&Key::Named(crate::NamedKey::Escape), mods_none(), &ctx),
+            map.resolve(&Key::Named(quadraui::NamedKey::Escape), mods_none(), &ctx),
             None
         );
     }
@@ -340,7 +362,7 @@ mod tests {
         let ctx_focused = KeyContext::new().with_focus_chain(&chain);
         assert_eq!(
             map.resolve(
-                &Key::Named(crate::NamedKey::Escape),
+                &Key::Named(quadraui::NamedKey::Escape),
                 mods_none(),
                 &ctx_focused
             )
@@ -368,7 +390,7 @@ mod tests {
         // Palette not focused — falls through to the Global fallback.
         let ctx = KeyContext::new();
         assert_eq!(
-            map.resolve(&Key::Named(crate::NamedKey::Escape), mods_none(), &ctx)
+            map.resolve(&Key::Named(quadraui::NamedKey::Escape), mods_none(), &ctx)
                 .as_ref()
                 .map(AcceleratorId::as_str),
             Some("app.blur")

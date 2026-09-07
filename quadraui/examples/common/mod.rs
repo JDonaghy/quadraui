@@ -30,6 +30,11 @@
 //!   (#596) mounted inside an `AppShell` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.
+//! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
+//!   list. `KeyMap`/`KeyContext` were demoted here from
+//!   `quadraui::compose` by #825 (zero adopters); this module is a
+//!   standalone copy-paste recipe, not wired into any runner. See its
+//!   own module doc.
 
 // Each example uses a subset of the shared items, so dead-code +
 // unused-import warnings are expected and not actionable here.
@@ -67,6 +72,7 @@ pub mod hit_map_recover_demo;
 pub mod hscroll_editor;
 pub mod image_app;
 pub mod indicators_app;
+pub mod key_map;
 pub mod markdown_demo;
 pub mod markdown_wrap_demo;
 pub mod menu_bar_app;

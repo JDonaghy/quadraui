@@ -162,3 +162,20 @@ release time.
   reasoning), so its fields are set the same way. Old methods kept behind
   `#[deprecated]`, unchanged in behaviour. PR 2 (shim removal), tracked in
   #824.
+
+### Removed
+
+- `compose::key_map::{KeyMap, KeyContext}` (#473) — the "one convention
+  #10" adopt-or-demote pass (#825) found zero constructors anywhere: no
+  hit in this crate's own examples or tests beyond its own unit-test
+  module, and the issue's own audit already recorded zero adopters in
+  `coord-tui`/`vimcode`. Per `docs/PRIMITIVE_RULES.md` rule 8 ("zero hits
+  in both plus no in-tree use ⇒ remove it outright"), no
+  `#[deprecated]` shim was needed — this is a straight removal, not a
+  two-PR deprecation. The type, its docs, and its full test suite move
+  unchanged to `examples/common/key_map.rs` as a copy-paste recipe; see
+  that file's module doc to promote it back if a consumer appears. The
+  other six #825 candidates (`FocusRing`, `Spinner`, `ProgressBar`,
+  `FolderPickerController`, `BottomPanelController`,
+  `TabGroupController`) each keep their public API — see the PR
+  description for each one's recorded disposition.

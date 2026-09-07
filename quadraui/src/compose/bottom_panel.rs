@@ -36,6 +36,16 @@
 //!     });
 //! ```
 //!
+//! # Adoption status (#825)
+//!
+//! Folded into [`AppShell`]: `ShellConfig::bottom_panel` /
+//! `ShellConfig::with_bottom_panel` (`shell.rs`) is what constructs a
+//! `BottomPanelController` (`shell_adapter.rs`), so a host app opts in
+//! by setting that config field rather than constructing this type
+//! directly. Demoed via `examples/tui_bottom_panel.rs`,
+//! `examples/gtk_bottom_panel.rs`, and
+//! `examples/common/full_chrome_demo.rs`.
+//!
 //! # Event routing
 //!
 //! The shell runner calls [`ShellApp::on_bottom_panel_event`] whenever

@@ -221,8 +221,9 @@ fn normalise_key_name(s: &str) -> String {
 /// identically.
 ///
 /// Shared by [`crate::tui::TuiBackend`]'s native accelerator matching and
-/// [`crate::compose::key_map::KeyMap`]'s scope-aware resolution, so the
-/// universal-binding → key mapping only lives in one place.
+/// `examples/common/key_map.rs`'s `KeyMap` recipe (demoted out of the
+/// public API by #825 for lack of a consumer; see that file's module
+/// doc), so the universal-binding → key mapping only lives in one place.
 pub fn parse_binding(b: &KeyBinding) -> Option<ParsedBinding> {
     match b {
         KeyBinding::Literal(s) if s.is_empty() => None,
