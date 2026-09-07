@@ -329,6 +329,78 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
     );
 }
 
+/// A real Escape keypress landing in the *same* pty write() as an
+/// adjacent SGR mouse-motion report — the exact race #293's root cause
+/// documents (see `recover_leaked_sgr_mouse_fragments`'s doc in
+/// `src/tui/backend.rs`): crossterm's reader can split `ESC [ < …
+/// (M|m)` right after the leading `ESC`, decode that lone byte as a
+/// standalone Escape, and then leak the report's tail as literal
+/// characters. Three byte orderings a real terminal's write scheduling
+/// could plausibly produce, all coalesced into one `write()` so the
+/// race actually has a chance to fire: motion-then-Escape,
+/// Escape-then-motion, and Escape sandwiched between two motions (a
+/// continuous any-motion stream with a keystroke landing mid-burst).
+/// Escape must still clear the input in every case, and no fragment of
+/// the SGR report may leak into the transcript.
+#[test]
+fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
+    let cases: [(&str, Vec<u8>); 3] = [
+        ("motion-then-escape", {
+            let mut b = b"\x1b[<35;10;5M".to_vec();
+            b.push(0x1b);
+            b
+        }),
+        ("escape-then-motion", {
+            let mut b = vec![0x1bu8];
+            b.extend_from_slice(b"\x1b[<35;10;5M");
+            b
+        }),
+        ("escape-sandwiched-between-motions", {
+            let mut b = b"\x1b[<35;10;5M".to_vec();
+            b.push(0x1b);
+            b.extend_from_slice(b"\x1b[<35;11;5M");
+            b
+        }),
+    ];
+
+    for (label, combined) in cases {
+        let mut ex = PtyExample::spawn("tui_chat", 100, 30);
+        assert!(
+            ex.wait_for("Ctrl+Enter or Alt+Enter to send", WAIT),
+            "[{label}] chat example did not render its status strip over the pty"
+        );
+
+        ex.send_str("hello");
+        assert!(
+            ex.wait_for("hello", WAIT),
+            "[{label}] typed text should appear before the race is triggered"
+        );
+
+        ex.send(&combined);
+        // Give the parser a moment to process both the (mis-)decoded
+        // Escape and any trailing fragment before sampling the screen.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let screen = ex.screen_text();
+        assert!(
+            !screen.contains("35;1"),
+            "[{label}] raw SGR mouse bytes leaked into the input after an interleaved Escape \
+             (#293 class):\n{screen}"
+        );
+        assert!(
+            !screen.contains("hello"),
+            "[{label}] Escape did not clear the input — either it was swallowed by the \
+             adjacent SGR report or the input got polluted before Escape ran:\n{screen}"
+        );
+
+        ex.send(b"\x03"); // Ctrl+C — quit immediately.
+        assert!(
+            ex.wait_exit(WAIT),
+            "[{label}] chat example did not exit after Ctrl+C"
+        );
+    }
+}
+
 // ─── tui_pipeline: colour-depth SGR quantisation (quadraui#826) ───────────
 
 /// Byte-exact SGR-family fixtures for #826's colour-depth quantisation.

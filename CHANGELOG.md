@@ -112,6 +112,18 @@ release time.
   `CONSUMER_PATTERNS.md`, `TESTING.md`, `LESSONS.md`). All internal links
   updated; no content changed.
 
+### Fixed
+
+- TUI: a real Escape keypress landing in the same terminal read as an
+  adjacent SGR mouse report (motion, click, or drag) could leak the
+  report's tail as literal characters into whatever had focus — e.g.
+  `[<35;10;5M` typed into a focused `TextInput` — because crossterm's
+  reader can split `ESC [ < Cb ; Cx ; Cy (M|m)` right after the leading
+  `ESC` and then decode the rest byte-by-byte as ordinary text (#293).
+  `TuiBackend::poll_events`/`wait_events` now reconstitute any such
+  leaked report back into the mouse event it should have decoded as
+  before dispatch ever sees it; the standalone `Escape` is preserved.
+
 ### Deprecated
 
 - `primitives::status_bar::StatusBar::hit_regions` and
