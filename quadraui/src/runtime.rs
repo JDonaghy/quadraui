@@ -627,20 +627,36 @@ impl UserEventQueue {
     }
 }
 
-/// Wraps a `!Send` value — a GTK widget handle, an AppKit/Win32 handle —
-/// so it can be captured by the `Send + Sync` closure [`crate::Backend::waker`]
-/// hands out (issue #831).
+/// Wraps a `!Send` value — a GTK widget handle, an `Rc<RefCell<_>>` app
+/// pair — so it can be captured by the `Send + Sync` closure
+/// [`crate::Backend::waker`] hands out (issue #831).
 ///
-/// GTK/macOS/Windows all need the same shape to make their native
-/// "run this on the UI thread" primitive
-/// (`glib::MainContext::invoke`, `dispatch2::DispatchQueue::main`,
-/// `PostMessageW`) actually do something useful once it wakes: the
-/// callback it runs needs a handle to *something* owned by the UI thread
-/// (a widget to redraw, a backend/app pair to dispatch through), and
-/// every one of those handles (`Rc<RefCell<_>>`, a GTK/GObject wrapper) is
-/// deliberately `!Send` — by construction, the same architectural fact
-/// that motivates `UserEventQueue` existing as a separate `Send + Sync`
-/// staging area in the first place.
+/// **GTK-only, deliberately.** The wrapper exists to make a native
+/// "run this on the UI thread" primitive do something useful once it
+/// wakes: the callback it schedules needs a handle to *something* owned
+/// by the UI thread (a widget to redraw, a backend/app pair to dispatch
+/// through), and every such handle (`Rc<RefCell<_>>`, a GTK/GObject
+/// wrapper) is deliberately `!Send` — the same architectural fact that
+/// motivates `UserEventQueue` existing as a separate `Send + Sync`
+/// staging area in the first place. Only `glib::MainContext::invoke`
+/// has that shape *and* no ready-made wrapper:
+///
+/// - **macOS** needs the identical shape but gets it from upstream —
+///   `MacBackend::waker` uses `dispatch2::MainThreadBound`, which ships
+///   with `dispatch2::DispatchQueue::main` and carries an
+///   `MainThreadMarker` proof rather than a thread-id assertion. Don't
+///   substitute this type there.
+/// - **Windows** doesn't need the indirection at all: `PostMessageW`
+///   wakes the loop by queueing a real Win32 message, and `wndproc`
+///   already holds the app/backend state when that message is
+///   dispatched, so there is nothing to carry across the thread boundary
+///   (see `WinBackend::waker`'s doc).
+///
+/// Keep this `#[cfg(feature = "gtk")]`. Widening it to `win` makes the
+/// type dead code on a Windows host — `cargo clippy --features win`
+/// under `-D warnings` fails on `dead_code`, which is not reproducible
+/// from a Linux `cargo check --features win` because the `cfg` arm
+/// wouldn't have been active there in the first place.
 ///
 /// The soundness argument is the same one `dispatch2::MainThreadBound`
 /// documents for its own identical wrapper: the value only ever
@@ -651,7 +667,7 @@ impl UserEventQueue {
 /// future call site that violates the invariant panics loudly on the
 /// thread that got it wrong instead of racing `Rc`'s refcount from two
 /// threads at once.
-#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+#[cfg(feature = "gtk")]
 pub(crate) struct MainThreadBound<T> {
     value: T,
     owner: std::thread::ThreadId,
@@ -663,14 +679,14 @@ pub(crate) struct MainThreadBound<T> {
 // native "run this on the main/UI thread" primitive scheduled, which by
 // that primitive's own contract only ever runs on `owner`. The wrapper
 // itself never dereferences `T` on any other thread.
-#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+#[cfg(feature = "gtk")]
 unsafe impl<T> Send for MainThreadBound<T> {}
 // SAFETY: shared access (`&self` in `get`) is read-only and carries the
 // same thread-identity assertion as the `Send` impl above.
-#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+#[cfg(feature = "gtk")]
 unsafe impl<T> Sync for MainThreadBound<T> {}
 
-#[cfg(any(feature = "gtk", all(feature = "win", target_os = "windows")))]
+#[cfg(feature = "gtk")]
 impl<T> MainThreadBound<T> {
     /// Wrap `value`, capturing the current thread as its only valid
     /// future accessor. Call this from the UI thread, before the value
