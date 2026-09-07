@@ -482,13 +482,18 @@ pub use frame::{
 // #819: `InteractionState` — a single hover/pressed store keyed by
 // `WidgetId`, meant to replace the bespoke per-primitive trackers
 // (`ToolbarHoverTracker`, `StatusBarInteraction`) and the positional
-// `hovered_id`/`pressed_id`/`hovered_idx` arguments several `Backend`
-// methods take today. No `Backend` method or primitive signature
-// changes in this PR — see `interaction.rs`'s module doc for why (both
-// are `pub` surface with real downstream call sites, so migrating them
-// needs the two-PR deprecate-then-remove sequence `CLAUDE.md` rule 3
-// requires). `examples/common/toolbar_app.rs` demonstrates the pattern
-// as an app-owned drop-in replacement for its old ad hoc fields.
+// `hovered_id`/`pressed_id`/`hovered_toolbar_id` arguments the
+// `WidgetId`-keyed `Backend` methods (`draw_toolbar`, `draw_status_bar`,
+// `draw_sidebar_panel`) used to take. Those three now have
+// `*_interactive` twins that take `&InteractionState`, and the old
+// positional names survive only as `#[deprecated]` shims per `CLAUDE.md`
+// rule 3 (both are `pub` surface with real downstream call sites in
+// `coord-tui`/`vimcode`) — see `interaction.rs`'s module doc for the
+// full before/after table and for the four index-keyed methods
+// (`draw_activity_bar`, `draw_tab_bar`, `draw_data_table`, `draw_chart`)
+// deliberately left unmigrated. `examples/common/toolbar_app.rs`
+// demonstrates the pattern as an app-owned drop-in replacement for its
+// old ad hoc fields.
 pub use interaction::InteractionState;
 // #816: shared layout/hit-test foundation (`Anchor` for overlay
 // positioning, `visible_range_walk` replacing the per-primitive
