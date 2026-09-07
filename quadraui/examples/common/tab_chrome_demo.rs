@@ -117,6 +117,7 @@ impl AppLogic for TabChromeDemo {
         );
     }
 
+    #[allow(deprecated)] // `Backend::tab_bar_layout_with_chrome` returns `TabBarHits` — issue #823
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             // Close buttons take precedence over tab-body activation —

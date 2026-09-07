@@ -850,6 +850,10 @@ impl crate::Backend for RecordingBackend {
     }
     /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
     /// real body wins for the same reason.
+    ///
+    /// `TabBarHits` is `#[deprecated]` (issue #823); this mock still
+    /// implements the trait method as declared.
+    #[allow(deprecated)]
     fn draw_tab_bar(
         &mut self,
         _r: Rect,
@@ -859,6 +863,7 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_tab_bar");
         crate::TabBarHits::default()
     }
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
     fn draw_tab_bar_icons(
         &mut self,
         _r: Rect,
@@ -909,9 +914,11 @@ impl crate::Backend for RecordingBackend {
             resolved_right_start: 0,
         }
     }
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
     fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
         crate::TabBarHits::default()
     }
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
     fn tab_bar_layout_icons(
         &self,
         _r: Rect,

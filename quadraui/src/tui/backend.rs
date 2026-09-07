@@ -1204,6 +1204,7 @@ impl Backend for TuiBackend {
         )
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
         &mut self,
         rect: QRect,
@@ -1215,6 +1216,7 @@ impl Backend for TuiBackend {
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
         rect: QRect,
@@ -1281,6 +1283,7 @@ impl Backend for TuiBackend {
         crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_with_chrome(
         &mut self,
         rect: QRect,
@@ -1409,10 +1412,12 @@ impl Backend for TuiBackend {
         })
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_icons(
         &self,
         rect: QRect,
@@ -1485,6 +1490,7 @@ impl Backend for TuiBackend {
         hits
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_with_chrome(
         &self,
         rect: QRect,
@@ -2480,6 +2486,7 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
         fn draw_tab_bar(
             &mut self,
             _r: QRect,
@@ -2488,6 +2495,7 @@ mod tests {
         ) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
         fn draw_tab_bar_icons(
             &mut self,
             _r: QRect,
@@ -2525,9 +2533,11 @@ mod tests {
                 resolved_right_start: 0,
             }
         }
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
         fn tab_bar_layout(&self, _r: QRect, _b: &TabBar) -> crate::TabBarHits {
             crate::TabBarHits::default()
         }
+        #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
         fn tab_bar_layout_icons(
             &self,
             _r: QRect,
@@ -4008,6 +4018,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_returns_absolute_x_not_bar_relative() {
         let backend = TuiBackend::new();
         let bar = audit_bar();
@@ -4050,6 +4061,7 @@ mod tests {
     /// `draw_tab_bar` through a real frame scope so it goes down the
     /// production rasteriser, not a reimplementation of it.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;

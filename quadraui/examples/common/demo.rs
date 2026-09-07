@@ -244,6 +244,7 @@ pub fn handle_status_action(state: &mut AppState, id: &str) {
 impl AppLogic for AppState {
     type AreaId = ();
 
+    #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
         // Tab bar at the top.

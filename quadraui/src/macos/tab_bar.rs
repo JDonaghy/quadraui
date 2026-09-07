@@ -24,6 +24,11 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
+// `TabBarHits` is `#[deprecated]` (issue #823) — this backend still
+// constructs it directly (per #504's audit: `macos::tab_bar` has no
+// intermediate `TabBarLayout` to source native coordinates from), so the
+// import needs the same allow every use site below does.
+#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
 use crate::theme::Theme;
 use crate::types::Color;
@@ -66,6 +71,7 @@ const CLOSE_PAD: f64 = 2.0;
 /// smuggled into quadraui#484's compile fix. What this function guarantees
 /// is the invariant that is actually load-bearing: `tab_bar_layout` returns
 /// exactly what `draw_tab_bar` painted.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
     let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
     let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
@@ -181,6 +187,7 @@ pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits
 /// the call (typical: the frame-scope pointer stashed on
 /// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub unsafe fn draw_tab_bar(
     ctx: CGContextRef,
     font: &CTFont,
@@ -375,6 +382,7 @@ mod tests {
     /// and return `(surface, hits)` for inspection. Mirrors the
     /// status_bar harness so future chrome tests follow the same
     /// shape.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn paint_via_backend(
         bar: &TabBar,
         hovered_close: Option<usize>,
@@ -395,6 +403,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn active_tab_paints_active_bg() {
         // The active tab's bg differs from `tab_bar_bg`. Probe just
         // above the bottom edge near the left of the active tab's
@@ -423,6 +432,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn active_accent_paints_at_top_of_active_tab() {
         // 2-px accent strip at y_offset for the active tab.
         let bar = sample_bar();
@@ -442,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn close_bounds_round_trip_via_hits_struct() {
         // Round-trip: paint, then sample a coordinate inside the
         // reported close-bounds and assert the hits struct's bounds
@@ -473,6 +484,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn dirty_tab_uses_filled_circle_glyph() {
         // `is_dirty` swaps the close glyph from `×` to `●`. We can't
         // easily compare glyph shape pixel-by-pixel, but a row-wise
@@ -516,6 +528,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn non_closable_tab_has_no_close_bounds_even_when_bar_show_close_is_true() {
         // Regression: `bar.show_tab_close = true` is a bar-level flag, but
         // individual tabs may opt out via `is_closable = false`. The macOS
@@ -570,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn empty_bar_paints_only_tab_bar_bg() {
         let bar = TabBar {
             id: WidgetId::new("empty"),
@@ -599,6 +613,7 @@ mod tests {
     /// the known bar-relative-vs-absolute divergence (#552); what is
     /// guaranteed here is that layout == paint.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn layout_twin_matches_the_painted_hits() {
         let bar = sample_bar();
         let (_surface, painted) = paint_via_backend(&bar, None);
@@ -621,6 +636,7 @@ mod tests {
     /// glyph the rasteriser actually drew — the paint↔click round trip
     /// the shared `mac_tab_bar_layout` exists to guarantee.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn close_box_centre_is_where_the_glyph_was_painted() {
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);

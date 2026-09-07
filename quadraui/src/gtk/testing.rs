@@ -1068,10 +1068,12 @@ mod tests {
             }
         }
 
+        #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.draw_tab_bar(Self::RECT, &self.bar(), None);
         }
 
+        #[allow(deprecated)] // `Backend::tab_bar_layout` returns `TabBarHits` — issue #823
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
             let UiEvent::MouseDown { position, .. } = event else {
                 return Reaction::Continue;
@@ -1134,6 +1136,7 @@ mod tests {
     /// below failed there and only there. Pinned as exact equality so
     /// the two paths can't drift apart again on any font.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_twin_matches_painted_geometry_headless() {
         let app = InteractiveTabBarApp::new(0);
         let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);

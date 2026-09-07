@@ -114,6 +114,28 @@ release time.
 
 ### Deprecated
 
+- `primitives::status_bar::StatusBar::hit_regions` and
+  `hit_regions_fit_chars` — pre-D6 char-column hit-testing helpers.
+  Replacement: `StatusBar::layout()` + `StatusBarLayout::hit_test()`, which
+  already applies the same priority-drop policy and returns the crate's
+  `Rect` + `Hit`-enum convention instead of raw `u16` columns. Tracked in
+  #823.
+- `primitives::status_bar::StatusBar::resolve_click_fit_chars` — same
+  replacement as above (`StatusBar::layout()` + `StatusBarLayout::hit_test()`).
+  Tracked in #823.
+- `primitives::tab_bar::TabBarHits` — the f64-tuple pre-D6 hit struct still
+  returned by `Backend::draw_tab_bar` / `draw_tab_bar_icons` /
+  `draw_tab_bar_with_chrome` / `tab_bar_layout` / `tab_bar_layout_icons` /
+  `tab_bar_layout_with_chrome`. This PR is the shim step only — it marks the
+  struct `#[deprecated]` without changing any of those six methods'
+  signatures; the eventual replacement is `TabBarLayout` (already real,
+  already `Rect`/`TabBarHit`-based, already what every in-tree rasteriser
+  computes before narrowing to `TabBarHits`). The six-method/four-backend
+  signature swap is separate, larger follow-up work — see
+  `primitives/tab_bar.rs`'s `TabBarHits` doc for why (two of the four
+  backends construct it with no intermediate `TabBarLayout`). Tracked in
+  #823; matching `vimcode` consumer-migration issue to be filed alongside
+  this PR.
 - `primitives::editor::StyledSpan` — renamed to `EditorStyledSpan` (the
   crate-root export was already using this name) to resolve a bare-name
   clash with the unrelated `types::StyledSpan`. Old name kept as a

@@ -431,6 +431,13 @@ pub use primitives::status_bar::{
     StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
+// `TabBarHits` is `#[deprecated]` (issue #823 — f64-tuple pre-D6 hit
+// struct; `TabBarLayout` is the eventual `Rect`/`TabBarHit` replacement).
+// `#[allow(deprecated)]` for the same reason as `SyntaxSpan` above: a `pub
+// use` of a deprecated item is itself a `deprecated`-lint use site, and
+// dropping the re-export would break `vimcode`, which constructs
+// `quadraui::TabBarHits` directly with no version pin on this crate.
+#[allow(deprecated)]
 pub use primitives::tab_bar::{
     tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits,
     TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure, VisibleSegment,

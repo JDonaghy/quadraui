@@ -111,6 +111,10 @@ use crate::primitives::drop_zone::{
     DropZoneHit, DropZoneKind,
 };
 use crate::primitives::split::{Split, SplitDirection};
+// `TabBarHits` is `#[deprecated]` (issue #823) — this compose helper caches
+// exactly what `Backend::draw_tab_bar` returns for click/drag dispatch. See
+// that struct's doc for the replacement plan.
+#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
 use crate::types::WidgetId;
 use crate::Backend;
@@ -680,6 +684,7 @@ pub struct TabGroupController {
 
 /// Cached hit-test state for one pane from the last render.
 struct PaneHitCache {
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
     hits: TabBarHits,
     strip_bounds: Rect,
     content_bounds: Rect,
@@ -973,6 +978,7 @@ impl TabGroupController {
     ///
     /// Returns a [`TabGroupLayout`] with resolved pane/strip/content rects
     /// in pane vec order.
+    #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> TabGroupLayout {
         if self.panes.is_empty() {
             return TabGroupLayout {
@@ -1080,6 +1086,7 @@ impl TabGroupController {
     /// outside all tab strips and content areas, or on dead space.
     ///
     /// Typical call site: mouse-down handler after background dismissal.
+    #[allow(deprecated)] // reads the deprecated `TabBarHits` cache — issue #823
     pub fn handle_click(&mut self, x: f32, y: f32) -> Option<TabGroupEvent> {
         let n = self.panes.len();
         let click_x = x as f64;
@@ -1227,6 +1234,7 @@ impl TabGroupController {
     /// Tab slot positions are derived from the last [`TabBarHits`] recorded
     /// during [`render`](Self::render). If `render` has not been called yet,
     /// the result is empty.
+    #[allow(deprecated)] // reads the deprecated `TabBarHits` cache — issue #823
     pub fn drop_group_rects(&self) -> Vec<DropGroupRect> {
         self.last_pane_hits
             .iter()
@@ -1286,6 +1294,7 @@ impl TabGroupController {
     /// primed via `set_drag_geometry`. If your consumer already excludes those
     /// targets before routing to the controller, this is fine. If you need full
     /// exclusion, call `render()` instead.
+    #[allow(deprecated)] // constructs the deprecated `TabBarHits` — issue #823
     pub fn set_drag_geometry(&mut self, panes: &[PaneDragRect]) {
         let n = self.panes.len();
         if self.last_pane_hits.len() != n {
@@ -1330,6 +1339,7 @@ impl TabGroupController {
     ///
     /// A tab drag and a divider drag are mutually exclusive; starting one
     /// implicitly cancels the other.
+    #[allow(deprecated)] // reads the deprecated `TabBarHits` cache — issue #823
     pub fn handle_tab_drag_start(&mut self, x: f32, y: f32) -> bool {
         let click_x = x as f64;
         let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
@@ -1837,6 +1847,7 @@ mod tests {
     /// Prime the hit-test cache for `pane_idx` without a real backend render.
     /// Each tab is given `tab_w` cells (last `close_w` cells = close region).
     /// The "new-tab" right segment is given 3 cells.
+    #[allow(deprecated)] // builds the deprecated `TabBarHits` test fixture — issue #823
     fn prime_pane(
         ctrl: &mut TabGroupController,
         pane_idx: usize,

@@ -104,6 +104,10 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
+// `TabBarHits` is `#[deprecated]` (issue #823) — this trait still returns it
+// from six methods below (the "real, separate follow-up work" its own doc
+// names), so the import itself needs the same allow every use site does.
+#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
@@ -1188,6 +1192,12 @@ pub trait Backend: sealed::Sealed {
     /// hovered tab's close glyph (the primitive itself carries no
     /// mouse state). Returns [`TabBarHits`] for click dispatch +
     /// scroll-offset reconciliation.
+    ///
+    /// `TabBarHits` itself is `#[deprecated]` (issue #823); this method's
+    /// signature isn't changing in this PR — see that struct's doc for why
+    /// the actual six-method/four-backend swap to [`TabBarLayout`] is
+    /// separate follow-up work, not something this shim PR does.
+    #[allow(deprecated)]
     fn draw_tab_bar(
         &mut self,
         rect: Rect,
@@ -1222,6 +1232,9 @@ pub trait Backend: sealed::Sealed {
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    ///
+    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    #[allow(deprecated)]
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -1244,6 +1257,9 @@ pub trait Backend: sealed::Sealed {
     /// the correct fallback for a backend with no frame vocabulary of its
     /// own. The TUI and GTK backends override it and honour
     /// [`crate::TabFrame::Brackets`] in full.
+    ///
+    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    #[allow(deprecated)]
     fn draw_tab_bar_with_chrome(
         &mut self,
         rect: Rect,
@@ -1369,6 +1385,9 @@ pub trait Backend: sealed::Sealed {
     /// but that is this repo's analysis, not a vimcode-side confirmation;
     /// vimcode should verify with its own GTK tab-bar click tests before
     /// relying on the corrected geometry.
+    ///
+    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    #[allow(deprecated)]
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, for a bar painted
@@ -1385,6 +1404,9 @@ pub trait Backend: sealed::Sealed {
     ///
     /// No default impl — same rule-7 reasoning as
     /// [`Self::draw_tab_bar_icons`].
+    ///
+    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    #[allow(deprecated)]
     fn tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -1406,6 +1428,9 @@ pub trait Backend: sealed::Sealed {
     /// Default body ignores `chrome` and delegates to
     /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
     /// default.
+    ///
+    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    #[allow(deprecated)]
     fn tab_bar_layout_with_chrome(
         &self,
         rect: Rect,
@@ -2287,6 +2312,10 @@ pub enum ImagePaintResult {
 /// the documented-absolute no-paint path silently returned relative x,
 /// off by `rect.x`. That is nonzero for any tab bar right of a sidebar,
 /// i.e. the same latent seam as the activity bar's, one primitive over.
+///
+/// `TabBarHits` is `#[deprecated]` (issue #823) — see its doc for the
+/// replacement plan.
+#[allow(deprecated)]
 pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
     if dx == 0.0 {
         return;
@@ -2332,6 +2361,7 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 /// an intermediate `TabBarLayout`, so a safe migration needs new native
 /// per-backend rasterisers, not just a signature change.
 #[deprecated(since = "0.0.1", note = "renamed to `tab_bar_hits_from_layout`")]
+#[allow(deprecated)] // `TabBarHits` is also `#[deprecated]` (issue #823)
 pub fn tab_bar_layout_to_hits(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     tab_bar_hits_from_layout(layout, bar)
 }
@@ -2343,6 +2373,10 @@ pub fn tab_bar_layout_to_hits(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits
 /// [`shift_tab_bar_hits`] using `rect.x`. See
 /// [`tab_bar_layout_to_hits`]'s doc for why `TabBarHits` itself — not
 /// just this converter's name — is still legacy (issue #504).
+///
+/// `TabBarHits` is now `#[deprecated]` itself (issue #823); this
+/// converter is the one place in-tree still allowed to construct it.
+#[allow(deprecated)]
 pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
     let mut close_bounds = vec![None; bar.tabs.len()];

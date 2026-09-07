@@ -808,6 +808,7 @@ impl GtkBackend {
     /// instead of a char-cell estimate that drifts with the host's UI
     /// font. Same "cache at paint, hit-test at click" pattern the rest of
     /// the backend uses.
+    #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
     fn cached_tab_bar_hits(&self, rect: QRect, bar: &TabBar) -> Option<crate::TabBarHits> {
         let (cached_rect, layout) = self.tab_bar_layouts.get(&bar.id)?;
         if *cached_rect != rect {
@@ -2005,6 +2006,7 @@ impl Backend for GtkBackend {
         bar_layout
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
         &mut self,
         rect: QRect,
@@ -2016,6 +2018,7 @@ impl Backend for GtkBackend {
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
         rect: QRect,
@@ -2059,6 +2062,7 @@ impl Backend for GtkBackend {
         hits
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_with_chrome(
         &mut self,
         rect: QRect,
@@ -2177,10 +2181,12 @@ impl Backend for GtkBackend {
         result
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: QRect, bar: &TabBar) -> crate::TabBarHits {
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_icons(
         &self,
         rect: QRect,
@@ -2346,6 +2352,7 @@ impl Backend for GtkBackend {
         hits
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_with_chrome(
         &self,
         rect: QRect,
@@ -6343,6 +6350,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn gtk_backend_tab_bar_layout_returns_absolute_x_not_bar_relative() {
         let backend = GtkBackend::new();
         let bar = audit_bar();
@@ -6390,6 +6398,7 @@ mod tests {
     /// the separate frame-layout-vs-`pango_ctx` fallback behaviour
     /// already covered by the `menu_bar_layout` tests above.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn gtk_backend_tab_bar_layout_agrees_with_draw_tab_bar_on_coordinate_space() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
@@ -6430,6 +6439,7 @@ mod tests {
     /// actually differ from the icon-less pair, or the "reservation" is
     /// a no-op nobody would notice until a user clicked a decorated tab.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn gtk_backend_tab_bar_layout_icons_agrees_with_draw_tab_bar_icons() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 

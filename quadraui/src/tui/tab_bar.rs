@@ -13,6 +13,11 @@ use ratatui::style::Modifier;
 
 use super::text::char_cell_width;
 use super::{ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled};
+// `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
+// still building one per frame; see that struct's doc for the replacement
+// plan (`TabBarLayout`, which every function below already receives as
+// its `layout` parameter).
+#[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
 use crate::theme::Theme;
 
@@ -62,6 +67,7 @@ pub const TAB_CLOSE_COLS: u16 = 2;
 ///   doc comment names this fix as the unblocker for switching to a
 ///   `display_width` measure there. coord-tui consumes the same tab
 ///   bar and should be checked for the equivalent assumption.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar(
     buf: &mut Buffer,
     area: Rect,
@@ -88,6 +94,7 @@ pub fn draw_tab_bar(
 /// `TuiBackend::draw_tab_bar_icons` / `tab_bar_layout_icons`
 /// (`backend.rs`) add to the tab's measured width, so paint and
 /// measurement cannot drift.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons(
     buf: &mut Buffer,
     area: Rect,
@@ -103,6 +110,7 @@ pub fn draw_tab_bar_icons(
 ///
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] cell
 /// for cell. See [`TabChrome::active_frame`] for what each frame paints.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_with_chrome(
     buf: &mut Buffer,
     area: Rect,
@@ -123,6 +131,7 @@ pub fn draw_tab_bar_with_chrome(
 /// in `backend.rs`, which build the chrome-aware
 /// [`crate::TabMeasure`] before calling [`TabBar::layout`]) — this
 /// function paints from `layout` verbatim and does not recompute widths.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons_with_chrome(
     buf: &mut Buffer,
     area: Rect,
@@ -431,6 +440,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
     fn returns_full_width_when_no_right_segments() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
         let bar = make_bar(0);
@@ -446,6 +456,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
     fn reserves_right_segment_width() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
         let bar = TabBar {
@@ -559,6 +570,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
     fn zero_size_is_a_no_op() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         let bar = make_bar(0);
@@ -652,6 +664,7 @@ mod tests {
     /// lets every backend route both entry points through one rasteriser
     /// without changing a single existing pixel.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
     fn empty_icon_sidecar_paints_identically_to_draw_tab_bar() {
         let bar = make_bar(0);
         let area = Rect::new(0, 0, 40, 1);
@@ -680,6 +693,7 @@ mod tests {
     /// the glyph itself, not the bracket wrapping it, so a click on `×`
     /// still resolves to `TabClose` rather than `Tab`.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` return — issue #823
     fn bracket_frame_encloses_close_glyph_and_close_bounds_stay_on_the_glyph() {
         use crate::primitives::tab_bar::{TabBarHit, TabChrome, TabFrame};
 
