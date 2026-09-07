@@ -813,6 +813,190 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
+/// Reassemble one leaked SGR mouse escape sequence (#293) out of a run of
+/// individual `KeyPressed(Char(_))` events, if `events[0]` opens one.
+///
+/// `events[0]` must already be `KeyPressed(Char('['))` — the caller checks
+/// that cheaply before calling in. This confirms the very next event is
+/// `Char('<')` (the SGR-extended marker; the legacy X10/`rxvt` mouse
+/// encodings aren't affected by the race this recovers from, so they're
+/// out of scope), then scans forward for a run of `Char(_)` events made
+/// only of ASCII digits and `;`, terminated by `Char('M')` or `Char('m')`
+/// — exactly the tail of `ESC [ < Cb ; Cx ; Cy (M|m)` with its leading
+/// `ESC` already consumed. Any event that isn't a plain, non-repeat
+/// `KeyPressed(Char(_))`, any character outside that alphabet, or running
+/// past the bound before finding a terminator aborts the match (`None`) —
+/// the run is left untouched as ordinary keystrokes.
+///
+/// See [`recover_leaked_sgr_mouse_fragments`] for why this exists at all.
+fn try_reassemble_sgr_mouse(events: &[UiEvent]) -> Option<(usize, UiEvent)> {
+    let UiEvent::KeyPressed {
+        key: crate::Key::Char('<'),
+        repeat: false,
+        ..
+    } = events.get(1)?
+    else {
+        return None;
+    };
+
+    let mut body = String::new();
+    let mut consumed = 2; // the '[' the caller matched, plus the '<' above.
+    let mut terminator = None;
+    // A real `Cb;Cx;Cy` triple never needs more than a handful of digits —
+    // cap the scan well above that so a run of unrelated real keystrokes
+    // (someone actually typing "<1234...") can't be walked indefinitely.
+    for ev in events.iter().skip(2).take(24) {
+        let UiEvent::KeyPressed {
+            key: crate::Key::Char(c),
+            repeat: false,
+            ..
+        } = ev
+        else {
+            return None;
+        };
+        consumed += 1;
+        if *c == 'M' || *c == 'm' {
+            terminator = Some(*c);
+            break;
+        }
+        if c.is_ascii_digit() || *c == ';' {
+            body.push(*c);
+        } else {
+            return None;
+        }
+    }
+    let terminator = terminator?;
+
+    let mut parts = body.split(';');
+    let cb: u16 = parts.next()?.parse().ok()?;
+    let x: u16 = parts.next()?.parse().ok()?;
+    let y: u16 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let event = decode_sgr_mouse_report(cb, x, y, terminator == 'm')?;
+    Some((consumed, event))
+}
+
+/// Decode one already-parsed `Cb ; Cx ; Cy` SGR mouse triple into a
+/// [`UiEvent`], via the same crossterm plumbing a well-formed escape
+/// sequence would have used ([`super::events::crossterm_mouse_to_uievent`]).
+///
+/// The `Cb` bit layout replicated here (button number in bits 0–1 and
+/// 6–7, drag flag in bit 5, modifiers in bits 2–4) is xterm's public SGR
+/// mouse-tracking protocol, not a crossterm implementation detail — see
+/// <http://www.xfree86.org/current/ctlseqs.html#Mouse%20Tracking> — so
+/// this mirrors crossterm's own (private) `parse_cb` deliberately rather
+/// than reusing it.
+fn decode_sgr_mouse_report(cb: u16, x: u16, y: u16, is_release: bool) -> Option<UiEvent> {
+    use ratatui::crossterm::event::{
+        KeyModifiers, MouseButton as CtMouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
+    };
+
+    let button_number = ((cb & 0b11) | ((cb & 0b1100_0000) >> 4)) as u8;
+    let dragging = cb & 0b0010_0000 != 0;
+    let mut modifiers = KeyModifiers::empty();
+    if cb & 0b0000_0100 != 0 {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    if cb & 0b0000_1000 != 0 {
+        modifiers |= KeyModifiers::ALT;
+    }
+    if cb & 0b0001_0000 != 0 {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+
+    let kind = match (button_number, dragging) {
+        (0, false) => MouseEventKind::Down(CtMouseButton::Left),
+        (1, false) => MouseEventKind::Down(CtMouseButton::Middle),
+        (2, false) => MouseEventKind::Down(CtMouseButton::Right),
+        (0, true) => MouseEventKind::Drag(CtMouseButton::Left),
+        (1, true) => MouseEventKind::Drag(CtMouseButton::Middle),
+        (2, true) => MouseEventKind::Drag(CtMouseButton::Right),
+        (3, false) => MouseEventKind::Up(CtMouseButton::Left),
+        (3, true) | (4, true) | (5, true) => MouseEventKind::Moved,
+        (4, false) => MouseEventKind::ScrollUp,
+        (5, false) => MouseEventKind::ScrollDown,
+        (6, false) => MouseEventKind::ScrollLeft,
+        (7, false) => MouseEventKind::ScrollRight,
+        _ => return None,
+    };
+    // SGR mode ends the sequence with lowercase `m` for a release, since
+    // `Cb`'s button-3 slot can't otherwise distinguish which button went
+    // up (mirrors crossterm's own `parse_csi_sgr_mouse`).
+    let kind = if is_release {
+        match kind {
+            MouseEventKind::Down(b) => MouseEventKind::Up(b),
+            other => other,
+        }
+    } else {
+        kind
+    };
+
+    super::events::crossterm_mouse_to_uievent(CtMouseEvent {
+        kind,
+        column: x.saturating_sub(1),
+        row: y.saturating_sub(1),
+        modifiers,
+    })
+}
+
+/// Recover an SGR mouse escape sequence that leaked into individual
+/// `KeyPressed(Char(_))` events (quadraui#293).
+///
+/// crossterm's own terminal-input reader disambiguates a lone `ESC` byte
+/// by whether more bytes are *already* available in the same read — not
+/// by waiting for them. When the OS delivers `ESC [ < Cb ; Cx ; Cy (M|m)`
+/// (a real mouse-motion/click report) split across two reads right after
+/// that leading `ESC` — which happens under perfectly ordinary scheduling
+/// jitter, not just a contrived race — crossterm commits to "standalone
+/// Escape key" for the lone byte and then decodes the *rest* of the
+/// report byte-by-byte as ordinary printable characters, since `[` isn't
+/// a recognised lead byte on its own. Observed live: the literal text
+/// `[<35;10;5M` typed into whatever has focus, e.g. coord-tui's chat
+/// input (see #293's repro). The `Escape` itself still fires correctly —
+/// it's only the report's tail that leaks — but landing in a focused
+/// `TextInput` right before it makes `Escape` look like it "didn't
+/// register" (it cleared/typed-into the just-polluted field instead of
+/// doing whatever an already-empty field would have triggered).
+///
+/// This can't be fixed by *not asking for* motion reports (mode 1003):
+/// hover state ([`super::toolbar_hover_tracker`] and friends) is a real,
+/// shipped TUI feature that depends on no-button `MouseMoved` events, so
+/// disabling any-motion tracking would trade this bug for silently
+/// breaking every hover affordance. Instead, this runs over each frame's
+/// already-drained batch of native events (still the same-frame window
+/// crossterm's own race lands in) and reconstitutes any leaked report
+/// back into the mouse event it should have been — before
+/// [`coalesce_mouse_moved`] and [`TuiBackend::apply_dispatch`] ever see
+/// it, so a recovered event flows through the exact same pipeline a
+/// cleanly decoded one would.
+fn recover_leaked_sgr_mouse_fragments(events: Vec<UiEvent>) -> Vec<UiEvent> {
+    let mut out = Vec::with_capacity(events.len());
+    let mut i = 0;
+    while i < events.len() {
+        let opens_escape = matches!(
+            events[i],
+            UiEvent::KeyPressed {
+                key: crate::Key::Char('['),
+                repeat: false,
+                ..
+            }
+        );
+        if opens_escape {
+            if let Some((consumed, mouse_event)) = try_reassemble_sgr_mouse(&events[i..]) {
+                out.push(mouse_event);
+                i += consumed;
+                continue;
+            }
+        }
+        out.push(events[i].clone());
+        i += 1;
+    }
+    out
+}
+
 /// Coalesce consecutive `MouseMoved` events in a raw batch, keeping only
 /// the last in each consecutive run.  A non-`MouseMoved` event breaks a
 /// run; the flushed move and the other event are both preserved in order.
@@ -934,6 +1118,11 @@ impl Backend for TuiBackend {
                 Err(_) => break,
             }
         }
+        // See `recover_leaked_sgr_mouse_fragments`'s doc (#293): recover
+        // any SGR mouse report that crossterm's own reader split around
+        // its leading `ESC`, before it reaches coalescing/dispatch as
+        // stray printable characters.
+        let raw = recover_leaked_sgr_mouse_fragments(raw);
         let coalesced = coalesce_mouse_moved(raw);
         let mut out = self.apply_dispatch(coalesced);
         self.apply_accelerators(&mut out);
@@ -962,6 +1151,8 @@ impl Backend for TuiBackend {
                     Err(_) => break,
                 }
             }
+            // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
+            let raw = recover_leaked_sgr_mouse_fragments(raw);
             let coalesced = coalesce_mouse_moved(raw);
             let mut out = self.apply_dispatch(coalesced);
             self.apply_accelerators(&mut out);
@@ -3997,6 +4188,175 @@ mod tests {
             "second run must collapse to x=6, got {:?}",
             out[2]
         );
+    }
+
+    // ── recover_leaked_sgr_mouse_fragments tests (#293) ─────────────────────
+
+    /// Builds a run of `KeyPressed(Char(_))` events, one per `char` in `s`
+    /// — the shape crossterm's reader produces when it decodes a leaked
+    /// escape-sequence tail byte-by-byte as ordinary text.
+    fn char_run(s: &str) -> Vec<UiEvent> {
+        s.chars()
+            .map(|c| UiEvent::KeyPressed {
+                key: Key::Char(c),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            })
+            .collect()
+    }
+
+    /// A leaked pure-motion report (`Cb=35`, the exact shape #293 was
+    /// filed against) reassembles into the `MouseMoved` it should have
+    /// decoded as, with no leftover `KeyPressed` events.
+    #[test]
+    fn recovers_leaked_pure_motion_report() {
+        use crate::ButtonMask;
+        let raw = char_run("[<35;10;5M");
+        let out = recover_leaked_sgr_mouse_fragments(raw);
+        assert_eq!(
+            out.len(),
+            1,
+            "expected exactly one recovered event: {out:?}"
+        );
+        assert!(
+            matches!(
+                &out[0],
+                UiEvent::MouseMoved { position, buttons }
+                    if position.x == 9.0 && position.y == 4.0 && *buttons == ButtonMask::default()
+            ),
+            "expected MouseMoved(9,4) with no buttons held, got {:?}",
+            out[0]
+        );
+    }
+
+    /// The leading `Escape` this race dispatches standalone is preserved
+    /// verbatim, immediately followed by the recovered mouse event — the
+    /// exact batch shape `wait_events`/`poll_events` hands to
+    /// `coalesce_mouse_moved` once the leak is fixed.
+    #[test]
+    fn preserves_a_genuine_leading_escape_before_the_recovered_report() {
+        let mut raw = vec![UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }];
+        raw.extend(char_run("[<35;10;5M"));
+        let out = recover_leaked_sgr_mouse_fragments(raw);
+        assert_eq!(out.len(), 2, "expected [Escape, MouseMoved]: {out:?}");
+        assert!(matches!(
+            &out[0],
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Escape),
+                ..
+            }
+        ));
+        assert!(matches!(&out[1], UiEvent::MouseMoved { .. }));
+    }
+
+    /// A left-button press (`Cb=0`) and its SGR release (`Cb=0`, lowercase
+    /// `m`) both reassemble correctly — release flips `Down` to `Up`,
+    /// matching crossterm's own `parse_csi_sgr_mouse`.
+    #[test]
+    fn recovers_leaked_click_down_and_up() {
+        use crate::MouseButton;
+        let down = recover_leaked_sgr_mouse_fragments(char_run("[<0;3;4M"));
+        assert!(
+            matches!(
+                &down[..],
+                [UiEvent::MouseDown { button: MouseButton::Left, position, .. }]
+                    if position.x == 2.0 && position.y == 3.0
+            ),
+            "expected a single MouseDown(2,3): {down:?}"
+        );
+
+        let up = recover_leaked_sgr_mouse_fragments(char_run("[<0;3;4m"));
+        assert!(
+            matches!(
+                &up[..],
+                [UiEvent::MouseUp { button: MouseButton::Left, position, .. }]
+                    if position.x == 2.0 && position.y == 3.0
+            ),
+            "expected a single MouseUp(2,3): {up:?}"
+        );
+    }
+
+    /// A drag report (`Cb=32`, left button held while moving) reassembles
+    /// with the held button carried on `buttons`, mirroring
+    /// `crossterm_mouse_to_uievent`'s `Drag` handling.
+    #[test]
+    fn recovers_leaked_drag_report() {
+        let out = recover_leaked_sgr_mouse_fragments(char_run("[<32;7;8M"));
+        assert!(
+            matches!(
+                &out[..],
+                [UiEvent::MouseMoved { position, buttons }]
+                    if position.x == 6.0 && position.y == 7.0 && buttons.left
+            ),
+            "expected a single held-left MouseMoved(6,7): {out:?}"
+        );
+    }
+
+    /// A real user typing a literal `[<...` that never completes into a
+    /// well-formed SGR triple (no `M`/`m` terminator, or a `;`-delimited
+    /// group that isn't three integers) must not be touched — the whole
+    /// run survives as ordinary `KeyPressed` events.
+    #[test]
+    fn leaves_non_matching_bracket_runs_untouched() {
+        let raw = char_run("[<12;34");
+        let out = recover_leaked_sgr_mouse_fragments(raw.clone());
+        assert_eq!(
+            out, raw,
+            "an incomplete/unterminated run must pass through verbatim"
+        );
+
+        let raw = char_run("[hello");
+        let out = recover_leaked_sgr_mouse_fragments(raw.clone());
+        assert_eq!(
+            out, raw,
+            "'[' not followed by '<' must pass through verbatim"
+        );
+    }
+
+    /// Events unrelated to the leak (plain keystrokes, real mouse events)
+    /// pass through untouched, and multiple independent leaks in one
+    /// batch each recover independently.
+    #[test]
+    fn passes_through_unrelated_events_and_recovers_multiple_leaks_in_one_batch() {
+        let mut raw = vec![UiEvent::KeyPressed {
+            key: Key::Char('h'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }];
+        raw.extend(char_run("[<35;10;5M"));
+        raw.push(UiEvent::KeyPressed {
+            key: Key::Char('i'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        raw.extend(char_run("[<35;11;6M"));
+
+        let out = recover_leaked_sgr_mouse_fragments(raw);
+        assert_eq!(
+            out.len(),
+            4,
+            "expected [Char(h), Moved, Char(i), Moved]: {out:?}"
+        );
+        assert!(matches!(
+            &out[0],
+            UiEvent::KeyPressed {
+                key: Key::Char('h'),
+                ..
+            }
+        ));
+        assert!(matches!(&out[1], UiEvent::MouseMoved { position, .. } if position.x == 9.0));
+        assert!(matches!(
+            &out[2],
+            UiEvent::KeyPressed {
+                key: Key::Char('i'),
+                ..
+            }
+        ));
+        assert!(matches!(&out[3], UiEvent::MouseMoved { position, .. } if position.x == 10.0));
     }
 
     // ── Issue #552 sibling audit: tab-bar hit geometry ──────────────
