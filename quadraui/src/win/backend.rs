@@ -92,6 +92,11 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
+// `TabBarHits` is `#[deprecated]` (issue #823) — this backend still
+// constructs it directly (per #504's audit: `win::tab_bar` has no
+// intermediate `TabBarLayout` to source native coordinates from), so the
+// import needs the same allow every use site below does.
+#[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
@@ -1854,6 +1859,7 @@ impl Backend for WinBackend {
         todo!("Direct2D status bar rasteriser (no surface attached yet)")
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
         &mut self,
         rect: Rect,
@@ -1868,6 +1874,7 @@ impl Backend for WinBackend {
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -1938,12 +1945,14 @@ impl Backend for WinBackend {
         todo!("DirectWrite status bar layout (no surface attached yet)")
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
     /// `self.dwrite`.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_icons(
         &self,
         rect: Rect,

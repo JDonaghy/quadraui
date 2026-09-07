@@ -1336,10 +1336,12 @@ mod tests {
     impl AppLogic for InteractiveTabBarApp {
         type AreaId = ();
 
+        #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             backend.draw_tab_bar(Self::RECT, &self.bar(), None);
         }
 
+        #[allow(deprecated)] // `Backend::tab_bar_layout` returns `TabBarHits` — issue #823
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
             let UiEvent::MouseDown { position, .. } = event else {
                 return Reaction::Continue;

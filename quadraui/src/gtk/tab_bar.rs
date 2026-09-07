@@ -16,6 +16,10 @@ use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
 use crate::backend::tab_bar_hits_from_layout;
+// `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
+// still converting a computed `TabBarLayout` into one per paint. See that
+// struct's doc for the replacement plan.
+#[allow(deprecated)]
 use crate::primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame, TabMeasure,
 };
@@ -176,6 +180,7 @@ fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) 
 /// - **Right segments:** painted in `tab_inactive_fg` (or
 ///   `tab_active_fg` when `seg.is_active`), no bold.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -221,6 +226,7 @@ pub fn draw_tab_bar(
 /// Font family, matching the activity bar's glyph-sourcing convention —
 /// the UI font itself typically isn't patched with icon codepoints.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -255,6 +261,7 @@ pub fn draw_tab_bar_icons(
 /// `&[]` icons + [`TabChrome::default`] reproduces [`draw_tab_bar`] pixel
 /// for pixel.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_with_chrome(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -292,6 +299,7 @@ pub fn draw_tab_bar_with_chrome(
 /// rasteriser paints. Mirrors `tui::tab_bar::draw_tab_bar_icons_with_chrome`
 /// so the two backends agree on what "enclosing" means (#631).
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons_with_chrome(
     cr: &Context,
     pango_layout: &pango::Layout,
@@ -818,6 +826,7 @@ mod tests {
     /// close bounds the layout reports (the icon reservation must not
     /// disturb close-glyph hit-test geometry).
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn icon_reserves_extra_width_and_close_still_hit_tests() {
         use crate::primitives::tab_bar::{TabBarHit, TabIcon};
 
@@ -1015,6 +1024,7 @@ mod tests {
     /// leading bracket — while `close_bounds`' own *width* stays exactly
     /// the glyph's, so a click still resolves to `TabClose`, not `Tab`.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn bracket_frame_widens_active_tab_and_close_bounds_excludes_the_bracket() {
         use crate::primitives::tab_bar::{TabBarHit, TabChrome, TabFrame};
 

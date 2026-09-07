@@ -75,6 +75,11 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
+// `TabBarHits` is `#[deprecated]` (issue #823) — this backend still
+// constructs it directly (per #504's audit: `macos::tab_bar` has no
+// intermediate `TabBarLayout` to source native coordinates from), so the
+// import needs the same allow every use site below does.
+#[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
@@ -1355,6 +1360,7 @@ impl Backend for MacBackend {
             pressed_id,
         )
     }
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
         &mut self,
         rect: Rect,
@@ -1394,6 +1400,7 @@ impl Backend for MacBackend {
     /// a macOS app that passes icons still paints correct (if
     /// undecorated) tabs, and fires a `debug_assert!` so the gap is loud
     /// in development rather than a silently-missing glyph.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
         rect: Rect,
@@ -1510,6 +1517,7 @@ impl Backend for MacBackend {
         }
     }
 
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
         // No-paint twin of `draw_tab_bar`, routed through the same
         // `mac_tab_bar_layout`. See that function's docs for why macOS
@@ -1532,6 +1540,7 @@ impl Backend for MacBackend {
     /// (#620 follow-up). Keeping both halves icon-blind is what preserves
     /// the load-bearing macOS invariant that `tab_bar_layout` returns
     /// exactly what `draw_tab_bar` painted.
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_icons(
         &self,
         rect: Rect,

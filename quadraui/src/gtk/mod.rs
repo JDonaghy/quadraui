@@ -71,6 +71,10 @@ mod toolbar;
 mod tooltip;
 mod tree;
 
+// `TabBarHits` is `#[deprecated]` (issue #823) — this re-export stays (a
+// dropped re-export is its own breaking change) until the six-method/
+// four-backend swap to `TabBarLayout` lands.
+#[allow(deprecated)]
 pub use crate::primitives::tab_bar::TabBarHits;
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, ACTIVITY_ROW_PX};
 pub use backend::GtkBackend;

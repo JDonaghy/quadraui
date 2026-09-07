@@ -131,6 +131,7 @@ impl AppLogic for TabIconsDemo {
         );
     }
 
+    #[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits` — issue #823
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             // Click routing goes through the **no-paint twin**

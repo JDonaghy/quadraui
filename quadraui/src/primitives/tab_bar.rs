@@ -617,6 +617,25 @@ impl TabChrome {
 /// [`crate::backend::tab_bar_layout_to_hits`], is deprecated in favour of
 /// [`crate::backend::tab_bar_hits_from_layout`] (same body, new name, zero
 /// remaining in-repo callers of the old one).
+///
+/// # Deprecated (issue #823)
+///
+/// The struct itself now carries `#[deprecated]`, per CLAUDE.md rule 8's
+/// deprecate-then-remove protocol. This is a *shim* PR only: it does not
+/// change what `draw_tab_bar` / `tab_bar_layout` (or their icon/chrome
+/// twins) return — that six-method, four-backend signature change is
+/// still the "real, separate follow-up work" described above, tracked
+/// as a coordinated pair of PRs (this repo + a linked `vimcode` issue for
+/// its consumer migration) once the replacement rasterisers exist. What
+/// this PR does do: mark the type deprecated so every remaining
+/// dependency on its `f64` shape is visible at the type level, and name
+/// [`TabBarLayout`] — already real, already f32/`Rect`/[`TabBarHit`]-based,
+/// already what every in-tree rasteriser computes *before* narrowing to
+/// this struct — as the eventual replacement return type.
+#[deprecated(
+    since = "0.0.1",
+    note = "f64-tuple pre-D6 hit struct; the eventual replacement is `TabBarLayout` (`Rect` + `TabBarHit`) — issue #823"
+)]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TabBarHits {
     /// `[(start_x, end_x)]` per tab index. Tabs before

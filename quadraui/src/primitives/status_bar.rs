@@ -32,12 +32,14 @@
 //! 2. **Render only the visible slice** — `&right_segments[start..]` —
 //!    right-aligned. Segments before `start` must NOT be drawn.
 //!
-//! 3. **Skip dropped segments in click handlers.** Use
-//!    [`StatusBar::resolve_click_fit_chars`] (TUI) or compute hit
-//!    regions only for visible segments (GTK / Win-GUI, where draw_func
-//!    populates per-segment hit zones inline). Otherwise clicks on
-//!    columns where dropped segments *used to be* will trigger their
-//!    actions even though the user can't see them.
+//! 3. **Skip dropped segments in click handlers.** Call [`StatusBar::layout`]
+//!    and resolve clicks with [`StatusBarLayout::hit_test`] — its
+//!    `hit_regions` only ever cover the segments `resolved_right_start`
+//!    kept visible. (The pre-D6 [`StatusBar::resolve_click_fit_chars`] did
+//!    the same thing by hand for char-cell backends; it's `#[deprecated]`
+//!    as of issue #823 — use `layout` + `hit_test` instead.) Otherwise
+//!    clicks on columns where dropped segments *used to be* will trigger
+//!    their actions even though the user can't see them.
 //!
 //! Convention for app-side priority: **`right_segments` is built
 //! least-important first, most-important (e.g. cursor position) last.**
@@ -109,6 +111,18 @@ impl StatusBar {
     /// Compute clickable hit regions given the bar's pixel/char width.
     /// Left segments accumulate from column 0; right segments are right-
     /// aligned inside `bar_width`.
+    ///
+    /// # Deprecated (issue #823)
+    ///
+    /// Pre-D6: returns character-column `u16` pairs rather than the
+    /// crate's `Rect` + `Hit`-enum convention. Use [`Self::layout`] and
+    /// [`StatusBarLayout::hit_test`] instead — same priority-aware hit
+    /// geometry, native-unit `Rect`s, and a `StatusBarHit` result instead
+    /// of a raw `WidgetId`.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `StatusBar::layout()` + `StatusBarLayout::hit_test()` instead — issue #823"
+    )]
     pub fn hit_regions(&self, bar_width: usize) -> Vec<StatusBarHitRegion> {
         let mut regions = Vec::new();
         let mut col: u16 = 0;
@@ -145,6 +159,11 @@ impl StatusBar {
 
     /// Resolve a column position to the `WidgetId` of the clicked segment,
     /// or `None` if the column falls outside any interactive segment.
+    ///
+    /// Not itself part of issue #823's retirement list, but calls the
+    /// now-deprecated [`Self::hit_regions`] internally — `#[allow(deprecated)]`
+    /// here is that internal call, not a second public deprecation.
+    #[allow(deprecated)]
     pub fn resolve_click(&self, click_col: u16, bar_width: usize) -> Option<WidgetId> {
         for region in self.hit_regions(bar_width) {
             if click_col >= region.col && click_col < region.col + region.width {
@@ -218,6 +237,16 @@ impl StatusBar {
 
     /// Like `hit_regions` but skips segments dropped by `fit_right_start_chars`.
     /// Use when the visible right half may have been narrowed.
+    ///
+    /// # Deprecated (issue #823)
+    ///
+    /// Pre-D6, same shape as [`Self::hit_regions`]. [`Self::layout`]
+    /// already applies the priority-drop policy this method hand-rolls,
+    /// so its [`StatusBarLayout::hit_test`] is the direct replacement.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `StatusBar::layout()` + `StatusBarLayout::hit_test()` instead — issue #823"
+    )]
     pub fn hit_regions_fit_chars(
         &self,
         bar_width: usize,
@@ -256,6 +285,18 @@ impl StatusBar {
 
     /// Like `resolve_click` but uses `hit_regions_fit_chars` so clicks on
     /// dropped (invisible) segments don't trigger spurious actions.
+    ///
+    /// # Deprecated (issue #823)
+    ///
+    /// Pre-D6. [`Self::layout`] already resolves the same priority-drop
+    /// decision (see `resolved_right_start`) and its
+    /// [`StatusBarLayout::hit_test`] only ever matches a visible segment,
+    /// so it is the direct replacement — no separate "fit" variant needed.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `StatusBar::layout()` + `StatusBarLayout::hit_test()` instead — issue #823"
+    )]
+    #[allow(deprecated)] // calls the also-deprecated `hit_regions_fit_chars` — issue #823
     pub fn resolve_click_fit_chars(
         &self,
         click_col: u16,
@@ -1038,6 +1079,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated pre-D6 shim directly — issue #823
     fn status_bar_hit_regions() {
         // Bar width 30: left " LEFT " (6 chars, clickable "left") +
         // right " R " (3 chars, clickable "right") right-aligned at col 27.
@@ -1189,6 +1231,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated pre-D6 shim directly — issue #823
     fn status_bar_resolve_click_fit_chars_skips_dropped() {
         let mk = |text: &str, id: &str| StatusBarSegment {
             text: text.to_string(),
