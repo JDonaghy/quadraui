@@ -2,7 +2,7 @@
 //! editing behaviour.
 //!
 //! Renders a single multi-line `TextInput` filling most of the viewport.
-//! All editing goes through `TextInput::apply(EditOp)` (issue #833) —
+//! All editing goes through `TextEditor::apply(EditOp)` (issue #833) —
 //! this file no longer hand-rolls insert/backspace/cursor-movement logic
 //! itself. Exercises cursor positioning, line wrap on Enter, scroll
 //! auto-clamp, placeholder rendering, Shift+arrow selection, and
@@ -12,14 +12,14 @@
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Color, EditOp,
     InteractionState, Key, KeyBinding, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TextInput, TextInputHit, UiEvent, UndoableTextInput, WidgetId,
+    StatusBarSegment, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 
 const UNDO_ACCEL: &str = "text_input_demo.undo";
 const REDO_ACCEL: &str = "text_input_demo.redo";
 
 pub struct TextInputDemo {
-    input: UndoableTextInput,
+    input: TextEditor,
 }
 
 impl TextInputDemo {
@@ -32,7 +32,7 @@ impl TextInputDemo {
         );
         input.has_focus = true;
         Self {
-            input: UndoableTextInput::new(input),
+            input: TextEditor::new(input),
         }
     }
 
@@ -123,7 +123,7 @@ impl AppLogic for TextInputDemo {
             // backends match registered accelerators first) — this is
             // #833's undo/redo wiring: the long-declared
             // `KeyBinding::Undo`/`Redo` names now reach
-            // `TextInput::apply` via `EditOp::from_key_binding`.
+            // `TextEditor::apply` via `EditOp::from_key_binding`.
             UiEvent::Accelerator(id, _modifiers) => {
                 let op = if id.as_str() == UNDO_ACCEL {
                     EditOp::from_key_binding(&KeyBinding::Undo)

@@ -10,14 +10,14 @@
 //! wrap inside the primitive is a future extension; today consumers
 //! split on `\n` or pre-wrap at their preferred width.
 //!
-//! ## Editing — [`EditOp`] / [`TextInput::apply`]
+//! ## Editing — [`EditOp`] / [`TextEditor`]
 //!
-//! Before issue #833, `TextInput` had no editing behaviour at all: apps
+//! Before issue #833, this module had no editing behaviour at all: apps
 //! (e.g. `examples/common/text_input_demo.rs`) had to hand-roll their own
 //! insert/backspace/arrow-key logic against `lines`/`cursor_line`/
 //! `cursor_col` directly. [`EditOp`] is a closed set of edit intents
 //! (insert, delete, cursor movement, selection, undo/redo);
-//! [`TextInput::apply`] is the single mutator that turns one into the
+//! [`TextEditor::apply`] is the single mutator that turns one into the
 //! next buffer/cursor/selection state, so every consumer gets the same
 //! (correct, multibyte-safe) editing behaviour instead of an ad hoc copy.
 //! [`EditOp::from_key`] maps a plain keypress to the `EditOp` it means;
@@ -28,20 +28,43 @@
 //! way, wiring those long-declared-but-unused names (see
 //! `accelerator.rs`'s module doc) to real behaviour.
 //!
-//! `TextInput::apply` on its own has no memory of `Undo`/`Redo` — every
-//! field on `TextInput` is `pub` so external crates can still build one
-//! with a plain struct literal (see the *Downstream consumers* policy in
-//! this repo's `CLAUDE.md`: a private field on a `pub` struct breaks that
-//! construction path with no workaround, not even `..Default::default()`).
-//! Adding an undo history *as a `TextInput` field* would have done exactly
-//! that, so history instead lives in the opt-in wrapper
-//! [`UndoableTextInput`], which owns a [`crate::undo::UndoStack`] of
-//! buffer snapshots and forwards everything except `Undo`/`Redo` to the
-//! wrapped `TextInput::apply`. `TextInput::apply(EditOp::Undo | EditOp::Redo)`
-//! is a documented no-op (returns `false`) — wrap in `UndoableTextInput`
-//! to get real undo/redo. Every content-mutating op records the
-//! pre-mutation snapshot; pure cursor movement does not, so moving the
-//! cursor between two edits doesn't split them into separate undo steps.
+//! ## Why the editing state is a wrapper, not new `TextInput` fields
+//!
+//! [`TextEditor`] is a *wrapper* around `TextInput`, not a set of extra
+//! fields on it, and that split is load-bearing rather than stylistic.
+//!
+//! `TextInput` is this crate's public paint-time snapshot type: all eight
+//! of its fields are `pub`, and external consumers construct it with an
+//! **exhaustive struct literal** — `vimcode`'s
+//! `render.rs::sc_commit_message_to_text_input()` is a live example, with
+//! no `..base` to absorb additions. Rust gives no way to grow such a
+//! struct without breaking those call sites:
+//!
+//! * a **private** field makes every external `TextInput { .. }` literal
+//!   fail with `E0451`, and `..Default::default()` does *not* rescue it;
+//! * a **public** field makes the same literal fail with `E0063`
+//!   (`missing field`), unless every call site already used `..base`.
+//!
+//! Either way it is a breaking change under this repo's *Downstream
+//! consumers* policy (`CLAUDE.md`) and `docs/PRIMITIVE_RULES.md` rule 8,
+//! whose first preference is "a shape that isn't breaking at all". So
+//! **both** pieces of live editing state — the selection anchor and the
+//! undo history — live on `TextEditor`, and `TextInput`'s field list is
+//! unchanged by #833.
+//!
+//! `TextEditor` `Deref`s to the wrapped `TextInput`, so `.lines`,
+//! `.cursor_line`, `.layout(..)` and `backend.draw_text_input(rect, &ed)`
+//! all work directly on it. Every content-mutating op records the
+//! pre-mutation snapshot into a bounded [`crate::undo::UndoStack`]; pure
+//! cursor movement does not, so moving the cursor between two edits
+//! doesn't split them into separate undo steps.
+//!
+//! Selection is therefore readable via [`TextEditor::selection_range`] /
+//! [`TextEditor::selected_text`] rather than off a bare `&TextInput`. No
+//! rasteriser paints a selection highlight yet; when one does, it takes
+//! the range as an argument (a new function alongside the old one — the
+//! non-breaking shape rule 8 asks for) rather than reading a new
+//! `TextInput` field.
 
 use serde::{Deserialize, Serialize};
 
@@ -55,8 +78,17 @@ use crate::undo::UndoStack;
 /// (not bytes); the rasterisers convert as needed.
 ///
 /// `PartialEq`/`Eq` are derived: every field here is content/cursor/
-/// selection state with no runtime-only history attached (see
-/// [`UndoableTextInput`] for why undo history is *not* a field here).
+/// viewport state with no runtime-only editing state attached — see this
+/// module's *Why the editing state is a wrapper* section for why the
+/// selection anchor and undo history live on [`TextEditor`] instead of
+/// being fields here (short version: adding **any** field, `pub` or
+/// private, breaks external exhaustive `TextInput { .. }` literals).
+///
+/// **Adding a field to this struct is a breaking change.** The
+/// `text_input_exhaustive_struct_literal_still_compiles` guard in
+/// `quadraui/tests/downstream_struct_literals.rs` fails in this repo's
+/// own CI if one is added, instead of the break surfacing later in a
+/// consumer's build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {
     pub id: WidgetId,
@@ -97,14 +129,6 @@ pub struct TextInput {
     /// a migration converges on.
     #[serde(default)]
     pub has_focus: bool,
-    /// Selection anchor `(line, col)`, in the same char-column space as
-    /// [`Self::cursor_line`]/[`Self::cursor_col`]. The cursor is the
-    /// *moving* end of a selection; this is the *fixed* end. `None`
-    /// means no active selection. A selection exists only when this is
-    /// `Some` **and** differs from the current cursor position — see
-    /// [`Self::selection_range`].
-    #[serde(default)]
-    pub selection_anchor: Option<(usize, usize)>,
 }
 
 impl TextInput {
@@ -118,12 +142,11 @@ impl TextInput {
             scroll_offset: 0,
             scroll_col: 0,
             has_focus: false,
-            selection_anchor: None,
         }
     }
 }
 
-/// An edit intent for [`TextInput::apply`] — see the module doc.
+/// An edit intent for [`TextEditor::apply`] — see the module doc.
 ///
 /// Every variant that moves the cursor (`Move*`, `SetCursor`) carries an
 /// `extend` flag: `false` collapses any active selection and moves the
@@ -149,8 +172,8 @@ pub enum EditOp {
     /// line at end-of-line).
     DeleteForward,
     /// Delete the active selection with no replacement. A no-op (returns
-    /// `false` from [`TextInput::apply`]) when no selection is active —
-    /// callers doing "Cut" should read [`TextInput::selected_text`]
+    /// `false` from [`TextEditor::apply`]) when no selection is active —
+    /// callers doing "Cut" should read [`TextEditor::selected_text`]
     /// first, then apply this.
     DeleteSelection,
     /// Move the cursor one character left (or to the end of the previous
@@ -194,7 +217,7 @@ pub enum EditOp {
 impl EditOp {
     /// Map a plain keypress to the [`EditOp`] it means, for widgets
     /// wiring [`crate::event::UiEvent::KeyPressed`] straight into
-    /// [`TextInput::apply`]. Returns `None` for keys `TextInput` doesn't
+    /// [`TextEditor::apply`]. Returns `None` for keys `TextEditor` doesn't
     /// interpret (function keys, Escape, Tab, ...) — callers handle
     /// those themselves (Escape to blur, Tab to move focus, etc.).
     ///
@@ -235,7 +258,7 @@ impl EditOp {
     /// [`crate::event::UiEvent::ClipboardPaste`]/`TextCopied`, not the
     /// accelerator alone (see `accelerator.rs`'s module doc on that
     /// event split), so they're not represented as an `EditOp` — callers
-    /// wire `Cut`/`Copy` through [`TextInput::selected_text`] plus
+    /// wire `Cut`/`Copy` through [`TextEditor::selected_text`] plus
     /// (for `Cut`) [`EditOp::DeleteSelection`], and `Paste` through
     /// [`EditOp::InsertText`] fed by `ClipboardPaste`'s payload.
     pub fn from_key_binding(binding: &KeyBinding) -> Option<EditOp> {
@@ -270,45 +293,25 @@ fn byte_offset_for_col(line: &str, col: usize) -> usize {
         .unwrap_or(line.len())
 }
 
+/// Buffer-level primitives shared by [`TextEditor`]'s [`EditOp`]
+/// handling.
+///
+/// These are deliberately **private** and selection-unaware: they rewrite
+/// `lines` and move the cursor, and leave everything to do with the
+/// selection anchor or the undo history to [`TextEditor`], which is where
+/// that state lives (see this module's *Why the editing state is a
+/// wrapper* section). Keeping them on `TextInput` means each one operates
+/// on exactly the fields it mutates; keeping them private means they add
+/// nothing to `TextInput`'s public surface.
 impl TextInput {
-    fn snapshot(&self) -> TextInputSnapshot {
-        TextInputSnapshot {
-            lines: self.lines.clone(),
-            cursor_line: self.cursor_line,
-            cursor_col: self.cursor_col,
-            selection_anchor: self.selection_anchor,
-        }
+    fn line_len(&self, line: usize) -> usize {
+        self.lines.get(line).map_or(0, |l| l.chars().count())
     }
 
-    fn restore(&mut self, snap: TextInputSnapshot) {
-        self.lines = snap.lines;
-        self.cursor_line = snap.cursor_line;
-        self.cursor_col = snap.cursor_col;
-        self.selection_anchor = snap.selection_anchor;
-    }
-
-    /// The selection as an ordered `(start, end)` pair of `(line, col)`
-    /// positions, or `None` if no selection is active (`selection_anchor`
-    /// is `None`, or equals the current cursor position).
-    pub fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
-        let anchor = self.selection_anchor?;
-        let cursor = (self.cursor_line, self.cursor_col);
-        if anchor == cursor {
-            return None;
-        }
-        Some(if anchor <= cursor {
-            (anchor, cursor)
-        } else {
-            (cursor, anchor)
-        })
-    }
-
-    /// The text currently selected, or `None` if no selection is active.
-    /// Multi-line selections join lines with `'\n'`, mirroring how
-    /// [`EditOp::InsertText`] would re-insert the same text verbatim.
-    pub fn selected_text(&self) -> Option<String> {
-        let (start, end) = self.selection_range()?;
-        Some(self.text_in_range(start, end))
+    fn clamp_pos(&self, line: usize, col: usize) -> (usize, usize) {
+        let line = line.min(self.lines.len().saturating_sub(1));
+        let col = col.min(self.line_len(line));
+        (line, col)
     }
 
     fn text_in_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
@@ -333,10 +336,8 @@ impl TextInput {
         out
     }
 
-    fn line_len(&self, line: usize) -> usize {
-        self.lines.get(line).map_or(0, |l| l.chars().count())
-    }
-
+    /// Delete `start..end` and leave the cursor at `start`. Clearing the
+    /// selection anchor is the caller's job — this type has no anchor.
     fn delete_range(&mut self, start: (usize, usize), end: (usize, usize)) {
         let (sl, sc) = start;
         let (el, ec) = end;
@@ -359,20 +360,6 @@ impl TextInput {
         }
         self.cursor_line = sl;
         self.cursor_col = sc;
-        self.selection_anchor = None;
-    }
-
-    /// Delete the active selection, if any. Returns whether anything was
-    /// deleted. Does **not** record undo itself — that's
-    /// [`UndoableTextInput::apply`]'s job.
-    fn delete_selection_raw(&mut self) -> bool {
-        match self.selection_range() {
-            Some((start, end)) => {
-                self.delete_range(start, end);
-                true
-            }
-            None => false,
-        }
     }
 
     fn insert_char_raw(&mut self, ch: char) {
@@ -399,14 +386,6 @@ impl TextInput {
         for ch in text.chars() {
             self.insert_char_raw(ch);
         }
-    }
-
-    /// Replace the selection (if any) then insert `text`. Shared by
-    /// [`EditOp::InsertChar`]/[`EditOp::InsertText`].
-    fn replace_selection_and_insert(&mut self, text: &str) -> bool {
-        self.delete_selection_raw();
-        self.insert_text_raw(text);
-        true
     }
 
     fn delete_backward_raw(&mut self) -> bool {
@@ -445,11 +424,139 @@ impl TextInput {
             false
         }
     }
+}
+
+/// Bounded so a long-lived editor (e.g. a persistent chat input, or a
+/// large commit-message buffer) doesn't accumulate unbounded history —
+/// each undo step clones the full `lines: Vec<String>`. 200 steps is
+/// generous for interactive editing while keeping worst-case memory
+/// proportional to a small constant times the buffer size, not to how
+/// long the widget has been alive.
+const UNDO_HISTORY_LIMIT: usize = 200;
+
+/// An editing session over a [`TextInput`] — this is #833's insert /
+/// delete / cursor-movement / selection / undo behaviour.
+///
+/// `TextEditor` owns the two pieces of live editing state that
+/// deliberately are **not** `TextInput` fields: the selection anchor, and
+/// a bounded [`crate::undo::UndoStack`] of buffer snapshots. See this
+/// module's *Why the editing state is a wrapper* section for why — the
+/// short version is that adding **any** field to `TextInput`, `pub` or
+/// private, breaks external exhaustive `TextInput { .. }` struct literals
+/// (`E0063` / `E0451`), which `CLAUDE.md`'s *Downstream consumers* policy
+/// and `docs/PRIMITIVE_RULES.md` rule 8 forbid without a consumer
+/// migration.
+///
+/// Access the wrapped `TextInput` through the public [`Self::input`]
+/// field or through `Deref`/`DerefMut`, so `.lines`, `.cursor_line`,
+/// `.layout(..)` and `backend.draw_text_input(rect, &editor)` all work
+/// directly on a `TextEditor`.
+///
+/// ```
+/// use quadraui::{EditOp, TextEditor, TextInput, WidgetId};
+///
+/// let mut ed = TextEditor::new(TextInput::new(WidgetId::new("demo")));
+/// ed.apply(EditOp::InsertText("hi".into()));
+/// ed.apply(EditOp::MoveLeft { extend: true });
+/// assert_eq!(ed.selected_text().as_deref(), Some("i"));
+/// ed.apply(EditOp::Undo);
+/// assert_eq!(ed.lines, vec![String::new()]);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TextEditor {
+    /// The wrapped paint-time state — hand this to a rasteriser.
+    pub input: TextInput,
+    selection_anchor: Option<(usize, usize)>,
+    undo_stack: UndoStack<TextInputSnapshot>,
+}
+
+impl TextEditor {
+    /// Start an editing session over `input`, with an empty undo history
+    /// and no active selection.
+    pub fn new(input: TextInput) -> Self {
+        Self {
+            input,
+            selection_anchor: None,
+            undo_stack: UndoStack::with_limit(UNDO_HISTORY_LIMIT),
+        }
+    }
+
+    /// The selection anchor `(line, col)`, in the same char-column space
+    /// as [`TextInput::cursor_line`]/[`TextInput::cursor_col`]. The
+    /// cursor is the *moving* end of a selection; this is the *fixed*
+    /// end. `None` means no active selection. A selection exists only
+    /// when this is `Some` **and** differs from the cursor position —
+    /// see [`Self::selection_range`].
+    pub fn selection_anchor(&self) -> Option<(usize, usize)> {
+        self.selection_anchor
+    }
+
+    /// Set (or clear) the selection anchor directly. Most callers should
+    /// go through [`EditOp`]'s `extend` flag instead; this exists for
+    /// backends driving a selection from a native gesture that doesn't
+    /// decompose into `EditOp`s.
+    pub fn set_selection_anchor(&mut self, anchor: Option<(usize, usize)>) {
+        self.selection_anchor = anchor;
+    }
+
+    /// The selection as an ordered `(start, end)` pair of `(line, col)`
+    /// positions, or `None` if no selection is active (the anchor is
+    /// `None`, or equals the current cursor position).
+    pub fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let anchor = self.selection_anchor?;
+        let cursor = (self.input.cursor_line, self.input.cursor_col);
+        if anchor == cursor {
+            return None;
+        }
+        Some(if anchor <= cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        })
+    }
+
+    /// The text currently selected, or `None` if no selection is active.
+    /// Multi-line selections join lines with `'\n'`, mirroring how
+    /// [`EditOp::InsertText`] would re-insert the same text verbatim.
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        Some(self.input.text_in_range(start, end))
+    }
+
+    fn snapshot(&self) -> TextInputSnapshot {
+        TextInputSnapshot {
+            lines: self.input.lines.clone(),
+            cursor_line: self.input.cursor_line,
+            cursor_col: self.input.cursor_col,
+            selection_anchor: self.selection_anchor,
+        }
+    }
+
+    fn restore(&mut self, snap: TextInputSnapshot) {
+        self.input.lines = snap.lines;
+        self.input.cursor_line = snap.cursor_line;
+        self.input.cursor_col = snap.cursor_col;
+        self.selection_anchor = snap.selection_anchor;
+    }
+
+    /// Delete the active selection, if any. Returns whether anything was
+    /// deleted. Does **not** record undo itself — that's [`Self::apply`]'s
+    /// job, so a delete-then-insert op pair stays one undo step.
+    fn delete_selection(&mut self) -> bool {
+        match self.selection_range() {
+            Some((start, end)) => {
+                self.input.delete_range(start, end);
+                self.selection_anchor = None;
+                true
+            }
+            None => false,
+        }
+    }
 
     /// Move the cursor to `pos`, updating (or clearing) the selection
-    /// anchor per `extend`. Returns whether the cursor actually moved.
+    /// anchor per `extend`. Returns whether anything actually changed.
     fn move_cursor_to(&mut self, pos: (usize, usize), extend: bool) -> bool {
-        let before = (self.cursor_line, self.cursor_col);
+        let before = (self.input.cursor_line, self.input.cursor_col);
         let anchor_before = self.selection_anchor;
         if extend {
             if self.selection_anchor.is_none() {
@@ -458,196 +565,38 @@ impl TextInput {
         } else {
             self.selection_anchor = None;
         }
-        self.cursor_line = pos.0;
-        self.cursor_col = pos.1;
+        self.input.cursor_line = pos.0;
+        self.input.cursor_col = pos.1;
         before != pos || self.selection_anchor != anchor_before
     }
 
-    fn clamp_pos(&self, line: usize, col: usize) -> (usize, usize) {
-        let line = line.min(self.lines.len().saturating_sub(1));
-        let col = col.min(self.line_len(line));
-        (line, col)
-    }
-
-    /// Apply one [`EditOp`], mutating this `TextInput` in place. Returns
-    /// whether anything actually changed (useful for deciding whether a
-    /// redraw is needed).
+    /// Apply one [`EditOp`], mutating the wrapped [`TextInput`] in place.
+    /// Returns whether anything actually changed (useful for deciding
+    /// whether a redraw is needed).
     ///
-    /// [`EditOp::Undo`]/[`EditOp::Redo`] are documented no-ops here — a
-    /// bare `TextInput` keeps no history (see the module doc). Wrap in
-    /// [`UndoableTextInput`] to get real undo/redo.
-    pub fn apply(&mut self, op: EditOp) -> bool {
-        match op {
-            EditOp::InsertChar(ch) => {
-                self.delete_selection_raw();
-                self.insert_char_raw(ch);
-                true
-            }
-            EditOp::InsertText(text) => self.replace_selection_and_insert(&text),
-            EditOp::DeleteBackward => {
-                if self.delete_selection_raw() {
-                    true
-                } else {
-                    self.delete_backward_raw()
-                }
-            }
-            EditOp::DeleteForward => {
-                if self.delete_selection_raw() {
-                    true
-                } else {
-                    self.delete_forward_raw()
-                }
-            }
-            EditOp::DeleteSelection => self.delete_selection_raw(),
-            EditOp::MoveLeft { extend } => {
-                // An unmodified arrow press while a selection is active
-                // collapses to the selection's near edge instead of also
-                // taking a step from the cursor's (moving-end) position —
-                // otherwise a single Left press after a rightward
-                // shift-selection would visually jump two characters.
-                if !extend {
-                    if let Some((start, _end)) = self.selection_range() {
-                        return self.move_cursor_to(start, false);
-                    }
-                }
-                let (line, col) = (self.cursor_line, self.cursor_col);
-                let target = if col > 0 {
-                    (line, col - 1)
-                } else if line > 0 {
-                    (line - 1, self.line_len(line - 1))
-                } else {
-                    (line, col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveRight { extend } => {
-                // See `MoveLeft`: collapses to the selection's far edge.
-                if !extend {
-                    if let Some((_start, end)) = self.selection_range() {
-                        return self.move_cursor_to(end, false);
-                    }
-                }
-                let (line, col) = (self.cursor_line, self.cursor_col);
-                let len = self.line_len(line);
-                let target = if col < len {
-                    (line, col + 1)
-                } else if line + 1 < self.lines.len() {
-                    (line + 1, 0)
-                } else {
-                    (line, col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveUp { extend } => {
-                let target = if self.cursor_line > 0 {
-                    self.clamp_pos(self.cursor_line - 1, self.cursor_col)
-                } else {
-                    (self.cursor_line, self.cursor_col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveDown { extend } => {
-                let target = if self.cursor_line + 1 < self.lines.len() {
-                    self.clamp_pos(self.cursor_line + 1, self.cursor_col)
-                } else {
-                    (self.cursor_line, self.cursor_col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveLineStart { extend } => self.move_cursor_to((self.cursor_line, 0), extend),
-            EditOp::MoveLineEnd { extend } => {
-                let len = self.line_len(self.cursor_line);
-                self.move_cursor_to((self.cursor_line, len), extend)
-            }
-            EditOp::MoveDocStart { extend } => self.move_cursor_to((0, 0), extend),
-            EditOp::MoveDocEnd { extend } => {
-                let last = self.lines.len().saturating_sub(1);
-                let len = self.line_len(last);
-                self.move_cursor_to((last, len), extend)
-            }
-            EditOp::SetCursor { line, col, extend } => {
-                let target = self.clamp_pos(line, col);
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::SelectAll => {
-                let last = self.lines.len().saturating_sub(1);
-                let end = (last, self.line_len(last));
-                if end == (0, 0) {
-                    false
-                } else {
-                    self.selection_anchor = Some((0, 0));
-                    self.cursor_line = end.0;
-                    self.cursor_col = end.1;
-                    true
-                }
-            }
-            // A bare `TextInput` has no history to undo/redo — see this
-            // method's doc and [`UndoableTextInput`].
-            EditOp::Undo | EditOp::Redo => false,
-        }
-    }
-}
-
-/// Bounded so a long-lived `TextInput` (e.g. a persistent chat input, or
-/// a large commit-message buffer) doesn't accumulate unbounded history —
-/// each undo step clones the full `lines: Vec<String>`. 200 steps is
-/// generous for interactive editing while keeping worst-case memory
-/// proportional to a small constant times the buffer size, not to how
-/// long the widget has been alive.
-const UNDO_HISTORY_LIMIT: usize = 200;
-
-/// Opt-in undo/redo wrapper around a [`TextInput`].
-///
-/// `TextInput` itself carries no history (see the module doc: adding one
-/// as a private `TextInput` field would have broken external struct-
-/// literal construction of `TextInput`, which every field being `pub`
-/// exists to keep working). `UndoableTextInput` owns the history instead,
-/// via a bounded [`crate::undo::UndoStack`] of buffer snapshots, and
-/// forwards every [`EditOp`] to [`TextInput::apply`] except `Undo`/`Redo`,
-/// which it serves from its own stack.
-///
-/// Access the wrapped `TextInput` through the public `input` field, or
-/// through `Deref`/`DerefMut` (so `.lines`, `.layout(..)`,
-/// `.selection_range()`, etc. all work directly on an `UndoableTextInput`
-/// without an extra `.input`).
-#[derive(Debug, Clone)]
-pub struct UndoableTextInput {
-    pub input: TextInput,
-    undo_stack: UndoStack<TextInputSnapshot>,
-}
-
-impl UndoableTextInput {
-    pub fn new(input: TextInput) -> Self {
-        Self {
-            input,
-            undo_stack: UndoStack::with_limit(UNDO_HISTORY_LIMIT),
-        }
-    }
-
-    /// Apply one [`EditOp`]. `Undo`/`Redo` are served from this wrapper's
-    /// history; every other op is forwarded to [`TextInput::apply`], with
-    /// a pre-mutation snapshot recorded first for content-mutating ops
-    /// (insert/delete) so undo can restore it. Pure cursor/selection
-    /// movement is not recorded, so moving the cursor between two edits
-    /// doesn't split them into separate undo steps. Returns whether
-    /// anything actually changed.
+    /// `Undo`/`Redo` are served from this editor's history. Every other
+    /// op mutates the buffer/cursor/selection, with a pre-mutation
+    /// snapshot recorded first for content-mutating ops (insert/delete)
+    /// so undo can restore it. Pure cursor/selection movement is not
+    /// recorded, so moving the cursor between two edits doesn't split
+    /// them into separate undo steps.
     pub fn apply(&mut self, op: EditOp) -> bool {
         match op {
             EditOp::Undo => {
-                let current = self.input.snapshot();
+                let current = self.snapshot();
                 match self.undo_stack.undo(current) {
                     Some(prev) => {
-                        self.input.restore(prev);
+                        self.restore(prev);
                         true
                     }
                     None => false,
                 }
             }
             EditOp::Redo => {
-                let current = self.input.snapshot();
+                let current = self.snapshot();
                 match self.undo_stack.redo(current) {
                     Some(next) => {
-                        self.input.restore(next);
+                        self.restore(next);
                         true
                     }
                     None => false,
@@ -663,28 +612,148 @@ impl UndoableTextInput {
                         | EditOp::DeleteSelection
                 );
                 if content_mutating {
-                    let snap = self.input.snapshot();
-                    let changed = self.input.apply(other);
+                    let snap = self.snapshot();
+                    let changed = self.apply_edit(other);
                     if changed {
                         self.undo_stack.record(snap);
                     }
                     changed
                 } else {
-                    self.input.apply(other)
+                    self.apply_edit(other)
                 }
             }
         }
     }
+
+    /// Every [`EditOp`] except `Undo`/`Redo`, with no history
+    /// bookkeeping — [`Self::apply`] wraps this.
+    fn apply_edit(&mut self, op: EditOp) -> bool {
+        match op {
+            EditOp::InsertChar(ch) => {
+                self.delete_selection();
+                self.input.insert_char_raw(ch);
+                true
+            }
+            EditOp::InsertText(text) => {
+                self.delete_selection();
+                self.input.insert_text_raw(&text);
+                true
+            }
+            EditOp::DeleteBackward => {
+                if self.delete_selection() {
+                    true
+                } else {
+                    self.input.delete_backward_raw()
+                }
+            }
+            EditOp::DeleteForward => {
+                if self.delete_selection() {
+                    true
+                } else {
+                    self.input.delete_forward_raw()
+                }
+            }
+            EditOp::DeleteSelection => self.delete_selection(),
+            EditOp::MoveLeft { extend } => {
+                // An unmodified arrow press while a selection is active
+                // collapses to the selection's near edge instead of also
+                // taking a step from the cursor's (moving-end) position —
+                // otherwise a single Left press after a rightward
+                // shift-selection would visually jump two characters.
+                if !extend {
+                    if let Some((start, _end)) = self.selection_range() {
+                        return self.move_cursor_to(start, false);
+                    }
+                }
+                let (line, col) = (self.input.cursor_line, self.input.cursor_col);
+                let target = if col > 0 {
+                    (line, col - 1)
+                } else if line > 0 {
+                    (line - 1, self.input.line_len(line - 1))
+                } else {
+                    (line, col)
+                };
+                self.move_cursor_to(target, extend)
+            }
+            EditOp::MoveRight { extend } => {
+                // See `MoveLeft`: collapses to the selection's far edge.
+                if !extend {
+                    if let Some((_start, end)) = self.selection_range() {
+                        return self.move_cursor_to(end, false);
+                    }
+                }
+                let (line, col) = (self.input.cursor_line, self.input.cursor_col);
+                let len = self.input.line_len(line);
+                let target = if col < len {
+                    (line, col + 1)
+                } else if line + 1 < self.input.lines.len() {
+                    (line + 1, 0)
+                } else {
+                    (line, col)
+                };
+                self.move_cursor_to(target, extend)
+            }
+            EditOp::MoveUp { extend } => {
+                let target = if self.input.cursor_line > 0 {
+                    self.input
+                        .clamp_pos(self.input.cursor_line - 1, self.input.cursor_col)
+                } else {
+                    (self.input.cursor_line, self.input.cursor_col)
+                };
+                self.move_cursor_to(target, extend)
+            }
+            EditOp::MoveDown { extend } => {
+                let target = if self.input.cursor_line + 1 < self.input.lines.len() {
+                    self.input
+                        .clamp_pos(self.input.cursor_line + 1, self.input.cursor_col)
+                } else {
+                    (self.input.cursor_line, self.input.cursor_col)
+                };
+                self.move_cursor_to(target, extend)
+            }
+            EditOp::MoveLineStart { extend } => {
+                self.move_cursor_to((self.input.cursor_line, 0), extend)
+            }
+            EditOp::MoveLineEnd { extend } => {
+                let len = self.input.line_len(self.input.cursor_line);
+                self.move_cursor_to((self.input.cursor_line, len), extend)
+            }
+            EditOp::MoveDocStart { extend } => self.move_cursor_to((0, 0), extend),
+            EditOp::MoveDocEnd { extend } => {
+                let last = self.input.lines.len().saturating_sub(1);
+                let len = self.input.line_len(last);
+                self.move_cursor_to((last, len), extend)
+            }
+            EditOp::SetCursor { line, col, extend } => {
+                let target = self.input.clamp_pos(line, col);
+                self.move_cursor_to(target, extend)
+            }
+            EditOp::SelectAll => {
+                let last = self.input.lines.len().saturating_sub(1);
+                let end = (last, self.input.line_len(last));
+                if end == (0, 0) {
+                    false
+                } else {
+                    self.selection_anchor = Some((0, 0));
+                    self.input.cursor_line = end.0;
+                    self.input.cursor_col = end.1;
+                    true
+                }
+            }
+            // Handled by `apply`, which never forwards them here.
+            EditOp::Undo | EditOp::Redo => false,
+        }
+    }
 }
 
-impl std::ops::Deref for UndoableTextInput {
+impl std::ops::Deref for TextEditor {
     type Target = TextInput;
     fn deref(&self) -> &TextInput {
         &self.input
     }
 }
 
-impl std::ops::DerefMut for UndoableTextInput {
+impl std::ops::DerefMut for TextEditor {
     fn deref_mut(&mut self) -> &mut TextInput {
         &mut self.input
     }
@@ -895,6 +964,14 @@ mod tests {
         ti
     }
 
+    /// An editing session over [`input`]'s buffer — the entry point for
+    /// every `apply(EditOp)` test below. `TextEditor` `Deref`s to the
+    /// wrapped `TextInput`, so `.lines` / `.cursor_col` reads and writes
+    /// in these tests still go straight through to the primitive.
+    fn editor(lines: Vec<&str>) -> TextEditor {
+        TextEditor::new(input(lines))
+    }
+
     fn measure() -> TextInputMeasure {
         TextInputMeasure::new(1.0, 1.0)
     }
@@ -1095,7 +1172,7 @@ mod tests {
 
     #[test]
     fn insert_char_advances_cursor() {
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = editor(vec![""]);
         assert!(ti.apply(EditOp::InsertChar('h')));
         assert!(ti.apply(EditOp::InsertChar('i')));
         assert_eq!(ti.lines, vec!["hi".to_string()]);
@@ -1104,7 +1181,7 @@ mod tests {
 
     #[test]
     fn insert_char_newline_splits_line() {
-        let mut ti = input(vec!["helloworld"]);
+        let mut ti = editor(vec!["helloworld"]);
         ti.cursor_col = 5;
         assert!(ti.apply(EditOp::InsertChar('\n')));
         assert_eq!(ti.lines, vec!["hello".to_string(), "world".to_string()]);
@@ -1116,7 +1193,7 @@ mod tests {
         // Cursor sits after 'h' + é (a 2-byte char) — inserting must not
         // panic slicing mid-char, and must land after the é (char column
         // 2), not the byte offset.
-        let mut ti = input(vec!["héllo"]);
+        let mut ti = editor(vec!["héllo"]);
         ti.cursor_col = 2; // after 'h', 'é'
         assert!(ti.apply(EditOp::InsertChar('X')));
         assert_eq!(ti.lines, vec!["héXllo".to_string()]);
@@ -1124,7 +1201,7 @@ mod tests {
 
     #[test]
     fn insert_text_with_embedded_newline_creates_lines() {
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+        let mut ti = editor(vec![""]);
         assert!(ti.apply(EditOp::InsertText("ab\ncd".to_string())));
         assert_eq!(ti.lines, vec!["ab".to_string(), "cd".to_string()]);
         assert_eq!((ti.cursor_line, ti.cursor_col), (1, 2));
@@ -1132,7 +1209,7 @@ mod tests {
 
     #[test]
     fn delete_backward_removes_prior_char() {
-        let mut ti = input(vec!["hi"]);
+        let mut ti = editor(vec!["hi"]);
         ti.cursor_col = 2;
         assert!(ti.apply(EditOp::DeleteBackward));
         assert_eq!(ti.lines, vec!["h".to_string()]);
@@ -1141,7 +1218,7 @@ mod tests {
 
     #[test]
     fn delete_backward_at_line_start_merges_with_previous_line() {
-        let mut ti = input(vec!["foo", "bar"]);
+        let mut ti = editor(vec!["foo", "bar"]);
         ti.cursor_line = 1;
         ti.cursor_col = 0;
         assert!(ti.apply(EditOp::DeleteBackward));
@@ -1151,14 +1228,14 @@ mod tests {
 
     #[test]
     fn delete_backward_at_doc_start_is_a_no_op() {
-        let mut ti = input(vec!["hi"]);
+        let mut ti = editor(vec!["hi"]);
         assert!(!ti.apply(EditOp::DeleteBackward));
         assert_eq!(ti.lines, vec!["hi".to_string()]);
     }
 
     #[test]
     fn delete_forward_removes_next_char() {
-        let mut ti = input(vec!["hi"]);
+        let mut ti = editor(vec!["hi"]);
         assert!(ti.apply(EditOp::DeleteForward));
         assert_eq!(ti.lines, vec!["i".to_string()]);
         assert_eq!(ti.cursor_col, 0);
@@ -1166,7 +1243,7 @@ mod tests {
 
     #[test]
     fn delete_forward_at_line_end_merges_next_line() {
-        let mut ti = input(vec!["foo", "bar"]);
+        let mut ti = editor(vec!["foo", "bar"]);
         ti.cursor_col = 3; // end of "foo"
         assert!(ti.apply(EditOp::DeleteForward));
         assert_eq!(ti.lines, vec!["foobar".to_string()]);
@@ -1174,14 +1251,14 @@ mod tests {
 
     #[test]
     fn delete_forward_at_doc_end_is_a_no_op() {
-        let mut ti = input(vec!["hi"]);
+        let mut ti = editor(vec!["hi"]);
         ti.cursor_col = 2;
         assert!(!ti.apply(EditOp::DeleteForward));
     }
 
     #[test]
     fn move_right_then_left_round_trips() {
-        let mut ti = input(vec!["hi"]);
+        let mut ti = editor(vec!["hi"]);
         assert!(ti.apply(EditOp::MoveRight { extend: false }));
         assert_eq!(ti.cursor_col, 1);
         assert!(ti.apply(EditOp::MoveLeft { extend: false }));
@@ -1190,7 +1267,7 @@ mod tests {
 
     #[test]
     fn move_right_at_line_end_wraps_to_next_line() {
-        let mut ti = input(vec!["ab", "cd"]);
+        let mut ti = editor(vec!["ab", "cd"]);
         ti.cursor_col = 2;
         assert!(ti.apply(EditOp::MoveRight { extend: false }));
         assert_eq!((ti.cursor_line, ti.cursor_col), (1, 0));
@@ -1198,7 +1275,7 @@ mod tests {
 
     #[test]
     fn move_left_at_line_start_wraps_to_previous_line_end() {
-        let mut ti = input(vec!["ab", "cd"]);
+        let mut ti = editor(vec!["ab", "cd"]);
         ti.cursor_line = 1;
         assert!(ti.apply(EditOp::MoveLeft { extend: false }));
         assert_eq!((ti.cursor_line, ti.cursor_col), (0, 2));
@@ -1206,7 +1283,7 @@ mod tests {
 
     #[test]
     fn move_up_down_clamp_column_to_shorter_line() {
-        let mut ti = input(vec!["abcdef", "xy"]);
+        let mut ti = editor(vec!["abcdef", "xy"]);
         ti.cursor_col = 5;
         assert!(ti.apply(EditOp::MoveDown { extend: false }));
         assert_eq!((ti.cursor_line, ti.cursor_col), (1, 2)); // clamped to "xy"'s length
@@ -1216,7 +1293,7 @@ mod tests {
 
     #[test]
     fn move_line_start_end_and_doc_start_end() {
-        let mut ti = input(vec!["abc", "de"]);
+        let mut ti = editor(vec!["abc", "de"]);
         ti.cursor_line = 1;
         ti.cursor_col = 1;
         assert!(ti.apply(EditOp::MoveLineEnd { extend: false }));
@@ -1231,7 +1308,7 @@ mod tests {
 
     #[test]
     fn set_cursor_clamps_out_of_range_position() {
-        let mut ti = input(vec!["abc"]);
+        let mut ti = editor(vec!["abc"]);
         assert!(ti.apply(EditOp::SetCursor {
             line: 99,
             col: 99,
@@ -1244,7 +1321,7 @@ mod tests {
 
     #[test]
     fn extend_move_creates_selection_and_selected_text() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true });
         assert_eq!(ti.selection_range(), Some(((0, 0), (0, 2))));
@@ -1253,7 +1330,7 @@ mod tests {
 
     #[test]
     fn plain_move_after_extend_collapses_selection() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: false });
         assert_eq!(ti.selection_range(), None);
@@ -1264,7 +1341,7 @@ mod tests {
         // Selecting rightward then pressing plain Left should land the
         // cursor exactly on the selection's start, not one further step
         // left of the (moving-end) cursor position.
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true }); // selects "he", cursor at col 2
         assert!(ti.apply(EditOp::MoveLeft { extend: false }));
@@ -1276,7 +1353,7 @@ mod tests {
     fn unmodified_right_after_selection_lands_on_far_edge() {
         // Same as above, mirrored: plain Right lands on the selection's
         // end rather than stepping one further right of the cursor.
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true }); // selects "he", cursor at col 2
         assert!(ti.apply(EditOp::MoveRight { extend: false }));
@@ -1289,7 +1366,7 @@ mod tests {
         // Selecting *leftward* (cursor is the near edge already) then
         // pressing plain Left should still land on the selection start —
         // exercising the anchor > cursor ordering in `selection_range`.
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.cursor_col = 3;
         ti.apply(EditOp::MoveLeft { extend: true });
         ti.apply(EditOp::MoveLeft { extend: true }); // selects "el" (cols 1..3), cursor at col 1
@@ -1300,14 +1377,14 @@ mod tests {
 
     #[test]
     fn select_all_selects_entire_buffer() {
-        let mut ti = input(vec!["ab", "cde"]);
+        let mut ti = editor(vec!["ab", "cde"]);
         assert!(ti.apply(EditOp::SelectAll));
         assert_eq!(ti.selected_text().as_deref(), Some("ab\ncde"));
     }
 
     #[test]
     fn insert_over_selection_replaces_it() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true }); // selects "he"
         assert!(ti.apply(EditOp::InsertChar('X')));
@@ -1317,7 +1394,7 @@ mod tests {
 
     #[test]
     fn delete_backward_over_selection_deletes_selection_not_one_char() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true }); // selects "he"
         assert!(ti.apply(EditOp::DeleteBackward));
@@ -1326,7 +1403,7 @@ mod tests {
 
     #[test]
     fn delete_selection_op_clears_selection_with_no_replacement() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true });
         assert!(ti.apply(EditOp::DeleteSelection));
@@ -1336,34 +1413,32 @@ mod tests {
 
     #[test]
     fn delete_selection_with_no_selection_is_a_no_op() {
-        let mut ti = input(vec!["hello"]);
+        let mut ti = editor(vec!["hello"]);
         assert!(!ti.apply(EditOp::DeleteSelection));
     }
 
     #[test]
     fn multiline_selection_spans_lines() {
-        let mut ti = input(vec!["abc", "def"]);
+        let mut ti = editor(vec!["abc", "def"]);
         ti.apply(EditOp::MoveDown { extend: true });
         ti.apply(EditOp::MoveLineEnd { extend: true });
         assert_eq!(ti.selected_text().as_deref(), Some("abc\ndef"));
     }
 
-    // ── undo / redo (via `UndoableTextInput` — see its module doc for
+    // ── undo / redo (via `TextEditor` — see its module doc for
     //    why history is not a `TextInput` field) ─────────────────────
 
     #[test]
-    fn bare_text_input_apply_treats_undo_redo_as_no_ops() {
-        // `TextInput::apply` alone (no wrapper) keeps no history at all —
-        // it's a documented no-op, not just "nothing recorded yet".
-        let mut ti = TextInput::new(WidgetId::new("ti"));
+    fn redo_with_no_history_is_a_no_op() {
+        let mut ti = editor(vec![""]);
         ti.apply(EditOp::InsertChar('h'));
-        assert!(!ti.apply(EditOp::Undo));
+        assert!(!ti.apply(EditOp::Redo), "nothing has been undone yet");
         assert_eq!(ti.lines, vec!["h".to_string()]);
     }
 
     #[test]
     fn undo_reverts_last_insert() {
-        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut ti = editor(vec![""]);
         ti.apply(EditOp::InsertChar('h'));
         ti.apply(EditOp::InsertChar('i'));
         assert_eq!(ti.lines, vec!["hi".to_string()]);
@@ -1375,13 +1450,13 @@ mod tests {
 
     #[test]
     fn undo_with_no_history_is_a_no_op() {
-        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut ti = editor(vec![""]);
         assert!(!ti.apply(EditOp::Undo));
     }
 
     #[test]
     fn redo_restores_undone_edit() {
-        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut ti = editor(vec![""]);
         ti.apply(EditOp::InsertChar('h'));
         ti.apply(EditOp::Undo);
         assert_eq!(ti.lines, vec!["".to_string()]);
@@ -1391,7 +1466,7 @@ mod tests {
 
     #[test]
     fn new_edit_after_undo_clears_redo_history() {
-        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut ti = editor(vec![""]);
         ti.apply(EditOp::InsertChar('a'));
         ti.apply(EditOp::Undo);
         ti.apply(EditOp::InsertChar('b'));
@@ -1406,7 +1481,7 @@ mod tests {
     fn cursor_movement_does_not_create_an_undo_step() {
         // Typing, then moving, then undoing should undo the typing — not
         // a no-op "undo the move" step.
-        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut ti = editor(vec![""]);
         ti.apply(EditOp::InsertChar('a'));
         ti.apply(EditOp::MoveLeft { extend: false });
         assert!(ti.apply(EditOp::Undo));
@@ -1415,7 +1490,7 @@ mod tests {
 
     #[test]
     fn undo_restores_selection_state() {
-        let mut ti = UndoableTextInput::new(input(vec!["hello"]));
+        let mut ti = editor(vec!["hello"]);
         ti.apply(EditOp::MoveRight { extend: true });
         ti.apply(EditOp::MoveRight { extend: true }); // selects "he"
         ti.apply(EditOp::DeleteSelection);
@@ -1430,7 +1505,7 @@ mod tests {
         // Regression test for the unbounded-memory concern: recording
         // more than `UNDO_HISTORY_LIMIT` steps evicts the oldest ones
         // instead of growing forever.
-        let mut ti = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut ti = editor(vec![""]);
         for _ in 0..UNDO_HISTORY_LIMIT + 50 {
             ti.apply(EditOp::InsertChar('a'));
         }
@@ -1516,15 +1591,15 @@ mod tests {
 
     #[test]
     fn equality_ignores_undo_history() {
-        // `TextInput` carries no history at all (see `UndoableTextInput`'s
+        // `TextInput` carries no history at all (see `TextEditor`'s
         // module doc for why), so its `PartialEq` never has history to
         // ignore in the first place. Demonstrate that at the wrapper
         // level: `a` reaches "x" directly, `b` reaches "x" via an extra
         // insert-then-undo round trip that leaves `b`'s redo stack
         // non-empty (unlike `a`'s) — the wrapped `TextInput`s are still
         // equal.
-        let mut a = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
-        let mut b = UndoableTextInput::new(TextInput::new(WidgetId::new("ti")));
+        let mut a = editor(vec![""]);
+        let mut b = editor(vec![""]);
         a.apply(EditOp::InsertChar('x'));
         b.apply(EditOp::InsertChar('x'));
         b.apply(EditOp::InsertChar('y'));
