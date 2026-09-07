@@ -255,7 +255,12 @@ pub struct MacBackend {
 /// [`MacBackend::set_wake_callback`]'s doc for what installs it and why
 /// it's shaped this way. Named to keep `MacBackend`'s field declaration
 /// (and `clippy::type_complexity`) readable — mirrors
-/// `gtk::backend::WakeCallback`.
+/// `gtk::backend::WakeCallback` in shape and intent only: the name is
+/// deliberately duplicated per backend module (this one wraps
+/// `dispatch2::MainThreadBound`, GTK's wraps the hand-rolled
+/// `crate::runtime::MainThreadBound`), each private to its own module, so
+/// a search for "the" `WakeCallback` type will find two unrelated
+/// definitions — that's intentional, not a naming collision to fix.
 type WakeCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn()>>>>;
 
 /// Position tolerance, in points, for [`MacBackend::fold_double_click`]'s
