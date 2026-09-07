@@ -163,12 +163,14 @@ cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
   replying `ESC [ row ; col R` from the `vt100` parser's tracked cursor
   position. Skipping this makes every example fail before it ever
   renders (confirmed empirically — see the harness's module doc).
-- **Deliberately thin — 2 representative examples** (`tui_pipeline`,
-  `tui_chat`), not broad coverage. This is wiring/integration
-  confidence for the terminal-protocol layer; `TuiDriver` (Tier "example
-  / app-wiring drift" above) remains the primary, deterministic tool for
-  everything else — coordinate drift, click routing, state-derived
-  paint, and per-example behavior all stay covered there.
+- **Deliberately thin — a handful of representative examples**
+  (`tui_pipeline`, `tui_chat`, and `tui_split`/`tui_no_mouse` for the
+  `no_mouse` module below), not broad coverage. This is wiring/
+  integration confidence for the terminal-protocol layer; `TuiDriver`
+  (Tier "example / app-wiring drift" above) remains the primary,
+  deterministic tool for everything else — coordinate drift, click
+  routing, state-derived paint, and per-example behavior all stay
+  covered there.
 - **Runs as a real CI gate**, not an operator-only tier like the GTK
   live-app smoke below. A pty is a kernel device, not a display server —
   no Xvfb, no compositor, works headlessly anywhere `openpty` does.
