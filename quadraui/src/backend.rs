@@ -347,6 +347,32 @@ pub struct BackendCaps {
     /// exhaustive destructure below for where it is still forced into
     /// view.
     pub color_depth: ColorDepth,
+    /// Whether the kitty keyboard protocol (progressive keyboard
+    /// enhancement — unambiguous modifier keys, key-release events) is
+    /// actually active on this backend right now (quadraui#827).
+    ///
+    /// Not part of the bool-capability vocabulary below, for the same
+    /// reason as [`Self::color_depth`]: this is a runtime-detected (or
+    /// test-overridden) property of the *terminal* a TUI session happens
+    /// to be running in, not a static "does this backend implement method
+    /// X" fact `tests/conformance/caps.rs` can check by asking whether a
+    /// method was overridden. `false` on every non-TUI backend (GTK,
+    /// Win-GUI, macOS): none of them speak a terminal protocol at all, so
+    /// `false` is the honest, structural answer, not a gap. On TUI it is
+    /// `true` only when [`crate::tui::run`] actually pushed the
+    /// protocol's enhancement flags — see
+    /// `crate::tui::caps::probe_kitty_keyboard` for how that is decided,
+    /// and `crate::tui::backend::TuiBackend::set_kitty_keyboard` for where
+    /// the live answer lands here. Before this flag existed, an app had no
+    /// way to tell "the terminal doesn't support this" from "it does, and
+    /// the push already happened" — a gesture built assuming the latter
+    /// would simply never fire on a terminal where it wasn't, with no
+    /// signal anywhere. Check this before relying on a gesture that needs
+    /// the protocol (e.g. Ctrl+Enter distinct from Enter) and fall back to
+    /// an always-available binding (Alt+Enter) when it's `false` — see
+    /// `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade table for which real
+    /// terminals land on which side.
+    pub kitty_keyboard: bool,
 }
 
 /// A capability name paired with the accessor that reads it off a
@@ -371,6 +397,7 @@ impl BackendCaps {
             native_dialogs: false,
             notifications: false,
             color_depth: ColorDepth::TrueColor,
+            kitty_keyboard: false,
         }
     }
 
@@ -2797,11 +2824,14 @@ mod backend_caps_tests {
         // invisible to `names()`/`has()`/`vocabulary()` — and so to every
         // scenario `requires` gate and to the C0 honesty check.
         //
-        // `color_depth` is the one deliberate exception: it is not a
-        // bool capability (see its doc comment on `BackendCaps`), so it
-        // is named here — forcing a future field addition to make a
-        // conscious choice about which bucket it belongs in — but
-        // intentionally left out of `SETTERS`/`want`/`ALL_NAMES`.
+        // `color_depth` and `kitty_keyboard` are the deliberate exceptions:
+        // neither is a bool *capability* in the "does this backend
+        // implement optional surface X" sense (see each field's doc
+        // comment on `BackendCaps`) — both are runtime-detected properties
+        // of the terminal a TUI session happens to be running in. They are
+        // named here — forcing a future field addition to make a conscious
+        // choice about which bucket it belongs in — but intentionally left
+        // out of `SETTERS`/`want`/`ALL_NAMES`.
         let BackendCaps {
             mouse: _,
             scroll: _,
@@ -2815,6 +2845,7 @@ mod backend_caps_tests {
             native_dialogs: _,
             notifications: _,
             color_depth: _,
+            kitty_keyboard: _,
         } = BackendCaps::empty();
 
         let want: Vec<&str> = SETTERS.iter().map(|(n, _)| *n).collect();
