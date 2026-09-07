@@ -9,18 +9,30 @@
 //!
 //! ## Math
 //!
-//! Two backends in this crate compute thumb geometry slightly
-//! differently — the TUI vertical scrollbar uses
-//! `thumb_start = floor(scroll/total * track_len)` (cell precision,
-//! offset proportional to scroll/total), while GTK's overlay uses
-//! `thumb_start = (scroll/(total-visible)) * (track_len-thumb_len)` with
-//! a 20-pixel minimum thumb. Both shapes are valid; this crate doesn't
-//! force one over the other.
+//! [`fit_thumb`] is the **one** canonical thumb-sizing/positioning
+//! formula in this crate — every scrollbar geometry type
+//! (`Scrollbar`, `PaletteScrollbar`, `PopupScrollbar`,
+//! `TerminalScrollbar`, `dispatch::SurfaceScrollbar`) computes its
+//! thumb through it, directly or via a thin per-primitive adapter
+//! (e.g. `multi_section_view::compute_thumb_bounds` converts a
+//! row-indexed scroll position into `fit_thumb`'s continuous units,
+//! then [`quantize_thumb`](crate::primitives::multi_section_view::quantize_thumb)
+//! snaps the result to whole cells for TUI).
 //!
-//! [`fit_thumb`] offers a single canonical helper that some backends
-//! consume directly. Backends with subtly different conventions may
-//! ignore the helper and supply their own pre-computed geometry to
-//! [`Scrollbar`]; the rasteriser only paints, never measures.
+//! This used to document two "accepted" competing formulas — a TUI
+//! cell-precision variant and a GTK-overlay variant with its own
+//! 20-pixel floor. **That is no longer true and was never actually
+//! required**: both were re-derivations of the same proportional
+//! thumb-sizing math, not a real backend-driven divergence. quadraui#820
+//! deleted every stand-alone re-derivation this crate had accumulated
+//! (`compose::sidebar_system`'s panel-drag setup, `multi_section_view`'s
+//! own panel-scrollbar layout, `primitives::rich_text_popup`'s popup
+//! scrollbar, and `tui::multi_section_view::paint_panel_scrollbar`'s
+//! paint-side copy — the last of which had silently drifted from the
+//! hit-tested geometry, dropping divider strips from its total). A
+//! caller may still choose its own `min_thumb_len` value (cells vs.
+//! pixels, 1 vs. 8, etc.) — that is a per-surface *policy knob*
+//! `fit_thumb` takes as a parameter, not a second formula.
 
 use crate::event::Rect;
 use crate::types::WidgetId;

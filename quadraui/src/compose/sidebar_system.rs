@@ -31,7 +31,7 @@ use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormLayout,
 };
 use crate::primitives::multi_section_view::{
-    panel_thumb_min, LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
+    LayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
 use crate::primitives::tree::TreeRowMeasure;
 use crate::{
@@ -1192,24 +1192,24 @@ impl SidebarSystem {
             MultiSectionViewHit::PanelScrollbar {
                 kind: ScrollbarHit::Thumb,
             } => {
-                if let Some(sb) = layout.panel_scrollbar {
+                if let Some(thumb) = layout.panel_scrollbar_thumb {
                     // Total content the panel scrolls through — match
                     // `MultiSectionView::layout`'s `total_content`
-                    // (sections + dividers) so drag math agrees with
-                    // the painted thumb position. The legacy code
+                    // (sections + dividers) so `max_scroll` agrees with
+                    // the painted thumb's travel range. The legacy code
                     // dropped divider sizes, breaking drag when
                     // `allow_resize=true`.
                     let sections_total: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
                     let dividers_total: f32 = layout.dividers.iter().map(|d| d.bounds.height).sum();
                     let total = sections_total + dividers_total;
                     let max_scroll = (total - rect.height).max(0.0);
-                    let thumb_frac = rect.height / total;
-                    // Use the layout's `min_thumb` so drag and hit_test
-                    // see the same thumb dimensions. `panel_thumb_min`
-                    // is unit-aware (1 cell in TUI, 8 pixels in GTK).
-                    let min_thumb = panel_thumb_min(metrics);
-                    let thumb_h = (sb.height * thumb_frac).max(min_thumb).min(sb.height);
-                    let travel = (sb.height - thumb_h).max(0.0);
+                    // Thumb height comes straight from the layout
+                    // (`panel_scrollbar_thumb`, computed once via
+                    // `fit_thumb`) instead of re-deriving the
+                    // min-thumb formula here — pre-quadraui#820 this was
+                    // a third hand-rolled copy of the same math, which
+                    // is exactly the drift this issue exists to close.
+                    let travel = (rect.height - thumb.height).max(0.0);
                     let _ = lh;
                     self.panel_drag = Some(PanelScrollDrag {
                         origin_y: y,

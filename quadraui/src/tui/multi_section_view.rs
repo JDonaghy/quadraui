@@ -106,9 +106,12 @@ pub fn draw_multi_section_view(
     }
 
     // Panel-level scrollbar (WholePanel mode when content overflows).
+    // Thumb geometry comes straight from `layout.panel_scrollbar_thumb`
+    // (computed once, via `fit_thumb`, in `MultiSectionView::layout`) —
+    // see `paint_panel_scrollbar`'s doc for why this used to be a second,
+    // disagreeing formula (quadraui#820).
     if let Some(panel_sb) = layout.panel_scrollbar {
-        let total_content: f32 = layout.sections.iter().map(|s| s.resolved_size).sum();
-        paint_panel_scrollbar(buf, panel_sb, view.panel_scroll, total_content, theme);
+        paint_panel_scrollbar(buf, panel_sb, layout.panel_scrollbar_thumb, theme);
     }
 }
 
@@ -507,9 +510,29 @@ fn paint_scrollbar(buf: &mut Buffer, gutter: QRect, thumb_bounds: Option<QRect>,
     }
 }
 
-/// Panel-level scrollbar. Computes thumb size + position from the
-/// panel-wide `scroll` and `total_content` heights.
-fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f32, theme: &Theme) {
+/// Panel-level scrollbar. Paints the track, then the thumb at
+/// `thumb_bounds` — geometry computed once by
+/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
+/// (`fit_thumb` + cell quantisation) and published as
+/// [`MultiSectionViewLayout::panel_scrollbar_thumb`].
+///
+/// Pre-quadraui#820 this function computed thumb size/position itself
+/// from `(scroll, total_content)` with a `ceil()`-based formula that
+/// disagreed with the layout's `fit_thumb`-based one in two ways: the
+/// caller passed `total_content` as *just* the summed section sizes,
+/// silently dropping divider strips (so painted thumb size drifted from
+/// the hit-tested thumb whenever `allow_resize` was on and dividers
+/// were present); and even with matching totals, `ceil()`-rounding a
+/// fractional cell count is not the same operation as `fit_thumb`'s
+/// `max(min_thumb_len)` floor. Mirrors [`paint_scrollbar`]'s
+/// (per-section) pattern of consuming pre-computed bounds instead of
+/// re-deriving them.
+fn paint_panel_scrollbar(
+    buf: &mut Buffer,
+    bounds: QRect,
+    thumb_bounds: Option<QRect>,
+    theme: &Theme,
+) {
     let bg = ratatui_color(theme.background);
     let track = ratatui_color(theme.scrollbar_track);
     let thumb = ratatui_color(theme.scrollbar_thumb);
@@ -517,7 +540,7 @@ fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f3
     let x = bounds.x.round() as u16;
     let y_start = bounds.y.round() as u16;
     let height = bounds.height.round() as u16;
-    if height == 0 || total <= 0.0 {
+    if height == 0 {
         return;
     }
 
@@ -530,18 +553,13 @@ fn paint_panel_scrollbar(buf: &mut Buffer, bounds: QRect, scroll: f32, total: f3
         set_cell(buf, x, cell_y, '░', track, bg);
     }
 
-    // Thumb position + size.
-    let visible_frac = (height as f32 / total).min(1.0);
-    let scroll_frac = if total > height as f32 {
-        scroll / (total - height as f32)
-    } else {
-        0.0
+    // Thumb.
+    let (thumb_y, thumb_h) = match thumb_bounds {
+        Some(t) => (t.y.round() as u16, t.height.round().max(1.0) as u16),
+        None => (y_start, 1),
     };
-    let thumb_h = ((height as f32 * visible_frac).ceil() as u16).max(1);
-    let thumb_track = height.saturating_sub(thumb_h);
-    let thumb_offset = (thumb_track as f32 * scroll_frac).round() as u16;
     for dy in 0..thumb_h {
-        let cell_y = y_start + thumb_offset + dy;
+        let cell_y = thumb_y + dy;
         if cell_y >= y_start + height {
             break;
         }
@@ -1132,6 +1150,96 @@ mod tests {
             } => assert_eq!(section, 0),
             other => panic!(
                 "hit at painted thumb row {} returned {:?}; expected Scrollbar::Thumb",
+                painted_mid, other
+            ),
+        }
+    }
+
+    /// Panel-level (`WholePanel`) scrollbar: painted thumb glyphs match
+    /// [`MultiSectionViewLayout::panel_scrollbar_thumb`] exactly, and
+    /// that thumb's size accounts for divider strips.
+    ///
+    /// Regression coverage for quadraui#820: pre-fix,
+    /// `paint_panel_scrollbar` recomputed its own thumb geometry from
+    /// `layout.sections.iter().map(|s| s.resolved_size).sum()` — which
+    /// silently dropped divider strips — instead of reusing
+    /// `panel_scrollbar_thumb` (itself computed once via `fit_thumb` from
+    /// the *correct* total, sections + dividers). With two 11-row tree
+    /// sections (each `1 (header) + 11 (rows) = 12`) plus one 1-cell
+    /// divider (`allow_resize = true`), the correct total is `25`, not
+    /// `24`. In a 10-row viewport that difference changes the painted
+    /// thumb height: `fit_thumb`'s `raw_len = (10/25)*10 = 4.0` exactly,
+    /// vs. the pre-fix formula's `ceil(10 * (10/24)) = ceil(4.1666) = 5`
+    /// — a visibly taller, wrong thumb.
+    #[test]
+    fn panel_scrollbar_thumb_paints_at_layout_position_with_dividers() {
+        let area = TuiRect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let rows: [&str; 11] = [
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10",
+        ];
+        let v = MultiSectionView {
+            id: WidgetId::new("v"),
+            sections: vec![
+                tree_section("a", &rows, SectionSize::EqualShare),
+                tree_section("b", &rows, SectionSize::EqualShare),
+            ],
+            active_section: None,
+            axis: Axis::Vertical,
+            allow_resize: true,
+            allow_collapse: true,
+            scroll_mode: ScrollMode::WholePanel,
+            has_focus: false,
+            panel_scroll: 0.0,
+        };
+
+        let layout = paint_then_layout(&mut buf, area, &v, &Theme::default(), false);
+        let panel_sb = layout
+            .panel_scrollbar
+            .expect("total_content (25) > viewport (10) → panel scrollbar present");
+        let thumb = layout
+            .panel_scrollbar_thumb
+            .expect("panel_scrollbar present implies panel_scrollbar_thumb present");
+
+        // Part A — matches `fit_thumb(scroll=0, total=25, visible=10,
+        // track=10, min=1)`: raw_len = 10/25*10 = 4.0, thumb_len = 4.0;
+        // scroll=0 → thumb_start = 0.
+        assert!(
+            (thumb.height - 4.0).abs() < 0.01,
+            "thumb.height = {} (expected 4.0 — pre-#820 formula would give 5.0 \
+             by dropping the divider strip from its total)",
+            thumb.height
+        );
+        assert!(
+            (thumb.y - panel_sb.y).abs() < 0.01,
+            "thumb.y = {} (expected to start at the track top: panel_scroll=0)",
+            thumb.y
+        );
+
+        // Part B — painted '█' rows match `panel_scrollbar_thumb` exactly.
+        let gutter_x = panel_sb.x.round() as u16;
+        let mut painted_thumb_rows: Vec<u16> = Vec::new();
+        for y in (panel_sb.y.round() as u16)..((panel_sb.y + panel_sb.height).round() as u16) {
+            if cell_char(&buf, gutter_x, y) == '█' {
+                painted_thumb_rows.push(y);
+            }
+        }
+        assert_eq!(
+            painted_thumb_rows,
+            (thumb.y.round() as u16..(thumb.y + thumb.height).round() as u16).collect::<Vec<_>>(),
+            "painted panel-thumb rows should match layout's panel_scrollbar_thumb"
+        );
+
+        // Part C — hit_test at a painted thumb cell returns
+        // `PanelScrollbar { Thumb }`, closing the paint/layout/hit-test
+        // round trip.
+        let painted_mid = painted_thumb_rows[painted_thumb_rows.len() / 2];
+        match layout.hit_test(panel_sb.x + panel_sb.width / 2.0, painted_mid as f32 + 0.5) {
+            MultiSectionViewHit::PanelScrollbar {
+                kind: ScrollbarHit::Thumb,
+            } => {}
+            other => panic!(
+                "hit at painted panel-thumb row {} returned {:?}; expected PanelScrollbar::Thumb",
                 painted_mid, other
             ),
         }
