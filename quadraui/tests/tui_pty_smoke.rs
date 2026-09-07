@@ -57,6 +57,15 @@ struct PtyExample {
 /// scratch if the target dir is cold.
 const WAIT: Duration = Duration::from_secs(60);
 
+/// How long to wait for a keystroke's *effect to disappear* from the screen
+/// (an input cleared by Escape). Much shorter than [`WAIT`] because nothing
+/// has to compile or start by this point — the example is already running
+/// and has already echoed typed text — but far longer than the round trip
+/// actually takes, so a loaded runner can't turn a pass into a failure.
+/// Only the failure path pays it.
+#[cfg_attr(not(unix), allow(dead_code))]
+const ESC_SETTLE: Duration = Duration::from_secs(10);
+
 impl PtyExample {
     /// Spawns `cargo run --quiet --example <name> --features tui` inside a
     /// freshly opened PTY sized `cols`x`rows`, with `TERM=xterm-256color`
@@ -174,6 +183,35 @@ impl PtyExample {
         let deadline = Instant::now() + timeout;
         loop {
             if self.screen_text().contains(needle) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Polls the emulated screen until it *stops* containing `needle`, or
+    /// times out.
+    ///
+    /// The mirror of [`Self::wait_for`], for assertions about something
+    /// being removed from the screen (an input cleared, a toast dismissed).
+    /// A fixed `sleep` before sampling would work only as long as the whole
+    /// write → pty → event loop → repaint → `vt100` round trip fits inside
+    /// it, which is not a property this harness can guarantee on a loaded
+    /// CI runner — this returns the moment the change lands and only pays
+    /// the full `timeout` when it genuinely never does.
+    ///
+    /// Unix-only in practice: its sole caller is `#[cfg(unix)]` (see
+    /// [`tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak`]),
+    /// so the `allow(dead_code)` keeps the `-D warnings` clippy leg green
+    /// on Windows — same pattern as [`Self::raw_contains`] above.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    fn wait_for_absence(&self, needle: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.screen_text().contains(needle) {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -342,6 +380,38 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
 /// continuous any-motion stream with a keystroke landing mid-burst).
 /// Escape must still clear the input in every case, and no fragment of
 /// the SGR report may leak into the transcript.
+///
+/// **`#[cfg(unix)]` — deliberately, for the same transport reason as the
+/// `sgr_color_depth` module below, and this gate must not be removed.**
+/// This fixture works by controlling the exact *byte* boundaries the
+/// terminal-input reader sees ("all coalesced into one `write()` so the
+/// race actually has a chance to fire"), and that lever only exists where
+/// crossterm parses a byte stream — i.e. its Unix event source, whose
+/// `parse_event(buffer, input_available)` is the very function that
+/// resolves a lone `ESC` to a standalone Escape when no further bytes are
+/// already buffered. That is #293's whole mechanism.
+///
+/// On Windows crossterm never parses bytes at all: `event::source::windows`
+/// reads `INPUT_RECORD`s through the console API (`read_single_input_event`
+/// → `handle_key_event`/`handle_mouse_event`), so there is no buffer, no
+/// `input_available`, and structurally no split-ESC race to reproduce.
+/// Worse, the bytes this test writes never reach the child as bytes:
+/// `portable-pty`'s Windows backend is ConPTY, so conhost's own VT *input*
+/// state machine parses `\x1b`/`\x1b[<…M` on the master side and hands the
+/// child whatever records *it* decides they mean — its escape
+/// disambiguation, its mouse translation, its flush-at-end-of-string
+/// timing. A failure here on windows-latest therefore reports on conhost's
+/// input parser, not on quadraui's recovery path, and no change to
+/// `recover_leaked_sgr_mouse_fragments` could move it either way. (Which is
+/// exactly what happened: this fixture failed on windows-latest while both
+/// content-level pty tests above passed on the same runner.)
+///
+/// What Windows keeps: the recovery logic itself, unit-tested end-to-end
+/// over real `UiEvent` batches in `src/tui/backend.rs`'s
+/// `recover_leaked_sgr_mouse_fragments` tests (pure-motion, click down/up,
+/// drag, non-matching runs, multiple leaks per batch) — platform-independent,
+/// and run by the same windows-latest job — plus both pty tests above.
+#[cfg(unix)]
 #[test]
 fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
     let cases: [(&str, Vec<u8>); 3] = [
@@ -377,9 +447,15 @@ fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
         );
 
         ex.send(&combined);
-        // Give the parser a moment to process both the (mis-)decoded
-        // Escape and any trailing fragment before sampling the screen.
-        std::thread::sleep(Duration::from_millis(300));
+        // Wait for the Escape to take effect rather than sampling after a
+        // fixed sleep — the round trip (write → pty → 16 ms event-loop poll
+        // → redraw → `vt100`) is fast, but not bounded on a loaded CI
+        // runner. Returns as soon as the input clears.
+        let cleared = ex.wait_for_absence("hello", ESC_SETTLE);
+        // A leaked fragment lands in the input in the same batch as the
+        // (mis-)decoded Escape, but let one more redraw settle before
+        // sampling so a fragment arriving just after the clear is still seen.
+        std::thread::sleep(Duration::from_millis(150));
 
         let screen = ex.screen_text();
         assert!(
@@ -388,9 +464,10 @@ fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
              (#293 class):\n{screen}"
         );
         assert!(
-            !screen.contains("hello"),
-            "[{label}] Escape did not clear the input — either it was swallowed by the \
-             adjacent SGR report or the input got polluted before Escape ran:\n{screen}"
+            cleared && !screen.contains("hello"),
+            "[{label}] Escape did not clear the input within {ESC_SETTLE:?} — either it was \
+             swallowed by the adjacent SGR report or the input got polluted before Escape \
+             ran:\n{screen}"
         );
 
         ex.send(b"\x03"); // Ctrl+C — quit immediately.
