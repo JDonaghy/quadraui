@@ -19,7 +19,7 @@ use super::{
 };
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
+    Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader, SectionMeasure,
 };
 use crate::text_util::char_cell_width;
@@ -128,7 +128,7 @@ pub fn tui_msv_layout(view: &MultiSectionView, area: TuiRect) -> MultiSectionVie
     // to whole cells inside `MultiSectionView::layout` so paint
     // (rounded to integer rows) and hit_test (raw fractional bounds)
     // agree by construction.
-    let metrics = LayoutMetrics {
+    let metrics = MsvLayoutMetrics {
         header_size: 1.0,
         divider_size: if view.allow_resize { 1.0 } else { 0.0 },
         scrollbar_size: 1.0,

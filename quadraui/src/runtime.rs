@@ -81,7 +81,7 @@
 
 use crate::desktop::{is_paste_keypress, PasteModifier};
 use crate::runner::AppLogic;
-use crate::text_selection::TextSelection;
+use crate::text_selection::ActiveTextSelection;
 use crate::{
     AcceleratorId, ActivityBarEvent, Key, Modifiers, MouseButton, Point, UiEvent, WidgetId,
 };
@@ -183,7 +183,7 @@ pub(crate) fn apply_outcome(outcome: impl Into<EventOutcome>, sink: &impl Reacti
 ))]
 pub(crate) trait PreprocessBackend {
     /// The currently active text selection, if any.
-    fn active_text_selection(&self) -> Option<&TextSelection>;
+    fn active_text_selection(&self) -> Option<&ActiveTextSelection>;
 
     /// Update (or start) the active text selection — called on
     /// `UiEvent::TextSelectionChanged`.

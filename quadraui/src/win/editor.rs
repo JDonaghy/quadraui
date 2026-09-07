@@ -51,7 +51,7 @@ use crate::types::Color;
 ///   text, same ordering as `gtk::editor`.
 /// - **Gutter:** right-aligned `gutter_text`, `Theme::line_number_active_fg`
 ///   on the current line, else `Theme::line_number_fg`.
-/// - **Text:** per-[`crate::primitives::editor::StyledSpan`] colour
+/// - **Text:** per-[`crate::primitives::editor::EditorStyledSpan`] colour
 ///   (`Theme::foreground` where unset), honouring `bold`.
 /// - **Diagnostics:** a 2-DIP underline under `[start_col, end_col)` in
 ///   `Theme::diagnostic_error` / `_warning` / `_info` / `_hint`.
@@ -281,7 +281,7 @@ fn paint_selection(
 
 /// Paint `line`'s visible text window (`[scroll_left, scroll_left +
 /// visible_cols)` characters) at `y`, splitting into contiguous runs by
-/// [`crate::primitives::editor::StyledSpan`] colour.
+/// [`crate::primitives::editor::EditorStyledSpan`] colour.
 #[allow(clippy::too_many_arguments)]
 fn paint_line_text(
     target: &ID2D1RenderTarget,
@@ -360,7 +360,9 @@ fn paint_line_text(
 mod tests {
     use super::*;
     use crate::event::Rect as QRect;
-    use crate::primitives::editor::{CursorPos, DiagnosticMark, EditorCursor, Style, StyledSpan};
+    use crate::primitives::editor::{
+        CursorPos, DiagnosticMark, EditorCursor, EditorStyledSpan, Style,
+    };
     use crate::types::WidgetId;
     use crate::win::testing::HeadlessSurface;
 
@@ -371,7 +373,7 @@ mod tests {
         EditorLine {
             raw_text: text.to_string(),
             gutter_text: format!("{:>3}", idx + 1),
-            spans: vec![StyledSpan {
+            spans: vec![EditorStyledSpan {
                 start_byte: 0,
                 end_byte: text.len(),
                 style: Style {

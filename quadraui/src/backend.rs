@@ -92,7 +92,7 @@ use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout};
 use crate::primitives::multi_section_view::{
-    LayoutMetrics, MultiSectionView, MultiSectionViewLayout,
+    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::panel::{Panel, PanelLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
@@ -1644,7 +1644,7 @@ pub trait Backend: sealed::Sealed {
     /// Return the layout metrics this backend uses for MSV layout.
     /// Compose helpers cache these to compute layouts without a Backend
     /// reference at event-handling time.
-    fn msv_metrics(&self) -> LayoutMetrics;
+    fn msv_metrics(&self) -> MsvLayoutMetrics;
 
     /// Compute the tree layout the rasteriser would produce. Used by
     /// hosts (especially MSV consumers) to resolve body clicks down

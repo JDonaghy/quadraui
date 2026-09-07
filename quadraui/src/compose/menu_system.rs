@@ -926,7 +926,7 @@ mod tests {
         ) -> crate::MultiSectionViewLayout {
             unimplemented!()
         }
-        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
+        fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
             unimplemented!()
         }
         fn tree_layout(

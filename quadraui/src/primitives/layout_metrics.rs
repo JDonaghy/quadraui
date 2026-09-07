@@ -25,7 +25,7 @@ use crate::event::Rect as QRect;
 use crate::primitives::form::{FieldKind, FormField, FormFieldMeasure, FormItemMeasure};
 use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
 use crate::primitives::multi_section_view::{
-    LayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
+    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
 };
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
@@ -153,12 +153,12 @@ pub fn list_layout(
 
 // ── MultiSectionView ────────────────────────────────────────────────
 
-/// Compute the [`LayoutMetrics`] any pixel backend derives from a
+/// Compute the [`MsvLayoutMetrics`] any pixel backend derives from a
 /// `line_height`. Backends call this AND the primitive's `layout()`
 /// with the same metrics so paint and click resolve to the same
 /// bounds.
-pub fn msv_metrics(line_height: f64, allow_resize: bool) -> LayoutMetrics {
-    LayoutMetrics {
+pub fn msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
+    MsvLayoutMetrics {
         header_size: (line_height * 1.4) as f32,
         divider_size: if allow_resize { 1.0 } else { 0.0 },
         // 8px gives a visible scrollbar against typical dark sidebar

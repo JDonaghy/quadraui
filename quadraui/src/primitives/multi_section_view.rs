@@ -434,8 +434,16 @@ impl Default for SectionMeasure {
 /// Width of a per-section scrollbar in main-cross-axis units (cells for
 /// TUI, pixels for GTK). The host passes their native value; we just
 /// reserve the space.
+///
+/// Named `MsvLayoutMetrics` (not just `LayoutMetrics`) since #822: the
+/// bare name read as though it were defined in the unrelated
+/// `primitives::layout_metrics` module (which in fact imports *this*
+/// type) — same-crate naming ambiguity, not a compile clash. Matches the
+/// name this type was already re-exported under at the crate root. The
+/// old name survives as a `#[deprecated]` `pub type` alias below per
+/// `PRIMITIVE_RULES.md` rule 8.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LayoutMetrics {
+pub struct MsvLayoutMetrics {
     /// Header row size in main-axis units (e.g. 1 cell, or
     /// `line_height` pixels).
     pub header_size: f32,
@@ -453,7 +461,7 @@ pub struct LayoutMetrics {
     pub cell_quantum: f32,
 }
 
-impl Default for LayoutMetrics {
+impl Default for MsvLayoutMetrics {
     fn default() -> Self {
         Self {
             header_size: 1.0,
@@ -463,6 +471,13 @@ impl Default for LayoutMetrics {
         }
     }
 }
+
+/// Pre-#822 name of [`MsvLayoutMetrics`]. Kept as a source-compatible
+/// alias per `PRIMITIVE_RULES.md` rule 8 for anyone reaching this type
+/// via the full `quadraui::primitives::multi_section_view::LayoutMetrics`
+/// path (the crate root already re-exported it as `MsvLayoutMetrics`).
+#[deprecated(since = "0.0.1", note = "renamed to `MsvLayoutMetrics` (#822)")]
+pub type LayoutMetrics = MsvLayoutMetrics;
 
 impl MultiSectionView {
     /// Compute the full chrome layout for this view.
@@ -474,7 +489,7 @@ impl MultiSectionView {
     pub fn layout<F>(
         &self,
         bounds: Rect,
-        metrics: LayoutMetrics,
+        metrics: MsvLayoutMetrics,
         measure: F,
     ) -> MultiSectionViewLayout
     where
@@ -504,7 +519,7 @@ impl MultiSectionView {
     fn layout_vertical<F>(
         &self,
         bounds: Rect,
-        metrics: LayoutMetrics,
+        metrics: MsvLayoutMetrics,
         measure: F,
     ) -> MultiSectionViewLayout
     where
@@ -1018,7 +1033,7 @@ fn size_bounds(s: &Section) -> (f32, f32) {
 /// Pre-#241 the compose helper used a different floor (`line_height`),
 /// so in TUI the painted thumb moved ~8× faster than the cursor and
 /// the user-facing symptom was "thumb drag does nothing visible".
-pub(crate) fn panel_thumb_min(metrics: &LayoutMetrics) -> f32 {
+pub(crate) fn panel_thumb_min(metrics: &MsvLayoutMetrics) -> f32 {
     if metrics.cell_quantum > 0.0 {
         metrics.cell_quantum
     } else {
@@ -1402,7 +1417,7 @@ mod tests {
         ]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 20.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // 20 rows total - 0 dividers = 20 usable; both equal share = 10 each.
@@ -1422,7 +1437,7 @@ mod tests {
         ]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 25.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // 25 - 5 (fixed) = 20 remaining; equal split = 10 each.
@@ -1439,7 +1454,7 @@ mod tests {
         ]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 100.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // Percent(0.4) of 100 = 40; rest = 60.
@@ -1455,7 +1470,7 @@ mod tests {
         ]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 30.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // 30 split 2:1 = 20:10.
@@ -1473,7 +1488,7 @@ mod tests {
         let v = view(sections);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 20.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // Collapsed section gets header_size (1.0); other gets remainder (19).
@@ -1492,7 +1507,7 @@ mod tests {
         let v = view(sections);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 20.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // Without min: both 10. With min(a)=15: a is at least 15.
@@ -1524,7 +1539,7 @@ mod tests {
         }]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 10.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // Chevron at x=0.
@@ -1580,7 +1595,7 @@ mod tests {
         }]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 10.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // Click in the action zone — but action is disabled, so we expect TitleArea.
@@ -1601,7 +1616,7 @@ mod tests {
         ]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 20.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         // Section 0 body is at y=1..10 (header at y=0..1).
@@ -1621,7 +1636,7 @@ mod tests {
         let v = view(vec![empty_section("a", SectionSize::EqualShare)]);
         let layout = v.layout(
             Rect::new(10.0, 10.0, 20.0, 20.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure::default(),
         );
         match layout.hit_test(0.0, 0.0) {
@@ -1636,9 +1651,9 @@ mod tests {
             empty_section("a", SectionSize::EqualShare),
             empty_section("b", SectionSize::EqualShare),
         ]);
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             divider_size: 1.0,
-            ..LayoutMetrics::default()
+            ..MsvLayoutMetrics::default()
         };
         v.allow_resize = false;
         let layout = v.layout(Rect::new(0.0, 0.0, 30.0, 20.0), metrics, |_| {
@@ -1694,7 +1709,7 @@ mod tests {
         v.scroll_mode = ScrollMode::WholePanel;
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 4.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure {
                 content_size: 5.0,
                 aux_size: 0.0,
@@ -1724,9 +1739,9 @@ mod tests {
             empty_section("c", SectionSize::EqualShare),
             empty_section("d", SectionSize::EqualShare),
         ]);
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             cell_quantum: 1.0,
-            ..LayoutMetrics::default()
+            ..MsvLayoutMetrics::default()
         };
         let layout = v.layout(Rect::new(0.0, 0.0, 30.0, 21.0), metrics, |_| {
             SectionMeasure {
@@ -1783,9 +1798,9 @@ mod tests {
             empty_section("c", SectionSize::EqualShare),
             empty_section("d", SectionSize::EqualShare),
         ]);
-        let metrics = LayoutMetrics {
+        let metrics = MsvLayoutMetrics {
             cell_quantum: 1.0,
-            ..LayoutMetrics::default()
+            ..MsvLayoutMetrics::default()
         };
         // 21 rows: 4 headers + 17 body cells, distributed unevenly.
         let layout = v.layout(Rect::new(0.0, 2.0, 30.0, 21.0), metrics, |_| {
@@ -1829,7 +1844,7 @@ mod tests {
         let v = view(vec![s]);
         let layout = v.layout(
             Rect::new(0.0, 0.0, 30.0, 10.0),
-            LayoutMetrics::default(),
+            MsvLayoutMetrics::default(),
             |_| SectionMeasure {
                 content_size: 0.0,
                 aux_size: 1.0,

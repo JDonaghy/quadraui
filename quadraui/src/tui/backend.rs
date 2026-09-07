@@ -318,7 +318,9 @@ impl TuiBackend {
     }
 
     /// Return the current active text selection, if any.
-    pub(crate) fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    pub(crate) fn active_text_selection(
+        &self,
+    ) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.text_selection.active_text_selection()
     }
 
@@ -711,7 +713,7 @@ impl Default for TuiBackend {
 }
 
 impl crate::runtime::PreprocessBackend for TuiBackend {
-    fn active_text_selection(&self) -> Option<&crate::text_selection::TextSelection> {
+    fn active_text_selection(&self) -> Option<&crate::text_selection::ActiveTextSelection> {
         self.active_text_selection()
     }
 
@@ -1747,8 +1749,8 @@ impl Backend for TuiBackend {
         crate::tui::tui_msv_layout(view, area)
     }
 
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
-        crate::primitives::multi_section_view::LayoutMetrics {
+    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
+        crate::primitives::multi_section_view::MsvLayoutMetrics {
             header_size: 1.0,
             divider_size: 0.0,
             scrollbar_size: 1.0,
@@ -2611,13 +2613,13 @@ mod tests {
             // metrics — sufficient for cross-backend compile checks.
             v.layout(
                 r,
-                crate::primitives::multi_section_view::LayoutMetrics::default(),
+                crate::primitives::multi_section_view::MsvLayoutMetrics::default(),
                 |_| crate::primitives::multi_section_view::SectionMeasure::default(),
             )
         }
 
-        fn msv_metrics(&self) -> crate::primitives::multi_section_view::LayoutMetrics {
-            crate::primitives::multi_section_view::LayoutMetrics::default()
+        fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
+            crate::primitives::multi_section_view::MsvLayoutMetrics::default()
         }
 
         fn tree_layout(&self, r: QRect, t: &TreeView) -> crate::primitives::tree::TreeViewLayout {
