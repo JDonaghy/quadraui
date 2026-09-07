@@ -619,7 +619,7 @@ pub const CASES: &[Case] = &[
         needle: None,
         paint: |b, area| {
             let cell = |ch: char| TerminalCell {
-                ch,
+                text: ch.to_string(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(30, 30, 30),
                 bold: false,

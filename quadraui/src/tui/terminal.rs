@@ -45,13 +45,21 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             let (draw_bg, draw_fg) = (ratatui_color(bg), ratatui_color(fg));
 
             let buf_cell = &mut buf[(x, y)];
-            // ratatui ≥ 0.30 debug_asserts on ASCII control chars in cell symbols.
-            let draw_ch = if cell.ch.is_ascii_control() {
-                ' '
+            // `cell.text` is the cell's full grapheme cluster (base
+            // character plus any combining marks vt100 attached to it,
+            // e.g. an accent) rather than a single `char` — `set_symbol`
+            // (not `set_char`) is what lets ratatui paint the whole
+            // cluster as one glyph instead of silently dropping every
+            // codepoint after the first (quadraui#337). ratatui ≥ 0.30
+            // debug_asserts on ASCII control chars in cell symbols, so
+            // any control byte in the cluster falls back to a plain
+            // space, matching the old single-`char` behaviour.
+            if cell.text.chars().any(|c| c.is_ascii_control()) {
+                buf_cell.set_char(' ');
             } else {
-                cell.ch
-            };
-            buf_cell.set_char(draw_ch).set_fg(draw_fg).set_bg(draw_bg);
+                buf_cell.set_symbol(&cell.text);
+            }
+            buf_cell.set_fg(draw_fg).set_bg(draw_bg);
 
             let mut modifier = Modifier::empty();
             if cell.bold {
@@ -129,7 +137,7 @@ mod tests {
 
     fn blank_cell() -> TerminalCell {
         TerminalCell {
-            ch: ' ',
+            text: " ".to_string(),
             fg: Color::rgb(200, 200, 200),
             bg: Color::rgb(0, 0, 0),
             bold: false,

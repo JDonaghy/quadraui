@@ -68,7 +68,7 @@ mod tests {
 
     fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
         TerminalCell {
-            ch,
+            text: ch.to_string(),
             fg,
             bg,
             bold: false,

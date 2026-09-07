@@ -75,9 +75,13 @@ use crate::types::{Color, Modifiers, WidgetId};
 ///
 /// Uses `vt100::Color` directly to defer RGB resolution until paint time,
 /// matching the approach used by downstream terminal-history cell types.
-#[derive(Clone, Copy)]
+///
+/// `text` carries the cell's full grapheme cluster (base character plus
+/// any combining marks), mirroring [`TerminalCell::text`] — no longer
+/// `Copy` since `String` isn't (quadraui#337).
+#[derive(Clone)]
 struct HistCell {
-    ch: char,
+    text: String,
     fg: vt100::Color,
     bg: vt100::Color,
     bold: bool,
@@ -88,7 +92,7 @@ struct HistCell {
 impl Default for HistCell {
     fn default() -> Self {
         HistCell {
-            ch: ' ',
+            text: " ".to_string(),
             fg: vt100::Color::Default,
             bg: vt100::Color::Default,
             bold: false,
@@ -887,7 +891,7 @@ impl TerminalSession {
             .map(|row| {
                 let mut line = String::new();
                 for hc in row {
-                    line.push(hc.ch);
+                    line.push_str(&hc.text);
                 }
                 line.trim_end().to_string()
             })
@@ -1105,8 +1109,7 @@ impl TerminalSession {
             let hist_idx_signed = hist_len as isize - scroll_offset as isize + display_r as isize;
             if hist_idx_signed >= 0 {
                 if let Some(hist_row) = self.history.get(hist_idx_signed as usize) {
-                    let ch = hist_row.get(col as usize).copied().unwrap_or_default().ch;
-                    return ch.to_string();
+                    return hist_row.get(col as usize).cloned().unwrap_or_default().text;
                 }
             }
             " ".to_string()
@@ -1239,7 +1242,19 @@ impl TerminalSession {
                         Some(cell) => {
                             let raw = cell.contents();
                             HistCell {
-                                ch: raw.chars().next().unwrap_or(' '),
+                                // vt100's own convention for an empty /
+                                // never-written cell (including a wide
+                                // glyph's trailing spacer column) is
+                                // `contents() == ""` — normalise that to
+                                // a single space rather than storing an
+                                // empty grapheme, so history playback
+                                // still occupies its column
+                                // (quadraui#337).
+                                text: if raw.is_empty() {
+                                    " ".to_string()
+                                } else {
+                                    raw.to_string()
+                                },
                                 fg: cell.fgcolor(),
                                 bg: cell.bgcolor(),
                                 bold: cell.bold(),
@@ -1302,7 +1317,7 @@ impl TerminalSession {
                     .map(|c| {
                         let cu = c as u16;
 
-                        let (ch, fg, bg, bold, italic, underline, is_cursor, selected) =
+                        let (text, fg, bg, bold, italic, underline, is_cursor, selected) =
                             if display_r < scroll_offset {
                                 // Row is in the scrollback history.
                                 let hist_idx_signed =
@@ -1311,9 +1326,9 @@ impl TerminalSession {
                                     if let Some(hist_row) =
                                         self.history.get(hist_idx_signed as usize)
                                     {
-                                        let hc = hist_row.get(c).copied().unwrap_or_default();
+                                        let hc = hist_row.get(c).cloned().unwrap_or_default();
                                         (
-                                            hc.ch,
+                                            hc.text,
                                             map_vt100_color(hc.fg, false),
                                             map_vt100_color(hc.bg, true),
                                             hc.bold,
@@ -1324,7 +1339,7 @@ impl TerminalSession {
                                         )
                                     } else {
                                         (
-                                            ' ',
+                                            " ".to_string(),
                                             (229, 229, 229),
                                             (30, 30, 30),
                                             false,
@@ -1336,7 +1351,7 @@ impl TerminalSession {
                                     }
                                 } else {
                                     (
-                                        ' ',
+                                        " ".to_string(),
                                         (229, 229, 229),
                                         (30, 30, 30),
                                         false,
@@ -1349,12 +1364,24 @@ impl TerminalSession {
                             } else {
                                 // Row is in the live vt100 screen.
                                 let live_r = (display_r - scroll_offset) as u16;
-                                let (ch, fg, bg, bold, italic, underline) =
+                                let (text, fg, bg, bold, italic, underline) =
                                     if let Some(cell) = screen.cell(live_r, cu) {
                                         let contents = cell.contents();
-                                        let ch = contents.chars().next().unwrap_or(' ');
+                                        // Full grapheme cluster (base char
+                                        // + any combining marks), not just
+                                        // the first char — and vt100's
+                                        // empty-string convention for a
+                                        // blank / wide-glyph continuation
+                                        // cell normalises to a single
+                                        // space so it still occupies its
+                                        // column (quadraui#337).
+                                        let text = if contents.is_empty() {
+                                            " ".to_string()
+                                        } else {
+                                            contents.to_string()
+                                        };
                                         (
-                                            ch,
+                                            text,
                                             map_vt100_color(cell.fgcolor(), false),
                                             map_vt100_color(cell.bgcolor(), true),
                                             cell.bold(),
@@ -1362,7 +1389,14 @@ impl TerminalSession {
                                             cell.underline(),
                                         )
                                     } else {
-                                        (' ', (229, 229, 229), (30, 30, 30), false, false, false)
+                                        (
+                                            " ".to_string(),
+                                            (229, 229, 229),
+                                            (30, 30, 30),
+                                            false,
+                                            false,
+                                            false,
+                                        )
                                     };
 
                                 let is_cursor = !self.exited
@@ -1372,7 +1406,7 @@ impl TerminalSession {
                                     && cu == cursor_col;
 
                                 (
-                                    ch,
+                                    text,
                                     fg,
                                     bg,
                                     bold,
@@ -1384,7 +1418,7 @@ impl TerminalSession {
                             };
 
                         TerminalCell {
-                            ch,
+                            text,
                             fg: Color::rgb(fg.0, fg.1, fg.2),
                             bg: Color::rgb(bg.0, bg.1, bg.2),
                             bold,
@@ -2932,7 +2966,9 @@ mod tests {
         let chars: Vec<char> = text.chars().collect();
         (0..cols as usize)
             .map(|i| HistCell {
-                ch: chars.get(i).copied().unwrap_or(' '),
+                text: chars
+                    .get(i)
+                    .map_or_else(|| " ".to_string(), |c| c.to_string()),
                 ..Default::default()
             })
             .collect()
@@ -3061,6 +3097,94 @@ mod tests {
         assert!(
             row1.iter().all(|c| !c.selected),
             "row 1 should have no selection"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    // ── Grapheme cluster / wide-char cell content (quadraui#337) ───────
+
+    /// `build_rows()`'s live-screen branch must carry a cell's *full*
+    /// grapheme cluster — base character plus any combining marks — not
+    /// just the first `char`. Feeds vt100 directly via `sess.parser`
+    /// (same technique as `resize_preserves_wide_chars`) so the byte
+    /// content is exact and doesn't depend on shell echo timing.
+    #[test]
+    #[cfg(unix)]
+    fn build_rows_live_screen_preserves_combining_mark_grapheme() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // 'e' + U+0301 COMBINING ACUTE ACCENT — a two-codepoint grapheme
+        // cluster vt100 stores in a single cell (`Cell::contents()`
+        // returns both codepoints for one column).
+        sess.parser.process("e\u{0301}".as_bytes());
+
+        let rows = sess.build_rows(false);
+        assert_eq!(
+            rows[0][0].text, "e\u{0301}",
+            "combining mark must survive into the cell's text, not just 'e'"
+        );
+        assert_eq!(
+            rows[0][0].cell_width(),
+            1,
+            "base char + combining accent is still one column wide"
+        );
+        // The accent must not have consumed a second column — column 1
+        // is still blank.
+        assert_eq!(rows[0][1].text, " ");
+
+        sess.send_str("exit\n");
+    }
+
+    /// `build_rows()`'s live-screen branch must reserve a two-column box
+    /// for a wide (CJK) glyph and leave vt100's blank continuation
+    /// column as-is, so column accounting downstream (TUI/GTK/macOS/win
+    /// rasterisers) matches vt100's own layout exactly.
+    #[test]
+    #[cfg(unix)]
+    fn build_rows_live_screen_wide_char_reserves_continuation_column() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 4, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        // '日' is double-width; vt100 gives it column 0 and leaves
+        // column 1 as an empty continuation cell.
+        sess.parser.process("日B".as_bytes());
+
+        let rows = sess.build_rows(false);
+        assert_eq!(rows[0][0].text, "日");
+        assert_eq!(rows[0][0].cell_width(), 2);
+        assert_eq!(
+            rows[0][1].text, " ",
+            "wide glyph's continuation column must be blank, not a second copy"
+        );
+        // 'B' lands in column 2 — the continuation column at index 1
+        // wasn't (incorrectly) treated as a second content column.
+        assert_eq!(rows[0][2].text, "B");
+        assert_eq!(rows[0][2].cell_width(), 1);
+
+        sess.send_str("exit\n");
+    }
+
+    /// `capture_scrolled_rows()` (the scrollback-capture path,
+    /// `terminal_engine.rs` history capture — quadraui#337) must also
+    /// preserve a full grapheme cluster rather than truncating to the
+    /// first `char`. A 1-row screen makes a single newline immediately
+    /// scroll that row into `history`, so `process_with_capture` (the
+    /// private entry point `poll()` normally drives) can be called
+    /// directly for a deterministic capture with no PTY/shell timing.
+    #[test]
+    #[cfg(unix)]
+    fn capture_scrolled_rows_preserves_combining_mark_grapheme() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn(10, 1, "/bin/sh", &cwd, 100).expect("spawn failed");
+
+        sess.process_with_capture("e\u{0301}\n".as_bytes());
+
+        assert_eq!(sess.history.len(), 1, "one row should have scrolled off");
+        assert_eq!(
+            sess.history[0][0].text, "e\u{0301}",
+            "combining mark must survive scrollback capture, not just 'e'"
         );
 
         sess.send_str("exit\n");
