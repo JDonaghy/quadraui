@@ -373,6 +373,30 @@ pub struct WinBackend {
     /// `attach_surface` call succeeds.
     #[cfg(target_os = "windows")]
     hwnd: Option<HWND>,
+    /// Live, thread-safe mirror of `hwnd`'s raw handle value, read fresh
+    /// on every invocation of the closure [`Self::waker`] hands out
+    /// (issue #831 review fix). `HWND` itself isn't `Send`, so it can't
+    /// be captured directly into the `Send + Sync` closure `waker()`
+    /// returns — but `waker()` is also documented to be callable during
+    /// `AppLogic::setup`, *before* [`Self::attach_surface`] has ever run
+    /// (`win::run::run_inner` calls `app.setup(&mut backend)` before
+    /// `CreateWindowExW`/`attach_surface`). A closure that captured
+    /// `self.hwnd` as a one-time `Option<isize>` snapshot at `waker()`
+    /// call time would permanently bake in "no window" for that closure
+    /// instance, even after `attach_surface` later runs — silently
+    /// dropping every future wake nudge, since a live `GetMessageW` loop
+    /// blocks indefinitely with no other way to notice a queued payload.
+    /// An `AtomicIsize` shared (not cloned-by-value) between `self` and
+    /// the closure lets the closure re-read the *current* value at
+    /// invocation time instead, mirroring the live-lookup pattern
+    /// `GtkBackend::waker` (thread-local map lookup) and
+    /// `MacBackend::waker` (`.get()` on a shared `OnceLock` inside the
+    /// dispatched closure) both already use for the same "waker obtained
+    /// before the wake target exists" case. `0` means "no window yet",
+    /// mirroring `hwnd`'s own `None` until `attach_surface` runs — a
+    /// real `HWND` is never null.
+    #[cfg(target_os = "windows")]
+    hwnd_raw: std::sync::Arc<std::sync::atomic::AtomicIsize>,
     /// DirectWrite factory + `IDWriteTextFormat` for the current editor
     /// font (`editor_font_family`/`editor_font_size_pt`). `None` until
     /// [`Self::attach_surface`] creates it — same lifecycle as `surface`,
@@ -515,6 +539,8 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             hwnd: None,
             #[cfg(target_os = "windows")]
+            hwnd_raw: std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(0)),
+            #[cfg(target_os = "windows")]
             dwrite: None,
             #[cfg(target_os = "windows")]
             editor_font_family: DEFAULT_EDITOR_FONT_FAMILY.to_string(),
@@ -637,6 +663,11 @@ impl WinBackend {
             target: RenderTarget::Hwnd(target),
         });
         self.hwnd = Some(hwnd);
+        // Keep the waker's live mirror in sync (issue #831 review fix) —
+        // see `Self::hwnd_raw`'s doc for why this can't just be read off
+        // `self.hwnd` from inside the closure.
+        self.hwnd_raw
+            .store(hwnd.0 as isize, std::sync::atomic::Ordering::Release);
         // #23: give `WinPlatformServices` the live window so file dialogs
         // open parented to it and notifications have an owning `HWND` —
         // mirrors `GtkBackend::set_window` calling
@@ -1138,6 +1169,23 @@ fn dpi_scale_for_window(hwnd: HWND) -> f32 {
     crate::win::msg::dpi_ratio(unsafe { GetDpiForWindow(hwnd) })
 }
 
+/// Resolve [`WinBackend::hwnd_raw`]'s current raw value back into an
+/// `HWND`, or `None` if no window has attached yet (`0`). Split out of
+/// [`WinBackend::waker`]'s closure so the "read the live handle" step is
+/// a plain, directly unit-testable function that doesn't also need a
+/// real `PostMessageW` call (or a real window) to exercise (issue #831
+/// review fix — see `hwnd_raw`'s doc for why this must be a fresh read
+/// on every call rather than a value closed over once).
+#[cfg(target_os = "windows")]
+fn live_hwnd(hwnd_raw: &std::sync::atomic::AtomicIsize) -> Option<HWND> {
+    let raw = hwnd_raw.load(std::sync::atomic::Ordering::Acquire);
+    if raw == 0 {
+        None
+    } else {
+        Some(HWND(raw as *mut core::ffi::c_void))
+    }
+}
+
 /// Map a [`PointerShape`] to the Win32 `IDC_*` cursor-resource `PCWSTR`
 /// [`LoadCursorW`] expects (#702, adopting `desktop::ALL_RESIZE_EDGES`/
 /// `desktop::all_pointer_shapes` — see
@@ -1434,6 +1482,13 @@ impl Backend for WinBackend {
     /// `GtkBackend::waker`'s "no `wake_callback` installed yet" case: a
     /// payload still lands in [`Self::user_events`] for any later
     /// `poll_events` caller, there is just no live window to nudge yet.
+    /// That no-op is *transient*, not permanent: the closure reads
+    /// [`Self::hwnd_raw`] fresh on every call rather than snapshotting
+    /// `self.hwnd` once at `waker()` call time, so a waker obtained
+    /// during `AppLogic::setup` (before `attach_surface` has run) still
+    /// wakes the loop correctly once a real window exists — see
+    /// `hwnd_raw`'s doc for the full rationale and the GTK/macOS
+    /// precedent this mirrors.
     fn waker(&self) -> std::sync::Arc<dyn Fn(UserPayload) + Send + Sync> {
         let queue = std::sync::Arc::clone(&self.user_events);
         #[cfg(target_os = "windows")]
@@ -1445,18 +1500,17 @@ impl Backend for WinBackend {
             // the other side is exactly as valid as the original value.
             // `PostMessageW` is documented safe to call against a window
             // owned by a different thread than the caller (that's its
-            // entire purpose here).
-            let hwnd_raw: Option<isize> = self.hwnd.map(|h| h.0 as isize);
+            // entire purpose here). `hwnd_raw` is the same `Arc` `self`
+            // holds (not a value copied out of it), so this closure sees
+            // whatever `attach_surface` stores into it later, however
+            // long after this closure was created.
+            let hwnd_raw = std::sync::Arc::clone(&self.hwnd_raw);
             std::sync::Arc::new(move |payload: UserPayload| {
                 queue.push(payload.into_arc());
-                if let Some(raw) = hwnd_raw {
+                if let Some(hwnd) = live_hwnd(&hwnd_raw) {
                     unsafe {
-                        let _ = PostMessageW(
-                            Some(HWND(raw as *mut core::ffi::c_void)),
-                            WM_QUADRAUI_USER_EVENT,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
+                        let _ =
+                            PostMessageW(Some(hwnd), WM_QUADRAUI_USER_EVENT, WPARAM(0), LPARAM(0));
                     }
                 }
             })
@@ -3838,6 +3892,44 @@ mod tests {
             }
             other => panic!("expected UiEvent::User, got {other:?}"),
         }
+    }
+
+    /// Regression test for the review finding on `WinBackend::waker`: a
+    /// closure obtained *before* `attach_surface` ever runs (exactly the
+    /// `AppLogic::setup` timing `Backend::waker`'s own doc example shows)
+    /// must not permanently bake in "no window" — it has to notice a
+    /// window attaching later. `attach_surface` itself needs a real
+    /// `HWND`/D2D device and can't run on this host, so this test drives
+    /// `hwnd_raw` (the live mirror `attach_surface` writes into) and
+    /// `live_hwnd` (the read `waker`'s closure performs on every call)
+    /// directly — the same two pieces of state the closure actually
+    /// touches, without needing `PostMessageW` to succeed against a real
+    /// window. Windows-only: `hwnd_raw`/`live_hwnd` don't exist on other
+    /// hosts (see `hwnd_raw`'s field doc).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn waker_resolves_hwnd_set_after_the_waker_was_obtained() {
+        let backend = WinBackend::new();
+
+        // Simulates: `waker()` called during `AppLogic::setup`, before
+        // `attach_surface` has ever run.
+        assert!(
+            live_hwnd(&backend.hwnd_raw).is_none(),
+            "no window attached yet"
+        );
+
+        // Simulates: `win::run::run_inner` later calls `attach_surface`,
+        // which stores the real `HWND` into the same `Arc` the closure
+        // holds — not into a value the closure already snapshotted.
+        let fake_hwnd_value: isize = 0xDEAD_BEEFusize as isize;
+        backend
+            .hwnd_raw
+            .store(fake_hwnd_value, std::sync::atomic::Ordering::Release);
+
+        // The live read now sees the attached window — proving a waker
+        // instance obtained pre-attach isn't permanently stuck on `None`.
+        let resolved = live_hwnd(&backend.hwnd_raw).expect("window is now attached");
+        assert_eq!(resolved.0 as isize, fake_hwnd_value);
     }
 
     #[test]
