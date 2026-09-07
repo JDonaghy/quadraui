@@ -469,4 +469,63 @@ mod tests {
         assert_eq!(rgb_to_indexed256(28, 32, 44), 234); // surface_bg
         assert_eq!(rgb_to_ansi16(28, 32, 44), RatatuiColor::Black);
     }
+
+    /// The platform-independent half of `tests/tui_pty_smoke.rs`'s
+    /// `sgr_color_depth` fixtures, and the reason that module can be
+    /// `#[cfg(unix)]` (ConPTY re-serialises the child's byte stream, so
+    /// byte-exact SGR assertions are unobservable on Windows — see that
+    /// module's doc).
+    ///
+    /// Goes the whole way a real frame goes *up to* the byte encoding:
+    /// takes the same `Theme::default()` `(foreground, surface_bg)` pair
+    /// `draw_pipeline_view` paints stage names with, runs it through the
+    /// real [`super::super::ratatui_color`] conversion every rasteriser
+    /// uses, paints it as a [`Cell`] through a real
+    /// [`RtBackend::draw`] on a [`DepthLimitedBackend`], and asserts the
+    /// colour that actually reached the wrapped backend at each of the
+    /// three depths. The only thing left to the pty fixtures is
+    /// crossterm's `Rgb`/`Indexed`/named → SGR-escape encoding, which is
+    /// crossterm's contract rather than quadraui's.
+    #[test]
+    fn pipeline_theme_pair_quantises_through_a_real_draw_at_every_depth() {
+        use crate::theme::Theme;
+        use crate::tui::ratatui_color;
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::default();
+        let fg = ratatui_color(theme.foreground);
+        let bg = ratatui_color(theme.surface_bg);
+        // Pins the pair itself, so a palette change to `Theme::default()`
+        // fails here rather than silently re-aiming the expectations
+        // below at some other colour.
+        assert_eq!(fg, RatatuiColor::Rgb(220, 220, 220));
+        assert_eq!(bg, RatatuiColor::Rgb(28, 32, 44));
+
+        for (depth, want_fg, want_bg) in [
+            (
+                ColorDepth::TrueColor,
+                RatatuiColor::Rgb(220, 220, 220),
+                RatatuiColor::Rgb(28, 32, 44),
+            ),
+            (
+                ColorDepth::Indexed256,
+                RatatuiColor::Indexed(253),
+                RatatuiColor::Indexed(234),
+            ),
+            (ColorDepth::Ansi16, RatatuiColor::Gray, RatatuiColor::Black),
+        ] {
+            let mut wrapped = DepthLimitedBackend::new(TestBackend::new(4, 1), depth);
+
+            let mut cell = Cell::default();
+            cell.set_char('S');
+            cell.fg = fg;
+            cell.bg = bg;
+            wrapped.draw([(0u16, 0u16, &cell)].into_iter()).unwrap();
+
+            let inner = wrapped.into_inner();
+            let painted = &inner.buffer()[(0, 0)];
+            assert_eq!(painted.fg, want_fg, "foreground at {depth:?}");
+            assert_eq!(painted.bg, want_bg, "background at {depth:?}");
+        }
+    }
 }
