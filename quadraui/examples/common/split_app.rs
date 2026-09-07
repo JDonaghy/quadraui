@@ -6,8 +6,8 @@
 //!
 //! Controls:
 //! - drag divider             resize panes
-//! - [ / ]                    resize panes by 5% (keyboard equivalent of
-//!                             dragging the divider — quadraui#828)
+//! - [ / ]                    nudge divider by 5% (keyboard equivalent of
+//!   dragging it — quadraui#828)
 //! - v                        toggle Horizontal / Vertical
 //! - r                        reset ratio to 0.5
 //! - q / Esc                  quit
