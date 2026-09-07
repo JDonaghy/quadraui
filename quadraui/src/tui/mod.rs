@@ -101,7 +101,7 @@ pub use panel::{draw_panel, tui_panel_layout};
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub use progress::{draw_progress, tui_progress_layout};
 pub use rich_text_popup::draw_rich_text_popup;
-pub use run::run;
+pub use run::{run, run_with, RunConfig};
 pub use scrollbar::draw_scrollbar;
 pub use services::TuiPlatformServices;
 pub use sidebar_panel::{draw_sidebar_panel, tui_sidebar_panel_layout};

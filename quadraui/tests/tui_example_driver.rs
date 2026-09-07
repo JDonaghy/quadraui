@@ -1478,6 +1478,36 @@ fn tab_group_q_exits() {
     assert!(driver.exited(), "'q' should exit the tab group demo");
 }
 
+/// quadraui#828: Ctrl-W is the keyboard equivalent of clicking a tab's `×`
+/// — before this fix there was no key path to close a tab at all. Closing
+/// "main.rs" (the active tab in the focused pane) must promote "lib.rs"
+/// (the next tab in the same pane) and leave the second pane's
+/// "Cargo.toml" untouched — the same outcome the mouse-driven close
+/// produces, with no mouse step anywhere in this test.
+#[test]
+fn tab_group_ctrl_w_closes_active_tab_and_promotes_next() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+    let before = driver.screen();
+    assert!(before.contains("main.rs content"), "{before}");
+    assert!(before.contains("lib.rs"), "{before}");
+
+    driver.ctrl_char('w');
+
+    let after = driver.screen();
+    assert!(
+        !after.contains("main.rs"),
+        "Ctrl-W should close the active tab (main.rs):\n{after}"
+    );
+    assert!(
+        after.contains("lib.rs content"),
+        "closing main.rs should promote lib.rs, the next tab in the same pane:\n{after}"
+    );
+    assert!(
+        after.contains("Cargo.toml content"),
+        "the second pane must be untouched by a close in the first:\n{after}"
+    );
+}
+
 // ─── ToolbarApp: focus, Tab, Enter, click ───────────────────────────────────
 
 #[test]
@@ -2873,6 +2903,44 @@ fn data_table_f_key_toggles_footer_off() {
     );
 }
 
+/// quadraui#828: `PageDown`/`PageUp` are the keyboard equivalent of
+/// clicking above/below the scrollbar thumb (a full-page jump) — before
+/// this fix the finest keyboard granularity was `j`/`k` (one row) with no
+/// page-sized step at all. Uses the table's own `visible_rows` (not a
+/// hardcoded row count) so the expected landing row can't drift from
+/// whatever the real layout resolves.
+#[test]
+fn data_table_page_down_and_page_up_move_selection_by_a_full_page() {
+    let mut driver = TuiDriver::new(DataTableApp::new(), 100, 12);
+    assert!(
+        driver.screen_contains("row 1 / 20"),
+        "starts on the first row:\n{}",
+        driver.screen()
+    );
+    let vis = driver.app().table_layout(driver.backend()).visible_rows;
+    assert!(
+        vis > 1 && vis < 20,
+        "test assumes a short-enough viewport that the table overflows: visible_rows={vis}"
+    );
+
+    driver.press_named(NamedKey::PageDown);
+    let expected_row = format!("row {} / 20", vis + 1);
+    assert!(
+        driver.screen_contains(&expected_row),
+        "PageDown from row 1 should land on row {} (visible_rows={vis}), a full page beyond \
+         where a single 'j' would land:\n{}",
+        vis + 1,
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::PageUp);
+    assert!(
+        driver.screen_contains("row 1 / 20"),
+        "PageUp should return to row 1, the exact mirror of the PageDown above:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── DataTableApp: body clipping, separators, resize direction (#516) ──────
 //
 // A tall-enough viewport (26 rows) fits all 20 pod rows + header + the
@@ -3405,6 +3473,47 @@ fn split_dragging_divider_moves_it_and_updates_ratio() {
     assert!(
         !driver.screen_contains("ratio: 50% (H)"),
         "status bar ratio should move away from 50% after the drag:\n{}",
+        driver.screen()
+    );
+}
+
+/// quadraui#828: `[`/`]` are the keyboard equivalent of dragging the
+/// divider — the mouse-only drag above had no key path at all before this
+/// fix. Also moves the painted divider (not just the status text), so a
+/// key handler that updated `ratio` without affecting layout would fail
+/// this the same way a broken drag handler fails the test above.
+#[test]
+fn split_bracket_keys_resize_the_divider_with_no_mouse_step() {
+    let mut driver = TuiDriver::new(SplitApp::new(), 80, 24);
+    assert!(driver.screen_contains("ratio: 50% (H)"));
+    let before = driver
+        .find_bounds("│")
+        .unwrap_or_else(|| panic!("divider not painted:\n{}", driver.screen()));
+
+    driver.type_char(']');
+    driver.type_char(']');
+    assert!(
+        driver.screen_contains("ratio: 60% (H)"),
+        "two ']' presses should grow the ratio by 5% each, no mouse step involved:\n{}",
+        driver.screen()
+    );
+    let after = driver
+        .find_bounds("│")
+        .unwrap_or_else(|| panic!("divider not painted after resize:\n{}", driver.screen()));
+    assert!(
+        after.x > before.x,
+        "']' should move the painted divider right (growing the first pane): before={}, after={}",
+        before.x,
+        after.x
+    );
+
+    driver.type_char('[');
+    driver.type_char('[');
+    driver.type_char('[');
+    driver.type_char('[');
+    assert!(
+        driver.screen_contains("ratio: 40% (H)"),
+        "four '[' presses from 60% should land on 40%:\n{}",
         driver.screen()
     );
 }

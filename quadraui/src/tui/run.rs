@@ -68,7 +68,40 @@ type LiveBackend = DepthLimitedBackend<CrosstermBackend<io::Stdout>>;
 /// advanced asynchronously.
 const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 
-/// Drive `app` to completion in a TUI environment.
+/// Runtime configuration for [`run_with`]. `Default` matches [`run`]'s
+/// previously-hardcoded behaviour, so `run_with(app, RunConfig::default())`
+/// and `run(app)` behave identically.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct RunConfig {
+    /// Whether to negotiate mouse reporting with the terminal
+    /// (`EnableMouseCapture`/`DisableMouseCapture`).
+    ///
+    /// Defaults to `true`. Set to `false` for **`no-mouse` mode**
+    /// (quadraui#828): a host where mouse capture is refused or
+    /// unavailable (e.g. some multiplexers, restrictive SSH sessions, a
+    /// screen reader driving the terminal) never gets the capture escape
+    /// sequences at all — instead of getting them and then discarding
+    /// whatever the terminal sends back. An app can read the live
+    /// answer via [`crate::tui::backend::TuiBackend::mouse_enabled`]
+    /// (kept separate from [`crate::backend::BackendCaps::mouse`], which
+    /// stays a static per-backend-type fact — see that accessor's doc).
+    /// Every Tier-1 gesture in this crate's own examples has a key path
+    /// that works with this flag off — see
+    /// `tests/conformance/scenarios/**/*_keyboard.scn.json` — so turning
+    /// it off costs an app nothing that a conformant `AppLogic` needs.
+    pub mouse: bool,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self { mouse: true }
+    }
+}
+
+/// Drive `app` to completion in a TUI environment, using the default
+/// [`RunConfig`] (mouse capture enabled). See [`run_with`] for a version
+/// that takes an explicit config, e.g. to opt into `no-mouse` mode.
 ///
 /// Returns `Ok(())` on graceful exit (the app returned
 /// [`Reaction::Exit`] from its `handle` method), or an
@@ -83,7 +116,13 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(16);
 /// Apps with multiple independently-drawn surfaces (vimcode's
 /// per-DrawingArea GTK model) are out of scope today; the
 /// single-frame model covers most TUI apps cleanly.
-pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
+pub fn run<A: AppLogic>(app: A) -> io::Result<()> {
+    run_with(app, RunConfig::default())
+}
+
+/// Like [`run`], but with an explicit [`RunConfig`] — the entry point for
+/// **`no-mouse` mode** (`RunConfig { mouse: false, .. }`, quadraui#828).
+pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     use ratatui::crossterm::event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     };
@@ -91,12 +130,20 @@ pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
     // ── Terminal setup ──────────────────────────────────────────
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
+    if config.mouse {
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
+    } else {
+        // `no-mouse` mode: never negotiate mouse capture with the
+        // terminal at all, rather than enabling it and then discarding
+        // mouse events — a host that refuses capture (or has none to
+        // give) should see no capture request in the first place.
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    }
 
     // Best-effort kitty keyboard enhancement push. Apps that
     // override this can call the crossterm functions before
@@ -112,6 +159,11 @@ pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
     // worked would silently never fire on a terminal where it didn't. See
     // `crate::backend::BackendCaps::kitty_keyboard`'s doc.
     backend.set_kitty_keyboard(kbd_enhanced);
+    // Record the `no-mouse` choice (quadraui#828) so an app can tell —
+    // via `TuiBackend::mouse_enabled()` — that no mouse events will ever
+    // arrive this session, instead of finding out by a mouse gesture
+    // silently never firing.
+    backend.set_mouse_enabled(config.mouse);
     let crossterm_backend = CrosstermBackend::new(stdout);
     // Quantise every frame's SGR to what this terminal actually supports
     // (quadraui#826) — `backend.color_depth()` was detected from
@@ -131,12 +183,20 @@ pub fn run<A: AppLogic>(mut app: A) -> io::Result<()> {
         let _ = pop_keyboard_enhancement(terminal.backend_mut());
     }
     let _ = disable_raw_mode();
-    let _ = execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    );
+    if config.mouse {
+        let _ = execute!(
+            terminal.backend_mut(),
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
+    } else {
+        let _ = execute!(
+            terminal.backend_mut(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
+    }
     let _ = terminal.show_cursor();
 
     match result {

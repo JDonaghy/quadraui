@@ -14,6 +14,8 @@
 //!   `Left`/`Right` edges create a horizontal split;
 //!   `Top`/`Bottom` edges create a vertical split.
 //! - Tab / Shift+Tab to cycle focus between panes.
+//! - **Ctrl-W** — close the active tab in the focused pane (keyboard
+//!   equivalent of clicking `×`, #828).
 //! - **`f`** — rebuild via `from_layout`: 3 panes in a mixed H/V tree
 //!   (`left | (top-right / bottom-right)`). Tests the new constructor.
 //! - **`r`** — reset to the default 2-pane horizontal layout.
@@ -206,7 +208,7 @@ impl TabGroupDemo {
         Self {
             group: RefCell::new(make_default_group()),
             last_event: RefCell::new(
-                "click tabs · drag divider · drag tab to edge/pane · Tab=focus · f=from_layout · r=reset · q=quit".into(),
+                "click tabs · drag divider · drag tab to edge/pane · Tab=focus · Ctrl-W=close tab · f=from_layout · r=reset · q=quit".into(),
             ),
             last_bounds: RefCell::new(Rect::new(0.0, 0.0, 100.0, 20.0)),
             divider_dragging: RefCell::new(false),
@@ -317,6 +319,32 @@ impl AppLogic for TabGroupDemo {
                 *self.tab_dragging.borrow_mut() = false;
                 *self.tab_drag_pending_pos.borrow_mut() = None;
                 Reaction::Redraw
+            }
+
+            // ── Close active tab (Ctrl-W) ──────────────────────────
+            // Keyboard equivalent of clicking a tab's `×` (#828): the
+            // mouse-only close affordance had no key path at all.
+            UiEvent::KeyPressed {
+                key: Key::Char('w'),
+                modifiers: Modifiers { ctrl: true, .. },
+                ..
+            } => {
+                let target = {
+                    let group = self.group.borrow();
+                    group.focused_pane().and_then(|idx| {
+                        group
+                            .pane(idx)
+                            .map(|p| (idx, p.active_tab_id().to_string()))
+                    })
+                };
+                if let Some((pane_idx, tab_id)) = target {
+                    if let Some(ev) = self.group.borrow_mut().close_tab(pane_idx, &tab_id) {
+                        *self.last_event.borrow_mut() = format_event(&ev);
+                        self.handle_tab_group_event(ev);
+                        return Reaction::Redraw;
+                    }
+                }
+                Reaction::Continue
             }
 
             // ── Focus cycling ──────────────────────────────────────

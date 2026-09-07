@@ -1,0 +1,14 @@
+{
+  "id": "panel.select_all_copy_via_keyboard",
+  "fixture": "panel_app",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "requires": ["text_selection"],
+  "steps": [
+    { "note": "Keyboard-only equivalent of dragging across the panel's text to select it (quadraui#828): Ctrl-A selects the whole registered text region and Ctrl-C copies it, with no mouse drag anywhere in this scenario. Coarser than a partial-range drag, but proves selecting-and-copying is achievable with keys alone — see panel.drag_select_copy for the mouse-drag version." },
+    { "assert_screen_has": "The quick brown fox" },
+    { "ctrl_char": "a" },
+    { "ctrl_char": "c" },
+    { "assert_screen_has": "Copied:" }
+  ]
+}

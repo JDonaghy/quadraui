@@ -4,9 +4,9 @@
 //! cargo run --example gtk_data_table --features gtk
 //! ```
 //!
-//! j/k or ↑/↓ to navigate, s to cycle sort column, d to flip direction,
-//! f to toggle the pinned footer/summary row (#432), click header to
-//! sort, click row to select, q to quit.
+//! j/k or ↑/↓ to navigate, PageDown/PageUp to page, s to cycle sort
+//! column, d to flip direction, f to toggle the pinned footer/summary
+//! row (#432), click header to sort, click row to select, q to quit.
 
 #[path = "common/mod.rs"]
 mod common;
