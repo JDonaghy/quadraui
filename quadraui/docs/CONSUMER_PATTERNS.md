@@ -106,3 +106,28 @@ input editor, sections are collapsible, and section count is dynamic.
 Runnable: `quadraui/examples/msv_sc_panel.rs`. Harness:
 `quadraui/src/tui/multi_section_view.rs::tests` ("SC panel" sub-block
 within "Consumer-state round-trip harness").
+
+## Known limit — every-frame rebuild scales with collection size
+
+"Rebuild a fresh descriptor every frame" is the pattern this document
+recommends throughout, and it has a ceiling worth knowing before you design
+around it.
+
+Five descriptors own their whole row collection by value — `DataTable.rows`,
+`ListView.items`, `TreeView.rows`, `TextDisplay.lines`, `Editor.lines`. A
+rebuild allocates and populates the entire `Vec` each frame, while the backend
+paints only the visible window. At a few thousand rows this does not show up
+against paint cost. At a million it is the frame.
+
+**If you are approaching that, slice in the host.** Build the descriptor from
+the visible window of your own data plus the scroll offset, rather than from
+the whole collection. Hit-tests return indices into the collection you supplied
+(`ListViewHit::Item(usize)`, `DataTableHit::Row { idx }`), so you add the
+window offset back when resolving a hit to your own row. This needs no crate
+change.
+
+The crate-side alternative — a `Rows<T>` with an `Owned` and a `Provider` arm —
+is designed and **deliberately not built**: see
+[`ROWS_PROVIDER_PROPOSAL.md`](ROWS_PROVIDER_PROPOSAL.md) (#837), which records
+why it is a breaking change to the descriptor derives rather than an additive
+one, and what would make it worth doing.

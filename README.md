@@ -63,6 +63,37 @@ SegmentedControl / ButtonRow / PasswordInput, and animated
 `InlineInput` caret blink driven by an `NSTimer` (~530 ms, pauses for
 500 ms after a keystroke). See `SESSION_HISTORY.md` for details.
 
+### What is not supported
+
+Three capabilities are absent. They are stated here because each one is
+load-bearing for somebody's adoption decision, and because
+`quadraui/docs/` contains design documents for two of them that a reader
+can otherwise mistake for shipped work.
+
+**Accessibility — no assistive-technology support at all.** There is zero
+AccessKit, AT-SPI, UI Automation or NSAccessibility code in the crate. A
+screen reader sees nothing. `docs/UI_CRATE_DESIGN.md` decision #6 planned
+`a11y_role` / `a11y_label` data fields on every primitive with platform
+wiring to follow; the data fields are groundwork only and do not
+constitute AT support even once they land (quadraui#835). Full
+integration is a multi-backend programme, not a patch. This rules
+quadraui out where a Section 508 / EN 301 549 / WCAG obligation applies.
+
+**IME / composition — CJK input does not work.** No backend implements an
+IME client protocol. GTK sees already-resolved keysyms, macOS's
+`objc_key_down` bypasses `NSTextInputClient`, and Windows has no
+`WM_IME_*` handling. Dead-key composition for accented Latin does not
+work either. `quadraui/docs/IME_INPUT_PROPOSAL.md` is a design (#502);
+the four backend integrations are tracked in quadraui#900 and are
+unbuilt.
+
+**i18n — East-Asian width only, no RTL or bidi.** Text handling accounts
+for East-Asian character width via `unicode-width`, and that is the
+whole of it. There is no right-to-left layout, no bidirectional
+reordering, and no shaping for scripts that need it, so Arabic, Hebrew,
+and Indic text render incorrectly rather than partially. This is not
+planned; treat it as a scope boundary rather than a gap awaiting a fix.
+
 ## Workspace
 
 | Crate | Purpose |
@@ -151,8 +182,16 @@ declarative descriptions + layout + dual rasterisers. The most-used ones:
 - [`quadraui/docs/IME_INPUT_PROPOSAL.md`](quadraui/docs/IME_INPUT_PROPOSAL.md) —
   IME/composition input model proposal (issue #502): `UiEvent` preedit
   contract, GTK `IMContext` / macOS `NSTextInputClient` / Windows TSF
-  mapping, caret-rect feedback channel. Design phase, not yet wired to
-  any backend.
+  mapping, caret-rect feedback channel. **Unimplemented design** — no
+  backend emits a composition event; the four backend integrations are
+  tracked in quadraui#900.
+- [`quadraui/docs/ROWS_PROVIDER_PROPOSAL.md`](quadraui/docs/ROWS_PROVIDER_PROPOSAL.md) —
+  `Rows<T>` virtualised row storage for the five collection descriptors
+  (issue #837). **Design sketch, deliberately deferred**: records why a
+  `Provider` arm is a breaking change to the descriptor `PartialEq` /
+  `Serialize` derives rather than an additive one, that hit-testing is
+  already index-based and unaffected, and what would make it worth
+  building. Slice in the host until then.
 
 ## Examples
 
