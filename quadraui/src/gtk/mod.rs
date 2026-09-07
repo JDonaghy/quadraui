@@ -82,6 +82,12 @@ pub use context_menu::draw_context_menu;
 pub use data_table::{draw_data_table, gtk_data_table_layout};
 pub use dialog::draw_dialog;
 pub use diff_view::draw_diff_view;
+// #865: `draw_drop_overlay` is `#[deprecated]` — see
+// `drop_overlay::draw_drop_overlay`'s doc for why the shim exists and
+// why re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
 pub use drop_overlay::draw_drop_overlay;
 pub use editor::{draw_editor, editor_col_at_x};
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};

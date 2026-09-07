@@ -1,75 +1,130 @@
 //! macOS (Core Graphics) rasteriser for [`crate::DropOverlay`].
 //!
-//! Port of [`crate::gtk::drop_overlay::draw_drop_overlay`]:
-//!
-//! - Highlight: semi-transparent (15%) filled rect in `theme.accent_fg`.
-//! - Insertion bar: solid rect in `theme.accent_fg`, at least 2 points wide.
+//! Painting moved to the shared
+//! [`crate::primitives::drop_zone::native_surface_paint::paint`] (#865,
+//! `NativeSurface` Phase 2d slice 8/9) — see that fn's doc for the one
+//! named divergence (Windows's pre-migration CPU-premixed highlight,
+//! unlike GTK/macOS's real alpha blend) found and reported while
+//! unifying `gtk::draw_drop_overlay`, `macos::drop_overlay::
+//! draw_drop_overlay` and `win::drop_overlay::draw_drop_overlay` into
+//! one implementation. This module now only carries
+//! [`RawDropOverlaySurface`] and the deprecated [`draw_drop_overlay`]
+//! compatibility shim over it, mirroring `macos::scrollbar::
+//! RawScrollbarSurface` (#811 slice 1/9), plus the driver-tier tests
+//! below (unchanged — they already painted through
+//! [`crate::Backend::draw_drop_overlay`], so they exercise the new
+//! shared path without modification).
 //!
 //! `DropOverlay::ghost_position` is not rendered — neither GTK nor TUI
 //! paints a ghost label either, so this is parity, not a macOS gap.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 
+use crate::native_surface::NativeSurface;
 use crate::primitives::drop_zone::DropOverlay;
 use crate::theme::Theme;
 
-/// Paint `overlay` on top of the current frame.
+/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef`, used
+/// only by the deprecated [`draw_drop_overlay`] shim below — a drop
+/// overlay's paint calls exactly one verb (`surface_fill_rect`), so
+/// every other method is `unreachable!()`. Mirrors `macos::scrollbar::
+/// RawScrollbarSurface`'s identical pattern (#811).
+pub(crate) struct RawDropOverlaySurface {
+    pub(crate) ctx: CGContextRef,
+}
+
+impl NativeSurface for RawDropOverlaySurface {
+    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
+        unreachable!("RawDropOverlaySurface has no backend frame lifecycle to begin")
+    }
+
+    fn surface_end_frame(&mut self) {
+        unreachable!("RawDropOverlaySurface has no backend frame lifecycle to end")
+    }
+
+    fn surface_viewport(&self) -> crate::Viewport {
+        unreachable!("RawDropOverlaySurface has no backend viewport")
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        unreachable!("RawDropOverlaySurface has no backend line height")
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        unreachable!("RawDropOverlaySurface has no backend char width")
+    }
+
+    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+        unreachable!("RawDropOverlaySurface has no text measurement")
+    }
+
+    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
+        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
+        // pass — see this struct's construction site. `ns_fill_rect`
+        // already honours `color.a` with a real alpha blend.
+        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
+    }
+
+    fn surface_stroke_rect(
+        &mut self,
+        _rect: crate::Rect,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("DropOverlay::paint never strokes a rect")
+    }
+
+    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
+        unreachable!("DropOverlay::paint never draws text")
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        _from: crate::Point,
+        _to: crate::Point,
+        _color: crate::Color,
+        _stroke_width: f32,
+    ) {
+        unreachable!("DropOverlay::paint never strokes a line")
+    }
+
+    fn surface_push_clip(&mut self, _rect: crate::Rect) {
+        unreachable!("DropOverlay::paint never clips")
+    }
+
+    fn surface_pop_clip(&mut self) {
+        unreachable!("DropOverlay::paint never clips")
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        _rect: crate::Rect,
+        _image: &crate::Image,
+    ) -> crate::backend::ImagePaintResult {
+        unreachable!("DropOverlay::paint never draws an image")
+    }
+}
+
+/// Deprecated free-function shim (#865, CLAUDE.md rule 8): reproduces
+/// the pre-#865 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_drop_overlay` reference rather than
+/// going through [`crate::Backend::draw_drop_overlay`] — the sanctioned
+/// entry point, and the one every in-tree call site already uses, which
+/// is why this shim has no in-repo caller left to trip the
+/// `-D warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
 /// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
 /// Calling with a freed or null pointer is UB.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_drop_overlay` instead — this free function is a compatibility shim over the shared #865 implementation"
+)]
 pub unsafe fn draw_drop_overlay(ctx: CGContextRef, overlay: &DropOverlay, theme: &Theme) {
-    let a = theme.accent_fg;
-    let (ar, ag, ab) = (a.r as f64 / 255.0, a.g as f64 / 255.0, a.b as f64 / 255.0);
-
-    if let Some(h) = overlay.highlight {
-        if h.width > 0.0 && h.height > 0.0 {
-            CGContextSetRGBFillColor(ctx, ar, ag, ab, DropOverlay::HIGHLIGHT_ALPHA as f64);
-            CGContextFillRect(
-                ctx,
-                CGRect::new_xywh(h.x as f64, h.y as f64, h.width as f64, h.height as f64),
-            );
-        }
-    }
-
-    if let Some(bar) = overlay.insertion_bar {
-        if bar.height > 0.0 {
-            CGContextSetRGBFillColor(ctx, ar, ag, ab, 1.0);
-            CGContextFillRect(
-                ctx,
-                CGRect::new_xywh(
-                    bar.x as f64,
-                    bar.y as f64,
-                    (bar.width as f64).max(DropOverlay::MIN_BAR_THICKNESS as f64),
-                    bar.height as f64,
-                ),
-            );
-        }
-    }
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
+    let mut surface = RawDropOverlaySurface { ctx };
+    crate::primitives::drop_zone::native_surface_paint::paint(overlay, &mut surface, theme);
 }
 
 #[cfg(test)]

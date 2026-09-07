@@ -252,7 +252,13 @@ pub use data_table::{draw_data_table, win_data_table_layout};
 pub use dialog::draw_dialog;
 #[cfg(target_os = "windows")]
 pub use diff_view::draw_diff_view;
+// #865: `draw_drop_overlay` is `#[deprecated]` — see
+// `drop_overlay::draw_drop_overlay`'s doc for why the shim exists and
+// why re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
 #[cfg(target_os = "windows")]
+#[allow(deprecated)]
 pub use drop_overlay::draw_drop_overlay;
 #[cfg(target_os = "windows")]
 pub use editor::draw_editor;

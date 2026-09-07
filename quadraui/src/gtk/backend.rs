@@ -3039,10 +3039,7 @@ impl Backend for GtkBackend {
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
         let theme = self.current_theme;
-        let (cr, _layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_drop_overlay called outside enter_frame_scope");
-        crate::gtk::draw_drop_overlay(cr, overlay, &theme);
+        crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
         // #492: `DropOverlay` carries no `WidgetId` (there is at most one
         // overlay active at a time), so register a fixed chrome id at
         // whichever sub-rect it actually drew — otherwise this frame is
