@@ -1,14 +1,30 @@
 # IME / composition input model — proposal
 
+> **UNIMPLEMENTED DESIGN. Nothing in this document ships (checked 2026-09-07).**
+>
+> Every `UiEvent` variant, backend hook and routing rule below is a proposal.
+> `UiEvent` has no composition variants, and no backend emits one. CJK, Japanese
+> and Korean input does not work in a quadraui app today, and neither does
+> dead-key composition for accented Latin.
+>
+> The backend half is tracked in **#900** — read this document before starting
+> it, because the routing and the `CharTyped` interaction are settled here and
+> re-deciding them is the expensive part.
+>
+> Read this as "what we intend to build", never as a description of the crate.
+> If you need to know what actually ships, the root `README.md`'s *Status* is
+> the place that is guarded against drift (`quadraui/tests/readme_truth.rs`).
+
 **Status:** Draft, design phase (issue #502). Not yet implemented on any
 backend — this document is the thing #502's acceptance criteria asks
 for ("written proposal in docs/ … reviewed against vimcode's needs").
 Parent epic: **#481**. Related: **#415** ("route clipboard paste +
 IME/dead-key composition into the focused terminal PTY") is the
 Terminal-specific consumer of the general contract this document
-defines; §7 below is written to satisfy it directly.
+defines; §7 below is written to satisfy it directly. Backend
+implementation tracking: **#900**.
 
-**Date:** 2026-09-02.
+**Date:** 2026-09-02. Status banner re-checked 2026-09-07 (#836).
 
 ---
 
