@@ -111,3 +111,21 @@ release time.
   contributors at (`ARCHITECTURE.md`, `PRIMITIVE_RULES.md`,
   `CONSUMER_PATTERNS.md`, `TESTING.md`, `LESSONS.md`). All internal links
   updated; no content changed.
+
+### Deprecated
+
+- `primitives::editor::StyledSpan` — renamed to `EditorStyledSpan` (the
+  crate-root export was already using this name) to resolve a bare-name
+  clash with the unrelated `types::StyledSpan`. Old name kept as a
+  `#[deprecated]` `pub type` alias in `editor.rs`. PR 2 (shim removal),
+  tracked in #822.
+- `primitives::minimap::SyntaxSpan` — merged into the byte-identical
+  `MinimapSpan` (both were the same four-field struct, distinguished only
+  by which side of `aggregate_spans` produced them). Old name kept as a
+  `#[deprecated]` `pub type` alias, still re-exported at the crate root
+  behind `#[allow(deprecated)]`. PR 2 (shim removal), tracked in #822.
+- `primitives::multi_section_view::LayoutMetrics` — renamed to
+  `MsvLayoutMetrics` (the crate-root export was already using this name)
+  to resolve a bare-name clash that read as though it belonged to the
+  unrelated `primitives::layout_metrics` module. Old name kept as a
+  `#[deprecated]` `pub type` alias. PR 2 (shim removal), tracked in #822.
