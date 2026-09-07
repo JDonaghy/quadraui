@@ -86,6 +86,18 @@ impl PtyExample {
         cmd.args(["run", "--quiet", "--example", name, "--features", "tui"]);
         cmd.cwd(env!("CARGO_MANIFEST_DIR"));
         cmd.env("TERM", "xterm-256color");
+        // `CommandBuilder::new()` seeds its env map from the *entire*
+        // parent process environment (portable-pty-0.9.0's
+        // `get_base_env`), so a `COLORTERM` ambiently set in the shell
+        // `cargo test` runs under (VS Code's integrated terminal, tmux
+        // with passthrough, some terminal emulators) would otherwise leak
+        // into the child and make `detect_color_depth()` resolve to
+        // `TrueColor` regardless of the `TERM`/`extra_env` this test
+        // intends to exercise. Strip it here so only an explicit entry in
+        // `extra_env` below can reintroduce it — the indexed/ansi16
+        // fixtures below depend on this being absent unless they add it
+        // back themselves.
+        cmd.env_remove("COLORTERM");
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
