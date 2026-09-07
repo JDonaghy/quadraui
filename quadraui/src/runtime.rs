@@ -116,7 +116,11 @@ use crate::runner::Reaction;
 /// periodic `tick` — has been handled by the app.
 ///
 /// One definition shared by every backend runner (quadraui#496); each
-/// used to declare this verbatim.
+/// used to declare this verbatim. `Copy`/`Clone`/`Eq` (quadraui#832) so
+/// [`EventOutcome::merge`]'s tests can reuse a value across multiple
+/// assertions instead of constructing it fresh each time, mirroring
+/// [`Reaction`]'s identical derive list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EventOutcome {
     /// No redraw needed; keep looping.
     Continue,
@@ -129,6 +133,42 @@ pub(crate) enum EventOutcome {
     Exit,
 }
 
+impl EventOutcome {
+    /// Combine two `EventOutcome`s produced within the same
+    /// synthesized-event batch (e.g. a drag gesture's `MouseDown` +
+    /// synthetic `TextSelectionChanged`, dispatched in one loop) into the
+    /// single outcome the caller returns.
+    ///
+    /// `Exit` always wins, `Redraw` beats `RedrawAfter` (paint *now* is at
+    /// least as good as a future wake), and two `RedrawAfter`s keep the
+    /// *earlier* deadline — mirroring [`FrameScheduler::request`]'s own
+    /// coalescing and [`Reaction::merge`], its `Reaction`-side twin. That
+    /// last case is the one worth spelling out: "first non-`Continue`
+    /// wins" (this method's predecessor at every call site) silently
+    /// drops a shorter, more urgent deadline that arrives after a longer
+    /// one in the same batch, producing a wake later than the app
+    /// explicitly asked for — narrower than [`Reaction::RedrawAfter`]'s
+    /// own doc promise that the backend "never" wakes later.
+    #[cfg_attr(
+        not(any(feature = "win", all(feature = "macos", target_os = "macos"))),
+        allow(dead_code)
+    )]
+    pub(crate) fn merge(self, next: EventOutcome) -> EventOutcome {
+        match (self, next) {
+            (EventOutcome::Exit, _) | (_, EventOutcome::Exit) => EventOutcome::Exit,
+            (EventOutcome::Redraw, _) | (_, EventOutcome::Redraw) => EventOutcome::Redraw,
+            (EventOutcome::RedrawAfter(a), EventOutcome::RedrawAfter(b)) => {
+                EventOutcome::RedrawAfter(a.min(b))
+            }
+            (EventOutcome::RedrawAfter(d), EventOutcome::Continue)
+            | (EventOutcome::Continue, EventOutcome::RedrawAfter(d)) => {
+                EventOutcome::RedrawAfter(d)
+            }
+            (EventOutcome::Continue, EventOutcome::Continue) => EventOutcome::Continue,
+        }
+    }
+}
+
 impl From<Reaction> for EventOutcome {
     fn from(r: Reaction) -> Self {
         match r {
@@ -136,6 +176,22 @@ impl From<Reaction> for EventOutcome {
             Reaction::Redraw => EventOutcome::Redraw,
             Reaction::RedrawAfter(d) => EventOutcome::RedrawAfter(d),
             Reaction::Exit => EventOutcome::Exit,
+        }
+    }
+}
+
+/// The reverse of the conversion above — needed by drivers (`TuiDriver`,
+/// `TuiVtDriver`) that dispatch a batch of `UiEvent`s through
+/// [`preprocess_event`] (yielding an `EventOutcome` per event) but
+/// accumulate their own result as a public-facing [`Reaction`], via
+/// [`Reaction::merge`].
+impl From<EventOutcome> for Reaction {
+    fn from(o: EventOutcome) -> Self {
+        match o {
+            EventOutcome::Continue => Reaction::Continue,
+            EventOutcome::Redraw => Reaction::Redraw,
+            EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
+            EventOutcome::Exit => Reaction::Exit,
         }
     }
 }
@@ -1177,5 +1233,78 @@ mod frame_scheduler_tests {
              over {interval:?} to well under a quarter of the old \
              unconditional-poll baseline ({old_wakeups}); got {new_wakeups}"
         );
+    }
+}
+
+/// [`EventOutcome::merge`] — the fix for a review finding on quadraui#832:
+/// every batch-dispatch loop across `macos::run`, `win::run`,
+/// `gtk::testing`, `tui::testing` and `tui::vt_testing` used to keep the
+/// *first* non-`Continue` outcome seen in a batch rather than the
+/// *earliest* `RedrawAfter` deadline, which could silently drop a shorter,
+/// more urgent wake requested by a later event in the same batch. These
+/// tests pin the corrected, order-independent semantics directly, since
+/// the batches that would exercise this in a live runner (multiple
+/// synthetic events from one drag gesture, each separately requesting a
+/// different `RedrawAfter`) are awkward to synthesize end-to-end.
+#[cfg(test)]
+mod event_outcome_merge_tests {
+    use super::*;
+
+    #[test]
+    fn exit_beats_everything_either_order() {
+        assert!(matches!(
+            EventOutcome::Continue.merge(EventOutcome::Exit),
+            EventOutcome::Exit
+        ));
+        assert!(matches!(
+            EventOutcome::Exit.merge(EventOutcome::Redraw),
+            EventOutcome::Exit
+        ));
+        assert!(matches!(
+            EventOutcome::RedrawAfter(Duration::from_millis(5)).merge(EventOutcome::Exit),
+            EventOutcome::Exit
+        ));
+    }
+
+    #[test]
+    fn redraw_beats_redraw_after_either_order() {
+        assert!(matches!(
+            EventOutcome::RedrawAfter(Duration::from_millis(5)).merge(EventOutcome::Redraw),
+            EventOutcome::Redraw
+        ));
+        assert!(matches!(
+            EventOutcome::Redraw.merge(EventOutcome::RedrawAfter(Duration::from_millis(5))),
+            EventOutcome::Redraw
+        ));
+    }
+
+    #[test]
+    fn continue_is_the_identity() {
+        assert!(matches!(
+            EventOutcome::Continue.merge(EventOutcome::Continue),
+            EventOutcome::Continue
+        ));
+        assert!(matches!(
+            EventOutcome::Continue.merge(EventOutcome::RedrawAfter(Duration::from_millis(5))),
+            EventOutcome::RedrawAfter(d) if d == Duration::from_millis(5)
+        ));
+    }
+
+    /// The actual regression: a shorter deadline arriving *after* a longer
+    /// one in the same batch must still win — "first wins" would have kept
+    /// the 100ms request and dropped the 5ms one.
+    #[test]
+    fn two_redraw_afters_keep_the_earlier_deadline_regardless_of_arrival_order() {
+        let long = EventOutcome::RedrawAfter(Duration::from_millis(100));
+        let short = EventOutcome::RedrawAfter(Duration::from_millis(5));
+
+        assert!(matches!(
+            long.merge(short),
+            EventOutcome::RedrawAfter(d) if d == Duration::from_millis(5)
+        ));
+        assert!(matches!(
+            short.merge(long),
+            EventOutcome::RedrawAfter(d) if d == Duration::from_millis(5)
+        ));
     }
 }

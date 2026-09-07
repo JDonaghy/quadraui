@@ -4398,7 +4398,7 @@ mod tests {
     /// before_wake_callback_is_installed` above.
     ///
     /// Deliberately doesn't pump `glib::MainContext::default()` to prove
-    /// the timer actually *fires`: that context is one process-wide
+    /// the timer actually *fires*: that context is one process-wide
     /// object shared by every test in this binary, and earlier draft of
     /// this test (`ctx.iteration(true)` in a loop) crashed the whole test
     /// binary (`SIGABRT`, "already acquired by another thread" /

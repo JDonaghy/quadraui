@@ -887,6 +887,11 @@ pub trait Backend: sealed::Sealed {
     /// implementation records the deadline and folds it into the next
     /// `wait_events` call's timeout instead; see
     /// `crate::runtime::FrameScheduler`.
+    ///
+    /// `WinBackend`'s implementation clamps `delay` to `u32::MAX`
+    /// milliseconds (~49.7 days) — `SetTimer`'s elapse parameter is a
+    /// 32-bit millisecond count — rather than erroring on a longer
+    /// request; no caller asks for anything close to that today.
     fn request_frame_in(&self, delay: Duration);
 
     /// Register an accelerator. The backend stores it and emits

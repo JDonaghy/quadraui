@@ -265,16 +265,14 @@ pub(crate) fn route_mouse_down<A: AppLogic>(
 
     let mut outcome = EventOutcome::Continue;
     for ev in events {
-        match dispatch_event(ev, backend, app) {
-            EventOutcome::Continue => {}
-            EventOutcome::Redraw => outcome = EventOutcome::Redraw,
-            EventOutcome::RedrawAfter(d) => {
-                if matches!(outcome, EventOutcome::Continue) {
-                    outcome = EventOutcome::RedrawAfter(d);
-                }
-            }
-            EventOutcome::Exit => return EventOutcome::Exit,
+        let step = dispatch_event(ev, backend, app);
+        if matches!(step, EventOutcome::Exit) {
+            return EventOutcome::Exit;
         }
+        // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen in
+        // this batch rather than the first non-`Continue` one — see
+        // `EventOutcome::merge`'s doc for why that distinction matters.
+        outcome = outcome.merge(step);
     }
     outcome
 }
@@ -300,16 +298,14 @@ pub(crate) fn route_mouse_move<A: AppLogic>(
 
     let mut outcome = EventOutcome::Continue;
     for ev in events {
-        match dispatch_event(ev, backend, app) {
-            EventOutcome::Continue => {}
-            EventOutcome::Redraw => outcome = EventOutcome::Redraw,
-            EventOutcome::RedrawAfter(d) => {
-                if matches!(outcome, EventOutcome::Continue) {
-                    outcome = EventOutcome::RedrawAfter(d);
-                }
-            }
-            EventOutcome::Exit => return EventOutcome::Exit,
+        let step = dispatch_event(ev, backend, app);
+        if matches!(step, EventOutcome::Exit) {
+            return EventOutcome::Exit;
         }
+        // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen in
+        // this batch rather than the first non-`Continue` one — see
+        // `EventOutcome::merge`'s doc for why that distinction matters.
+        outcome = outcome.merge(step);
     }
     outcome
 }
@@ -336,16 +332,14 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
 
     let mut outcome = EventOutcome::Continue;
     for ev in events {
-        match dispatch_event(ev, backend, app) {
-            EventOutcome::Continue => {}
-            EventOutcome::Redraw => outcome = EventOutcome::Redraw,
-            EventOutcome::RedrawAfter(d) => {
-                if matches!(outcome, EventOutcome::Continue) {
-                    outcome = EventOutcome::RedrawAfter(d);
-                }
-            }
-            EventOutcome::Exit => return EventOutcome::Exit,
+        let step = dispatch_event(ev, backend, app);
+        if matches!(step, EventOutcome::Exit) {
+            return EventOutcome::Exit;
         }
+        // quadraui#832: keep the *earliest* `RedrawAfter` deadline seen in
+        // this batch rather than the first non-`Continue` one — see
+        // `EventOutcome::merge`'s doc for why that distinction matters.
+        outcome = outcome.merge(step);
     }
     outcome
 }

@@ -304,22 +304,17 @@ impl<A: AppLogic> GtkDriver<A> {
 
     /// Dispatch each of `events` in order, short-circuiting on `Exit` and
     /// returning the strongest [`Reaction`] observed (`Exit` beats
-    /// `Redraw` beats `Continue`) — mirrors the live click/motion/release
-    /// handlers' per-event loop.
+    /// `Redraw` beats `RedrawAfter`, and two `RedrawAfter`s keep the
+    /// earlier deadline — see [`Reaction::merge`]) — mirrors the live
+    /// click/motion/release handlers' per-event loop.
     fn dispatch_all(&mut self, events: Vec<UiEvent>) -> Reaction {
         let mut result = Reaction::Continue;
         for ev in events {
-            match self.dispatch(ev) {
-                Reaction::Exit => return Reaction::Exit,
-                Reaction::Redraw => result = Reaction::Redraw,
-                // quadraui#832: never downgrades an earlier `Redraw`.
-                Reaction::RedrawAfter(d) => {
-                    if result == Reaction::Continue {
-                        result = Reaction::RedrawAfter(d);
-                    }
-                }
-                Reaction::Continue => {}
+            let step = self.dispatch(ev);
+            if step == Reaction::Exit {
+                return Reaction::Exit;
             }
+            result = result.merge(step);
         }
         result
     }

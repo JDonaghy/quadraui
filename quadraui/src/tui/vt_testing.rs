@@ -174,24 +174,21 @@ impl<A: AppLogic> TuiVtDriver<A> {
         }
         let mut result = Reaction::Continue;
         for ev in self.backend.translate_injected(vec![event]) {
-            match dispatch_event(ev, &mut self.backend, &mut self.app) {
+            let outcome = dispatch_event(ev, &mut self.backend, &mut self.app);
+            match &outcome {
                 EventOutcome::Continue => {}
-                EventOutcome::Redraw => {
-                    self.render();
-                    result = Reaction::Redraw;
-                }
+                EventOutcome::Redraw => self.render(),
                 // quadraui#832 — see `TuiDriver::dispatch`'s identical arm.
                 EventOutcome::RedrawAfter(d) => {
-                    self.backend.request_frame_in(d);
-                    if result == Reaction::Continue {
-                        result = Reaction::RedrawAfter(d);
-                    }
+                    self.backend.request_frame_in(*d);
                 }
                 EventOutcome::Exit => {
                     self.exited = true;
                     return Reaction::Exit;
                 }
             }
+            // quadraui#832 — see `TuiDriver::dispatch`'s identical merge.
+            result = result.merge(outcome.into());
         }
         result
     }
