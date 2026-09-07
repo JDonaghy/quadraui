@@ -184,6 +184,15 @@ fn wake_callback_for(id: WakeId) -> Option<Rc<dyn Fn()>> {
 /// fire. The trait method bodies just dereference through.
 pub struct GtkBackend {
     viewport: Viewport,
+    /// Current GDK surface scale factor (HiDPI multiplier), tracked
+    /// independently of `viewport` (issue #834). `run.rs::render_frame`
+    /// seeds every frame's `Viewport::scale` from this rather than a
+    /// hardcoded `1.0`, and `gtk::run`'s `notify::scale-factor` handler
+    /// (fired on a live monitor/DPI change, not just resize) updates it
+    /// via [`Self::set_dpi_scale`] before dispatching
+    /// `UiEvent::DpiChanged`. Defaults to `1.0`, matching every other
+    /// backend's pre-realization placeholder.
+    dpi_scale: f32,
     modal_stack: Rc<std::cell::RefCell<ModalStack>>,
     drag_state: Rc<std::cell::RefCell<DragState>>,
     accelerators: HashMap<AcceleratorId, Accelerator>,
@@ -510,6 +519,7 @@ impl GtkBackend {
     pub fn new() -> Self {
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
+            dpi_scale: 1.0,
             modal_stack: Rc::new(std::cell::RefCell::new(ModalStack::new())),
             drag_state: Rc::new(std::cell::RefCell::new(DragState::new())),
             accelerators: HashMap::new(),
@@ -580,6 +590,25 @@ impl GtkBackend {
     pub fn set_window(&mut self, window: gtk4::ApplicationWindow) {
         self.services.set_window(window.clone());
         self.window = Some(window);
+    }
+
+    /// Current tracked GDK scale factor — see [`Self::dpi_scale`]'s field
+    /// doc. `gtk::run::render_frame` reads this every frame; it is not
+    /// the same value as `self.viewport.scale` (which only updates when
+    /// `begin_frame` runs) until the next paint has happened.
+    pub(crate) fn dpi_scale(&self) -> f32 {
+        self.dpi_scale
+    }
+
+    /// Update the tracked GDK scale factor (issue #834) — called from
+    /// `gtk::run`'s `notify::scale-factor` handler and its debounced
+    /// resize handler (both of which observe `DrawingArea::scale_factor()`)
+    /// before dispatching the corresponding `UiEvent`. Does not itself
+    /// touch `self.viewport` or trigger a repaint — mirrors
+    /// `WinBackend::set_dpi_scale`'s "caller resizes/redraws separately"
+    /// contract.
+    pub(crate) fn set_dpi_scale(&mut self, scale: f32) {
+        self.dpi_scale = scale;
     }
 
     /// Clone of the platform services' dialog-pump-depth counter — `> 0`

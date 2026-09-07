@@ -494,10 +494,18 @@ mod win32 {
         SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
         CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, MSG,
         SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY,
-        WM_DPICHANGED, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-        WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
+        WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
+        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
         WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    };
+    // #834: `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
+    // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
+    // calls against a live drag session, so (unlike `super::events`'
+    // pure translators) this stays inside `mod win32` rather than a
+    // cross-platform-testable module.
+    use windows::Win32::UI::Shell::{
+        DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
     };
 
     use crate::backend::Backend;
@@ -511,7 +519,7 @@ mod win32 {
     // be unit-tested off Windows (pure functions over already-decoded
     // ints/floats/bools) — see that module's docs.
     use crate::win::events::{
-        win_button_down, win_button_up, win_focus_to_uievent, win_modifiers,
+        win_button_down, win_button_up, win_files_dropped, win_focus_to_uievent, win_modifiers,
         win_mouse_button_for_message, win_mouse_moved, win_wheel_to_uievent, wm_char_to_uievent,
         wm_keydown_to_uievent,
     };
@@ -817,6 +825,14 @@ mod win32 {
             return Err(e);
         }
 
+        // #834: opt the window into `WM_DROPFILES` — off by default for
+        // every `HWND`. Without this, `WM_DROPFILES` never
+        // arrives at all (rather than arriving with an empty `HDROP`),
+        // so a missing call here is silent, not a visible failure.
+        unsafe {
+            DragAcceptFiles(hwnd, true);
+        }
+
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         // Forces the first `WM_PAINT` synchronously rather than waiting
         // for it to reach the front of the message queue, so "opens a
@@ -1048,6 +1064,50 @@ mod win32 {
                 );
             }
         }
+    }
+
+    /// Decode a `WM_DROPFILES` `HDROP` into the dropped file paths plus
+    /// the client-area device-pixel drop position (issue #834).
+    ///
+    /// `DragQueryFileW(hdrop, u32::MAX, None)` is the documented sentinel
+    /// for "return the number of dropped files" rather than a path;
+    /// `DragQueryFileW(hdrop, i, None)` (for a real index) returns the
+    /// required buffer length (UTF-16 code units, excluding the NUL
+    /// terminator) so the buffer can be sized exactly before the real
+    /// call fills it. `DragFinish` releases the `HDROP` — per its own
+    /// docs the handle is invalid afterwards, so this is the only
+    /// function allowed to touch it, and it always runs before
+    /// returning.
+    fn paths_from_dropfiles(hdrop: HDROP) -> (Vec<std::path::PathBuf>, i16, i16) {
+        let mut pt = POINT::default();
+        // SAFETY: `hdrop` is the live `HDROP` this `WM_DROPFILES` message
+        // carried; `DragQueryPoint` doesn't consume it.
+        unsafe {
+            let _ = DragQueryPoint(hdrop, &mut pt);
+        }
+
+        // SAFETY: `hdrop` is still valid — `DragFinish` hasn't run yet.
+        let count = unsafe { DragQueryFileW(hdrop, u32::MAX, None) };
+        let mut paths = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            // SAFETY: `hdrop`/`i` valid; `None` just asks for the
+            // required length.
+            let len = unsafe { DragQueryFileW(hdrop, i, None) };
+            let mut buf = vec![0u16; len as usize + 1];
+            // SAFETY: `buf` is sized to hold `len` code units plus the
+            // NUL terminator `DragQueryFileW` writes.
+            let written = unsafe { DragQueryFileW(hdrop, i, Some(&mut buf[..])) };
+            buf.truncate(written as usize);
+            paths.push(std::path::PathBuf::from(String::from_utf16_lossy(&buf)));
+        }
+
+        // SAFETY: `hdrop` came from this `WM_DROPFILES` message and has
+        // not been finished yet; this is its one and only `DragFinish`.
+        unsafe {
+            DragFinish(hdrop);
+        }
+
+        (paths, pt.x as i16, pt.y as i16)
     }
 
     /// The Win32 window procedure. Monomorphized once per concrete `A`
@@ -1501,6 +1561,22 @@ mod win32 {
                         }
                         break;
                     }
+                }
+                LRESULT(0)
+            }
+            WM_DROPFILES => {
+                // `wparam` carries the `HDROP` handle — `DragAcceptFiles`
+                // (called once after the window is shown, in `run_inner`)
+                // is what makes this message arrive at all. Decode via
+                // the real Shell32 calls (`paths_from_dropfiles`, below)
+                // then hand off to the pure `win_files_dropped`
+                // translator, same "decode raw params, then translate"
+                // split every other message arm here uses.
+                let hdrop = HDROP(wparam.0 as *mut c_void);
+                let (paths, x, y) = paths_from_dropfiles(hdrop);
+                if !paths.is_empty() {
+                    let scale = ws.state.borrow().backend.viewport().scale;
+                    dispatch(ws, hwnd, win_files_dropped(paths, x, y, scale));
                 }
                 LRESULT(0)
             }

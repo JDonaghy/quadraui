@@ -164,6 +164,13 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSOpenPanel",
     "NSPanel",
     "NSSavePanel",
+    # Issue #834 (OS file drop): `NSDraggingDestination`/`NSDraggingInfo`/
+    # `NSDragOperation` (`draggingEntered:`/`performDragOperation:` on
+    # `QuadraView`) and the pasteboard types they read the dropped file
+    # URLs from.
+    "NSDragging",
+    "NSPasteboard",
+    "NSPasteboardItem",
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",

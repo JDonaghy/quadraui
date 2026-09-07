@@ -564,6 +564,19 @@ where
         force_redraw = true;
     }
 
+    // ── 11. DpiChanged: always repaint, regardless of the app's own
+    // Reaction (issue #834). A DPI change means every pixel-based
+    // measurement quadraui/the app has cached is now stale — an app that
+    // has no opinion on this event (the unhandled-catch-all default,
+    // true of most existing examples) would otherwise leave the old,
+    // now-mis-scaled frame on screen indefinitely. This is the one place
+    // shared across GTK/macOS/Win that guarantees "re-measure on
+    // receipt" without every backend's runner needing its own eager
+    // invalidate — mirrors the `TextSelectionChanged` force above.
+    if matches!(event, UiEvent::DpiChanged(_)) {
+        force_redraw = true;
+    }
+
     // ── Normal app dispatch ──────────────────────────────────────────────
     let outcome: EventOutcome = app.handle(event, backend).into();
     if force_redraw {

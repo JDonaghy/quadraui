@@ -60,16 +60,25 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSControlStateValueOff", "NSCell"),
     ("NSControlStateValueOn", "NSCell"),
     ("NSCursor", "NSCursor"),
+    // Issue #834 (OS file drop): both live in the `NSDragging` header,
+    // not `NSDraggingInfo`'s/`NSDragOperation`'s own names.
+    ("NSDragOperation", "NSDragging"),
+    ("NSDraggingInfo", "NSDragging"),
     ("NSEvent", "NSEvent"),
     ("NSEventModifierFlags", "NSEvent"),
     ("NSGraphicsContext", "NSGraphicsContext"),
     ("NSMenu", "NSMenu"),
     ("NSMenuItem", "NSMenuItem"),
     ("NSOpenPanel", "NSOpenPanel"),
+    // Issue #834 (OS file drop): lives in the `NSPasteboard` header.
+    ("NSPasteboardTypeFileURL", "NSPasteboard"),
     ("NSSavePanel", "NSSavePanel"),
     ("NSView", "NSView"),
     ("NSViewFrameDidChangeNotification", "NSView"),
     ("NSWindow", "NSWindow"),
+    // Issue #834 (HiDPI runtime change): lives in the `NSWindow` header,
+    // same as `NSWindowStyleMask` above.
+    ("NSWindowDidChangeBackingPropertiesNotification", "NSWindow"),
     ("NSWindowStyleMask", "NSWindow"),
 ];
 

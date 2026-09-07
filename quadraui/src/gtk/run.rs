@@ -109,6 +109,7 @@ use std::time::Duration;
 
 use gtk4::cairo::Context;
 use gtk4::glib;
+use gtk4::glib::prelude::StaticType;
 use gtk4::prelude::*;
 use gtk4::{
     pango as pg, Application, ApplicationWindow, DrawingArea, EventControllerKey,
@@ -119,7 +120,7 @@ use pangocairo::functions as pcfn;
 use super::backend::GtkBackend;
 use super::events::{
     gdk_button_to_quadraui, gdk_key_to_uievent, gdk_modifiers_to_quadraui, gdk_resize_to_uievent,
-    gdk_scroll_to_uievent_with_direction,
+    gdk_scroll_to_uievent_with_direction, gtk_drop_to_uievent,
 };
 use crate::backend::Backend;
 use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
@@ -844,6 +845,13 @@ fn activate<A: AppLogic + 'static>(
                 let ev = gdk_resize_to_uievent(width, height, scale);
                 let outcome = {
                     let mut backend_mut = backend.borrow_mut();
+                    // #834: keep the tracked scale current on every
+                    // resize too, not just the dedicated
+                    // `notify::scale-factor` handler below — a resize and
+                    // a DPI change can arrive in the same GTK signal burst
+                    // (dragging a window across a monitor boundary
+                    // resizes it too on some compositors).
+                    backend_mut.set_dpi_scale(scale);
                     let mut app_mut = app.borrow_mut();
                     dispatch_event(ev, &mut backend_mut, &mut *app_mut)
                 };
@@ -856,6 +864,86 @@ fn activate<A: AppLogic + 'static>(
             });
             resize_timer.set(Some(id));
         });
+    }
+
+    // ── HiDPI runtime change (issue #834) ───────────────────────────
+    //
+    // `DrawingArea::scale_factor()` is only ever read once, at
+    // resize-settle time, before this issue — a pure DPI change with no
+    // accompanying resize (dragging the window to a different-DPI
+    // monitor without resizing it, or an external monitor's scaling
+    // setting changing live) never fired `connect_resize` at all, so
+    // `UiEvent::DpiChanged` was never dispatched and `GtkBackend`'s
+    // tracked scale went stale. `notify::scale-factor` is the GObject
+    // property-change signal GTK fires specifically for this case
+    // (`gtk4::Widget::connect_scale_factor_notify`), independent of any
+    // size change. No debounce: unlike a live resize drag, a DPI change
+    // doesn't arrive as a rapid-fire burst.
+    {
+        let backend = backend.clone();
+        let app = app.clone();
+        let da_for_dpi = da.clone();
+        let window_for_dpi = window.clone();
+        let pump_depth = pump_depth.clone();
+        da.connect_scale_factor_notify(move |da| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.is_pumping() {
+                return;
+            }
+            let scale = da.scale_factor() as f32;
+            let outcome = {
+                let mut backend_mut = backend.borrow_mut();
+                backend_mut.set_dpi_scale(scale);
+                let mut app_mut = app.borrow_mut();
+                dispatch_event(UiEvent::DpiChanged(scale), &mut backend_mut, &mut *app_mut)
+            };
+            apply_event_outcome(outcome, &backend.borrow(), &da_for_dpi, &window_for_dpi);
+        });
+    }
+
+    // ── OS file drop (issue #834) ────────────────────────────────────
+    //
+    // `gtk::DropTarget` is a `gtk::EventController` (added to the `da`
+    // the same way the click/motion/scroll controllers above are), not
+    // a separate widget — GTK4's drag-and-drop model routes a drop to
+    // whichever controller on the target widget declares it accepts the
+    // dragged `GType`. `gdk::FileList` is the type GTK/GNOME apps (file
+    // managers, browsers) drop file references as; `NSFilenamesPboardType`
+    // and `WM_DROPFILES`'s `HDROP` are the equivalent native shapes the
+    // macOS/Win wiring decodes.
+    {
+        let backend = backend.clone();
+        let app = app.clone();
+        let da_for_drop = da.clone();
+        let window_for_drop = window.clone();
+        let pump_depth = pump_depth.clone();
+        let drop_target = gtk4::DropTarget::new(
+            gtk4::gdk::FileList::static_type(),
+            gtk4::gdk::DragAction::COPY,
+        );
+        drop_target.connect_drop(move |_target, value, x, y| {
+            // #427 re-entrancy guard — see the key-press handler above.
+            if pump_depth.is_pumping() {
+                return false;
+            }
+            let Ok(file_list) = value.get::<gtk4::gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<std::path::PathBuf> =
+                file_list.files().iter().filter_map(|f| f.path()).collect();
+            if paths.is_empty() {
+                return false;
+            }
+            let ev = gtk_drop_to_uievent(paths, x, y);
+            let outcome = {
+                let mut backend_mut = backend.borrow_mut();
+                let mut app_mut = app.borrow_mut();
+                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+            };
+            apply_event_outcome(outcome, &backend.borrow(), &da_for_drop, &window_for_drop);
+            true
+        });
+        da.add_controller(drop_target);
     }
 
     // ── Window close (quadraui#501) ───────────────────────────────
@@ -1243,7 +1331,16 @@ pub(crate) fn render_frame<A: AppLogic>(
     let (char_w_px, _) = layout.pixel_size();
     let char_w = char_w_px as f64;
 
-    backend.begin_frame(crate::Viewport::new(width as f32, height as f32, 1.0));
+    // #834: seed from the tracked scale factor (kept current by the
+    // `notify::scale-factor` handler and the debounced resize handler
+    // below) rather than a hardcoded `1.0`, so `Backend::viewport().scale`
+    // reflects the real backing scale even between `WindowResized`
+    // dispatches.
+    backend.begin_frame(crate::Viewport::new(
+        width as f32,
+        height as f32,
+        backend.dpi_scale(),
+    ));
     backend.set_current_line_height(line_h);
     backend.set_current_char_width(char_w);
     // Deliberately *not* re-seeding `ui_font` here every frame the way

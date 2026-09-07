@@ -305,8 +305,8 @@ exists for it — do not silently no-op and do not fake it):
 |---|---|---|
 | `CharTyped` | Emitted by **no backend today** | Reserved exclusively for IME-committed composed text (epic #481, IME story #502) — **not** a second way to report a plain keystroke. `KeyPressed{Key::Char}` is the always-on text-input event every backend already emits; two in-tree consumers (`compose::sidebar_system`, `compose::tree_controller`) will double-insert a character if a future backend ever emits both for the same keystroke. See D-010. |
 | `MouseEntered` / `MouseLeft` | Emitted by no backend | Zero consumers anywhere today; kept for future hover-driven features (tooltip auto-show). See D-010. |
-| `FilesDropped` | Emitted by no backend | Zero consumers today; kept for future drag-and-drop file import. See D-010. |
-| `DpiChanged` | Win: ✅ (`WM_DPICHANGED`). GTK: read once at smoke-check time, never on a live runtime change. TUI: N/A (`scale` is always `1.0`). macOS: ❌, not wired. | GTK's live-runtime case is PORT-12's scope, not this issue's. See D-010. |
+| `FilesDropped` | GTK: ✅ (`gtk::DropTarget`). macOS: ✅ (`NSDraggingDestination` on `QuadraView`). Win: ✅ (`WM_DROPFILES`). TUI: N/A (no native drag-and-drop surface). | Wired by issue #834. Still zero in-tree consumers — no primitive reacts to the event yet, only the emission side is done. |
+| `DpiChanged` | Win: ✅ (`WM_DPICHANGED`, pre-existing). GTK: ✅ (`notify::scale-factor` on the `DrawingArea`). macOS: ✅ (`NSWindowDidChangeBackingPropertiesNotification`). TUI: N/A (`scale` is always `1.0`). | Wired by issue #834 (closing D-010 follow-up 2, and macOS's gap). `crate::runtime::preprocess_event` forces a redraw on this variant regardless of the app's own `Reaction`, so all three GUI backends re-measure on receipt without each runner needing its own eager-invalidate logic. |
 | Native menu events (`MenuActivated`, `ContextMenuItemActivated`, `ContextMenuDismissed`) | Backend-dependent, out of this table's scope | Only meaningful on a backend with `BackendCaps::native_menu`. |
 
 `❓` = not verified as part of this pass (out of scope for issue #501;

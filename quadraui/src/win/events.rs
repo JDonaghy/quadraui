@@ -179,6 +179,19 @@ pub fn win_mouse_moved(x: i16, y: i16, scale: f32, buttons: ButtonMask) -> UiEve
     }
 }
 
+// ─── Files dropped (issue #834) ─────────────────────────────────────────
+
+/// Translate a decoded `WM_DROPFILES` payload into
+/// [`UiEvent::FilesDropped`]. `paths` and the raw client-area device-pixel
+/// drop position are already extracted by `super::run`'s `WM_DROPFILES`
+/// arm (`DragQueryFileW`/`DragQueryPoint` — real `HDROP` calls, so that
+/// decode step itself stays `cfg(target_os = "windows")`-only, unlike
+/// this pure translator); `scale` converts the position to DIPs the same
+/// way every other Win mouse translator does.
+pub fn win_files_dropped(paths: Vec<std::path::PathBuf>, x: i16, y: i16, scale: f32) -> UiEvent {
+    crate::event::files_dropped(paths, to_dip(x, scale), to_dip(y, scale))
+}
+
 // ─── Scroll wheel ────────────────────────────────────────────────────────
 
 /// Translate `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` into [`UiEvent::Scroll`].
@@ -493,6 +506,32 @@ mod tests {
                 assert!(!buttons.middle && !buttons.right);
             }
             _ => panic!(),
+        }
+    }
+
+    /// Issue #834: before this issue nothing in `src/win` constructed
+    /// `UiEvent::FilesDropped` — `grep -rn FilesDropped quadraui/src/win`
+    /// had zero hits outside this new function and its test. Also
+    /// exercises the DIP conversion `win_files_dropped` shares with every
+    /// other Win mouse translator.
+    #[test]
+    fn files_dropped_scales_position_and_carries_paths() {
+        let paths = vec![
+            std::path::PathBuf::from(r"C:\tmp\a.txt"),
+            std::path::PathBuf::from(r"C:\tmp\b.txt"),
+        ];
+        // 200% scale: 100 device px -> 50.0 DIP.
+        let ev = win_files_dropped(paths.clone(), 100, 100, 2.0);
+        match ev {
+            UiEvent::FilesDropped {
+                paths: got,
+                position,
+            } => {
+                assert_eq!(got, paths);
+                assert_eq!(position.x, 50.0);
+                assert_eq!(position.y, 50.0);
+            }
+            other => panic!("expected UiEvent::FilesDropped, got {other:?}"),
         }
     }
 

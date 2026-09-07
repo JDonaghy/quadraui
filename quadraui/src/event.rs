@@ -473,24 +473,29 @@ pub enum UiEvent {
     /// (issue #486's window-lifecycle scope), not by this issue.
     WindowClose,
     WindowFocused(bool),
-    /// **Optional capability** (D-010, issue #501) — Win emits this
-    /// from `WM_DPICHANGED` (`win::run`); GTK reads `scale_factor()`
-    /// once at smoke-check time (`gtk::run::schedule_smoke_check`) but
-    /// never on a live runtime DPI change (monitor move, external
-    /// monitor plug/unplug); TUI is always `scale == 1.0`, so it never
-    /// applies there. Wiring GTK's live case is real, wanted future
-    /// work (PORT-12) but out of this issue's scope — declare the gap
-    /// via `BackendCaps` rather than silently no-op.
+    /// **Optional capability** (D-010, issue #501; wired for GTK/macOS by
+    /// issue #834) — Win emits this from `WM_DPICHANGED` (`win::run`);
+    /// GTK observes the `DrawingArea`'s `notify::scale-factor` signal
+    /// (`gtk::run`) and macOS observes
+    /// `NSWindowDidChangeBackingPropertiesNotification` (`macos::run`),
+    /// both firing on a live runtime DPI change (monitor move, external
+    /// monitor plug/unplug) as well as at startup; TUI is always
+    /// `scale == 1.0`, so it never applies there. `crate::runtime::preprocess_event`
+    /// forces `EventOutcome::Redraw` for this variant regardless of what
+    /// `AppLogic::handle` itself returns, so a repaint (and therefore a
+    /// re-measure of any DPI-dependent layout) always follows receipt —
+    /// see that function's doc for why an app-optional redraw isn't
+    /// enough here.
     DpiChanged(f32),
 
     // ── Drops + paste ──────────────────────────────────────────────────
-    /// **Optional capability** (D-010, issue #501) — no backend emits
-    /// this today, and no in-tree or downstream consumer matches on it.
-    /// Kept for the same reason as [`Self::MouseEntered`]: drag-and-
-    /// drop file import (e.g. an explorer sidebar accepting a dropped
-    /// file) is a real desktop feature with no working substitute
-    /// mechanism in this crate today, unlike the D-008 dead `*Event`
-    /// enums it would be easy to conflate this with.
+    /// **Optional capability** (D-010, issue #501; wired by issue #834) —
+    /// emitted by GTK (`gtk::DropTarget` on the `DrawingArea`), macOS
+    /// (`NSDraggingDestination` on `QuadraView`), and Windows
+    /// (`WM_DROPFILES`) when the user drops OS files onto the window.
+    /// Not applicable to TUI: a terminal has no native drag-and-drop
+    /// surface. `position` is in the same native units as every other
+    /// pointer event (DIPs for GTK/macOS/Win).
     FilesDropped {
         paths: Vec<PathBuf>,
         position: Point,
@@ -738,6 +743,16 @@ pub fn scroll(dx: f32, dy_native_down_positive: f32, x: f32, y: f32) -> UiEvent 
 pub fn window_resized(width: f32, height: f32, scale: f32) -> UiEvent {
     UiEvent::WindowResized {
         viewport: Viewport::new(width, height, scale),
+    }
+}
+
+/// Build a [`UiEvent::FilesDropped`] (issue #834). `x`/`y` are the drop
+/// position in the backend's native units — already-scaled DIPs for
+/// GTK/macOS/Win, matching every other pointer event's convention.
+pub fn files_dropped(paths: Vec<PathBuf>, x: f32, y: f32) -> UiEvent {
+    UiEvent::FilesDropped {
+        paths,
+        position: Point::new(x, y),
     }
 }
 

@@ -248,6 +248,18 @@ pub fn ns_focus_to_uievent(focused: bool) -> UiEvent {
     UiEvent::WindowFocused(focused)
 }
 
+/// Build a [`UiEvent::FilesDropped`] (issue #834) from an
+/// `NSDraggingInfo`'s already-decoded file paths and view-local drop
+/// point. `super::run`'s `performDragOperation:` override (on
+/// `QuadraView`) is the real caller — it reads the file URLs off
+/// `sender.draggingPasteboard()` (real AppKit calls, so that decode step
+/// stays in `super::run` rather than this cross-platform-testable
+/// module) and converts `sender.draggingLocation()` via
+/// `convertPoint:fromView:` before calling this.
+pub fn ns_files_dropped(paths: Vec<std::path::PathBuf>, x: f64, y: f64) -> UiEvent {
+    crate::event::files_dropped(paths, x as f32, y as f32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,5 +616,27 @@ mod tests {
     fn focus_translation() {
         assert_eq!(ns_focus_to_uievent(true), UiEvent::WindowFocused(true));
         assert_eq!(ns_focus_to_uievent(false), UiEvent::WindowFocused(false));
+    }
+
+    /// Issue #834: before this issue nothing in `src/macos` constructed
+    /// `UiEvent::FilesDropped` — `grep -rn FilesDropped quadraui/src/macos`
+    /// had zero hits outside this new function and its test.
+    #[test]
+    fn files_dropped_translation() {
+        let paths = vec![
+            std::path::PathBuf::from("/tmp/a.txt"),
+            std::path::PathBuf::from("/tmp/b.txt"),
+        ];
+        let ev = ns_files_dropped(paths.clone(), 12.0, 34.0);
+        match ev {
+            UiEvent::FilesDropped {
+                paths: got,
+                position,
+            } => {
+                assert_eq!(got, paths);
+                assert_eq!((position.x, position.y), (12.0, 34.0));
+            }
+            other => panic!("expected UiEvent::FilesDropped, got {other:?}"),
+        }
     }
 }
