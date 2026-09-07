@@ -157,6 +157,20 @@ nested value types may include floats (which don't implement `Eq`
 because of NaN); `PartialEq` is strictly weaker and sufficient for
 the testing use case.
 
+**Known deviation (#831):** `UiEvent::User(UserPayload)` — added for
+wake-from-a-background-thread support — does not honestly implement
+`Serialize`/`Deserialize`. `UserPayload` wraps an opaque
+`Arc<dyn Any + Send + Sync>` with no wire representation; its impls of
+those two traits always return `Err` with a descriptive message rather
+than failing to compile, and its `PartialEq` is `Arc::ptr_eq` (pointer
+identity) rather than structural equality. See `UserPayload`'s doc in
+`quadraui/src/event.rs` for the full rationale. No in-tree code path
+serialises a live `Vec<UiEvent>` today, so this doesn't break anything
+current — but it's a standing trap for any future record/replay-all-events
+feature, which would need to special-case (or filter out) `UiEvent::User`
+rather than assuming every variant round-trips through JSON like this
+section promises.
+
 **Data shape:**
 
 - **No closures, no lifetimes beyond `'static`** — identical discipline

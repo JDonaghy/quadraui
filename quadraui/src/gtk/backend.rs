@@ -98,7 +98,12 @@ pub(crate) struct PaintedText {
 
 /// The wake-target [`GtkBackend::waker`] invokes (issue #831) — see
 /// [`GtkBackend::set_wake_callback`]'s doc for what installs it and why
-/// it's shaped this way.
+/// it's shaped this way. Named the same as, but unrelated to,
+/// `macos::backend::WakeCallback` — each is private to its own module and
+/// wraps a different `MainThreadBound` (this one the hand-rolled
+/// `crate::runtime::MainThreadBound`, macOS's the real
+/// `dispatch2::MainThreadBound`); the duplicate name is deliberate, not a
+/// naming collision to fix.
 type WakeCallback = Arc<std::sync::OnceLock<crate::runtime::MainThreadBound<Rc<dyn Fn()>>>>;
 
 /// GTK backend implementing [`quadraui::Backend`].
