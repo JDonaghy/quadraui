@@ -62,9 +62,12 @@ use crate::testing::driver_core::DriverCore;
 use crate::testing::{
     Anchor, ConformanceDriver, DriverInput, FrameInventory, LogicalViewport, PixelClickConformance,
 };
-use crate::{
-    ButtonMask, Color, InteractionState, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent,
-};
+// `InteractionState` is deliberately *not* imported here: the only use site
+// is in `#[cfg(test)]` below, and a non-test `cargo clippy --features win`
+// (which does compile this module, but not its test block) would flag the
+// import as unused under `-D warnings`. The test refers to it as
+// `crate::InteractionState`, matching `macos/testing.rs`.
+use crate::{ButtonMask, Color, Key, Modifiers, MouseButton, NamedKey, Point, UiEvent};
 
 use super::backend::WinBackend;
 use super::run::{
@@ -788,7 +791,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &InteractionState::new(),
+                &crate::InteractionState::new(),
             );
         }
 

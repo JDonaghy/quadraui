@@ -475,11 +475,10 @@ mod tests {
         let hovered = WidgetId::new("status:save");
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_status_bar(
+            let l = b.draw_status_bar_interactive(
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                Some(&hovered),
-                None,
+                &crate::InteractionState::from_parts(Some(hovered.clone()), None),
             );
             *layout.borrow_mut() = Some(l);
         });
