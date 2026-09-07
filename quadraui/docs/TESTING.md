@@ -878,14 +878,34 @@ interactive desktop: `HeadlessSurface` never creates an `HWND`, and a
 `cargo xwin test`-launched process may run outside the interactive
 window station even though it's genuine native code. That residual
 gap — not "is it Wine", but "is there a window and a human looking at
-it" — is exactly C4, and is what the checklist below covers. (Aside,
-found while re-running this: `cargo xwin test`'s **doctest** binaries
-fail with exit 53, the same "missing vcruntime" signature as
-CLAUDE.md's trap #1, on this run even with `crt-static` set — looks
-like `rustdoc`'s own doctest harness doesn't inherit `RUSTFLAGS` the
-same way `cargo test`'s regular targets do. Unrelated to the Wine
-question and not a C4/Direct2D fidelity issue; flagged here rather
-than chased, since it's outside this issue's scope.)
+it" — is exactly C4, and is what the checklist below covers.
+
+**Doctest exit 53 — resolved (2026-09-07).** The aside that used to sit
+here reported `cargo xwin test`'s **doctest** binaries failing with exit
+53 — the "missing vcruntime" signature of CLAUDE.md's trap #1 — even
+with `crt-static` set, and guessed that `rustdoc`'s harness doesn't
+inherit `RUSTFLAGS`. That guess was right, and the fix is one more env
+var: `rustdoc` compiles each doctest itself and reads **`RUSTDOCFLAGS`**,
+not `RUSTFLAGS`. Set both and the doctest leg passes:
+
+```console
+$ RUSTFLAGS="-C target-feature=+crt-static" \
+  RUSTDOCFLAGS="-C target-feature=+crt-static" \
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env \
+  cargo xwin test --target x86_64-pc-windows-msvc -p quadraui --features win
+...
+   Doc-tests quadraui
+test result: ok. 11 passed; 0 failed; 22 ignored; ...
+```
+
+CLAUDE.md's *Win-GUI* block now documents that third variable, and
+`tests/quality_gate_docs.rs` asserts it stays there. The residual
+flake seen on the same host — a lone `<binary>.exe: Invalid argument`
+from a freshly-linked, unsigned PE — is **not** this bug and is not a
+build defect either: it is the Windows host's Device Guard / Smart App
+Control refusing execution while it resolves the binary's reputation,
+which `binfmt_misc` surfaces as `EINVAL`. Re-run the command; see
+CLAUDE.md's trap #5.
 
 ### Manual pass checklist
 

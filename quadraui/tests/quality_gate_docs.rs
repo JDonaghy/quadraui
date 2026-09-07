@@ -1,5 +1,7 @@
-//! CLAUDE.md's "Quality Gate" block must stay in sync with the commands
-//! `.github/workflows/ci.yml` actually runs (#19 follow-up).
+//! CLAUDE.md's copy-paste command blocks must stay true: the "Quality Gate"
+//! block in sync with the commands `.github/workflows/ci.yml` actually runs
+//! (#19 follow-up), and the "Win-GUI" block carrying every environment
+//! variable the cross-compiled Windows run needs (#832 follow-up).
 //!
 //! Why this is a *test* and not a review checklist: the gate block is the
 //! first thing every agent and every human copies before committing, and it
@@ -133,6 +135,118 @@ fn claude_md_quality_gate_never_recommends_a_bare_workspace_test() {
              every workspace member — including kubeui-gtk, whose unconditional \
              gtk4 dependency needs pkg-config and libgtk-4-dev. Add an explicit \
              `--workspace --exclude <member>` or `-p <member>`, matching ci.yml.",
+        );
+    }
+}
+
+/// The blank-line-separated chunks of the fenced ```bash block(s) under
+/// CLAUDE.md's `## Win-GUI: building and testing for real` heading. Each
+/// chunk is one copy-pasteable invocation — its `\`-continued env prefix
+/// plus the `cargo` line — with comments and blank lines dropped.
+fn win_gui_invocations(claude_md: &str) -> Vec<String> {
+    let mut chunks: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut in_section = false;
+    let mut in_fence = false;
+
+    for raw in claude_md.lines() {
+        let line = raw.trim();
+
+        if !in_fence && line.starts_with("## ") {
+            in_section = line == "## Win-GUI: building and testing for real";
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            if !current.is_empty() {
+                chunks.push(current.join(" "));
+                current.clear();
+            }
+            continue;
+        }
+        if !in_fence {
+            continue;
+        }
+        if line.is_empty() || line.starts_with('#') {
+            if !current.is_empty() {
+                chunks.push(current.join(" "));
+                current.clear();
+            }
+            continue;
+        }
+        current.push(normalise(line.trim_end_matches('\\').trim()));
+    }
+    if !current.is_empty() {
+        chunks.push(current.join(" "));
+    }
+
+    chunks
+}
+
+/// Every environment variable the documented `cargo xwin test` line must
+/// carry, paired with what silently breaks when it is missing. All three
+/// failure modes are silent-or-misleading, which is why they are asserted
+/// rather than trusted to review — see CLAUDE.md's numbered trap list.
+const REQUIRED_XWIN_TEST_ENV: &[(&str, &str)] = &[
+    (
+        "RUSTFLAGS=\"-C target-feature=+crt-static\"",
+        "the host has no vcruntime140.dll, so every test .exe exits 53 with \
+         completely empty output — indistinguishable from a program that ran \
+         and printed nothing (trap #1)",
+    ),
+    (
+        "RUSTDOCFLAGS=\"-C target-feature=+crt-static\"",
+        "rustdoc compiles each doctest itself and does NOT inherit RUSTFLAGS, \
+         so the integration tests all pass and only the `Doc-tests quadraui` \
+         leg fails — with exit 53 blamed on the library docs rather than on \
+         the missing flag (trap #1, second half)",
+    ),
+    (
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER=env",
+        "cargo xwin injects a `wine` runner and dies with \
+         `could not execute process 'wine ...'`, even though binfmt_misc can \
+         exec the PE directly and wine is never needed (trap #2)",
+    ),
+];
+
+#[test]
+fn claude_md_win_gui_test_command_carries_every_required_env_var() {
+    let claude_md = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("CLAUDE.md exists");
+    let invocations = win_gui_invocations(&claude_md);
+
+    // Guard the parser: a renamed heading or reformatted fence must fail
+    // loudly here rather than vacuously pass on an empty chunk list.
+    assert!(
+        !invocations.is_empty(),
+        "parsed no commands out of CLAUDE.md's `## Win-GUI: building and \
+         testing for real` block — the heading or its ```bash fence probably \
+         moved; fix this parser rather than deleting the assertion."
+    );
+
+    let test_cmds: Vec<&String> = invocations
+        .iter()
+        .filter(|c| c.contains("cargo xwin test"))
+        .collect();
+    assert_eq!(
+        test_cmds.len(),
+        1,
+        "expected exactly one documented `cargo xwin test` invocation in \
+         CLAUDE.md's Win-GUI block, found {}: {test_cmds:#?}",
+        test_cmds.len(),
+    );
+    let cmd = test_cmds[0];
+
+    for (var, consequence) in REQUIRED_XWIN_TEST_ENV {
+        assert!(
+            cmd.contains(var),
+            "CLAUDE.md's documented Windows test command is missing \
+             `{var}`:\n  {cmd}\n\nWithout it, {consequence}.\n\nEvery one of \
+             these has already cost a session, because none of them produces \
+             an error that names its own cause. Restore the variable rather \
+             than relaxing this assertion."
         );
     }
 }
