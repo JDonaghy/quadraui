@@ -3,8 +3,11 @@
 //! Painting moved to the shared
 //! [`crate::primitives::split::native_surface_paint::paint`] (#864,
 //! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for why the three per-backend copies were found to be
-//! already identical (no divergence). This module now carries
+//! module doc for a **reported divergence**: the deleted `draw_split`
+//! below painted the divider opaque-only (`set_source`), while the live
+//! `Backend::draw_split` path now honours `theme.separator`'s alpha via
+//! `GtkBackend::surface_fill_rect` (`gtk::set_source_rgba`, inherited
+//! from the #811 slice 1 scrollbar fix). This module now carries
 //! [`gtk_split_layout`], [`RawSplitSurface`], and the deprecated
 //! [`draw_split`] compatibility shim over the shared paint, mirroring
 //! `gtk::split_tree::RawSplitTreeSurface` (#863, slice 6/9).
@@ -58,9 +61,15 @@ impl crate::native_surface::NativeSurface for RawSplitSurface<'_> {
     }
 
     fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // Dividers are always opaque `theme.separator` — `set_source`
-        // (not `_rgba`) matches this module's pre-migration behaviour
-        // exactly, unlike `gtk::scrollbar`'s translucent-overlay fill.
+        // Deliberately opaque-only `set_source` (not `_rgba`): this
+        // reproduces the pre-#864 free function's behaviour exactly,
+        // byte for byte, for any external caller still holding a direct
+        // reference to it. `theme.separator` is NOT guaranteed opaque
+        // (see `primitives::split::native_surface_paint`'s module doc
+        // for why) — the sanctioned `Backend::draw_split` entry point
+        // now honours its alpha via `GtkBackend::surface_fill_rect`
+        // (`set_source_rgba`); this deprecated shim intentionally does
+        // not, to keep this preservation guarantee.
         super::set_source(self.cr, color);
         self.cr.rectangle(
             rect.x as f64,

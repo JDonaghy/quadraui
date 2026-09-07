@@ -211,17 +211,43 @@ impl Split {
 //
 // Re-verified while migrating, per this issue's "re-verify before you
 // implement": all three deleted copies painted exactly one filled
-// rectangle — `layout.divider_bounds` in the opaque `theme.separator`
-// colour — and nothing else (pane content is explicitly the host's
-// job, not the rasteriser's, on every backend). GTK used `set_source`
-// (opaque, no alpha channel); macOS's `CGContextSetRGBFillColor` and
-// Windows's `ID2D1SolidColorBrush` both pass a real alpha channel, but
-// since `theme.separator` is always fully opaque (`Color::rgb`, not
-// `rgba`) the three are pixel-identical. **No divergence found** — same
-// conclusion as `primitives::split_tree`'s identical migration (#863,
-// slice 6/9), which shares this exact divider-fill shape.
+// rectangle — `layout.divider_bounds` in `theme.separator` — and
+// nothing else (pane content is explicitly the host's job, not the
+// rasteriser's, on every backend).
 //
-// One difference worth naming, though it isn't a paint divergence: the
+// **Divergence found and reported here (not silently resolved) — the
+// same class of bug `scrollbar` (#811 slice 1) found first.** The
+// deleted `gtk::draw_split` painted with `set_source`, which drops
+// alpha entirely, while macOS's `CGContextSetRGBFillColor` and
+// Windows's `ID2D1SolidColorBrush` both honour the real alpha byte.
+// `theme.separator` is **not** guaranteed opaque: `Theme::from_vscode_json`
+// (`theme.rs`) assigns it through the plain `color()` closure —
+// `Color::from_hex` (`types.rs`) — which parses a real alpha byte out of
+// an 8-digit `#rrggbbaa` VS Code `editorGroup.border` value instead of
+// clamping it to 255 the way `color_over`/`try_from_hex_over` do for
+// genuinely-composited colours. So a loaded theme CAN hand `paint()` a
+// translucent `theme.separator`.
+//
+// `paint` above fills through `surface.surface_fill_rect`, which on GTK
+// is `GtkBackend::surface_fill_rect` — already switched from
+// `set_source_rgb` to `gtk::set_source_rgba` by the scrollbar migration
+// (#811 slice 1; see that fn's doc). So this migration silently
+// *inherits* that fix: `Backend::draw_split`'s live GTK path now
+// honours the divider's alpha, where the pre-migration free function
+// did not. **This is a real GTK behaviour change** for any host whose
+// theme sets a translucent `editorGroup.border` — it brings GTK in line
+// with macOS/Windows (the same direction as the scrollbar fix, and
+// arguably desirable), but it is a divergence from the old GTK-only
+// behaviour, so it's reported here rather than asserted away.
+//
+// The deprecated `gtk::draw_split` free-function shim's `RawSplitSurface`
+// deliberately keeps calling the opaque `set_source` instead of
+// `set_source_rgba`, so any external caller still holding a direct
+// reference to that free function keeps getting byte-identical output
+// to before this migration — only the sanctioned `Backend::draw_split`
+// entry point's behaviour changed.
+//
+// One further difference worth naming, though it isn't a paint divergence: the
 // pre-migration `win::split::draw_split` always painted with
 // `Theme::default()` rather than any live theme (`WinBackend` doesn't
 // carry one through to chrome rasterisers yet — see that module's old
