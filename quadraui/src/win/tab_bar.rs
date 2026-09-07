@@ -27,6 +27,14 @@ use super::text::{fill_rect, DWrite};
 use crate::backend::{shift_tab_bar_hits, tab_bar_hits_from_layout};
 use crate::event::Rect;
 use crate::theme::Theme;
+// `TabBarHits` is `#[deprecated]` (issue #823) — this rasteriser still
+// narrows its `TabBarLayout` down to that struct because the six
+// `Backend` tab-bar methods `WinBackend` implements still return it, so
+// the import needs the same allow every use site below does. This module
+// is `cfg(target_os = "windows")`-gated, so these warnings only surface
+// under `--target x86_64-pc-windows-msvc` (or a real Windows host) —
+// never on the Linux `--features win` compile gate.
+#[allow(deprecated)]
 use crate::{tab_icon_at, SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabIcon, TabMeasure};
 
 /// Left+right padding (DIPs) inside a tab's background fill.
@@ -140,6 +148,7 @@ fn correct_scroll_offset(
     }
 }
 
+#[allow(deprecated)] // builds the deprecated `TabBarHits` — issue #823
 fn hits_from_layout(
     dwrite: &DWrite,
     rect: Rect,
@@ -162,6 +171,7 @@ fn hits_from_layout(
 /// Compute a [`TabBar`]'s layout without painting, for a bar decorated
 /// with per-tab icons (#620) — the no-paint twin of
 /// [`draw_tab_bar_icons`]. `&[]` reproduces [`win_tab_bar_layout`].
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn win_tab_bar_layout_icons(
     dwrite: &DWrite,
     rect: Rect,
@@ -174,6 +184,7 @@ pub fn win_tab_bar_layout_icons(
 
 /// Compute a [`TabBar`]'s layout without painting — the icon-less twin of
 /// [`win_tab_bar_layout_icons`].
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn win_tab_bar_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarHits {
     win_tab_bar_layout_icons(dwrite, rect, bar, &[])
 }
@@ -197,6 +208,7 @@ pub fn win_tab_bar_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarHi
 ///   hovered, so the hover state always shows `×` to close).
 /// - **Right segments:** painted in `tab_inactive_fg`, or `tab_active_fg`
 ///   when `seg.is_active`.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -325,6 +337,7 @@ pub fn draw_tab_bar_icons(
 
 /// Draw a [`TabBar`] with no per-tab icons — [`draw_tab_bar_icons`] with
 /// `icons: &[]`.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -382,6 +395,7 @@ mod tests {
     /// visible tab (per the independently-computed `TabBarLayout`) must
     /// `hit_test` back to that tab.
     #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
