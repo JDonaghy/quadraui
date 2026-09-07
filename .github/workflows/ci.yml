@@ -224,6 +224,17 @@ jobs:
         # path. Same narrowed override as the gtk+tui job's "Test (gtk +
         # tui features)" step below, and for the same reason (#819): only
         # `deprecated` is relaxed, every other lint stays denied.
+        #
+        # #829: this step is also the regenerate-and-diff-check gate for the
+        # generated terminal compatibility matrix — `quadraui/tests/terminal_matrix.rs`
+        # is a plain `#[test]` target with no extra feature gate, so it rides
+        # along here (and on every other `cargo test` leg) with no dedicated
+        # step of its own. It regenerates the multiplexer/colour-depth/
+        # mouse-mode/key-protocol matrix from `tests/tui_pty_smoke.rs`'s real
+        # pty fixtures and fails if the committed block in the root
+        # `README.md` (between the `TERMINAL_MATRIX` markers) differs from
+        # what it generates — the same guard shape `tests/readme_truth.rs`
+        # (#798) uses for the rest of the README.
         run: cargo test --features tui --workspace --exclude kubeui-gtk
         env:
           RUSTFLAGS: "-D warnings -A deprecated"
