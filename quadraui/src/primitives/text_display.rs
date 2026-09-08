@@ -85,6 +85,87 @@ fn default_auto_scroll() -> bool {
     true
 }
 
+/// Glyph prefixed to every continuation row of a wrapped [`TextDisplay`]
+/// line (quadraui#905). Without it, a wrapped row and a genuinely new
+/// line are visually identical, so a reader can't tell "this continues"
+/// from "this is unrelated." U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS)
+/// plus a separating space: a single narrow glyph, so it costs a small,
+/// predictable, constant column budget on every row (see
+/// [`wrap_continuation_marker_width`]).
+pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
+
+/// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
+/// [`crate::text_util::display_width`]).
+pub(crate) fn wrap_continuation_marker_width() -> usize {
+    crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
+}
+
+/// Column budget consumed by `line`'s timestamp prefix (its display
+/// width plus one separating space), or `0` when the line has none.
+/// Shared by every backend so the wrap column accounting always agrees
+/// with how much room the timestamp actually occupies.
+pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
+    line.timestamp
+        .as_ref()
+        .map(|ts| crate::text_util::display_width(ts) + 1)
+        .unwrap_or(0)
+}
+
+/// Word-wrap one [`TextDisplayLine`]'s spans to `col_budget` display
+/// cells. Thin, backend-shared adapter over
+/// [`crate::text_util::wrap_spans`] (`WrapPolicy::Word`) — the crate's
+/// one line wrapper — so every rasteriser (`tui`, and the shared
+/// [`native_surface_paint::paint`] behind `gtk`/`macos`/`win`) makes the
+/// same wrap decision. `col_budget` is the room left for content *after*
+/// the caller has already reserved timestamp/marker gutter width (see
+/// [`line_timestamp_cols`], [`wrap_continuation_marker_width`]) — this
+/// function only wraps what's left.
+pub(crate) fn wrap_display_line(line: &TextDisplayLine, col_budget: usize) -> Vec<Vec<StyledSpan>> {
+    crate::text_util::wrap_spans(&line.spans, col_budget, crate::text_util::WrapPolicy::Word)
+}
+
+/// Number of visual rows `line` occupies at `col_budget` display cells.
+/// `TextDisplay` always wraps over-long lines (quadraui#905) — this is
+/// not a caller-toggleable option (see the module doc: the primitive is
+/// documented exclusively for prose/log content, which has no fixed-
+/// column use case; that's what `DataTable` is for). Shared by every
+/// backend's `measure_line` closure (paint) *and* its pure layout
+/// counterpart (hit-testing), so the two can never disagree about row
+/// counts — see quadraui#494 (layout/paint parity) and #905 (this
+/// function's reason for existing).
+pub(crate) fn wrap_row_count(line: &TextDisplayLine, col_budget: usize) -> usize {
+    let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
+    let content_budget = col_budget.saturating_sub(gutter).max(1);
+    wrap_display_line(line, content_budget).len().max(1)
+}
+
+/// Convert a pixel width to a display-cell column budget using an
+/// approximate average character width — the same "no live measurement
+/// context available" approximation [`crate::backend::Backend::char_width`]
+/// exists for (used by hit-testing layout helpers that run outside a
+/// paint pass). Pixel backends (GTK/macOS/Windows) use this so their wrap
+/// column budget is computed identically whether or not a live
+/// rendering surface is on hand — see [`wrap_row_count`]'s doc on why
+/// paint and layout must agree.
+///
+/// `cfg`-gated to the pixel backends: TUI cells are already a 1:1
+/// column unit (no conversion needed), so under a bare `--features tui`
+/// build this function has no caller — and CI's tui leg runs with
+/// `-D warnings`, so an unconditional `pub(crate) fn` here would fail
+/// that leg on unused-function, not just warn.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn px_to_cols(width_px: f32, char_width: f32) -> usize {
+    if char_width <= 0.0 || width_px <= 0.0 {
+        0
+    } else {
+        (width_px / char_width).floor() as usize
+    }
+}
+
 /// One line in a `TextDisplay`. Carries styled spans plus an optional
 /// decoration tag (Error/Warning/Muted/Header) for log-level styling and
 /// an optional left-aligned timestamp string the backend renders in a
@@ -467,7 +548,10 @@ impl TextDisplay {
 ))]
 #[allow(dead_code)]
 mod native_surface_paint {
-    use super::{TextDisplay, TextDisplayLineMeasure};
+    use super::{
+        line_timestamp_cols, px_to_cols, wrap_display_line, wrap_row_count, TextDisplay,
+        TextDisplayLineMeasure, WRAP_CONTINUATION_MARKER,
+    };
     use crate::native_surface::NativeSurface;
     use crate::theme::Theme;
     use crate::types::Decoration;
@@ -487,12 +571,23 @@ mod native_surface_paint {
     /// `win_text_display_layout` already compute — see this module's
     /// doc for why those three stay separate, pure-math copies rather
     /// than also being unified here.
+    ///
+    /// `char_width` is the backend's approximate average character width
+    /// (`Backend::char_width`), used to convert `rect`'s pixel width into
+    /// the same "display cells" unit the wrap decision budgets in —
+    /// see [`px_to_cols`]'s doc for why an approximation (rather than a
+    /// real per-glyph measurement, which `surface` could give here) is
+    /// the correct choice: the pure `*_text_display_layout` hit-testing
+    /// helpers have no live surface to measure with, so paint must use
+    /// the same approximation they do or a click could resolve to a
+    /// different row than what's on screen (quadraui#494/#905).
     pub(crate) fn paint(
         display: &TextDisplay,
         rect: Rect,
         surface: &mut dyn NativeSurface,
         theme: &Theme,
         line_height: f32,
+        char_width: f32,
     ) {
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return;
@@ -524,20 +619,27 @@ mod native_surface_paint {
 
         let gutter = 12.0_f32;
         let min_thumb = 8.0_f32;
-        let layout = if display.show_scrollbar {
-            display.layout_with_scrollbar(rect.width, body_h, gutter, min_thumb, |_| {
-                TextDisplayLineMeasure::new(line_height)
-            })
+        let body_width_px = if display.show_scrollbar {
+            (rect.width - gutter).max(0.0)
         } else {
-            display.layout(rect.width, body_h, |_| {
-                TextDisplayLineMeasure::new(line_height)
-            })
+            rect.width
+        };
+        let col_budget = px_to_cols(body_width_px, char_width);
+
+        let measure = |i: usize| {
+            let rows = wrap_row_count(&display.lines[i], col_budget);
+            TextDisplayLineMeasure::new(rows as f32 * line_height)
+        };
+        let layout = if display.show_scrollbar {
+            display.layout_with_scrollbar(rect.width, body_h, gutter, min_thumb, measure)
+        } else {
+            display.layout(rect.width, body_h, measure)
         };
 
         for vis in &layout.visible_lines {
             let line = &display.lines[vis.line_idx];
-            let row_y = body_y + vis.bounds.y;
-            if row_y + line_height > body_y + body_h {
+            let row0_y = body_y + vis.bounds.y;
+            if row0_y >= body_y + body_h {
                 break;
             }
 
@@ -548,30 +650,57 @@ mod native_surface_paint {
                 _ => theme.foreground,
             };
 
-            let mut cursor_x = rect.x;
+            // Word-wrap onto continuation rows (quadraui#905) — every
+            // `TextDisplay` line wraps rather than being cut off.
+            let gutter_cols =
+                line_timestamp_cols(line).max(super::wrap_continuation_marker_width());
+            let content_budget = col_budget.saturating_sub(gutter_cols).max(1);
+            let rows = wrap_display_line(line, content_budget);
 
-            if let Some(ref ts) = line.timestamp {
-                let (tw, _) = surface.surface_measure_text(ts);
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, row_y, tw.max(1.0), line_height),
-                    ts,
-                    theme.muted_fg,
-                );
-                cursor_x += tw + 6.0;
-            }
-
-            for span in &line.spans {
-                let span_fg = span.fg.unwrap_or(line_fg);
-                let (sw, _) = surface.surface_measure_text(&span.text);
-                if let Some(span_bg) = span.bg {
-                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, sw, line_height), span_bg);
+            for (row_i, row_spans) in rows.iter().enumerate() {
+                let row_y = row0_y + row_i as f32 * line_height;
+                if row_y + line_height > body_y + body_h {
+                    break;
                 }
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, row_y, sw.max(1.0), line_height),
-                    &span.text,
-                    span_fg,
-                );
-                cursor_x += sw;
+
+                let mut cursor_x = rect.x;
+
+                if row_i == 0 {
+                    if let Some(ref ts) = line.timestamp {
+                        let (tw, _) = surface.surface_measure_text(ts);
+                        surface.surface_draw_text_run(
+                            Rect::new(cursor_x, row_y, tw.max(1.0), line_height),
+                            ts,
+                            theme.muted_fg,
+                        );
+                        cursor_x += tw + 6.0;
+                    }
+                } else {
+                    let (mw, _) = surface.surface_measure_text(WRAP_CONTINUATION_MARKER);
+                    surface.surface_draw_text_run(
+                        Rect::new(cursor_x, row_y, mw.max(1.0), line_height),
+                        WRAP_CONTINUATION_MARKER,
+                        theme.muted_fg,
+                    );
+                    cursor_x += mw;
+                }
+
+                for span in row_spans {
+                    let span_fg = span.fg.unwrap_or(line_fg);
+                    let (sw, _) = surface.surface_measure_text(&span.text);
+                    if let Some(span_bg) = span.bg {
+                        surface.surface_fill_rect(
+                            Rect::new(cursor_x, row_y, sw, line_height),
+                            span_bg,
+                        );
+                    }
+                    surface.surface_draw_text_run(
+                        Rect::new(cursor_x, row_y, sw.max(1.0), line_height),
+                        &span.text,
+                        span_fg,
+                    );
+                    cursor_x += sw;
+                }
             }
         }
 
@@ -686,7 +815,7 @@ mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             let rect = Rect::new(0.0, 0.0, 240.0, 160.0);
 
-            paint(&td, rect, &mut surface, &theme, 16.0);
+            paint(&td, rect, &mut surface, &theme, 16.0, 8.0);
 
             assert!(
                 surface
@@ -710,6 +839,7 @@ mod native_surface_paint {
                 &mut surface,
                 &theme,
                 16.0,
+                8.0,
             );
 
             assert!(surface.fills.is_empty());
@@ -724,7 +854,7 @@ mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             let rect = Rect::new(0.0, 0.0, 240.0, 32.0);
 
-            paint(&td, rect, &mut surface, &theme, 16.0);
+            paint(&td, rect, &mut surface, &theme, 16.0, 8.0);
 
             assert!(
                 surface
@@ -757,6 +887,7 @@ mod native_surface_paint {
                 &mut surface,
                 &theme,
                 16.0,
+                8.0,
             );
 
             assert!(
@@ -781,6 +912,7 @@ mod native_surface_paint {
                 &mut surface,
                 &theme,
                 16.0,
+                8.0,
             );
 
             assert!(
@@ -796,6 +928,51 @@ mod native_surface_paint {
                     .iter()
                     .any(|&(_, c)| c == theme.scrollbar_thumb),
                 "expected a scrollbar-thumb fill"
+            );
+        }
+
+        // ── quadraui#905: wrap paint behaviour ──────────────────────────
+
+        #[test]
+        fn wrap_splits_long_line_across_multiple_rows_with_continuation_marker() {
+            let mut td = make_td(0, false);
+            td.lines.push(TextDisplayLine {
+                spans: vec![StyledSpan::plain(
+                    "the quick brown fox jumps over the lazy dog",
+                )],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            // RecordingSurface measures 8px/char; an 80px-wide viewport is
+            // a 10-cell budget, far narrower than the 44-char line.
+            paint(
+                &td,
+                Rect::new(0.0, 0.0, 80.0, 160.0),
+                &mut surface,
+                &theme,
+                16.0,
+                8.0,
+            );
+
+            let row_ys: std::collections::BTreeSet<i64> = surface
+                .text_runs
+                .iter()
+                .map(|(r, _, _)| (r.y * 1000.0).round() as i64)
+                .collect();
+            assert!(
+                row_ys.len() > 1,
+                "expected the line to wrap onto multiple rows, got runs {:?}",
+                surface.text_runs
+            );
+            assert!(
+                surface
+                    .text_runs
+                    .iter()
+                    .any(|(_, t, _)| t == WRAP_CONTINUATION_MARKER),
+                "expected the continuation marker painted on a wrapped row, got {:?}",
+                surface.text_runs,
             );
         }
     }
@@ -1157,5 +1334,79 @@ mod tests {
         // Third line clipped to the remaining 1 row of viewport.
         assert_eq!(layout.visible_lines[2].bounds.y, 4.0);
         assert_eq!(layout.visible_lines[2].bounds.height, 1.0);
+    }
+
+    // ── quadraui#905: wrap helpers ──────────────────────────────────────
+    //
+    // These are the pure, backend-shared building blocks every rasteriser
+    // (`tui`, and the shared `native_surface_paint::paint` behind
+    // `gtk`/`macos`/`win`) calls from both its `measure_line` closure and
+    // its pure hit-testing layout counterpart — see `wrap_row_count`'s
+    // doc for why paint and layout must never disagree.
+
+    #[test]
+    fn wrap_display_line_short_line_is_one_row() {
+        let line = make_td_line("short");
+        let rows = wrap_display_line(&line, 80);
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn wrap_display_line_long_line_produces_multiple_rows() {
+        let line = TextDisplayLine {
+            spans: vec![StyledSpan::plain(
+                "the quick brown fox jumps over the lazy dog",
+            )],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        };
+        let rows = wrap_display_line(&line, 10);
+        assert!(rows.len() > 1, "expected wrapping, got {rows:?}");
+        for row in &rows {
+            let w: usize = row
+                .iter()
+                .map(|s| crate::text_util::display_width(&s.text))
+                .sum();
+            assert!(w <= 10, "row {row:?} exceeds the 10-cell budget");
+        }
+    }
+
+    #[test]
+    fn wrap_row_count_matches_wrap_display_line_len() {
+        let line = TextDisplayLine {
+            spans: vec![StyledSpan::plain(
+                "the quick brown fox jumps over the lazy dog",
+            )],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        };
+        assert_eq!(
+            wrap_row_count(&line, 10),
+            wrap_display_line(
+                &line,
+                10_usize.saturating_sub(wrap_continuation_marker_width())
+            )
+            .len()
+        );
+    }
+
+    #[test]
+    fn line_timestamp_cols_accounts_for_separator_space() {
+        let mut line = make_td_line("x");
+        assert_eq!(line_timestamp_cols(&line), 0);
+        line.timestamp = Some("12:00:00".to_string());
+        assert_eq!(line_timestamp_cols(&line), 8 + 1);
+    }
+
+    #[test]
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    fn px_to_cols_floors_and_handles_degenerate_input() {
+        assert_eq!(px_to_cols(100.0, 8.0), 12);
+        assert_eq!(px_to_cols(100.0, 0.0), 0);
+        assert_eq!(px_to_cols(0.0, 8.0), 0);
     }
 }

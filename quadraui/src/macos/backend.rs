@@ -1810,7 +1810,8 @@ impl Backend for MacBackend {
     fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
-        crate::primitives::text_display::paint(td, rect, self, &theme, line_height);
+        let char_width = self.current_char_width as f32;
+        crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
     }
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
         let ctx = self.current_cg();
@@ -1849,7 +1850,12 @@ impl Backend for MacBackend {
         )
     }
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
-        super::text_display::mac_text_display_layout(td, rect, self.current_line_height)
+        super::text_display::mac_text_display_layout(
+            td,
+            rect,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
     fn draw_text_input(
         &mut self,

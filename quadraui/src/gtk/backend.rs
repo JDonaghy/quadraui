@@ -2909,7 +2909,8 @@ impl Backend for GtkBackend {
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
-        crate::primitives::text_display::paint(td, rect, self, &theme, line_height);
+        let char_width = self.current_char_width as f32;
+        crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
     }
 
     fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
@@ -2949,7 +2950,12 @@ impl Backend for GtkBackend {
         rect: QRect,
         td: &TextDisplay,
     ) -> crate::primitives::text_display::TextDisplayLayout {
-        crate::gtk::gtk_text_display_layout(td, rect, self.current_line_height)
+        crate::gtk::gtk_text_display_layout(
+            td,
+            rect,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 
     fn draw_text_input(
@@ -7863,6 +7869,7 @@ mod tests {
             &td,
             QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32),
             16.0,
+            8.0,
         );
         let theme = crate::Theme::default();
         let stride = surface.stride() as usize;
