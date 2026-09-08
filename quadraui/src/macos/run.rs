@@ -708,17 +708,21 @@ define_class!(
         // protocol `impl` block needed.
 
         /// Accept a drag iff it carries at least one file-URL pasteboard
-        /// item — see [`Self::dropped_paths`].
+        /// item — see [`Self::drag_operation`].
+        ///
+        /// The answer itself lives in the plain `impl QuadraView` block
+        /// below rather than here, because `define_class!` rewrites the
+        /// signatures it generates (an ObjC `_cmd: Sel` is threaded in as
+        /// the first argument, and a `-> bool` becomes `-> Bool`), so a
+        /// method defined *inside* the macro is awkward to call from a
+        /// sibling method inside it. Shared logic goes in the ordinary
+        /// impl; the macro arms stay thin selector adapters.
         #[unsafe(method(draggingEntered:))]
         fn dragging_entered(
             &self,
             sender: &ProtocolObject<dyn NSDraggingInfo>,
         ) -> NSDragOperation {
-            if self.dropped_paths(sender).is_empty() {
-                NSDragOperation::None
-            } else {
-                NSDragOperation::Copy
-            }
+            self.drag_operation(sender)
         }
 
         /// Same accept/reject answer as `draggingEntered:`, re-evaluated
@@ -728,7 +732,7 @@ define_class!(
             &self,
             sender: &ProtocolObject<dyn NSDraggingInfo>,
         ) -> NSDragOperation {
-            self.dragging_entered(sender)
+            self.drag_operation(sender)
         }
 
         /// The user released the mouse button over this view — decode
@@ -736,16 +740,23 @@ define_class!(
         /// `UiEvent::FilesDropped`. Returns `false` (declining the
         /// operation) if the drag turns out to carry no file paths after
         /// all, mirroring `draggingEntered:`'s reject case.
+        ///
+        /// Written as a single tail `if`/`else` rather than an early
+        /// `return false`: `define_class!` declares the generated method
+        /// as returning ObjC's `Bool` and converts the *tail* expression
+        /// for us, so an early `return` of a Rust `bool` would not
+        /// type-check.
         #[unsafe(method(performDragOperation:))]
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
             let paths = self.dropped_paths(sender);
             if paths.is_empty() {
-                return false;
+                false
+            } else {
+                let loc = sender.draggingLocation();
+                let view_pt = self.convertPoint_fromView(loc, None);
+                self.dispatch(ns_files_dropped(paths, view_pt.x, view_pt.y));
+                true
             }
-            let loc = sender.draggingLocation();
-            let view_pt = self.convertPoint_fromView(loc, None);
-            self.dispatch(ns_files_dropped(paths, view_pt.x, view_pt.y));
-            true
         }
     }
 );
@@ -781,6 +792,23 @@ impl QuadraView {
         let view_pt = self.convertPoint_fromView(win_pt, None);
         let flags = event.modifierFlags().0;
         (view_pt.x, view_pt.y, flags)
+    }
+
+    /// The accept/reject answer both `draggingEntered:` and
+    /// `draggingUpdated:` give AppKit (issue #834): `Copy` for a drag
+    /// carrying at least one file URL, `None` for anything else — a
+    /// text or colour drag gets no drop cursor and never reaches
+    /// `performDragOperation:`.
+    ///
+    /// Lives here, outside `define_class!`, so both selector arms can
+    /// share it — see `draggingEntered:`'s doc for why one macro-defined
+    /// method can't simply call another.
+    fn drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+        if self.dropped_paths(sender).is_empty() {
+            NSDragOperation::None
+        } else {
+            NSDragOperation::Copy
+        }
     }
 
     /// Decode a drag's file-URL pasteboard items into filesystem paths
