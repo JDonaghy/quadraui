@@ -292,36 +292,113 @@ fn shipped_primitives_and_backend_trait_are_not_called_roadmapped() {
 
 // ── a11y and BackendError: doc claims that must track source reality ────
 
-#[test]
-fn a11y_fields_absence_is_still_disclosed_accurately() {
-    // docs/UI_CRATE_DESIGN.md's decision #6 claimed a11y-ready fields
-    // (`a11y_role`, `a11y_label`) ship on every primitive. They never did.
-    // If they ever get added for real, this test starts failing — that's
-    // the point: whoever ships them must come back and remove the
-    // now-stale disclaimer instead of leaving both claims in the repo.
-    let has_a11y_fields = fs::read_dir(crate_root().join("src/primitives"))
+/// Path of the one primitive-module file allowed to mention `a11y_role`
+/// while the docs still say no primitive *descriptor* carries a11y data:
+/// the groundwork type's own module (#835).
+const A11Y_GROUNDWORK_MODULE: &str = "a11y.rs";
+
+/// Every `src/primitives/*.rs` file, paired with its contents.
+fn primitive_module_sources() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = fs::read_dir(crate_root().join("src/primitives"))
         .expect("src/primitives exists")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
-        .any(|e| fs::read_to_string(e.path()).is_ok_and(|s| s.contains("a11y_role")));
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "rs"))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_string();
+            let body = fs::read_to_string(&p).ok()?;
+            Some((name, body))
+        })
+        .collect();
+    out.sort();
+    assert!(
+        !out.is_empty(),
+        "src/primitives/ has no .rs files — either the module layout \
+         moved or this helper's parsing broke. Investigate before \
+         trusting the a11y checks below."
+    );
+    out
+}
+
+#[test]
+fn a11y_groundwork_doc_claims_track_source_reality() {
+    // docs/UI_CRATE_DESIGN.md's decision #6 originally claimed a11y-ready
+    // fields (`a11y_role`, `a11y_label`) ship on *every* primitive. #798
+    // corrected that to "no primitive has any such field", which was true
+    // at the time. #835 then landed the groundwork half for real: a single
+    // shared `A11yInfo` sidecar in `src/primitives/a11y.rs`. So the doc now
+    // has to make a narrower claim, and this test pins it from both sides.
+    let modules = primitive_module_sources();
+
+    let groundwork = modules
+        .iter()
+        .find(|(name, _)| name == A11Y_GROUNDWORK_MODULE)
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| {
+            panic!(
+                "src/primitives/{A11Y_GROUNDWORK_MODULE} is gone, but \
+                 docs/UI_CRATE_DESIGN.md (decision #6, the status banner \
+                 and the risk table) describes `A11yInfo` as shipped \
+                 groundwork. If #835 was reverted, restore #798's \
+                 \"no primitive has any such field\" framing in that doc \
+                 rather than leaving it claiming API that no longer exists."
+            )
+        });
+    for needle in ["pub struct A11yInfo", "pub a11y_role", "pub a11y_label"] {
+        assert!(
+            groundwork.contains(needle),
+            "src/primitives/{A11Y_GROUNDWORK_MODULE} no longer contains \
+             `{needle}`, but docs/UI_CRATE_DESIGN.md decision #6 names \
+             `A11yInfo` with exactly `a11y_role` / `a11y_label`. Rename \
+             the doc's wording with the code, or this doc is lying again."
+        );
+    }
 
     let design_doc = ui_crate_design_md();
-    if has_a11y_fields {
-        panic!(
-            "a11y_role now appears under src/primitives/ — accessibility \
-             fields shipped! Remove the \"did not [ship]\" / \"no primitive \
-             has any such field\" disclaimers this test currently checks \
-             for in docs/UI_CRATE_DESIGN.md (decision #6 and the risk \
-             table), and delete this branch of the test."
+    for stale in [
+        "no primitive has any such field",
+        "`grep -rn a11y_role quadraui/src` finds nothing",
+        "zero primitives carry `a11y_role`/`a11y_label`",
+    ] {
+        assert!(
+            !design_doc.contains(stale),
+            "docs/UI_CRATE_DESIGN.md still says {stale:?}, but \
+             src/primitives/{A11Y_GROUNDWORK_MODULE} defines `A11yInfo` \
+             with those exact fields (#835). Describe the groundwork that \
+             actually shipped instead of contradicting the code."
         );
     }
     assert!(
-        design_doc.contains("no primitive has any such field"),
-        "docs/UI_CRATE_DESIGN.md's accessibility disclaimer (added by \
-         #798) is missing, but src/primitives/ still has no a11y_role \
-         field anywhere. Decision #6 in that doc reads as a shipped ✅ \
-         without the disclaimer, which is exactly the drift #798 fixed — \
-         restore the correction rather than deleting it silently."
+        design_doc.contains("A11yInfo"),
+        "docs/UI_CRATE_DESIGN.md never mentions `A11yInfo`, but it ships \
+         in src/primitives/{A11Y_GROUNDWORK_MODULE} (#835). Decision #6 \
+         has to name what actually landed, or the next reader re-derives \
+         the gap from scratch."
+    );
+
+    // The *other* half of the claim, and the one most likely to rot: the
+    // doc and the root README both say the groundwork is not wired into
+    // any primitive descriptor yet. The moment some primitive grows an
+    // `A11yInfo` field, that sentence is false — fail here rather than
+    // let the doc quietly under-claim shipped accessibility data.
+    let adopters: Vec<&str> = modules
+        .iter()
+        // `mod.rs` is the module index, not a descriptor — its `pub mod`
+        // list and the comment explaining why `a11y` is `pub(crate)` are
+        // expected to name the type.
+        .filter(|(name, _)| name != A11Y_GROUNDWORK_MODULE && name != "mod.rs")
+        .filter(|(_, body)| {
+            body.contains("a11y_role") || body.contains("a11y_label") || body.contains("A11yInfo")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        adopters.is_empty(),
+        "primitive module(s) {adopters:?} now reference a11y data, but \
+         docs/UI_CRATE_DESIGN.md decision #6 and README.md's \
+         \"What is not supported\" both still say no primitive descriptor \
+         carries an `A11yInfo` field. Update both docs to name the \
+         primitives that do, then narrow this check to them."
     );
 }
 
