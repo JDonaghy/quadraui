@@ -15,31 +15,12 @@
 //! fields added directly to [`crate::TabBar`], [`crate::ActivityBar`],
 //! [`crate::Spinner`], etc. — was tried first and reverted. Every
 //! top-level primitive descriptor in this crate is a plain,
-//! non-`#[non_exhaustive]`, all-`pub`-field struct, and **every one of
-//! them is already constructed via exhaustive literals** — no
-//! `..Default::default()` spread — both downstream and in this repo's
-//! own sealed acceptance suite:
-//!
-//! - `tests/acceptance/ms-11/c0_paint_smoke.rs` (sealed — workers may
-//!   not edit it, see `quadraui/tests/acceptance.rs`'s module doc)
-//!   builds `StatusBar`, `TabBar`, `CommandLine`, `MessageList`,
-//!   `TextDisplay`, `ListView`, `TreeView`, `PipelineView`, `DiffView`,
-//!   `Tooltip`, `Spinner`, `ProgressBar`, `Scrollbar` and `DropOverlay`
-//!   with full field lists. A new required field on any of those is an
-//!   `error[E0063]: missing fields` there, unconditionally.
-//! - `~/src/vimcode/src/{render.rs,app.rs,gtk/util.rs,core/window.rs}`
-//!   and `~/src/coord-tui/src/app/{mod.rs,render.rs}` construct
-//!   essentially every remaining descriptor
-//!   (`ActivityBar`/`BoardCard`/`BoardColumn`/`BoardModel`/`Chart`/
-//!   `CommandCenter`/`Completions`/`ContextMenu`/`DataTable`/`Dialog`/
-//!   `FindReplacePanel`/`Form`/`Image`/`MenuBar`/`Minimap`/
-//!   `MultiSectionView`/`Palette`/`RichTextPopup`/`SidebarPanel`/
-//!   `SplitTree`/`Toolbar`/…) the same exhaustive way — confirmed by
-//!   grep, zero `..Default::default()` hits in the coord-tui files that
-//!   do the constructing. `vimcode` tracks this repo's `develop` tip
-//!   directly (see the *Downstream consumers* section of the repo
-//!   root `CLAUDE.md`), so any one of those breaks would turn its CI
-//!   red on this PR's `downstream` job, not at some future pin bump.
+//! non-`#[non_exhaustive]`, all-`pub`-field struct built via exhaustive
+//! literals with no `..Default::default()` spread, both in this repo's
+//! sealed acceptance suite and downstream in vimcode/coord-tui, so a new
+//! required field on any of them is an unconditional `error[E0063]` at
+//! every call site (full grep evidence in this PR's `## Downstream
+//! impact` section, not repeated here).
 //!
 //! Per `CLAUDE.md`'s public-API rule 2, the preferred shape for
 //! additive data that can't be a defaulted field on an

@@ -157,6 +157,14 @@
 // updating this comment.
 #![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
+// Not `pub mod`, and not under `primitives/`: `A11yInfo` (#835) is shared
+// accessibility groundwork, not a widget primitive — no `Layout`, no
+// `hit_test`, no `Backend::draw_*` method — so it doesn't belong in the
+// primitive count `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count`
+// / `root_readme_states_the_real_primitive_count` derive from
+// `primitives/mod.rs`'s `pub mod` list, nor is it exposed as its own
+// public module path. Re-exported below as `crate::A11yInfo`.
+mod a11y;
 pub mod diagnostics;
 pub mod diff;
 pub mod focus;
@@ -315,9 +323,9 @@ mod desktop;
 ))]
 mod text_selection;
 
+pub use a11y::A11yInfo;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
-pub use primitives::a11y::A11yInfo;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,

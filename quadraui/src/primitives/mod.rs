@@ -11,16 +11,6 @@
 //! `docs/decisions/DECISIONS.md` for why the per-primitive `*Event` enums that
 //! nothing ever constructed were removed).
 
-// Not `pub mod`: `a11y` is not a widget primitive — it has no `Layout`,
-// no `hit_test`, and no `Backend::draw_*` method, so it does not belong
-// in the primitive count that `readme_truth.rs`'s
-// `lib_doc_states_the_real_primitive_count` /
-// `root_readme_states_the_real_primitive_count` check against README.md
-// and lib.rs (both of which count every `pub mod` line in this file).
-// It is the shared accessibility groundwork type `A11yInfo` (#835):
-// `pub(crate)` here, re-exported as `crate::A11yInfo` from `lib.rs`,
-// rather than counted as the 41st primitive module.
-pub(crate) mod a11y;
 pub mod activity_bar;
 pub mod board;
 pub mod chart;
