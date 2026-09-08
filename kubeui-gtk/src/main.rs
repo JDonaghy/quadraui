@@ -255,6 +255,7 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
         &yaml,
         &yaml_theme,
         line_h,
+        metrics.char_w as f64,
     );
 
     // ── Status bar ─────────────────────────────────────────────

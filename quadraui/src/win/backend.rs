@@ -2343,7 +2343,8 @@ impl Backend for WinBackend {
         if self.surface.is_some() {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
-            crate::primitives::text_display::paint(td, rect, self, &theme, line_height);
+            let char_width = self.current_char_width;
+            crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -2408,7 +2409,12 @@ impl Backend for WinBackend {
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
         #[cfg(target_os = "windows")]
         {
-            super::text_display::win_text_display_layout(td, rect, self.current_line_height)
+            super::text_display::win_text_display_layout(
+                td,
+                rect,
+                self.current_line_height,
+                self.current_char_width,
+            )
         }
         #[cfg(not(target_os = "windows"))]
         {

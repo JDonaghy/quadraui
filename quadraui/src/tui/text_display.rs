@@ -1,22 +1,40 @@
 //! TUI rasteriser for [`crate::TextDisplay`].
 //!
 //! Per D6: this function asks the primitive for a
-//! [`crate::TextDisplayLayout`] using a uniform 1-cell-per-line
-//! measurer (TUI rows are always 1 cell tall) and paints the resolved
-//! `visible_lines` verbatim.
+//! [`crate::TextDisplayLayout`] using a per-line measurer and paints the
+//! resolved `visible_lines` verbatim. Since quadraui#905, a line wider
+//! than the viewport no longer gets silently cut off at the right edge:
+//! it always wraps onto continuation rows prefixed with a visible marker
+//! (one TUI cell is exactly one [`crate::text_util::display_width`]
+//! column, so the column-budget wrap decision is exact here, unlike the
+//! pixel backends' `char_width` approximation).
 //!
 //! Each line's spans render with their own `fg` / `bg` (falling back
 //! to the theme defaults). Optional `timestamp` prefix is rendered in
-//! [`Theme::muted_fg`]. Per-line `decoration` (`Error`/`Warning`/
-//! `Muted`) overrides the default fg for the entire line.
+//! [`Theme::muted_fg`] on a line's first row only. Per-line `decoration`
+//! (`Error`/`Warning`/`Muted`) overrides the default fg for the entire
+//! line.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::text_display::{TextDisplay, TextDisplayLineMeasure};
+use crate::primitives::text_display::{
+    line_timestamp_cols, wrap_continuation_marker_width, wrap_display_line, wrap_row_count,
+    TextDisplay, TextDisplayLine, TextDisplayLineMeasure, WRAP_CONTINUATION_MARKER,
+};
 use crate::theme::Theme;
-use crate::types::Decoration;
+use crate::types::{Decoration, StyledSpan};
+
+/// Word-wrap one [`TextDisplayLine`] to `line_end` columns, reserving
+/// gutter width for its timestamp prefix / the continuation marker (see
+/// [`crate::primitives::text_display::wrap_row_count`]'s doc on why the
+/// same budget math is shared with the pure hit-testing layout).
+fn line_rows(line: &TextDisplayLine, line_end: u16) -> Vec<Vec<StyledSpan>> {
+    let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
+    let content_budget = (line_end as usize).saturating_sub(gutter).max(1);
+    wrap_display_line(line, content_budget)
+}
 
 /// Draw a [`TextDisplay`] into `area` on `buf`.
 ///
@@ -77,20 +95,27 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
         return;
     }
 
-    let layout = if display.show_scrollbar {
-        display.layout_with_scrollbar(body.width as f32, body.height as f32, 1.0, 1.0, |_| {
-            TextDisplayLineMeasure::new(1.0)
-        })
+    let line_end = if display.show_scrollbar {
+        body.width.saturating_sub(1)
     } else {
-        display.layout(body.width as f32, body.height as f32, |_| {
-            TextDisplayLineMeasure::new(1.0)
-        })
+        body.width
+    };
+    let col_budget = line_end as usize;
+
+    let measure = |i: usize| {
+        let rows = wrap_row_count(&display.lines[i], col_budget);
+        TextDisplayLineMeasure::new(rows as f32)
+    };
+    let layout = if display.show_scrollbar {
+        display.layout_with_scrollbar(body.width as f32, body.height as f32, 1.0, 1.0, measure)
+    } else {
+        display.layout(body.width as f32, body.height as f32, measure)
     };
 
     for vis in &layout.visible_lines {
         let line = &display.lines[vis.line_idx];
-        let row_y = body.y + vis.bounds.y.round() as u16;
-        if row_y >= body.y + body.height {
+        let row0_y = body.y + vis.bounds.y.round() as u16;
+        if row0_y >= body.y + body.height {
             break;
         }
 
@@ -101,38 +126,51 @@ pub fn draw_text_display(buf: &mut Buffer, area: Rect, display: &TextDisplay, th
             _ => fg,
         };
 
-        let mut col: u16 = 0;
-
-        // Timestamp prefix (if present).
-        if let Some(ref ts) = line.timestamp {
-            for ch in ts.chars() {
-                if col >= body.width {
-                    break;
-                }
-                set_cell(buf, body.x + col, row_y, ch, muted, bg);
-                col += 1;
+        for (row_i, row_spans) in line_rows(line, line_end).iter().enumerate() {
+            let row_y = row0_y + row_i as u16;
+            if row_y >= body.y + body.height {
+                break;
             }
-            if col < body.width {
-                set_cell(buf, body.x + col, row_y, ' ', muted, bg);
-                col += 1;
-            }
-        }
 
-        // Spans.
-        let line_end = if display.show_scrollbar {
-            body.width.saturating_sub(1)
-        } else {
-            body.width
-        };
-        for span in &line.spans {
-            let span_fg = span.fg.map(ratatui_color).unwrap_or(line_fg);
-            let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
-            for ch in span.text.chars() {
-                if col >= line_end {
-                    break;
+            let mut col: u16 = 0;
+
+            if row_i == 0 {
+                // Timestamp prefix (if present) — first row only.
+                if let Some(ref ts) = line.timestamp {
+                    for ch in ts.chars() {
+                        if col >= line_end {
+                            break;
+                        }
+                        set_cell(buf, body.x + col, row_y, ch, muted, bg);
+                        col += 1;
+                    }
+                    if col < line_end {
+                        set_cell(buf, body.x + col, row_y, ' ', muted, bg);
+                        col += 1;
+                    }
                 }
-                set_cell(buf, body.x + col, row_y, ch, span_fg, span_bg);
-                col += 1;
+            } else {
+                // Continuation-row marker (quadraui#905) — a wrapped row
+                // must not read as an unrelated new line.
+                for ch in WRAP_CONTINUATION_MARKER.chars() {
+                    if col >= line_end {
+                        break;
+                    }
+                    set_cell(buf, body.x + col, row_y, ch, muted, bg);
+                    col += 1;
+                }
+            }
+
+            for span in row_spans {
+                let span_fg = span.fg.map(ratatui_color).unwrap_or(line_fg);
+                let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
+                for ch in span.text.chars() {
+                    if col >= line_end {
+                        break;
+                    }
+                    set_cell(buf, body.x + col, row_y, ch, span_fg, span_bg);
+                    col += 1;
+                }
             }
         }
     }
@@ -178,14 +216,20 @@ pub fn tui_text_display_layout(
     if body.height == 0 {
         return display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(1.0));
     }
-    if display.show_scrollbar {
-        display.layout_with_scrollbar(body.width as f32, body.height as f32, 1.0, 1.0, |_| {
-            TextDisplayLineMeasure::new(1.0)
-        })
+    let line_end = if display.show_scrollbar {
+        body.width.saturating_sub(1)
     } else {
-        display.layout(body.width as f32, body.height as f32, |_| {
-            TextDisplayLineMeasure::new(1.0)
-        })
+        body.width
+    };
+    let col_budget = line_end as usize;
+    let measure = |i: usize| {
+        let rows = wrap_row_count(&display.lines[i], col_budget);
+        TextDisplayLineMeasure::new(rows as f32)
+    };
+    if display.show_scrollbar {
+        display.layout_with_scrollbar(body.width as f32, body.height as f32, 1.0, 1.0, measure)
+    } else {
+        display.layout(body.width as f32, body.height as f32, measure)
     }
 }
 
@@ -414,6 +458,10 @@ mod tests {
     #[test]
     fn scrollbar_body_width_reduced() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        // 26-char line in a 5-cell-tall viewport: at a 19-col (20 - 1
+        // scrollbar) budget it wraps onto a second row (quadraui#905)
+        // rather than being cut mid-word — this test now asserts the
+        // scrollbar gutter still lands in the same column either way.
         let display = TextDisplay {
             id: WidgetId::new("td"),
             lines: vec![line("abcdefghijklmnopqrstuvwxyz")],
@@ -430,9 +478,19 @@ mod tests {
             &display,
             &Theme::default(),
         );
-        // Text should stop before the scrollbar column (col 19).
-        // Col 18 should have 's' (19th char), col 19 should be scrollbar.
-        assert_eq!(cell_char(&buf, 18, 0), 's');
+        // Row 0 holds the first wrapped chunk, stopping before the
+        // scrollbar column (col 19); row 1 is the continuation, marked
+        // so it isn't mistaken for an unrelated new line.
+        let row0: String = (0..19).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..19).map(|x| cell_char(&buf, x, 1)).collect();
+        assert!(
+            !row0.contains('…'),
+            "wrap mode must not truncate, got {row0:?}"
+        );
+        assert!(
+            row1.starts_with('↳'),
+            "continuation row should carry the wrap marker, got {row1:?}"
+        );
         assert_ne!(cell_char(&buf, 19, 0), 't');
     }
 
@@ -514,6 +572,91 @@ mod tests {
         assert_eq!(
             thumb_top.y, 0.0,
             "thumb should be at top when scroll_offset=0"
+        );
+    }
+
+    // ── quadraui#905: wrap ──────────────────────────────────────────────
+
+    #[test]
+    fn wrap_splits_long_line_and_shows_continuation_marker() {
+        // 12-col viewport, no scrollbar, no timestamp: gutter reserved
+        // for the continuation marker is 2 cols (see
+        // `wrap_continuation_marker_width`), leaving a 10-col content
+        // budget — the same budget `text_util`'s own
+        // `word_wrap_packs_multiple_words_per_row` test wraps "the quick
+        // brown fox" at, into exactly ["the quick", "brown fox"].
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 5));
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![line("the quick brown fox")],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        draw_text_display(
+            &mut buf,
+            Rect::new(0, 0, 12, 5),
+            &display,
+            &Theme::default(),
+        );
+        let row0: String = (0..12).map(|x| cell_char(&buf, x, 0)).collect();
+        let row1: String = (0..12).map(|x| cell_char(&buf, x, 1)).collect();
+        assert_eq!(row0.trim_end(), "the quick");
+        assert!(
+            row1.starts_with('↳'),
+            "continuation row should start with the wrap marker, got {row1:?}"
+        );
+        assert!(
+            row1.contains("brown fox"),
+            "continuation row should carry the rest of the line, got {row1:?}"
+        );
+    }
+
+    #[test]
+    fn tui_text_display_layout_row_count_matches_paint_for_wrapped_line() {
+        // The pure hit-testing layout must agree with what `draw_text_display`
+        // actually paints (quadraui#494/#905) — a wrapped line occupies more
+        // than one visible row in both.
+        let display = TextDisplay {
+            id: WidgetId::new("td"),
+            lines: vec![
+                line("the quick brown fox jumps over the lazy dog"),
+                line("short"),
+            ],
+            scroll_offset: 0,
+            auto_scroll: false,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        let layout = tui_text_display_layout(&display, Rect::new(0, 0, 10, 10));
+        // One `VisibleTextDisplayLine` per source line, with `bounds.height`
+        // equal to its wrapped row count (see `text_display_layout_wrap_heights`
+        // in `primitives::text_display`). Line 0 must wrap to >1 row, and
+        // line 1 ("short") must start immediately after all of line 0's
+        // wrapped rows — never overlapping them.
+        let line0 = layout
+            .visible_lines
+            .iter()
+            .find(|v| v.line_idx == 0)
+            .expect("line 0 visible");
+        assert!(
+            line0.bounds.height > 1.0,
+            "expected line 0 to occupy multiple visual rows, layout: {:?}",
+            layout.visible_lines
+        );
+        let line1 = layout
+            .visible_lines
+            .iter()
+            .find(|v| v.line_idx == 1)
+            .expect("line 1 visible");
+        assert!(
+            line1.bounds.y >= line0.bounds.height,
+            "line 1 must start after all of line 0's wrapped rows"
         );
     }
 }

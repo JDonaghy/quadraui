@@ -40,10 +40,19 @@ const SCROLLBAR_MIN_THUMB_PT: f32 = 8.0;
 /// `line_height` strip above; the body height passed to the
 /// primitive shrinks by that strip when `title` is present. This
 /// matches the GTK helper's contract.
+///
+/// `char_width` is the backend's approximate average character width
+/// (`Backend::char_width`) — see quadraui#905: this pure function has no
+/// live `CTFont`/`CGContext` to measure real glyph widths with, so it
+/// approximates the wrap column budget from pixels the same way the
+/// shared `paint` (`MacBackend::draw_text_display`) does, so a click
+/// always resolves against the same row boundaries that were actually
+/// painted.
 pub fn mac_text_display_layout(
     display: &TextDisplay,
     rect: QRect,
     line_height: f64,
+    char_width: f64,
 ) -> TextDisplayLayout {
     let body_h = if display.title.is_some() {
         (rect.height as f64 - line_height).max(0.0)
@@ -55,17 +64,25 @@ pub fn mac_text_display_layout(
             TextDisplayLineMeasure::new(line_height as f32)
         });
     }
+    let body_width_px = if display.show_scrollbar {
+        (rect.width - SCROLLBAR_GUTTER_PT).max(0.0)
+    } else {
+        rect.width
+    };
+    let col_budget = crate::primitives::text_display::px_to_cols(body_width_px, char_width as f32);
+    let measure = |i: usize| {
+        let rows = crate::primitives::text_display::wrap_row_count(&display.lines[i], col_budget);
+        TextDisplayLineMeasure::new(rows as f32 * line_height as f32)
+    };
     if display.show_scrollbar {
         display.layout_with_scrollbar(
             rect.width,
             body_h as f32,
             SCROLLBAR_GUTTER_PT,
             SCROLLBAR_MIN_THUMB_PT,
-            |_| TextDisplayLineMeasure::new(line_height as f32),
+            measure,
         )
     } else {
-        display.layout(rect.width, body_h as f32, |_| {
-            TextDisplayLineMeasure::new(line_height as f32)
-        })
+        display.layout(rect.width, body_h as f32, measure)
     }
 }
