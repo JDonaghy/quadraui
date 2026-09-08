@@ -102,6 +102,48 @@
 //! comment), and epic quadraui#481 owns adding one across every backend,
 //! not just GTK's terminal example. `examples/common/terminal_app.rs`'s
 //! module doc carries the consumer-facing version of this note.
+//!
+//! ## Re-entrancy: two independent sources, one invariant (quadraui#902)
+//!
+//! Every signal closure below takes `backend.borrow_mut()` and
+//! `app.borrow_mut()` together across a `dispatch_event` call. Two
+//! different things can make that double-borrow — panicking inside a
+//! non-unwindable `extern "C"` GLib trampoline frame, which aborts the
+//! whole process rather than unwinding:
+//!
+//! 1. **A nested modal pump** (quadraui#427) — GTK's async
+//!    `FileDialog`'s `MainContext::iteration(true)` wait services every
+//!    other pending source, including this runner's own closures, while
+//!    the code that started the pump still holds `backend`/`app`
+//!    borrowed. Guarded by `pump_depth.is_pumping()`, checked first in
+//!    every closure below.
+//! 2. **A synchronous same-signal re-entry from app code** (quadraui#902)
+//!    — app code, called from inside `dispatch_event`, invokes a GTK
+//!    method that synchronously re-emits the very signal a handler below
+//!    listens for. The reported case: `AppLogic::handle` calls
+//!    `window.close()` from inside its own `WindowClose` handling;
+//!    `gtk_window_close` emits `close-request` synchronously, re-entering
+//!    `connect_close_request` below while the outer call still holds
+//!    `backend`/`app`. `pump_depth` is `0` the entire time this happens —
+//!    it only ever models source 1 — so it waves this straight through
+//!    into a second `borrow_mut()` and the abort.
+//!
+//! Nothing about source 2 is specific to `close-request`: any handler
+//! below aborts the same way if app code, mid-dispatch, triggers the
+//! signal it listens for. The fix is structural rather than enumerative
+//! — `try_borrow_both`/`try_dispatch`/`try_dispatch_with`/
+//! `try_dispatch_borrowed` (defined near [`dispatch_event`], used
+//! throughout) ask the `RefCell`s themselves whether it's safe to
+//! proceed, which catches source 2 *and* any future re-entrancy source
+//! nobody has enumerated yet, without needing a second depth counter.
+//! Most handlers degrade by skipping the event, the same trade
+//! `pump_depth.is_pumping()` already makes. `close-request` additionally
+//! *defers* its event onto `events_handle` (a plain
+//! `Rc<RefCell<VecDeque<UiEvent>>>` with borrow state independent of
+//! `backend`'s, safe to push to even while `backend` is held) rather than
+//! dropping it, because a dropped `WindowClose` would turn an
+//! in-dispatch `close()` call into a silent, permanent no-op — see that
+//! handler for the full rationale.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -349,6 +391,19 @@ fn activate<A: AppLogic + 'static>(
     // callback frame and aborting the process.
     let pump_depth = backend.borrow().pump_depth();
 
+    // #902 backstop: shared handle to the backend's event queue, fetched
+    // once here (same reasoning as `pump_depth` above) and cloned into
+    // any closure below that needs to *defer* an event rather than drop
+    // it outright when `try_dispatch`/`try_borrow_both` (below) report the
+    // backend/app are already borrowed. Pushing here never needs
+    // `backend`'s own `RefCell` — `events_handle()` hands back a plain
+    // `Rc<RefCell<VecDeque<UiEvent>>>` with independent borrow state — so
+    // it works precisely in the situation that motivates it: `backend`
+    // mutably borrowed by an outer `dispatch_event` call, still on the
+    // stack. See `try_dispatch`'s doc and the `close-request` handler
+    // below for the concrete re-entrancy this exists to survive.
+    let events_handle = backend.borrow().events_handle();
+
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
@@ -451,10 +506,13 @@ fn activate<A: AppLogic + 'static>(
             // module doc's "Shared with the headless test driver" section)
             // so the live GTK path and `GtkDriver::press`/`type_char`
             // (quadraui#446) can't drift apart.
-            let outcome = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+            // #902 backstop: `backend`/`app` already borrowed by an outer
+            // `dispatch_event` further up this stack (not a nested pump,
+            // which `pump_depth` above already ruled out) — degrade like
+            // that guard instead of panicking. See the `#902` section
+            // above `dispatch_event`.
+            let Some(outcome) = try_dispatch(&backend, &app, ev) else {
+                return glib::Propagation::Proceed;
             };
             apply_event_outcome(
                 outcome,
@@ -502,17 +560,27 @@ fn activate<A: AppLogic + 'static>(
             // `begin_window_drag`.
             if let Some(event) = gesture.current_event() {
                 if let Some(device) = event.device() {
-                    backend.borrow_mut().stash_window_press(
-                        device,
-                        gdk_button as i32,
-                        x,
-                        y,
-                        event.time(),
-                    );
+                    // #902 backstop: best-effort — if `backend` is already
+                    // borrowed (see the `#902` section above
+                    // `dispatch_event`), skip the stash. Worst case a
+                    // subsequent `begin_window_drag` has nothing armed to
+                    // commit; strictly better than aborting the process.
+                    if let Ok(mut backend_mut) = backend.try_borrow_mut() {
+                        backend_mut.stash_window_press(
+                            device,
+                            gdk_button as i32,
+                            x,
+                            y,
+                            event.time(),
+                        );
+                    }
                 }
             }
 
-            let mut backend_mut = backend.borrow_mut();
+            // #902 backstop — see the `#902` section above `dispatch_event`.
+            let Ok(mut backend_mut) = backend.try_borrow_mut() else {
+                return;
+            };
 
             // Route through dispatch_click so text-region clicks begin a
             // TextSelection drag and scrollbar clicks begin scrollbar drags —
@@ -551,9 +619,13 @@ fn activate<A: AppLogic + 'static>(
                 // `dispatch_event` folds the double-click itself (as its
                 // first pre-processing step) — pass the raw `MouseDown`
                 // dispatch_click returned straight through.
-                let outcome = {
-                    let mut app_mut = app.borrow_mut();
-                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+                //
+                // #902 backstop: `app` already borrowed by an outer
+                // `dispatch_event` further up this stack — stop draining
+                // this batch rather than panicking; see the `#902` section
+                // above `dispatch_event`.
+                let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
+                    break;
                 };
                 match outcome {
                     EventOutcome::Continue => {}
@@ -591,7 +663,10 @@ fn activate<A: AppLogic + 'static>(
             if pump_depth.is_pumping() {
                 return;
             }
-            let mut backend_mut = backend.borrow_mut();
+            // #902 backstop — see the `#902` section above `dispatch_event`.
+            let Ok(mut backend_mut) = backend.try_borrow_mut() else {
+                return;
+            };
             // #400: if the button goes up before the pointer ever moved
             // past the drag threshold, this was a plain click (or the
             // first half of a double-click), not a drag. Discard the
@@ -610,9 +685,10 @@ fn activate<A: AppLogic + 'static>(
                 dispatch_mouse_up(&stack, &mut drag, position, button)
             };
             for ev in events {
-                let outcome = {
-                    let mut app_mut = app.borrow_mut();
-                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+                // #902 backstop — see the `#902` section above
+                // `dispatch_event`.
+                let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
+                    break;
                 };
                 apply_event_outcome(outcome, &backend_mut, &da_for_redraw, &window_for_close);
             }
@@ -665,9 +741,17 @@ fn activate<A: AppLogic + 'static>(
             // (control passes to the compositor's native move at that
             // point); otherwise falls through to the normal motion
             // handling below unaffected.
-            if backend.borrow_mut().try_commit_window_drag(x, y) {
+            // #902 backstop: best-effort — if `backend` is already
+            // borrowed, skip the commit check this move event; the next
+            // motion event retries it. See the `#902` section above
+            // `dispatch_event`.
+            let Ok(mut probe_backend_mut) = backend.try_borrow_mut() else {
+                return;
+            };
+            if probe_backend_mut.try_commit_window_drag(x, y) {
                 return;
             }
+            drop(probe_backend_mut);
 
             let modifier = ctrl.current_event_state();
             let buttons = ButtonMask {
@@ -677,7 +761,10 @@ fn activate<A: AppLogic + 'static>(
             };
             let position = Point::new(x as f32, y as f32);
 
-            let mut backend_mut = backend.borrow_mut();
+            // #902 backstop — see the `#902` section above `dispatch_event`.
+            let Ok(mut backend_mut) = backend.try_borrow_mut() else {
+                return;
+            };
             let events = {
                 let drag_rc = backend_mut.drag_state_handle();
                 let drag = drag_rc.borrow();
@@ -688,9 +775,10 @@ fn activate<A: AppLogic + 'static>(
             // fallback `app.handle` both live in the shared `dispatch_event`.
             let mut needs_redraw = false;
             for ev in events {
-                let outcome = {
-                    let mut app_mut = app.borrow_mut();
-                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+                // #902 backstop — see the `#902` section above
+                // `dispatch_event`.
+                let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
+                    break;
                 };
                 match outcome {
                     EventOutcome::Continue => {}
@@ -733,12 +821,19 @@ fn activate<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             }
             let (x, y) = cursor_pos.get();
-            let natural_scroll = app.borrow().natural_scroll();
+            // #902 backstop: `app` already mutably borrowed further up
+            // this stack would make even this shared `.borrow()` panic —
+            // fall back to the trait's own default (`false`) rather than
+            // risk it; `try_dispatch` below degrades the same way for the
+            // dispatch itself. See the `#902` section above
+            // `dispatch_event`.
+            let natural_scroll = app
+                .try_borrow()
+                .map(|a| a.natural_scroll())
+                .unwrap_or(false);
             let ev = gdk_scroll_to_uievent_with_direction(dx, dy, x, y, natural_scroll);
-            let outcome = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+            let Some(outcome) = try_dispatch(&backend, &app, ev) else {
+                return glib::Propagation::Stop;
             };
             apply_event_outcome(
                 outcome,
@@ -843,17 +938,27 @@ fn activate<A: AppLogic + 'static>(
                 let height = da_for_redraw.height();
                 let scale = da_for_redraw.scale_factor() as f32;
                 let ev = gdk_resize_to_uievent(width, height, scale);
-                let outcome = {
-                    let mut backend_mut = backend.borrow_mut();
-                    // #834: keep the tracked scale current on every
-                    // resize too, not just the dedicated
-                    // `notify::scale-factor` handler below — a resize and
-                    // a DPI change can arrive in the same GTK signal burst
-                    // (dragging a window across a monitor boundary
-                    // resizes it too on some compositors).
-                    backend_mut.set_dpi_scale(scale);
-                    let mut app_mut = app.borrow_mut();
-                    dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+                // #902 backstop — see the `#902` section above
+                // `dispatch_event`. Skipping here means the tracked scale
+                // (`set_dpi_scale`, run as `try_dispatch_with`'s `pre`
+                // step) doesn't update this tick either; the next resize
+                // or `notify::scale-factor` firing corrects it.
+                let Some(outcome) = try_dispatch_with(
+                    &backend,
+                    &app,
+                    |backend_mut| {
+                        // #834: keep the tracked scale current on every
+                        // resize too, not just the dedicated
+                        // `notify::scale-factor` handler below — a resize
+                        // and a DPI change can arrive in the same GTK
+                        // signal burst (dragging a window across a
+                        // monitor boundary resizes it too on some
+                        // compositors).
+                        backend_mut.set_dpi_scale(scale);
+                    },
+                    ev,
+                ) else {
+                    return;
                 };
                 apply_event_outcome(
                     outcome,
@@ -891,11 +996,14 @@ fn activate<A: AppLogic + 'static>(
                 return;
             }
             let scale = da.scale_factor() as f32;
-            let outcome = {
-                let mut backend_mut = backend.borrow_mut();
-                backend_mut.set_dpi_scale(scale);
-                let mut app_mut = app.borrow_mut();
-                dispatch_event(UiEvent::DpiChanged(scale), &mut backend_mut, &mut *app_mut)
+            // #902 backstop — see the `#902` section above `dispatch_event`.
+            let Some(outcome) = try_dispatch_with(
+                &backend,
+                &app,
+                |backend_mut| backend_mut.set_dpi_scale(scale),
+                UiEvent::DpiChanged(scale),
+            ) else {
+                return;
             };
             apply_event_outcome(outcome, &backend.borrow(), &da_for_dpi, &window_for_dpi);
         });
@@ -935,10 +1043,9 @@ fn activate<A: AppLogic + 'static>(
                 return false;
             }
             let ev = gtk_drop_to_uievent(paths, x, y);
-            let outcome = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+            // #902 backstop — see the `#902` section above `dispatch_event`.
+            let Some(outcome) = try_dispatch(&backend, &app, ev) else {
+                return false;
             };
             apply_event_outcome(outcome, &backend.borrow(), &da_for_drop, &window_for_drop);
             true
@@ -990,15 +1097,47 @@ fn activate<A: AppLogic + 'static>(
         let app = app.clone();
         let da_for_redraw = da.clone();
         let pump_depth = pump_depth.clone();
+        let events_handle = events_handle.clone();
         window.connect_close_request(move |_window| {
             // #427 re-entrancy guard — see the key-press handler above.
             if pump_depth.is_pumping() {
                 return glib::Propagation::Proceed;
             }
-            let outcome = {
-                let mut backend_mut = backend.borrow_mut();
-                let mut app_mut = app.borrow_mut();
-                dispatch_event(UiEvent::WindowClose, &mut backend_mut, &mut *app_mut)
+            // #902: this is the handler the reported abort actually hit —
+            // `pump_depth` only ever sees a *nested modal pump* (#427);
+            // it's still 0 here when app code, synchronously inside an
+            // outer `dispatch_event` call further up this very stack,
+            // calls `window.close()`. GTK turns that into a second,
+            // synchronous `close-request` emission that re-enters this
+            // closure while `backend`/`app` are still borrowed by the
+            // outer call — see the module doc's "Re-entrancy: two
+            // independent sources, one invariant (quadraui#902)" section
+            // for the full call chain.
+            //
+            // Unlike every other handler above, this one can't just skip
+            // the event on a double-borrow: `WindowClose` is exactly what
+            // a consumer needs to see to decide whether to actually exit,
+            // and dropping it silently would turn an in-dispatch
+            // `close()` call into a permanent no-op. So defer instead:
+            // push straight onto `events_handle` — a plain
+            // `Rc<RefCell<VecDeque<UiEvent>>>` with its own, independent
+            // borrow state, so this can't double-borrow no matter how
+            // deep the reentrant stack is (see `events_handle`'s capture
+            // above `activate`'s `pump_depth`) — and refuse the close
+            // *this* turn, same as the ordinary `EventOutcome::Continue`
+            // arm below. The queued `WindowClose` reaches the app
+            // cleanly a tick later via the 33ms drain loop, once every
+            // outstanding borrow from this stack has unwound; if the app
+            // wants to exit it drives that itself through
+            // `Reaction::Exit` → `request_exit` → `window.destroy()`,
+            // which — unlike `close()` — cannot loop back through this
+            // handler.
+            let outcome = match try_dispatch(&backend, &app, UiEvent::WindowClose) {
+                Some(outcome) => outcome,
+                None => {
+                    events_handle.borrow_mut().push_back(UiEvent::WindowClose);
+                    return glib::Propagation::Stop;
+                }
             };
             match outcome {
                 EventOutcome::Exit => glib::Propagation::Proceed,
@@ -1037,6 +1176,7 @@ fn activate<A: AppLogic + 'static>(
     let drain_app = app.clone();
     let drain_backend = backend.clone();
     let drain_pump_depth = pump_depth.clone();
+    let drain_events_handle = events_handle.clone();
     let drain_and_tick: Rc<dyn Fn()> = Rc::new(move || {
         // #427 re-entrancy guard: this is the callback that produced the
         // original crash report. A file dialog's nested `pump_until_ready`
@@ -1050,30 +1190,56 @@ fn activate<A: AppLogic + 'static>(
         if drain_pump_depth.is_pumping() {
             return;
         }
-        let events = drain_backend.borrow_mut().poll_events();
-        for ev in events {
-            let outcome = {
-                let mut backend_mut = drain_backend.borrow_mut();
-                let mut app_mut = drain_app.borrow_mut();
-                dispatch_event(ev, &mut backend_mut, &mut *app_mut)
+        // #902 backstop: `poll_events` needs `&mut GtkBackend` same as
+        // every dispatch below — degrade instead of panicking if some
+        // other re-entrant source (see the `#902` section above
+        // `dispatch_event`) already holds it. The next tick (33ms later,
+        // or the next `waker()` call) retries.
+        let Ok(mut drain_backend_mut) = drain_backend.try_borrow_mut() else {
+            return;
+        };
+        let events = drain_backend_mut.poll_events();
+        drop(drain_backend_mut);
+        let mut events_iter = events.into_iter();
+        while let Some(ev) = events_iter.next() {
+            // #902 backstop — see the `#902` section above
+            // `dispatch_event`. Stop draining this tick rather than
+            // panicking; `ev` and anything left in `events_iter` were
+            // already drained from the backend's own queue above, so
+            // requeue them onto `events_handle` (a separate `RefCell`,
+            // safe to push to here — see `events_handle`'s capture above
+            // `pump_depth`) rather than losing them outright.
+            let Some((mut backend_mut, mut app_mut)) = try_borrow_both(&drain_backend, &drain_app)
+            else {
+                let mut q = drain_events_handle.borrow_mut();
+                q.push_back(ev);
+                q.extend(events_iter);
+                break;
             };
+            let outcome = dispatch_event(ev, &mut backend_mut, &mut *app_mut);
+            drop(backend_mut);
+            drop(app_mut);
             apply_event_outcome(outcome, &drain_backend.borrow(), &drain_da, &drain_window);
         }
 
         // Periodic tick — called after every queue drain, including
         // idle ticks where no events arrived. Lets apps drive timer
         // logic without synthetic event injection.
-        let tick_reaction = {
-            let mut backend_mut = drain_backend.borrow_mut();
-            let mut app_mut = drain_app.borrow_mut();
-            app_mut.tick(&mut *backend_mut)
-        };
-        apply_reaction(
-            tick_reaction,
-            &drain_backend.borrow(),
-            &drain_da,
-            &drain_window,
-        );
+        //
+        // #902 backstop: skip the tick, rather than panic, if `backend`/
+        // `app` are already borrowed — see the `#902` section above
+        // `dispatch_event`.
+        if let Some((mut backend_mut, mut app_mut)) = try_borrow_both(&drain_backend, &drain_app) {
+            let tick_reaction = app_mut.tick(&mut *backend_mut);
+            drop(backend_mut);
+            drop(app_mut);
+            apply_reaction(
+                tick_reaction,
+                &drain_backend.borrow(),
+                &drain_da,
+                &drain_window,
+            );
+        }
     });
 
     // Issue #831: install this closure as `waker()`'s wake target before
@@ -1423,6 +1589,83 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     app: &mut A,
 ) -> EventOutcome {
     crate::runtime::preprocess_event(event, backend, app)
+}
+
+// ── #902: re-entrancy backstop ──────────────────────────────────────
+//
+// A GTK trampoline handler must never panic — see the long comment above
+// `pump_depth`'s definition (`#427`) and the module's `close-request`
+// handler for the full incident this class of helper exists to prevent.
+// `pump_depth.is_pumping()` (checked by every signal closure above,
+// *before* reaching one of these) guards exactly one re-entrancy source:
+// a nested modal pump. It says nothing about a second, independent
+// source — app code that's already inside a `dispatch_event` call
+// synchronously invoking a GTK method that re-emits the very signal a
+// handler below is listening for (`window.close()` → `close-request`
+// being the reported case; nothing about the hazard is specific to
+// that one signal). `pump_depth` is depth 0 the whole time that happens,
+// so it waves the re-entry straight through into a second `borrow_mut()`
+// on an already-mutably-borrowed `RefCell` — a panic that can't unwind
+// across the `extern "C"` GLib trampoline frame above it, aborting the
+// process.
+//
+// Rather than add a second enumerated counter (which would fix only the
+// source that has already been found), these ask the `RefCell`s
+// themselves — they already know the true answer, including for sources
+// nobody has enumerated yet. Every caller below must treat a `None`
+// return as "degrade, don't dispatch" — most just skip the event, the
+// same trade the `pump_depth` guard next to them already makes; the
+// `close-request` handler additionally *defers* it via `events_handle`
+// (see that handler) because silently dropping a `WindowClose` would
+// make an in-dispatch `close()` call a permanent, silent no-op.
+
+/// Attempt to mutably borrow both `backend` and `app`, returning `None`
+/// instead of panicking if either is already borrowed. See the `#902`
+/// section above.
+fn try_borrow_both<'a, A>(
+    backend: &'a Rc<RefCell<GtkBackend>>,
+    app: &'a Rc<RefCell<A>>,
+) -> Option<(std::cell::RefMut<'a, GtkBackend>, std::cell::RefMut<'a, A>)> {
+    let backend_mut = backend.try_borrow_mut().ok()?;
+    let app_mut = app.try_borrow_mut().ok()?;
+    Some((backend_mut, app_mut))
+}
+
+/// [`try_borrow_both`] + [`dispatch_event`], running `pre` on the
+/// borrowed backend in between (e.g. `set_dpi_scale`) before `app` is
+/// borrowed and the event dispatched. `None` on a double-borrow — see
+/// the `#902` section above.
+fn try_dispatch_with<A: AppLogic>(
+    backend: &Rc<RefCell<GtkBackend>>,
+    app: &Rc<RefCell<A>>,
+    pre: impl FnOnce(&mut GtkBackend),
+    ev: UiEvent,
+) -> Option<EventOutcome> {
+    let (mut backend_mut, mut app_mut) = try_borrow_both(backend, app)?;
+    pre(&mut backend_mut);
+    Some(dispatch_event(ev, &mut backend_mut, &mut *app_mut))
+}
+
+/// [`try_dispatch_with`] with no pre-dispatch step — the common case.
+fn try_dispatch<A: AppLogic>(
+    backend: &Rc<RefCell<GtkBackend>>,
+    app: &Rc<RefCell<A>>,
+    ev: UiEvent,
+) -> Option<EventOutcome> {
+    try_dispatch_with(backend, app, |_| {}, ev)
+}
+
+/// Like [`try_dispatch`] but for callers that already hold `backend`
+/// mutably borrowed across a loop of several events (click press/release,
+/// motion) and only need `app` borrowed per-event. `None` on a
+/// double-borrow of `app` — see the `#902` section above.
+fn try_dispatch_borrowed<A: AppLogic>(
+    backend_mut: &mut GtkBackend,
+    app: &Rc<RefCell<A>>,
+    ev: UiEvent,
+) -> Option<EventOutcome> {
+    let mut app_mut = app.try_borrow_mut().ok()?;
+    Some(dispatch_event(ev, backend_mut, &mut *app_mut))
 }
 
 #[cfg(test)]
@@ -2076,5 +2319,168 @@ mod window_close_tests {
             300,
         );
         assert_eq!(driver.dispatch(UiEvent::WindowClose), Reaction::Redraw);
+    }
+}
+
+#[cfg(test)]
+mod reentrancy_backstop_tests {
+    //! Coverage for quadraui#902 — the structural re-entrancy backstop
+    //! (`try_borrow_both` / `try_dispatch` / `try_dispatch_with` /
+    //! `try_dispatch_borrowed`, all defined just above [`dispatch_event`])
+    //! that every guarded signal closure in `activate` now routes
+    //! through, replacing a plain `borrow_mut()` that would panic — and,
+    //! because the panic crosses a non-unwindable GLib trampoline frame,
+    //! abort the whole process — on a double borrow.
+    //!
+    //! The live `close-request` re-entry itself (`window.close()` called
+    //! from inside `AppLogic::handle`, which GTK turns into a synchronous
+    //! `close-request` re-emission) needs a real `ApplicationWindow`/
+    //! display and can't run through `GtkDriver` — see
+    //! `window_close_tests`'s module doc for the identical constraint on
+    //! `WindowClose` dispatch generally. What *is* headlessly testable,
+    //! and what the issue's own Verification section asks for, is the
+    //! degrade path: hold one of `backend`/`app`'s `RefCell`s borrowed —
+    //! exactly the state an outer `dispatch_event` call leaves the stack
+    //! in — and confirm these helpers return `None` (never panic), and
+    //! that a caller can safely defer the event onto `events_handle`
+    //! while that borrow is still held.
+    use super::*;
+
+    #[derive(Default)]
+    struct NoopApp;
+
+    impl AppLogic for NoopApp {
+        type AreaId = ();
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    #[test]
+    fn try_borrow_both_succeeds_when_neither_is_borrowed() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        assert!(try_borrow_both(&backend, &app).is_some());
+    }
+
+    #[test]
+    fn try_borrow_both_degrades_instead_of_panicking_when_backend_is_borrowed() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        // Mirrors the #902 call chain: an outer `dispatch_event` still
+        // holds `backend` mutably borrowed on the stack when a re-entered
+        // signal handler runs — not a nested modal pump (`pump_depth`
+        // already covers that), just app code synchronously triggering
+        // the same signal again.
+        let _outer_borrow = backend.borrow_mut();
+        assert!(
+            try_borrow_both(&backend, &app).is_none(),
+            "a double borrow_mut() on backend must degrade to None, not panic"
+        );
+    }
+
+    #[test]
+    fn try_borrow_both_degrades_instead_of_panicking_when_app_is_borrowed() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        let _outer_borrow = app.borrow_mut();
+        assert!(try_borrow_both(&backend, &app).is_none());
+    }
+
+    #[test]
+    fn try_dispatch_degrades_when_backend_already_borrowed() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        let _outer_borrow = backend.borrow_mut();
+        assert!(try_dispatch(&backend, &app, UiEvent::WindowClose).is_none());
+    }
+
+    #[test]
+    fn try_dispatch_with_degrades_when_app_already_borrowed() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        let _outer_borrow = app.borrow_mut();
+        let mut pre_ran = false;
+        let outcome = try_dispatch_with(
+            &backend,
+            &app,
+            |_backend_mut| pre_ran = true,
+            UiEvent::WindowClose,
+        );
+        assert!(outcome.is_none());
+        assert!(
+            !pre_ran,
+            "try_borrow_both borrows backend *and* app before `pre` ever runs, so a \
+             failed app borrow must short-circuit before any backend mutation \
+             (e.g. set_dpi_scale) happens — no partial side effect from a dispatch \
+             that never completes"
+        );
+    }
+
+    #[test]
+    fn try_dispatch_with_runs_pre_then_dispatches_when_neither_is_borrowed() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        let mut pre_ran = false;
+        let outcome = try_dispatch_with(
+            &backend,
+            &app,
+            |_backend_mut| pre_ran = true,
+            UiEvent::WindowClose,
+        );
+        assert!(outcome.is_some());
+        assert!(pre_ran);
+    }
+
+    #[test]
+    fn try_dispatch_borrowed_degrades_when_app_already_borrowed() {
+        let mut backend = GtkBackend::new();
+        let app = Rc::new(RefCell::new(NoopApp));
+        let _outer_borrow = app.borrow_mut();
+        assert!(try_dispatch_borrowed(&mut backend, &app, UiEvent::WindowClose).is_none());
+    }
+
+    /// This is `close-request`'s own degrade path (#902), exercised
+    /// directly: when `try_dispatch` reports a double-borrow, the handler
+    /// pushes `WindowClose` onto `events_handle` instead of dropping it —
+    /// the fix for the reported abort. Confirms both halves: pushing
+    /// while `backend` is still held mutably borrowed doesn't panic (the
+    /// whole point of deferring through `events_handle` rather than
+    /// `backend.push_event` — it's an independent `RefCell`), and the
+    /// event actually reaches `poll_events()` once the outer borrow is
+    /// released, so it isn't silently lost the way a plain `skip` would
+    /// lose it.
+    #[test]
+    fn close_request_degrade_path_defers_the_event_instead_of_dropping_it() {
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        let app = Rc::new(RefCell::new(NoopApp));
+        let events_handle = backend.borrow().events_handle();
+
+        {
+            // Simulate the outer `dispatch_event` call still holding
+            // `backend` borrowed when `close-request` re-enters.
+            let _outer_borrow = backend.borrow_mut();
+            let outcome = try_dispatch(&backend, &app, UiEvent::WindowClose);
+            assert!(
+                outcome.is_none(),
+                "must degrade, not panic, on the double borrow"
+            );
+            // The exact push `connect_close_request`'s handler does on
+            // `None` — must not panic even though `backend` is still
+            // borrowed above, because `events_handle` has independent
+            // borrow state.
+            events_handle.borrow_mut().push_back(UiEvent::WindowClose);
+        }
+
+        // Once the outer borrow is released (the stack has unwound back
+        // out of the original dispatch), the drain loop's `poll_events`
+        // picks the deferred event up like any other.
+        let drained = backend.borrow_mut().poll_events();
+        assert_eq!(
+            drained,
+            vec![UiEvent::WindowClose],
+            "the deferred WindowClose must reach the app on the next drain tick, not be lost"
+        );
     }
 }
