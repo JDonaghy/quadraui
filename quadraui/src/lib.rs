@@ -317,6 +317,7 @@ mod text_selection;
 
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
+pub use primitives::a11y::A11yInfo;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,
