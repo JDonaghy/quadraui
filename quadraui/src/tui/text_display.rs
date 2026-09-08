@@ -20,20 +20,20 @@ use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::text_display::{
-    line_timestamp_cols, wrap_continuation_marker_width, wrap_display_line, wrap_row_count,
-    TextDisplay, TextDisplayLine, TextDisplayLineMeasure, WRAP_CONTINUATION_MARKER,
+    content_budget_cols, wrap_display_line, wrap_row_count, TextDisplay, TextDisplayLine,
+    TextDisplayLineMeasure, WRAP_CONTINUATION_MARKER,
 };
 use crate::theme::Theme;
 use crate::types::{Decoration, StyledSpan};
 
 /// Word-wrap one [`TextDisplayLine`] to `line_end` columns, reserving
-/// gutter width for its timestamp prefix / the continuation marker (see
-/// [`crate::primitives::text_display::wrap_row_count`]'s doc on why the
-/// same budget math is shared with the pure hit-testing layout).
+/// gutter width for its timestamp prefix / the continuation marker via
+/// [`content_budget_cols`] — the single shared formula also used by
+/// [`crate::primitives::text_display::wrap_row_count`] and the pixel
+/// backends' paint path, so none of the three can drift out of step
+/// (see `content_budget_cols`'s doc, quadraui#494/#905).
 fn line_rows(line: &TextDisplayLine, line_end: u16) -> Vec<Vec<StyledSpan>> {
-    let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
-    let content_budget = (line_end as usize).saturating_sub(gutter).max(1);
-    wrap_display_line(line, content_budget)
+    wrap_display_line(line, content_budget_cols(line, line_end as usize))
 }
 
 /// Draw a [`TextDisplay`] into `area` on `buf`.

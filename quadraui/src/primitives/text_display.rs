@@ -154,6 +154,37 @@ mod wrap {
         crate::text_util::wrap_spans(&line.spans, col_budget, crate::text_util::WrapPolicy::Word)
     }
 
+    /// The column budget actually left for `line`'s span text after
+    /// reserving gutter width for whichever is wider: `line`'s timestamp
+    /// prefix (row 0 only) or the continuation marker (every other row).
+    ///
+    /// **The one place this subtraction is allowed to happen.** Every
+    /// caller that needs "how much room is left for content" —
+    /// [`wrap_row_count`] (row-count measurement), [`native_surface_paint::paint`]
+    /// (actual pixel-backend painting), and TUI's `line_rows`
+    /// (`crate::tui::text_display`, actual cell painting) — goes through
+    /// this function instead of re-deriving `col_budget.saturating_sub(gutter)`
+    /// locally. Before this helper existed the same three-line formula was
+    /// duplicated verbatim at all three call sites, which is exactly the
+    /// kind of drift that caused #494's paint/layout row-count mismatch:
+    /// a future edit to the formula in only one copy would silently
+    /// reintroduce it. A single function can't drift from itself.
+    ///
+    /// Reserving the wider of the two gutters for *every* row (including
+    /// row 0, which never draws a marker, and continuation rows, which
+    /// never draw a timestamp) is deliberately conservative rather than
+    /// exact: it keeps this one function usable for both row-count
+    /// measurement and per-row painting without either needing to know
+    /// which row it's computing for, at the cost of a line with no
+    /// timestamp wrapping very slightly earlier than the pixels available
+    /// to it would strictly allow. That trade-off is what keeps
+    /// [`wrap_row_count`] (measurement, no row index) and the paint loops
+    /// (per-row, but budgeted once up front) unable to disagree.
+    pub(crate) fn content_budget_cols(line: &TextDisplayLine, col_budget: usize) -> usize {
+        let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
+        col_budget.saturating_sub(gutter).max(1)
+    }
+
     /// Number of visual rows `line` occupies at `col_budget` display cells.
     /// `TextDisplay` always wraps over-long lines (quadraui#905) — this is
     /// not a caller-toggleable option (see the module doc: the primitive is
@@ -164,9 +195,9 @@ mod wrap {
     /// counts — see quadraui#494 (layout/paint parity) and #905 (this
     /// function's reason for existing).
     pub(crate) fn wrap_row_count(line: &TextDisplayLine, col_budget: usize) -> usize {
-        let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
-        let content_budget = col_budget.saturating_sub(gutter).max(1);
-        wrap_display_line(line, content_budget).len().max(1)
+        wrap_display_line(line, content_budget_cols(line, col_budget))
+            .len()
+            .max(1)
     }
 
     /// Convert a pixel width to a display-cell column budget using an
@@ -277,8 +308,7 @@ mod wrap {
     all(feature = "macos", target_os = "macos")
 ))]
 pub(crate) use wrap::{
-    line_timestamp_cols, wrap_continuation_marker_width, wrap_display_line, wrap_row_count,
-    WRAP_CONTINUATION_MARKER,
+    content_budget_cols, wrap_display_line, wrap_row_count, WRAP_CONTINUATION_MARKER,
 };
 
 #[cfg(any(
@@ -671,7 +701,7 @@ impl TextDisplay {
 #[allow(dead_code)]
 mod native_surface_paint {
     use super::{
-        line_timestamp_cols, px_to_cols, wrap_display_line, wrap_row_count, TextDisplay,
+        content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count, TextDisplay,
         TextDisplayLineMeasure, WRAP_CONTINUATION_MARKER,
     };
     use crate::native_surface::NativeSurface;
@@ -773,14 +803,26 @@ mod native_surface_paint {
             };
 
             // Word-wrap onto continuation rows (quadraui#905) — every
-            // `TextDisplay` line wraps rather than being cut off.
-            let gutter_cols =
-                line_timestamp_cols(line).max(super::wrap_continuation_marker_width());
-            let content_budget = col_budget.saturating_sub(gutter_cols).max(1);
-            let rows = wrap_display_line(line, content_budget);
+            // `TextDisplay` line wraps rather than being cut off. Same
+            // gutter math as `wrap_row_count` (and TUI's `line_rows`) via
+            // `content_budget_cols` — see its doc for why that sharing
+            // matters (#494).
+            let rows = wrap_display_line(line, content_budget_cols(line, col_budget));
 
             for (row_i, row_spans) in rows.iter().enumerate() {
                 let row_y = row0_y + row_i as f32 * line_height;
+                // `break` here only exits *this line's* wrapped-row loop,
+                // not the outer `for vis in &layout.visible_lines` loop —
+                // deliberately, since #905 made a single visible line
+                // capable of spanning multiple rows. The old single-row
+                // code could `break` the outer loop directly because
+                // hitting the bottom on one line meant every later line
+                // was also below it; that's no longer true in the
+                // abstract (though `TextDisplay::layout`'s own visible-line
+                // selection already stops handing back lines that start
+                // past the bottom, via the `row0_y` check above, so this
+                // rarely does more than confirm there is no next line to
+                // skip to).
                 if row_y + line_height > body_y + body_h {
                     break;
                 }

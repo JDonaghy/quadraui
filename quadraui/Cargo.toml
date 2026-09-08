@@ -1056,3 +1056,18 @@ required-features = ["tui"]
 name = "tui_find_replace"
 path = "examples/tui_find_replace.rs"
 required-features = ["tui"]
+
+# #905 — `TextDisplay` word-wraps an over-long line instead of silently
+# truncating it. Both entries are mandatory (see #595's note above): without
+# an explicit `[[example]]`, `gtk_text_display_wrap.rs` gets autodiscovered
+# with no `required-features` and fails `cargo test --features tui` on
+# `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_text_display_wrap"
+path = "examples/tui_text_display_wrap.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_text_display_wrap"
+path = "examples/gtk_text_display_wrap.rs"
+required-features = ["gtk"]

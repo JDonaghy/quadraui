@@ -1,0 +1,17 @@
+{
+  "id": "text_display.long_line_wraps_not_truncated",
+  "fixture": "text_display_wrap_demo",
+  "tier": 1,
+  "viewport": { "cols": 40, "rows": 20 },
+  "steps": [
+    { "note": "quadraui#905: a TextDisplay line far wider than the viewport must word-wrap onto continuation rows instead of being silently cut off at the right edge. The fixture's long line ends in the word TAILMARKER, which no backend can paint unless it actually wraps the line — there is no scroll-right affordance, and the viewport is tall enough to show every wrapped row at once. If a future change reintroduces truncation (or a new pane copies the old cut-at-the-edge behaviour), TAILMARKER stops being painted and this scenario fails on every registered backend." },
+    { "assert_screen_has": "This one line of prose" },
+    { "assert_screen_has": "TAILMARKER" },
+    { "note": "The continuation-row marker (↳, quadraui#905) must actually be painted, not just implied by the tail word reaching the screen — otherwise a wrapped row would be visually indistinguishable from an unrelated new line." },
+    { "assert_screen_has": "↳" },
+    { "note": "A short line placed after the long one still renders normally." },
+    { "assert_screen_has": "A short line follows." },
+    { "type_char": "q" },
+    { "assert_exited": true }
+  ]
+}

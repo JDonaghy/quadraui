@@ -37,6 +37,7 @@ pub const FIXTURES: &[&str] = &[
     "shell_app",
     "split_app",
     "tab_group_demo",
+    "text_display_wrap_demo",
     "toast_app",
     "wide_tab_bar_demo",
 ];
@@ -70,6 +71,10 @@ pub fn build<F: DriverFactory>(
         "shell_app" => F::make(common::shell_app::ShellApp::new(), viewport),
         "split_app" => F::make(common::split_app::SplitApp::new(), viewport),
         "tab_group_demo" => F::make(common::tab_group_demo::TabGroupDemo::new(), viewport),
+        "text_display_wrap_demo" => F::make(
+            common::text_display_wrap_demo::TextDisplayWrapDemo::new(),
+            viewport,
+        ),
         "toast_app" => F::make(common::toast_app::ToastApp::new(), viewport),
         "wide_tab_bar_demo" => F::make(common::wide_tab_bar_demo::WideTabBarDemo::new(), viewport),
         _ => return None,
