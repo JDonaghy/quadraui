@@ -85,86 +85,208 @@ fn default_auto_scroll() -> bool {
     true
 }
 
-/// Glyph prefixed to every continuation row of a wrapped [`TextDisplay`]
-/// line (quadraui#905). Without it, a wrapped row and a genuinely new
-/// line are visually identical, so a reader can't tell "this continues"
-/// from "this is unrelated." U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS)
-/// plus a separating space: a single narrow glyph, so it costs a small,
-/// predictable, constant column budget on every row (see
-/// [`wrap_continuation_marker_width`]).
-pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
-
-/// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
-/// [`crate::text_util::display_width`]).
-pub(crate) fn wrap_continuation_marker_width() -> usize {
-    crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
-}
-
-/// Column budget consumed by `line`'s timestamp prefix (its display
-/// width plus one separating space), or `0` when the line has none.
-/// Shared by every backend so the wrap column accounting always agrees
-/// with how much room the timestamp actually occupies.
-pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
-    line.timestamp
-        .as_ref()
-        .map(|ts| crate::text_util::display_width(ts) + 1)
-        .unwrap_or(0)
-}
-
-/// Word-wrap one [`TextDisplayLine`]'s spans to `col_budget` display
-/// cells. Thin, backend-shared adapter over
-/// [`crate::text_util::wrap_spans`] (`WrapPolicy::Word`) — the crate's
-/// one line wrapper — so every rasteriser (`tui`, and the shared
-/// [`native_surface_paint::paint`] behind `gtk`/`macos`/`win`) makes the
-/// same wrap decision. `col_budget` is the room left for content *after*
-/// the caller has already reserved timestamp/marker gutter width (see
-/// [`line_timestamp_cols`], [`wrap_continuation_marker_width`]) — this
-/// function only wraps what's left.
-pub(crate) fn wrap_display_line(line: &TextDisplayLine, col_budget: usize) -> Vec<Vec<StyledSpan>> {
-    crate::text_util::wrap_spans(&line.spans, col_budget, crate::text_util::WrapPolicy::Word)
-}
-
-/// Number of visual rows `line` occupies at `col_budget` display cells.
-/// `TextDisplay` always wraps over-long lines (quadraui#905) — this is
-/// not a caller-toggleable option (see the module doc: the primitive is
-/// documented exclusively for prose/log content, which has no fixed-
-/// column use case; that's what `DataTable` is for). Shared by every
-/// backend's `measure_line` closure (paint) *and* its pure layout
-/// counterpart (hit-testing), so the two can never disagree about row
-/// counts — see quadraui#494 (layout/paint parity) and #905 (this
-/// function's reason for existing).
-pub(crate) fn wrap_row_count(line: &TextDisplayLine, col_budget: usize) -> usize {
-    let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
-    let content_budget = col_budget.saturating_sub(gutter).max(1);
-    wrap_display_line(line, content_budget).len().max(1)
-}
-
-/// Convert a pixel width to a display-cell column budget using an
-/// approximate average character width — the same "no live measurement
-/// context available" approximation [`crate::backend::Backend::char_width`]
-/// exists for (used by hit-testing layout helpers that run outside a
-/// paint pass). Pixel backends (GTK/macOS/Windows) use this so their wrap
-/// column budget is computed identically whether or not a live
-/// rendering surface is on hand — see [`wrap_row_count`]'s doc on why
-/// paint and layout must agree.
+/// Backend-shared line-wrapping math for [`TextDisplay`] (quadraui#905).
 ///
-/// `cfg`-gated to the pixel backends: TUI cells are already a 1:1
-/// column unit (no conversion needed), so under a bare `--features tui`
-/// build this function has no caller — and CI's tui leg runs with
-/// `-D warnings`, so an unconditional `pub(crate) fn` here would fail
-/// that leg on unused-function, not just warn.
+/// Every rasteriser — `tui`, and the shared [`native_surface_paint::paint`]
+/// behind `gtk`/`macos`/`win` — computes its wrap decisions here rather
+/// than per-backend, so paint and the pure hit-testing layout helpers can
+/// never disagree about how many rows a line occupies (see
+/// [`wrap::wrap_row_count`]'s doc, and quadraui#494).
+///
+/// **Why the whole module is `cfg`-gated to the rasteriser features.**
+/// These helpers exist *only* to serve rasterisers. A default-feature
+/// `quadraui` build (no `tui`/`gtk`/`win`/`macos`) compiles the primitive
+/// types but no backend, so nothing calls them — and `cargo check
+/// -p quadraui --all-targets` under `RUSTFLAGS="-D warnings"` turns that
+/// into five hard `dead_code` errors, not warnings. Gating the module is
+/// the same fix (and the same reasoning) that [`wrap::px_to_cols`] already
+/// carries one level narrower. The gate must stay a superset of every
+/// backend that calls into here: adding a new rasteriser feature means
+/// adding it to this list.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+mod wrap {
+    use super::{StyledSpan, TextDisplayLine};
+
+    /// Glyph prefixed to every continuation row of a wrapped
+    /// [`super::TextDisplay`] line (quadraui#905). Without it, a wrapped
+    /// row and a genuinely new line are visually identical, so a reader
+    /// can't tell "this continues" from "this is unrelated."
+    /// U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS) plus a separating
+    /// space: a single narrow glyph, so it costs a small, predictable,
+    /// constant column budget on every row (see
+    /// [`wrap_continuation_marker_width`]).
+    pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
+
+    /// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
+    /// [`crate::text_util::display_width`]).
+    pub(crate) fn wrap_continuation_marker_width() -> usize {
+        crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
+    }
+
+    /// Column budget consumed by `line`'s timestamp prefix (its display
+    /// width plus one separating space), or `0` when the line has none.
+    /// Shared by every backend so the wrap column accounting always agrees
+    /// with how much room the timestamp actually occupies.
+    pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
+        line.timestamp
+            .as_ref()
+            .map(|ts| crate::text_util::display_width(ts) + 1)
+            .unwrap_or(0)
+    }
+
+    /// Word-wrap one [`TextDisplayLine`]'s spans to `col_budget` display
+    /// cells. Thin, backend-shared adapter over
+    /// [`crate::text_util::wrap_spans`] (`WrapPolicy::Word`) — the crate's
+    /// one line wrapper — so every rasteriser makes the same wrap
+    /// decision. `col_budget` is the room left for content *after* the
+    /// caller has already reserved timestamp/marker gutter width (see
+    /// [`line_timestamp_cols`], [`wrap_continuation_marker_width`]) —
+    /// this function only wraps what's left.
+    pub(crate) fn wrap_display_line(
+        line: &TextDisplayLine,
+        col_budget: usize,
+    ) -> Vec<Vec<StyledSpan>> {
+        crate::text_util::wrap_spans(&line.spans, col_budget, crate::text_util::WrapPolicy::Word)
+    }
+
+    /// Number of visual rows `line` occupies at `col_budget` display cells.
+    /// `TextDisplay` always wraps over-long lines (quadraui#905) — this is
+    /// not a caller-toggleable option (see the module doc: the primitive is
+    /// documented exclusively for prose/log content, which has no fixed-
+    /// column use case; that's what `DataTable` is for). Shared by every
+    /// backend's `measure_line` closure (paint) *and* its pure layout
+    /// counterpart (hit-testing), so the two can never disagree about row
+    /// counts — see quadraui#494 (layout/paint parity) and #905 (this
+    /// function's reason for existing).
+    pub(crate) fn wrap_row_count(line: &TextDisplayLine, col_budget: usize) -> usize {
+        let gutter = line_timestamp_cols(line).max(wrap_continuation_marker_width());
+        let content_budget = col_budget.saturating_sub(gutter).max(1);
+        wrap_display_line(line, content_budget).len().max(1)
+    }
+
+    /// Convert a pixel width to a display-cell column budget using an
+    /// approximate average character width — the same "no live measurement
+    /// context available" approximation
+    /// [`crate::backend::Backend::char_width`] exists for (used by
+    /// hit-testing layout helpers that run outside a paint pass). Pixel
+    /// backends (GTK/macOS/Windows) use this so their wrap column budget is
+    /// computed identically whether or not a live rendering surface is on
+    /// hand — see [`wrap_row_count`]'s doc on why paint and layout must
+    /// agree.
+    ///
+    /// `cfg`-gated one level narrower than the enclosing module: TUI cells
+    /// are already a 1:1 column unit (no conversion needed), so under a
+    /// bare `--features tui` build this function has no caller — and CI's
+    /// tui leg runs with `-D warnings`, so an ungated `pub(crate) fn` here
+    /// would fail that leg on unused-function, not just warn.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    pub(crate) fn px_to_cols(width_px: f32, char_width: f32) -> usize {
+        if char_width <= 0.0 || width_px <= 0.0 {
+            0
+        } else {
+            (width_px / char_width).floor() as usize
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::types::Decoration;
+
+        fn make_td_line(text: &str) -> TextDisplayLine {
+            TextDisplayLine {
+                spans: vec![StyledSpan::plain(text)],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }
+        }
+
+        #[test]
+        fn wrap_display_line_short_line_is_one_row() {
+            let line = make_td_line("short");
+            let rows = wrap_display_line(&line, 80);
+            assert_eq!(rows.len(), 1);
+        }
+
+        #[test]
+        fn wrap_display_line_long_line_produces_multiple_rows() {
+            let line = make_td_line("the quick brown fox jumps over the lazy dog");
+            let rows = wrap_display_line(&line, 10);
+            assert!(rows.len() > 1, "expected wrapping, got {rows:?}");
+            for row in &rows {
+                let w: usize = row
+                    .iter()
+                    .map(|s| crate::text_util::display_width(&s.text))
+                    .sum();
+                assert!(w <= 10, "row {row:?} exceeds the 10-cell budget");
+            }
+        }
+
+        #[test]
+        fn wrap_row_count_matches_wrap_display_line_len() {
+            let line = make_td_line("the quick brown fox jumps over the lazy dog");
+            assert_eq!(
+                wrap_row_count(&line, 10),
+                wrap_display_line(
+                    &line,
+                    10_usize.saturating_sub(wrap_continuation_marker_width())
+                )
+                .len()
+            );
+        }
+
+        #[test]
+        fn line_timestamp_cols_accounts_for_separator_space() {
+            let mut line = make_td_line("x");
+            assert_eq!(line_timestamp_cols(&line), 0);
+            line.timestamp = Some("12:00:00".to_string());
+            assert_eq!(line_timestamp_cols(&line), 8 + 1);
+        }
+
+        #[test]
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        fn px_to_cols_floors_and_handles_degenerate_input() {
+            assert_eq!(px_to_cols(100.0, 8.0), 12);
+            assert_eq!(px_to_cols(100.0, 0.0), 0);
+            assert_eq!(px_to_cols(0.0, 8.0), 0);
+        }
+    }
+}
+
+// Re-exported at the old `primitives::text_display::*` paths so every
+// backend call site keeps its existing import. Two `use`s, not one: the
+// pixel-only `px_to_cols` keeps the narrower gate it carries inside
+// `wrap` (see its doc).
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) use wrap::{
+    line_timestamp_cols, wrap_continuation_marker_width, wrap_display_line, wrap_row_count,
+    WRAP_CONTINUATION_MARKER,
+};
+
 #[cfg(any(
     feature = "gtk",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-pub(crate) fn px_to_cols(width_px: f32, char_width: f32) -> usize {
-    if char_width <= 0.0 || width_px <= 0.0 {
-        0
-    } else {
-        (width_px / char_width).floor() as usize
-    }
-}
+pub(crate) use wrap::px_to_cols;
 
 /// One line in a `TextDisplay`. Carries styled spans plus an optional
 /// decoration tag (Error/Warning/Muted/Header) for log-level styling and
@@ -1336,77 +1458,8 @@ mod tests {
         assert_eq!(layout.visible_lines[2].bounds.height, 1.0);
     }
 
-    // ── quadraui#905: wrap helpers ──────────────────────────────────────
-    //
-    // These are the pure, backend-shared building blocks every rasteriser
-    // (`tui`, and the shared `native_surface_paint::paint` behind
-    // `gtk`/`macos`/`win`) calls from both its `measure_line` closure and
-    // its pure hit-testing layout counterpart — see `wrap_row_count`'s
-    // doc for why paint and layout must never disagree.
-
-    #[test]
-    fn wrap_display_line_short_line_is_one_row() {
-        let line = make_td_line("short");
-        let rows = wrap_display_line(&line, 80);
-        assert_eq!(rows.len(), 1);
-    }
-
-    #[test]
-    fn wrap_display_line_long_line_produces_multiple_rows() {
-        let line = TextDisplayLine {
-            spans: vec![StyledSpan::plain(
-                "the quick brown fox jumps over the lazy dog",
-            )],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        };
-        let rows = wrap_display_line(&line, 10);
-        assert!(rows.len() > 1, "expected wrapping, got {rows:?}");
-        for row in &rows {
-            let w: usize = row
-                .iter()
-                .map(|s| crate::text_util::display_width(&s.text))
-                .sum();
-            assert!(w <= 10, "row {row:?} exceeds the 10-cell budget");
-        }
-    }
-
-    #[test]
-    fn wrap_row_count_matches_wrap_display_line_len() {
-        let line = TextDisplayLine {
-            spans: vec![StyledSpan::plain(
-                "the quick brown fox jumps over the lazy dog",
-            )],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        };
-        assert_eq!(
-            wrap_row_count(&line, 10),
-            wrap_display_line(
-                &line,
-                10_usize.saturating_sub(wrap_continuation_marker_width())
-            )
-            .len()
-        );
-    }
-
-    #[test]
-    fn line_timestamp_cols_accounts_for_separator_space() {
-        let mut line = make_td_line("x");
-        assert_eq!(line_timestamp_cols(&line), 0);
-        line.timestamp = Some("12:00:00".to_string());
-        assert_eq!(line_timestamp_cols(&line), 8 + 1);
-    }
-
-    #[test]
-    #[cfg(any(
-        feature = "gtk",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    ))]
-    fn px_to_cols_floors_and_handles_degenerate_input() {
-        assert_eq!(px_to_cols(100.0, 8.0), 12);
-        assert_eq!(px_to_cols(100.0, 0.0), 0);
-        assert_eq!(px_to_cols(0.0, 8.0), 0);
-    }
+    // quadraui#905's wrap-helper unit tests live in `wrap::tests`, next to
+    // the helpers themselves — both are gated on the rasteriser features
+    // (see the `wrap` module doc), so they can't sit in this ungated
+    // `mod tests`.
 }
