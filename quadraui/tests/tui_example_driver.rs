@@ -131,6 +131,8 @@ mod tab_group_demo;
 #[path = "../examples/common/tab_icons_demo.rs"]
 #[allow(dead_code)]
 mod tab_icons_demo;
+#[path = "../examples/common/text_display_wrap_demo.rs"]
+mod text_display_wrap_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
 #[path = "../examples/common/toast_app.rs"]
@@ -192,6 +194,7 @@ use split_tree_app::SplitTreeApp;
 use tab_chrome_demo::TabChromeDemo;
 use tab_group_demo::TabGroupDemo;
 use tab_icons_demo::TabIconsDemo;
+use text_display_wrap_demo::{TextDisplayWrapDemo, TAIL_MARKER};
 use text_input_demo::TextInputDemo;
 use toast_app::ToastApp;
 use tooltip_demo::TooltipDemo;
@@ -6421,4 +6424,40 @@ fn focus_demo_ring_overlays_without_erasing_the_focused_widget() {
         "{}",
         driver.screen()
     );
+}
+
+// ─── TextDisplayWrapDemo: long lines wrap instead of truncating (#905) ──────
+
+#[test]
+fn text_display_wrap_demo_wraps_the_long_line_instead_of_truncating_it() {
+    // A narrow, fixed viewport with no scroll step anywhere in this test:
+    // before #905, `TAIL_MARKER` (the last word of the fixture's
+    // deliberately-too-wide line) could never be painted here — the line
+    // was cut off at the right edge and the rest was gone. It's only
+    // reachable now because `TextDisplay` word-wraps the line onto
+    // continuation rows within the same tall-enough viewport.
+    let driver = TuiDriver::new(TextDisplayWrapDemo::new(), 40, 20);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains(TAIL_MARKER),
+        "long line's tail word must be painted (wrapped), not truncated:\n{screen}"
+    );
+    // The continuation-row marker itself must be painted too — a wrapped
+    // row must not read as an unrelated new line.
+    assert!(
+        driver.screen_contains("\u{21B3}"),
+        "wrapped continuation rows must carry the ↳ marker:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("A short line follows."),
+        "the line after the wrapped one still renders normally:\n{screen}"
+    );
+}
+
+#[test]
+fn text_display_wrap_demo_pressing_q_exits() {
+    let mut driver = TuiDriver::new(TextDisplayWrapDemo::new(), 40, 20);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should make the app exit");
 }
