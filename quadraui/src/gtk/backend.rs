@@ -1301,6 +1301,35 @@ impl GtkBackend {
     }
 }
 
+/// Measure the true (fractional) monospace advance width for `layout`'s
+/// current font, in device pixels — the single place this repo derives
+/// `Backend::char_width()`'s seed value from Pango, so `gtk/run.rs` and
+/// `gtk/menu_overlay.rs` cannot report different numbers for the same
+/// font (quadraui#910).
+///
+/// `pango::Layout::pixel_size()` rounds to whole pixels. That's fine for
+/// a single line's height, but wrong for `char_width()`: every consumer
+/// divides a pixel width by it to recover a column count
+/// (`available_width / char_width()`), and a monospace advance is almost
+/// never integral (8.4px, 9.6px, …). Rounding one glyph to 9 before that
+/// division loses a column's width across a realistic pane — the #910
+/// symptom (GTK wrapping ~6-8% early vs. the ratatui backend). Laying
+/// out a run of identical glyphs and dividing keeps the fraction
+/// (`Layout::size()` is in Pango units — `SCALE` per pixel) while still
+/// averaging out per-glyph hinting jitter, the same "measure actual
+/// laid-out width, not the approximate metric" reasoning `gtk/run.rs`
+/// already applies for the height metric (rejecting
+/// `approximate_char_width()` — see the comment there).
+///
+/// Mutates `layout`'s text; every current call site only holds the
+/// layout to derive per-frame metrics before painting overwrites its
+/// text anyway, so this is safe to call at the top of a draw closure.
+pub(crate) fn measure_char_width_px(layout: &pango::Layout) -> f64 {
+    const RUN_LEN: usize = 100;
+    layout.set_text(&"0".repeat(RUN_LEN));
+    layout.size().0 as f64 / pango::SCALE as f64 / RUN_LEN as f64
+}
+
 impl Default for GtkBackend {
     fn default() -> Self {
         Self::new()
@@ -5340,6 +5369,99 @@ mod tests {
             "menu_bar_layout must measure with `ui_font` regardless of \
              which layout object it resolves to: small_ctx_width={small_ctx_width}, \
              large_layout_width={large_layout_width}"
+        );
+    }
+
+    /// quadraui#910: `measure_char_width_px` must preserve the true
+    /// fractional glyph advance instead of `pixel_size()`'s whole-pixel
+    /// rounding. This host's default monospace font happens to resolve to
+    /// exactly-integral advances at common sizes regardless of hinting
+    /// (verified by hand across several sizes while writing this test), so
+    /// comparing the fixed measurement against the old buggy one on a
+    /// plain layout would pass vacuously on this machine and prove
+    /// nothing. A letter-spacing attribute forces a deterministically
+    /// non-integral advance on *any* host/font, independent of hinting —
+    /// which is what makes the second assertion below able to fail if
+    /// `measure_char_width_px` is ever regressed back to
+    /// `layout.pixel_size()` on a single glyph.
+    #[test]
+    fn measure_char_width_px_preserves_fractional_advance_forced_by_letter_spacing() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 4000, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let ctx = pangocairo::functions::create_context(&cr);
+        ctx.set_font_description(&pango::FontDescription::from_string("Monospace 11"));
+        let layout = pango::Layout::new(&ctx);
+        layout.set_width(-1);
+
+        // A third-of-a-pixel letter-spacing attribute over the whole run:
+        // whatever the base glyph advance is, adding a non-integral offset
+        // per glyph makes the *run's* average advance non-integral too,
+        // deterministically.
+        let attrs = pango::AttrList::new();
+        let mut spacing = pango::AttrInt::new_letter_spacing(pango::SCALE / 3);
+        spacing.set_start_index(0);
+        spacing.set_end_index(u32::MAX);
+        attrs.insert(spacing);
+        layout.set_attributes(Some(&attrs));
+
+        let via_fn = measure_char_width_px(&layout);
+
+        // Independent re-derivation of the formula `measure_char_width_px`
+        // is supposed to implement — pins the exact algorithm, not just its
+        // outcome, so a future edit can't silently swap back to
+        // `layout.pixel_size()` on a single glyph without this failing.
+        layout.set_text(&"0".repeat(100));
+        let raw = layout.size().0 as f64 / pango::SCALE as f64 / 100.0;
+        assert!(
+            (via_fn - raw).abs() < 1e-9,
+            "measure_char_width_px should equal a 100-glyph run's raw \
+             width / 100: via_fn={via_fn}, raw={raw}"
+        );
+
+        // The actual #910 regression bar: the result must carry a real
+        // fractional part. `layout.pixel_size()` — the old, buggy call —
+        // always returns a whole number, so this fails immediately if
+        // `measure_char_width_px` reverts to it.
+        assert!(
+            (via_fn - via_fn.round()).abs() > 0.05,
+            "letter-spacing should force a non-integral advance that \
+             whole-pixel rounding would lose; got {via_fn}"
+        );
+    }
+
+    /// The concrete "Done when" bar from #910, exercised end-to-end
+    /// against a plain (unmodified) layout: a pane exactly as wide as a
+    /// known-length line of monospace glyphs must report that many
+    /// columns through `px_to_cols` — the same formula
+    /// `available_width / char_width()` every consumer uses — not fewer,
+    /// which is the empty-right-margin symptom the issue describes.
+    #[test]
+    fn char_width_and_px_to_cols_agree_with_what_pango_actually_painted() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 4000, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let ctx = pangocairo::functions::create_context(&cr);
+        ctx.set_font_description(&pango::FontDescription::from_string("Monospace 11"));
+        let layout = pango::Layout::new(&ctx);
+        layout.set_width(-1);
+
+        let char_w = measure_char_width_px(&layout);
+
+        const N: usize = 137;
+        layout.set_text(&"0".repeat(N));
+        // Unrounded painted width of the N-glyph line — the pane a real
+        // consumer would size to fit this line exactly.
+        let pane_w = layout.size().0 as f64 / pango::SCALE as f64;
+
+        let cols = crate::primitives::text_display::px_to_cols(pane_w as f32, char_w as f32);
+        assert_eq!(
+            cols, N,
+            "a pane exactly filled by {N} monospace glyphs should report \
+             {N} columns via char_width()/px_to_cols, got {cols} \
+             (char_w={char_w}, pane_w={pane_w})"
         );
     }
 

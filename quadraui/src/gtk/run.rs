@@ -1492,10 +1492,11 @@ pub(crate) fn render_frame<A: AppLogic>(
     // Measure actual laid-out character width instead of
     // `approximate_char_width()` — the approximate value doesn't
     // account for font hinting and drifts over long lines (e.g. 9 chars
-    // short at 500-char scroll).
-    layout.set_text("0");
-    let (char_w_px, _) = layout.pixel_size();
-    let char_w = char_w_px as f64;
+    // short at 500-char scroll). Delegates to
+    // `backend::measure_char_width_px` (quadraui#910) rather than
+    // `layout.pixel_size()` directly: that rounds to whole pixels, which
+    // silently loses columns once a consumer divides pane width by it.
+    let char_w = super::backend::measure_char_width_px(&layout);
 
     // #834: seed from the tracked scale factor (kept current by the
     // `notify::scale-factor` handler and the debounced resize handler
