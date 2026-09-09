@@ -182,8 +182,11 @@ impl MenuOverlay {
             let pango_ctx = pango_layout.context();
             let metrics = pango_ctx.metrics(Some(&font_desc), None);
             let lh = (metrics.ascent() + metrics.descent()) as f64 / pango::SCALE as f64;
-            pango_layout.set_text("M");
-            let cw = pango_layout.pixel_size().0 as f64;
+            // Delegates to `backend::measure_char_width_px` (quadraui#910)
+            // so this overlay's char width can't disagree with `gtk/run.rs`'s
+            // for the same font — `pixel_size()` rounds to whole pixels,
+            // which loses columns once divided into.
+            let cw = super::backend::measure_char_width_px(&pango_layout);
             drop(b_ref);
 
             let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
