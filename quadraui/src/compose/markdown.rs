@@ -1896,6 +1896,50 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_mixed_ascii_and_cjk_wraps_by_display_width_not_char_count() {
+        // "ab 中文" is 5 *characters* (a, b, space, 中, 文) but 7 *display
+        // cells* (1+1+1+2+2). A per-char accumulator (`chars().count() <=
+        // width`) would see 5 <= 6 and wrongly skip wrapping entirely,
+        // leaving the row 1 cell over budget — see issue #908. The
+        // display-width-aware wrapper must still wrap it into two rows.
+        let theme = Theme::default();
+        let input = "ab 中文";
+        assert!(
+            input.chars().count() <= 6,
+            "test fixture must reproduce the naive char-count false negative"
+        );
+        assert!(
+            crate::text_util::display_width(input) > 6,
+            "test fixture must actually exceed the cell budget"
+        );
+        let r = render_markdown_to_styled_wrapped(input, &theme, 6);
+        assert!(
+            r.lines.len() >= 2,
+            "mixed ASCII+CJK line exceeding the cell budget must wrap into \
+             at least 2 rows; got: {:?}",
+            r.line_text
+        );
+        for (i, lt) in r.line_text.iter().enumerate() {
+            assert!(
+                crate::text_util::display_width(lt) <= 6,
+                "row {i} exceeds the 6-cell budget: {lt:?}"
+            );
+        }
+        // No glyph may be split across rows: rejoining (with the single
+        // separating space collapsed back in by word-wrap, same as the
+        // existing bold-boundary test) must reproduce the non-space
+        // characters of the original line, in order.
+        let rejoined_non_space: String = r
+            .line_text
+            .iter()
+            .flat_map(|s| s.chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let original_non_space: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(rejoined_non_space, original_non_space);
+    }
+
+    #[test]
     fn wrapped_all_vectors_length_aligned_for_various_inputs() {
         let inputs: &[&str] = &[
             "",
