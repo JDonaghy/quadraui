@@ -1310,22 +1310,47 @@ impl GtkBackend {
 /// `pango::Layout::pixel_size()` rounds to whole pixels. That's fine for
 /// a single line's height, but wrong for `char_width()`: every consumer
 /// divides a pixel width by it to recover a column count
-/// (`available_width / char_width()`), and a monospace advance is almost
-/// never integral (8.4px, 9.6px, …). Rounding one glyph to 9 before that
-/// division loses a column's width across a realistic pane — the #910
-/// symptom (GTK wrapping ~6-8% early vs. the ratatui backend). Laying
-/// out a run of identical glyphs and dividing keeps the fraction
-/// (`Layout::size()` is in Pango units — `SCALE` per pixel) while still
-/// averaging out per-glyph hinting jitter, the same "measure actual
-/// laid-out width, not the approximate metric" reasoning `gtk/run.rs`
-/// already applies for the height metric (rejecting
-/// `approximate_char_width()` — see the comment there).
+/// (`available_width / char_width()`), and a monospace advance is not
+/// always integral (8.4px, 9.6px, …). Rounding one glyph before that
+/// division would lose a column's width across a realistic pane, in
+/// proportion to pane width.
 ///
-/// Mutates `layout`'s text; every current call site only holds the
-/// layout to derive per-frame metrics before painting overwrites its
+/// **Measured status for #910 (read before trusting this as "the fix"):**
+/// the reported symptom is a ~6-8% empty right margin vs. the ratatui
+/// backend. `measure_char_width_px_matches_pixel_size_for_the_real_editor_font`
+/// below prints `layout.pixel_size().0`, `layout.size().0 as f64 /
+/// pango::SCALE as f64` (single glyph) and this function's 100-glyph
+/// average for the actual runtime font — `gtk/run.rs`'s hardcoded
+/// `"Monospace 11"`, which resolves via fontconfig to DejaVu Sans Mono on
+/// this build host — at every commonly-configured editor size (9-16pt).
+/// All three agree exactly (the advance is already integral) at every
+/// size tested. That means for the font this repo actually ships with,
+/// this function returns **the same number** `pixel_size()` did before
+/// this change — this refactor does not alter `char_width()`'s value for
+/// the real editor font, and on its own does not explain the #910
+/// symptom. Per #910's own "confirm before fixing" instruction, that
+/// result is evidence the whole-pixel-rounding theory is not the (or not
+/// the whole) cause, and #910 may need reopening against a different
+/// root cause rather than being considered closed by this change.
+///
+/// The change still ships because it is strictly more correct and
+/// strictly cheaper to keep than to special-case away: it removes a
+/// latent bug (a font/DPI combination that *does* produce a fractional
+/// advance would have silently lost columns) and it collapses two
+/// duplicated measurement call sites (`gtk/run.rs`, `gtk/menu_overlay.rs`)
+/// into one, so they can no longer disagree with each other. It is a
+/// defensive correctness fix, not a confirmed fix for the reported
+/// symptom.
+///
+/// Mutates `layout`'s text and width; every current call site only holds
+/// the layout to derive per-frame metrics before painting overwrites its
 /// text anyway, so this is safe to call at the top of a draw closure.
+/// `set_width(-1)` is applied defensively here (not just by callers) so a
+/// future call site that reuses a width-constrained layout can't silently
+/// get a wrapped (too-small) measurement back.
 pub(crate) fn measure_char_width_px(layout: &pango::Layout) -> f64 {
     const RUN_LEN: usize = 100;
+    layout.set_width(-1);
     layout.set_text(&"0".repeat(RUN_LEN));
     layout.size().0 as f64 / pango::SCALE as f64 / RUN_LEN as f64
 }
@@ -5374,16 +5399,16 @@ mod tests {
 
     /// quadraui#910: `measure_char_width_px` must preserve the true
     /// fractional glyph advance instead of `pixel_size()`'s whole-pixel
-    /// rounding. This host's default monospace font happens to resolve to
-    /// exactly-integral advances at common sizes regardless of hinting
-    /// (verified by hand across several sizes while writing this test), so
-    /// comparing the fixed measurement against the old buggy one on a
-    /// plain layout would pass vacuously on this machine and prove
-    /// nothing. A letter-spacing attribute forces a deterministically
-    /// non-integral advance on *any* host/font, independent of hinting —
-    /// which is what makes the second assertion below able to fail if
-    /// `measure_char_width_px` is ever regressed back to
-    /// `layout.pixel_size()` on a single glyph.
+    /// rounding. As `measure_char_width_px_matches_pixel_size_for_the_real_editor_font`
+    /// below demonstrates (automated, not hand-checked), the real editor
+    /// font resolves to exactly-integral advances at every commonly
+    /// configured size on this build host, so comparing the fixed
+    /// measurement against the old buggy one on a plain layout of that
+    /// font would pass vacuously and prove nothing. A letter-spacing
+    /// attribute forces a deterministically non-integral advance on *any*
+    /// host/font, independent of hinting — which is what makes the second
+    /// assertion below able to fail if `measure_char_width_px` is ever
+    /// regressed back to `layout.pixel_size()` on a single glyph.
     #[test]
     fn measure_char_width_px_preserves_fractional_advance_forced_by_letter_spacing() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -5463,6 +5488,71 @@ mod tests {
              {N} columns via char_width()/px_to_cols, got {cols} \
              (char_w={char_w}, pane_w={pane_w})"
         );
+    }
+
+    /// quadraui#910's "confirm the diagnosis before fixing it" instruction,
+    /// run automatically instead of by hand: for the actual runtime editor
+    /// font — `gtk/run.rs`'s hardcoded `"Monospace N"`, which fontconfig
+    /// resolves to DejaVu Sans Mono on this build host — print and compare
+    /// `layout.pixel_size().0` (old, buggy), a single glyph's raw Pango-unit
+    /// width, and a 100-glyph run's average, at every commonly configured
+    /// editor size.
+    ///
+    /// Result (also visible via `--nocapture`): **all three agree exactly,
+    /// at every size 9-16pt.** The advance for this font is already
+    /// integral, so `measure_char_width_px` returns the same number
+    /// `pixel_size()` always did — this change does not alter
+    /// `char_width()`'s value for the font this repo actually ships with.
+    /// Per #910's own instruction, that is evidence the whole-pixel-
+    /// rounding theory does not explain the reported ~6-8% empty right
+    /// margin by itself, and #910 likely needs a different root cause
+    /// investigated rather than being considered resolved by this PR (see
+    /// `measure_char_width_px`'s doc comment for the full reasoning). This
+    /// test exists so that judgment is re-checked automatically — on a
+    /// host/font/DPI combination where the three numbers *do* disagree,
+    /// it fails loudly rather than silently passing.
+    #[test]
+    fn measure_char_width_px_matches_pixel_size_for_the_real_editor_font() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        // Mirrors the range `ShellConfig::with_editor_font` /
+        // `core::settings::default_ui_font_size` realistically produce —
+        // see the "editor font" comment in `gtk/run.rs::render_frame`.
+        for size in [9, 10, 11, 12, 13, 14, 16] {
+            let surface =
+                ImageSurface::create(Format::ARgb32, 4000, 40).expect("create ImageSurface");
+            let cr = Context::new(&surface).expect("Context::new");
+            let ctx = pangocairo::functions::create_context(&cr);
+            ctx.set_font_description(&pango::FontDescription::from_string(&format!(
+                "Monospace {size}"
+            )));
+            let layout = pango::Layout::new(&ctx);
+            layout.set_width(-1);
+
+            layout.set_text("0");
+            let pixel_size = layout.pixel_size().0;
+            let single_raw = layout.size().0 as f64 / pango::SCALE as f64;
+            let run_avg = measure_char_width_px(&layout);
+
+            eprintln!(
+                "quadraui#910 size={size}: pixel_size().0={pixel_size} \
+                 single_raw={single_raw:.6} run_avg(100)={run_avg:.6}"
+            );
+
+            assert!(
+                (single_raw - pixel_size as f64).abs() < 1e-9
+                    && (run_avg - pixel_size as f64).abs() < 1e-9,
+                "quadraui#910: expected pixel_size(), single-glyph raw \
+                 width, and the 100-glyph average to disagree here (that \
+                 would demonstrate the fractional-advance bug for the \
+                 real editor font) — instead they agree exactly at \
+                 size={size}: pixel_size={pixel_size}, \
+                 single_raw={single_raw}, run_avg={run_avg}. If this \
+                 assertion ever fails, that's the disagreement #910 \
+                 predicted; capture the printed numbers for the PR/issue \
+                 and treat #910 as confirmed rather than closed."
+            );
+        }
     }
 
     /// #407 (manual smoke-test failure on iteration 1): the real bug is
