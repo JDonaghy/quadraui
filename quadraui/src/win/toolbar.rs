@@ -230,6 +230,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         }
     }
 
@@ -311,6 +312,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", false)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
         let layout = paint_via_backend_at(&bar, 0.0, 0.0);
         let r = layout.visible_items[0].bounds;
@@ -334,6 +336,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
         let layout = paint_via_backend_at(&bar, 0.0, 0.0);
         assert!(!layout.visible_items[0].clickable);

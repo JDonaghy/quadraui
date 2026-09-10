@@ -62,6 +62,11 @@ pub fn draw_sidebar_panel(
             tb_bounds.width.round() as u16,
             tb_bounds.height.round() as u16,
         );
+        // `false`: a `SidebarPanel` header toolbar has no path to
+        // register an icon override yet (issue #913 scoped the override
+        // API to the standalone `Toolbar` primitive), so
+        // `icon_overrides` is always empty here and the flag value can't
+        // change what paints.
         let _ = super::draw_toolbar(
             buf,
             tb_rect,
@@ -69,6 +74,7 @@ pub fn draw_sidebar_panel(
             theme,
             hovered_toolbar_id,
             pressed_toolbar_id,
+            false,
         );
     }
 
@@ -102,6 +108,7 @@ mod tests {
                 }],
                 bg: None,
                 focused_index: None,
+                icon_overrides: Vec::new(),
             }),
             toolbar_height: None,
         }

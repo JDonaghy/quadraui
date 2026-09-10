@@ -247,6 +247,12 @@ pub unsafe fn draw_dialog(
             DialogInput::Toolbar(toolbar) => {
                 // Render the embedded toolbar using the macOS toolbar
                 // rasteriser.
+                //
+                // `false`: a `DialogInput::Toolbar` has no path to
+                // register an icon override yet (issue #913 scoped the
+                // override API to the standalone `Toolbar` primitive), so
+                // `icon_overrides` is always empty here and the flag
+                // value can't change what paints.
                 super::toolbar::draw_toolbar(
                     ctx,
                     font,
@@ -258,6 +264,7 @@ pub unsafe fn draw_dialog(
                     theme,
                     None,
                     None,
+                    false,
                 );
             }
         }

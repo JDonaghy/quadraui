@@ -1028,6 +1028,7 @@ pub const CASES: &[Case] = &[
                 }],
                 bg: None,
                 focused_index: None,
+                icon_overrides: Vec::new(),
             };
             let _ = b.draw_toolbar_interactive(
                 Rect::new(0.0, 0.0, area.width, lh),
@@ -1053,6 +1054,7 @@ pub const CASES: &[Case] = &[
                 }],
                 bg: None,
                 focused_index: None,
+                icon_overrides: Vec::new(),
             };
             let panel = SidebarPanel {
                 id: id("sidebar-panel"),
@@ -1216,6 +1218,7 @@ pub const CASES: &[Case] = &[
                 }],
                 bg: None,
                 focused_index: None,
+                icon_overrides: Vec::new(),
             };
             #[allow(deprecated)]
             let _ = b.draw_toolbar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
@@ -1238,6 +1241,7 @@ pub const CASES: &[Case] = &[
                 }],
                 bg: None,
                 focused_index: None,
+                icon_overrides: Vec::new(),
             };
             let panel = SidebarPanel {
                 id: id("sidebar-panel-shim"),

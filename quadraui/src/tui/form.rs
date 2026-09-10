@@ -479,7 +479,12 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     area.width.saturating_sub(start_col),
                     1,
                 );
-                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
+                // `false`: a `FieldKind::Toolbar` has no path to register
+                // an icon override yet (issue #913 scoped the override
+                // API to the standalone `Toolbar` primitive), so
+                // `icon_overrides` is always empty here and the flag
+                // value can't change what paints.
+                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None, false);
             }
             FieldKind::TextArea {
                 value,
@@ -1502,6 +1507,7 @@ mod tests {
                     ],
                     bg: None,
                     focused_index: None,
+                    icon_overrides: Vec::new(),
                 }),
                 hint: label(""),
                 disabled: false,
@@ -1616,6 +1622,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         });
         let json = serde_json::to_string(&kind).unwrap();
         let back: FieldKind = serde_json::from_str(&json).unwrap();

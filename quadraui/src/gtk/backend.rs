@@ -2147,8 +2147,14 @@ impl Backend for GtkBackend {
             };
             let toolbar_w = row_x + row_w - toolbar_x;
             if toolbar_w > 0.0 {
+                // `false`: a `FieldKind::Toolbar` has no path to register
+                // an icon override yet (issue #913 scoped the override
+                // API to the standalone `Toolbar` primitive), so
+                // `icon_overrides` is always empty here and the flag
+                // value can't change what paints.
                 crate::gtk::toolbar::draw_toolbar(
                     cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                    false,
                 );
                 layout.set_attributes(None);
             }
@@ -3850,6 +3856,7 @@ impl Backend for GtkBackend {
             &theme,
             hovered_id,
             pressed_id,
+            self.nerd_fonts_enabled,
         );
         pango_layout.set_font_description(saved_font.as_ref());
         layout
@@ -3883,6 +3890,7 @@ impl Backend for GtkBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
+            self.nerd_fonts_enabled,
         );
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -4994,6 +5002,7 @@ mod tests {
                     ],
                     bg: None,
                     focused_index: None,
+                    icon_overrides: Vec::new(),
                 }),
                 hint: StyledText::default(),
                 disabled: false,
@@ -6325,6 +6334,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         }
     }
 

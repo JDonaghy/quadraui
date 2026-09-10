@@ -124,6 +124,7 @@ impl ToolbarApp {
             // `None` lets the backend pick its theme default (header_bg).
             bg: None,
             focused_index: self.focused_index,
+            icon_overrides: Vec::new(),
         }
     }
 

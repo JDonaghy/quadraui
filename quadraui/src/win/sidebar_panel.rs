@@ -231,6 +231,7 @@ mod tests {
                 buttons: vec![mk_action("a", "Refine"), mk_action("b", "Drop")],
                 bg: None,
                 focused_index: None,
+                icon_overrides: Vec::new(),
             }),
             toolbar_height: None,
         }
