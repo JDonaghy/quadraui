@@ -33,6 +33,16 @@ use super::toolbar::CtFontMeasure;
 /// does, so this no-paint layout's hit regions always agree with what
 /// actually painted. A `Toolbar` with no overrides is unaffected by the
 /// flag.
+///
+/// The `nerd_fonts_enabled` parameter pushes this past clippy's
+/// 7-argument threshold; the allow mirrors the one
+/// [`crate::gtk::sidebar_panel::gtk_sidebar_panel_layout`] already
+/// carries for the identical `x, y, w, h` + measurement-context shape.
+/// Collapsing `x, y, w, h` into a `Rect` is the real fix, but it would
+/// be a breaking signature change to a `pub` item (CLAUDE.md rule 3)
+/// that is out of scope for this issue and should be done for both
+/// backends at once.
+#[allow(clippy::too_many_arguments)]
 pub fn mac_sidebar_panel_layout(
     panel: &SidebarPanel,
     font: &CTFont,
