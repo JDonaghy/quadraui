@@ -1583,10 +1583,11 @@ impl Backend for TuiBackend {
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_form called outside enter_frame_scope");
-        crate::tui::draw_form(frame.buffer_mut(), area, form, &theme);
+        crate::tui::draw_form(frame.buffer_mut(), area, form, &theme, nerd_fonts_enabled);
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
@@ -2182,10 +2183,17 @@ impl Backend for TuiBackend {
         // #455: see draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_dialog called outside enter_frame_scope");
-        crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
+        crate::tui::draw_dialog(
+            frame.buffer_mut(),
+            dialog,
+            layout,
+            &theme,
+            nerd_fonts_enabled,
+        );
         // Derive button rects from the layout (TUI rasteriser doesn't
         // return them; the primitive owns the layout).
         layout
@@ -2637,6 +2645,7 @@ impl Backend for TuiBackend {
             (interaction.hovered(), interaction.pressed());
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_sidebar_panel called outside enter_frame_scope");
@@ -2647,6 +2656,7 @@ impl Backend for TuiBackend {
             &theme,
             hovered_toolbar_id,
             pressed_toolbar_id,
+            nerd_fonts_enabled,
         )
     }
 

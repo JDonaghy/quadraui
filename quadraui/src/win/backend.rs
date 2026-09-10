@@ -3300,6 +3300,7 @@ impl Backend for WinBackend {
             // `native_surface_paint` module doc, divergence 4, and
             // `WinBackend::draw_panel`'s identical note).
             let theme = crate::theme::Theme::default();
+            let nerd_fonts_enabled = self.nerd_fonts_enabled;
             return crate::primitives::sidebar_panel::native_surface_paint::paint(
                 panel,
                 self,
@@ -3308,6 +3309,7 @@ impl Backend for WinBackend {
                 line_height,
                 hovered_toolbar_id,
                 pressed_toolbar_id,
+                nerd_fonts_enabled,
             );
         }
         #[cfg(not(target_os = "windows"))]

@@ -334,10 +334,24 @@ pub(crate) mod native_surface_paint {
     /// toolbar action button; the primitive itself carries no mouse
     /// state.
     ///
+    /// `nerd_fonts_enabled` (issue #913 review fix) picks which half of
+    /// an overridden button's [`crate::types::Icon`] (registered via
+    /// [`Toolbar::with_icon_override`]) is measured and painted — `glyph`
+    /// when `true`, `fallback` when `false` — same contract as every
+    /// other rasteriser's `nerd_fonts_enabled`. Before this fix the
+    /// parameter didn't exist here at all, so a `SidebarPanel`'s embedded
+    /// `Toolbar.icon_overrides` was silently dead data on every backend
+    /// that routes through this shared paint (GTK, macOS, Win) — see
+    /// this module's own tests for the round-trip that now covers it. A
+    /// `Toolbar` with no overrides measures/paints its own `icon` field
+    /// regardless of the flag, so this is a no-op for every pre-#913
+    /// panel.
+    ///
     /// A non-positive `bounds.width`/`bounds.height` short-circuits to
     /// the no-paint layout without touching `surface` at all, matching
     /// every pre-#862 per-backend copy's `if w <= 0.0 || h <= 0.0 {
     /// return layout; }` guard.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         panel: &SidebarPanel,
         surface: &mut dyn NativeSurface,
@@ -346,6 +360,7 @@ pub(crate) mod native_surface_paint {
         default_toolbar_height: f32,
         hovered_toolbar_id: Option<&WidgetId>,
         pressed_toolbar_id: Option<&WidgetId>,
+        nerd_fonts_enabled: bool,
     ) -> SidebarPanelLayout {
         let layout = {
             // `item_width` (the measure's second field) is dead in
@@ -357,7 +372,17 @@ pub(crate) mod native_surface_paint {
             panel.layout(
                 bounds,
                 SidebarPanelMeasure::new(default_toolbar_height, 0.0),
-                |btn| ToolbarItemMeasure::new(measure_button(&measurer, btn)),
+                |btn| {
+                    // `panel.toolbar` is always `Some` when this closure
+                    // runs — `SidebarPanel::layout` only ever calls
+                    // `measure_item` on buttons drawn from `self.toolbar`
+                    // — so resolving the override through it is safe.
+                    let resolved = match &panel.toolbar {
+                        Some(bar) => bar.resolve_button_icon(btn, nerd_fonts_enabled),
+                        None => std::borrow::Cow::Borrowed(btn),
+                    };
+                    ToolbarItemMeasure::new(measure_button(&measurer, &resolved))
+                },
             )
         };
 
@@ -375,6 +400,7 @@ pub(crate) mod native_surface_paint {
                     tb_bounds,
                     hovered_toolbar_id,
                     pressed_toolbar_id,
+                    nerd_fonts_enabled,
                 );
             }
         }
@@ -386,7 +412,11 @@ pub(crate) mod native_surface_paint {
     /// module's doc for why this exists (a `NativeSurface`-generic port
     /// of `gtk`/`macos`/`win`'s own `toolbar::draw_toolbar`, scoped to
     /// what a sidebar panel's header needs) and for the four named
-    /// divergences found while porting it.
+    /// divergences found while porting it. See [`paint`] for
+    /// `nerd_fonts_enabled`'s contract — paint and layout resolve every
+    /// button's icon the same way, so a wide glyph's measured and
+    /// painted widths never disagree.
+    #[allow(clippy::too_many_arguments)]
     fn paint_toolbar_header(
         bar: &Toolbar,
         toolbar_layout: &ToolbarLayout,
@@ -395,6 +425,7 @@ pub(crate) mod native_surface_paint {
         tb_bounds: Rect,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
+        nerd_fonts_enabled: bool,
     ) {
         // Divergence 2: clip on every backend, closing the pre-#862 Win
         // gap instead of reproducing it.
@@ -411,8 +442,9 @@ pub(crate) mod native_surface_paint {
             let Some(btn) = bar.buttons.get(vis.item_idx) else {
                 continue;
             };
+            let resolved = bar.resolve_button_icon(btn, nerd_fonts_enabled);
 
-            match btn {
+            match resolved.as_ref() {
                 ToolbarButton::Action {
                     id,
                     label,
@@ -604,6 +636,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             assert!(surface.fills.is_empty());
             assert!(surface.text_runs.is_empty());
@@ -623,6 +656,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             assert!(surface.fills.is_empty());
             assert!(surface.clip_pushes.is_empty());
@@ -641,6 +675,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             let tb = layout.toolbar_bounds.expect("toolbar slot reserved");
             assert_eq!(surface.clip_pushes, vec![tb]);
@@ -661,6 +696,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 Some(&WidgetId::new("a")),
                 None,
+                false,
             );
             // fills[0] = bar background, fills[1] = hovered button's
             // highlight inset.
@@ -686,6 +722,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 Some(&WidgetId::new("a")),
+                false,
             );
             assert_eq!(surface.fills[1].1, theme.selected_bg);
         }
@@ -713,6 +750,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 Some(&WidgetId::new("a")), // hover on a disabled button is a no-op
                 None,
+                false,
             );
             // Only the bar background fill — no highlight for a disabled
             // (thus never "hovered") action.
@@ -744,6 +782,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             assert_eq!(surface.strokes.len(), 1);
             assert_eq!(surface.strokes[0].1, theme.accent_fg);
@@ -772,6 +811,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             assert_eq!(surface.lines.len(), 1);
             assert_eq!(surface.lines[0].2, theme.muted_fg);
@@ -803,6 +843,7 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             let tb = layout.toolbar_bounds.unwrap();
             // Only the bar background fill — labels never get a
@@ -827,9 +868,101 @@ pub(crate) mod native_surface_paint {
                 16.0,
                 None,
                 None,
+                false,
             );
             let tb = layout.toolbar_bounds.unwrap();
             assert_eq!(layout.content_bounds.y, tb.y + tb.height);
+        }
+
+        /// Issue #913 review fix: closes the "no test exercises an
+        /// embedded toolbar with a registered override" gap — every
+        /// pre-fix `nerd_fonts_flag_selects_glyph_or_fallback`-style test
+        /// targeted the standalone `Toolbar` path only, so a
+        /// `SidebarPanel`'s embedded toolbar silently never plumbed
+        /// `icon_overrides` on GTK/macOS/Win (all three route through
+        /// this shared `paint`). `nerd_fonts_enabled: true` must paint
+        /// the override's `glyph`, not the button's own `icon` field.
+        #[test]
+        fn nerd_fonts_enabled_paints_override_glyph_in_embedded_toolbar() {
+            let panel = SidebarPanel {
+                id: WidgetId::new("sb"),
+                toolbar: Some(
+                    Toolbar::new(
+                        WidgetId::new("sb:toolbar"),
+                        vec![mk_action("a", "Refine", true)],
+                    )
+                    .with_icon_override(
+                        WidgetId::new("a"),
+                        crate::types::Icon::new("\u{f021}", "R"),
+                    ),
+                ),
+                toolbar_height: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &panel,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 50.0),
+                16.0,
+                None,
+                None,
+                true,
+            );
+            let (_, text, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t.contains("Refine"))
+                .expect("Refine label drawn");
+            assert_eq!(
+                text, "\u{f021} Refine",
+                "nerd_fonts_enabled: true should paint the override's glyph, not its fallback"
+            );
+        }
+
+        /// Flag-off twin of the above: the same override must resolve to
+        /// its ASCII `fallback`, not the Nerd-Font glyph — this is the
+        /// byte-identical-with-develop acceptance bar for a panel with no
+        /// overrides, extended to confirm a *registered* override still
+        /// respects the flag rather than always winning.
+        #[test]
+        fn nerd_fonts_disabled_paints_override_fallback_in_embedded_toolbar() {
+            let panel = SidebarPanel {
+                id: WidgetId::new("sb"),
+                toolbar: Some(
+                    Toolbar::new(
+                        WidgetId::new("sb:toolbar"),
+                        vec![mk_action("a", "Refine", true)],
+                    )
+                    .with_icon_override(
+                        WidgetId::new("a"),
+                        crate::types::Icon::new("\u{f021}", "R"),
+                    ),
+                ),
+                toolbar_height: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &panel,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 50.0),
+                16.0,
+                None,
+                None,
+                false,
+            );
+            let (_, text, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t.contains("Refine"))
+                .expect("Refine label drawn");
+            assert_eq!(
+                text, "R Refine",
+                "nerd_fonts_enabled: false should paint the override's fallback, not its glyph"
+            );
         }
     }
 }

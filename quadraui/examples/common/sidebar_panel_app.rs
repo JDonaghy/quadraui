@@ -60,9 +60,9 @@ impl SidebarPanelApp {
     }
 
     fn toolbar(&self) -> Toolbar {
-        Toolbar {
-            id: WidgetId::new("sb:toolbar"),
-            buttons: vec![
+        Toolbar::new(
+            WidgetId::new("sb:toolbar"),
+            vec![
                 // Icon-only `[ + ]` — exercises Gap 4 icon-only width.
                 ToolbarButton::Action {
                     id: WidgetId::new("sb:add"),
@@ -114,10 +114,7 @@ impl SidebarPanelApp {
                     fg: Some(Color::rgb(160, 200, 160)),
                 },
             ],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        }
+        )
     }
 
     fn panel(&self) -> SidebarPanel {

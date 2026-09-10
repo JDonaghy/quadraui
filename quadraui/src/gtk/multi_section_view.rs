@@ -348,7 +348,18 @@ fn paint_body(
             );
         }
         SectionBody::Form(f) => {
-            draw_form_body(cr, layout, x, y, w, h, f, theme, line_height);
+            draw_form_body(
+                cr,
+                layout,
+                x,
+                y,
+                w,
+                h,
+                f,
+                theme,
+                line_height,
+                nerd_fonts_enabled,
+            );
         }
         SectionBody::Chart(c) => {
             // #810: painting moved to the shared
@@ -402,6 +413,7 @@ fn draw_form_body(
     form: &crate::Form,
     theme: &Theme,
     line_height: f64,
+    nerd_fonts_enabled: bool,
 ) {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
     let measure = super::toolbar::PangoMeasure {
@@ -437,11 +449,10 @@ fn draw_form_body(
         };
         let toolbar_w = row_x + row_w - toolbar_x;
         if toolbar_w > 0.0 {
-            // `false`: a `FieldKind::Toolbar` has no path to register an
-            // icon override yet (issue #913 scoped the override API to
-            // the standalone `Toolbar` primitive), so `icon_overrides`
-            // is always empty here and the flag value can't change what
-            // paints.
+            // Issue #913 review fix: `FieldKind::Toolbar` embeds the
+            // same `Toolbar` the standalone rasteriser resolves
+            // overrides for, so forward the caller's flag instead of a
+            // hardcoded `false`.
             super::toolbar::draw_toolbar(
                 cr,
                 layout,
@@ -453,7 +464,7 @@ fn draw_form_body(
                 theme,
                 None,
                 None,
-                false,
+                nerd_fonts_enabled,
             );
             layout.set_attributes(None);
         }

@@ -172,6 +172,12 @@ fn draw_table_gtk(
 /// rasteriser temporarily swaps in `ui_font_desc` for title +
 /// button rendering, then restores the layout's original font
 /// description before returning.
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to the
+/// embedded `DialogInput::Toolbar` rasteriser — see
+/// `gtk::toolbar::draw_toolbar` for its contract. A `Dialog` with no
+/// input, or an input toolbar with no `icon_overrides`, is unaffected
+/// by the flag.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_dialog(
     cr: &Context,
@@ -181,6 +187,7 @@ pub fn draw_dialog(
     dialog_layout: &DialogLayout,
     line_height: f64,
     theme: &Theme,
+    nerd_fonts_enabled: bool,
 ) -> Vec<(f64, f64, f64, f64)> {
     let bounds = dialog_layout.bounds;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -284,11 +291,10 @@ pub fn draw_dialog(
                 // rasteriser. Background fill uses the toolbar's own bg
                 // (or header_bg fallback) so the slot reads as chrome.
                 //
-                // `false`: a `DialogInput::Toolbar` has no path to
-                // register an icon override yet (issue #913 scoped the
-                // override API to the standalone `Toolbar` primitive), so
-                // `icon_overrides` is always empty here and the flag
-                // value can't change what paints.
+                // Issue #913 review fix: `DialogInput::Toolbar` embeds
+                // the same `Toolbar` the standalone rasteriser resolves
+                // overrides for, so forward the caller's flag instead of
+                // a hardcoded `false`.
                 super::toolbar::draw_toolbar(
                     cr,
                     pango_layout,
@@ -300,7 +306,7 @@ pub fn draw_dialog(
                     theme,
                     None,
                     None,
-                    false,
+                    nerd_fonts_enabled,
                 );
                 // Restore body font after the toolbar rasteriser may
                 // have swapped it.

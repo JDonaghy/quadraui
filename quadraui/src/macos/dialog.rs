@@ -132,6 +132,12 @@ unsafe fn draw_table_macos(
 
 /// Draw a [`Dialog`] at its resolved layout. Returns per-button bounds.
 ///
+/// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to the
+/// embedded `DialogInput::Toolbar` rasteriser — see
+/// `macos::toolbar::draw_toolbar` for its contract. A `Dialog` with no
+/// input, or an input toolbar with no `icon_overrides`, is unaffected
+/// by the flag.
+///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
@@ -144,6 +150,7 @@ pub unsafe fn draw_dialog(
     dialog_layout: &DialogLayout,
     line_height: f64,
     theme: &Theme,
+    nerd_fonts_enabled: bool,
 ) -> Vec<QRect> {
     let bounds = dialog_layout.bounds;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -248,11 +255,10 @@ pub unsafe fn draw_dialog(
                 // Render the embedded toolbar using the macOS toolbar
                 // rasteriser.
                 //
-                // `false`: a `DialogInput::Toolbar` has no path to
-                // register an icon override yet (issue #913 scoped the
-                // override API to the standalone `Toolbar` primitive), so
-                // `icon_overrides` is always empty here and the flag
-                // value can't change what paints.
+                // Issue #913 review fix: `DialogInput::Toolbar` embeds
+                // the same `Toolbar` the standalone rasteriser resolves
+                // overrides for, so forward the caller's flag instead of
+                // a hardcoded `false`.
                 super::toolbar::draw_toolbar(
                     ctx,
                     font,
@@ -264,7 +270,7 @@ pub unsafe fn draw_dialog(
                     theme,
                     None,
                     None,
-                    false,
+                    nerd_fonts_enabled,
                 );
             }
         }

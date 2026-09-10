@@ -105,7 +105,31 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
 }
 
 /// Draw a [`Form`] into `area` on `buf`.
-pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to the
+/// embedded `FieldKind::Toolbar` rasteriser — see
+/// `tui::toolbar::draw_toolbar` for its contract. A `Form` with no
+/// `Toolbar` field, or a toolbar with no `icon_overrides`, is
+/// unaffected by the flag.
+///
+/// Known limitation: [`tui_form_layout`]'s own `FieldKind::Toolbar`
+/// item-width measurer (used for this form's outer hit-test grid,
+/// separate from the toolbar's own internal repaint below) still
+/// measures each button's un-resolved `icon` field — it doesn't accept
+/// `nerd_fonts_enabled` and can't call `Toolbar::resolve_button_icon`.
+/// A registered override whose glyph/fallback widths differ can
+/// therefore disagree between this fn's paint (correct, via
+/// `draw_toolbar`) and the form-level click hit-test for buttons after
+/// the overridden one — tracked as a follow-up, out of this issue's
+/// scope (which fixes painting, not this pre-existing layout/paint
+/// split).
+pub fn draw_form(
+    buf: &mut Buffer,
+    area: Rect,
+    form: &Form,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -479,12 +503,19 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     area.width.saturating_sub(start_col),
                     1,
                 );
-                // `false`: a `FieldKind::Toolbar` has no path to register
-                // an icon override yet (issue #913 scoped the override
-                // API to the standalone `Toolbar` primitive), so
-                // `icon_overrides` is always empty here and the flag
-                // value can't change what paints.
-                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None, false);
+                // Issue #913 review fix: `FieldKind::Toolbar` embeds the
+                // same `Toolbar` the standalone rasteriser resolves
+                // overrides for, so forward the caller's flag instead of
+                // a hardcoded `false`.
+                super::toolbar::draw_toolbar(
+                    buf,
+                    toolbar_area,
+                    toolbar,
+                    theme,
+                    None,
+                    None,
+                    nerd_fonts_enabled,
+                );
             }
             FieldKind::TextArea {
                 value,
@@ -827,7 +858,13 @@ mod tests {
     fn paints_label_and_toggle_glyph() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let f = make_form();
-        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 30, 5),
+            &f,
+            &Theme::default(),
+            false,
+        );
 
         // Header row: "Editor" starts at col 1 (label_col).
         let row0: String = (1..7).map(|x| cell_char(&buf, x, 0)).collect();
@@ -854,7 +891,7 @@ mod tests {
             selected_bg: crate::types::Color::rgb(99, 0, 0),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &theme);
+        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &theme, false);
         // Row 1 ("wrap", focused) bg should be (99, 0, 0).
         let bg = buf[(0u16, 1u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
@@ -870,7 +907,7 @@ mod tests {
             muted_fg: crate::types::Color::rgb(50, 50, 50),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &theme);
+        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &theme, false);
         // 'w' of "wrap" should be in muted_fg.
         let fg = buf[(1u16, 1u16)].fg;
         assert_eq!(fg, ratatui::style::Color::Rgb(50, 50, 50));
@@ -880,7 +917,13 @@ mod tests {
     fn zero_size_is_a_no_op() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let f = make_form();
-        draw_form(&mut buf, Rect::new(0, 0, 0, 5), &f, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 0, 5),
+            &f,
+            &Theme::default(),
+            false,
+        );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -906,7 +949,13 @@ mod tests {
             has_focus: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
-        draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 30, 3),
+            &f,
+            &Theme::default(),
+            false,
+        );
 
         // Row fills full width: '[' at col 0, text at col 1, ']' at col 29.
         let row: String = (0..30).map(|x| cell_char(&buf, x, 0)).collect();
@@ -960,7 +1009,13 @@ mod tests {
     fn toggle_group_paints_labels() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         let f = make_toggle_group_form();
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &Theme::default(),
+            false,
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(row.contains("Aa"), "expected 'Aa' in row: {row:?}");
@@ -980,7 +1035,7 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 40, 3);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
         let f = make_toggle_group_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let layout = f.layout(area.width as f32, area.height as f32, |i| {
             let field = &f.fields[i];
@@ -1106,7 +1161,13 @@ mod tests {
     fn button_row_paints_bracketed_labels() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         let f = make_button_row_form();
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &Theme::default(),
+            false,
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(row.contains("[Next]"), "expected '[Next]' in row: {row:?}");
@@ -1122,7 +1183,7 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 40, 3);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
         let f = make_button_row_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let layout = f.layout(area.width as f32, area.height as f32, |i| {
             let field = &f.fields[i];
@@ -1213,7 +1274,7 @@ mod tests {
             accent_fg: crate::types::Color::rgb(200, 100, 50),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme, false);
 
         // "Aa" (value=true) should be in accent_fg.
         let mut aa_col = None;
@@ -1237,7 +1298,7 @@ mod tests {
             accent_fg: crate::types::Color::rgb(200, 100, 50),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme, false);
 
         // "[All]" (disabled=true) bracket should be in muted_fg.
         let mut all_col = None;
@@ -1278,7 +1339,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+            false,
+        );
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             row.contains("••••••"),
@@ -1312,7 +1379,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+            false,
+        );
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             row.contains("Enter key"),
@@ -1342,7 +1415,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+            false,
+        );
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(row.contains("Ws"), "should paint 'Ws', got: {row:?}");
         assert!(row.contains("File"), "should paint 'File', got: {row:?}");
@@ -1405,7 +1484,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 6),
+            &form,
+            &Theme::default(),
+            false,
+        );
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
         assert_eq!(
             layout.visible_fields[0].bounds.height, 3.0,
@@ -1437,7 +1522,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+            false,
+        );
         let col0 = cell_char(&buf, 0, 0);
         assert_eq!(col0, '!', "error validation should paint '!' at col 0");
     }
@@ -1464,7 +1555,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut buf,
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+            false,
+        );
         let col0 = cell_char(&buf, 0, 0);
         assert_eq!(
             col0, '\u{26A0}',
@@ -1524,7 +1621,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_toolbar_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
@@ -1541,12 +1638,81 @@ mod tests {
         );
     }
 
+    /// Issue #913 review fix: closes the "no test exercises an embedded
+    /// toolbar with a registered override" gap — every pre-fix
+    /// `nerd_fonts_flag_selects_glyph_or_fallback`-style test targeted
+    /// the standalone `Toolbar` path only, so a `FieldKind::Toolbar`
+    /// silently never resolved `icon_overrides`.
+    #[test]
+    fn toolbar_field_nerd_fonts_flag_selects_glyph_or_fallback() {
+        use crate::types::Icon;
+
+        let f = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("actions"),
+                label: label(""),
+                kind: FieldKind::Toolbar(
+                    Toolbar::new(
+                        WidgetId::new("tb"),
+                        vec![ToolbarButton::Action {
+                            id: WidgetId::new("go"),
+                            label: "Go".into(),
+                            icon: Some("stale".into()),
+                            key_hint: None,
+                            enabled: true,
+                            is_active: false,
+                            tooltip: String::new(),
+                        }],
+                    )
+                    .with_icon_override(WidgetId::new("go"), Icon::new("\u{f021}", "R")),
+                ),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+
+        let area = Rect::new(0, 0, 40, 3);
+        let row_text = |nerd_fonts_enabled: bool| -> String {
+            let mut buf = Buffer::empty(area);
+            draw_form(&mut buf, area, &f, &Theme::default(), nerd_fonts_enabled);
+            (0..40).map(|x| cell_char(&buf, x, 0)).collect::<String>()
+        };
+
+        assert!(
+            row_text(true).contains('\u{f021}'),
+            "nerd_fonts_enabled: true should paint the glyph half of the override \
+             in a FieldKind::Toolbar"
+        );
+        assert!(
+            !row_text(true).contains('R'),
+            "fallback must not paint when flag is on"
+        );
+        assert!(
+            row_text(false).contains('R'),
+            "nerd_fonts_enabled: false should paint the fallback half of the override"
+        );
+        assert!(
+            !row_text(false).contains('\u{f021}'),
+            "glyph must not paint when flag is off"
+        );
+        assert!(
+            !row_text(false).contains("stale"),
+            "an override must replace the button's own `icon` field entirely, \
+             not just supplement it"
+        );
+    }
+
     #[test]
     fn toolbar_field_click_routes_to_action_id() {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_toolbar_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let layout = tui_form_layout(&f, area);
 
@@ -1576,7 +1742,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_toolbar_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let layout = tui_form_layout(&f, area);
 
@@ -1672,7 +1838,7 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let label_visible_width = f.fields[0].label.visible_width();
         assert_eq!(label_visible_width, 7);
@@ -1738,7 +1904,7 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(&mut buf, area, &f, &Theme::default(), false);
 
         let label_visible_width = f.fields[0].label.visible_width();
         assert_eq!(label_visible_width, 5); // 2 + 2 + 1

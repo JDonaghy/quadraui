@@ -36,6 +36,12 @@ pub fn tui_sidebar_panel_layout(panel: &SidebarPanel, area: Rect) -> SidebarPane
 /// Draw a `SidebarPanel` into `area` on `buf`. Returns the layout the
 /// host needs to paint its content into `content_bounds` and route
 /// clicks via `hit_test`.
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to the
+/// embedded toolbar's rasteriser — see [`super::draw_toolbar`] for its
+/// contract. A panel with no toolbar, or a toolbar with no
+/// `icon_overrides`, is unaffected by the flag.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_sidebar_panel(
     buf: &mut Buffer,
     area: Rect,
@@ -43,6 +49,7 @@ pub fn draw_sidebar_panel(
     theme: &Theme,
     hovered_toolbar_id: Option<&WidgetId>,
     pressed_toolbar_id: Option<&WidgetId>,
+    nerd_fonts_enabled: bool,
 ) -> SidebarPanelLayout {
     let layout = tui_sidebar_panel_layout(panel, area);
 
@@ -62,11 +69,10 @@ pub fn draw_sidebar_panel(
             tb_bounds.width.round() as u16,
             tb_bounds.height.round() as u16,
         );
-        // `false`: a `SidebarPanel` header toolbar has no path to
-        // register an icon override yet (issue #913 scoped the override
-        // API to the standalone `Toolbar` primitive), so
-        // `icon_overrides` is always empty here and the flag value can't
-        // change what paints.
+        // Issue #913 review fix: a `SidebarPanel` header toolbar embeds
+        // the same `Toolbar` the standalone rasteriser resolves
+        // overrides for, so forward the caller's flag instead of a
+        // hardcoded `false`.
         let _ = super::draw_toolbar(
             buf,
             tb_rect,
@@ -74,7 +80,7 @@ pub fn draw_sidebar_panel(
             theme,
             hovered_toolbar_id,
             pressed_toolbar_id,
-            false,
+            nerd_fonts_enabled,
         );
     }
 
@@ -120,7 +126,8 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         let panel = panel_with_toolbar();
-        let layout = draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None);
+        let layout =
+            draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None, false);
         // Header at row 0 starts with `[`.
         assert_eq!(cell_char(&buf, 0, 0), '[');
         // Content begins at row 1 and is left blank (host paints).
@@ -140,7 +147,8 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 40, 10);
         let mut buf = Buffer::empty(area);
         let panel = panel_with_toolbar();
-        let layout = draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None);
+        let layout =
+            draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None, false);
         match layout.hit_test(origin_x as f32 + 2.0, origin_y as f32) {
             SidebarPanelHit::ToolbarButton(id) => assert_eq!(id.as_str(), "refine"),
             other => panic!("expected ToolbarButton, got {other:?}"),
@@ -165,7 +173,8 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         let panel = panel_with_toolbar();
-        let layout = draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None);
+        let layout =
+            draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None, false);
         match layout.hit_test(5.0, 4.0) {
             // Content origin y = 1, so local y = 4 - 1 = 3.
             SidebarPanelHit::Content { x, y } => {
@@ -185,9 +194,82 @@ mod tests {
             toolbar: None,
             toolbar_height: None,
         };
-        let layout = draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None);
+        let layout =
+            draw_sidebar_panel(&mut buf, area, &panel, &Theme::default(), None, None, false);
         assert!(layout.toolbar_bounds.is_none());
         assert_eq!(layout.content_bounds.y, 0.0);
         assert_eq!(layout.content_bounds.height, 10.0);
+    }
+
+    /// Issue #913 review fix: closes the "no test exercises an embedded
+    /// toolbar with a registered override" gap — every pre-fix
+    /// `nerd_fonts_flag_selects_glyph_or_fallback`-style test targeted
+    /// the standalone `Toolbar` path only, so a `SidebarPanel`'s header
+    /// toolbar silently never resolved `icon_overrides`. Mirrors
+    /// `tui::toolbar::nerd_fonts_flag_selects_glyph_or_fallback` at the
+    /// `SidebarPanel` level.
+    #[test]
+    fn nerd_fonts_flag_selects_glyph_or_fallback_in_embedded_toolbar() {
+        use crate::types::Icon;
+
+        let area = Rect::new(0, 0, 40, 10);
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(
+                Toolbar::new(
+                    WidgetId::new("sb:toolbar"),
+                    vec![ToolbarButton::Action {
+                        id: WidgetId::new("go"),
+                        label: "Go".into(),
+                        icon: Some("stale".into()),
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                )
+                .with_icon_override(WidgetId::new("go"), Icon::new("\u{f021}", "R")),
+            ),
+            toolbar_height: None,
+        };
+
+        let row_text = |nerd_fonts_enabled: bool| -> String {
+            let mut buf = Buffer::empty(area);
+            draw_sidebar_panel(
+                &mut buf,
+                area,
+                &panel,
+                &Theme::default(),
+                None,
+                None,
+                nerd_fonts_enabled,
+            );
+            (0..area.width)
+                .map(|x| cell_char(&buf, x, 0))
+                .collect::<String>()
+        };
+
+        assert!(
+            row_text(true).contains('\u{f021}'),
+            "nerd_fonts_enabled: true should paint the glyph half of the override \
+             in a SidebarPanel's embedded toolbar"
+        );
+        assert!(
+            !row_text(true).contains('R'),
+            "fallback must not paint when flag is on"
+        );
+        assert!(
+            row_text(false).contains('R'),
+            "nerd_fonts_enabled: false should paint the fallback half of the override"
+        );
+        assert!(
+            !row_text(false).contains('\u{f021}'),
+            "glyph must not paint when flag is off"
+        );
+        assert!(
+            !row_text(false).contains("stale"),
+            "an override must replace the button's own `icon` field entirely, \
+             not just supplement it"
+        );
     }
 }
