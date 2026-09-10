@@ -47,12 +47,6 @@ impl TextMeasure for CtFontMeasure<'_> {
 
 /// Compute the macOS pixel-unit layout for a [`Toolbar`] without
 /// painting. `font` is required for accurate text measurement.
-///
-/// `nerd_fonts_enabled` picks which half of an overridden button's icon
-/// (registered via [`Toolbar::with_icon_override`]) is measured — `glyph`
-/// when `true`, `fallback` when `false` (issue #913), same contract as
-/// `gtk::toolbar::gtk_toolbar_layout`. A button with no override measures
-/// its own `icon` field regardless of the flag.
 pub fn mac_toolbar_layout(
     bar: &Toolbar,
     font: &CTFont,
@@ -60,21 +54,15 @@ pub fn mac_toolbar_layout(
     y: f64,
     w: f64,
     h: f64,
-    nerd_fonts_enabled: bool,
 ) -> ToolbarLayout {
     let measure = CtFontMeasure(font);
     bar.layout(x as f32, y as f32, w as f32, h as f32, |btn| {
-        let resolved = bar.resolve_button_icon(btn, nerd_fonts_enabled);
-        ToolbarItemMeasure::new(measure_button(&measure, &resolved))
+        ToolbarItemMeasure::new(measure_button(&measure, btn))
     })
 }
 
 /// Paint `bar` into `(x, y, w, h)` on `ctx`. Returns the resolved
 /// layout for host click dispatch.
-///
-/// See [`mac_toolbar_layout`] for `nerd_fonts_enabled`'s contract — paint
-/// and layout resolve every button's icon the same way, so a wide
-/// glyph's measured and painted widths never disagree.
 ///
 /// # Safety
 ///
@@ -93,9 +81,8 @@ pub unsafe fn draw_toolbar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
-    nerd_fonts_enabled: bool,
 ) -> ToolbarLayout {
-    let layout = mac_toolbar_layout(bar, font, x, y, w, h, nerd_fonts_enabled);
+    let layout = mac_toolbar_layout(bar, font, x, y, w, h);
 
     if w <= 0.0 || h <= 0.0 {
         return layout;
@@ -115,8 +102,8 @@ pub unsafe fn draw_toolbar(
         if item_w <= 0.0 || item_h <= 0.0 {
             continue;
         }
-        let btn = bar.resolve_button_icon(&bar.buttons[vis.item_idx], nerd_fonts_enabled);
-        match btn.as_ref() {
+        let btn = &bar.buttons[vis.item_idx];
+        match btn {
             ToolbarButton::Action {
                 id,
                 label,
@@ -299,7 +286,6 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         }
     }
 
@@ -402,58 +388,6 @@ mod tests {
             hit,
             ToolbarHit::Button(WidgetId::new("tb:refine")),
             "expected Refine button hit at non-zero origin",
-        );
-    }
-
-    /// #913: `nerd_fonts_enabled` selects `Icon::glyph` vs `Icon::fallback`
-    /// for a button with a registered [`Toolbar::with_icon_override`].
-    /// Uses two ASCII strings of clearly different width (`"WWWW"` vs
-    /// `"E"`) rather than a real Nerd Font codepoint, so the assertion
-    /// holds without the Symbols Nerd Font installed — same reasoning as
-    /// `gtk::toolbar`'s `nerd_fonts_flag_selects_glyph_or_fallback`. Like
-    /// `round_trip_click_hits_enabled_button_at_nonzero_origin` above,
-    /// this is unverified by the compiler in this sandbox (no macOS
-    /// target).
-    #[test]
-    fn nerd_fonts_flag_selects_glyph_or_fallback() {
-        use crate::types::Icon;
-
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![mk_action("tb:action", "", true)],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        }
-        .with_icon_override(WidgetId::new("tb:action"), Icon::new("WWWW", "E"));
-
-        let button_width = |nerd_fonts_enabled: bool| -> f32 {
-            let surface = BitmapSurface::new(W, H);
-            surface.fill(0.0, 0.0, 0.0, 0.0);
-            let mut backend = MacBackend::new();
-            backend.set_current_font(font());
-            backend.set_nerd_fonts(nerd_fonts_enabled);
-            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let width = std::cell::RefCell::new(0.0_f32);
-            backend.enter_frame_scope(surface.context_ptr(), |b| {
-                let l = b.draw_toolbar_interactive(
-                    QRect::new(0.0, 0.0, W as f32, H as f32),
-                    &bar,
-                    &crate::InteractionState::new(),
-                );
-                *width.borrow_mut() = l.visible_items[0].bounds.width;
-            });
-            backend.end_frame();
-            width.into_inner()
-        };
-
-        let glyph_width = button_width(true);
-        let fallback_width = button_width(false);
-        assert!(
-            glyph_width > fallback_width,
-            "nerd_fonts_enabled: true should measure the wider glyph half \
-             (\"WWWW\", {glyph_width}px) vs the narrower fallback half \
-             (\"E\", {fallback_width}px) measured when false"
         );
     }
 }

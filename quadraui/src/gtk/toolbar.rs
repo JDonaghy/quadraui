@@ -73,13 +73,6 @@ impl TextMeasure for PangoMeasure<'_> {
 /// `pango_layout` is `Some` inside a draw frame (Pango can measure
 /// accurately) and `None` from layout-only paths called between
 /// frames — in that case a `char_width`-based fallback is used.
-///
-/// `nerd_fonts_enabled` picks which half of an overridden button's icon
-/// (registered via [`Toolbar::with_icon_override`]) is measured — `glyph`
-/// when `true`, `fallback` when `false` (issue #913), same contract as
-/// [`super::activity_bar::draw_activity_bar`]. A button with no override
-/// measures its own `icon` field regardless of the flag.
-#[allow(clippy::too_many_arguments)]
 pub fn gtk_toolbar_layout(
     bar: &Toolbar,
     pango_layout: Option<&pango::Layout>,
@@ -88,24 +81,18 @@ pub fn gtk_toolbar_layout(
     y: f64,
     w: f64,
     h: f64,
-    nerd_fonts_enabled: bool,
 ) -> ToolbarLayout {
     let measure = PangoMeasure {
         pango_layout,
         char_width,
     };
     bar.layout(x as f32, y as f32, w as f32, h as f32, |btn| {
-        let resolved = bar.resolve_button_icon(btn, nerd_fonts_enabled);
-        ToolbarItemMeasure::new(measure_button(&measure, &resolved))
+        ToolbarItemMeasure::new(measure_button(&measure, btn))
     })
 }
 
 /// Draw a [`Toolbar`] into `(x, y, w, h)` on `cr`. Returns the layout
 /// for host click dispatch.
-///
-/// See [`gtk_toolbar_layout`] for `nerd_fonts_enabled`'s contract — paint
-/// and layout resolve every button's icon the same way, so a wide
-/// glyph's measured and painted widths never disagree.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar(
     cr: &Context,
@@ -118,7 +105,6 @@ pub fn draw_toolbar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
-    nerd_fonts_enabled: bool,
 ) -> ToolbarLayout {
     pango_layout.set_attributes(None);
     pango_layout.set_width(-1);
@@ -127,8 +113,7 @@ pub fn draw_toolbar(
     // Inside a draw frame, prefer Pango measurement; `char_width` is
     // unused. We still pass a positive default so the fallback path
     // (which `draw_toolbar` itself never hits) remains well-defined.
-    let toolbar_layout =
-        gtk_toolbar_layout(bar, Some(pango_layout), 8.0, x, y, w, h, nerd_fonts_enabled);
+    let toolbar_layout = gtk_toolbar_layout(bar, Some(pango_layout), 8.0, x, y, w, h);
 
     if w <= 0.0 || h <= 0.0 {
         return toolbar_layout;
@@ -155,9 +140,9 @@ pub fn draw_toolbar(
             continue;
         }
 
-        let btn = bar.resolve_button_icon(&bar.buttons[vis.item_idx], nerd_fonts_enabled);
+        let btn = &bar.buttons[vis.item_idx];
 
-        match btn.as_ref() {
+        match btn {
             ToolbarButton::Action {
                 id,
                 label,
@@ -272,7 +257,6 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         }
     }
 
@@ -287,7 +271,7 @@ mod tests {
     /// (outside-frame) hit test uses.
     fn round_trip_at(x: f64, y: f64) {
         let bar = test_toolbar();
-        let layout = gtk_toolbar_layout(&bar, None, 8.0, x, y, 100.0, 20.0, false);
+        let layout = gtk_toolbar_layout(&bar, None, 8.0, x, y, 100.0, 20.0);
 
         let vis = &layout.visible_items[0];
         assert_eq!(vis.bounds.x as f64, x);
@@ -310,67 +294,5 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);
-    }
-
-    /// #913: `nerd_fonts_enabled` selects `Icon::glyph` vs `Icon::fallback`
-    /// for a button with a registered [`Toolbar::with_icon_override`].
-    /// Uses two ASCII strings of clearly different width (`"WWWW"` vs
-    /// `"E"`) rather than a real Nerd Font codepoint, so the assertion
-    /// holds headless without the Symbols Nerd Font installed — same
-    /// reasoning as `gtk::activity_bar`'s
-    /// `nerd_fonts_flag_selects_glyph_or_fallback`. A real `pango::Layout`
-    /// measures the two strings to meaningfully different pixel widths,
-    /// so the returned [`ToolbarLayout`]'s button width alone proves
-    /// which half painted — no pixel scanning needed.
-    #[test]
-    fn nerd_fonts_flag_selects_glyph_or_fallback() {
-        use crate::types::Icon;
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![ToolbarButton::Action {
-                id: WidgetId::new("tb:action"),
-                label: String::new(),
-                icon: Some("E".into()),
-                key_hint: None,
-                enabled: true,
-                is_active: false,
-                tooltip: String::new(),
-            }],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        }
-        .with_icon_override(WidgetId::new("tb:action"), Icon::new("WWWW", "E"));
-
-        let button_width = |nerd_fonts_enabled: bool| -> f64 {
-            let surface = ImageSurface::create(Format::ARgb32, 200, 20).unwrap();
-            let cr = Context::new(&surface).unwrap();
-            let pango_layout = pangocairo::functions::create_layout(&cr);
-            let layout = draw_toolbar(
-                &cr,
-                &pango_layout,
-                0.0,
-                0.0,
-                200.0,
-                20.0,
-                &bar,
-                &Theme::default(),
-                None,
-                None,
-                nerd_fonts_enabled,
-            );
-            layout.visible_items[0].bounds.width as f64
-        };
-
-        let glyph_width = button_width(true);
-        let fallback_width = button_width(false);
-        assert!(
-            glyph_width > fallback_width,
-            "nerd_fonts_enabled: true should measure the wider glyph half \
-             (\"WWWW\", {glyph_width}px) vs the narrower fallback half \
-             (\"E\", {fallback_width}px) measured when false"
-        );
     }
 }

@@ -2603,7 +2603,6 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_toolbar_interactive called outside enter_frame_scope");
@@ -2614,7 +2613,6 @@ impl Backend for TuiBackend {
             &theme,
             interaction.hovered(),
             interaction.pressed(),
-            nerd_fonts,
         )
     }
 
@@ -2624,7 +2622,7 @@ impl Backend for TuiBackend {
         bar: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_toolbar_layout(bar, area, self.nerd_fonts_enabled)
+        crate::tui::tui_toolbar_layout(bar, area)
     }
 
     fn draw_sidebar_panel_interactive(

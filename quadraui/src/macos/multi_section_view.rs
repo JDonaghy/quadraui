@@ -441,13 +441,8 @@ unsafe fn draw_form_body(
         };
         let toolbar_w = row_x + row_w - toolbar_x;
         if toolbar_w > 0.0 {
-            // `false`: a `FieldKind::Toolbar` has no path to register an
-            // icon override yet (issue #913 scoped the override API to
-            // the standalone `Toolbar` primitive), so `icon_overrides`
-            // is always empty here and the flag value can't change what
-            // paints.
             super::toolbar::draw_toolbar(
-                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None, false,
+                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
             );
         }
     }

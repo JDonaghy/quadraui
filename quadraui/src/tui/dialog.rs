@@ -318,12 +318,7 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
                 // repaint with hover/pressed state if the caller provides
                 // it. For the dialog paint path we pass `None` for both.
                 let toolbar_area = RRect::new(ix, iy, iw, 1);
-                // `false`: a `DialogInput::Toolbar` has no path to register
-                // an icon override yet (issue #913 scoped the override API
-                // to the standalone `Toolbar` primitive), so
-                // `icon_overrides` is always empty here and the flag
-                // value can't change what paints.
-                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None, false);
+                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
             }
         }
     }
@@ -559,7 +554,6 @@ mod tests {
                 ],
                 bg: None,
                 focused_index: None,
-                icon_overrides: Vec::new(),
             })),
         }
     }
@@ -710,7 +704,6 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         });
         let json = serde_json::to_string(&input).unwrap();
         let back: DialogInput = serde_json::from_str(&json).unwrap();

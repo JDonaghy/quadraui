@@ -198,7 +198,6 @@ impl FormAllFieldsApp {
                         }],
                         bg: None,
                         focused_index: None,
-                        icon_overrides: Vec::new(),
                     }),
                     hint: StyledText::default(),
                     disabled: false,

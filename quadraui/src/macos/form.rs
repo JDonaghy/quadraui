@@ -229,14 +229,8 @@ pub unsafe fn draw_form(
         if toolbar_w > 0.0 {
             // SAFETY: `ctx` is valid for the duration of this call, per
             // this fn's own contract.
-            //
-            // `false`: a `FieldKind::Toolbar` has no path to register an
-            // icon override yet (issue #913 scoped the override API to
-            // the standalone `Toolbar` primitive), so `icon_overrides`
-            // is always empty here and the flag value can't change what
-            // paints.
             super::toolbar::draw_toolbar(
-                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None, false,
+                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
             );
         }
     }

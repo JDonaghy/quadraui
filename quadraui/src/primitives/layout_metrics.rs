@@ -473,7 +473,6 @@ mod tests {
             buttons: vec![ToolbarButton::Separator],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
 
         // Empty label -> Toolbar's pre-#499 special case: 6px inset,
@@ -631,7 +630,6 @@ mod tests {
                     buttons: vec![],
                     bg: None,
                     focused_index: None,
-                    icon_overrides: Vec::new(),
                 }),
             ),
         ];

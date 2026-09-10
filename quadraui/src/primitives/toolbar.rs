@@ -50,10 +50,8 @@
 //! The primitive returns a [`ToolbarLayout`] carrying per-button bounds
 //! (per D6 contract) so paint and click consume one layout per frame.
 
-use std::borrow::Cow;
-
 use crate::event::Rect;
-use crate::types::{Color, Icon, WidgetId};
+use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 fn default_true() -> bool {
@@ -86,27 +84,6 @@ pub struct Toolbar {
     /// or disabled item.
     #[serde(default)]
     pub focused_index: Option<usize>,
-    /// Per-button Nerd-Font glyph + ASCII fallback pairs, keyed by the
-    /// owning [`ToolbarButton::Action`]'s `id`.
-    ///
-    /// [`ToolbarButton::Action::icon`] stays a plain `Option<String>`
-    /// fallback on purpose — 67 literal construction sites across
-    /// `quadraui`, `coord-tui`, and `vimcode` pin its type, the same
-    /// blast-radius problem issue #683 hit for `PanelDefinition::icon`.
-    /// Rather than widen that field, a button that wants a *distinct*
-    /// Nerd-Font glyph and ASCII fallback registers the pair here via
-    /// [`Self::with_icon_override`] — mirroring
-    /// [`crate::compose::app_shell::AppShell::with_panel_icon`]'s
-    /// override-by-id shape (issue #913). Empty by default, so a
-    /// `Toolbar` built without this field (every existing literal)
-    /// paints byte-identical to pre-#913 `develop` on every backend.
-    ///
-    /// A small `Vec` rather than a `HashMap` because toolbars carry a
-    /// handful of buttons at most, and `Vec<(K, V)>` (unlike
-    /// `HashMap<K, V>`) implements `Eq`, which `Toolbar`'s own derive
-    /// needs.
-    #[serde(default)]
-    pub icon_overrides: Vec<(WidgetId, Icon)>,
 }
 
 /// One item in a [`Toolbar`].
@@ -117,17 +94,8 @@ pub enum ToolbarButton {
         id: WidgetId,
         /// Primary label text (e.g. "Refine", "Continue").
         label: String,
-        /// Optional leading icon glyph (e.g. "▶", "🔄"), painted verbatim
-        /// on every backend.
-        ///
-        /// This is the ASCII/Unicode fallback string when the owning
-        /// [`Toolbar`] registers a [`crate::types::Icon`] override for
-        /// this button's `id` via [`Toolbar::with_icon_override`] — in
-        /// that case the override's `glyph` paints instead whenever the
-        /// backend's Nerd Font glyph set is available (issue #913). A
-        /// button with no override keeps painting this string on every
-        /// backend regardless of Nerd Font availability, unchanged from
-        /// pre-#913 behaviour.
+        /// Optional leading icon glyph (e.g. "▶", "🔄"). TUI rasterises
+        /// as plain text; GTK can swap for an Image widget.
         #[serde(default)]
         icon: Option<String>,
         /// Optional parenthesised key hint shown after the label
@@ -332,75 +300,6 @@ pub fn measure_button(
 }
 
 impl Toolbar {
-    /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
-    /// button, overriding the plain-string [`ToolbarButton::Action::icon`]
-    /// that button was built with (issue #913).
-    ///
-    /// `id` may name any button in [`Self::buttons`]; unknown ids are
-    /// stored but never consulted (no button will ever resolve them).
-    /// Calling this twice for the same id appends a second entry —
-    /// [`Self::icon_override`] returns the first match, so the earliest
-    /// registration wins. Which half of the pair actually paints is the
-    /// backend's `nerd_fonts_enabled` flag: `glyph` when Nerd Font
-    /// glyphs are available, `fallback` otherwise.
-    #[must_use]
-    pub fn with_icon_override(mut self, id: WidgetId, icon: Icon) -> Self {
-        self.icon_overrides.push((id, icon));
-        self
-    }
-
-    /// The registered [`Icon`] override for `id`, if any — see
-    /// [`Self::with_icon_override`].
-    pub fn icon_override(&self, id: &WidgetId) -> Option<&Icon> {
-        self.icon_overrides
-            .iter()
-            .find(|(oid, _)| oid == id)
-            .map(|(_, icon)| icon)
-    }
-
-    /// Resolve the icon `btn` should actually paint/measure, given
-    /// whether the backend's Nerd Font glyph set is available.
-    ///
-    /// When `btn` is an [`ToolbarButton::Action`] with a registered
-    /// [`Self::icon_override`], returns a copy of `btn` with its `icon`
-    /// field swapped for `Icon::glyph` (when `nerd_fonts_enabled`) or
-    /// `Icon::fallback` (otherwise) — the override wins outright,
-    /// replacing the button's own `icon` field entirely, exactly like
-    /// [`crate::compose::app_shell::AppShell::resolved_icon`] does for
-    /// `PanelDefinition::icon`. Every other case (no override, or a
-    /// non-`Action` button) borrows `btn` unchanged, so calling this on
-    /// a `Toolbar` with no overrides is a no-op — the byte-identical
-    /// `develop` behaviour the flag-off acceptance bar requires.
-    ///
-    /// Every rasteriser calls this once per button — during layout
-    /// *and* during paint, from the exact same `(bar, nerd_fonts_enabled)`
-    /// inputs — so a wide glyph's measured width and painted width can
-    /// never disagree.
-    pub fn resolve_button_icon<'a>(
-        &self,
-        btn: &'a ToolbarButton,
-        nerd_fonts_enabled: bool,
-    ) -> Cow<'a, ToolbarButton> {
-        if let ToolbarButton::Action { id, .. } = btn {
-            if let Some(icon) = self.icon_override(id) {
-                let resolved = if nerd_fonts_enabled {
-                    icon.glyph.clone()
-                } else {
-                    icon.fallback.clone()
-                };
-                let mut cloned = btn.clone();
-                if let ToolbarButton::Action {
-                    icon: icon_field, ..
-                } = &mut cloned
-                {
-                    *icon_field = Some(resolved);
-                }
-                return Cow::Owned(cloned);
-            }
-        }
-        Cow::Borrowed(btn)
-    }
-
     /// Compute the full rendering + hit-test layout for this toolbar.
     ///
     /// Items lay out left-to-right starting at `(origin_x, origin_y)`,
@@ -484,13 +383,7 @@ mod tests {
 
     fn cell_measure() -> impl Fn(&ToolbarButton) -> ToolbarItemMeasure {
         // Mirrors what the TUI rasteriser uses: `[ label ]` style cells,
-        // separators 2 cells, labels their *display* width. Uses
-        // `crate::text_util::display_width`, not `chars().count()` —
-        // before issue #913 this used `chars().count()`, which
-        // undercounts every East-Asian-Wide / emoji icon by half a cell
-        // and made this helper diverge from `tui::toolbar::tui_item_width`
-        // (which already measured correctly), so a wide-icon layout bug
-        // could hide behind a green test suite here.
+        // separators 2 cells, labels their char width.
         |btn| match btn {
             ToolbarButton::Action {
                 label,
@@ -498,21 +391,17 @@ mod tests {
                 key_hint,
                 ..
             } => {
-                let icon_w = icon
-                    .as_ref()
-                    .map(|s| crate::text_util::display_width(s) + 1)
-                    .unwrap_or(0);
+                let icon_w = icon.as_ref().map(|s| s.chars().count() + 1).unwrap_or(0);
                 let hint_w = key_hint
                     .as_ref()
-                    .map(|s| crate::text_util::display_width(s) + 1)
+                    .map(|s| s.chars().count() + 1)
                     .unwrap_or(0);
                 // `[ ` + content + ` ]`
-                let label_w = crate::text_util::display_width(label);
-                ToolbarItemMeasure::new((4 + icon_w + label_w + hint_w) as f32)
+                ToolbarItemMeasure::new((4 + icon_w + label.chars().count() + hint_w) as f32)
             }
             ToolbarButton::Separator => ToolbarItemMeasure::new(2.0),
             ToolbarButton::Label { text, .. } => {
-                ToolbarItemMeasure::new(crate::text_util::display_width(text) as f32)
+                ToolbarItemMeasure::new(text.chars().count() as f32)
             }
         }
     }
@@ -524,7 +413,6 @@ mod tests {
             buttons: vec![],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(layout.visible_items.is_empty());
@@ -538,7 +426,6 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert_eq!(layout.visible_items.len(), 2);
@@ -556,7 +443,6 @@ mod tests {
             buttons: vec![mk_action("refine", "Refine", true)],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         let r = layout.visible_items[0].bounds;
@@ -574,7 +460,6 @@ mod tests {
             buttons: vec![mk_action("refine", "Refine", false)],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(!layout.visible_items[0].clickable);
@@ -595,7 +480,6 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(!layout.visible_items[0].clickable);
@@ -624,7 +508,6 @@ mod tests {
             buttons: vec![mk_wide("a"), mk_wide("b")],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         // Use a fixed 6-cell measurer so the second button is clipped.
         let measure = |_: &ToolbarButton| ToolbarItemMeasure::new(6.0);
@@ -645,7 +528,6 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(0.0, 0.0, 0.0, 1.0, cell_measure());
         assert_eq!(layout.visible_items.len(), 1);
@@ -662,7 +544,6 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let layout = bar.layout(10.0, 5.0, 80.0, 1.0, cell_measure());
         assert_eq!(layout.bar_bounds.x, 10.0);
@@ -704,7 +585,6 @@ mod tests {
             ],
             bg: Some(Color::rgb(40, 40, 40)),
             focused_index: None,
-            icon_overrides: Vec::new(),
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: Toolbar = serde_json::from_str(&json).unwrap();
@@ -783,177 +663,5 @@ mod tests {
         let json = serde_json::to_string(&btn).unwrap();
         let back: ToolbarButton = serde_json::from_str(&json).unwrap();
         assert_eq!(btn, back);
-    }
-
-    // ── Icon overrides (#913) ───────────────────────────────────────────
-
-    /// Flag-off acceptance bar: a `Toolbar` with no `icon_overrides`
-    /// resolves every button's icon to exactly its own `icon` field,
-    /// regardless of `nerd_fonts_enabled` — i.e. `resolve_button_icon`
-    /// is a no-op absent an override, so today's `icon: Some("▶".into())`
-    /// literals keep painting byte-identical to pre-#913 `develop`.
-    #[test]
-    fn resolve_button_icon_is_a_noop_with_no_overrides() {
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        };
-        let btn = ToolbarButton::Action {
-            id: WidgetId::new("a"),
-            label: "Refine".into(),
-            icon: Some("▶".into()),
-            key_hint: None,
-            enabled: true,
-            is_active: false,
-            tooltip: String::new(),
-        };
-        for flag in [false, true] {
-            let resolved = bar.resolve_button_icon(&btn, flag);
-            assert_eq!(resolved.as_ref(), &btn, "nerd_fonts_enabled={flag}");
-        }
-    }
-
-    /// Flag-on acceptance bar: a button with a registered override paints
-    /// `Icon::glyph` when `nerd_fonts_enabled` and `Icon::fallback`
-    /// otherwise — the override replaces the button's own `icon` field
-    /// entirely, mirroring `AppShell::resolved_icon`.
-    #[test]
-    fn resolve_button_icon_picks_glyph_or_fallback() {
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        }
-        .with_icon_override(WidgetId::new("a"), Icon::new("\u{f021}", "R"));
-        let btn = ToolbarButton::Action {
-            id: WidgetId::new("a"),
-            label: "Refresh".into(),
-            icon: Some("stale".into()),
-            key_hint: None,
-            enabled: true,
-            is_active: false,
-            tooltip: String::new(),
-        };
-
-        let glyph_resolved = bar.resolve_button_icon(&btn, true);
-        match glyph_resolved.as_ref() {
-            ToolbarButton::Action { icon, .. } => {
-                assert_eq!(icon.as_deref(), Some("\u{f021}"))
-            }
-            other => panic!("expected Action, got {other:?}"),
-        }
-
-        let fallback_resolved = bar.resolve_button_icon(&btn, false);
-        match fallback_resolved.as_ref() {
-            ToolbarButton::Action { icon, .. } => assert_eq!(icon.as_deref(), Some("R")),
-            other => panic!("expected Action, got {other:?}"),
-        }
-    }
-
-    /// An override registered for an id that isn't in `buttons` (or that
-    /// doesn't match the button passed in) is simply never consulted —
-    /// `resolve_button_icon` only ever looks at the `id` embedded in the
-    /// `btn` argument itself.
-    #[test]
-    fn resolve_button_icon_ignores_override_for_a_different_id() {
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        }
-        .with_icon_override(WidgetId::new("other"), Icon::new("\u{f021}", "R"));
-        let btn = ToolbarButton::Action {
-            id: WidgetId::new("a"),
-            label: "Refine".into(),
-            icon: Some("▶".into()),
-            key_hint: None,
-            enabled: true,
-            is_active: false,
-            tooltip: String::new(),
-        };
-        let resolved = bar.resolve_button_icon(&btn, true);
-        assert_eq!(resolved.as_ref(), &btn);
-    }
-
-    /// Non-`Action` items (separators, labels) have no `id` to key an
-    /// override on — `resolve_button_icon` must leave them untouched
-    /// rather than panicking or silently misinterpreting the item.
-    #[test]
-    fn resolve_button_icon_leaves_separator_and_label_untouched() {
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        }
-        .with_icon_override(WidgetId::new("a"), Icon::new("\u{f021}", "R"));
-        assert_eq!(
-            bar.resolve_button_icon(&ToolbarButton::Separator, true)
-                .as_ref(),
-            &ToolbarButton::Separator
-        );
-        let label = ToolbarButton::Label {
-            text: "2 of 5".into(),
-            fg: None,
-        };
-        assert_eq!(bar.resolve_button_icon(&label, true).as_ref(), &label);
-    }
-
-    // ── Wide-icon cell-width measurement (#913 Part 2) ──────────────────
-
-    /// A wide (East-Asian-Wide / emoji) icon on the first button must
-    /// reserve two cells, not one, so the second button's layout — and
-    /// therefore its hit region — starts where it actually paints.
-    /// Before #913 `cell_measure` (this test module's stand-in for the
-    /// TUI rasteriser's cell formula) measured icons via
-    /// `chars().count()`, undercounting a wide glyph by one cell; the
-    /// real `tui::toolbar::tui_item_width` already used
-    /// `text_util::display_width` and was unaffected; this test pins the
-    /// primitive-level formula to the same contract so the two can never
-    /// drift again.
-    #[test]
-    fn wide_icon_on_first_button_offsets_second_buttons_layout() {
-        // 一 (U+4E00) is an unambiguous double-width CJK ideograph — same
-        // choice `tui::toolbar`'s own `double_width_icon_reserves_two_cells`
-        // makes, to avoid depending on how a given `unicode-width` version
-        // classifies emoji presentation.
-        let wide_icon = mk_action_with_icon("a", "X", "一"); // 2 cells
-        let plain = mk_action("b", "Y", true);
-        let bar = Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![wide_icon, plain],
-            bg: None,
-            focused_index: None,
-            icon_overrides: Vec::new(),
-        };
-        let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
-        // `cell_measure`'s Action formula: 4 (brackets/padding) + icon_w
-        // (display_width + 1 trailing space) + label_w + hint_w
-        // = 4 + (2 + 1) + 1 + 0 = 8.
-        let w0 = layout.visible_items[0].bounds.width;
-        assert_eq!(w0, 8.0, "wide icon should occupy 2 measured cells");
-        // Second button must start exactly where the first one's measured
-        // (and therefore painted) width ends — not one cell short.
-        assert_eq!(layout.visible_items[1].bounds.x, w0);
-    }
-
-    fn mk_action_with_icon(id: &str, label: &str, icon: &str) -> ToolbarButton {
-        ToolbarButton::Action {
-            id: WidgetId::new(id),
-            label: label.to_string(),
-            icon: Some(icon.to_string()),
-            key_hint: None,
-            enabled: true,
-            is_active: false,
-            tooltip: String::new(),
-        }
     }
 }

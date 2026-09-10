@@ -283,12 +283,6 @@ pub fn draw_dialog(
                 // Render the embedded toolbar using the GTK toolbar
                 // rasteriser. Background fill uses the toolbar's own bg
                 // (or header_bg fallback) so the slot reads as chrome.
-                //
-                // `false`: a `DialogInput::Toolbar` has no path to
-                // register an icon override yet (issue #913 scoped the
-                // override API to the standalone `Toolbar` primitive), so
-                // `icon_overrides` is always empty here and the flag
-                // value can't change what paints.
                 super::toolbar::draw_toolbar(
                     cr,
                     pango_layout,
@@ -300,7 +294,6 @@ pub fn draw_dialog(
                     theme,
                     None,
                     None,
-                    false,
                 );
                 // Restore body font after the toolbar rasteriser may
                 // have swapped it.
