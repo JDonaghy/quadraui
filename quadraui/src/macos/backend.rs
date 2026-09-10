@@ -1433,9 +1433,16 @@ impl Backend for MacBackend {
                     "MacBackend::draw_form called outside enter_frame_scope",
                 );
                 // SAFETY: ctx is non-null inside the frame scope.
+                //
+                // `false`: a `FieldKind::Toolbar` has no path to register
+                // an icon override yet (issue #913 scoped the override
+                // API to the standalone `Toolbar` primitive), so
+                // `icon_overrides` is always empty here and the flag
+                // value can't change what paints.
                 unsafe {
                     super::toolbar::draw_toolbar(
-                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None,
+                        None, false,
                     );
                 }
             }
@@ -2426,6 +2433,7 @@ impl Backend for MacBackend {
                 &theme,
                 hovered_id,
                 pressed_id,
+                self.nerd_fonts_enabled,
             )
         }
     }
@@ -2446,6 +2454,7 @@ impl Backend for MacBackend {
                 rect.y as f64,
                 rect.width as f64,
                 rect.height as f64,
+                self.nerd_fonts_enabled,
             )
         } else {
             let cw = self.current_char_width as f32;

@@ -823,6 +823,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         });
 
         // Clicking the first button should emit ToolbarButtonClicked with
@@ -870,6 +871,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         });
 
         // form_click_event matches by id, not by enabled state.

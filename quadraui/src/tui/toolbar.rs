@@ -71,18 +71,33 @@ pub(crate) fn tui_item_width(btn: &ToolbarButton) -> f32 {
 }
 
 /// Compute the layout the rasteriser would produce. No paint side-effects.
-pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect) -> ToolbarLayout {
+///
+/// `nerd_fonts_enabled` picks which half of an overridden button's icon
+/// (registered via [`Toolbar::with_icon_override`]) is measured — `glyph`
+/// when `true`, `fallback` when `false` (issue #913) — same contract as
+/// [`super::activity_bar::draw_activity_bar`]. A button with no override
+/// measures its own `icon` field regardless of the flag, so layout is
+/// unaffected for every pre-#913 `Toolbar`.
+pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect, nerd_fonts_enabled: bool) -> ToolbarLayout {
     bar.layout(
         area.x as f32,
         area.y as f32,
         area.width as f32,
         area.height.max(1) as f32,
-        |btn| ToolbarItemMeasure::new(tui_item_width(btn)),
+        |btn| {
+            let resolved = bar.resolve_button_icon(btn, nerd_fonts_enabled);
+            ToolbarItemMeasure::new(tui_item_width(&resolved))
+        },
     )
 }
 
 /// Draw a [`Toolbar`] into `area` on `buf`. Returns the layout for host
 /// click dispatch.
+///
+/// See [`tui_toolbar_layout`] for `nerd_fonts_enabled`'s contract — paint
+/// and layout resolve every button's icon the same way, so a wide glyph's
+/// measured and painted widths never disagree.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar(
     buf: &mut Buffer,
     area: Rect,
@@ -90,6 +105,7 @@ pub fn draw_toolbar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
+    nerd_fonts_enabled: bool,
 ) -> ToolbarLayout {
     if area.width == 0 || area.height == 0 {
         // `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`
@@ -106,7 +122,7 @@ pub fn draw_toolbar(
         ));
     }
 
-    let layout = tui_toolbar_layout(bar, area);
+    let layout = tui_toolbar_layout(bar, area, nerd_fonts_enabled);
 
     let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
     let fg = qc(theme.foreground);
@@ -136,9 +152,9 @@ pub fn draw_toolbar(
         if item_w == 0 {
             continue;
         }
-        let btn = &bar.buttons[vis.item_idx];
+        let btn = bar.resolve_button_icon(&bar.buttons[vis.item_idx], nerd_fonts_enabled);
 
-        match btn {
+        match btn.as_ref() {
             ToolbarButton::Action {
                 id,
                 label,
@@ -276,8 +292,9 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         // First two cells should be `[` then ` `.
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_eq!(cell_char(&buf, 1, 0), ' ');
@@ -297,8 +314,9 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         // Click inside the first button.
         let b = layout.visible_items[0].bounds;
         assert_eq!(
@@ -345,8 +363,9 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", false)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         let b = layout.visible_items[0].bounds;
         assert_eq!(layout.hit_test(b.x + 1.0, b.y), ToolbarHit::Empty);
     }
@@ -360,8 +379,9 @@ mod tests {
             buttons: vec![ToolbarButton::Separator],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         // First cell is space, second is the pipe char.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert_eq!(cell_char(&buf, 1, 0), '│');
@@ -379,8 +399,9 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         assert_eq!(cell_char(&buf, 0, 0), '2');
         assert_eq!(cell_char(&buf, 1, 0), '/');
         assert_eq!(cell_char(&buf, 2, 0), '5');
@@ -396,8 +417,9 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert!(layout.visible_items.is_empty());
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
@@ -421,8 +443,9 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         assert!(layout.visible_items.is_empty());
         // Pre-fix, the forced `bar_height.max(1)` row band at y == 0
         // would hit-test the button here even though nothing painted.
@@ -442,8 +465,9 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
 
         // Row 0 (top): button text painted in centre — but the bg
         // outside the button text still fills.
@@ -475,8 +499,9 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         // Row 1 col 0 should be `[`.
         assert_eq!(cell_char(&buf, 0, 1), '[');
         // Rows 0 and 2 should not have the bracket.
@@ -493,8 +518,9 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         let r = layout.visible_items[0].bounds;
         // Click in each row of the button bounds — every row should
         // resolve to the button.
@@ -516,8 +542,9 @@ mod tests {
             buttons: vec![ToolbarButton::Separator],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         // The │ glyph should appear on every row at column 1.
         for y in 0..area.height {
             assert_eq!(cell_char(&buf, 1, y), '│', "row {y} missing pipe");
@@ -546,8 +573,9 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         assert_eq!(layout.visible_items[0].bounds.width, 5.0);
         // Painted: `[ X ]`
         assert_eq!(cell_char(&buf, 0, 0), '[');
@@ -577,9 +605,67 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            icon_overrides: Vec::new(),
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, false);
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
         assert_eq!(layout.visible_items[0].bounds.width, 9.0);
+    }
+
+    /// #913: `nerd_fonts_enabled` selects `Icon::glyph` vs `Icon::fallback`
+    /// for a button with a registered [`Toolbar::with_icon_override`] —
+    /// same contract as `tui::activity_bar::draw_activity_bar`'s
+    /// `nerd_fonts_flag_selects_glyph_or_fallback`.
+    #[test]
+    fn nerd_fonts_flag_selects_glyph_or_fallback() {
+        use crate::types::Icon;
+
+        let area = Rect::new(0, 0, 40, 1);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "Go".into(),
+                icon: Some("stale".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+            icon_overrides: Vec::new(),
+        }
+        .with_icon_override(WidgetId::new("a"), Icon::new("\u{f021}", "R"));
+
+        let row_text = |nerd_fonts_enabled: bool| -> String {
+            let mut buf = Buffer::empty(area);
+            draw_toolbar(
+                &mut buf,
+                area,
+                &bar,
+                &Theme::default(),
+                None,
+                None,
+                nerd_fonts_enabled,
+            );
+            (0..area.width)
+                .map(|x| cell_char(&buf, x, 0))
+                .collect::<String>()
+        };
+
+        assert!(
+            row_text(true).contains('\u{f021}'),
+            "nerd_fonts_enabled: true should paint the glyph half of the override"
+        );
+        assert!(
+            row_text(false).contains('R'),
+            "nerd_fonts_enabled: false should paint the fallback half of the override"
+        );
+        assert!(
+            !row_text(false).contains("stale"),
+            "an override must replace the button's own `icon` field entirely, \
+             not just supplement it"
+        );
     }
 }
