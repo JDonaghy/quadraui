@@ -244,12 +244,7 @@ impl From<String> for Icon {
 /// Owned `String` so plugins can generate IDs at runtime. Apps should
 /// namespace IDs (e.g. `"plugin:my-ext:main-form"`) to avoid collisions
 /// with core widget IDs.
-///
-/// `Default` (issue #913) is the empty-string id — purely additive, and
-/// what lets [`crate::primitives::toolbar::Toolbar`] derive `Default`
-/// for its now-`#[non_exhaustive]` shape without inventing a placeholder
-/// id scheme.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WidgetId(pub String);
 
 impl WidgetId {

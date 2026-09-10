@@ -1583,11 +1583,10 @@ impl Backend for TuiBackend {
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_form called outside enter_frame_scope");
-        crate::tui::draw_form(frame.buffer_mut(), area, form, &theme, nerd_fonts_enabled);
+        crate::tui::draw_form(frame.buffer_mut(), area, form, &theme);
     }
 
     fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
@@ -2183,17 +2182,10 @@ impl Backend for TuiBackend {
         // #455: see draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_dialog called outside enter_frame_scope");
-        crate::tui::draw_dialog(
-            frame.buffer_mut(),
-            dialog,
-            layout,
-            &theme,
-            nerd_fonts_enabled,
-        );
+        crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
         // Derive button rects from the layout (TUI rasteriser doesn't
         // return them; the primitive owns the layout).
         layout
@@ -2244,7 +2236,7 @@ impl Backend for TuiBackend {
 
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_form_layout(form, area, self.nerd_fonts_enabled)
+        crate::tui::tui_form_layout(form, area)
     }
 
     fn draw_editor(
@@ -2645,7 +2637,6 @@ impl Backend for TuiBackend {
             (interaction.hovered(), interaction.pressed());
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let frame = self
             .current_frame_mut()
             .expect("TuiBackend::draw_sidebar_panel called outside enter_frame_scope");
@@ -2656,7 +2647,6 @@ impl Backend for TuiBackend {
             &theme,
             hovered_toolbar_id,
             pressed_toolbar_id,
-            nerd_fonts_enabled,
         )
     }
 
@@ -2666,7 +2656,7 @@ impl Backend for TuiBackend {
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_sidebar_panel_layout(panel, area, self.nerd_fonts_enabled)
+        crate::tui::tui_sidebar_panel_layout(panel, area)
     }
 
     fn draw_diff_view(
@@ -3133,7 +3123,7 @@ mod tests {
 
         fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {
             let area = q_rect_to_ratatui(r);
-            crate::tui::tui_form_layout(form, area, false)
+            crate::tui::tui_form_layout(form, area)
         }
 
         fn draw_editor(

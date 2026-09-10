@@ -2117,7 +2117,6 @@ impl Backend for GtkBackend {
     /// after `paint` releases its exclusive borrow of `self`.
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let flayout = self.form_layout(rect, form);
         let origin = Point::new(rect.x, rect.y);
         crate::primitives::form::paint(form, &flayout, self, &theme, origin);
@@ -2148,23 +2147,14 @@ impl Backend for GtkBackend {
             };
             let toolbar_w = row_x + row_w - toolbar_x;
             if toolbar_w > 0.0 {
-                // Issue #913 review fix: `FieldKind::Toolbar` embeds the
-                // same `Toolbar` the standalone rasteriser resolves
-                // overrides for — `self.nerd_fonts_enabled` is live here,
-                // so thread it through instead of the `false` that
-                // silently dropped every embedded-form override.
+                // `false`: a `FieldKind::Toolbar` has no path to register
+                // an icon override yet (issue #913 scoped the override
+                // API to the standalone `Toolbar` primitive), so
+                // `icon_overrides` is always empty here and the flag
+                // value can't change what paints.
                 crate::gtk::toolbar::draw_toolbar(
-                    cr,
-                    layout,
-                    toolbar_x,
-                    row_y,
-                    toolbar_w,
-                    row_h,
-                    toolbar,
-                    &theme,
-                    None,
-                    None,
-                    nerd_fonts_enabled,
+                    cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                    false,
                 );
                 layout.set_attributes(None);
             }
@@ -3136,7 +3126,6 @@ impl Backend for GtkBackend {
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
@@ -3149,7 +3138,6 @@ impl Backend for GtkBackend {
             dialog_layout,
             line_height,
             &theme,
-            nerd_fonts_enabled,
         );
         rects
             .into_iter()
@@ -3231,14 +3219,8 @@ impl Backend for GtkBackend {
             char_w,
         };
 
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         form.layout(rect.width, rect.height, |i| {
-            crate::primitives::layout_metrics::form_field_measure(
-                &form.fields[i],
-                row_h,
-                &measure,
-                nerd_fonts_enabled,
-            )
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
         })
     }
 
@@ -3926,7 +3908,6 @@ impl Backend for GtkBackend {
             (interaction.hovered(), interaction.pressed());
         let theme = self.current_theme;
         let line_height = self.current_line_height;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         // #416 / #862: `SidebarPanel` composes a `Toolbar` header — its
         // icon glyphs are chrome, not editor content — so the same
@@ -3951,7 +3932,6 @@ impl Backend for GtkBackend {
             line_height as f32,
             hovered_toolbar_id,
             pressed_toolbar_id,
-            nerd_fonts_enabled,
         );
         {
             let (_cr, pango_layout) = self
@@ -3989,7 +3969,6 @@ impl Backend for GtkBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
-            self.nerd_fonts_enabled,
         );
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
