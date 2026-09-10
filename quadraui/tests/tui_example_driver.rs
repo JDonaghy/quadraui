@@ -2032,6 +2032,90 @@ fn toolbar_q_exits() {
     assert!(driver.exited(), "'q' should exit the toolbar demo");
 }
 
+/// #913 acceptance: a `ToolbarButton::Action` icon can carry a Nerd-Font
+/// glyph *and* a distinct ASCII fallback, with the backend's
+/// `nerd_fonts_enabled` flag choosing which one paints.
+///
+/// Before #913 there was no path at all: `icon` is one `String`, so a bar
+/// built with a Nerd glyph painted mojibake on a terminal without the
+/// font, and a bar built with ASCII never showed the glyph on one with
+/// it. `ToolbarApp` registers `Icon::new("\u{f0b0}", "*")` for Filter and
+/// `Icon::new("\u{f021}", "%")` for Reset, and bakes them in with
+/// `ToolbarIcons::apply`.
+#[test]
+fn toolbar_n_swaps_registered_icons_between_ascii_fallback_and_nerd_glyph() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    // Nerd fonts start off → the ASCII fallback halves paint.
+    let ascii = driver.screen();
+    assert!(
+        driver.screen_contains("* Filter"),
+        "Filter must paint its ASCII fallback with nerd fonts off:\n{ascii}"
+    );
+    assert!(
+        driver.screen_contains("% Reset"),
+        "Reset must paint its ASCII fallback with nerd fonts off:\n{ascii}"
+    );
+    assert!(
+        !driver.screen_contains("\u{f0b0}"),
+        "the Nerd glyph must not paint with nerd fonts off:\n{ascii}"
+    );
+
+    driver.type_char('n');
+
+    let nerd = driver.screen();
+    assert!(
+        driver.screen_contains("\u{f0b0} Filter"),
+        "Filter must paint its Nerd glyph after 'n':\n{nerd}"
+    );
+    assert!(
+        driver.screen_contains("\u{f021} Reset"),
+        "Reset must paint its Nerd glyph after 'n':\n{nerd}"
+    );
+    assert!(
+        !driver.screen_contains("* Filter"),
+        "the override replaces the fallback outright, it doesn't paint both:\n{nerd}"
+    );
+
+    // Buttons with no registered override are untouched by the flag —
+    // the byte-identical-to-pre-#913 guarantee for every existing bar.
+    assert!(
+        driver.screen_contains("\u{23F8} Pause"),
+        "Pause has no override, so its own icon paints on either flag:\n{nerd}"
+    );
+}
+
+/// The same override must move the *hit regions*, not just the pixels:
+/// clicking Reset has to keep working after a preceding button's icon
+/// changed width. This is the layout/paint agreement `ToolbarIcons::apply`
+/// buys by resolving once, before layout.
+#[test]
+fn toolbar_click_still_hits_reset_after_the_nerd_glyph_swap() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    driver.type_char('n');
+
+    // Put the demo into a state Reset visibly changes: pause it.
+    driver.type_char('2');
+    let paused = driver.screen();
+    assert!(
+        driver.screen_contains("paused"),
+        "precondition: demo is paused:\n{paused}"
+    );
+
+    let (x, y) = driver
+        .find("Reset")
+        .unwrap_or_else(|| panic!("Reset button must be visible:\n{paused}"));
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+
+    assert!(
+        driver.screen_contains("running"),
+        "clicking Reset must fire — the hit region has to follow the resolved \
+         icon widths:\n{}",
+        driver.screen()
+    );
+}
+
 /// Pressing `f` rebuilds the controller via `from_layout`, producing a
 /// 3-pane mixed H/V tree (left | top-right / bottom-right).
 ///
@@ -5372,8 +5456,11 @@ fn toolbar_press_release_on_filter_toggles_is_active_state() {
     // match, silently dropping the toggle. Clicking a couple of cells over
     // (still inside the same button) stays outside that radius while
     // exercising the same toggle path.
+    // `*` is Filter's icon because `ToolbarApp` registers
+    // `Icon::new("\u{f0b0}", "*")` for it and the demo starts with Nerd
+    // fonts off (issue #913) — it used to be a hardcoded `⚙`.
     let (x2, y2) = driver
-        .find("⚙")
+        .find("*")
         .unwrap_or_else(|| panic!("Filter icon not painted:\n{after_on}"));
     driver.mouse_down(x2, y2);
     driver.mouse_up(x2, y2);

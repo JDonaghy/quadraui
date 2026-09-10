@@ -653,6 +653,22 @@ pub trait Backend: sealed::Sealed {
     /// headless test backend) can accept this default.
     fn set_nerd_fonts(&mut self, _enabled: bool) {}
 
+    /// Whatever was last handed to [`Self::set_nerd_fonts`].
+    ///
+    /// Hosts need this to resolve a [`crate::ToolbarIcons`] table at the
+    /// point of use — `icons.apply(&bar, backend.nerd_fonts_enabled())`
+    /// (issue #913) — without having to mirror the flag in their own
+    /// state. `Toolbar` icons are plain strings, so the glyph-or-fallback
+    /// choice has to be made before the `Toolbar` reaches the backend;
+    /// this is how the caller learns which one to bake in.
+    ///
+    /// Default: `false`, matching `set_nerd_fonts`'s no-op default — a
+    /// backend that ignores the setter reports the ASCII form, which is
+    /// what it actually paints.
+    fn nerd_fonts_enabled(&self) -> bool {
+        false
+    }
+
     /// Override the font used to paint editor content (family name + size
     /// in points).
     ///
