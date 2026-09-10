@@ -56,9 +56,9 @@ impl ToolbarApp {
     }
 
     fn toolbar(&self) -> Toolbar {
-        let mut bar = Toolbar::new(
-            WidgetId::new("demo:toolbar"),
-            vec![
+        Toolbar {
+            id: WidgetId::new("demo:toolbar"),
+            buttons: vec![
                 ToolbarButton::Action {
                     id: WidgetId::new("demo:continue"),
                     label: "Continue".into(),
@@ -121,9 +121,11 @@ impl ToolbarApp {
                     }),
                 },
             ],
-        );
-        bar.focused_index = self.focused_index;
-        bar
+            // `None` lets the backend pick its theme default (header_bg).
+            bg: None,
+            focused_index: self.focused_index,
+            icon_overrides: Vec::new(),
+        }
     }
 
     fn status_bar(&self) -> StatusBar {

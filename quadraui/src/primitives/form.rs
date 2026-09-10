@@ -1078,7 +1078,7 @@ mod native_surface_paint {
         fn paint_recorded(form: &Form) -> (RecordingSurface, FormLayout) {
             let row_h = form_row_height(14.0);
             let flayout = form.layout(320.0, 160.0, |i| {
-                form_field_measure(&form.fields[i], row_h, &FixedMeasure, false)
+                form_field_measure(&form.fields[i], row_h, &FixedMeasure)
             });
             let mut surface = RecordingSurface::default();
             paint(

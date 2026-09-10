@@ -171,18 +171,8 @@ pub fn draw_form(
         pango_layout: Some(layout),
         char_width: 8.0,
     };
-    // `false`: this is the deprecated `draw_form` shim, which reproduces
-    // the pre-#808 signature exactly and predates `nerd_fonts_enabled`
-    // entirely — there's no flag for a caller of this shim to have
-    // passed. The live path is `GtkBackend::form_layout`, which forwards
-    // its own `self.nerd_fonts_enabled` (issue #913 review fix).
     let flayout = form.layout(w as f32, h as f32, |i| {
-        crate::primitives::layout_metrics::form_field_measure(
-            &form.fields[i],
-            row_h,
-            &measure,
-            false,
-        )
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
     });
     let origin = crate::Point::new(x as f32, y as f32);
     let mut surface = RawFormSurface { cr, layout };
@@ -210,12 +200,11 @@ pub fn draw_form(
         };
         let toolbar_w = row_x + row_w - toolbar_x;
         if toolbar_w > 0.0 {
-            // `false`: this is the deprecated `draw_form` shim, which
-            // reproduces the pre-#808 signature exactly and predates
-            // `nerd_fonts_enabled` entirely — there's no flag for a
-            // caller of this shim to have passed. The live path is
-            // `GtkBackend::draw_form`, which forwards its own
-            // `self.nerd_fonts_enabled` (issue #913 review fix).
+            // `false`: a `FieldKind::Toolbar` has no path to register an
+            // icon override yet (issue #913 scoped the override API to
+            // the standalone `Toolbar` primitive), so `icon_overrides`
+            // is always empty here and the flag value can't change what
+            // paints.
             super::toolbar::draw_toolbar(
                 cr,
                 layout,
@@ -358,12 +347,7 @@ mod tests {
             char_width: 8.0,
         };
         let flayout = form.layout(320.0, 160.0, |i| {
-            crate::primitives::layout_metrics::form_field_measure(
-                &form.fields[i],
-                row_h,
-                &measure,
-                false,
-            )
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
         });
         let mut raw = RawFormSurface {
             cr: &cr,
@@ -443,7 +427,6 @@ mod tests {
                     &form.fields[i],
                     row_h,
                     &measure,
-                    false,
                 )
             });
             let mut raw = RawFormSurface {

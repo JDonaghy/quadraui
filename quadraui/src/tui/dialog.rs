@@ -208,19 +208,7 @@ fn draw_table(
 }
 
 /// Draw a [`Dialog`] at its resolved layout.
-///
-/// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to the
-/// embedded `DialogInput::Toolbar` rasteriser — see
-/// `tui::toolbar::draw_toolbar` for its contract. A `Dialog` with no
-/// input, or an input toolbar with no `icon_overrides`, is unaffected
-/// by the flag.
-pub fn draw_dialog(
-    buf: &mut Buffer,
-    dialog: &Dialog,
-    layout: &DialogLayout,
-    theme: &Theme,
-    nerd_fonts_enabled: bool,
-) {
+pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, theme: &Theme) {
     let bg = ratatui_color(theme.surface_bg);
     let fg = ratatui_color(theme.surface_fg);
     let sel_bg = ratatui_color(theme.selected_bg);
@@ -330,19 +318,12 @@ pub fn draw_dialog(
                 // repaint with hover/pressed state if the caller provides
                 // it. For the dialog paint path we pass `None` for both.
                 let toolbar_area = RRect::new(ix, iy, iw, 1);
-                // Issue #913 review fix: `DialogInput::Toolbar` embeds
-                // the same `Toolbar` the standalone rasteriser resolves
-                // overrides for, so forward the caller's flag instead of
-                // a hardcoded `false`.
-                super::toolbar::draw_toolbar(
-                    buf,
-                    toolbar_area,
-                    toolbar,
-                    theme,
-                    None,
-                    None,
-                    nerd_fonts_enabled,
-                );
+                // `false`: a `DialogInput::Toolbar` has no path to register
+                // an icon override yet (issue #913 scoped the override API
+                // to the standalone `Toolbar` primitive), so
+                // `icon_overrides` is always empty here and the flag
+                // value can't change what paints.
+                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None, false);
             }
         }
     }
@@ -439,7 +420,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
         let d = make_dialog();
         let layout = make_layout(&d);
-        draw_dialog(&mut buf, &d, &layout, &Theme::default(), false);
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
 
         let bx = layout.bounds.x.round() as u16;
         let by = layout.bounds.y.round() as u16;
@@ -461,7 +442,7 @@ mod tests {
             selected_bg: crate::types::Color::rgb(99, 0, 0),
             ..Theme::default()
         };
-        draw_dialog(&mut buf, &d, &layout, &theme, false);
+        draw_dialog(&mut buf, &d, &layout, &theme);
 
         // The first visible button is "Save" (is_default).
         let vis = &layout.visible_buttons[0];
@@ -499,7 +480,7 @@ mod tests {
             input_bg: crate::types::Color::rgb(7, 7, 7),
             ..Theme::default()
         };
-        draw_dialog(&mut buf, &d, &layout, &theme, false);
+        draw_dialog(&mut buf, &d, &layout, &theme);
 
         // Input bounds carry input_bg as the row's bg.
         let ib = layout.input_bounds.expect("input bounds present");
@@ -525,7 +506,7 @@ mod tests {
         };
         let viewport = crate::event::Rect::new(0.0, 0.0, 0.0, 0.0);
         let layout = d.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0));
-        draw_dialog(&mut buf, &d, &layout, &Theme::default(), false);
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -589,7 +570,7 @@ mod tests {
         let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
         let layout = tui_dialog_layout(&d, viewport);
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
-        draw_dialog(&mut buf, &d, &layout, &Theme::default(), false);
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
 
         // The input_bounds slot should be set.
         assert!(
@@ -620,70 +601,6 @@ mod tests {
         );
     }
 
-    /// Issue #913 review fix: closes the "no test exercises an embedded
-    /// toolbar with a registered override" gap — every pre-fix
-    /// `nerd_fonts_flag_selects_glyph_or_fallback`-style test targeted
-    /// the standalone `Toolbar` path only, so a `DialogInput::Toolbar`
-    /// silently never resolved `icon_overrides`.
-    #[test]
-    fn body_toolbar_nerd_fonts_flag_selects_glyph_or_fallback() {
-        use crate::types::Icon;
-
-        let mut d = make_toolbar_dialog();
-        d.input = Some(DialogInput::Toolbar(
-            Toolbar::new(
-                WidgetId::new("body-toolbar"),
-                vec![ToolbarButton::Action {
-                    id: WidgetId::new("preview"),
-                    label: "Preview".into(),
-                    icon: Some("stale".into()),
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }],
-            )
-            .with_icon_override(WidgetId::new("preview"), Icon::new("\u{f021}", "R")),
-        ));
-        let viewport = crate::event::Rect::new(0.0, 0.0, 80.0, 30.0);
-        let layout = tui_dialog_layout(&d, viewport);
-        let ib = layout.input_bounds.expect("input_bounds should be Some");
-        let start_y = ib.y.round() as u16;
-        let start_x = ib.x.round() as u16;
-        let end_x = (ib.x + ib.width).round() as u16;
-
-        let row_text = |nerd_fonts_enabled: bool| -> String {
-            let mut buf = Buffer::empty(Rect::new(0, 0, 80, 30));
-            draw_dialog(&mut buf, &d, &layout, &Theme::default(), nerd_fonts_enabled);
-            (start_x..end_x)
-                .map(|x| cell_char(&buf, x, start_y))
-                .collect::<String>()
-        };
-
-        assert!(
-            row_text(true).contains('\u{f021}'),
-            "nerd_fonts_enabled: true should paint the glyph half of the override \
-             in a DialogInput::Toolbar"
-        );
-        assert!(
-            !row_text(true).contains('R'),
-            "fallback must not paint when flag is on"
-        );
-        assert!(
-            row_text(false).contains('R'),
-            "nerd_fonts_enabled: false should paint the fallback half of the override"
-        );
-        assert!(
-            !row_text(false).contains('\u{f021}'),
-            "glyph must not paint when flag is off"
-        );
-        assert!(
-            !row_text(false).contains("stale"),
-            "an override must replace the button's own `icon` field entirely, \
-             not just supplement it"
-        );
-    }
-
     /// Shared body for `body_toolbar_click_routes_to_body_toolbar_button[_at_nonzero_origin]`:
     /// `tui_dialog_layout` bakes `viewport.x`/`viewport.y` into `Dialog::layout`'s
     /// `box_x`/`box_y` (absolute frame), so paint + click must agree at a
@@ -699,7 +616,7 @@ mod tests {
         let buf_w = (origin_x + 80.0).ceil() as u16;
         let buf_h = (origin_y + 30.0).ceil() as u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, buf_w, buf_h));
-        draw_dialog(&mut buf, &d, &layout, &Theme::default(), false);
+        draw_dialog(&mut buf, &d, &layout, &Theme::default());
 
         let tl = layout
             .body_toolbar_layout

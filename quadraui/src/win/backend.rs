@@ -1949,13 +1949,8 @@ impl Backend for WinBackend {
                 .dwrite
                 .as_ref()
                 .expect("checked Some by the `if` guard above");
-            let flayout = super::form::win_form_layout(
-                dwrite,
-                rect,
-                form,
-                self.current_line_height,
-                self.nerd_fonts_enabled,
-            );
+            let flayout =
+                super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
             let theme = Theme::default();
             let origin = Point::new(rect.x, rect.y);
             crate::primitives::form::paint(form, &flayout, self, &theme, origin);
@@ -2652,13 +2647,7 @@ impl Backend for WinBackend {
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = &self.dwrite {
-            return super::form::win_form_layout(
-                dwrite,
-                rect,
-                form,
-                self.current_line_height,
-                self.nerd_fonts_enabled,
-            );
+            return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, form);
@@ -3311,7 +3300,6 @@ impl Backend for WinBackend {
             // `native_surface_paint` module doc, divergence 4, and
             // `WinBackend::draw_panel`'s identical note).
             let theme = crate::theme::Theme::default();
-            let nerd_fonts_enabled = self.nerd_fonts_enabled;
             return crate::primitives::sidebar_panel::native_surface_paint::paint(
                 panel,
                 self,
@@ -3320,7 +3308,6 @@ impl Backend for WinBackend {
                 line_height,
                 hovered_toolbar_id,
                 pressed_toolbar_id,
-                nerd_fonts_enabled,
             );
         }
         #[cfg(not(target_os = "windows"))]
@@ -3343,7 +3330,6 @@ impl Backend for WinBackend {
                 self.current_line_height,
                 rect,
                 panel,
-                self.nerd_fonts_enabled,
             );
         }
         #[cfg(not(target_os = "windows"))]
