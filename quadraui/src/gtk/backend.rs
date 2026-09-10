@@ -1573,6 +1573,10 @@ impl Backend for GtkBackend {
         self.nerd_fonts_enabled = enabled;
     }
 
+    fn nerd_fonts_enabled(&self) -> bool {
+        self.nerd_fonts_enabled
+    }
+
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
         self.editor_font_family = family.to_string();
         self.editor_font_size_pt = size_pt;

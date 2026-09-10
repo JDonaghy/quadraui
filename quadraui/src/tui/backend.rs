@@ -1276,6 +1276,10 @@ impl Backend for TuiBackend {
         self.nerd_fonts_enabled = enabled;
     }
 
+    fn nerd_fonts_enabled(&self) -> bool {
+        self.nerd_fonts_enabled
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain every queued crossterm event; never blocks. Each
         // native event translates to zero, one, or more `UiEvent`s

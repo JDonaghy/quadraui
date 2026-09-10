@@ -910,6 +910,10 @@ impl Backend for MacBackend {
         self.nerd_fonts_enabled = enabled;
     }
 
+    fn nerd_fonts_enabled(&self) -> bool {
+        self.nerd_fonts_enabled
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         // Issue #831: fold in any `UiEvent::User` payloads a background

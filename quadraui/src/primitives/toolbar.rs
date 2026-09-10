@@ -49,9 +49,19 @@
 //!
 //! The primitive returns a [`ToolbarLayout`] carrying per-button bounds
 //! (per D6 contract) so paint and click consume one layout per frame.
+//!
+//! ## Nerd-Font icons
+//!
+//! [`ToolbarButton::Action::icon`] is a plain `Option<String>` painted
+//! verbatim on every backend, so a host that wants a Nerd-Font glyph with
+//! an ASCII fallback registers the pair in a [`ToolbarIcons`] side table
+//! and calls [`ToolbarIcons::apply`] to bake the right half into the
+//! `Toolbar` it hands to the backend (issue #913).
+
+use std::borrow::Cow;
 
 use crate::event::Rect;
-use crate::types::{Color, WidgetId};
+use crate::types::{Color, Icon, WidgetId};
 use serde::{Deserialize, Serialize};
 
 fn default_true() -> bool {
@@ -94,8 +104,19 @@ pub enum ToolbarButton {
         id: WidgetId,
         /// Primary label text (e.g. "Refine", "Continue").
         label: String,
-        /// Optional leading icon glyph (e.g. "▶", "🔄"). TUI rasterises
-        /// as plain text; GTK can swap for an Image widget.
+        /// Optional leading icon glyph (e.g. "▶", "🔄"), painted verbatim
+        /// on every backend. TUI rasterises as plain text; GTK can swap
+        /// for an Image widget.
+        ///
+        /// This field holds *one* string, so a button that needs a
+        /// Nerd-Font glyph **and** a distinct ASCII fallback registers
+        /// the pair in a [`ToolbarIcons`] table and lets
+        /// [`ToolbarIcons::apply`] write the resolved half into this
+        /// field before the `Toolbar` reaches a backend (issue #913).
+        /// The field's type deliberately stays `Option<String>`: it is
+        /// named by ~67 exhaustive struct literals across `quadraui`,
+        /// `coord-tui` and `vimcode`, the same blast-radius constraint
+        /// issue #683 hit for `PanelDefinition::icon`.
         #[serde(default)]
         icon: Option<String>,
         /// Optional parenthesised key hint shown after the label
@@ -125,6 +146,166 @@ pub enum ToolbarButton {
         #[serde(default)]
         fg: Option<Color>,
     },
+}
+
+// ── Nerd-Font icon overrides ─────────────────────────────────────────────────
+
+/// Per-button Nerd-Font glyph + ASCII fallback pairs for a [`Toolbar`],
+/// keyed by the owning [`ToolbarButton::Action`]'s `id` (issue #913).
+///
+/// Mirrors [`crate::compose::app_shell::AppShell::with_panel_icon`]'s
+/// override-by-id shape. Register the pairs once, then call
+/// [`Self::apply`] with the backend's Nerd-Font flag to get a `Toolbar`
+/// whose buttons already carry the right half of each pair:
+///
+/// ```
+/// use quadraui::{Icon, Toolbar, ToolbarButton, ToolbarIcons, WidgetId};
+///
+/// let bar = Toolbar {
+///     id: WidgetId::new("sc:toolbar"),
+///     buttons: vec![ToolbarButton::Action {
+///         id: WidgetId::new("sc:refresh"),
+///         label: "Refresh".into(),
+///         icon: None,
+///         key_hint: None,
+///         enabled: true,
+///         is_active: false,
+///         tooltip: String::new(),
+///     }],
+///     bg: None,
+///     focused_index: None,
+/// };
+/// let icons = ToolbarIcons::new()
+///     .with(WidgetId::new("sc:refresh"), Icon::new("\u{f021}", "R"));
+///
+/// // Nerd Fonts available → the glyph; otherwise → the ASCII fallback.
+/// let painted = icons.apply(&bar, true);
+/// assert!(matches!(&painted.buttons[0],
+///     ToolbarButton::Action { icon: Some(i), .. } if i == "\u{f021}"));
+/// ```
+///
+/// ## Why a side table, not a `Toolbar` field
+///
+/// `Toolbar` is an all-`pub`-field paint-time snapshot that both external
+/// consumers build with **exhaustive struct literals** (four sites in
+/// `coord-tui`, two in `vimcode` — see `tests/downstream_struct_literals.rs`).
+/// Growing it by one field fails every one of those literals with `E0063`,
+/// and `#[non_exhaustive]` fails them with `E0639` instead — both are hard
+/// breaks with no deprecation shim available, which CLAUDE.md's *Downstream
+/// consumers* rule exists to prevent. Keeping the pairs in a separate type
+/// the host composes on its own side is the same non-breaking escape hatch
+/// `TextEditor` uses for `TextInput` (issue #833).
+///
+/// ## Why resolution happens here and not inside each rasteriser
+///
+/// [`Self::apply`] returns a plain `Toolbar`, so **layout, hit-testing and
+/// paint all consume the one already-resolved value**. A wide glyph's
+/// measured width and its painted width cannot disagree, because no code
+/// downstream of `apply` ever sees the unresolved form — a stronger
+/// guarantee than threading a `nerd_fonts_enabled` flag into every
+/// measure/paint site and relying on each of them to resolve identically.
+///
+/// A small `Vec` rather than a `HashMap` because toolbars carry a handful
+/// of buttons at most, and `Vec<(K, V)>` (unlike `HashMap<K, V>`)
+/// implements `Eq`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarIcons {
+    entries: Vec<(WidgetId, Icon)>,
+}
+
+impl ToolbarIcons {
+    /// An empty table — [`Self::apply`] on it is a no-op that returns a
+    /// byte-identical clone of the input `Toolbar`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register the glyph + fallback pair for the [`ToolbarButton::Action`]
+    /// with this `id`.
+    ///
+    /// `id` may name any button (or none at all — unknown ids are stored
+    /// but never resolved). Registering the same id twice keeps the
+    /// earliest entry, since [`Self::get`] returns the first match.
+    #[must_use]
+    pub fn with(mut self, id: WidgetId, icon: Icon) -> Self {
+        self.entries.push((id, icon));
+        self
+    }
+
+    /// The registered pair for `id`, if any.
+    pub fn get(&self, id: &WidgetId) -> Option<&Icon> {
+        self.entries
+            .iter()
+            .find(|(oid, _)| oid == id)
+            .map(|(_, icon)| icon)
+    }
+
+    /// `true` when nothing is registered.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// How many pairs are registered.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Resolve one button against this table.
+    ///
+    /// An [`ToolbarButton::Action`] with a registered pair comes back as an
+    /// owned clone whose `icon` field is the pair's `glyph` (when
+    /// `nerd_fonts_enabled`) or `fallback` (otherwise) — the override wins
+    /// outright, replacing whatever the button's own `icon` held, exactly
+    /// like [`crate::compose::app_shell::AppShell`] does for
+    /// `PanelDefinition::icon`. Every other case borrows `btn` untouched.
+    pub fn resolve_button<'a>(
+        &self,
+        btn: &'a ToolbarButton,
+        nerd_fonts_enabled: bool,
+    ) -> Cow<'a, ToolbarButton> {
+        if let ToolbarButton::Action { id, .. } = btn {
+            if let Some(icon) = self.get(id) {
+                let resolved = if nerd_fonts_enabled {
+                    icon.glyph.clone()
+                } else {
+                    icon.fallback.clone()
+                };
+                let mut cloned = btn.clone();
+                if let ToolbarButton::Action {
+                    icon: icon_field, ..
+                } = &mut cloned
+                {
+                    *icon_field = Some(resolved);
+                }
+                return Cow::Owned(cloned);
+            }
+        }
+        Cow::Borrowed(btn)
+    }
+
+    /// Bake every registered pair into a copy of `bar`, ready to hand to
+    /// any `Backend::draw_toolbar*` / `SidebarPanel` / `FieldKind::Toolbar`
+    /// / `Dialog` path.
+    ///
+    /// With an empty table (or a `bar` whose buttons match no registered
+    /// id) the result equals `bar` field-for-field, so an app that never
+    /// registers anything paints byte-identically to pre-#913 behaviour.
+    #[must_use]
+    pub fn apply(&self, bar: &Toolbar, nerd_fonts_enabled: bool) -> Toolbar {
+        if self.is_empty() {
+            return bar.clone();
+        }
+        Toolbar {
+            id: bar.id.clone(),
+            buttons: bar
+                .buttons
+                .iter()
+                .map(|btn| self.resolve_button(btn, nerd_fonts_enabled).into_owned())
+                .collect(),
+            bg: bar.bg,
+            focused_index: bar.focused_index,
+        }
+    }
 }
 
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
@@ -383,7 +564,13 @@ mod tests {
 
     fn cell_measure() -> impl Fn(&ToolbarButton) -> ToolbarItemMeasure {
         // Mirrors what the TUI rasteriser uses: `[ label ]` style cells,
-        // separators 2 cells, labels their char width.
+        // separators 2 cells, labels their *display* width.
+        //
+        // `crate::text_util::display_width`, not `chars().count()` (issue
+        // #913): a char count undercounts every East-Asian-Wide glyph and
+        // emoji by half a cell, which made this helper disagree with the
+        // real `tui::toolbar::tui_item_width` — so a wide-icon layout bug
+        // could have hidden behind a green suite here.
         |btn| match btn {
             ToolbarButton::Action {
                 label,
@@ -391,17 +578,21 @@ mod tests {
                 key_hint,
                 ..
             } => {
-                let icon_w = icon.as_ref().map(|s| s.chars().count() + 1).unwrap_or(0);
+                let icon_w = icon
+                    .as_ref()
+                    .map(|s| crate::text_util::display_width(s) + 1)
+                    .unwrap_or(0);
                 let hint_w = key_hint
                     .as_ref()
-                    .map(|s| s.chars().count() + 1)
+                    .map(|s| crate::text_util::display_width(s) + 1)
                     .unwrap_or(0);
                 // `[ ` + content + ` ]`
-                ToolbarItemMeasure::new((4 + icon_w + label.chars().count() + hint_w) as f32)
+                let label_w = crate::text_util::display_width(label);
+                ToolbarItemMeasure::new((4 + icon_w + label_w + hint_w) as f32)
             }
             ToolbarButton::Separator => ToolbarItemMeasure::new(2.0),
             ToolbarButton::Label { text, .. } => {
-                ToolbarItemMeasure::new(text.chars().count() as f32)
+                ToolbarItemMeasure::new(crate::text_util::display_width(text) as f32)
             }
         }
     }
@@ -663,5 +854,157 @@ mod tests {
         let json = serde_json::to_string(&btn).unwrap();
         let back: ToolbarButton = serde_json::from_str(&json).unwrap();
         assert_eq!(btn, back);
+    }
+
+    // ── #913: Nerd-Font icon overrides + wide-glyph measurement ─────────
+
+    fn mk_icon_action(id: &str, label: &str, icon: Option<&str>) -> ToolbarButton {
+        ToolbarButton::Action {
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            icon: icon.map(|s| s.to_string()),
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }
+    }
+
+    fn icon_of(btn: &ToolbarButton) -> Option<&str> {
+        match btn {
+            ToolbarButton::Action { icon, .. } => icon.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn bar_with(buttons: Vec<ToolbarButton>) -> Toolbar {
+        Toolbar {
+            id: WidgetId::new("tb"),
+            buttons,
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    #[test]
+    fn icon_overrides_pick_glyph_or_fallback_by_flag() {
+        let bar = bar_with(vec![mk_icon_action("a", "Refresh", Some("~"))]);
+        let icons = ToolbarIcons::new().with(WidgetId::new("a"), Icon::new("\u{f021}", "R"));
+
+        assert_eq!(
+            icon_of(&icons.apply(&bar, true).buttons[0]),
+            Some("\u{f021}"),
+            "nerd fonts on → the override's glyph replaces the button's own icon"
+        );
+        assert_eq!(
+            icon_of(&icons.apply(&bar, false).buttons[0]),
+            Some("R"),
+            "nerd fonts off → the override's ASCII fallback"
+        );
+    }
+
+    #[test]
+    fn apply_without_overrides_is_byte_identical_to_the_input_bar() {
+        // The flag-off acceptance bar: an app that registers nothing must
+        // paint exactly as it did before #913, on either flag value.
+        let bar = bar_with(vec![
+            mk_icon_action("a", "Refine", Some("\u{f021}")),
+            ToolbarButton::Separator,
+            ToolbarButton::Label {
+                text: "2 of 5".into(),
+                fg: None,
+            },
+        ]);
+        let empty = ToolbarIcons::new();
+        assert!(empty.is_empty());
+        assert_eq!(empty.apply(&bar, true), bar);
+        assert_eq!(empty.apply(&bar, false), bar);
+
+        // Same for a table that names a button this bar doesn't have.
+        let unrelated = ToolbarIcons::new().with(WidgetId::new("nope"), Icon::new("X", "Y"));
+        assert_eq!(unrelated.apply(&bar, true), bar);
+    }
+
+    #[test]
+    fn apply_leaves_non_action_items_and_unregistered_buttons_alone() {
+        let bar = bar_with(vec![
+            mk_icon_action("a", "Refresh", Some("~")),
+            ToolbarButton::Separator,
+            mk_icon_action("b", "Drop", Some("-")),
+        ]);
+        let icons = ToolbarIcons::new().with(WidgetId::new("a"), Icon::new("\u{f021}", "R"));
+        let out = icons.apply(&bar, true);
+
+        assert_eq!(icon_of(&out.buttons[0]), Some("\u{f021}"));
+        assert_eq!(out.buttons[1], ToolbarButton::Separator);
+        assert_eq!(
+            icon_of(&out.buttons[2]),
+            Some("-"),
+            "an unregistered button keeps its own icon"
+        );
+        // Everything else about the bar survives the copy.
+        assert_eq!(out.id, bar.id);
+        assert_eq!(out.bg, bar.bg);
+        assert_eq!(out.focused_index, bar.focused_index);
+    }
+
+    #[test]
+    fn first_registration_wins_for_a_duplicated_id() {
+        let bar = bar_with(vec![mk_icon_action("a", "Refresh", None)]);
+        let icons = ToolbarIcons::new()
+            .with(WidgetId::new("a"), Icon::new("first", "F"))
+            .with(WidgetId::new("a"), Icon::new("second", "S"));
+        assert_eq!(icons.len(), 2);
+        assert_eq!(icon_of(&icons.apply(&bar, true).buttons[0]), Some("first"));
+    }
+
+    #[test]
+    fn resolve_button_borrows_when_there_is_nothing_to_resolve() {
+        let icons = ToolbarIcons::new().with(WidgetId::new("a"), Icon::new("\u{f021}", "R"));
+        let sep = ToolbarButton::Separator;
+        assert!(matches!(
+            icons.resolve_button(&sep, true),
+            Cow::Borrowed(ToolbarButton::Separator)
+        ));
+        let other = mk_icon_action("b", "Drop", Some("-"));
+        assert!(matches!(
+            icons.resolve_button(&other, true),
+            Cow::Borrowed(_)
+        ));
+        let hit = mk_icon_action("a", "Refresh", None);
+        assert!(matches!(icons.resolve_button(&hit, true), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn a_wide_override_glyph_shifts_the_next_button_by_two_cells() {
+        // The #913 measurement half: a resolved East-Asian-Wide glyph
+        // occupies two terminal cells, so the *second* button's hit
+        // region must start two cells further right than it does with a
+        // one-cell ASCII fallback. Before the `display_width` fix in
+        // `cell_measure` above, both layouts came out identical here and
+        // a real hit-region/paint divergence would have gone unnoticed.
+        let bar = bar_with(vec![
+            mk_icon_action("a", "Refresh", None),
+            mk_icon_action("b", "Drop", None),
+        ]);
+        let icons = ToolbarIcons::new().with(WidgetId::new("a"), Icon::new("一", "R"));
+
+        let narrow = icons
+            .apply(&bar, false)
+            .layout(0.0, 0.0, 80.0, 1.0, cell_measure());
+        let wide = icons
+            .apply(&bar, true)
+            .layout(0.0, 0.0, 80.0, 1.0, cell_measure());
+
+        assert_eq!(
+            wide.visible_items[0].bounds.width - narrow.visible_items[0].bounds.width,
+            1.0,
+            "the wide glyph is one cell wider than its ASCII fallback"
+        );
+        assert_eq!(
+            wide.visible_items[1].bounds.x - narrow.visible_items[1].bounds.x,
+            1.0,
+            "the next button's hit region moves with it"
+        );
     }
 }

@@ -9,17 +9,22 @@
 //! - A non-clickable `Label` showing live state ("paused" / "running")
 //! - Hover state (highlight tracks the mouse cursor)
 //! - **Keyboard focus** (Tab / Shift-Tab cycles focus, Enter / Space activates)
+//! - **Nerd-Font icon fallback** (issue #913): "Filter" and "Reset" register
+//!   a glyph + ASCII fallback pair in a [`ToolbarIcons`] table, baked into
+//!   the painted `Toolbar` via `ToolbarIcons::apply`. "Continue" and
+//!   "Pause" register nothing, so they paint their own icon either way.
 //!
 //! Controls:
 //! - Click an action button       fire it
 //! - Tab / Shift-Tab              move keyboard focus between enabled buttons
 //! - Enter / Space                activate the focused button
 //! - 1 / 2 / 3 / 4               keyboard shortcuts for the four enabled actions
+//! - n                           toggle Nerd-Font glyphs vs ASCII fallbacks
 //! - q / Esc                     quit
 
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, UiEvent, WidgetId,
 };
 
 pub struct ToolbarApp {
@@ -42,6 +47,12 @@ pub struct ToolbarApp {
     /// buttons (skipping separators, labels, and disabled actions).
     /// Enter / Space activate the focused button.
     focused_index: Option<usize>,
+    /// Whether the host claims Nerd-Font glyphs are renderable. Pushed to
+    /// the backend every frame via `Backend::set_nerd_fonts`, then read
+    /// back through `Backend::nerd_fonts_enabled()` to resolve
+    /// [`Self::icons`]. The `n` key flips it so the demo shows both
+    /// halves of every registered [`Icon`] pair without restarting.
+    nerd_fonts: bool,
 }
 
 impl ToolbarApp {
@@ -52,7 +63,32 @@ impl ToolbarApp {
             last_message: "Click, Tab to focus, Enter to activate. q=quit".into(),
             interaction: InteractionState::new(),
             focused_index: None,
+            nerd_fonts: false,
         }
+    }
+
+    /// Nerd-Font glyph + ASCII fallback pairs for two of the buttons
+    /// (issue #913).
+    ///
+    /// `ToolbarButton::Action::icon` is a single `String`, so the pair
+    /// lives in this side table and [`ToolbarIcons::apply`] writes the
+    /// resolved half into the `Toolbar` handed to the backend. Continue
+    /// and Pause deliberately register nothing — they keep painting
+    /// their own `icon` on either flag value.
+    fn icons() -> ToolbarIcons {
+        ToolbarIcons::new()
+            .with(WidgetId::new("demo:filter"), Icon::new("\u{f0b0}", "*"))
+            .with(WidgetId::new("demo:reset"), Icon::new("\u{f021}", "%"))
+    }
+
+    /// The `Toolbar` actually painted and hit-tested: [`Self::toolbar`]
+    /// with every registered icon override baked in.
+    ///
+    /// Both `render` and `handle` go through this, so the layout that
+    /// measures a two-cell glyph is the same one the click router
+    /// hit-tests against.
+    fn resolved_toolbar(&self, backend: &dyn Backend) -> Toolbar {
+        Self::icons().apply(&self.toolbar(), backend.nerd_fonts_enabled())
     }
 
     fn toolbar(&self) -> Toolbar {
@@ -138,7 +174,7 @@ impl ToolbarApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " q=quit ".into(),
+                text: " n=nerd icons  q=quit ".into(),
                 fg: Color::rgb(200, 200, 200),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -262,6 +298,11 @@ impl AppLogic for ToolbarApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        // Push the host's Nerd-Font capability every frame, per
+        // `Backend::set_nerd_fonts`'s contract (a `setup()`-only call
+        // silently sticks at whatever the first frame saw — vimcode#547).
+        backend.set_nerd_fonts(self.nerd_fonts);
+
         let viewport = backend.viewport();
         let lh = backend.line_height();
 
@@ -284,11 +325,9 @@ impl AppLogic for ToolbarApp {
         );
 
         // Toolbar in the second row.
-        let _ = backend.draw_toolbar_interactive(
-            Self::toolbar_rect(backend),
-            &self.toolbar(),
-            &self.interaction,
-        );
+        let rect = Self::toolbar_rect(backend);
+        let bar = self.resolved_toolbar(backend);
+        let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -365,6 +404,19 @@ impl AppLogic for ToolbarApp {
                 }
             }
 
+            // ── n: toggle Nerd-Font glyphs vs ASCII fallbacks ──────────────
+            UiEvent::KeyPressed {
+                key: Key::Char('n'),
+                ..
+            } => {
+                self.nerd_fonts = !self.nerd_fonts;
+                self.last_message = format!(
+                    "Nerd-Font icons {}",
+                    if self.nerd_fonts { "on" } else { "off" }
+                );
+                Reaction::Redraw
+            }
+
             // ── Number shortcuts for individual buttons ────────────────────
             UiEvent::KeyPressed {
                 key: Key::Char(c), ..
@@ -415,7 +467,10 @@ impl AppLogic for ToolbarApp {
             // in `tests/tui_example_driver.rs`.
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
                 let rect = Self::toolbar_rect(backend);
-                let bar = self.toolbar();
+                // The *resolved* bar, exactly as painted — a two-cell
+                // Nerd glyph makes every button to its right start two
+                // cells later, and the click router has to agree.
+                let bar = self.resolved_toolbar(backend);
                 let layout = backend.toolbar_layout(rect, &bar);
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
                     ToolbarHit::Button(id) => Some(id),

@@ -1404,6 +1404,10 @@ impl Backend for WinBackend {
         self.nerd_fonts_enabled = enabled;
     }
 
+    fn nerd_fonts_enabled(&self) -> bool {
+        self.nerd_fonts_enabled
+    }
+
     /// Store the chrome font description for the next
     /// [`Self::attach_surface`]/[`Self::attach_headless`] call to build a
     /// chrome `IDWriteTextFormat` from (#724), parsed via

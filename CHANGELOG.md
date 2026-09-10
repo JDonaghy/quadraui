@@ -55,6 +55,37 @@ release time.
 
 ### Added
 
+- `ToolbarIcons` + `Backend::nerd_fonts_enabled()` (issue #913) — a
+  Nerd-Font glyph + ASCII fallback path for `ToolbarButton::Action`
+  icons, which previously had none: `icon` is a single `Option<String>`,
+  so a bar built with a Nerd glyph painted mojibake on a terminal
+  without the font and a bar built with ASCII never showed the glyph on
+  one with it. Hosts register `Icon` pairs by button id in a
+  `ToolbarIcons` table and call `ToolbarIcons::apply(&bar, nerd)` to bake
+  the resolved half into the `Toolbar` they hand to any existing
+  `Backend::draw_toolbar*` / `SidebarPanel` / `FieldKind::Toolbar` /
+  `Dialog` path; `Backend::nerd_fonts_enabled()` reads back whatever the
+  host last gave `set_nerd_fonts`, so the flag doesn't have to be
+  mirrored app-side. Because resolution happens *before* layout, the
+  measured and painted widths of a wide glyph cannot disagree.
+
+  **A side table, not a `Toolbar` field, deliberately.** Both consumers
+  build `Toolbar` with exhaustive struct literals (four sites in
+  `coord-tui`, two in `vimcode`), so a new field breaks them with
+  `E0063` and `#[non_exhaustive]` breaks them with `E0639` — this change
+  is non-breaking for every existing call site, and the new
+  `Toolbar` cases in `quadraui/tests/downstream_struct_literals.rs`
+  fail this repo's CI if a future change re-breaks that literal. Same
+  escape hatch `TextEditor` uses for `TextInput` (issue #833).
+
+  Also fixes the `cell_measure()` test helper in
+  `primitives::toolbar`'s own suite, which measured icon/label/hint
+  width with `chars().count()` — undercounting every East-Asian-Wide
+  glyph by half a cell and diverging from the real
+  `tui::toolbar::tui_item_width` — so a wide-icon layout bug could hide
+  behind a green suite. The `tui_toolbar` demo grows an `n` key that
+  toggles Nerd-Font glyphs live, covered end-to-end in
+  `tests/tui_example_driver.rs`.
 - `rust-version` in `quadraui/Cargo.toml`, pinned to match
   `rust-toolchain.toml` (1.97.1) — an older `cargo` now reports the version
   requirement directly instead of an opaque parse/feature error.
@@ -172,8 +203,8 @@ release time.
 ### Fixed
 
 - `macos::multi_section_view::draw_multi_section_view`'s rustdoc regained
-  its `# Safety` section, dropped when the doc comment was rewritten to
-  describe the new `nerd_fonts_enabled` parameter (issue #913). The
+  its `# Safety` section, dropped while its doc comment was being
+  rewritten during issue #913. The
   omission is denied by `clippy::missing_safety_doc` under CI's
   `-D warnings`, but `lib.rs` gates `mod macos` on
   `target_os = "macos"`, so only the `macos-latest` runner ever compiles

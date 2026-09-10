@@ -113,3 +113,93 @@ fn editing_is_available_without_new_text_input_fields() {
     let painted: &TextInput = &ed;
     assert_eq!(painted.id, WidgetId::new("sc:commit_input"));
 }
+
+/// `Toolbar`'s exhaustive struct literal, transcribed from `coord-tui`'s
+/// `src/app/sidebar.rs::sidebar_panel()` — again pointedly with no
+/// `..base`. Four such literals live in `coord-tui` and two in `vimcode`:
+///
+/// ```text
+/// $ grep -rn 'Toolbar {' ~/src/coord-tui/src ~/src/vimcode/src
+/// /home/john/src/coord-tui/src/app/sidebar.rs:66:            toolbar: Some(Toolbar {
+/// /home/john/src/coord-tui/src/app/sidebar.rs:368:        Some(Toolbar {
+/// /home/john/src/coord-tui/src/app/pipeline.rs:7434:        Some(Toolbar {
+/// /home/john/src/coord-tui/src/app/dialogs.rs:6311:            let toolbar = Toolbar {
+/// /home/john/src/vimcode/src/render.rs:9089:    Toolbar {
+/// /home/john/src/vimcode/src/render.rs:13824:    Toolbar {
+/// ```
+///
+/// Issue #913 first tried to grow `Toolbar` by an `icon_overrides` field
+/// and then, when that broke those literals with `E0063`, to mark the
+/// struct `#[non_exhaustive]` — which breaks them with `E0639` instead
+/// (`#[non_exhaustive]` rejects bare struct-literal syntax outright,
+/// `..Default::default()` included). CI's *downstream consumers* job
+/// caught the second attempt; this test is what catches the next one
+/// here, before it costs a merge-gate round trip.
+#[test]
+fn toolbar_exhaustive_struct_literal_still_compiles() {
+    use quadraui::{Toolbar, ToolbarButton};
+
+    let bar = Toolbar {
+        id: WidgetId::new("sidebar-action-bar"),
+        buttons: vec![ToolbarButton::Action {
+            id: WidgetId::new("sidebar:refresh"),
+            label: "Refresh".to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }],
+        bg: None,
+        focused_index: None,
+    };
+
+    assert_eq!(bar.buttons.len(), 1);
+    assert_eq!(bar.focused_index, None);
+}
+
+/// #913's Nerd-Font glyph + ASCII fallback pairs are reachable **without**
+/// touching `Toolbar`'s field list: an external crate keeps building the
+/// same exhaustive literal above and composes a `ToolbarIcons` table
+/// beside it.
+///
+/// This is the other half of the guard — it proves the side table is a
+/// real substitute for the field that was *not* added, rather than the
+/// literal above being kept alive by dropping the feature.
+#[test]
+fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
+    use quadraui::{Icon, Toolbar, ToolbarButton, ToolbarIcons};
+
+    let bar = Toolbar {
+        id: WidgetId::new("sidebar-action-bar"),
+        buttons: vec![ToolbarButton::Action {
+            id: WidgetId::new("sidebar:refresh"),
+            label: "Refresh".to_string(),
+            icon: Some("~".to_string()),
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }],
+        bg: None,
+        focused_index: None,
+    };
+    let icons =
+        ToolbarIcons::new().with(WidgetId::new("sidebar:refresh"), Icon::new("\u{f021}", "R"));
+
+    let icon_of = |bar: &Toolbar| match &bar.buttons[0] {
+        ToolbarButton::Action { icon, .. } => icon.clone(),
+        _ => None,
+    };
+
+    assert_eq!(
+        icon_of(&icons.apply(&bar, true)).as_deref(),
+        Some("\u{f021}")
+    );
+    assert_eq!(icon_of(&icons.apply(&bar, false)).as_deref(), Some("R"));
+    // The resolved value is a plain `Toolbar`, so it goes straight into
+    // every existing `Backend::draw_toolbar*` / `SidebarPanel` slot.
+    let _: Toolbar = icons.apply(&bar, true);
+    // Registering nothing leaves the bar exactly as built.
+    assert_eq!(ToolbarIcons::new().apply(&bar, true), bar);
+}
