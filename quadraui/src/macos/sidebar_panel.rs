@@ -229,7 +229,6 @@ mod tests {
                 }],
                 bg: None,
                 focused_index: None,
-                icon_overrides: Vec::new(),
             }),
             toolbar_height: None,
         }
