@@ -210,6 +210,15 @@ release time.
 
 ### Fixed
 
+- `macos::multi_section_view::draw_multi_section_view`'s rustdoc regained
+  its `# Safety` section, dropped when the doc comment was rewritten to
+  describe the new `nerd_fonts_enabled` parameter (issue #913). The
+  omission is denied by `clippy::missing_safety_doc` under CI's
+  `-D warnings`, but `lib.rs` gates `mod macos` on
+  `target_os = "macos"`, so only the `macos-latest` runner ever compiles
+  it — a blind spot now covered on every leg and every OS by the new
+  text-level `quadraui/tests/macos_safety_docs.rs` guard, alongside the
+  existing `macos_appkit_features.rs`.
 - `Reaction`/`EventOutcome` batch-dispatch merging (issue #832 review
   follow-up): `macos::run::dispatch_event`'s drag-dispatch loops,
   `win::run`'s `route_mouse_down`/`route_mouse_move`/`route_mouse_up`,
