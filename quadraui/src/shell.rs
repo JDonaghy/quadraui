@@ -13,7 +13,7 @@ use crate::compose::app_shell::{
 };
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
-use crate::types::WidgetId;
+use crate::types::{Icon, WidgetId};
 use crate::{Backend, Reaction, ResizeEdge, UiEvent};
 
 /// Configuration for creating an AppShell.
@@ -84,6 +84,22 @@ pub struct ShellConfig {
     /// fallback icon in place. Set via [`Self::with_icon_name`]. Backends
     /// with no icon-theme concept (TUI) ignore this field.
     pub icon_name: Option<String>,
+    /// Per-panel Nerd-Font glyph + ASCII fallback overrides, replayed onto
+    /// the built [`AppShell`] via [`AppShell::with_panel_icon`] by
+    /// [`crate::shell_adapter::build_shell_adapter`]. Covers both top
+    /// panels (`panels`) and [`Self::bottom_items`] — same seam,
+    /// [`AppShell::with_panel_icon`] doesn't distinguish the two. Empty by
+    /// default, so nothing that predates this field changes behavior:
+    /// every panel keeps painting its single [`PanelDefinition::icon`]
+    /// string under both settings of `nerd_fonts_enabled`, exactly as
+    /// before.
+    ///
+    /// Set via [`Self::with_panel_icon`]. Before this field existed, a
+    /// `ShellConfig`-based consumer had no way to reach
+    /// [`AppShell::with_panel_icon`] at all — `build_shell_adapter` builds
+    /// the `AppShell` directly from `panels/bottom_items` and never
+    /// exposed a hook for it (#914).
+    pub panel_icons: Vec<(WidgetId, Icon)>,
 }
 
 impl ShellConfig {
@@ -110,6 +126,7 @@ impl ShellConfig {
             editor_font: None,
             app_id: "org.quadraui.app".to_string(),
             icon_name: None,
+            panel_icons: Vec::new(),
         }
     }
 
@@ -214,6 +231,29 @@ impl ShellConfig {
     /// by default). See [`Self::icon_name`] for why this matters (#656).
     pub fn with_icon_name(mut self, icon_name: impl Into<String>) -> Self {
         self.icon_name = Some(icon_name.into());
+        self
+    }
+
+    /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
+    /// activity-bar row, mirroring [`AppShell::with_panel_icon`] — the
+    /// consuming-builder method [`crate::shell_adapter::build_shell_adapter`]
+    /// replays every registered pair onto during construction (#914).
+    ///
+    /// `id` may name a top panel (`panels`) or a [`Self::bottom_items`]
+    /// entry; unknown ids are stored but never consulted, so call order
+    /// relative to `ShellConfig::new` / [`Self::with_bottom_items`] doesn't
+    /// matter. Calling this twice for the same id keeps the last pair —
+    /// same last-write-wins semantics as `AppShell::with_panel_icon`, since
+    /// both are ultimately backed by the same `HashMap`.
+    ///
+    /// Without this, a `ShellApp` consumer had no way to reach
+    /// [`AppShell::with_panel_icon`] at all: `build_shell_adapter` builds
+    /// its `AppShell` directly from `ShellConfig` and never called it, so
+    /// the `Icon` glyph/fallback pair #683 plumbed through was reachable
+    /// only from a direct `AppShell::new(...).with_panel_icon(...)` chain —
+    /// i.e. quadraui's own tests and examples, not any real consumer.
+    pub fn with_panel_icon(mut self, id: WidgetId, icon: Icon) -> Self {
+        self.panel_icons.push((id, icon));
         self
     }
 }
@@ -707,6 +747,30 @@ mod tests {
     fn shell_config_with_activity_bar_width_px_sets_the_override() {
         let config = ShellConfig::new("test", Vec::new()).with_activity_bar_width_px(48.0);
         assert_eq!(config.activity_bar_width_px, Some(48.0));
+    }
+
+    /// #914: a fresh `ShellConfig` has no panel-icon overrides — nothing
+    /// that predates this field changes behavior.
+    #[test]
+    fn shell_config_panel_icons_defaults_to_empty() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert!(config.panel_icons.is_empty());
+    }
+
+    /// #914: `with_panel_icon` appends `(id, icon)` pairs verbatim, in call
+    /// order, for `build_shell_adapter` to replay onto the `AppShell`.
+    #[test]
+    fn shell_config_with_panel_icon_appends_overrides_in_order() {
+        let config = ShellConfig::new("test", Vec::new())
+            .with_panel_icon(WidgetId::new("panel:explorer"), Icon::new("\u{f07c}", "E"))
+            .with_panel_icon(WidgetId::new("panel:settings"), Icon::new("\u{f013}", "S"));
+        assert_eq!(
+            config.panel_icons,
+            vec![
+                (WidgetId::new("panel:explorer"), Icon::new("\u{f07c}", "E")),
+                (WidgetId::new("panel:settings"), Icon::new("\u{f013}", "S")),
+            ]
+        );
     }
 
     #[test]

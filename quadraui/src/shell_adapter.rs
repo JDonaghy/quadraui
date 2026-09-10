@@ -143,6 +143,18 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         .with_activity_bar_width(config.activity_bar_width)
         .with_position(config.position);
 
+    // #914: replay every `ShellConfig::with_panel_icon` override onto the
+    // built `AppShell`. Before this loop existed, `ShellConfig.panel_icons`
+    // had nowhere to go — `AppShell::with_panel_icon` (#683) is a consuming
+    // `mut self -> Self` builder, and this is the only place an `AppShell`
+    // is constructed from a `ShellConfig`, so no `ShellApp` consumer could
+    // reach it at all. Covers both `config.panels` and `config.bottom_items`
+    // — `AppShell::with_panel_icon` doesn't distinguish the two, and #683's
+    // own `with_panel_icon_applies_to_bottom_items` test pins that.
+    for (id, icon) in config.panel_icons {
+        shell = shell.with_panel_icon(id, icon);
+    }
+
     // Fixed-pixel override wins over the line-height multiple set just
     // above — see `AppShell::with_activity_bar_width_px` (#657).
     if let Some(width_px) = config.activity_bar_width_px {
@@ -555,6 +567,50 @@ mod tests {
             .title_bar_bounds
             .expect("row reserved from construction");
         assert_eq!(tb.height, 1.0);
+    }
+
+    /// #914: `ShellConfig::with_panel_icon` overrides survive
+    /// `build_shell_adapter` into the underlying `AppShell` — for both a
+    /// top panel and a bottom item — closing the gap where the seam #683
+    /// added (`AppShell::with_panel_icon`) was unreachable from any
+    /// `ShellConfig`-based consumer.
+    #[test]
+    fn build_shell_adapter_replays_panel_icon_overrides() {
+        use crate::compose::app_shell::PanelDefinition;
+        use crate::types::Icon;
+
+        let panel_id = WidgetId::new("panel:explorer");
+        let bottom_id = WidgetId::new("panel:settings");
+        let config = ShellConfig::new(
+            "t",
+            vec![PanelDefinition {
+                id: panel_id.clone(),
+                icon: "X".to_string(),
+                tooltip: "Explorer".to_string(),
+                title: "EXPLORER".to_string(),
+            }],
+        )
+        .with_bottom_items(vec![PanelDefinition {
+            id: bottom_id.clone(),
+            icon: "Y".to_string(),
+            tooltip: "Settings".to_string(),
+            title: "SETTINGS".to_string(),
+        }])
+        .with_panel_icon(panel_id, Icon::new("\u{f07c}", "\u{25c6}"))
+        .with_panel_icon(bottom_id, Icon::new("\u{f013}", "\u{25a0}"));
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        let bar = adapter.shell.build_activity_bar();
+        assert_eq!(
+            bar.top_items[0].icon,
+            Icon::new("\u{f07c}", "\u{25c6}"),
+            "top-panel override must reach the built AppShell, not just ShellConfig"
+        );
+        assert_eq!(
+            bar.bottom_items[0].icon,
+            Icon::new("\u{f013}", "\u{25a0}"),
+            "bottom-item override must reach the built AppShell too (#683 parity)"
+        );
     }
 
     #[test]

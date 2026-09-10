@@ -1762,4 +1762,144 @@ mod tests {
             "the later payload must win — both were delivered in push order"
         );
     }
+
+    // ─── #914: ShellConfig::with_panel_icon reaches driver-rendered chrome ──
+
+    use crate::compose::app_shell::{AppShellLayout, PanelDefinition};
+    use crate::shell::ShellContext;
+    use crate::types::Icon;
+
+    /// Minimal `ShellApp` that flips `nerd_fonts_enabled` once in `setup()`
+    /// — the pattern `Backend::set_nerd_fonts`'s own doc recommends for a
+    /// flag that's static for the process lifetime.
+    struct NerdFontsToggleApp {
+        nerd_fonts: bool,
+    }
+
+    impl ShellApp for NerdFontsToggleApp {
+        fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+        fn handle(
+            &mut self,
+            _event: UiEvent,
+            _backend: &mut dyn Backend,
+            _ctx: &ShellContext,
+        ) -> Reaction {
+            Reaction::Continue
+        }
+
+        fn setup(&mut self, backend: &mut dyn Backend) {
+            backend.set_nerd_fonts(self.nerd_fonts);
+        }
+    }
+
+    /// The `ShellConfig` #914's acceptance tests share: one top panel and
+    /// one bottom item, each carrying a `with_panel_icon` override whose
+    /// glyph/fallback halves are unmistakable non-ASCII symbols — chosen so
+    /// they can't collide with any chrome text (titles, tooltips) the shell
+    /// itself paints.
+    fn nerd_fonts_toggle_config() -> ShellConfig {
+        let panel_id = WidgetId::new("panel:explorer");
+        let bottom_id = WidgetId::new("panel:settings");
+        ShellConfig::new(
+            "Demo",
+            vec![PanelDefinition {
+                id: panel_id.clone(),
+                icon: "X".to_string(),
+                tooltip: "Explorer".to_string(),
+                title: "EXPLORER".to_string(),
+            }],
+        )
+        .with_bottom_items(vec![PanelDefinition {
+            id: bottom_id.clone(),
+            icon: "Y".to_string(),
+            tooltip: "Settings".to_string(),
+            title: "SETTINGS".to_string(),
+        }])
+        .with_panel_icon(panel_id, Icon::new("\u{f07c}", "\u{25c6}"))
+        .with_panel_icon(bottom_id, Icon::new("\u{f013}", "\u{25a0}"))
+    }
+
+    /// #914 acceptance: a `ShellConfig` panel-icon override, rendered
+    /// through `driver_with_shell` — the consumer path a real `ShellApp`
+    /// takes, not a direct `AppShell::with_panel_icon` builder chain, which
+    /// is exactly what passed while this issue's gap was open — with
+    /// `nerd_fonts_enabled` off, paints the fallback.
+    #[test]
+    fn shell_config_panel_icon_paints_fallback_when_nerd_fonts_off() {
+        let driver = driver_with_shell(
+            NerdFontsToggleApp { nerd_fonts: false },
+            nerd_fonts_toggle_config(),
+            40,
+            10,
+        );
+        assert!(
+            driver.screen_contains("\u{25c6}"),
+            "nerd_fonts off must paint the top panel's fallback glyph"
+        );
+        assert!(
+            !driver.screen_contains("\u{f07c}"),
+            "nerd_fonts off must not paint the top panel's Nerd Font glyph"
+        );
+    }
+
+    /// #914 acceptance: the same config with the flag on paints the glyph.
+    #[test]
+    fn shell_config_panel_icon_paints_glyph_when_nerd_fonts_on() {
+        let driver = driver_with_shell(
+            NerdFontsToggleApp { nerd_fonts: true },
+            nerd_fonts_toggle_config(),
+            40,
+            10,
+        );
+        assert!(
+            driver.screen_contains("\u{f07c}"),
+            "nerd_fonts on must paint the top panel's Nerd Font glyph"
+        );
+        assert!(
+            !driver.screen_contains("\u{25c6}"),
+            "nerd_fonts on must not paint the top panel's fallback glyph"
+        );
+    }
+
+    /// #914 acceptance, bottom-item half: fallback when nerd_fonts is off —
+    /// pins that the override reaches `bottom_items`, not just `panels`
+    /// (#683's `with_panel_icon_applies_to_bottom_items` pins the same
+    /// thing one layer down, on `AppShell` directly).
+    #[test]
+    fn shell_config_panel_icon_paints_fallback_for_bottom_item_when_nerd_fonts_off() {
+        let driver = driver_with_shell(
+            NerdFontsToggleApp { nerd_fonts: false },
+            nerd_fonts_toggle_config(),
+            40,
+            10,
+        );
+        assert!(
+            driver.screen_contains("\u{25a0}"),
+            "nerd_fonts off must paint the bottom item's fallback glyph"
+        );
+        assert!(
+            !driver.screen_contains("\u{f013}"),
+            "nerd_fonts off must not paint the bottom item's Nerd Font glyph"
+        );
+    }
+
+    /// #914 acceptance, bottom-item half: glyph when nerd_fonts is on.
+    #[test]
+    fn shell_config_panel_icon_paints_glyph_for_bottom_item_when_nerd_fonts_on() {
+        let driver = driver_with_shell(
+            NerdFontsToggleApp { nerd_fonts: true },
+            nerd_fonts_toggle_config(),
+            40,
+            10,
+        );
+        assert!(
+            driver.screen_contains("\u{f013}"),
+            "nerd_fonts on must paint the bottom item's Nerd Font glyph"
+        );
+        assert!(
+            !driver.screen_contains("\u{25a0}"),
+            "nerd_fonts on must not paint the bottom item's fallback glyph"
+        );
+    }
 }
