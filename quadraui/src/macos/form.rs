@@ -230,11 +230,12 @@ pub unsafe fn draw_form(
             // SAFETY: `ctx` is valid for the duration of this call, per
             // this fn's own contract.
             //
-            // `false`: a `FieldKind::Toolbar` has no path to register an
-            // icon override yet (issue #913 scoped the override API to
-            // the standalone `Toolbar` primitive), so `icon_overrides`
-            // is always empty here and the flag value can't change what
-            // paints.
+            // `false`: this is the deprecated `draw_form` shim, which
+            // reproduces the pre-#808 signature exactly and predates
+            // `nerd_fonts_enabled` entirely — there's no flag for a
+            // caller of this shim to have passed. The live path is
+            // `MacBackend::draw_form`, which forwards its own
+            // `self.nerd_fonts_enabled` (issue #913 review fix).
             super::toolbar::draw_toolbar(
                 ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None, false,
             );

@@ -361,7 +361,7 @@ fn paint_body(
                 draw_list(buf, area, &l_clone, theme, nerd_fonts_enabled);
             }
         }
-        SectionBody::Form(f) => draw_form(buf, area, f, theme),
+        SectionBody::Form(f) => draw_form(buf, area, f, theme, nerd_fonts_enabled),
         SectionBody::Chart(c) => {
             super::draw_chart(buf, area, c, theme, None, None);
         }

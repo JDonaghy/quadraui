@@ -183,6 +183,11 @@ pub unsafe fn draw_sidebar_panel(
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
     let mut surface = RawSidebarPanelSurface { ctx, font };
+    // `false`: this deprecated shim reproduces the pre-#862 signature
+    // exactly (see its doc above), which predates `nerd_fonts_enabled`
+    // entirely — there's no flag for a caller of this shim to have
+    // passed. `false` matches the fallback-only behaviour every such
+    // caller already observed.
     crate::primitives::sidebar_panel::native_surface_paint::paint(
         panel,
         &mut surface,
@@ -191,6 +196,7 @@ pub unsafe fn draw_sidebar_panel(
         line_height as f32,
         hovered_toolbar_id,
         pressed_toolbar_id,
+        false,
     )
 }
 

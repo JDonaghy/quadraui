@@ -63,7 +63,25 @@ fn default_true() -> bool {
 // ── Data model ───────────────────────────────────────────────────────────────
 
 /// Declarative description of a horizontal toolbar.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `#[non_exhaustive]` + `Default` (issue #913 review fix): `Toolbar` has
+/// no private fields and, before this, no `Default` impl either, so the
+/// *only* way to build one — in this crate or downstream — was a full
+/// struct literal naming every field. That made the `icon_overrides`
+/// field this issue added a breaking change for every external
+/// constructor site (`coord-tui`, `vimcode`): a literal missing the new
+/// field simply fails to compile. `#[non_exhaustive]` forces *external*
+/// crates through [`Self::new`] or `Toolbar { ..Default::default() }`
+/// instead of a bare literal (in-crate code is unaffected — every
+/// existing literal in this file keeps compiling exactly as written,
+/// verified by this module's own tests); either path already tolerates
+/// a future field the same way. This is itself a one-time breaking
+/// change for any external bare-literal construction site (there is no
+/// way to add `#[non_exhaustive]` retroactively without one — see
+/// CLAUDE.md's *Downstream consumers* section) but it is the last one:
+/// every field `Toolbar` grows from here on is additive.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Toolbar {
     pub id: WidgetId,
     pub buttons: Vec<ToolbarButton>,
@@ -332,6 +350,20 @@ pub fn measure_button(
 }
 
 impl Toolbar {
+    /// Build a `Toolbar` with `bg: None`, `focused_index: None` and no
+    /// icon overrides — the constructor external crates now need since
+    /// `#[non_exhaustive]` (issue #913) blocks a bare struct literal
+    /// outside this crate. Chain [`Self::with_icon_override`] and direct
+    /// field assignment (`bg` / `focused_index` are still `pub`) for the
+    /// rest.
+    pub fn new(id: WidgetId, buttons: Vec<ToolbarButton>) -> Self {
+        Self {
+            id,
+            buttons,
+            ..Default::default()
+        }
+    }
+
     /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
     /// button, overriding the plain-string [`ToolbarButton::Action::icon`]
     /// that button was built with (issue #913).

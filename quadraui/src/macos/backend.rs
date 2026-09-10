@@ -1402,6 +1402,7 @@ impl Backend for MacBackend {
             .clone()
             .expect("MacBackend::draw_form requires set_current_font");
         let theme = self.current_theme;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
         let origin = Point::new(rect.x, rect.y);
         crate::primitives::form::paint(form, &flayout, self, &theme, origin);
@@ -1434,15 +1435,24 @@ impl Backend for MacBackend {
                 );
                 // SAFETY: ctx is non-null inside the frame scope.
                 //
-                // `false`: a `FieldKind::Toolbar` has no path to register
-                // an icon override yet (issue #913 scoped the override
-                // API to the standalone `Toolbar` primitive), so
-                // `icon_overrides` is always empty here and the flag
-                // value can't change what paints.
+                // Issue #913 review fix: `FieldKind::Toolbar` embeds the
+                // same `Toolbar` the standalone rasteriser resolves
+                // overrides for — `self.nerd_fonts_enabled` is live here,
+                // so thread it through instead of the `false` that
+                // silently dropped every embedded-form override.
                 unsafe {
                     super::toolbar::draw_toolbar(
-                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None,
-                        None, false,
+                        ctx,
+                        &font,
+                        toolbar_x,
+                        row_y,
+                        toolbar_w,
+                        row_h,
+                        toolbar,
+                        &theme,
+                        None,
+                        None,
+                        nerd_fonts_enabled,
                     );
                 }
             }
@@ -1955,8 +1965,19 @@ impl Backend for MacBackend {
             .expect("MacBackend::draw_dialog requires set_current_font");
         let theme = self.current_theme;
         let line_height = self.current_line_height;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::dialog::draw_dialog(ctx, font, dialog, layout, line_height, &theme) }
+        unsafe {
+            super::dialog::draw_dialog(
+                ctx,
+                font,
+                dialog,
+                layout,
+                line_height,
+                &theme,
+                nerd_fonts_enabled,
+            )
+        }
     }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
@@ -1972,6 +1993,7 @@ impl Backend for MacBackend {
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
         let caret_visible = self.caret_visible.get();
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::multi_section_view::draw_multi_section_view(
@@ -1986,6 +2008,7 @@ impl Backend for MacBackend {
                 line_height,
                 char_width,
                 caret_visible,
+                nerd_fonts_enabled,
             )
         }
     }
@@ -2501,6 +2524,7 @@ impl Backend for MacBackend {
         );
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         crate::primitives::sidebar_panel::native_surface_paint::paint(
             panel,
             self,
@@ -2509,6 +2533,7 @@ impl Backend for MacBackend {
             line_height,
             hovered_toolbar_id,
             pressed_toolbar_id,
+            nerd_fonts_enabled,
         )
     }
 

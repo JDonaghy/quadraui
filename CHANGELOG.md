@@ -157,8 +157,47 @@ release time.
   grep, and the new `quadraui/tests/downstream_struct_literals.rs`, which
   fails this repo's own CI if a future change re-breaks that literal.
 
+- `ToolbarButton::Action` icon Nerd-Font fallback (issue #913): `Toolbar`
+  gained `icon_overrides: Vec<(WidgetId, Icon)>` plus
+  `Toolbar::with_icon_override`/`icon_override`/`resolve_button_icon`,
+  mirroring `AppShell::with_panel_icon`'s override-by-id shape. A button
+  with a registered override paints `Icon::glyph` when the backend's
+  `nerd_fonts_enabled` flag is set and `Icon::fallback` otherwise;
+  `ToolbarButton::Action::icon` itself stays a plain `Option<String>` so
+  the 48+11+8 pre-existing literal construction sites across quadraui,
+  `coord-tui`, and `vimcode` keep compiling unchanged. Every rasteriser
+  that embeds a `Toolbar` — TUI/GTK/macOS `Dialog`, `Form`,
+  `MultiSectionView`, and the shared `SidebarPanel` paint used by
+  GTK/macOS/Win — now resolves this override too, not just the
+  standalone `Toolbar` primitive. `Toolbar::new(id, buttons)` is the new
+  constructor external callers need (see `### Changed` below).
+- Toolbar/dialog/form/sidebar-panel cell-width measurement now uses
+  `text_util::display_width` instead of `chars().count()` for icon,
+  label, and key-hint widths — a wide (East-Asian-Wide or emoji) icon on
+  one button used to undercount by half a cell and lay out every button
+  after it one cell short of where it actually painted.
+
 ### Changed
 
+- **Breaking**: `Toolbar` is now `#[non_exhaustive]` and implements
+  `Default` (issue #913) — a one-time cost so no *future* field addition
+  breaks external construction again, per
+  `quadraui/docs/PRIMITIVE_RULES.md` rule 8's preferred non-breaking
+  shape, applied retroactively because `Toolbar` shipped without it.
+  Unlike `Reaction`'s `#[non_exhaustive]` addition above, this one **is**
+  breaking today: `Toolbar` has no private fields and (before this) no
+  `Default` impl, so every construction site — in this crate,
+  `coord-tui`, and `vimcode` alike — was a bare exhaustive struct
+  literal, and `#[non_exhaustive]` rejects that syntax outright from an
+  external crate regardless of `..Default::default()` (verified via
+  `quadraui/tests/downstream_struct_literals.rs`'s new
+  `toolbar_new_constructor_replaces_the_pre_913_bare_struct_literal`
+  guard). Both consumers must migrate their `Toolbar { .. }` literals to
+  `Toolbar::new(id, buttons)` + field assignment (`bg`/`focused_index`
+  are still `pub`) the next time they bump their pinned quadraui rev —
+  see `## Downstream impact` in the PR body for the exact grep and hit
+  count. `WidgetId` also gained `Default` (empty-string id), purely
+  additive, to let `Toolbar` derive its own `Default`.
 - `publish = false` removed from `quadraui/Cargo.toml` — `quadraui` is now
   publishable to crates.io. (The actual `v0.1.0` tag and `cargo publish` are
   a separate, coordinator-run release step — see `quadraui#797`.)

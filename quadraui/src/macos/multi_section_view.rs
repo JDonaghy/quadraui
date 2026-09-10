@@ -72,10 +72,13 @@ pub fn mac_msv_layout(
 
 /// Paint `view` into `(x, y, w, h)` on `ctx`.
 ///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
+/// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to an
+/// embedded `SectionBody::Form`'s `FieldKind::Toolbar` — see
+/// `macos::toolbar::draw_toolbar` for its contract. It is **not**
+/// forwarded to `SectionBody::Tree` yet (still hardcoded `false` inside
+/// `paint_body`) — that wiring is separate, unstarted scope tracked
+/// independently (see `paint_body`'s own note); this issue only fixes
+/// the `Toolbar` no-op.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_multi_section_view(
     ctx: CGContextRef,
@@ -89,6 +92,7 @@ pub unsafe fn draw_multi_section_view(
     line_height: f64,
     char_width: f64,
     caret_visible: bool,
+    nerd_fonts_enabled: bool,
 ) {
     if w <= 0.0 || h <= 0.0 || view.axis == Axis::Horizontal {
         return;
@@ -126,6 +130,7 @@ pub unsafe fn draw_multi_section_view(
                 theme,
                 line_height,
                 char_width,
+                nerd_fonts_enabled,
             );
 
             if let Some(sb_b) = s_layout.scrollbar_bounds {
@@ -339,6 +344,7 @@ unsafe fn paint_body(
     theme: &Theme,
     line_height: f64,
     char_width: f64,
+    nerd_fonts_enabled: bool,
 ) {
     let bx = bounds.x as f64;
     let by = bounds.y as f64;
@@ -356,17 +362,30 @@ unsafe fn paint_body(
         SectionBody::Tree(t) => {
             // #804 fixed the nerd-fonts no-op in `macos::tree::draw_tree`
             // itself; wiring `nerd_fonts_enabled` through
-            // `draw_multi_section_view`'s own call chain (it isn't a
-            // parameter here yet, unlike TUI/GTK's MSV) is separate,
-            // unstarted scope — passing `false` preserves today's
-            // fallback-only behaviour for tree bodies nested in an MSV.
+            // `draw_multi_section_view`'s own call chain to *this* call
+            // site is separate, unstarted scope (issue #913 only fixed
+            // the parallel `FieldKind::Toolbar` no-op below, now that
+            // `nerd_fonts_enabled` is a parameter here) — passing `false`
+            // preserves today's fallback-only behaviour for tree bodies
+            // nested in an MSV.
             super::tree::draw_tree(ctx, font, bx, by, bw, bh, t, theme, line_height, false);
         }
         SectionBody::List(l) => {
             super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height);
         }
         SectionBody::Form(f) => {
-            draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);
+            draw_form_body(
+                ctx,
+                font,
+                bx,
+                by,
+                bw,
+                bh,
+                f,
+                theme,
+                line_height,
+                nerd_fonts_enabled,
+            );
         }
         SectionBody::Chart(c) => {
             // #810: painting moved to the shared
@@ -413,6 +432,7 @@ unsafe fn draw_form_body(
     form: &crate::Form,
     theme: &Theme,
     line_height: f64,
+    nerd_fonts_enabled: bool,
 ) {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     let flayout = super::form::mac_form_layout(form, area, line_height, font);
@@ -441,13 +461,22 @@ unsafe fn draw_form_body(
         };
         let toolbar_w = row_x + row_w - toolbar_x;
         if toolbar_w > 0.0 {
-            // `false`: a `FieldKind::Toolbar` has no path to register an
-            // icon override yet (issue #913 scoped the override API to
-            // the standalone `Toolbar` primitive), so `icon_overrides`
-            // is always empty here and the flag value can't change what
-            // paints.
+            // Issue #913 review fix: `FieldKind::Toolbar` embeds the
+            // same `Toolbar` the standalone rasteriser resolves
+            // overrides for, so forward the caller's flag instead of a
+            // hardcoded `false`.
             super::toolbar::draw_toolbar(
-                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None, false,
+                ctx,
+                font,
+                toolbar_x,
+                row_y,
+                toolbar_w,
+                row_h,
+                toolbar,
+                theme,
+                None,
+                None,
+                nerd_fonts_enabled,
             );
         }
     }
