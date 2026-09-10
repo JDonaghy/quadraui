@@ -79,6 +79,11 @@ pub fn mac_msv_layout(
 /// `paint_body`) — that wiring is separate, unstarted scope tracked
 /// independently (see `paint_body`'s own note); this issue only fixes
 /// the `Toolbar` no-op.
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_multi_section_view(
     ctx: CGContextRef,
