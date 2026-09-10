@@ -30,6 +30,18 @@ use super::toolbar::PangoMeasure;
 /// for accurate text measurement when `pango_layout` is provided; falls
 /// back to a `char_width`-based estimate otherwise (matches the
 /// `gtk_toolbar_layout` fallback convention).
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves the embedded
+/// toolbar's per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) the same way
+/// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
+/// does, so the width this no-paint layout measures — and therefore
+/// every hit region `GtkBackend::sidebar_panel_layout` returns — always
+/// agrees with what actually painted. Before this fix the two could
+/// disagree the instant an override was registered: paint resolved the
+/// override, this measured the button's raw `icon` field, so a wide
+/// glyph shifted every button after it out from under its own hit
+/// region. A `Toolbar` with no overrides is unaffected by the flag.
 #[allow(clippy::too_many_arguments)]
 pub fn gtk_sidebar_panel_layout(
     panel: &SidebarPanel,
@@ -40,6 +52,7 @@ pub fn gtk_sidebar_panel_layout(
     y: f64,
     w: f64,
     h: f64,
+    nerd_fonts_enabled: bool,
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
     let measure = PangoMeasure {
@@ -49,7 +62,13 @@ pub fn gtk_sidebar_panel_layout(
     panel.layout(
         bounds,
         SidebarPanelMeasure::new(line_height as f32, char_width as f32),
-        |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
+        |btn| {
+            let resolved = match &panel.toolbar {
+                Some(bar) => bar.resolve_button_icon(btn, nerd_fonts_enabled),
+                None => std::borrow::Cow::Borrowed(btn),
+            };
+            ToolbarItemMeasure::new(measure_button(&measure, &resolved))
+        },
     )
 }
 
@@ -228,7 +247,7 @@ mod tests {
             toolbar: None,
             toolbar_height: None,
         };
-        let layout = gtk_sidebar_panel_layout(&panel, None, 6.0, 14.0, x, y, 100.0, 60.0);
+        let layout = gtk_sidebar_panel_layout(&panel, None, 6.0, 14.0, x, y, 100.0, 60.0, false);
 
         assert_eq!(layout.content_bounds.x as f64, x);
         assert_eq!(layout.content_bounds.y as f64, y);
@@ -252,5 +271,59 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);
+    }
+
+    /// Issue #913 review fix: closes the layout/paint width-divergence
+    /// gap for a `SidebarPanel`'s embedded `Toolbar` with a registered
+    /// `icon_overrides` entry. `gtk_sidebar_panel_layout` backs
+    /// `GtkBackend::sidebar_panel_layout` — the real hit-test/hover path
+    /// `examples/common/sidebar_panel_app.rs` calls directly — so it
+    /// must resolve overrides exactly like the shared
+    /// `native_surface_paint::paint` does, or a wide Nerd-Font glyph's
+    /// measured width silently disagrees with what actually painted.
+    #[test]
+    fn nerd_fonts_enabled_changes_measured_toolbar_button_width() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::types::Icon;
+
+        let panel = SidebarPanel {
+            id: WidgetId::new("sp"),
+            toolbar: Some(
+                Toolbar::new(
+                    WidgetId::new("sp:toolbar"),
+                    vec![ToolbarButton::Action {
+                        id: WidgetId::new("a"),
+                        label: "Go".into(),
+                        icon: Some("stale".into()),
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                )
+                .with_icon_override(
+                    WidgetId::new("a"),
+                    Icon::new("\u{f021}\u{f021}\u{f021}", "R"),
+                ),
+            ),
+            toolbar_height: None,
+        };
+
+        let fallback =
+            gtk_sidebar_panel_layout(&panel, None, 6.0, 14.0, 0.0, 0.0, 200.0, 60.0, false);
+        let glyph = gtk_sidebar_panel_layout(&panel, None, 6.0, 14.0, 0.0, 0.0, 200.0, 60.0, true);
+
+        let fallback_w = fallback.toolbar_layout.as_ref().unwrap().visible_items[0]
+            .bounds
+            .width;
+        let glyph_w = glyph.toolbar_layout.as_ref().unwrap().visible_items[0]
+            .bounds
+            .width;
+
+        assert!(
+            glyph_w > fallback_w,
+            "a 3-glyph Nerd-Font icon should measure wider than the 1-char \
+             fallback: glyph_w={glyph_w}, fallback_w={fallback_w}"
+        );
     }
 }

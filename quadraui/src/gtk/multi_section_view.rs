@@ -421,7 +421,12 @@ fn draw_form_body(
         char_width: 8.0,
     };
     let flayout = form.layout(w as f32, h as f32, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        crate::primitives::layout_metrics::form_field_measure(
+            &form.fields[i],
+            row_h,
+            &measure,
+            nerd_fonts_enabled,
+        )
     });
     let origin = crate::Point::new(x as f32, y as f32);
     let mut surface = super::form::RawFormSurface { cr, layout };

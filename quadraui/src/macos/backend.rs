@@ -1403,7 +1403,13 @@ impl Backend for MacBackend {
             .expect("MacBackend::draw_form requires set_current_font");
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
+        let flayout = super::form::mac_form_layout(
+            form,
+            rect,
+            self.current_line_height,
+            &font,
+            nerd_fonts_enabled,
+        );
         let origin = Point::new(rect.x, rect.y);
         crate::primitives::form::paint(form, &flayout, self, &theme, origin);
 
@@ -2026,7 +2032,13 @@ impl Backend for MacBackend {
             .current_font
             .as_ref()
             .expect("MacBackend::form_layout requires set_current_font");
-        super::form::mac_form_layout(form, rect, self.current_line_height, font)
+        super::form::mac_form_layout(
+            form,
+            rect,
+            self.current_line_height,
+            font,
+            self.nerd_fonts_enabled,
+        )
     }
     fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
         let ctx = self.current_cg();
@@ -2579,6 +2591,7 @@ impl Backend for MacBackend {
                 rect.y as f64,
                 rect.width as f64,
                 rect.height as f64,
+                self.nerd_fonts_enabled,
             )
         } else {
             // No font yet (called before first draw) — produce the
@@ -4263,8 +4276,13 @@ mod tests {
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
-        let flayout =
-            crate::macos::form::mac_form_layout(&form, rect, backend.line_height() as f64, &font());
+        let flayout = crate::macos::form::mac_form_layout(
+            &form,
+            rect,
+            backend.line_height() as f64,
+            &font(),
+            false,
+        );
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.draw_form(rect, &form);
         });

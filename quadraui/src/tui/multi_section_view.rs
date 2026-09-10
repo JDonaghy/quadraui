@@ -2548,6 +2548,7 @@ mod tests {
             let form_layout = crate::tui::form::tui_form_layout(
                 f,
                 TuiRect::new(0, 0, body_b.width as u16, body_b.height as u16),
+                false,
             );
             // First item should be individually hit-testable.
             let vis = &form_layout.visible_fields[0];

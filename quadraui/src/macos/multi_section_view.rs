@@ -440,7 +440,7 @@ unsafe fn draw_form_body(
     nerd_fonts_enabled: bool,
 ) {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let flayout = super::form::mac_form_layout(form, area, line_height, font);
+    let flayout = super::form::mac_form_layout(form, area, line_height, font, nerd_fonts_enabled);
     let origin = crate::Point::new(x as f32, y as f32);
     let mut surface = super::form::RawFormSurface { ctx, font };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);

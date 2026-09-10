@@ -291,10 +291,22 @@ fn label_text(field: &FormField) -> String {
 /// here would be a silent behavior change beyond #499's scope, not a
 /// dedup. Do that as its own follow-up once a backend actually renders
 /// it.
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves the embedded
+/// `FieldKind::Toolbar`'s per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) before measuring, the same way every
+/// pixel backend's `Backend::draw_form` resolves them before *painting*
+/// the toolbar chrome. Before this fix, this function always measured a
+/// button's raw, unresolved `icon` field — so `Backend::form_layout()`
+/// (the real hit-test path `compose::form_controller::click_inner`
+/// calls) disagreed with what actually painted the instant an override
+/// was registered, and every field kind other than `Toolbar` simply
+/// ignores the flag.
 pub fn form_field_measure(
     field: &FormField,
     row_h: f32,
     measure: &dyn TextMeasure,
+    nerd_fonts_enabled: bool,
 ) -> FormFieldMeasure {
     match &field.kind {
         FieldKind::ToggleGroup { toggles } => {
@@ -344,10 +356,16 @@ pub fn form_field_measure(
                         ToolbarButton::Action { id, .. } => id.clone(),
                         _ => field.id.clone(),
                     };
+                    // Resolve any registered `icon_overrides` entry
+                    // before measuring (issue #913 review fix) — must
+                    // match what `Backend::draw_form` resolves before
+                    // painting, or the two disagree on this button's
+                    // width.
+                    let resolved = toolbar.resolve_button_icon(btn, nerd_fonts_enabled);
                     // Single button-measure formula shared with every
                     // pixel rasteriser (#730) — see `measure_button`'s
                     // doc.
-                    let width = measure_button(measure, btn);
+                    let width = measure_button(measure, &resolved);
                     FormItemMeasure { id, width }
                 })
                 .collect();
@@ -432,7 +450,7 @@ mod tests {
                 ],
             },
         );
-        let m = form_field_measure(&field, 20.0, &FakeMeasure);
+        let m = form_field_measure(&field, 20.0, &FakeMeasure, false);
         assert_eq!(m.height, 20.0);
         assert_eq!(m.items_start_x, 6.0 + 30.0 + 12.0);
         assert_eq!(m.item_gap, 8.0);
@@ -451,7 +469,7 @@ mod tests {
                 selected_idx: 0,
             },
         );
-        let m = form_field_measure(&field, 20.0, &FakeMeasure);
+        let m = form_field_measure(&field, 20.0, &FakeMeasure, false);
         // `SegmentedControl` (unlike `Toolbar`) has no empty-label
         // special case: pre-#499 macOS and GTK's still-unmigrated
         // inline copy both compute the unconditional
@@ -479,20 +497,63 @@ mod tests {
         // Empty label -> Toolbar's pre-#499 special case: 6px inset,
         // no +label_w+12 addition.
         let empty_label = field_with("tb", "", FieldKind::Toolbar(toolbar.clone()));
-        let m = form_field_measure(&empty_label, 20.0, &FakeMeasure);
+        let m = form_field_measure(&empty_label, 20.0, &FakeMeasure, false);
         assert_eq!(m.items_start_x, 6.0);
 
         // Non-empty label -> unconditional 6 + label_w + 12, same as
         // the other row-item kinds.
         let with_label = field_with("tb", "Go", FieldKind::Toolbar(toolbar)); // 2 chars * 6.0 = 12.0
-        let m = form_field_measure(&with_label, 20.0, &FakeMeasure);
+        let m = form_field_measure(&with_label, 20.0, &FakeMeasure, false);
         assert_eq!(m.items_start_x, 6.0 + 12.0 + 12.0);
+    }
+
+    /// Issue #913 review fix: closes the layout/paint width-divergence
+    /// gap for a `FieldKind::Toolbar` with a registered `icon_overrides`
+    /// entry. This function backs every backend's `Backend::form_layout`
+    /// (the real hit-test path `compose::form_controller::click_inner`
+    /// calls), so it must resolve overrides the same way
+    /// `Backend::draw_form` resolves them before painting the toolbar
+    /// chrome — otherwise a wide Nerd-Font glyph's measured item width
+    /// silently disagrees with what actually painted.
+    #[test]
+    fn form_field_measure_toolbar_resolves_icon_override_width() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::types::Icon;
+
+        let toolbar = Toolbar::new(
+            WidgetId::new("tb"),
+            vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "Go".into(),
+                icon: Some("stale".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+        )
+        .with_icon_override(
+            WidgetId::new("a"),
+            Icon::new("\u{f021}\u{f021}\u{f021}", "R"),
+        );
+
+        let field = field_with("tb", "", FieldKind::Toolbar(toolbar));
+        let fallback = form_field_measure(&field, 20.0, &FakeMeasure, false);
+        let glyph = form_field_measure(&field, 20.0, &FakeMeasure, true);
+
+        assert!(
+            glyph.item_measures[0].width > fallback.item_measures[0].width,
+            "a 3-glyph Nerd-Font icon should measure wider than the 1-char \
+             fallback: glyph_w={}, fallback_w={}",
+            glyph.item_measures[0].width,
+            fallback.item_measures[0].width,
+        );
     }
 
     #[test]
     fn form_field_measure_default_kind_has_no_items() {
         let field = field_with("name", "Name", FieldKind::Button);
-        let m = form_field_measure(&field, 20.0, &FakeMeasure);
+        let m = form_field_measure(&field, 20.0, &FakeMeasure, false);
         assert_eq!(m.height, 20.0);
         assert!(m.item_measures.is_empty());
         assert_eq!(m.items_start_x, 0.0);
@@ -638,7 +699,7 @@ mod tests {
 
         for (name, kind) in kinds {
             let field = field_with(name, "Label", kind);
-            let m = form_field_measure(&field, ROW_H, &FakeMeasure);
+            let m = form_field_measure(&field, ROW_H, &FakeMeasure, false);
             assert_eq!(
                 m.height, ROW_H,
                 "FieldKind::{name} must measure exactly one row_h ({ROW_H}), got {}",

@@ -40,15 +40,30 @@ use crate::types::WidgetId;
 /// `content_bounds` / `toolbar_bounds`), matching
 /// [`crate::Backend::sidebar_panel_layout`]'s documented contract and
 /// `gtk_sidebar_panel_layout` / the TUI/macOS twins.
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves the embedded
+/// toolbar's per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) the same way
+/// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
+/// does, so this no-paint layout's hit regions always agree with what
+/// actually painted. Before this fix this function ignored the flag
+/// entirely — a registered override was measured at its raw, unresolved
+/// width no matter what actually painted. A `Toolbar` with no overrides
+/// is unaffected by the flag.
 pub fn win_sidebar_panel_layout(
     dwrite: &DWrite,
     line_height: f32,
     rect: Rect,
     panel: &SidebarPanel,
+    nerd_fonts_enabled: bool,
 ) -> SidebarPanelLayout {
     let measure = DWriteMeasure(dwrite);
     panel.layout(rect, SidebarPanelMeasure::new(line_height, 0.0), |btn| {
-        ToolbarItemMeasure::new(measure_button(&measure, btn))
+        let resolved = match &panel.toolbar {
+            Some(bar) => bar.resolve_button_icon(btn, nerd_fonts_enabled),
+            None => std::borrow::Cow::Borrowed(btn),
+        };
+        ToolbarItemMeasure::new(measure_button(&measure, &resolved))
     })
 }
 
@@ -220,7 +235,7 @@ mod tests {
                     nerd_fonts_enabled,
                 );
             })
-            .map(|_| win_sidebar_panel_layout(dwrite, line_height, rect, panel))
+            .map(|_| win_sidebar_panel_layout(dwrite, line_height, rect, panel, nerd_fonts_enabled))
             .expect("paint sidebar panel")
     }
 
@@ -341,7 +356,52 @@ mod tests {
             None,
             false,
         );
-        let no_paint = win_sidebar_panel_layout(&dwrite, line_height, rect, &panel);
+        let no_paint = win_sidebar_panel_layout(&dwrite, line_height, rect, &panel, false);
+        assert_eq!(painted, no_paint);
+    }
+
+    /// Second-round review fix: `no_paint_layout_matches_paint_layout`
+    /// above only ever compared the two layouts at `nerd_fonts_enabled:
+    /// false`, which can never observe a width divergence — an override
+    /// resolves to `Icon::fallback` on both paths regardless. This test
+    /// re-runs the identical byte-for-byte comparison at `true`, with a
+    /// registered override whose glyph and fallback measure to
+    /// different widths, closing the gap: `win_sidebar_panel_layout`
+    /// used to ignore `nerd_fonts_enabled` entirely (it wasn't even a
+    /// parameter), so `painted` and `no_paint` disagreed the instant an
+    /// override was registered and the flag was on — clicks past the
+    /// overridden button would have landed on the wrong hit region.
+    #[test]
+    fn no_paint_layout_matches_paint_layout_with_glyph_override() {
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(
+                Toolbar::new(
+                    WidgetId::new("sb:toolbar"),
+                    vec![mk_action("a", "Refine"), mk_action("b", "Drop")],
+                )
+                .with_icon_override(
+                    WidgetId::new("a"),
+                    crate::types::Icon::new("\u{f021}\u{f021}\u{f021}", "R"),
+                ),
+            ),
+            toolbar_height: None,
+        };
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+
+        let painted = paint(
+            &surface,
+            &dwrite,
+            line_height,
+            rect,
+            &panel,
+            None,
+            None,
+            true,
+        );
+        let no_paint = win_sidebar_panel_layout(&dwrite, line_height, rect, &panel, true);
         assert_eq!(painted, no_paint);
     }
 
@@ -351,12 +411,7 @@ mod tests {
     /// and paints via `Toolbar::resolve_button_icon`, so a registered
     /// override must change the measured button width once
     /// `nerd_fonts_enabled` flips, exactly like every other backend's
-    /// `nerd_fonts_flag_selects_glyph_or_fallback`-style test. Measuring
-    /// directly (rather than through the full paint pipeline) sidesteps
-    /// `win_sidebar_panel_layout`'s own pre-existing gap — it never
-    /// threaded `nerd_fonts_enabled` at all (out of this issue's scope;
-    /// only the *paint* path is fixed here) — while still proving the
-    /// override actually reaches `measure_button`.
+    /// `nerd_fonts_flag_selects_glyph_or_fallback`-style test.
     #[test]
     fn nerd_fonts_enabled_changes_measured_toolbar_button_width() {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");

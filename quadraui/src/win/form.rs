@@ -165,7 +165,12 @@ pub fn draw_form(
     form: &Form,
     line_height: f32,
 ) -> FormLayout {
-    let flayout = win_form_layout(dwrite, rect, form, line_height);
+    // `false`: this is the deprecated `draw_form` shim, which reproduces
+    // the pre-#808 signature exactly and predates `nerd_fonts_enabled`
+    // entirely — there's no flag for a caller of this shim to have
+    // passed. The live path is `WinBackend::draw_form`, which forwards
+    // its own `self.nerd_fonts_enabled` (issue #913 review fix).
+    let flayout = win_form_layout(dwrite, rect, form, line_height, false);
     let theme = Theme::default();
     let origin = crate::Point::new(rect.x, rect.y);
     let mut surface = RawFormSurface { target, dwrite };
@@ -243,11 +248,32 @@ impl TextMeasure for DWriteMeasure<'_> {
 /// / [`crate::primitives::layout_metrics::form_field_measure`] (#499,
 /// adopted for `win/` by #701), via [`DWriteMeasure`] — the same
 /// per-field-kind measurement math `macos::form::mac_form_layout` uses.
-pub fn win_form_layout(dwrite: &DWrite, rect: Rect, form: &Form, line_height: f32) -> FormLayout {
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves a
+/// `FieldKind::Toolbar`'s per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) before measuring, so
+/// `WinBackend::form_layout`'s hit regions agree with the widths
+/// `form_field_measure` reports for the rest of the pipeline. Win-GUI's
+/// own `FieldKind::Toolbar` painting (`WinBackend::draw_form`) doesn't
+/// yet paint the resolved icon glyph at all — see that fn's doc — so
+/// this only fixes the *measured* width for now, matching
+/// `win::toolbar`'s own documented gap.
+pub fn win_form_layout(
+    dwrite: &DWrite,
+    rect: Rect,
+    form: &Form,
+    line_height: f32,
+    nerd_fonts_enabled: bool,
+) -> FormLayout {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
     let measure = DWriteMeasure(dwrite);
     form.layout(rect.width, rect.height, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        crate::primitives::layout_metrics::form_field_measure(
+            &form.fields[i],
+            row_h,
+            &measure,
+            nerd_fonts_enabled,
+        )
     })
 }
 
@@ -367,7 +393,7 @@ mod tests {
     /// uses, exercised here instead of a live `WinBackend` since these
     /// tests predate #808 and only ever needed `target`/`dwrite`.
     fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, form: &Form) -> FormLayout {
-        let layout = win_form_layout(dwrite, rect, form, LINE_HEIGHT);
+        let layout = win_form_layout(dwrite, rect, form, LINE_HEIGHT, false);
         let theme = Theme::default();
         let origin = crate::Point::new(rect.x, rect.y);
         surface
@@ -602,6 +628,59 @@ mod tests {
                 theme.selected_bg.b
             ),
             "active search row paints selected_bg"
+        );
+    }
+
+    /// Issue #913 review fix: closes the layout width-divergence gap
+    /// for a `FieldKind::Toolbar` with a registered `icon_overrides`
+    /// entry. `win_form_layout` backs `WinBackend::form_layout` — the
+    /// real hit-test path `compose::form_controller::click_inner`
+    /// calls — so it must resolve overrides the same way every other
+    /// backend's `form_field_measure` call resolves them, even though
+    /// Win-GUI's own `FieldKind::Toolbar` *painting* doesn't yet paint
+    /// the resolved icon glyph (see `win_form_layout`'s doc).
+    #[test]
+    fn form_layout_resolves_toolbar_icon_override_width() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::types::{Icon, WidgetId};
+
+        let toolbar = Toolbar::new(
+            WidgetId::new("tb"),
+            vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "Go".into(),
+                icon: Some("stale".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+        )
+        .with_icon_override(
+            WidgetId::new("a"),
+            Icon::new("\u{f021}\u{f021}\u{f021}", "R"),
+        );
+
+        let form = Form {
+            id: WidgetId::new("form"),
+            fields: vec![field("tb", "", FieldKind::Toolbar(toolbar))],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+
+        let fallback = win_form_layout(&dwrite, rect, &form, LINE_HEIGHT, false);
+        let glyph = win_form_layout(&dwrite, rect, &form, LINE_HEIGHT, true);
+
+        let fallback_w = fallback.visible_fields[0].item_bounds[0].1.width;
+        let glyph_w = glyph.visible_fields[0].item_bounds[0].1.width;
+
+        assert!(
+            glyph_w > fallback_w,
+            "a 3-glyph Nerd-Font icon should measure wider than the 1-char \
+             fallback: glyph_w={glyph_w}, fallback_w={fallback_w}"
         );
     }
 }
