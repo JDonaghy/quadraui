@@ -3231,8 +3231,14 @@ impl Backend for GtkBackend {
             char_w,
         };
 
+        let nerd_fonts_enabled = self.nerd_fonts_enabled;
         form.layout(rect.width, rect.height, |i| {
-            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+            crate::primitives::layout_metrics::form_field_measure(
+                &form.fields[i],
+                row_h,
+                &measure,
+                nerd_fonts_enabled,
+            )
         })
     }
 
@@ -3983,6 +3989,7 @@ impl Backend for GtkBackend {
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
+            self.nerd_fonts_enabled,
         );
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());

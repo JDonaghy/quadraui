@@ -2244,7 +2244,7 @@ impl Backend for TuiBackend {
 
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_form_layout(form, area)
+        crate::tui::tui_form_layout(form, area, self.nerd_fonts_enabled)
     }
 
     fn draw_editor(
@@ -2666,7 +2666,7 @@ impl Backend for TuiBackend {
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_sidebar_panel_layout(panel, area)
+        crate::tui::tui_sidebar_panel_layout(panel, area, self.nerd_fonts_enabled)
     }
 
     fn draw_diff_view(
@@ -3133,7 +3133,7 @@ mod tests {
 
         fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {
             let area = q_rect_to_ratatui(r);
-            crate::tui::tui_form_layout(form, area)
+            crate::tui::tui_form_layout(form, area, false)
         }
 
         fn draw_editor(

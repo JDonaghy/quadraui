@@ -17,7 +17,23 @@ use crate::types::{Decoration, WidgetId};
 
 /// Compute the form layout using TUI cell metrics (1 cell per row,
 /// char-count item widths).
-pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::FormLayout {
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves a
+/// `FieldKind::Toolbar`'s per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) before measuring, the same way
+/// [`draw_form`] resolves them before painting the toolbar chrome via
+/// `tui::toolbar::draw_toolbar` — so `TuiBackend::form_layout`'s hit
+/// regions (and `draw_form`'s own outer hit-test grid) always agree
+/// with what actually painted. Before this fix this function ignored
+/// the flag entirely (it wasn't even a parameter): a registered
+/// override's width disagreed between what `draw_toolbar` painted and
+/// what this measured, so a click past the overridden button could land
+/// on the wrong hit region.
+pub fn tui_form_layout(
+    form: &Form,
+    area: Rect,
+    nerd_fonts_enabled: bool,
+) -> crate::primitives::form::FormLayout {
     form.layout(area.width as f32, area.height as f32, |i| {
         let field = &form.fields[i];
         match &field.kind {
@@ -76,9 +92,15 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
                             ToolbarButton::Action { id, .. } => id.clone(),
                             _ => field.id.clone(),
                         };
+                        // Resolve any registered `icon_overrides` entry
+                        // before measuring (issue #913 review fix) —
+                        // must match what `draw_toolbar` resolves before
+                        // painting, or the two disagree on this
+                        // button's width.
+                        let resolved = toolbar.resolve_button_icon(btn, nerd_fonts_enabled);
                         FormItemMeasure {
                             id,
-                            width: tui_item_width(btn),
+                            width: tui_item_width(&resolved),
                         }
                     })
                     .collect();
@@ -108,21 +130,13 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
 ///
 /// `nerd_fonts_enabled` (issue #913 review fix) is forwarded to the
 /// embedded `FieldKind::Toolbar` rasteriser — see
-/// `tui::toolbar::draw_toolbar` for its contract. A `Form` with no
-/// `Toolbar` field, or a toolbar with no `icon_overrides`, is
-/// unaffected by the flag.
-///
-/// Known limitation: [`tui_form_layout`]'s own `FieldKind::Toolbar`
-/// item-width measurer (used for this form's outer hit-test grid,
-/// separate from the toolbar's own internal repaint below) still
-/// measures each button's un-resolved `icon` field — it doesn't accept
-/// `nerd_fonts_enabled` and can't call `Toolbar::resolve_button_icon`.
-/// A registered override whose glyph/fallback widths differ can
-/// therefore disagree between this fn's paint (correct, via
-/// `draw_toolbar`) and the form-level click hit-test for buttons after
-/// the overridden one — tracked as a follow-up, out of this issue's
-/// scope (which fixes painting, not this pre-existing layout/paint
-/// split).
+/// `tui::toolbar::draw_toolbar` for its contract — and to
+/// [`tui_form_layout`]'s own `FieldKind::Toolbar` item-width measurer
+/// (used for this form's outer hit-test grid, separate from the
+/// toolbar's own internal repaint below), so the two can never disagree
+/// about a registered override's width. A `Form` with no `Toolbar`
+/// field, or a toolbar with no `icon_overrides`, is unaffected by the
+/// flag.
 pub fn draw_form(
     buf: &mut Buffer,
     area: Rect,
@@ -144,7 +158,7 @@ pub fn draw_form(
     let error_fg = ratatui_color(theme.error_fg);
     let warning_fg = ratatui_color(theme.warning_fg);
 
-    let layout = tui_form_layout(form, area);
+    let layout = tui_form_layout(form, area, nerd_fonts_enabled);
 
     for visible_field in &layout.visible_fields {
         let field = &form.fields[visible_field.field_idx];
@@ -1448,7 +1462,7 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3));
+        let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 3), false);
         let vis = &layout.visible_fields[0];
         assert!(
             vis.item_bounds.len() >= 2,
@@ -1491,7 +1505,7 @@ mod tests {
             &Theme::default(),
             false,
         );
-        let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
+        let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6), false);
         assert_eq!(
             layout.visible_fields[0].bounds.height, 3.0,
             "TextArea with visible_rows=3 should be 3 cells tall"
@@ -1714,7 +1728,7 @@ mod tests {
         let f = make_toolbar_form();
         draw_form(&mut buf, area, &f, &Theme::default(), false);
 
-        let layout = tui_form_layout(&f, area);
+        let layout = tui_form_layout(&f, area, false);
 
         // Find where 'R' (first char of "Reset") is painted.
         let mut reset_col = None;
@@ -1744,7 +1758,7 @@ mod tests {
         let f = make_toolbar_form();
         draw_form(&mut buf, area, &f, &Theme::default(), false);
 
-        let layout = tui_form_layout(&f, area);
+        let layout = tui_form_layout(&f, area, false);
 
         // Find where 'E' (first char of "Export") is painted.
         let mut export_col = None;
@@ -1764,6 +1778,62 @@ mod tests {
             hit,
             FormHit::Field(WidgetId::new("export")),
             "clicking Export label should hit the export action id"
+        );
+    }
+
+    /// Issue #913 review fix: closes the layout/paint width-divergence
+    /// gap for a `FieldKind::Toolbar` with a registered `icon_overrides`
+    /// entry. `tui_form_layout` backs `TuiBackend::form_layout` — the
+    /// real hit-test path `compose::form_controller::click_inner` calls
+    /// — and `draw_form`'s own outer hit-test grid, so it must resolve
+    /// overrides the same way `draw_toolbar` resolves them before
+    /// painting the toolbar chrome.
+    #[test]
+    fn form_layout_resolves_toolbar_icon_override_width() {
+        use crate::types::Icon;
+
+        let toolbar = Toolbar::new(
+            WidgetId::new("tb"),
+            vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "Go".into(),
+                icon: Some("R".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+        )
+        // A double-width CJK glyph vs. a single-cell fallback, so the
+        // measured cell width must differ.
+        .with_icon_override(WidgetId::new("a"), Icon::new("一", "R"));
+
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("tb"),
+                label: label(""),
+                kind: FieldKind::Toolbar(toolbar),
+                hint: label(""),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        };
+        let area = Rect::new(0, 0, 40, 3);
+
+        let fallback = tui_form_layout(&form, area, false);
+        let glyph = tui_form_layout(&form, area, true);
+
+        let fallback_w = fallback.visible_fields[0].item_bounds[0].1.width;
+        let glyph_w = glyph.visible_fields[0].item_bounds[0].1.width;
+
+        assert!(
+            glyph_w > fallback_w,
+            "a double-width glyph should measure wider than the 1-cell \
+             fallback: glyph_w={glyph_w}, fallback_w={fallback_w}"
         );
     }
 

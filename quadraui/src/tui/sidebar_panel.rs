@@ -17,20 +17,44 @@ use crate::types::WidgetId;
 /// [`super::toolbar::tui_item_width`]; pulled into a free function so
 /// `sidebar_panel_layout` (no paint) can reuse it without forcing
 /// `tui_item_width` to leave the `toolbar` submodule.
-fn tui_item_measure(btn: &crate::primitives::toolbar::ToolbarButton) -> ToolbarItemMeasure {
-    ToolbarItemMeasure::new(super::toolbar::tui_item_width(btn))
+///
+/// `resolved_btn` must already have had any `Toolbar::icon_overrides`
+/// entry resolved via [`crate::primitives::toolbar::Toolbar::resolve_button_icon`]
+/// — see [`tui_sidebar_panel_layout`]'s doc.
+fn tui_item_measure(
+    resolved_btn: &crate::primitives::toolbar::ToolbarButton,
+) -> ToolbarItemMeasure {
+    ToolbarItemMeasure::new(super::toolbar::tui_item_width(resolved_btn))
 }
 
 /// Compute the TUI cell-unit layout for a `SidebarPanel` without
 /// painting.
-pub fn tui_sidebar_panel_layout(panel: &SidebarPanel, area: Rect) -> SidebarPanelLayout {
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves the embedded
+/// toolbar's per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) the same way [`super::draw_toolbar`]
+/// does, so the width this no-paint layout measures — and therefore
+/// every hit region `TuiBackend::sidebar_panel_layout` returns — always
+/// agrees with what actually painted. A `Toolbar` with no overrides is
+/// unaffected by the flag.
+pub fn tui_sidebar_panel_layout(
+    panel: &SidebarPanel,
+    area: Rect,
+    nerd_fonts_enabled: bool,
+) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(
         area.x as f32,
         area.y as f32,
         area.width as f32,
         area.height as f32,
     );
-    panel.layout(bounds, SidebarPanelMeasure::new(1.0, 1.0), tui_item_measure)
+    panel.layout(bounds, SidebarPanelMeasure::new(1.0, 1.0), |btn| {
+        let resolved = match &panel.toolbar {
+            Some(bar) => bar.resolve_button_icon(btn, nerd_fonts_enabled),
+            None => std::borrow::Cow::Borrowed(btn),
+        };
+        tui_item_measure(&resolved)
+    })
 }
 
 /// Draw a `SidebarPanel` into `area` on `buf`. Returns the layout the
@@ -51,7 +75,7 @@ pub fn draw_sidebar_panel(
     pressed_toolbar_id: Option<&WidgetId>,
     nerd_fonts_enabled: bool,
 ) -> SidebarPanelLayout {
-    let layout = tui_sidebar_panel_layout(panel, area);
+    let layout = tui_sidebar_panel_layout(panel, area, nerd_fonts_enabled);
 
     if area.width == 0 || area.height == 0 {
         return layout;
@@ -270,6 +294,57 @@ mod tests {
             !row_text(false).contains("stale"),
             "an override must replace the button's own `icon` field entirely, \
              not just supplement it"
+        );
+    }
+
+    /// Issue #913 review fix: closes the layout/paint width-divergence
+    /// gap for a `SidebarPanel`'s embedded `Toolbar` with a registered
+    /// `icon_overrides` entry. `tui_sidebar_panel_layout` backs
+    /// `TuiBackend::sidebar_panel_layout` — the real hit-test/hover path
+    /// — so it must resolve overrides exactly like `draw_sidebar_panel`
+    /// does, or a wide Nerd-Font glyph's measured width silently
+    /// disagrees with what actually painted.
+    #[test]
+    fn nerd_fonts_enabled_changes_measured_toolbar_button_width() {
+        use crate::types::Icon;
+
+        let area = Rect::new(0, 0, 40, 10);
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(
+                Toolbar::new(
+                    WidgetId::new("sb:toolbar"),
+                    vec![ToolbarButton::Action {
+                        id: WidgetId::new("a"),
+                        label: "Go".into(),
+                        icon: Some("R".into()),
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                )
+                // A double-width CJK glyph vs. a single-cell fallback,
+                // so the measured cell width must differ.
+                .with_icon_override(WidgetId::new("a"), Icon::new("一", "R")),
+            ),
+            toolbar_height: None,
+        };
+
+        let fallback = tui_sidebar_panel_layout(&panel, area, false);
+        let glyph = tui_sidebar_panel_layout(&panel, area, true);
+
+        let fallback_w = fallback.toolbar_layout.as_ref().unwrap().visible_items[0]
+            .bounds
+            .width;
+        let glyph_w = glyph.toolbar_layout.as_ref().unwrap().visible_items[0]
+            .bounds
+            .width;
+
+        assert!(
+            glyph_w > fallback_w,
+            "a double-width glyph should measure wider than the 1-cell \
+             fallback: glyph_w={glyph_w}, fallback_w={fallback_w}"
         );
     }
 }

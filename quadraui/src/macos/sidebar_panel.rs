@@ -25,6 +25,14 @@ use super::toolbar::CtFontMeasure;
 
 /// Compute the macOS pixel-unit layout for a `SidebarPanel`. `font`
 /// is required for accurate text measurement.
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves the embedded
+/// toolbar's per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) the same way
+/// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
+/// does, so this no-paint layout's hit regions always agree with what
+/// actually painted. A `Toolbar` with no overrides is unaffected by the
+/// flag.
 pub fn mac_sidebar_panel_layout(
     panel: &SidebarPanel,
     font: &CTFont,
@@ -33,13 +41,20 @@ pub fn mac_sidebar_panel_layout(
     y: f64,
     w: f64,
     h: f64,
+    nerd_fonts_enabled: bool,
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
     let measure = CtFontMeasure(font);
     panel.layout(
         bounds,
         SidebarPanelMeasure::new(line_height as f32, 8.0),
-        |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
+        |btn| {
+            let resolved = match &panel.toolbar {
+                Some(bar) => bar.resolve_button_icon(btn, nerd_fonts_enabled),
+                None => std::borrow::Cow::Borrowed(btn),
+            };
+            ToolbarItemMeasure::new(measure_button(&measure, &resolved))
+        },
     )
 }
 
@@ -298,8 +313,9 @@ mod tests {
     fn click_in_header_round_trip_at(origin_x: f64, origin_y: f64) {
         let panel = panel_with_toolbar();
         let f = font();
-        let layout =
-            mac_sidebar_panel_layout(&panel, &f, 16.0, origin_x, origin_y, W as f64, H as f64);
+        let layout = mac_sidebar_panel_layout(
+            &panel, &f, 16.0, origin_x, origin_y, W as f64, H as f64, false,
+        );
         match layout.hit_test(origin_x as f32 + 2.0, origin_y as f32) {
             SidebarPanelHit::ToolbarButton(id) => assert_eq!(id.as_str(), "refine"),
             other => panic!("expected ToolbarButton, got {other:?}"),
@@ -315,5 +331,56 @@ mod tests {
     #[test]
     fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {
         click_in_header_round_trip_at(7.0, 13.0);
+    }
+
+    /// Issue #913 review fix: closes the layout/paint width-divergence
+    /// gap for a `SidebarPanel`'s embedded `Toolbar` with a registered
+    /// `icon_overrides` entry. `mac_sidebar_panel_layout` backs
+    /// `MacBackend::sidebar_panel_layout` — the real hit-test/hover path
+    /// — so it must resolve overrides exactly like the shared
+    /// `native_surface_paint::paint` does, or a wide Nerd-Font glyph's
+    /// measured width silently disagrees with what actually painted.
+    #[test]
+    fn nerd_fonts_enabled_changes_measured_toolbar_button_width() {
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(
+                Toolbar::new(
+                    WidgetId::new("sb:toolbar"),
+                    vec![ToolbarButton::Action {
+                        id: WidgetId::new("a"),
+                        label: "Go".into(),
+                        icon: Some("stale".into()),
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                )
+                .with_icon_override(
+                    WidgetId::new("a"),
+                    crate::types::Icon::new("\u{f021}\u{f021}\u{f021}", "R"),
+                ),
+            ),
+            toolbar_height: None,
+        };
+        let f = font();
+
+        let fallback =
+            mac_sidebar_panel_layout(&panel, &f, 16.0, 0.0, 0.0, W as f64, H as f64, false);
+        let glyph = mac_sidebar_panel_layout(&panel, &f, 16.0, 0.0, 0.0, W as f64, H as f64, true);
+
+        let fallback_w = fallback.toolbar_layout.as_ref().unwrap().visible_items[0]
+            .bounds
+            .width;
+        let glyph_w = glyph.toolbar_layout.as_ref().unwrap().visible_items[0]
+            .bounds
+            .width;
+
+        assert!(
+            glyph_w > fallback_w,
+            "a 3-glyph Nerd-Font icon should measure wider than the 1-char \
+             fallback: glyph_w={glyph_w}, fallback_w={fallback_w}"
+        );
     }
 }

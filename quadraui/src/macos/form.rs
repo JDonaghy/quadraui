@@ -47,11 +47,29 @@ impl TextMeasure for CtFontMeasure<'_> {
 /// (e.g. `SidebarSystem`, `FormController`) subtract `area.x`/`area.y`
 /// from absolute click coords before calling
 /// [`FormLayout::hit_test`].
-pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont) -> FormLayout {
+///
+/// `nerd_fonts_enabled` (issue #913 review fix) resolves a
+/// `FieldKind::Toolbar`'s per-button [`crate::types::Icon`] overrides
+/// (`Toolbar::with_icon_override`) before measuring, the same way
+/// `MacBackend::draw_form` resolves them before painting the toolbar
+/// chrome — so `MacBackend::form_layout`'s hit regions always agree
+/// with what actually painted.
+pub fn mac_form_layout(
+    form: &Form,
+    area: QRect,
+    line_height: f64,
+    font: &CTFont,
+    nerd_fonts_enabled: bool,
+) -> FormLayout {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
     let measure = CtFontMeasure(font);
     form.layout(area.width, area.height, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        crate::primitives::layout_metrics::form_field_measure(
+            &form.fields[i],
+            row_h,
+            &measure,
+            nerd_fonts_enabled,
+        )
     })
 }
 
@@ -197,7 +215,12 @@ pub unsafe fn draw_form(
     line_height: f64,
 ) -> FormLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let flayout = mac_form_layout(form, area, line_height, font);
+    // `false`: this is the deprecated `draw_form` shim, which reproduces
+    // the pre-#808 signature exactly and predates `nerd_fonts_enabled`
+    // entirely — there's no flag for a caller of this shim to have
+    // passed. The live path is `MacBackend::draw_form`, which forwards
+    // its own `self.nerd_fonts_enabled` (issue #913 review fix).
+    let flayout = mac_form_layout(form, area, line_height, font, false);
     if w <= 0.0 || h <= 0.0 {
         return flayout;
     }
@@ -469,6 +492,7 @@ mod tests {
                 QRect::new(0.0, 0.0, W as f32, H as f32),
                 b.line_height() as f64,
                 &font(),
+                false,
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -556,7 +580,7 @@ mod tests {
         // Area offset by (0, 40) — typical when a form lives below an
         // MSV section header.
         let area = QRect::new(0.0, 40.0, 320.0, 120.0);
-        let layout = mac_form_layout(&form, area, 16.0, &font());
+        let layout = mac_form_layout(&form, area, 16.0, &font(), false);
         // Locality: first field's bounds.y must be 0, not 40.
         let first = &layout.visible_fields[0];
         assert_eq!(
@@ -580,6 +604,64 @@ mod tests {
                 vis.id,
             );
         }
+    }
+
+    /// Issue #913 review fix: closes the layout/paint width-divergence
+    /// gap for a `FieldKind::Toolbar` with a registered `icon_overrides`
+    /// entry. `mac_form_layout` backs `MacBackend::form_layout` — the
+    /// real hit-test path `compose::form_controller::click_inner` calls
+    /// — so it must resolve overrides the same way `MacBackend::draw_form`
+    /// resolves them before painting the toolbar chrome.
+    #[test]
+    fn form_layout_resolves_toolbar_icon_override_width() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::types::Icon;
+
+        let toolbar = Toolbar::new(
+            WidgetId::new("tb"),
+            vec![ToolbarButton::Action {
+                id: WidgetId::new("a"),
+                label: "Go".into(),
+                icon: Some("stale".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+        )
+        .with_icon_override(
+            WidgetId::new("a"),
+            Icon::new("\u{f021}\u{f021}\u{f021}", "R"),
+        );
+
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("tb"),
+                label: StyledText::default(),
+                kind: FieldKind::Toolbar(toolbar),
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        let area = QRect::new(0.0, 0.0, 320.0, 120.0);
+        let f = font();
+
+        let fallback = mac_form_layout(&form, area, 16.0, &f, false);
+        let glyph = mac_form_layout(&form, area, 16.0, &f, true);
+
+        let fallback_w = fallback.visible_fields[0].item_bounds[0].1.width;
+        let glyph_w = glyph.visible_fields[0].item_bounds[0].1.width;
+
+        assert!(
+            glyph_w > fallback_w,
+            "a 3-glyph Nerd-Font icon should measure wider than the 1-char \
+             fallback: glyph_w={glyph_w}, fallback_w={fallback_w}"
+        );
     }
 
     // ── #189 ToggleGroup / SegmentedControl / ButtonRow / PasswordInput ──

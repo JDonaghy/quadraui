@@ -436,7 +436,14 @@ fn draw_form_body(
     theme: &Theme,
     line_height: f32,
 ) {
-    let flayout = super::form::win_form_layout(dwrite, bounds, form, line_height);
+    // `false`: wiring `nerd_fonts_enabled` through
+    // `draw_multi_section_view`'s own call chain to *this* call site is
+    // separate, unstarted scope — mirrors the identical `false` this
+    // module's `SectionBody::Tree` arm above passes, for the same
+    // reason (`nerd_fonts_enabled` isn't a parameter of `paint_body`
+    // yet). Preserves today's fallback-only behaviour for Form bodies
+    // nested in an MSV.
+    let flayout = super::form::win_form_layout(dwrite, bounds, form, line_height, false);
     let origin = crate::Point::new(bounds.x, bounds.y);
     let mut surface = super::form::RawFormSurface { target, dwrite };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
