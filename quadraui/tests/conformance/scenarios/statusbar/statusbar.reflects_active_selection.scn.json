@@ -1,0 +1,17 @@
+{
+  "id": "statusbar.reflects_active_selection",
+  "fixture": "shell_app",
+  "tier": 1,
+  "viewport": { "cols": 120, "rows": 40 },
+  "steps": [
+    { "note": "Status bar reactivity (quadraui#918): ShellApp's bottom status bar (a widget outside both the sidebar and the main content area) shows last_message, which the app updates on every SidebarEvent::RowSelected. Starting from the 'nothing selected' baseline, selecting one row must update it, and selecting a DIFFERENT row must update it again — not just show the first selection forever, and not just be correct in the single-click case layout/shell.sidebar_left_of_main already covers. Clicks use the right_edge anchor, matching that scenario's own precedent for resolving nested tree rows reliably." },
+    { "assert_screen_has": "nothing selected" },
+    { "click_text_at": { "text": "backend.rs", "anchor": "right_edge" } },
+    { "assert_screen_has": "Selected: section 1, row [0, 2]" },
+    { "assert_absent": "nothing selected" },
+    { "note": "A second, different selection must overwrite the first rather than append to it or stick." },
+    { "click_text_at": { "text": "types.rs", "anchor": "right_edge" } },
+    { "assert_screen_has": "Selected: section 1, row [0, 3]" },
+    { "assert_absent": "row [0, 2]" }
+  ]
+}

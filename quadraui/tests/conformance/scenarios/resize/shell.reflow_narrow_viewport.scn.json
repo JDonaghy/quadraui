@@ -1,0 +1,16 @@
+{
+  "id": "shell.reflow_narrow_viewport",
+  "fixture": "shell_app",
+  "tier": 1,
+  "viewport": { "cols": 90, "rows": 40 },
+  "steps": [
+    { "note": "Resize/reflow (quadraui#918): the same relational geometry layout/shell.sidebar_left_of_main proves at 120 cols, re-asserted at a narrower LogicalViewport (90, still well above AppShell's with_min_width/with_max_width clamps of 8/50 line-heights). There is no mid-scenario 'resize' step in schema v0 — every act step is unit-free by construction (schema.rs's no-coordinates invariant) — so the portable way to express 'the shell must still be usable at a smaller size' is to start at that size and show the same relations still hold, rather than to grow/shrink mid-run." },
+    { "assert_screen_has": "backend.rs" },
+    { "assert_left_of": { "a": "EXPLORER", "b": "Selected:" } },
+    { "assert_above": { "a": "EXPLORER", "b": "EDITORS" } },
+    { "assert_above": { "a": "EDITORS", "b": "PROJECT" } },
+    { "assert_above": { "a": "PROJECT", "b": "Tab=focus" } },
+    { "note": "The bottom status bar's right-priority hint segment (Tab=focus bar / q=quit) must still be reachable at the smaller width, not silently dropped by a reflow that only got tested at the original 120-column fixture." },
+    { "assert_screen_has": "q=quit" }
+  ]
+}
