@@ -447,6 +447,13 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
+        "resolve_tab_bar_layout_with_chrome",
+        "issue #919's `TabBarLayout`-returning counterpart to `tab_bar_layout_with_chrome` — same \
+         gap, same reason: #631's `TabFrame::Brackets` isn't wired to the CoreText tab-bar \
+         rasteriser, so this falls back to the plain `resolve_tab_bar_layout` geometry too",
+    ),
+    (
+        "macos",
         "snap_height",
         "pixel backend — CoreText paints fractional heights exactly, so the identity default is \
          correct, not unfinished work (quadraui#632)",
@@ -467,6 +474,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "win",
         "tab_bar_layout_with_chrome",
         "stub backend — see #19",
+    ),
+    (
+        "win",
+        "resolve_tab_bar_layout_with_chrome",
+        "issue #919's `TabBarLayout`-returning counterpart to `tab_bar_layout_with_chrome` — same \
+         stub-backend gap, see #19",
     ),
     (
         "win",

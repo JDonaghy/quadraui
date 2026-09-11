@@ -361,6 +361,15 @@ pub use split_tree::{draw_split_tree, win_split_tree_layout};
 pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
+// Issue #919's `TabBarLayout`-returning counterparts to the four above —
+// exported for the same reason: a consumer holding only the free
+// rasteriser fns (not going through `Backend`) gets the same additive
+// pair every other new-method site does.
+#[cfg(target_os = "windows")]
+pub use tab_bar::{
+    draw_tab_bar_icons_layout, draw_tab_bar_layout, win_tab_bar_native_layout,
+    win_tab_bar_native_layout_icons,
+};
 #[cfg(target_os = "windows")]
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]

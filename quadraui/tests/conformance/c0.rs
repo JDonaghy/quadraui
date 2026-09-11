@@ -197,6 +197,100 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        // Issue #919's `TabBarLayout`-returning counterpart to
+        // `draw_tab_bar` above — same content, same needle convention,
+        // just a different return type reaching the backend.
+        method: "draw_tab_bar_layout",
+        needle: Some("c0tabslayout"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-layout"),
+                tabs: vec![TabItem {
+                    label: " c0tabslayout ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let _ = b.draw_tab_bar_layout(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
+        },
+    },
+    Case {
+        // Issue #919's `TabBarLayout`-returning counterpart to
+        // `draw_tab_bar_icons` above.
+        method: "draw_tab_bar_icons_layout",
+        needle: Some("c0icontabslayout"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-icons-layout"),
+                tabs: vec![TabItem {
+                    label: " c0icontabslayout ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: false,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let icons = [Some(TabIcon {
+                glyph: "R".to_string(),
+                color: Color::rgb(222, 165, 132),
+            })];
+            let _ = b.draw_tab_bar_icons_layout(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                &icons,
+                None,
+            );
+        },
+    },
+    Case {
+        // Issue #919's `TabBarLayout`-returning counterpart to
+        // `draw_tab_bar_with_chrome` above — same non-default `Brackets`
+        // request, exercising the override on backends that honour it
+        // (TUI/GTK) and the trait default fallback on the ones that
+        // don't (macOS/Win).
+        method: "draw_tab_bar_with_chrome_layout",
+        needle: Some("c0chrometabslayout"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = TabBar {
+                id: id("tab-bar-chrome-layout"),
+                tabs: vec![TabItem {
+                    label: " c0chrometabslayout ".to_string(),
+                    is_active: true,
+                    is_dirty: false,
+                    is_preview: false,
+                    is_closable: true,
+                }],
+                scroll_offset: 0,
+                right_segments: vec![],
+                active_accent: None,
+                show_tab_close: true,
+                compact: false,
+            };
+            let chrome = TabChrome::new(TabFrame::Brackets);
+            let _ = b.draw_tab_bar_with_chrome_layout(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                None,
+                &chrome,
+            );
+        },
+    },
+    Case {
         method: "draw_command_line",
         needle: Some("c0cmd"),
         paint: |b, area| {
