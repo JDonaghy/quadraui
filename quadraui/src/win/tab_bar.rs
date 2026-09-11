@@ -189,6 +189,28 @@ pub fn win_tab_bar_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarHi
     win_tab_bar_layout_icons(dwrite, rect, bar, &[])
 }
 
+/// Compute a [`TabBar`]'s [`TabBarLayout`] without painting, for a bar
+/// decorated with per-tab icons — issue #919's `TabBarLayout`-returning
+/// counterpart to [`win_tab_bar_layout_icons`]. Unlike macOS's
+/// `mac_tab_bar_native_layout`, no duplicated measurement code is
+/// needed here: [`compute_layout`] already *is* the single measurement
+/// path both [`draw_tab_bar_icons`] and [`win_tab_bar_layout_icons`]
+/// narrow down to `TabBarHits` — this just returns it directly.
+pub fn win_tab_bar_native_layout_icons(
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<TabIcon>],
+) -> TabBarLayout {
+    compute_layout(dwrite, rect, bar, icons)
+}
+
+/// Compute a [`TabBar`]'s [`TabBarLayout`] without painting — the
+/// icon-less twin of [`win_tab_bar_native_layout_icons`].
+pub fn win_tab_bar_native_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarLayout {
+    win_tab_bar_native_layout_icons(dwrite, rect, bar, &[])
+}
+
 /// Draw a [`TabBar`] with per-tab icon glyphs (#620) into `rect` (DIPs)
 /// on `target`. Returns [`TabBarHits`] in **target-surface (absolute)**
 /// coordinates, matching [`crate::Backend::draw_tab_bar_icons`]'s
@@ -217,10 +239,47 @@ pub fn draw_tab_bar_icons(
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
 ) -> TabBarHits {
+    let layout = compute_layout(dwrite, rect, bar, icons);
+    paint_tab_bar_icons_from_layout(target, dwrite, rect, bar, icons, hovered_close_tab, &layout);
+    hits_from_layout(dwrite, rect, bar, icons, &layout)
+}
+
+/// Draw a [`TabBar`] with per-tab icon glyphs, returning [`TabBarLayout`]
+/// instead of the deprecated [`TabBarHits`] (issue #919) — the
+/// `TabBarLayout`-returning counterpart to [`draw_tab_bar_icons`] above.
+/// Shares [`compute_layout`] and [`paint_tab_bar_icons_from_layout`] with
+/// it, so the two can never paint different pixels — only the return
+/// value differs.
+pub fn draw_tab_bar_icons_layout(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<TabIcon>],
+    hovered_close_tab: Option<usize>,
+) -> TabBarLayout {
+    let layout = compute_layout(dwrite, rect, bar, icons);
+    paint_tab_bar_icons_from_layout(target, dwrite, rect, bar, icons, hovered_close_tab, &layout);
+    layout
+}
+
+/// Shared paint loop for [`draw_tab_bar_icons`] / [`draw_tab_bar_icons_layout`]
+/// — paints `bar` from a pre-computed `layout` and returns nothing, so
+/// both callers can hand back whichever return type (`TabBarHits` vs.
+/// `TabBarLayout`) their contract needs.
+#[allow(clippy::too_many_arguments)]
+fn paint_tab_bar_icons_from_layout(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<TabIcon>],
+    hovered_close_tab: Option<usize>,
+    layout: &TabBarLayout,
+) {
     let theme = Theme::default();
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
-    let layout = compute_layout(dwrite, rect, bar, icons);
     let close_w = close_glyph_width(dwrite, bar);
 
     for vt in &layout.visible_tabs {
@@ -331,8 +390,6 @@ pub fn draw_tab_bar_icons(
         );
         let _ = dwrite.draw_text(target, &seg.text, seg_rect, fg);
     }
-
-    hits_from_layout(dwrite, rect, bar, icons, &layout)
 }
 
 /// Draw a [`TabBar`] with no per-tab icons — [`draw_tab_bar_icons`] with
@@ -346,6 +403,19 @@ pub fn draw_tab_bar(
     hovered_close_tab: Option<usize>,
 ) -> TabBarHits {
     draw_tab_bar_icons(target, dwrite, rect, bar, &[], hovered_close_tab)
+}
+
+/// Draw a [`TabBar`] with no per-tab icons, returning [`TabBarLayout`]
+/// instead of the deprecated [`TabBarHits`] (issue #919) —
+/// [`draw_tab_bar_icons_layout`] with `icons: &[]`.
+pub fn draw_tab_bar_layout(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &TabBar,
+    hovered_close_tab: Option<usize>,
+) -> TabBarLayout {
+    draw_tab_bar_icons_layout(target, dwrite, rect, bar, &[], hovered_close_tab)
 }
 
 #[cfg(test)]
@@ -473,5 +543,66 @@ mod tests {
         let no_paint = win_tab_bar_layout(&dwrite, rect, &bar);
 
         assert_eq!(painted, no_paint);
+    }
+
+    /// Issue #919: the new `TabBarLayout`-returning fns
+    /// (`draw_tab_bar_layout` / `win_tab_bar_native_layout`) must agree
+    /// with each other exactly as their `TabBarHits`-returning siblings
+    /// do above — same bar, same rect, same measurer. Since both new
+    /// fns are thin wrappers over the shared `compute_layout` this is
+    /// mostly a wiring check, but it pins the paint path's `layout`
+    /// (post-paint) against the no-paint path's independently-called
+    /// `compute_layout` so the two can't silently diverge later.
+    #[test]
+    fn native_layout_no_paint_matches_native_layout_paint() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let bar = bar();
+        let rect = Rect::new(5.0, 0.0, W, H);
+
+        let surface = HeadlessSurface::new((W + 5.0) as u32, H as u32).expect("create surface");
+        let mut painted = None;
+        surface
+            .paint(|target| {
+                painted = Some(draw_tab_bar_layout(target, &dwrite, rect, &bar, None));
+            })
+            .expect("paint");
+        let painted = painted.expect("draw_tab_bar_layout ran");
+        let no_paint = win_tab_bar_native_layout(&dwrite, rect, &bar);
+
+        assert_eq!(painted, no_paint);
+    }
+
+    /// The `TabBarLayout`-returning accessor and the deprecated
+    /// `TabBarHits`-returning one must report the same geometry —
+    /// converting the former through the shared `tab_bar_hits_from_layout`
+    /// helper and comparing field-by-field against the latter's direct
+    /// output. This is the "twin" pattern issue #919 asks every backend
+    /// to cover; the other three each get their own version of this
+    /// test (`gtk::testing::tab_bar_layout_twin_matches_painted_geometry_headless`,
+    /// its TUI counterpart, and macOS's `native_layout_agrees_with_hits_layout`).
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn native_layout_agrees_with_hits_layout() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let bar = bar();
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let hits = win_tab_bar_layout(&dwrite, rect, &bar);
+        let native = win_tab_bar_native_layout(&dwrite, rect, &bar);
+        let mut native_as_hits = tab_bar_hits_from_layout(&native, &bar);
+        shift_tab_bar_hits(&mut native_as_hits, rect.x as f64);
+
+        assert_eq!(
+            hits.slot_positions, native_as_hits.slot_positions,
+            "tab slots must agree between the two accessors"
+        );
+        assert_eq!(
+            hits.close_bounds, native_as_hits.close_bounds,
+            "close-button spans must agree too"
+        );
+        assert_eq!(
+            hits.right_segment_bounds, native_as_hits.right_segment_bounds,
+            "right-segment spans must agree too"
+        );
     }
 }

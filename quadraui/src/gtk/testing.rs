@@ -1172,6 +1172,34 @@ mod tests {
         }
     }
 
+    /// Issue #919's `TabBarLayout`-returning counterpart to the test
+    /// above: [`Backend::resolve_tab_bar_layout`] must report the exact
+    /// geometry the bar was painted with too, headless and all — no
+    /// `TabBarHits` conversion involved this time, since `TabBarLayout`
+    /// is already the struct both the paint cache and this accessor
+    /// deal in directly.
+    #[test]
+    fn resolve_tab_bar_layout_matches_painted_geometry_headless() {
+        let app = InteractiveTabBarApp::new(0);
+        let mut driver = GtkDriver::new(app, TAB_BAR_W, TAB_BAR_H);
+        let bar = driver.app().bar();
+
+        let (rect, painted) = driver
+            .core
+            .backend()
+            .cached_tab_bar_layout(&bar.id)
+            .map(|(r, l)| (r, l.clone()))
+            .expect("the first frame painted the tab bar");
+        let resolved =
+            crate::Backend::resolve_tab_bar_layout(driver.core.backend_mut(), rect, &bar);
+
+        assert_eq!(
+            resolved, painted,
+            "`resolve_tab_bar_layout` must report exactly the `TabBarLayout` \
+             the bar was last painted with"
+        );
+    }
+
     /// Acceptance criterion: `driver.click(tab_close_center(&bar, 1))`
     /// closes tab 1 and does **not** merely activate it.
     #[test]

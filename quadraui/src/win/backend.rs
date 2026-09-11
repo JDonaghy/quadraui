@@ -92,12 +92,13 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-// `TabBarHits` is `#[deprecated]` (issue #823) — these six `Backend`
-// tab-bar methods still return it (this PR is the shim step only; the
-// six-method/four-backend signature swap to `TabBarLayout` is the
-// separate follow-up described on `TabBarHits`'s own doc), so the import
-// needs the same allow every use site below does. `win::tab_bar` does
-// compute a real `TabBarLayout` first and narrow it via
+// `TabBarHits` is `#[deprecated]` (issue #823) — the original six
+// `Backend` tab-bar methods still return it (issue #919 added six more,
+// additive, `TabBarLayout`-returning counterparts alongside them rather
+// than swapping the originals in place — see `TabBarLayout`'s own doc
+// for the full deprecate-then-remove plan), so the import needs the
+// same allow every use site below does. `win::tab_bar` does compute a
+// real `TabBarLayout` first and narrow it via
 // `backend::tab_bar_hits_from_layout` — unlike `macos::tab_bar`, which
 // builds the struct straight from Core Text metrics.
 #[allow(deprecated)]
@@ -111,7 +112,8 @@ use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Key, ListView, Modifiers, Palette,
-    ParsedBinding, StatusBar, TabBar, Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
+    ParsedBinding, StatusBar, TabBar, TabBarLayout, Terminal, TextDisplay, TooltipChrome, TreeView,
+    UserPayload,
 };
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
@@ -2120,6 +2122,17 @@ impl Backend for WinBackend {
         self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
     }
 
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar`] above.
+    fn draw_tab_bar_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout {
+        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
+    }
+
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -2144,6 +2157,32 @@ impl Backend for WinBackend {
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, bar, icons, hovered_close_tab);
         todo!("Direct2D tab bar rasteriser (with per-tab icons) — no surface attached yet")
+    }
+
+    /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
+    /// attached yet" fallback posture. Issue #919's `TabBarLayout`-
+    /// returning counterpart to [`Self::draw_tab_bar_icons`] above.
+    fn draw_tab_bar_icons_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            return super::tab_bar::draw_tab_bar_icons_layout(
+                &surface.target,
+                dwrite,
+                rect,
+                bar,
+                icons,
+                hovered_close_tab,
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, icons, hovered_close_tab);
+        todo!("Direct2D tab bar rasteriser (TabBarLayout, with per-tab icons) — no surface attached yet")
     }
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2198,6 +2237,12 @@ impl Backend for WinBackend {
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// [`Self::tab_bar_layout`] above.
+    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
+        self.resolve_tab_bar_layout_icons(rect, bar, &[])
+    }
+
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
     /// `self.dwrite`.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -2214,6 +2259,24 @@ impl Backend for WinBackend {
         #[cfg(not(target_os = "windows"))]
         let _ = (rect, bar, icons);
         todo!("DirectWrite tab bar layout (with per-tab icons) — no surface attached yet")
+    }
+
+    /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
+    /// `self.dwrite`. Issue #919's `TabBarLayout`-returning counterpart
+    /// to [`Self::tab_bar_layout_icons`] above.
+    fn resolve_tab_bar_layout_icons(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+    ) -> TabBarLayout {
+        #[cfg(target_os = "windows")]
+        if let Some(dwrite) = &self.dwrite {
+            return super::tab_bar::win_tab_bar_native_layout_icons(dwrite, rect, bar, icons);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = (rect, bar, icons);
+        todo!("DirectWrite tab bar layout (TabBarLayout, with per-tab icons) — no surface attached yet")
     }
 
     /// #25: activity-bar layout needs no measurer at all (uniform

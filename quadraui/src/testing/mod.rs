@@ -738,6 +738,23 @@ impl RecordingBackend {
     }
 }
 
+/// An empty [`crate::TabBarLayout`] — no tabs, no segments, no hit
+/// regions. `TabBarLayout` has no `Default` impl of its own (unlike
+/// `TabBarHits`), so the inert-but-real stub every other `*_layout`
+/// getter on this mock returns needs a literal instead.
+fn empty_tab_bar_layout() -> crate::TabBarLayout {
+    crate::TabBarLayout {
+        bar_width: 0.0,
+        bar_height: 0.0,
+        visible_tabs: Vec::new(),
+        visible_segments: Vec::new(),
+        scroll_left: None,
+        scroll_right: None,
+        hit_regions: Vec::new(),
+        resolved_scroll_offset: 0,
+    }
+}
+
 impl crate::backend::sealed::Sealed for RecordingBackend {}
 
 impl crate::Backend for RecordingBackend {
@@ -896,6 +913,29 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_tab_bar_icons");
         crate::TabBarHits::default()
     }
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// `draw_tab_bar` above — same inert-but-real default posture.
+    fn draw_tab_bar_layout(
+        &mut self,
+        _r: Rect,
+        _b: &crate::TabBar,
+        _h: Option<usize>,
+    ) -> crate::TabBarLayout {
+        self.record("draw_tab_bar_layout");
+        empty_tab_bar_layout()
+    }
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// `draw_tab_bar_icons` above.
+    fn draw_tab_bar_icons_layout(
+        &mut self,
+        _r: Rect,
+        _b: &crate::TabBar,
+        _icons: &[Option<crate::TabIcon>],
+        _h: Option<usize>,
+    ) -> crate::TabBarLayout {
+        self.record("draw_tab_bar_icons_layout");
+        empty_tab_bar_layout()
+    }
     /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
     /// real body (`Vec::new()`) wins for the same reason;
     /// `AppShell::render` calls this for real.
@@ -948,6 +988,21 @@ impl crate::Backend for RecordingBackend {
         _icons: &[Option<crate::TabIcon>],
     ) -> crate::TabBarHits {
         crate::TabBarHits::default()
+    }
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// `tab_bar_layout` above.
+    fn resolve_tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarLayout {
+        empty_tab_bar_layout()
+    }
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// `tab_bar_layout_icons` above.
+    fn resolve_tab_bar_layout_icons(
+        &self,
+        _r: Rect,
+        _b: &crate::TabBar,
+        _icons: &[Option<crate::TabIcon>],
+    ) -> crate::TabBarLayout {
+        empty_tab_bar_layout()
     }
     fn activity_bar_layout(
         &self,

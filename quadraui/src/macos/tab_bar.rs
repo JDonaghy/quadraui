@@ -24,12 +24,18 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-// `TabBarHits` is `#[deprecated]` (issue #823) — this backend still
-// constructs it directly (per #504's audit: `macos::tab_bar` has no
-// intermediate `TabBarLayout` to source native coordinates from), so the
-// import needs the same allow every use site below does.
+// `TabBarHits` is `#[deprecated]` (issue #823) — `mac_tab_bar_layout`
+// still constructs it directly rather than narrowing it down from a
+// `TabBarLayout`, per #504's original audit — so the import needs the
+// same allow every use site below does. Issue #919 added
+// `mac_tab_bar_native_layout`, a *second*, independently-computed
+// function that builds the real `TabBarLayout` `Backend::resolve_tab_bar_layout`
+// exposes; see that function's doc for why it duplicates rather than
+// shares `mac_tab_bar_layout`'s measurement code.
+use crate::event::Rect;
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
+use crate::primitives::tab_bar::{TabBarHit, TabBarLayout, VisibleSegment, VisibleTab};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -173,6 +179,174 @@ pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits
         right_segment_bounds,
         available_cols,
         correct_scroll_offset,
+    }
+}
+
+/// Compute the [`TabBarLayout`] [`draw_tab_bar`] paints, without
+/// painting — issue #919's `TabBarLayout`-returning counterpart to
+/// [`mac_tab_bar_layout`], backing [`crate::Backend::resolve_tab_bar_layout`].
+///
+/// # Why this duplicates `mac_tab_bar_layout` instead of sharing it
+///
+/// Every other backend derives its `TabBarHits` by calling
+/// [`crate::TabBar::layout`] (the shared D6 layout API) and narrowing the
+/// resulting `TabBarLayout` down via
+/// [`crate::backend::tab_bar_hits_from_layout`]. macOS never adopted that
+/// path (#504's audit) — `mac_tab_bar_layout` above measures and
+/// positions tabs by hand, one `f64` tuple at a time, with no
+/// intermediate `TabBarLayout` to source native `Rect` coordinates from.
+/// Retrofitting `mac_tab_bar_layout` onto the shared layout API is real,
+/// independent rasteriser work (out of scope for this additive-only
+/// issue — see its "Scope" section), so this function instead mirrors
+/// `mac_tab_bar_layout`'s measurement expressions line-for-line and
+/// builds a `TabBarLayout` directly. `native_layout_agrees_with_hits_layout`
+/// (below) pins the two against each other so they cannot silently
+/// drift apart.
+///
+/// # Coordinate space — bar-relative, matching `mac_tab_bar_layout`
+///
+/// Same x-axis convention as `mac_tab_bar_layout` (see its doc): macOS
+/// paints tabs from `x = 0`, never shifted by `rect.x`, so both this
+/// and that function are already bar-relative in x — no `TabBarHits`
+/// absolute-coordinate divergence to account for. `height` (the caller's
+/// `rect.height`) becomes every tab's `bounds.height`, and every
+/// `bounds.y` is `0.0` — [`TabBarLayout`]'s own documented convention
+/// (origin at the bar's top-left).
+pub fn mac_tab_bar_native_layout(
+    font: &CTFont,
+    width: f64,
+    height: f64,
+    bar: &TabBar,
+) -> TabBarLayout {
+    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
+    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
+    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+
+    // ── Right-segment widths (reserved before tabs get their budget) ──
+    let right_widths: Vec<f64> = bar
+        .right_segments
+        .iter()
+        .map(|seg| measure_text(font, &seg.text).0)
+        .collect();
+    let reserved_px: f64 = right_widths.iter().sum();
+    let effective_tab_area = (width - reserved_px).max(0.0);
+
+    let close_w = if bar.show_tab_close {
+        measure_text(font, "×").0
+    } else {
+        0.0
+    };
+    let close_extra_for = |tab_idx: usize| -> f64 {
+        if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
+            tab_inner_gap + close_w
+        } else {
+            0.0
+        }
+    };
+
+    // Pre-measure every tab's full slot width — used for scroll-offset
+    // resolution, exactly as `mac_tab_bar_layout` does.
+    let tab_slot_widths: Vec<f64> = bar
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| {
+            let (name_w, _) = measure_text(font, &tab.label);
+            tab_pad + name_w + close_extra_for(i) + tab_pad + tab_outer_gap
+        })
+        .collect();
+
+    let active_idx = bar.tabs.iter().position(|t| t.is_active);
+    let resolved_scroll_offset = if let Some(active) = active_idx {
+        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
+            tab_slot_widths[i] as usize
+        })
+    } else {
+        bar.scroll_offset
+    };
+
+    // ── Visible tabs ─────────────────────────────────────────────────
+    // Painted from `bar.scroll_offset` (the caller's value), not the
+    // freshly-resolved `resolved_scroll_offset` above — exactly what
+    // `mac_tab_bar_layout` does: the "engine feedback" correction is
+    // reported back for the *next* frame's caller to apply, not applied
+    // to this one. Unlike `TabBarHits`, there is no `(0.0, 0.0)`
+    // sentinel padding to keep vector indices aligned — `visible_tabs`
+    // is sparse and carries its own `tab_idx`, matching every other
+    // backend's `TabBarLayout`.
+    let mut visible_tabs: Vec<VisibleTab> = Vec::new();
+    let mut close_regions: Vec<(Rect, TabBarHit)> = Vec::new();
+    let mut body_regions: Vec<(Rect, TabBarHit)> = Vec::new();
+
+    let mut x = 0.0_f64;
+    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
+        let (tab_name_w, _) = measure_text(font, &tab.label);
+        let tab_content_w = tab_pad + tab_name_w + close_extra_for(tab_idx) + tab_pad;
+        let slot_w = tab_content_w + tab_outer_gap;
+        if x + slot_w > effective_tab_area {
+            break;
+        }
+        let bounds = Rect::new(x as f32, 0.0, slot_w as f32, height as f32);
+
+        let close_bounds = if bar.show_tab_close && tab.is_closable {
+            let close_x = x + tab_pad + tab_name_w + tab_inner_gap;
+            let cb = Rect::new(
+                (close_x - CLOSE_PAD) as f32,
+                0.0,
+                (close_w + 2.0 * CLOSE_PAD) as f32,
+                height as f32,
+            );
+            close_regions.push((cb, TabBarHit::TabClose(tab_idx)));
+            Some(cb)
+        } else {
+            None
+        };
+
+        body_regions.push((bounds, TabBarHit::Tab(tab_idx)));
+        visible_tabs.push(VisibleTab {
+            tab_idx,
+            bounds,
+            close_bounds,
+        });
+
+        x += slot_w;
+    }
+
+    // Close regions before body regions — matches `TabBar::layout`'s own
+    // hit-region ordering (close-before-body) so `hit_test` returns the
+    // more-specific close hit when the pointer is on the × glyph.
+    let mut hit_regions: Vec<(Rect, TabBarHit)> =
+        Vec::with_capacity(close_regions.len() + body_regions.len());
+    hit_regions.extend(close_regions);
+    hit_regions.extend(body_regions);
+
+    // ── Right segments ───────────────────────────────────────────────
+    let mut visible_segments: Vec<VisibleSegment> = Vec::with_capacity(right_widths.len());
+    let mut sx = width - reserved_px;
+    for (segment_idx, seg_w) in right_widths.iter().enumerate() {
+        let bounds = Rect::new(sx as f32, 0.0, *seg_w as f32, height as f32);
+        let seg = &bar.right_segments[segment_idx];
+        let clickable = seg.id.is_some();
+        if let Some(id) = &seg.id {
+            hit_regions.push((bounds, TabBarHit::RightSegment(id.clone())));
+        }
+        visible_segments.push(VisibleSegment {
+            segment_idx,
+            bounds,
+            clickable,
+        });
+        sx += seg_w;
+    }
+
+    TabBarLayout {
+        bar_width: width as f32,
+        bar_height: height as f32,
+        visible_tabs,
+        visible_segments,
+        scroll_left: None,
+        scroll_right: None,
+        hit_regions,
+        resolved_scroll_offset,
     }
 }
 
@@ -629,6 +803,43 @@ mod tests {
         assert_eq!(
             painted.correct_scroll_offset,
             computed.correct_scroll_offset
+        );
+    }
+
+    /// Issue #919: `mac_tab_bar_native_layout` — the new `TabBarLayout`-
+    /// returning function backing `Backend::resolve_tab_bar_layout` —
+    /// must report exactly the same geometry `mac_tab_bar_layout`
+    /// (the deprecated `TabBarHits`-returning one) does, since the two
+    /// duplicate rather than share their measurement code (see
+    /// `mac_tab_bar_native_layout`'s doc for why). Converting the new
+    /// function's `TabBarLayout` through the shared
+    /// `tab_bar_hits_from_layout` helper and comparing field-by-field
+    /// against the old function's direct output pins the two together.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn native_layout_agrees_with_hits_layout() {
+        let bar = sample_bar();
+        let f = font();
+
+        let hits = mac_tab_bar_layout(&f, W as f64, &bar);
+        let native = mac_tab_bar_native_layout(&f, W as f64, H as f64, &bar);
+        let native_as_hits = crate::backend::tab_bar_hits_from_layout(&native, &bar);
+
+        assert_eq!(
+            hits.slot_positions, native_as_hits.slot_positions,
+            "tab slots must agree between the two independently-computed layouts"
+        );
+        assert_eq!(
+            hits.close_bounds, native_as_hits.close_bounds,
+            "close-button spans must agree too"
+        );
+        assert_eq!(
+            hits.right_segment_bounds, native_as_hits.right_segment_bounds,
+            "right-segment spans must agree too"
+        );
+        assert_eq!(
+            hits.correct_scroll_offset, native.resolved_scroll_offset,
+            "the \"fit active tab\" scroll correction must agree"
         );
     }
 

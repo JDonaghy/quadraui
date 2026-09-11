@@ -864,6 +864,23 @@ mod tests {
         ) -> crate::TabBarHits {
             unimplemented!()
         }
+        fn draw_tab_bar_layout(
+            &mut self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _h: Option<usize>,
+        ) -> crate::TabBarLayout {
+            unimplemented!()
+        }
+        fn draw_tab_bar_icons_layout(
+            &mut self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _icons: &[Option<crate::TabIcon>],
+            _h: Option<usize>,
+        ) -> crate::TabBarLayout {
+            unimplemented!()
+        }
         fn draw_activity_bar(
             &mut self,
             _r: Rect,
@@ -895,6 +912,35 @@ mod tests {
         #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
         fn tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarHits {
             crate::TabBarHits::default()
+        }
+        fn resolve_tab_bar_layout(&self, _r: Rect, _b: &crate::TabBar) -> crate::TabBarLayout {
+            crate::TabBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_tabs: Vec::new(),
+                visible_segments: Vec::new(),
+                scroll_left: None,
+                scroll_right: None,
+                hit_regions: Vec::new(),
+                resolved_scroll_offset: 0,
+            }
+        }
+        fn resolve_tab_bar_layout_icons(
+            &self,
+            _r: Rect,
+            _b: &crate::TabBar,
+            _icons: &[Option<crate::TabIcon>],
+        ) -> crate::TabBarLayout {
+            crate::TabBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_tabs: Vec::new(),
+                visible_segments: Vec::new(),
+                scroll_left: None,
+                scroll_right: None,
+                hit_regions: Vec::new(),
+                resolved_scroll_offset: 0,
+            }
         }
         #[allow(deprecated)] // `TabBarHits` is `#[deprecated]` (issue #823)
         fn tab_bar_layout_icons(

@@ -1462,6 +1462,34 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
+    /// Draw a tab bar, returning [`TabBarLayout`] instead of the
+    /// deprecated [`TabBarHits`] (issue #919).
+    ///
+    /// #823 deprecated `TabBarHits` but left every accessor returning it
+    /// with no replacement a consumer could call instead — #919 is that
+    /// replacement, added *alongside* [`Self::draw_tab_bar`] rather than
+    /// in place of it, so no existing caller breaks (`CLAUDE.md` rule 8).
+    /// Paints exactly what [`Self::draw_tab_bar`] paints (icon-less
+    /// sidecar of [`Self::draw_tab_bar_icons_layout`]); the two must never
+    /// drift apart, same invariant [`Self::draw_tab_bar`] already holds
+    /// against [`Self::draw_tab_bar_icons`].
+    ///
+    /// Returned in [`TabBarLayout`]'s own **bar-relative** coordinate
+    /// space (origin at `rect`'s top-left) — see that struct's doc. This
+    /// is deliberately *not* the target-surface-absolute space
+    /// [`TabBarHits`] uses; the two return types have different,
+    /// independently-documented contracts, and this method follows
+    /// `TabBarLayout`'s.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser, mirroring
+    /// [`Self::draw_tab_bar`]'s own no-default rule (rule 7).
+    fn draw_tab_bar_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout;
     /// Draw a tab bar with per-tab icon glyphs (#620) — VS Code's
     /// coloured language/file-type badge on each tab.
     ///
@@ -1500,6 +1528,22 @@ pub trait Backend: sealed::Sealed {
         icons: &[Option<TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
+    /// Draw a tab bar with per-tab icon glyphs, returning [`TabBarLayout`]
+    /// instead of the deprecated [`TabBarHits`] (issue #919). The
+    /// icon-aware twin of [`Self::draw_tab_bar_layout`], exactly as
+    /// [`Self::draw_tab_bar_icons`] is the twin of [`Self::draw_tab_bar`]
+    /// — same `icons` sidecar convention, same bar-relative coordinate
+    /// space as [`Self::draw_tab_bar_layout`].
+    ///
+    /// No default impl — same rule-7 reasoning as
+    /// [`Self::draw_tab_bar_icons`].
+    fn draw_tab_bar_icons_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout;
     /// Draw a tab bar with an explicit [`TabChrome`] request (#631): which
     /// decoration, if any, should enclose the active tab's full content
     /// (label *and* close glyph).
@@ -1527,6 +1571,24 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarHits {
         let _ = chrome;
         self.draw_tab_bar(rect, bar, hovered_close_tab)
+    }
+    /// Draw a tab bar with an explicit [`TabChrome`] request, returning
+    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] (issue
+    /// #919) — the `TabBarLayout`-returning twin of
+    /// [`Self::draw_tab_bar_with_chrome`].
+    ///
+    /// Default body **ignores `chrome`** and delegates to
+    /// [`Self::draw_tab_bar_layout`], matching
+    /// [`Self::draw_tab_bar_with_chrome`]'s own default exactly.
+    fn draw_tab_bar_with_chrome_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+        chrome: &TabChrome,
+    ) -> TabBarLayout {
+        let _ = chrome;
+        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
     }
     /// Draw an activity bar. `hovered_idx` carries per-frame hover
     /// state so the rasteriser can paint a tint on the hovered row.
@@ -1648,6 +1710,28 @@ pub trait Backend: sealed::Sealed {
     #[allow(deprecated)]
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
+    /// Compute the tab bar layout without painting, returning
+    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] (issue
+    /// #919). The `TabBarLayout`-returning twin of [`Self::tab_bar_layout`],
+    /// added alongside it rather than in place of it (`CLAUDE.md` rule 8)
+    /// — every backend already resolves this geometry internally before
+    /// narrowing it down to `TabBarHits`; this exposes it directly.
+    ///
+    /// Returned in `TabBarLayout`'s own **bar-relative** space — see that
+    /// struct's doc — which is the *opposite* convention from
+    /// [`Self::tab_bar_layout`]'s documented absolute one. This is not a
+    /// coordinate-space bug: the two return types each follow their own
+    /// struct's contract, same split `TabBarLayout`'s own doc draws
+    /// against `Self::draw_activity_bar` / `Self::activity_bar_layout`.
+    /// A caller wanting an absolute point adds the bar's own `rect.x` /
+    /// `rect.y` origin, exactly as [`TabBarLayout::tab_center`] /
+    /// [`TabBarLayout::tab_close_center`]'s docs already describe for
+    /// `TuiDriver` / `GtkDriver`.
+    ///
+    /// No default impl — same rule-7 reasoning as
+    /// [`Self::tab_bar_layout_icons`].
+    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout;
+
     /// Compute the tab bar layout without painting, for a bar painted
     /// with per-tab icons (#620). The no-paint twin of
     /// [`Self::draw_tab_bar_icons`], exactly as [`Self::tab_bar_layout`]
@@ -1671,6 +1755,23 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         icons: &[Option<TabIcon>],
     ) -> TabBarHits;
+
+    /// Compute the tab bar layout without painting, for a bar painted
+    /// with per-tab icons, returning [`TabBarLayout`] instead of the
+    /// deprecated [`TabBarHits`] (issue #919). The icon-aware twin of
+    /// [`Self::resolve_tab_bar_layout`], exactly as
+    /// [`Self::tab_bar_layout_icons`] is the twin of
+    /// [`Self::tab_bar_layout`] — same `icons` sidecar convention, same
+    /// bar-relative coordinate space as [`Self::resolve_tab_bar_layout`].
+    ///
+    /// No default impl — same rule-7 reasoning as
+    /// [`Self::tab_bar_layout_icons`].
+    fn resolve_tab_bar_layout_icons(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<TabIcon>],
+    ) -> TabBarLayout;
 
     /// Compute the tab bar layout without painting, for a bar painted
     /// with [`Self::draw_tab_bar_with_chrome`] (#631). The no-paint twin
@@ -1697,6 +1798,24 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarHits {
         let _ = chrome;
         self.tab_bar_layout(rect, bar)
+    }
+
+    /// Compute the tab bar layout without painting, for a bar painted
+    /// with chrome, returning [`TabBarLayout`] instead of the deprecated
+    /// [`TabBarHits`] (issue #919) — the `TabBarLayout`-returning twin of
+    /// [`Self::tab_bar_layout_with_chrome`].
+    ///
+    /// Default body ignores `chrome` and delegates to
+    /// [`Self::resolve_tab_bar_layout`], matching
+    /// [`Self::tab_bar_layout_with_chrome`]'s own default exactly.
+    fn resolve_tab_bar_layout_with_chrome(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        chrome: &TabChrome,
+    ) -> TabBarLayout {
+        let _ = chrome;
+        self.resolve_tab_bar_layout(rect, bar)
     }
 
     /// Compute activity bar row hit regions without painting. Returns

@@ -93,8 +93,8 @@ use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, FieldKind, Form, Key, ListView,
-    Modifiers, Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, Terminal, TextDisplay,
-    Theme, TreeView,
+    Modifiers, Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, TabBarLayout, Terminal,
+    TextDisplay, Theme, TreeView,
 };
 
 use super::services::MacPlatformServices;
@@ -1605,6 +1605,64 @@ impl Backend for MacBackend {
         );
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar`] above. Paints exactly as that method does
+    /// (discarding the deprecated `TabBarHits` it returns), then
+    /// separately resolves the real `TabBarLayout` via
+    /// [`super::tab_bar::mac_tab_bar_native_layout`] — see that
+    /// function's doc for why macOS can't share one measurement path
+    /// between its `TabBarHits` and `TabBarLayout` accessors the way
+    /// TUI/GTK/Win do.
+    fn draw_tab_bar_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_tab_bar_layout called outside enter_frame_scope",
+        );
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_tab_bar_layout requires set_current_font");
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        // SAFETY: `ctx` is non-null inside the frame scope.
+        #[allow(deprecated)] // discarded `TabBarHits` — issue #823
+        unsafe {
+            let _ = super::tab_bar::draw_tab_bar(
+                ctx,
+                font,
+                rect.width as f64,
+                line_height,
+                rect.y as f64,
+                rect.height as f64,
+                bar,
+                &theme,
+                hovered_close_tab,
+            );
+        }
+        super::tab_bar::mac_tab_bar_native_layout(font, rect.width as f64, rect.height as f64, bar)
+    }
+    /// See [`Self::draw_tab_bar_icons`]'s doc — same icon gap, same
+    /// icon-less forward (#620 follow-up).
+    fn draw_tab_bar_icons_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout {
+        debug_assert!(
+            icons.iter().all(Option::is_none),
+            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
+             tabs will paint without their icons",
+        );
+        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
+    }
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -1743,6 +1801,49 @@ impl Backend for MacBackend {
              layout reserves no icon width",
         );
         self.tab_bar_layout(rect, bar)
+    }
+
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// [`Self::tab_bar_layout`] above, routed through
+    /// [`super::tab_bar::mac_tab_bar_native_layout`] — see that
+    /// function's doc for why macOS can't share one measurement path
+    /// between its `TabBarHits` and `TabBarLayout` accessors.
+    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
+        match self.current_font.as_ref() {
+            Some(font) => super::tab_bar::mac_tab_bar_native_layout(
+                font,
+                rect.width as f64,
+                rect.height as f64,
+                bar,
+            ),
+            None => TabBarLayout {
+                bar_width: rect.width,
+                bar_height: rect.height,
+                visible_tabs: Vec::new(),
+                visible_segments: Vec::new(),
+                scroll_left: None,
+                scroll_right: None,
+                hit_regions: Vec::new(),
+                resolved_scroll_offset: bar.scroll_offset,
+            },
+        }
+    }
+
+    /// No-paint twin of [`Self::draw_tab_bar_icons_layout`] — and, like
+    /// [`Self::tab_bar_layout_icons`], an icon-less forward until macOS
+    /// grows a CoreText icon-width pass (#620 follow-up).
+    fn resolve_tab_bar_layout_icons(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+    ) -> TabBarLayout {
+        debug_assert!(
+            icons.iter().all(Option::is_none),
+            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
+             layout reserves no icon width",
+        );
+        self.resolve_tab_bar_layout(rect, bar)
     }
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
