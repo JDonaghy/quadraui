@@ -1,0 +1,15 @@
+{
+  "id": "traversal.tab_cycles_widgets",
+  "fixture": "tab_group_demo",
+  "tier": 1,
+  "viewport": { "cols": 100, "rows": 30 },
+  "steps": [
+    { "note": "Keyboard focus traversal (quadraui#918): Tab cycles focus across the two panes of a TabGroupController via FocusGroup::cycle, which wraps at the last index back to the first (see compose/focus_group.rs's cycle_forward_wraps unit test) — the same primitive AppShell's own activity-bar cursor deliberately does NOT use (that one saturates at the ends, per compose/app_shell.rs). This scenario proves the wrapping variant end to end through a real AppLogic, not just the primitive in isolation. The fixture starts with pane 0 already focused (TabGroupDemo::new calls focus_pane(0))." },
+    { "assert_screen_has": "focus: 0" },
+    { "press": "Tab" },
+    { "assert_screen_has": "focus: 1" },
+    { "note": "A second Tab wraps back to pane 0 rather than saturating or going out of range — the wrap, not just the cycle, is what this scenario is for." },
+    { "press": "Tab" },
+    { "assert_screen_has": "focus: 0" }
+  ]
+}
