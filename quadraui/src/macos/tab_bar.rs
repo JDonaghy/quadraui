@@ -512,7 +512,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::tab_bar::{TabBar, TabItem};
+    use crate::primitives::tab_bar::{TabBar, TabIcon, TabItem};
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::Backend;
@@ -867,5 +867,86 @@ mod tests {
             inked,
             "close box [{lo}, {hi}] contains no painted glyph — hits and paint have drifted",
         );
+    }
+
+    /// Issue #931: `draw_tab_bar_icons` used to abort the whole process
+    /// (via a `debug_assert!` that unwound across the AppKit `drawRect:`
+    /// frame, which AppKit can't catch) on the first frame that painted
+    /// a **non-empty** icon sidecar — exactly the input a default
+    /// `use_nerd_fonts = true` app hits on frame one. This pins the fix:
+    /// painting with real icons present must complete and must match the
+    /// icon-less `draw_tab_bar` output exactly. The #620 gap itself is
+    /// still open (icons are dropped, not drawn), but dropping them must
+    /// not be fatal.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_icons_with_non_empty_sidecar_does_not_abort() {
+        let bar = sample_bar();
+        let icons = vec![
+            Some(TabIcon {
+                glyph: "\u{f1c9}".into(),
+                color: Color::rgb(200, 200, 200),
+            }),
+            None,
+        ];
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h =
+                b.draw_tab_bar_icons(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, &icons, None);
+            *hits.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        let hits = hits.into_inner().unwrap();
+
+        // Must match the icon-less paint exactly — #620 is still a gap
+        // (icons are dropped, not drawn), but reaching this assertion at
+        // all is the regression test: the old `debug_assert!` never let
+        // execution get here.
+        let (_icon_less_surface, icon_less_hits) = paint_via_backend(&bar, None);
+        assert_eq!(hits.slot_positions, icon_less_hits.slot_positions);
+        assert_eq!(hits.close_bounds, icon_less_hits.close_bounds);
+    }
+
+    /// Same #931 non-abort guarantee for the layout-only twins
+    /// (`draw_tab_bar_icons_layout`, `tab_bar_layout_icons`,
+    /// `resolve_tab_bar_layout_icons`) — none of these paint, but all
+    /// four shared the same `debug_assert!` guard before the fix.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn layout_only_icon_twins_with_non_empty_sidecar_do_not_abort() {
+        let bar = sample_bar();
+        let icons = vec![
+            Some(TabIcon {
+                glyph: "\u{f1c9}".into(),
+                color: Color::rgb(200, 200, 200),
+            }),
+            None,
+        ];
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+
+        let icon_hits = backend.tab_bar_layout_icons(rect, &bar, &icons);
+        let plain_hits = backend.tab_bar_layout(rect, &bar);
+        assert_eq!(icon_hits.slot_positions, plain_hits.slot_positions);
+
+        let icon_layout = backend.resolve_tab_bar_layout_icons(rect, &bar, &icons);
+        let plain_layout = backend.resolve_tab_bar_layout(rect, &bar);
+        assert_eq!(icon_layout.visible_tabs, plain_layout.visible_tabs);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let _ = b.draw_tab_bar_icons_layout(rect, &bar, &icons, None);
+        });
+        backend.end_frame();
     }
 }
