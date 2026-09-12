@@ -96,6 +96,33 @@
 //! (gtk/tui — see [`BACKENDS`]), or a `cfg(...)` whose inner tokens don't
 //! parse as a `syn::Meta` at all.
 //!
+//! ## Statement-position macro calls
+//!
+//! `syn` represents a macro invocation used as a mid-block statement
+//! differently depending on how it ends: a bare tail expression parses as
+//! `Stmt::Expr(Expr::Macro(...), None)` (handled by `visit_expr` above),
+//! but a semicolon-terminated or brace-delimited macro *statement* —
+//! `todo!("x");` sitting above other code in the same block, e.g.
+//! `fn f(&mut self) { todo!("x"); more_code(); }` — parses as the
+//! completely separate `Stmt::Macro(StmtMacro)` variant instead. An
+//! earlier version of this checker only overrode `visit_expr` and had no
+//! `visit_stmt_macro`, so that shape was invisible to it: not `Dangerous`,
+//! not `Exempt`, not `Unclassifiable` — simply never visited as a macro
+//! call at all. `Walker::visit_stmt_macro` below runs the identical
+//! gate-lookup/classification logic for this shape so it can't recur; see
+//! `self_test::semicolon_terminated_todo_statement_is_dangerous`.
+//!
+//! ## Match-arm `#[cfg(...)]` (not applicable today)
+//!
+//! `syn::Arm` also carries its own `attrs`, so a per-arm `#[cfg(...)]` on a
+//! `match` arm is a theoretically distinct gating shape this walker does
+//! not special-case (no `visit_arm` override — a `todo!()` inside an arm is
+//! only checked against the enclosing fn/block's gate, not the arm's own).
+//! No backend uses this pattern today (confirmed by grep across
+//! `src/{tui,gtk,macos,win}/`), so it has zero live impact; flagged here so
+//! it isn't rediscovered as a silent gap the way statement-position macros
+//! were.
+//!
 //! ## Scope
 //!
 //! Only `src/tui/`, `src/gtk/`, `src/macos/`, `src/win/` — "each backend's
@@ -140,7 +167,7 @@ use syn::{
     ExprIf, ExprIndex, ExprInfer, ExprLet, ExprLit, ExprLoop, ExprMacro, ExprMatch, ExprMethodCall,
     ExprParen, ExprPath, ExprRange, ExprReference, ExprRepeat, ExprReturn, ExprStruct, ExprTry,
     ExprTryBlock, ExprTuple, ExprUnary, ExprUnsafe, ExprWhile, ExprYield, ImplItemFn, ItemFn,
-    ItemImpl, ItemMod, Local, Meta,
+    ItemImpl, ItemMod, Local, Macro, Meta, StmtMacro,
 };
 
 /// `(source subdirectory, this backend's native `target_os`)`. `None` means
@@ -453,6 +480,50 @@ impl<'a> Walker<'a> {
             .cloned()
             .unwrap_or_else(|| "<file scope>".to_string())
     }
+
+    /// Shared by every syntax shape a `todo!()`/`unimplemented!()` call can
+    /// take (tail-expression via `visit_expr`, or a semicolon-terminated /
+    /// brace-delimited statement via `visit_stmt_macro`): if `mac` names one
+    /// of the two macros, classify it against the gate on top of
+    /// `gate_stack` and record a [`Finding`] unless it's exempt. Must be
+    /// called only after the node's own attrs have already been pushed onto
+    /// `gate_stack` by the caller.
+    fn check_macro_call(&mut self, mac: &Macro) {
+        let name = mac
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+        if name != "todo" && name != "unimplemented" {
+            return;
+        }
+        let gate = self.gate_stack.last().unwrap().clone();
+        let line = mac.span().start().line;
+        let message_key = mac.tokens.to_string();
+        let context = self.context();
+        match gate {
+            Gate::Reachable => self.findings.push(Finding {
+                kind: Kind::Dangerous,
+                file: self.file.to_path_buf(),
+                line,
+                macro_name: name,
+                message_key,
+                context,
+                detail: "no cfg excludes this call from a native build — reachable".to_string(),
+            }),
+            Gate::Exempt(_) => {}
+            Gate::Unclassifiable(reason) => self.findings.push(Finding {
+                kind: Kind::Unclassifiable,
+                file: self.file.to_path_buf(),
+                line,
+                macro_name: name,
+                message_key,
+                context,
+                detail: reason,
+            }),
+        }
+    }
 }
 
 impl<'a, 'ast> Visit<'ast> for Walker<'a> {
@@ -490,44 +561,23 @@ impl<'a, 'ast> Visit<'ast> for Walker<'a> {
         self.pop();
     }
 
+    /// Handles a macro invocation used as an ordinary, semicolon-terminated
+    /// (or brace-delimited) statement — `syn`'s `Stmt::Macro(StmtMacro)`,
+    /// distinct from the tail-expression `Stmt::Expr(Expr::Macro(...), _)`
+    /// shape `visit_expr` already covers. See the module doc's
+    /// "Statement-position macro calls" section.
+    fn visit_stmt_macro(&mut self, node: &'ast StmtMacro) {
+        self.push(&node.attrs);
+        self.check_macro_call(&node.mac);
+        visit::visit_stmt_macro(self, node);
+        self.pop();
+    }
+
     fn visit_expr(&mut self, node: &'ast Expr) {
         self.push(expr_attrs(node));
-        let gate = self.gate_stack.last().unwrap().clone();
 
         if let Expr::Macro(ExprMacro { mac, .. }) = node {
-            let name = mac
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident.to_string())
-                .unwrap_or_default();
-            if name == "todo" || name == "unimplemented" {
-                let line = mac.span().start().line;
-                let message_key = mac.tokens.to_string();
-                let context = self.context();
-                match gate {
-                    Gate::Reachable => self.findings.push(Finding {
-                        kind: Kind::Dangerous,
-                        file: self.file.to_path_buf(),
-                        line,
-                        macro_name: name,
-                        message_key,
-                        context,
-                        detail: "no cfg excludes this call from a native build — reachable"
-                            .to_string(),
-                    }),
-                    Gate::Exempt(_) => {}
-                    Gate::Unclassifiable(reason) => self.findings.push(Finding {
-                        kind: Kind::Unclassifiable,
-                        file: self.file.to_path_buf(),
-                        line,
-                        macro_name: name,
-                        message_key,
-                        context,
-                        detail: reason,
-                    }),
-                }
-            }
+            self.check_macro_call(mac);
         }
 
         visit::visit_expr(self, node);
@@ -868,5 +918,77 @@ mod self_test {
         "#;
         let dangerous = only_kind(src, Some("macos"), Kind::Dangerous);
         assert_eq!(dangerous.len(), 1);
+    }
+
+    #[test]
+    fn semicolon_terminated_todo_statement_is_dangerous() {
+        // syn parses a semicolon-terminated (or brace-delimited) macro
+        // statement as `Stmt::Macro(StmtMacro)`, a completely different
+        // variant from the tail-expression `Stmt::Expr(Expr::Macro(...), _)`
+        // shape covered by `visit_expr`. An earlier version of this checker
+        // had no `visit_stmt_macro` override, so this extremely idiomatic
+        // shape — a `todo!()` followed by more statements in the same
+        // block, e.g. `fn f(&mut self) { todo!("x"); more_code(); }` — was
+        // invisible to it: not Dangerous, not Exempt, not Unclassifiable,
+        // simply never visited as a macro call at all. This pins it as
+        // Dangerous instead.
+        let src = r#"
+            impl Backend for WinBackend {
+                fn draw_whatever(&mut self, rect: Rect) {
+                    todo!("not done yet");
+                    let _ = rect;
+                }
+            }
+        "#;
+        let dangerous = only_kind(src, Some("windows"), Kind::Dangerous);
+        assert_eq!(
+            dangerous.len(),
+            1,
+            "a todo!() written as an ordinary semicolon-terminated \
+             statement (not a block's tail expression) must still be \
+             detected as dangerous when nothing gates it"
+        );
+    }
+
+    #[test]
+    fn cfg_gated_semicolon_terminated_todo_statement_is_exempt() {
+        // The same statement-position shape as above, but with a direct
+        // `#[cfg(not(target_os = "windows"))]` on the macro statement
+        // itself — must still resolve Exempt, not just Dangerous-by-default
+        // now that visit_stmt_macro exists.
+        let src = r#"
+            impl Backend for WinBackend {
+                fn draw_whatever(&mut self, rect: Rect) {
+                    #[cfg(target_os = "windows")]
+                    if let Some(surface) = &self.surface { return; }
+                    #[cfg(not(target_os = "windows"))]
+                    todo!("no surface attached yet");
+                    let _ = rect;
+                }
+            }
+        "#;
+        assert!(
+            findings_for(src, Some("windows")).is_empty(),
+            "a semicolon-terminated todo!() directly gated by \
+             #[cfg(not(target_os = \"windows\"))] must be exempt, the same \
+             as the tail-expression shape"
+        );
+    }
+
+    #[test]
+    fn unclassifiable_cfg_on_statement_macro_is_refused() {
+        // The Unclassifiable path must also work for the StmtMacro shape,
+        // not just the Expr::Macro one.
+        let src = r#"
+            impl Backend for WinBackend {
+                fn weird(&self) {
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    todo!("ambiguous");
+                }
+            }
+        "#;
+        let findings = findings_for(src, Some("windows"));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, Kind::Unclassifiable);
     }
 }
