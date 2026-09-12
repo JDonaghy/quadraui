@@ -272,6 +272,21 @@ crossterm = "0.29"
 # For isolated temp-directory creation in compose-controller tests
 # that touch the filesystem.
 tempfile = "3"
+# For `tests/backend_todo_gate.rs` (quadraui#923): parses each backend's
+# source with a real Rust grammar instead of line-adjacency regex, so
+# `#[cfg(...)]` attribute-to-statement/item binding is resolved the way
+# rustc actually resolves it. "visit" for the `syn::visit::Visit` walker,
+# "full" for statement/expression syntax (attribute macros aren't enough —
+# this needs `ExprMacro`, `ItemFn`, `ImplItemFn`, `Local`, etc.).
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+# `ToTokens` — only used to render an unrecognised `#[cfg(...)]` predicate
+# back into readable source text for the guard's failure message.
+quote = "1"
+# `span-locations` gives real line numbers from a standalone `parse_file`
+# call (outside an actual proc-macro invocation, spans are otherwise
+# call-site-only with no line info) — needed so a failure names a line a
+# human can jump to instead of just a byte-order description.
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [[example]]
 name = "tui_tooltip"
