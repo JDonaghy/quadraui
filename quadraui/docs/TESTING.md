@@ -766,6 +766,75 @@ New backends ship with their harness on day one. Once a backend has a
 [`FrameInventory`](#frameinventory-the-portable-paint-inventory-contract-quadraui490) —
 see the backend checklist above.
 
+## Backend `todo!()` gate (quadraui#923)
+
+`tests/backend_todo_gate.rs` guards against a specific latent-abort shape:
+an un-cfg-gated `todo!()`/`unimplemented!()` inside one of the four real
+per-platform `Backend` impls (`TuiBackend`, `GtkBackend`, `MacBackend`,
+`WinBackend`) that's reachable when that backend is compiled for its own
+native target. That already shipped once —
+`MacBackend::draw_minimap`/`minimap_layout`/`draw_image` had no `cfg` at
+all and aborted vimcode's macOS GUI on first paint (vimcode#896, fixed in
+`dbb3023`) — and a raw `todo!()` count can't tell that case apart from
+Win-GUI's dozens of legitimate `cfg`-gated stubs (there purely so
+`cargo check --features win` can type-check `WinBackend`'s trait
+completeness on Linux). Counting without classifying would be red on
+Win-GUI's stubs from day one, get muted, and miss the next macOS-shaped
+case exactly as the absence of this test did before #923.
+
+**Per-backend dangerous (un-gated, reachable-on-native) count, measured by
+parsing each backend's source with `syn` rather than by line-adjacency**
+(a `#[cfg(...)]` binds to exactly one following statement or item — see
+the test's own module doc for the sibling-statement shape a proximity
+check gets wrong):
+
+| backend | dangerous (un-gated) `todo!()`/`unimplemented!()` |
+|---|---|
+| tui | 0 |
+| gtk | 0 |
+| macos | 0 |
+| win | **59** (`src/win/backend.rs`, tracked as quadraui#924 — see that file's `Backend` impl; none in `src/win/run.rs`, whose 2 stubs are gated by a `#[cfg(not(target_os = "windows"))]` on the enclosing `pub fn`) |
+
+Win-GUI's real total of `todo!()`/`unimplemented!()` call sites (ignoring
+doc-comment mentions) is 81, not the "83 legitimate stubs" #923 was
+originally filed against: 22 are genuinely excluded from a native Windows
+build (2 via a `#[cfg(...)]` directly on the macro call — `begin_frame`/
+`end_frame` — and 20 via a `#[cfg(...)]` on the whole enclosing `{ }` block,
+e.g. `minimap_layout`/`list_layout`), and the other 59 carry no cfg that
+excludes them and are reachable on Windows itself whenever `self.surface`
+is `None`. Fixing those 59 is quadraui#924's job, not #923's — this test
+ships a frozen baseline (`KNOWN_DANGEROUS_TODOS`) naming exactly those 59
+call sites so it passes today without #924 having landed, while still
+failing the instant a 60th un-gated stub appears anywhere in one of the
+four backends.
+
+**Recognised `cfg` spellings** (anything else is refused as
+`Unclassifiable` — a hard test failure naming the exact attribute, never a
+silent pass in either direction):
+
+- `cfg(test)` — exempt everywhere (never compiled outside a test build).
+- `cfg(not(test))` — not exempt (this is the shipped arm).
+- `cfg(target_os = "X")` — exempt iff `X` differs from the file's own
+  backend's native `target_os` (`"macos"` for `src/macos/`, `"windows"`
+  for `src/win/`).
+- `cfg(not(target_os = "X"))` — exempt iff `X` matches that native
+  `target_os`.
+
+**Refused, not classified:** `cfg_attr(...)` in any form, `cfg(any(...))`,
+`cfg(all(...))`, `cfg(not(any(...)))`/`cfg(not(all(...)))`, bare
+`cfg(unix)`/`cfg(windows)`, a `target_os` comparison inside `src/gtk/` or
+`src/tui/` (no native `target_os` is defined for those — they ship
+cross-platform today), or a `cfg(...)` whose inner tokens don't parse as a
+`syn::Meta` at all. Any of these appearing in a real backend fails the
+test loudly rather than guessing which way it resolves.
+
+**Scope:** only `src/tui/`, `src/gtk/`, `src/macos/`, `src/win/` — the
+`impl Backend` blocks actually reachable from `quadraui::{tui,gtk,macos,win}::run`.
+`src/testing/mod.rs`'s `RecordingBackend` (a `pub`, always-compiled
+`Backend` mock for unit tests, never the backend an `AppLogic` is actually
+run against) and `compose/*`'s private `#[cfg(test)] mod tests` mocks are
+deliberately out of scope.
+
 ## Live-app headless smoke (GD-5, quadraui#450)
 
 The offscreen `GtkDriver` above is deliberately display-free — no
