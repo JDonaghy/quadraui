@@ -12,20 +12,24 @@
 //! rasterisers — `status_bar`, `tab_bar`, `activity_bar`, `menu_bar` (see
 //! `super::status_bar`/`super::tab_bar`/`super::activity_bar`/
 //! `super::menu_bar`) — each wired into its `Backend` trait method below,
-//! falling back to the `todo!()` stub only for a `WinBackend` no window
-//! has ever attached a surface to (see [`WinBackend::draw_status_bar`]'s
-//! doc). #26 landed the six content-area rasterisers (`tree`/`list`/
-//! `form`/`data_table`/`editor`/`chart`), #27 the multi-section view +
-//! standalone scrollbar, and #28 the seven overlay rasterisers —
-//! `tooltip`/`context_menu`/`dialog`/`palette`/`completions`/
-//! `find_replace`/`rich_text_popup` (see `super::tooltip` etc.). #29
-//! landed the five container/indicator rasterisers — `panel`/`split`/
-//! `toast`/`progress`/`spinner`. #30 landed the three text-heavy
-//! rasterisers — `terminal`/`text_display`/`message_list` (see
-//! `super::terminal`/`super::text_display`/`super::message_list`).
-//! Every other `draw_*`/`*_layout` rasteriser method is still a
-//! `todo!()` stub — later issues implement each one against Direct2D /
-//! DirectWrite, same as the GTK backend did one primitive at a time.
+//! falling back to a no-paint/nominal-layout fallback (issue #924) only
+//! for a `WinBackend` no window has ever attached a surface to (see
+//! [`WinBackend::draw_status_bar`]'s doc). #26 landed the six
+//! content-area rasterisers (`tree`/`list`/`form`/`data_table`/`editor`/
+//! `chart`), #27 the multi-section view + standalone scrollbar, and #28
+//! the seven overlay rasterisers — `tooltip`/`context_menu`/`dialog`/
+//! `palette`/`completions`/`find_replace`/`rich_text_popup` (see
+//! `super::tooltip` etc.). #29 landed the five container/indicator
+//! rasterisers — `panel`/`split`/`toast`/`progress`/`spinner`. #30
+//! landed the three text-heavy rasterisers — `terminal`/`text_display`/
+//! `message_list` (see `super::terminal`/`super::text_display`/
+//! `super::message_list`). Every other `draw_*`/`*_layout` rasteriser
+//! method still has no real Direct2D/DirectWrite paint path — later
+//! issues implement each one, same as the GTK backend did one primitive
+//! at a time — but as of #924 a missing rasteriser degrades to a real
+//! (or nominal-measurer) layout with nothing painted, never a panic;
+//! see that issue's doc for why a reachable `todo!()` here used to be
+//! able to abort the whole host process.
 //!
 //! # Implementation notes
 //!
@@ -33,8 +37,8 @@
 //!   (this issue). Offscreen: [`super::testing::HeadlessSurface`] wraps an
 //!   `ID2D1DCRenderTarget` bound to an in-memory DIB section for headless
 //!   tests (#24) — a lower-level building block than a `WinBackend`
-//!   driver, since every `draw_*`/`*_layout` rasteriser below is still a
-//!   `todo!()` stub with nothing yet for a driver to paint. Only actually
+//!   driver, since most `draw_*`/`*_layout` rasterisers below still have
+//!   nothing real to paint (see the paragraph above). Only actually
 //!   *runs* on the `windows-latest` leg of `ci.yml`'s `tui` job (see
 //!   `HeadlessSurface`'s module docs and that workflow's "Test (win
 //!   feature, real Windows)" step) — `cargo check --features win` on
@@ -81,6 +85,12 @@ use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
+// Only referenced (as a bare name) inside `draw_form`'s
+// `target_os = "windows"` arm, which pattern-matches
+// `ToolbarButton::Action`/`ToolbarButton::Label` directly — every other
+// `ToolbarButton` use in this file goes through
+// `crate::primitives::toolbar::measure_button`'s inferred closure
+// parameter, which needs no import of its own.
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
@@ -92,6 +102,8 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::StatusBarLayout;
+#[cfg(target_os = "windows")]
+use crate::primitives::toolbar::ToolbarButton;
 // `TabBarHits` is `#[deprecated]` (issue #823) — the original six
 // `Backend` tab-bar methods still return it (issue #919 added six more,
 // additive, `TabBarLayout`-returning counterparts alongside them rather
@@ -103,10 +115,8 @@ use crate::primitives::status_bar::StatusBarLayout;
 // builds the struct straight from Core Text metrics.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
-use crate::primitives::text_display::TextDisplayLayout;
+use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
 use crate::primitives::toast::{ToastStack, ToastStackLayout};
-#[cfg(target_os = "windows")]
-use crate::primitives::toolbar::ToolbarButton;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
@@ -119,6 +129,248 @@ use crate::{
 use crate::{FieldKind, Theme};
 
 use super::services::WinPlatformServices;
+
+// ─── Cross-platform fallback measurement (issue #924) ───────────────────
+//
+// Every `draw_*`/`*_layout` method below that needs a text-width
+// measurement gated on `self.dwrite` being `Some` — built once by
+// `attach_surface`/`attach_headless`, both `target_os = "windows"`-only —
+// and fell through to an unconditional `todo!()` otherwise. That `None`
+// state isn't Windows-vs-not: it's also the state a fresh
+// `WinBackend::new()` starts in (on *any* platform) and the state
+// `end_frame` drops back to after a device-lost `EndDraw` failure, so a
+// live Windows host hit the same panic a Linux `cargo test --features
+// win` run does. `nominal_text_width`/`NominalTextMeasure` give every
+// such site a plausible, finite substitute (`char_width` per character,
+// no real glyph metrics) instead — real widths resume automatically once
+// a surface exists.
+fn nominal_text_width(text: &str, char_width: f32) -> f32 {
+    text.chars().count() as f32 * char_width
+}
+
+/// [`crate::primitives::layout_metrics::TextMeasure`] impl backed by
+/// [`nominal_text_width`] — for `*_layout` fallbacks (`form_layout`,
+/// `toolbar_layout`, `sidebar_panel_layout`) that need a
+/// `&dyn TextMeasure` rather than a bare width.
+struct NominalTextMeasure {
+    char_width: f32,
+}
+
+impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
+    fn width_of(&self, text: &str) -> f32 {
+        nominal_text_width(text, self.char_width)
+    }
+}
+
+/// Nominal-measurer fallback for [`WinBackend::draw_tab_bar_icons`] /
+/// [`WinBackend::tab_bar_layout_icons`] and their `TabBarLayout`-returning
+/// counterparts (issue #924) — mirrors `super::tab_bar::compute_layout`'s
+/// shape (same padding/gap constants, duplicated by *value* rather than
+/// by code per `PRIMITIVE_RULES.md`#713, since that module is
+/// `target_os = "windows"`-gated and this fallback must also compile and
+/// run on non-Windows hosts) but measures every label/segment via
+/// [`nominal_text_width`] instead of `DWrite::measure_text`.
+fn win_tab_bar_nominal_layout(
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<crate::TabIcon>],
+    char_width: f32,
+) -> TabBarLayout {
+    const TAB_PAD_DIP: f32 = 14.0;
+    const TAB_INNER_GAP_DIP: f32 = 10.0;
+    const TAB_OUTER_GAP_DIP: f32 = 1.0;
+    const TAB_ICON_GAP_DIP: f32 = 6.0;
+
+    let close_w = if bar.show_tab_close {
+        nominal_text_width("×", char_width)
+    } else {
+        0.0
+    };
+    let icon_extra = |i: usize| match crate::tab_icon_at(icons, i) {
+        Some(icon) => nominal_text_width(&icon.glyph, char_width) + TAB_ICON_GAP_DIP,
+        None => 0.0,
+    };
+    let measure_tab = |i: usize| -> crate::TabMeasure {
+        let tab = &bar.tabs[i];
+        let name_w = nominal_text_width(&tab.label, char_width);
+        let has_close = bar.show_tab_close && tab.is_closable;
+        let close_extra = if has_close {
+            TAB_INNER_GAP_DIP + close_w
+        } else {
+            0.0
+        };
+        let total =
+            TAB_PAD_DIP + icon_extra(i) + name_w + close_extra + TAB_PAD_DIP + TAB_OUTER_GAP_DIP;
+        let close_region_w = if has_close {
+            TAB_INNER_GAP_DIP + close_w + TAB_PAD_DIP + TAB_OUTER_GAP_DIP
+        } else {
+            0.0
+        };
+        crate::TabMeasure::new(total, close_region_w)
+    };
+    let measure_segment = |i: usize| -> crate::SegmentMeasure {
+        crate::SegmentMeasure::new(nominal_text_width(&bar.right_segments[i].text, char_width))
+    };
+    bar.layout(rect.width, rect.height, 0.0, measure_tab, measure_segment)
+}
+
+/// [`TabBarHits`] twin of [`win_tab_bar_nominal_layout`] — narrows the
+/// nominal layout down via the same shared
+/// [`crate::backend::tab_bar_hits_from_layout`]/[`crate::backend::shift_tab_bar_hits`]
+/// helpers `super::tab_bar::hits_from_layout` uses. Skips that fn's extra
+/// "engine feedback" scroll-offset correction pass (a UX nicety, not a
+/// hit-test correctness requirement) — `tab_bar_hits_from_layout` already
+/// seeds `correct_scroll_offset` from `TabBar::layout`'s own
+/// `resolved_scroll_offset`, which honours `bar.scroll_offset` verbatim
+/// since this fallback measures with `scroll_arrow_width: 0.0` same as
+/// the real rasteriser.
+#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+fn win_tab_bar_nominal_hits(
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<crate::TabIcon>],
+    char_width: f32,
+) -> TabBarHits {
+    let layout = win_tab_bar_nominal_layout(rect, bar, icons, char_width);
+    let mut hits = crate::backend::tab_bar_hits_from_layout(&layout, bar);
+    crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+    hits
+}
+
+/// Nominal-measurer fallback for [`WinBackend::draw_data_table`] /
+/// [`WinBackend::data_table_layout`] — mirrors
+/// `super::data_table::win_data_table_layout`'s shape (same
+/// `SCROLLBAR_WIDTH`/header-height formula, duplicated by value per
+/// `PRIMITIVE_RULES.md`#713) but measures column-title width via
+/// [`nominal_text_width`] instead of `DWrite::measure_text` (issue #924).
+fn win_data_table_nominal_layout(
+    rect: Rect,
+    table: &crate::DataTable,
+    line_height: f32,
+    char_width: f32,
+) -> crate::DataTableLayout {
+    const SCROLLBAR_WIDTH: f32 = 8.0;
+    let header_height = (line_height * 1.2).round();
+    table.layout(
+        rect.width,
+        rect.height,
+        line_height,
+        header_height,
+        SCROLLBAR_WIDTH,
+        |col| {
+            crate::primitives::data_table::ColumnMeasure::new(nominal_text_width(
+                &col.title, char_width,
+            ))
+        },
+    )
+}
+
+/// Nominal-measurer fallback for [`WinBackend::draw_status_bar_interactive`]
+/// / [`WinBackend::status_bar_layout`] — mirrors
+/// `super::status_bar::win_status_bar_layout`'s shape (same `MIN_GAP_DIP`,
+/// duplicated by value per `PRIMITIVE_RULES.md`#713) but measures each
+/// segment via [`nominal_text_width`] instead of
+/// `DWrite::measure_text_styled` (issue #924).
+fn win_status_bar_nominal_layout(rect: Rect, bar: &StatusBar, char_width: f32) -> StatusBarLayout {
+    const MIN_GAP_DIP: f32 = 16.0;
+    bar.layout(rect.width, rect.height, MIN_GAP_DIP, |seg| {
+        crate::primitives::status_bar::StatusSegmentMeasure::new(nominal_text_width(
+            &seg.text, char_width,
+        ))
+    })
+}
+
+/// Nominal-measurer fallback for [`WinBackend::draw_menu_bar`] /
+/// [`WinBackend::menu_bar_layout`] — mirrors
+/// `super::menu_bar::win_menu_bar_layout`'s shape (same
+/// `ITEM_H_PADDING_DIP`, duplicated by value per `PRIMITIVE_RULES.md`#713)
+/// but measures each item's label via [`nominal_text_width`] instead of
+/// `DWrite::measure_text` (issue #924).
+fn win_menu_bar_nominal_layout(rect: Rect, bar: &MenuBar, char_width: f32) -> MenuBarLayout {
+    const ITEM_H_PADDING_DIP: f32 = 16.0;
+    bar.layout(rect, |i| {
+        // `&`-marker stripped, mirroring `super::menu_bar::display_text`
+        // (private to that Windows-only module).
+        let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
+        crate::primitives::menu_bar::MenuBarItemMeasure::new(
+            nominal_text_width(&text, char_width) + ITEM_H_PADDING_DIP,
+        )
+    })
+}
+
+/// Nominal-measurer fallback for [`WinBackend::draw_toast_stack`] /
+/// [`WinBackend::toast_stack_layout`] — mirrors
+/// `super::toast::win_toast_stack_layout`'s shape (same margin/gap/
+/// padding constants, duplicated by value per `PRIMITIVE_RULES.md`#713)
+/// but measures each toast's action label via [`nominal_text_width`]
+/// instead of `DWrite::measure_text` (issue #924).
+fn win_toast_stack_nominal_layout(
+    rect: Rect,
+    stack: &ToastStack,
+    line_height: f32,
+    char_width: f32,
+) -> ToastStackLayout {
+    const TOAST_WIDTH_DIP: f32 = 320.0;
+    const TOAST_MARGIN_DIP: f32 = 12.0;
+    const TOAST_GAP_DIP: f32 = 8.0;
+    const DISMISS_WIDTH_DIP: f32 = 28.0;
+    const ACTION_PADDING_DIP: f32 = 16.0;
+    const TOAST_PADDING_DIP: f32 = 8.0;
+    stack.layout(
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        TOAST_MARGIN_DIP,
+        TOAST_GAP_DIP,
+        |i| {
+            let toast = &stack.toasts[i];
+            let h = if toast.body.is_empty() {
+                line_height + TOAST_PADDING_DIP * 2.0
+            } else {
+                line_height * 2.0 + TOAST_PADDING_DIP * 2.0
+            };
+            let action_w = toast
+                .action
+                .as_ref()
+                .map(|a| nominal_text_width(&a.label, char_width) + ACTION_PADDING_DIP)
+                .unwrap_or(0.0);
+            crate::primitives::toast::ToastMeasure {
+                width: TOAST_WIDTH_DIP.min((rect.width - TOAST_MARGIN_DIP * 2.0).max(0.0)),
+                height: h,
+                dismiss_width: DISMISS_WIDTH_DIP,
+                action_width: action_w,
+            }
+        },
+    )
+}
+
+/// Nominal-measurer fallback for [`WinBackend::draw_spinner`] /
+/// [`WinBackend::spinner_layout`] — mirrors `super::spinner`'s frame-text
+/// formula (same braille frame table, duplicated by value per
+/// `PRIMITIVE_RULES.md`#713 — every backend keeps its own copy) but
+/// measures the frame text via [`nominal_text_width`] instead of
+/// `DWrite::measure_text` (issue #924).
+fn win_spinner_nominal_layout(
+    rect: Rect,
+    spinner: &Spinner,
+    char_width: f32,
+    line_height: f32,
+) -> SpinnerLayout {
+    const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
+    let text = if spinner.label.is_empty() {
+        glyph.to_string()
+    } else {
+        format!("{glyph} {}", spinner.label)
+    };
+    let w = nominal_text_width(&text, char_width);
+    spinner.layout(
+        rect.x,
+        rect.y,
+        crate::primitives::spinner::SpinnerMeasure::new(w, line_height),
+    )
+}
 
 // ─── Direct2D bootstrap (#19) ───────────────────────────────────────────
 //
@@ -238,8 +490,8 @@ impl std::ops::Deref for RenderTarget {
 /// offscreen headless surface. Only exists once
 /// [`WinBackend::attach_surface`] or [`WinBackend::attach_headless`] has
 /// run — a `WinBackend` constructed standalone (before either has run)
-/// has `surface: None` and every draw call keeps hitting the `todo!()`
-/// arm until a later issue implements it.
+/// has `surface: None` and every draw call degrades to its no-paint
+/// fallback (issue #924) until a later issue lands a real rasteriser.
 #[cfg(target_os = "windows")]
 struct Surface {
     /// Kept alive only because `ID2D1HwndRenderTarget` was created from
@@ -1339,8 +1591,15 @@ impl Backend for WinBackend {
                 surface.target.Clear(Some(&clear_color));
             }
         }
+        // A non-Windows host never has Direct2D types to call
+        // `BeginDraw`/`Clear` against at all — same "nothing to paint
+        // onto" posture as the `self.surface.is_none()` case above, not a
+        // gap this issue's fallbacks need to fake (issue #924). The
+        // `#[cfg]` still binds directly to this statement (not a sibling
+        // unused-param line), unlike the bug this issue otherwise fixes —
+        // see the module-level issue doc.
         #[cfg(not(target_os = "windows"))]
-        todo!("ID2D1RenderTarget::BeginDraw()")
+        {}
     }
 
     fn end_frame(&mut self) {
@@ -1383,8 +1642,9 @@ impl Backend for WinBackend {
                 );
             }
         }
+        // See `begin_frame`'s matching comment (issue #924).
         #[cfg(not(target_os = "windows"))]
-        todo!("ID2D1RenderTarget::EndDraw()")
+        {}
     }
 
     // ─── Theming ────────────────────────────────────────────────────────
@@ -1818,9 +2078,11 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // No surface/DWrite yet (fresh backend, device lost, or a
+        // non-Windows host, where this module never compiles) — paint
+        // nothing rather than panic (issue #924); the next real
+        // `attach_surface`/`attach_headless` resumes painting.
         let _ = (rect, tree);
-        todo!("Direct2D tree rasteriser (no surface attached yet)")
     }
 
     /// #26: see [`Self::draw_tree`]'s doc.
@@ -1836,9 +2098,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, list);
-        todo!("Direct2D list rasteriser (no surface attached yet)")
     }
 
     /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -1860,9 +2122,17 @@ impl Backend for WinBackend {
                 hovered_idx,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, table, hovered_idx);
-        todo!("Direct2D data table rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `data_table_layout` falls back to, and paint
+        // nothing (issue #924). `hovered_idx` only affects painting, so
+        // it's unused on this path.
+        let _ = hovered_idx;
+        win_data_table_nominal_layout(
+            rect,
+            table,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 
     /// #26: pure measurement — only needs `self.dwrite`, not a live
@@ -1877,9 +2147,12 @@ impl Backend for WinBackend {
                 self.current_line_height,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, table);
-        todo!("DirectWrite data table layout (no surface attached yet)")
+        win_data_table_nominal_layout(
+            rect,
+            table,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 
     /// #26: GTK's twin (`GtkBackend::list_hscrollbar`) builds the
@@ -1922,21 +2195,21 @@ impl Backend for WinBackend {
     }
 
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // Same two-block shape as `tree_layout` below (and deliberately
-        // NOT `return … ;` inside the windows arm): on a Windows host the
-        // `not(windows)` block is cfg'd away, so the `return` would be the
-        // function's own tail expression and `clippy::needless_return`
-        // fires — a lint only the windows-latest CI leg can see, since on
-        // Linux the second block follows and the `return` is load-bearing.
-        #[cfg(target_os = "windows")]
-        {
-            super::list::win_list_layout(list, rect, self.current_line_height)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, list);
-            todo!("DirectWrite list layout — src/win/list.rs is target_os=\"windows\"-gated")
-        }
+        // Pure geometry (uniform `line_height` row pitch, no per-item
+        // text measurement) — mirrors `super::list::win_list_layout`
+        // (which is `target_os = "windows"`-gated purely for consistency
+        // with its neighbours, not because it needs any Direct2D/
+        // DirectWrite type), so this is computed directly rather than
+        // reaching into that module (issue #924).
+        let line_height = self.current_line_height;
+        let title_height = if list.title.is_some() {
+            line_height
+        } else {
+            0.0
+        };
+        list.layout(rect.width, rect.height, title_height, |_| {
+            crate::primitives::list::ListItemMeasure::new(line_height)
+        })
     }
 
     /// #26: see [`Self::draw_tree`]'s doc.
@@ -2004,9 +2277,9 @@ impl Backend for WinBackend {
             }
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, form);
-        todo!("Direct2D form rasteriser (no surface attached yet)")
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::palette` once a
@@ -2024,9 +2297,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, palette);
-        todo!("Direct2D palette rasteriser (no surface attached yet)")
     }
 
     /// Pure geometry (issue #818) — needs no live surface, unlike
@@ -2035,15 +2308,20 @@ impl Backend for WinBackend {
     /// types), same `#[cfg(target_os = "windows")]` split every other
     /// method on this impl uses to stay a type-check-only stub elsewhere.
     fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::palette::win_palette_layout(rect, palette, self.current_line_height)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, palette);
-            todo!("Direct2D palette layout (Windows-only)")
-        }
+        // Pure geometry (issue #818) — `super::palette::win_palette_layout`
+        // needs no Direct2D/DirectWrite type either, so this is computed
+        // directly instead of reaching into that Windows-only module
+        // (issue #924).
+        let line_height = self.current_line_height;
+        let title_h = if !palette.title.is_empty() {
+            line_height
+        } else {
+            0.0
+        };
+        let query_h = if palette.show_query { line_height } else { 0.0 };
+        palette.layout(rect.width, rect.height, title_h, query_h, 6.0, 8.0, |_| {
+            crate::primitives::palette::PaletteItemMeasure::new(line_height)
+        })
     }
 
     /// #734: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2070,18 +2348,17 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, header_text, query, placeholder, active);
-        todo!("Direct2D settings chrome rasteriser (no surface attached yet)")
     }
 
     /// #25: real Direct2D/DirectWrite rasteriser via `win::status_bar`
-    /// once a surface is attached. Falls through to the `todo!()` stub
-    /// otherwise — `self.surface`/`self.dwrite` are always populated
-    /// together by [`Self::attach_surface`], so that only happens for a
-    /// standalone `WinBackend` no window has ever attached to yet, the
-    /// same "not wired up" posture every other still-`todo!()` method
-    /// here has.
+    /// once a surface is attached. Falls back to
+    /// [`win_status_bar_nominal_layout`] otherwise (issue #924) —
+    /// `self.surface`/`self.dwrite` are always populated together by
+    /// [`Self::attach_surface`], so that only happens for a standalone
+    /// `WinBackend` no window has ever attached to yet.
     fn draw_status_bar_interactive(
         &mut self,
         rect: Rect,
@@ -2104,9 +2381,12 @@ impl Backend for WinBackend {
                 pressed_id,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, hovered_id, pressed_id);
-        todo!("Direct2D status bar rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `status_bar_layout` falls back to, and paint
+        // nothing (issue #924). `hovered_id`/`pressed_id` only affect
+        // painting, so they're unused on this path.
+        let _ = (hovered_id, pressed_id);
+        win_status_bar_nominal_layout(rect, bar, self.current_char_width)
     }
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -2154,9 +2434,12 @@ impl Backend for WinBackend {
                 hovered_close_tab,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, icons, hovered_close_tab);
-        todo!("Direct2D tab bar rasteriser (with per-tab icons) — no surface attached yet")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `tab_bar_layout_icons` falls back to, and
+        // paint nothing (issue #924). `hovered_close_tab` only affects
+        // painting, so it's unused on this path.
+        let _ = hovered_close_tab;
+        win_tab_bar_nominal_hits(rect, bar, icons, self.current_char_width)
     }
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2180,9 +2463,9 @@ impl Backend for WinBackend {
                 hovered_close_tab,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, icons, hovered_close_tab);
-        todo!("Direct2D tab bar rasteriser (TabBarLayout, with per-tab icons) — no surface attached yet")
+        // See `draw_tab_bar_icons`'s doc.
+        let _ = hovered_close_tab;
+        win_tab_bar_nominal_layout(rect, bar, icons, self.current_char_width)
     }
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2213,9 +2496,12 @@ impl Backend for WinBackend {
                 &self.current_theme,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, hovered_idx);
-        todo!("Direct2D activity bar rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — return the real (pure-geometry) hit
+        // list via `activity_bar_layout` and paint nothing (issue #924).
+        // `hovered_idx` only affects painting, so it's unused on this
+        // path.
+        let _ = hovered_idx;
+        self.activity_bar_layout(rect, bar)
     }
 
     /// #25: pure measurement — only needs `self.dwrite`, not a live
@@ -2227,9 +2513,7 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::status_bar::win_status_bar_layout(dwrite, rect, bar);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar);
-        todo!("DirectWrite status bar layout (no surface attached yet)")
+        win_status_bar_nominal_layout(rect, bar, self.current_char_width)
     }
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -2256,9 +2540,7 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::tab_bar::win_tab_bar_layout_icons(dwrite, rect, bar, icons);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, icons);
-        todo!("DirectWrite tab bar layout (with per-tab icons) — no surface attached yet")
+        win_tab_bar_nominal_hits(rect, bar, icons, self.current_char_width)
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
@@ -2274,9 +2556,7 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::tab_bar::win_tab_bar_native_layout_icons(dwrite, rect, bar, icons);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, icons);
-        todo!("DirectWrite tab bar layout (TabBarLayout, with per-tab icons) — no surface attached yet")
+        win_tab_bar_nominal_layout(rect, bar, icons, self.current_char_width)
     }
 
     /// #25: activity-bar layout needs no measurer at all (uniform
@@ -2285,39 +2565,33 @@ impl Backend for WinBackend {
     /// `target_os = "windows"` gate for consistency with every other
     /// method in this file.
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
-        // No `return` here (unlike the `if let Some(dwrite)` early-returns
-        // above): on `target_os = "windows"` the `not(windows)` block below
-        // is stripped, so this block *is* the tail expression and an
-        // explicit `return` trips `clippy::needless_return` — an error under
-        // CI's `-D warnings`, and only on the windows-latest leg.
-        #[cfg(target_os = "windows")]
-        {
-            super::activity_bar::win_activity_bar_layout(rect, bar)
-                .visible_items
-                .into_iter()
-                .map(|vi| {
-                    let item = match vi.side {
-                        crate::primitives::activity_bar::ActivitySide::Top => {
-                            &bar.top_items[vi.item_idx]
-                        }
-                        crate::primitives::activity_bar::ActivitySide::Bottom => {
-                            &bar.bottom_items[vi.item_idx]
-                        }
-                    };
-                    ActivityBarRowHit {
-                        y_start: vi.bounds.y,
-                        y_end: vi.bounds.y + vi.bounds.height,
-                        id: item.id.clone(),
-                        tooltip: item.tooltip.clone(),
+        // Pure geometry (uniform `ACTIVITY_ROW_DIP` row height, no
+        // measurer at all) — `super::activity_bar::win_activity_bar_layout`
+        // needs no Direct2D/DirectWrite type either, so this is computed
+        // directly instead of reaching into that Windows-only module
+        // (issue #924). `ACTIVITY_ROW_DIP`'s value (48.0) is duplicated
+        // from that module per `PRIMITIVE_RULES.md`#713.
+        const ACTIVITY_ROW_DIP: f32 = 48.0;
+        bar.layout(rect.width, rect.height, ACTIVITY_ROW_DIP)
+            .visible_items
+            .into_iter()
+            .map(|vi| {
+                let item = match vi.side {
+                    crate::primitives::activity_bar::ActivitySide::Top => {
+                        &bar.top_items[vi.item_idx]
                     }
-                })
-                .collect()
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, bar);
-            todo!("DirectWrite activity bar layout")
-        }
+                    crate::primitives::activity_bar::ActivitySide::Bottom => {
+                        &bar.bottom_items[vi.item_idx]
+                    }
+                };
+                ActivityBarRowHit {
+                    y_start: vi.bounds.y,
+                    y_end: vi.bounds.y + vi.bounds.height,
+                    id: item.id.clone(),
+                    tooltip: item.tooltip.clone(),
+                }
+            })
+            .collect()
     }
 
     /// #30: real Direct2D/DirectWrite rasteriser via `win::terminal` once
@@ -2373,9 +2647,9 @@ impl Backend for WinBackend {
             }
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, term);
-        todo!("Direct2D terminal cell grid rasteriser (no surface attached yet)")
     }
 
     /// #30: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2389,9 +2663,9 @@ impl Backend for WinBackend {
             crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = rect;
-        todo!("Direct2D terminal split divider rasteriser (no surface attached yet)")
     }
 
     /// #30: real Direct2D/DirectWrite rasteriser via `win::text_display`
@@ -2414,9 +2688,9 @@ impl Backend for WinBackend {
             crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, td);
-        todo!("Direct2D text display rasteriser (no surface attached yet)")
     }
 
     /// #725: real Direct2D/DirectWrite rasteriser via `win::command_line`
@@ -2439,9 +2713,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, cmd);
-        todo!("Direct2D command line rasteriser (no surface attached yet)")
     }
 
     /// #725: pure measurement — only needs `current_char_width`, not a
@@ -2455,15 +2729,13 @@ impl Backend for WinBackend {
         rect: Rect,
         cmd: &crate::primitives::command_line::CommandLine,
     ) -> crate::primitives::command_line::CommandLineLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::command_line::win_command_line_layout(cmd, rect, self.current_char_width)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, cmd);
-            todo!("Direct2D command line layout")
-        }
+        // Pure measurement (only `current_char_width`, no `self.dwrite`)
+        // — computed directly rather than reaching into the Windows-only
+        // `super::command_line` module (issue #924).
+        cmd.layout(
+            rect,
+            crate::primitives::command_line::CommandLineMeasure::new(self.current_char_width),
+        )
     }
 
     /// #30: pure measurement — only needs `line_height`, not a live
@@ -2474,19 +2746,44 @@ impl Backend for WinBackend {
     /// method in this file shares. No `return` in the `windows` arm —
     /// see [`Self::activity_bar_layout`]'s doc for why.
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::text_display::win_text_display_layout(
-                td,
-                rect,
-                self.current_line_height,
-                self.current_char_width,
-            )
+        // Pure measurement (row-count estimate off `line_height`/
+        // `char_width`, no real text layout) — mirrors
+        // `super::text_display::win_text_display_layout`'s shape (same
+        // scrollbar-gutter constants, duplicated by value per
+        // `PRIMITIVE_RULES.md`#713), computed directly instead of
+        // reaching into that Windows-only module (issue #924).
+        const SCROLLBAR_GUTTER_DIP: f32 = 12.0;
+        const SCROLLBAR_MIN_THUMB_DIP: f32 = 8.0;
+        let line_height = self.current_line_height;
+        let char_width = self.current_char_width;
+        let body_h = if td.title.is_some() {
+            (rect.height - line_height).max(0.0)
+        } else {
+            rect.height
+        };
+        if body_h <= 0.0 {
+            return td.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(line_height));
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, td);
-            todo!("DirectWrite text display layout")
+        let body_width_px = if td.show_scrollbar {
+            (rect.width - SCROLLBAR_GUTTER_DIP).max(0.0)
+        } else {
+            rect.width
+        };
+        let col_budget = crate::primitives::text_display::px_to_cols(body_width_px, char_width);
+        let measure = |i: usize| {
+            let rows = crate::primitives::text_display::wrap_row_count(&td.lines[i], col_budget);
+            TextDisplayLineMeasure::new(rows as f32 * line_height)
+        };
+        if td.show_scrollbar {
+            td.layout_with_scrollbar(
+                rect.width,
+                body_h,
+                SCROLLBAR_GUTTER_DIP,
+                SCROLLBAR_MIN_THUMB_DIP,
+                measure,
+            )
+        } else {
+            td.layout(rect.width, body_h, measure)
         }
     }
 
@@ -2510,9 +2807,16 @@ impl Backend for WinBackend {
                 self.current_char_width,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, ti);
-        todo!("Direct2D text input rasteriser (no surface attached yet)")
+        // Pure geometry — `TextInput::layout` needs only `line_height`/
+        // `char_width`, no real text measurement (issue #924); paints
+        // nothing since there's no surface to paint onto.
+        ti.layout(
+            rect,
+            crate::primitives::text_input::TextInputMeasure::new(
+                self.current_line_height,
+                self.current_char_width,
+            ),
+        )
     }
 
     /// #733: pure measurement — only needs `current_line_height`/
@@ -2526,20 +2830,13 @@ impl Backend for WinBackend {
         rect: Rect,
         ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::text_input::win_text_input_layout(
-                ti,
-                rect,
+        ti.layout(
+            rect,
+            crate::primitives::text_input::TextInputMeasure::new(
                 self.current_line_height,
                 self.current_char_width,
-            )
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, ti);
-            todo!("Direct2D text input layout")
-        }
+            ),
+        )
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
@@ -2575,9 +2872,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (tooltip, layout, chrome);
-        todo!("Direct2D tooltip rasteriser (no surface attached yet)")
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::context_menu`
@@ -2601,9 +2898,21 @@ impl Backend for WinBackend {
                 &self.current_theme,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (menu, layout);
-        todo!("Direct2D context menu rasteriser (no surface attached yet)")
+        // `layout` is already fully resolved (see this fn's doc) — the
+        // hit-rect list is a pure extraction from it, no text measurement
+        // involved, so this doesn't need a surface/DWrite at all (issue
+        // #924). Painting is skipped; only the hit rects are returned.
+        layout
+            .visible_items
+            .iter()
+            .filter(|vis| vis.clickable)
+            .filter_map(|vis| {
+                menu.items[vis.item_idx]
+                    .id
+                    .clone()
+                    .map(|id| (vis.bounds, id))
+            })
+            .collect()
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::dialog` once a
@@ -2623,9 +2932,17 @@ impl Backend for WinBackend {
                 self.current_line_height,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (dialog, layout);
-        todo!("Direct2D dialog rasteriser (no surface attached yet)")
+        // `layout` is already fully resolved (see this fn's doc) — the
+        // per-button hit rects are a pure extraction from
+        // `layout.visible_buttons`, no text measurement involved, so this
+        // doesn't need a surface/DWrite at all (issue #924). Painting is
+        // skipped; only the hit rects are returned.
+        let _ = dialog;
+        layout
+            .visible_buttons
+            .iter()
+            .map(|vis| vis.bounds)
+            .collect()
     }
 
     /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
@@ -2644,9 +2961,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, view);
-        todo!("Direct2D MSV rasteriser (no surface attached yet)")
     }
 
     /// #27: like [`Self::tree_layout`], this is pure measurement — only
@@ -2662,15 +2979,11 @@ impl Backend for WinBackend {
     /// `return` trips `clippy::needless_return` under CI's `-D warnings`
     /// — see [`Self::activity_bar_layout`]'s doc for the same pattern.
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::multi_section_view::win_msv_layout(view, rect, self.current_line_height)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, view);
-            todo!("DirectWrite MSV layout")
-        }
+        // `crate::primitives::layout_metrics::msv_layout` is fully
+        // portable (row-count estimate, no Direct2D/DirectWrite type) —
+        // call it directly instead of reaching into the Windows-only
+        // `super::multi_section_view` module (issue #924).
+        crate::primitives::layout_metrics::msv_layout(view, rect, self.current_line_height as f64)
     }
 
     /// #27: see [`Self::msv_layout`]'s doc for both the "no measurer
@@ -2681,14 +2994,8 @@ impl Backend for WinBackend {
     /// the resize-aware divider size should go through
     /// [`Self::msv_layout`] instead.
     fn msv_metrics(&self) -> MsvLayoutMetrics {
-        #[cfg(target_os = "windows")]
-        {
-            super::multi_section_view::win_msv_metrics(self.current_line_height, false)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            todo!("DirectWrite MSV metrics")
-        }
+        // Portable — see `msv_layout`'s doc (issue #924).
+        crate::primitives::layout_metrics::msv_metrics(self.current_line_height as f64, false)
     }
 
     /// #26: like [`Self::activity_bar_layout`], this needs no measurer
@@ -2698,15 +3005,9 @@ impl Backend for WinBackend {
     /// `target_os = "windows"` gate every method in this file shares
     /// (the callee lives in a Windows-only module).
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::tree::win_tree_layout(tree, rect, self.current_line_height)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, tree);
-            todo!("DirectWrite tree layout")
-        }
+        // `crate::primitives::layout_metrics::tree_layout` is fully
+        // portable — see `msv_layout`'s doc (issue #924).
+        crate::primitives::layout_metrics::tree_layout(tree, rect, self.current_line_height as f64)
     }
 
     /// #26: pure measurement — only needs `self.dwrite`, not a live
@@ -2716,9 +3017,17 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, form);
-        todo!("DirectWrite form layout (no surface attached yet)")
+        // No live DWrite handle — nominal char-width estimate instead
+        // (issue #924); real per-glyph measurement resumes once
+        // `attach_surface`/`attach_headless` builds one.
+        let row_h =
+            crate::primitives::layout_metrics::form_row_height(self.current_line_height as f64);
+        let measure = NominalTextMeasure {
+            char_width: self.current_char_width,
+        };
+        form.layout(rect.width, rect.height, |i| {
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        })
     }
 
     /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2737,9 +3046,12 @@ impl Backend for WinBackend {
                 self.current_line_height,
             );
         }
-        #[cfg(not(target_os = "windows"))]
+        // No surface/DWrite yet — paint nothing and report no cursor
+        // position, matching every other backend's "nothing painted"
+        // shape for a struct with no `painted` flag of its own (issue
+        // #924).
         let _ = (rect, editor);
-        todo!("Direct2D editor rasteriser (no surface attached yet)")
+        EditorPaintResult::default()
     }
 
     /// #30: real Direct2D/DirectWrite rasteriser via `win::message_list`
@@ -2762,9 +3074,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, list);
-        todo!("Direct2D message list rasteriser (no surface attached yet)")
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::rich_text_popup`
@@ -2785,9 +3097,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (popup, layout);
-        todo!("Direct2D rich text popup rasteriser (no surface attached yet)")
     }
 
     /// #809 (`NativeSurface` Phase 2b): real Direct2D/DirectWrite
@@ -2802,9 +3114,9 @@ impl Backend for WinBackend {
             crate::primitives::find_replace::paint(panel, self, &theme);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, panel);
-        todo!("Direct2D find/replace rasteriser (no surface attached yet)")
     }
 
     /// #28: real Direct2D/DirectWrite rasteriser via `win::completions`
@@ -2822,9 +3134,9 @@ impl Backend for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (completions, layout);
-        todo!("Direct2D completions rasteriser (no surface attached yet)")
     }
 
     /// #27: real Direct2D rasteriser via `win::scrollbar` once a surface
@@ -2840,9 +3152,9 @@ impl Backend for WinBackend {
             crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, self, &theme);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = (rect, scrollbar);
-        todo!("Direct2D scrollbar rasteriser (no surface attached yet)")
     }
 
     /// #865: paint via the shared
@@ -2857,9 +3169,9 @@ impl Backend for WinBackend {
             crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // of panicking (issue #924).
         let _ = overlay;
-        todo!("Direct2D drop overlay rasteriser (no surface attached yet)")
     }
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2875,9 +3187,10 @@ impl Backend for WinBackend {
                 &self.current_theme,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar);
-        todo!("Direct2D menu bar rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `menu_bar_layout` falls back to, and paint
+        // nothing (issue #924).
+        win_menu_bar_nominal_layout(rect, bar, self.current_char_width)
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
@@ -2887,9 +3200,7 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::menu_bar::win_menu_bar_layout(dwrite, rect, bar);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar);
-        todo!("DirectWrite menu bar layout (no surface attached yet)")
+        win_menu_bar_nominal_layout(rect, bar, self.current_char_width)
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2907,9 +3218,9 @@ impl Backend for WinBackend {
             crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
             return layout;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, split);
-        todo!("Direct2D split rasteriser (no surface attached yet)")
+        // No surface yet — return the real (pure-geometry) layout via
+        // `split_layout` and paint nothing (issue #924).
+        self.split_layout(rect, split)
     }
 
     /// #29: pure geometry — no measurer at all (uniform divider
@@ -2917,22 +3228,16 @@ impl Backend for WinBackend {
     /// need `self.dwrite`, only kept behind the `target_os = "windows"`
     /// gate for consistency with every other method in this file.
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
-        // No `return` here (unlike the `if let Some(dwrite)` early-returns
-        // elsewhere in this file): on `target_os = "windows"` the
-        // `not(windows)` block below is stripped, so this block *is* the
-        // tail expression and an explicit `return` trips
-        // `clippy::needless_return` — an error under CI's `-D warnings`,
-        // and only on the windows-latest leg. See `activity_bar_layout`'s
-        // matching comment.
-        #[cfg(target_os = "windows")]
-        {
-            super::split::win_split_layout(rect, split)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, split);
-            todo!("DirectWrite split layout (no surface attached yet)")
-        }
+        // Pure geometry (uniform divider thickness, no measurer) —
+        // mirrors `super::split::win_split_layout`'s shape (same
+        // `DIVIDER_DIP`, duplicated by value per `PRIMITIVE_RULES.md`#713),
+        // computed directly instead of reaching into that Windows-only
+        // module (issue #924).
+        const DIVIDER_DIP: f32 = 4.0;
+        split.layout(
+            rect,
+            crate::primitives::split::SplitMeasure::new(DIVIDER_DIP),
+        )
     }
 
     /// #740: see [`Self::draw_split`]'s doc for the "surface not attached
@@ -2955,9 +3260,9 @@ impl Backend for WinBackend {
             crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
             return layout;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, tree);
-        todo!("Direct2D split-tree rasteriser (no surface attached yet)")
+        // No surface yet — return the real (pure-geometry) layout via
+        // `split_tree_layout` and paint nothing (issue #924).
+        self.split_tree_layout(rect, tree)
     }
 
     /// #740: pure geometry — no measurer at all (uniform divider
@@ -2971,15 +3276,13 @@ impl Backend for WinBackend {
         rect: Rect,
         tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::split_tree::win_split_tree_layout(rect, tree)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, tree);
-            todo!("DirectWrite split-tree layout (no surface attached yet)")
-        }
+        // Pure geometry — see `split_layout`'s doc (issue #924). Same
+        // `DIVIDER_DIP` value as `super::split_tree`.
+        const DIVIDER_DIP: f32 = 4.0;
+        tree.layout(
+            rect,
+            crate::primitives::split_tree::SplitTreeMeasure::new(DIVIDER_DIP),
+        )
     }
 
     /// #736: real Direct2D/DirectWrite rasteriser via `win::board` once a
@@ -2996,9 +3299,9 @@ impl Backend for WinBackend {
                 &self.current_theme,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, model);
-        todo!("Direct2D board rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `board_layout` and paint nothing (issue #924).
+        self.board_layout(rect, model)
     }
 
     /// #736: pure geometry — `board_layout` needs no measurer at all
@@ -3008,15 +3311,29 @@ impl Backend for WinBackend {
     /// method in this file. No `return` in the `windows` arm — see
     /// [`Self::activity_bar_layout`]'s doc for why.
     fn board_layout(&self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::board::win_board_layout(model, rect)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, model);
-            todo!("Direct2D board layout — no rasteriser to keep in sync with yet, see draw_board")
-        }
+        // Pure geometry (fixed DIP constants) — `crate::primitives::board`
+        // exposes both `board_layout` and every constant
+        // `super::board::win_board_layout` uses, so this calls them
+        // directly rather than reaching into that Windows-only module
+        // (issue #924).
+        use crate::primitives::board::{
+            BoardMeasure, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX, BOARD_COL_MIN_PX,
+            BOARD_HEADER_H_PX,
+        };
+        crate::primitives::board::board_layout(
+            model,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            BoardMeasure::new(
+                BOARD_COL_MIN_PX,
+                BOARD_COL_GAP_PX,
+                BOARD_HEADER_H_PX,
+                BOARD_CARD_H_PX,
+                BOARD_CARD_GAP_PX,
+            ),
+        )
     }
 
     /// #738: real Direct2D/DirectWrite rasteriser via `win::minimap` once a
@@ -3041,9 +3358,14 @@ impl Backend for WinBackend {
                 painted: true,
             };
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, minimap);
-        todo!("Direct2D minimap rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — same treatment `MacBackend::draw_minimap`
+        // gives its own "no rasteriser yet" gap (#802/dbb3023): real
+        // geometry via `minimap_layout`, `painted: false`, nothing drawn
+        // (issue #924).
+        crate::backend::MinimapPaintResult {
+            layout: self.minimap_layout(rect, minimap),
+            painted: false,
+        }
     }
 
     /// #738: pure geometry — `minimap_layout` needs no measurer at all
@@ -3056,15 +3378,19 @@ impl Backend for WinBackend {
         rect: Rect,
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::primitives::minimap::MinimapLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::minimap::win_minimap_layout(minimap, rect)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, minimap);
-            todo!("Direct2D minimap layout — no rasteriser to keep in sync with yet, see draw_minimap")
-        }
+        // Pure geometry (fixed DIP constants) — `Minimap::layout_with_sizing`
+        // needs no Direct2D/DirectWrite type, so this is computed directly
+        // instead of reaching into the Windows-only `super::minimap`
+        // module (issue #924). One buffer line per painted row (no
+        // cross-line colour reduction), same `LINES_PER_ROW` value that
+        // module uses.
+        minimap.layout_with_sizing(
+            rect,
+            1,
+            crate::primitives::minimap::MinimapSizing::FixedPitch(
+                crate::primitives::minimap::ROW_PITCH_PX as f32,
+            ),
+        )
     }
 
     /// #739: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3080,9 +3406,11 @@ impl Backend for WinBackend {
         if let Some(surface) = &self.surface {
             return super::image::draw_image(&surface.target, rect, image);
         }
-        #[cfg(not(target_os = "windows"))]
+        // No surface yet — matches `MacBackend::draw_image`'s categorical
+        // `Unsupported` (#802): no pixels to rasterise onto, so report it
+        // rather than panic (issue #924).
         let _ = (rect, image);
-        todo!("Direct2D image rasteriser (no surface attached yet)")
+        crate::backend::ImagePaintResult::Unsupported
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3101,23 +3429,23 @@ impl Backend for WinBackend {
             crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
             return layout;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, panel);
-        todo!("Direct2D panel rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `panel_layout` and paint nothing (issue #924).
+        self.panel_layout(rect, panel)
     }
 
     /// #29: pure geometry — `Panel::layout` needs only `line_height`,
-    /// not text measurement, so this only needs `self.dwrite` to exist
-    /// (for the `target_os = "windows"` gate below) rather than a live
-    /// render target — same posture as [`Self::status_bar_layout`].
+    /// not text measurement, so this needs no `self.dwrite`/surface at
+    /// all (issue #924) — computed directly rather than reaching into
+    /// the Windows-only `super::panel` module.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout {
-        #[cfg(target_os = "windows")]
-        if self.dwrite.is_some() {
-            return super::panel::win_panel_layout(rect, panel, self.current_line_height);
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, panel);
-        todo!("DirectWrite panel layout (no surface attached yet)")
+        let line_height = self.current_line_height;
+        let measure = crate::primitives::panel::PanelMeasure::new(if panel.title.is_some() {
+            line_height
+        } else {
+            0.0
+        });
+        panel.layout(rect, measure)
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3141,9 +3469,15 @@ impl Backend for WinBackend {
                 line_height,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, stack);
-        todo!("Direct2D toast stack rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `toast_stack_layout` falls back to, and paint
+        // nothing (issue #924).
+        win_toast_stack_nominal_layout(
+            rect,
+            stack,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 
     /// #29: pure measurement — only needs `self.dwrite`, not a live
@@ -3159,9 +3493,12 @@ impl Backend for WinBackend {
                 self.current_line_height,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, stack);
-        todo!("DirectWrite toast stack layout (no surface attached yet)")
+        win_toast_stack_nominal_layout(
+            rect,
+            stack,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 
     /// #735: real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
@@ -3182,32 +3519,40 @@ impl Backend for WinBackend {
                 &self.current_theme,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, view);
-        todo!("Direct2D pipeline view rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `pipeline_view_layout` and paint nothing (issue #924).
+        self.pipeline_view_layout(rect, view)
     }
 
     /// #735: pure geometry — `PipelineView::layout` needs no measurer at
-    /// all (fixed DIP constants for arrow/action-height), so unlike most
-    /// `*_layout` siblings this doesn't even need `self.dwrite`, only
-    /// kept behind the `target_os = "windows"` gate for consistency with
-    /// every other method in this file (mirrors
-    /// [`Self::progress_layout`]'s doc). No `return` in the `windows`
-    /// arm — see [`Self::activity_bar_layout`]'s doc for why.
+    /// all (fixed DIP constants for arrow/action-height), so this needs
+    /// no `self.dwrite`/surface at all (issue #924) — computed directly
+    /// rather than reaching into the Windows-only `super::pipeline_view`
+    /// module. Same constant values as that module, per
+    /// `PRIMITIVE_RULES.md`#713.
     fn pipeline_view_layout(
         &self,
         rect: Rect,
         view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::pipeline_view::win_pipeline_view_layout(view, rect)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, view);
-            todo!("DirectWrite pipeline view layout")
-        }
+        const WIN_ARROW_WIDTH_DIP: f32 = 32.0;
+        const WIN_ACTION_HEIGHT_DIP: f32 = 22.0;
+        const WIN_FOCUS_INDICATOR_H: f32 = 8.0;
+        let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
+            WIN_ACTION_HEIGHT_DIP
+        } else {
+            0.0
+        };
+        view.layout(
+            rect.x,
+            rect.y + WIN_FOCUS_INDICATOR_H,
+            crate::primitives::pipeline_view::PipelineViewMeasure::new(
+                rect.width,
+                (rect.height - WIN_FOCUS_INDICATOR_H).max(0.0),
+                WIN_ARROW_WIDTH_DIP,
+                action_h,
+            ),
+        )
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3217,27 +3562,33 @@ impl Backend for WinBackend {
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             return super::progress::draw_progress(&surface.target, dwrite, rect, bar);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar);
-        todo!("Direct2D progress bar rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — return the real (pure-geometry) layout
+        // via `progress_layout` and paint nothing (issue #924).
+        self.progress_layout(rect, bar)
     }
 
     /// #29: pure geometry — `ProgressBar::layout` needs no measurer at
-    /// all (uniform cancel-affordance width), so unlike most
-    /// `*_layout` siblings this doesn't even need `self.dwrite`, only
-    /// kept behind the `target_os = "windows"` gate for consistency
-    /// with every other method in this file.
+    /// all (uniform cancel-affordance width), so this needs no
+    /// `self.dwrite`/surface at all (issue #924) — computed directly
+    /// rather than reaching into the Windows-only `super::progress`
+    /// module. Same `CANCEL_WIDTH_DIP` value as that module, per
+    /// `PRIMITIVE_RULES.md`#713.
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        // See `split_layout`'s comment on why this block has no `return`.
-        #[cfg(target_os = "windows")]
-        {
-            super::progress::win_progress_layout(rect, bar)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, bar);
-            todo!("DirectWrite progress layout (no surface attached yet)")
-        }
+        const CANCEL_WIDTH_DIP: f32 = 28.0;
+        let cancel_width = if bar.cancellable {
+            CANCEL_WIDTH_DIP
+        } else {
+            0.0
+        };
+        bar.layout(
+            rect.x,
+            rect.y,
+            crate::primitives::progress::ProgressBarMeasure {
+                width: rect.width,
+                height: rect.height,
+                cancel_width,
+            },
+        )
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3247,9 +3598,15 @@ impl Backend for WinBackend {
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             return super::spinner::draw_spinner(&surface.target, dwrite, rect, spinner);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, spinner);
-        todo!("Direct2D spinner rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `spinner_layout` falls back to, and paint
+        // nothing (issue #924).
+        win_spinner_nominal_layout(
+            rect,
+            spinner,
+            self.current_char_width,
+            self.current_line_height,
+        )
     }
 
     /// #29: pure measurement — only needs `self.dwrite`, not a live
@@ -3260,9 +3617,12 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::spinner::win_spinner_layout(dwrite, rect, spinner);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, spinner);
-        todo!("DirectWrite spinner layout (no surface attached yet)")
+        win_spinner_nominal_layout(
+            rect,
+            spinner,
+            self.current_char_width,
+            self.current_line_height,
+        )
     }
 
     /// #732: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3280,26 +3640,26 @@ impl Backend for WinBackend {
                 &self.current_theme,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, cc);
-        todo!("Direct2D command center rasteriser (no surface attached yet)")
+        // No surface yet — return the real (pure `char_width` estimate)
+        // layout via `command_center_layout` and paint nothing (issue
+        // #924).
+        self.command_center_layout(rect, cc)
     }
 
     /// #732: pure `char_width` estimate (via the shared
     /// [`crate::primitives::command_center::CommandCenterMeasure::from_char_width`]
-    /// formula) — no live `DWrite` measurer is needed, same posture as
-    /// [`Self::chart_layout`].
+    /// formula) — no live `DWrite` measurer is needed at all (issue
+    /// #924), so this is computed directly rather than reaching into the
+    /// Windows-only `super::command_center` module.
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        // See `progress_layout`'s comment on why this block has no `return`.
-        #[cfg(target_os = "windows")]
-        {
-            super::command_center::win_command_center_layout(self.current_char_width, rect, cc)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, cc);
-            todo!("DirectWrite command center layout (no surface attached yet)")
-        }
+        cc.layout(
+            rect,
+            crate::primitives::command_center::CommandCenterMeasure::from_char_width(
+                &cc.search_label,
+                self.current_char_width,
+                rect.height,
+            ),
+        )
     }
 
     /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3322,9 +3682,12 @@ impl Backend for WinBackend {
                 pressed_id,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar, hovered_id, pressed_id);
-        todo!("Direct2D toolbar rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `toolbar_layout` falls back to, and paint
+        // nothing (issue #924). `hovered_id`/`pressed_id` only affect
+        // painting, so they're unused on this path.
+        let _ = (hovered_id, pressed_id);
+        self.toolbar_layout(rect, bar)
     }
 
     /// #730: see [`Self::status_bar_layout`]'s doc for why this only
@@ -3338,9 +3701,16 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::toolbar::win_toolbar_layout(dwrite, rect, bar);
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, bar);
-        todo!("DirectWrite toolbar layout (no surface attached yet)")
+        // No live DWrite handle — nominal char-width estimate instead
+        // (issue #924).
+        let measure = NominalTextMeasure {
+            char_width: self.current_char_width,
+        };
+        bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
+            crate::primitives::toolbar::ToolbarItemMeasure::new(
+                crate::primitives::toolbar::measure_button(&measure, btn),
+            )
+        })
     }
 
     /// #731 / #862: see [`Self::draw_status_bar`]'s doc for the "surface
@@ -3377,9 +3747,13 @@ impl Backend for WinBackend {
                 pressed_toolbar_id,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, panel, hovered_toolbar_id, pressed_toolbar_id);
-        todo!("Direct2D sidebar-panel rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — compute the real layout via the same
+        // nominal measurer `sidebar_panel_layout` falls back to, and
+        // paint nothing (issue #924). `hovered_toolbar_id`/
+        // `pressed_toolbar_id` only affect painting, so they're unused
+        // on this path.
+        let _ = (hovered_toolbar_id, pressed_toolbar_id);
+        self.sidebar_panel_layout(rect, panel)
     }
 
     /// #731: see [`Self::toolbar_layout`]'s doc for why this only needs
@@ -3399,9 +3773,23 @@ impl Backend for WinBackend {
                 panel,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, panel);
-        todo!("DirectWrite sidebar-panel layout (no surface attached yet)")
+        // No live DWrite handle — nominal char-width estimate instead
+        // (issue #924).
+        let measure = NominalTextMeasure {
+            char_width: self.current_char_width,
+        };
+        panel.layout(
+            rect,
+            crate::primitives::sidebar_panel::SidebarPanelMeasure::new(
+                self.current_line_height,
+                0.0,
+            ),
+            |btn| {
+                crate::primitives::toolbar::ToolbarItemMeasure::new(
+                    crate::primitives::toolbar::measure_button(&measure, btn),
+                )
+            },
+        )
     }
 
     /// #737: `diff_view_layout` is **not** overridden on this backend —
@@ -3435,9 +3823,11 @@ impl Backend for WinBackend {
                 line_height,
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, view);
-        todo!("Direct2D DiffView rasteriser (no surface attached yet)")
+        // No surface/DWrite yet — the trait's own default
+        // `diff_view_layout` (not overridden here — see this fn's doc)
+        // already computes the real row-based layout with no measurer
+        // at all, so delegate to it and paint nothing (issue #924).
+        Backend::diff_view_layout(self, rect, view)
     }
 
     /// #26: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3472,36 +3862,33 @@ impl Backend for WinBackend {
             );
             return layout;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (rect, chart, hovered_point, crosshair_x);
-        todo!("Direct2D chart rasteriser (no surface attached yet)")
+        // No surface yet — return the real (pure `char_width`/
+        // `line_height` estimate) layout via `chart_layout` and paint
+        // nothing (issue #924).
+        let _ = (hovered_point, crosshair_x);
+        self.chart_layout(rect, chart)
     }
 
     /// #26: like [`Self::tree_layout`], no measurer is needed — chart
     /// tick-label sizing only uses `char_width`/`line_height`, both
-    /// already cross-platform fields — so this doesn't need
-    /// `self.dwrite`, only the `target_os = "windows"` gate every
-    /// method in this file shares (the callee lives in a Windows-only
-    /// module).
+    /// already cross-platform fields — so this needs no `self.dwrite`/
+    /// surface at all (issue #924), computed directly rather than
+    /// reaching into the Windows-only `super::chart` module.
     fn chart_layout(
         &self,
         rect: Rect,
         chart: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
-        #[cfg(target_os = "windows")]
-        {
-            super::chart::win_chart_layout(
-                chart,
-                rect,
-                self.current_char_width,
-                self.current_line_height,
-            )
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (rect, chart);
-            todo!("DirectWrite chart layout")
-        }
+        chart.layout(
+            rect.x,
+            rect.y,
+            crate::primitives::chart::ChartMeasure {
+                width: rect.width,
+                height: rect.height,
+                char_width: self.current_char_width,
+                line_height: self.current_line_height,
+            },
+        )
     }
 }
 
@@ -3515,9 +3902,11 @@ impl Backend for WinBackend {
 // identically-named `Backend` method (frame lifecycle, measurement,
 // viewport, image) or to the same free function/inherent method a real
 // `draw_*` rasteriser would call, so no existing call site's behaviour
-// changes. Same `#[cfg(target_os = "windows")]` / `todo!()` split as every
-// other method on this backend — see the module doc's "Implementation
-// notes" for why that keeps `cargo check --features win` meaningful on
+// changes. Same `#[cfg(target_os = "windows")]` split — and, since issue
+// #924, the same no-op/nominal-estimate fallback instead of a `todo!()` —
+// as every other method on this backend. See the module doc's
+// "Implementation notes" for why that keeps `cargo check --features win`
+// meaningful on
 // Linux. See `native_surface`'s module doc for the full scope note and why
 // these methods are `surface_`-prefixed instead of colliding with
 // `Backend`'s.
@@ -3544,14 +3933,18 @@ impl NativeSurface for WinBackend {
 
     fn surface_measure_text(&self, text: &str) -> (f32, f32) {
         #[cfg(target_os = "windows")]
-        {
-            self.measure_text(text)
+        if self.dwrite.is_some() {
+            return self.measure_text(text);
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = text;
-            todo!("DirectWrite measure_text (no surface attached yet)")
-        }
+        // No live DWrite handle (fresh backend, device lost, or a
+        // non-Windows host where this never compiles) — a measurement
+        // can't be faked meaningfully, but a wrong-but-finite nominal
+        // per-character estimate beats a dead process (issue #924). Real
+        // widths resume once a surface exists.
+        (
+            nominal_text_width(text, self.current_char_width),
+            self.current_line_height,
+        )
     }
 
     /// #860: overrides the default (which drops `bold`) —
@@ -3560,18 +3953,19 @@ impl NativeSurface for WinBackend {
     /// before its paint moved to
     /// `primitives::status_bar::native_surface_paint::paint`.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        let _ = bold;
         #[cfg(target_os = "windows")]
-        {
-            self.dwrite
-                .as_ref()
-                .and_then(|d| d.measure_text_styled(text, bold).ok())
-                .unwrap_or((0.0, 0.0))
+        if let Some(d) = self.dwrite.as_ref() {
+            if let Ok(m) = d.measure_text_styled(text, bold) {
+                return m;
+            }
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (text, bold);
-            todo!("DirectWrite measure_text_styled (no surface attached yet)")
-        }
+        // See `surface_measure_text`'s doc for why this nominal estimate
+        // (rather than `(0.0, 0.0)`) is the chosen degrade (issue #924).
+        (
+            nominal_text_width(text, self.current_char_width),
+            self.current_line_height,
+        )
     }
 
     fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
@@ -3580,9 +3974,9 @@ impl NativeSurface for WinBackend {
             let _ = super::text::fill_rect(&surface.target, rect, color);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
         let _ = (rect, color);
-        todo!("Direct2D fill_rect (no surface attached yet)")
     }
 
     fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
@@ -3591,20 +3985,21 @@ impl NativeSurface for WinBackend {
             let _ = super::text::stroke_rect(&surface.target, rect, color, stroke_width);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
         let _ = (rect, color, stroke_width);
-        todo!("Direct2D stroke_rect (no surface attached yet)")
     }
 
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
         #[cfg(target_os = "windows")]
         {
+            // Already a no-op when no surface/DWrite handle exists — see
+            // `Self::draw_text`'s doc.
             self.draw_text(text, rect, color);
         }
         #[cfg(not(target_os = "windows"))]
         {
             let _ = (rect, text, color);
-            todo!("DirectWrite draw_text (no surface attached yet)")
         }
     }
 
@@ -3637,9 +4032,9 @@ impl NativeSurface for WinBackend {
             }
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
         let _ = (rect, text, color, bold, scale_x);
-        todo!("DirectWrite draw_text_styled (no surface attached yet)")
     }
 
     fn surface_draw_line(
@@ -3662,9 +4057,9 @@ impl NativeSurface for WinBackend {
             );
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
         let _ = (from, to, color, stroke_width);
-        todo!("Direct2D draw_line (no surface attached yet)")
     }
 
     fn surface_push_clip(&mut self, rect: Rect) {
@@ -3673,18 +4068,18 @@ impl NativeSurface for WinBackend {
             super::text::push_clip(&surface.target, rect);
             return;
         }
-        #[cfg(not(target_os = "windows"))]
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
         let _ = rect;
-        todo!("Direct2D push_clip (no surface attached yet)")
     }
 
     fn surface_pop_clip(&mut self) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             super::text::pop_clip(&surface.target);
-            return;
         }
-        todo!("Direct2D pop_clip (no surface attached yet)")
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
     }
 
     fn surface_draw_image(
@@ -5220,5 +5615,221 @@ mod tests {
 
         let no_paint = backend.text_display_layout(rect, &td);
         assert_eq!(painted, no_paint);
+    }
+
+    // ─── Issue #924: no-surface fallback survives instead of panicking ──
+
+    fn sample_minimap() -> crate::primitives::minimap::Minimap {
+        crate::primitives::minimap::Minimap {
+            id: WidgetId::new("minimap"),
+            lines: (0..40)
+                .map(|i| crate::primitives::minimap::MinimapLine {
+                    text: format!("line {i}"),
+                    line_idx: i,
+                })
+                .collect(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 10,
+            total_buffer_lines: 40,
+        }
+    }
+
+    fn sample_panel() -> Panel {
+        Panel {
+            id: WidgetId::new("panel"),
+            title: None,
+            actions: Vec::new(),
+            accent: None,
+            collapsed: false,
+        }
+    }
+
+    /// Issue #924's core acceptance bar: a `WinBackend` that has never
+    /// had `attach_surface`/`attach_headless` called — the same
+    /// surface-less state a fresh `WinBackend::new()` starts in *and*
+    /// the state `end_frame` drops back to after a device-lost
+    /// `EndDraw` failure — survives a full `begin_frame` -> a spread of
+    /// `draw_*`/`*_layout`/`NativeSurface` calls spanning every
+    /// return-type group this issue's fallbacks touch (`()`, a
+    /// `*PaintResult`, a `*Layout`, and the two measurement methods) ->
+    /// `end_frame`, without panicking. No `target_os = "windows"` gate:
+    /// the whole point is that this now degrades instead of aborting on
+    /// *every* host, not just Windows — see the module-level issue doc.
+    #[test]
+    fn win_backend_survives_full_frame_with_no_surface_attached() {
+        let mut backend = WinBackend::new();
+        let viewport = Viewport::new(400.0, 300.0, 1.0);
+        Backend::begin_frame(&mut backend, viewport);
+
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        // `()` category. None of these types derive `Default`, so build
+        // each with an empty/idle content set instead.
+        let msv = MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: Vec::new(),
+            active_section: None,
+            axis: crate::primitives::multi_section_view::Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: false,
+            scroll_mode: crate::primitives::multi_section_view::ScrollMode::PerSection,
+            has_focus: false,
+            panel_scroll: 0.0,
+        };
+        backend.draw_multi_section_view(rect, &msv);
+
+        // `Vec<ActivityBarRowHit>` category.
+        let activity_bar = ActivityBar {
+            id: WidgetId::new("activity-bar"),
+            top_items: Vec::new(),
+            bottom_items: Vec::new(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let _ = backend.draw_activity_bar(rect, &activity_bar, None);
+
+        // `TabBarHits`/`TabBarLayout` category (nominal-measurer
+        // fallback).
+        #[allow(deprecated)]
+        {
+            let tab_bar = TabBar {
+                id: WidgetId::new("tab-bar"),
+                tabs: Vec::new(),
+                scroll_offset: 0,
+                right_segments: Vec::new(),
+                active_accent: None,
+                show_tab_close: false,
+                compact: false,
+            };
+            let _ = backend.draw_tab_bar(rect, &tab_bar, None);
+        }
+
+        // `ToolbarLayout` category (nominal-measurer fallback via
+        // `measure_button`).
+        let toolbar = crate::primitives::toolbar::Toolbar {
+            id: WidgetId::new("toolbar"),
+            buttons: Vec::new(),
+            bg: None,
+            focused_index: None,
+        };
+        let interaction = crate::interaction::InteractionState::default();
+        let _ = backend.draw_toolbar_interactive(rect, &toolbar, &interaction);
+
+        // `PanelLayout` category (pure geometry, no measurer).
+        let panel = sample_panel();
+        let _ = backend.draw_panel(rect, &panel);
+
+        // `MinimapPaintResult` category (`painted: false`, real layout).
+        let minimap = sample_minimap();
+        let _ = backend.draw_minimap(rect, &minimap);
+
+        // `ImagePaintResult`/`EditorPaintResult` categories — trivial,
+        // fixed fallback values (`Unsupported` / `::default()`), no
+        // fixture needed to exercise the code path meaningfully; covered
+        // by inspection, not repeated here.
+
+        // `NativeSurface` measurement category (nominal char-width
+        // estimate).
+        let _ = NativeSurface::surface_measure_text(&backend, "hello");
+        let _ = NativeSurface::surface_measure_text_styled(&backend, "hello", true);
+
+        Backend::end_frame(&mut backend);
+    }
+
+    /// Acceptance: a layout returned with no surface attached is real
+    /// geometry, and — for the minimap — agrees exactly with what
+    /// [`WinBackend::draw_minimap`] itself reports as unpainted layout,
+    /// the same "paint and no-paint query can't drift apart" contract
+    /// every backend upholds (mirrors `MacBackend`'s
+    /// `minimap_layout_agrees_with_draw_minimap`, #802/dbb3023).
+    #[test]
+    fn draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout() {
+        let mut backend = WinBackend::new();
+        let minimap = sample_minimap();
+        let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
+
+        let result = backend.draw_minimap(rect, &minimap);
+
+        assert!(
+            !result.painted,
+            "no surface attached — `painted` must honestly report `false`, not panic"
+        );
+        assert!(
+            !result.layout.visible_lines.is_empty(),
+            "the layout must still be real geometry, not an empty stub"
+        );
+
+        let no_paint = backend.minimap_layout(rect, &minimap);
+        assert_eq!(
+            result.layout, no_paint,
+            "draw_minimap's returned layout must agree with minimap_layout's \
+             standalone query"
+        );
+    }
+
+    /// Same contract as the minimap test above, for a `Panel` — issue
+    /// #924's acceptance criterion explicitly calls out "the minimap and
+    /// one panel".
+    #[test]
+    fn draw_panel_with_no_surface_agrees_with_panel_layout() {
+        let mut backend = WinBackend::new();
+        let panel = sample_panel();
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+
+        let painted = backend.draw_panel(rect, &panel);
+        let no_paint = backend.panel_layout(rect, &panel);
+
+        assert_eq!(
+            painted, no_paint,
+            "draw_panel's returned layout must agree with panel_layout's \
+             standalone query"
+        );
+    }
+
+    /// `draw_image` on a surface-less backend must report categorically
+    /// `Unsupported` (matching `MacBackend::draw_image`'s #802 posture)
+    /// rather than panic.
+    #[test]
+    fn draw_image_with_no_surface_reports_unsupported() {
+        let mut backend = WinBackend::new();
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("img"),
+            source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
+            intrinsic_size: None,
+            fit: crate::primitives::image::ImageFit::Contain,
+            fallback_text: "img".to_string(),
+        };
+        let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
+
+        let result = backend.draw_image(rect, &image);
+        assert_eq!(result, crate::backend::ImagePaintResult::Unsupported);
+    }
+
+    // `draw_editor`'s no-surface fallback (`EditorPaintResult::default()`)
+    // is a one-line, zero-logic return with nothing to get wrong beyond
+    // what `cargo check`/`clippy` already verify — building a full
+    // `Editor` fixture (~20 required fields) to cover it isn't worth the
+    // weight; `EditorPaintResult`'s own `#[derive(Default)]` is exercised
+    // directly wherever it's constructed (e.g. `Default::default()` in
+    // `src/backend.rs`'s own tests).
+
+    /// `NativeSurface::surface_measure_text`/`surface_measure_text_styled`
+    /// on a surface-less backend must return a finite nominal estimate
+    /// (`char_width` per character) instead of panicking — chosen over
+    /// `(0.0, 0.0)` so a host doing hit-testing against the "measurement"
+    /// still gets a non-degenerate box (issue #924's final-message
+    /// disclosure).
+    #[test]
+    fn surface_measure_text_with_no_surface_returns_a_nominal_estimate() {
+        let backend = WinBackend::new();
+        let (w, h) = NativeSurface::surface_measure_text(&backend, "hello");
+        assert_eq!(w, 5.0 * backend.current_char_width);
+        assert_eq!(h, backend.current_line_height);
+
+        let (w2, h2) = NativeSurface::surface_measure_text_styled(&backend, "hello", true);
+        assert_eq!(w2, 5.0 * backend.current_char_width);
+        assert_eq!(h2, backend.current_line_height);
     }
 }
