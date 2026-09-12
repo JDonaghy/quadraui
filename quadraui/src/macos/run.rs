@@ -807,7 +807,7 @@ define_class!(
         /// type-check.
         #[unsafe(method(performDragOperation:))]
         fn perform_drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-            let paths = self.dropped_paths(sender);
+            let paths = self.dropped_paths_guarded(sender);
             if paths.is_empty() {
                 false
             } else {
@@ -863,10 +863,42 @@ impl QuadraView {
     /// share it — see `draggingEntered:`'s doc for why one macro-defined
     /// method can't simply call another.
     fn drag_operation(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-        if self.dropped_paths(sender).is_empty() {
+        if self.dropped_paths_guarded(sender).is_empty() {
             NSDragOperation::None
         } else {
             NSDragOperation::Copy
+        }
+    }
+
+    /// Panic-guarded wrapper around [`Self::dropped_paths`] (#922).
+    ///
+    /// `draggingEntered:`/`draggingUpdated:` (via [`Self::drag_operation`])
+    /// and `performDragOperation:` are, like `drawRect:` and the responder
+    /// methods `dispatch` guards, C-ABI entry points objc2's
+    /// `define_class!` trampoline invokes directly off AppKit's
+    /// drag-tracking loop — a boundary that cannot unwind. `dropped_paths`
+    /// is written defensively today (all `?`-chained `Option`s, no
+    /// `unwrap`/indexing), but that can silently stop being true after an
+    /// innocuous future edit, so it gets the same `catch_unwind` treatment
+    /// as `draw_rect`'s `paint` call and `dispatch`'s `handle` call rather
+    /// than relying on that property holding forever.
+    ///
+    /// On a caught panic, report it once (deduped by call site, so a
+    /// hovering drag re-entering `draggingUpdated:` every frame doesn't
+    /// spam the log) and answer as if the drag carried no files — the
+    /// same "reject this drag" outcome `dropped_paths` itself returns for
+    /// a drag with no file-URL pasteboard item.
+    fn dropped_paths_guarded(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.dropped_paths(sender)))
+        {
+            Ok(paths) => paths,
+            Err(payload) => {
+                crate::desktop::report_caught_panic_once(
+                    "macos::run::QuadraView::dropped_paths",
+                    payload.as_ref(),
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -874,7 +906,11 @@ impl QuadraView {
     /// (issue #834). Empty (not an error) for a drag that carries no
     /// `NSPasteboardTypeFileURL` item — e.g. a text or color drag —
     /// which `draggingEntered:`/`performDragOperation:` both treat as
-    /// "reject this drag."
+    /// "reject this drag." Never call this directly from a
+    /// `define_class!` selector arm — go through
+    /// [`Self::dropped_paths_guarded`] (or [`Self::drag_operation`],
+    /// which already does) so a panic here can't escape the C ABI
+    /// boundary.
     fn dropped_paths(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
         let pasteboard = sender.draggingPasteboard();
         let Some(items) = pasteboard.pasteboardItems() else {
@@ -900,18 +936,26 @@ impl QuadraView {
     ///
     /// # Panic safety (#922)
     ///
-    /// Every responder override in the `define_class!` block above
-    /// (`mouseDown:`, `keyDown:`, `scrollWheel:`, the resize/DPI/drag
-    /// notification handlers, …) funnels through this one method, itself
-    /// called directly from objc2's dispatch trampoline — a C ABI
-    /// boundary that cannot unwind. A single `catch_unwind` here guards
-    /// every one of those call sites at once, including every branch
-    /// inside `handle` → `dispatch_event`'s own internal `app.handle`
-    /// calls, rather than needing a guard duplicated into each of
-    /// `dispatch_event`'s several match arms. On a caught panic this
-    /// falls back to `Reaction::Continue` — no redraw, no exit — the same
-    /// safe default `win::run::dispatch_event` uses for the identical
-    /// case.
+    /// Every responder override in the `define_class!` block above that
+    /// ends up feeding `AppLogic::handle` (`mouseDown:`, `keyDown:`,
+    /// `scrollWheel:`, the resize/DPI notification handlers, and
+    /// `performDragOperation:`'s `FilesDropped` dispatch) funnels through
+    /// this one method, itself called directly from objc2's dispatch
+    /// trampoline — a C ABI boundary that cannot unwind. A single
+    /// `catch_unwind` here guards every one of those call sites at once,
+    /// including every branch inside `handle` → `dispatch_event`'s own
+    /// internal `app.handle` calls, rather than needing a guard
+    /// duplicated into each of `dispatch_event`'s several match arms. On
+    /// a caught panic this falls back to `Reaction::Continue` — no
+    /// redraw, no exit — the same safe default `win::run::dispatch_event`
+    /// uses for the identical case.
+    ///
+    /// `draggingEntered:`/`draggingUpdated:` are the exception: they
+    /// answer AppKit synchronously with an `NSDragOperation` and never
+    /// call `handle` at all, so they can't route through here. They (and
+    /// `performDragOperation:`'s own `dropped_paths` call, before it
+    /// reaches the `dispatch` this method serves) are guarded separately
+    /// by [`Self::dropped_paths_guarded`] — see its doc.
     fn dispatch(&self, ev: UiEvent) {
         let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.ivars().handle)(ev)
