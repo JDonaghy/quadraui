@@ -973,4 +973,89 @@ mod tests {
              been rebuilt by ensure_surface, not left permanently dropped"
         );
     }
+
+    /// Coverage for #922: `render_frame`'s `catch_unwind` around
+    /// `app.render` must (a) survive a panicking render — if it didn't,
+    /// this test would fail with an *uncaught* panic rather than an
+    /// assertion, since nothing upstream of `render_frame` in this test
+    /// catches anything — and (b) leave the `BeginDraw`/`EndDraw`
+    /// bracket balanced, so the *next* frame still paints. Mirrors
+    /// `end_frame_recovers_the_next_frame_after_a_forced_end_draw_failure`
+    /// (#805) immediately above, but forcing the failure from
+    /// `app.render` instead of a genuine Direct2D error.
+    ///
+    /// This drives the real `super::run::render_frame` the live
+    /// `wndproc`'s `WM_PAINT` handler calls — the same production
+    /// function, not a reimplementation — but not `wndproc`/`WNDPROC`
+    /// itself: that C ABI entry point only exists inside `mod win32`
+    /// (`target_os = "windows"`, live message loop), which no headless
+    /// test can drive. This is the closest reachable seam; see
+    /// `render_frame`'s "Panic safety" doc for why catching one level
+    /// below the C boundary is still a correct fix.
+    #[test]
+    fn render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints() {
+        const W: u32 = 32;
+        const H: u32 = 32;
+        let divider_color = Color::rgb(0x22, 0x66, 0xaa);
+
+        /// Panics on its first `render` call, then paints a solid
+        /// divider on every call after that — lets one test drive both
+        /// "the panicking frame" and "the recovered frame" through the
+        /// same `AppLogic` impl.
+        struct PanicsOnceThenPaints {
+            panicked_yet: std::cell::Cell<bool>,
+            divider_color: Color,
+        }
+
+        impl AppLogic for PanicsOnceThenPaints {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn crate::Backend, _area: ()) {
+                if !self.panicked_yet.replace(true) {
+                    panic!("PanicsOnceThenPaints: deliberate panic for #922 coverage");
+                }
+                backend.set_theme(crate::theme::Theme {
+                    separator: self.divider_color,
+                    ..crate::theme::Theme::default()
+                });
+                backend.draw_terminal_divider(Rect::new(0.0, 0.0, W as f32, H as f32));
+            }
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        let app = PanicsOnceThenPaints {
+            panicked_yet: std::cell::Cell::new(false),
+            divider_color,
+        };
+        let viewport = Viewport::new(W as f32, H as f32, 1.0);
+
+        // Frame 1: `app.render` panics.
+        render_frame(&mut backend, &app, viewport);
+
+        // Frame 2 — the acceptance criterion: painting must still work
+        // after the caught panic, proving `end_frame` ran (so
+        // `BeginDraw` from frame 1 wasn't left unmatched) even though
+        // frame 1's `app.render` never returned normally. Mirrors the
+        // #805 test's `ensure_surface` call before every real frame.
+        let _ = backend.ensure_surface();
+        render_frame(&mut backend, &app, viewport);
+        assert_eq!(
+            (
+                surface.pixel_at(0, H / 2).r,
+                surface.pixel_at(0, H / 2).g,
+                surface.pixel_at(0, H / 2).b,
+            ),
+            (divider_color.r, divider_color.g, divider_color.b),
+            "frame 2 (after a caught panic in frame 1) must still paint — the \
+             BeginDraw/EndDraw bracket must have stayed balanced despite the panic"
+        );
+    }
 }

@@ -314,6 +314,32 @@ pub(crate) fn dispatch_event<A: AppLogic>(
 /// [`Viewport`] + a borrowed `CGContextRef`. Shared by the live runner and
 /// [`super::testing::MacDriver`] (quadraui#493) — mirrors
 /// [`crate::gtk::run::render_frame`].
+///
+/// # Panic safety (#922)
+///
+/// `drawRect:` (below) runs this from inside objc2's `define_class!`
+/// dispatch trampoline — a C ABI callback that cannot unwind — so
+/// `app.render` (arbitrary consumer code, or a `MacBackend` rasteriser's
+/// reachable `todo!()`, the exact shape of the vimcode#896 incident that
+/// prompted quadraui#922) is wrapped in its own `catch_unwind` instead of
+/// being allowed to unwind through that boundary into `abort()`.
+///
+/// This catches specifically *inside* the closure passed to
+/// [`MacBackend::enter_frame_scope`], not around the call to
+/// `enter_frame_scope` itself: `enter_frame_scope`'s own cleanup (restoring
+/// `current_cg_ptr`, stopping text-run recording) runs as plain code after
+/// its closure argument returns, with no `Drop` guard backing it — if the
+/// closure unwound instead of returning, that cleanup would never run and
+/// `current_cg_ptr` would stay stuck non-null past this frame. Catching
+/// here means the closure always returns normally (the panic is already
+/// resolved to `Err` before the closure's body ends), so
+/// `enter_frame_scope` never sees an unwind and its cleanup runs exactly
+/// as it would for a successful frame — this is the "frame scope opened
+/// by `enter_frame_scope` must be closed" half of #922's requirements.
+/// `draw_rect`'s own outer `catch_unwind` around this whole function is
+/// separate defense-in-depth for the code *outside* this closure (the
+/// `tab_stops` call below, `begin_frame`/`end_frame` themselves) — see
+/// that method's doc.
 pub(crate) fn render_frame<A: AppLogic>(
     backend: &mut MacBackend,
     app: &A,
@@ -330,7 +356,19 @@ pub(crate) fn render_frame<A: AppLogic>(
             .map(|(_, rect)| rect)
     });
     backend.enter_frame_scope(ctx, |b| {
-        app.render(b, <A as AppLogic>::AreaId::default());
+        let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.render(&mut *b, <A as AppLogic>::AreaId::default());
+        }));
+        if let Err(payload) = rendered {
+            crate::desktop::report_caught_panic_once(
+                "macos::run::render_frame (app.render)",
+                payload.as_ref(),
+            );
+            // Skip the rest of this frame — the focus ring / selection
+            // highlight below both read state a panicking `render` may
+            // have left inconsistent.
+            return;
+        }
         // After app.render: paint the focus-ring convention (#830), same
         // reasoning as `apply_selection_highlight` below for staying
         // inside this closure — `MacBackend::current_cg` is only
@@ -458,7 +496,28 @@ define_class!(
             // `paint` is responsible for `begin_frame` / frame-scope /
             // `end_frame` orchestration so this method doesn't need
             // to know anything about the concrete `A`.
-            (self.ivars().paint)(viewport, cg_ref);
+            //
+            // #922: `drawRect:` is objc2's `define_class!`-generated
+            // dispatch trampoline invoking this method directly — a C ABI
+            // callback that cannot unwind. `catch_unwind` here is the
+            // outermost guard for everything `paint` does (the primary
+            // guard, around `app.render` specifically, lives inside
+            // `render_frame` itself — see its doc for why that inner
+            // placement is what keeps `MacBackend::enter_frame_scope`'s
+            // frame-scope bracket balanced); this one is defense-in-depth
+            // for anything else `paint` runs (queued-event draining,
+            // `tab_stops`, `begin_frame`/`end_frame`) so a panic there
+            // degrades to "this frame is blank" instead of aborting the
+            // host process (quadraui#922, following the real vimcode#896
+            // incident this exact method used to be unable to survive).
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (self.ivars().paint)(viewport, cg_ref);
+            })) {
+                crate::desktop::report_caught_panic_once(
+                    "macos::run::QuadraView::draw_rect (paint)",
+                    payload.as_ref(),
+                );
+            }
         }
 
         /// Top-left origin to match TUI + GTK conventions.
@@ -838,8 +897,34 @@ impl QuadraView {
 
     /// Route a translated [`UiEvent`] through `AppLogic::handle` and
     /// act on the returned [`Reaction`].
+    ///
+    /// # Panic safety (#922)
+    ///
+    /// Every responder override in the `define_class!` block above
+    /// (`mouseDown:`, `keyDown:`, `scrollWheel:`, the resize/DPI/drag
+    /// notification handlers, …) funnels through this one method, itself
+    /// called directly from objc2's dispatch trampoline — a C ABI
+    /// boundary that cannot unwind. A single `catch_unwind` here guards
+    /// every one of those call sites at once, including every branch
+    /// inside `handle` → `dispatch_event`'s own internal `app.handle`
+    /// calls, rather than needing a guard duplicated into each of
+    /// `dispatch_event`'s several match arms. On a caught panic this
+    /// falls back to `Reaction::Continue` — no redraw, no exit — the same
+    /// safe default `win::run::dispatch_event` uses for the identical
+    /// case.
     fn dispatch(&self, ev: UiEvent) {
-        let reaction = (self.ivars().handle)(ev);
+        let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.ivars().handle)(ev)
+        })) {
+            Ok(reaction) => reaction,
+            Err(payload) => {
+                crate::desktop::report_caught_panic_once(
+                    "macos::run::QuadraView::dispatch (app.handle)",
+                    payload.as_ref(),
+                );
+                Reaction::Continue
+            }
+        };
         self.apply_reaction(reaction);
     }
 
@@ -849,8 +934,23 @@ impl QuadraView {
     /// elapses — never called on any fixed cadence, mirroring
     /// [`Self::dispatch`]'s "translate, then apply" shape for the tick
     /// path instead of an event.
+    ///
+    /// Guarded the same way as [`Self::dispatch`] (#922) — this is also
+    /// invoked directly from an objc2/AppKit callback (the `NSTimer`
+    /// target set up in [`run`]), the same non-unwindable boundary.
     fn dispatch_tick(&self) {
-        let reaction = (self.ivars().tick)();
+        let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.ivars().tick)()
+        })) {
+            Ok(reaction) => reaction,
+            Err(payload) => {
+                crate::desktop::report_caught_panic_once(
+                    "macos::run::QuadraView::dispatch_tick (app.tick)",
+                    payload.as_ref(),
+                );
+                Reaction::Continue
+            }
+        };
         self.apply_reaction(reaction);
     }
 

@@ -211,13 +211,48 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 /// `key_to_activity_bar_string`, `EventOutcome`) — would trip `-D
 /// warnings`' dead-code lint on that leg despite being genuinely used on
 /// the `windows-latest` leg where it matters.
+///
+/// # Panic safety (#922)
+///
+/// This is the one funnel every message `wndproc` dispatches to
+/// `app.handle` passes through (directly, or via
+/// [`route_mouse_down`]/[`route_mouse_move`]/[`route_mouse_up`] below,
+/// which call back into this same function). `wndproc` is a Win32
+/// `WNDPROC` — a C ABI callback that cannot unwind — so a panic
+/// anywhere in `preprocess_event`/`app.handle` (an app bug, or a
+/// `WinBackend` rasteriser's reachable `todo!()`) would otherwise
+/// escalate straight to `abort()` instead of staying a recoverable
+/// panic (see the module-level issue this closes: quadraui#922,
+/// following the real-world vimcode#896 incident on macOS's equivalent
+/// unguarded boundary). `catch_unwind` here converts that into "this one
+/// event is dropped, everything else keeps running": on a caught panic,
+/// `backend`/`app` may be left in a partially-mutated state (unavoidable
+/// — that's what makes catching correct instead of merely convenient,
+/// not a claim that the state is fine), but no `BeginDraw`/`EndDraw`
+/// bracket is open at this call site (that's [`render_frame`]'s
+/// concern), so there is nothing here that needs unwinding to leave
+/// balanced. `AssertUnwindSafe` is required because `backend: &mut
+/// WinBackend` is not `UnwindSafe` — see [`crate::desktop::report_caught_panic_once`]'s
+/// doc for the once-per-site reporting this uses instead of logging
+/// every single frame's re-panic.
 #[allow(dead_code)]
 pub(crate) fn dispatch_event<A: AppLogic>(
     event: UiEvent,
     backend: &mut WinBackend,
     app: &mut A,
 ) -> EventOutcome {
-    crate::runtime::preprocess_event(event, backend, app)
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::runtime::preprocess_event(event, backend, app)
+    })) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            crate::desktop::report_caught_panic_once(
+                "win::run::dispatch_event (app.handle)",
+                payload.as_ref(),
+            );
+            EventOutcome::Continue
+        }
+    }
 }
 
 /// Route a `MouseDown` through the shared text-selection/scrollbar-drag
@@ -355,10 +390,35 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
 ///
 /// `#[allow(dead_code)]`: same reasoning as [`dispatch_event`]'s doc —
 /// both its callers only exist on `target_os = "windows"`.
+///
+/// # Panic safety (#922)
+///
+/// `WM_PAINT`'s handler in `mod win32` runs this from inside `wndproc` —
+/// a Win32 `WNDPROC`, a C ABI callback that cannot unwind — so `app.render`
+/// (arbitrary consumer code, or a `WinBackend` rasteriser's reachable
+/// `todo!()`) is wrapped in its own `catch_unwind` rather than being
+/// allowed to unwind through that boundary into `abort()` (quadraui#922,
+/// following the vimcode#896 incident on macOS's equivalent unguarded
+/// `drawRect:`). A caught panic skips the rest of this frame — no focus
+/// ring, no selection highlight, both of which read state a panicking
+/// `render` may have left inconsistent — but `backend.end_frame()` below
+/// still always runs, so the `BeginDraw`/`EndDraw` bracket
+/// `backend.begin_frame` opened above stays balanced for the next
+/// `WM_PAINT` regardless of whether this one panicked.
 #[allow(dead_code)]
 pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewport: Viewport) {
     backend.begin_frame(viewport);
-    app.render(backend, Default::default());
+    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.render(&mut *backend, Default::default());
+    }));
+    if let Err(payload) = rendered {
+        crate::desktop::report_caught_panic_once(
+            "win::run::render_frame (app.render)",
+            payload.as_ref(),
+        );
+        backend.end_frame();
+        return;
+    }
     // After app.render: paint the focus-ring convention (#830) — mirrors
     // the other three runners' post-render overlay ordering.
     let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
@@ -2164,6 +2224,99 @@ mod text_selection_dispatch_tests {
             vec![ev],
             "middle-click must fall through to app.handle unchanged when there is no \
              PRIMARY selection to paste, matching gtk::run's identical fallthrough branch"
+        );
+    }
+}
+
+/// Coverage for #922: `dispatch_event` must catch a panic from
+/// `app.handle` rather than let it propagate out to `wndproc`'s C ABI
+/// boundary — see that function's "Panic safety" doc. Runs on every
+/// host, deliberately: `dispatch_event` itself isn't `target_os`-gated
+/// (see its doc), and the real `WNDPROC`/`wndproc::<A>` only exists
+/// under `mod win32` (`target_os = "windows"`), which no test on this
+/// host can drive. This module proves the Rust-side half of the fix —
+/// the shared funnel every real `WM_*` message dispatches `app.handle`
+/// through — not the C-ABI boundary itself; see `render_frame`'s
+/// equivalent windows-only test in `win::testing` for the render half,
+/// which — unlike `dispatch_event` — needs a live Direct2D surface and
+/// so can only run where `HeadlessSurface` exists.
+#[cfg(test)]
+mod panic_guard_tests {
+    use super::*;
+    use crate::runner::Reaction;
+    use crate::{Key, Modifiers, UiEvent};
+
+    struct PanicsOnHandle;
+
+    impl AppLogic for PanicsOnHandle {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            panic!("PanicsOnHandle: deliberate panic for #922 coverage");
+        }
+    }
+
+    fn some_key() -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char('z'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn a_panicking_handle_does_not_unwind_past_dispatch_event() {
+        let mut backend = WinBackend::new();
+        let mut app = PanicsOnHandle;
+        // If `dispatch_event` didn't catch this, the panic would unwind
+        // out of this call and fail the test with an uncaught panic
+        // rather than a normal assertion failure — the test process
+        // reaching the assertion below at all is part of what's proven.
+        let outcome = dispatch_event(some_key(), &mut backend, &mut app);
+        assert!(
+            matches!(outcome, EventOutcome::Continue),
+            "a caught panic in app.handle must resolve to Continue (no \
+             redraw, no exit), matching wndproc's fallthrough for every \
+             message it doesn't otherwise handle"
+        );
+    }
+
+    #[test]
+    fn a_panicking_handle_keeps_working_across_repeated_frames() {
+        let mut backend = WinBackend::new();
+        let mut app = PanicsOnHandle;
+        // A reachable rasteriser/app-logic panic is re-entered on every
+        // repaint (the vimcode#896 incident this issue names) — assert
+        // `dispatch_event` keeps degrading gracefully rather than
+        // aborting or hanging on the second, third, ... occurrence, not
+        // just the first.
+        for _ in 0..5 {
+            let outcome = dispatch_event(some_key(), &mut backend, &mut app);
+            assert!(matches!(outcome, EventOutcome::Continue));
+        }
+    }
+
+    #[test]
+    fn a_non_panicking_handle_is_unaffected_by_the_guard() {
+        struct RecordingApp {
+            seen: bool,
+        }
+        impl AppLogic for RecordingApp {
+            type AreaId = ();
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                self.seen = true;
+                Reaction::Continue
+            }
+        }
+        let mut backend = WinBackend::new();
+        let mut app = RecordingApp { seen: false };
+        let _ = dispatch_event(some_key(), &mut backend, &mut app);
+        assert!(
+            app.seen,
+            "catch_unwind must not swallow or alter a non-panicking call"
         );
     }
 }

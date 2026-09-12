@@ -96,8 +96,11 @@ pub fn clear_sink() {
 /// places listed in #619 — modal-paint tracking, vt100 panic recovery,
 /// the GTK/macOS siblings of the same modal-paint check — plus, since
 /// issue #805, `win/backend.rs`'s `end_frame` reporting a dropped render
-/// target. Genuinely CLI-shaped tools (examples, the GTK headless-smoke
-/// harness) print directly and carry their own justified
+/// target, plus, since issue #922, `desktop.rs`'s
+/// `report_caught_panic_once` (the dedup wrapper `macos::run`/`win::run`
+/// call after a `catch_unwind` guard catches a panic at their C-ABI
+/// entry points). Genuinely CLI-shaped tools (examples, the GTK
+/// headless-smoke harness) print directly and carry their own justified
 /// `#[allow(clippy::print_stderr)]` instead of going through this sink —
 /// they *are* the host, not a library embedded in one.
 ///
@@ -107,24 +110,25 @@ pub fn clear_sink() {
 /// `macos` feature compiles none of it), `win/backend.rs`'s `end_frame`
 /// (itself additionally `target_os = "windows"`-gated, so on Linux the
 /// `win` feature compiles none of it either — mirrors the `macos` case
-/// exactly), and `terminal_engine.rs`. This module is not gated, so a
-/// configuration that enables none of them — CI's `cargo check -p
-/// quadraui --features win` gate on Linux is exactly that one, since
-/// `win`'s only call site needs `target_os = "windows"` too — compiles
-/// `emit` with zero callers and trips `dead_code` under the workflow's
-/// `-D warnings`. The allow is scoped by `cfg_attr` to precisely that
-/// case rather than applied unconditionally, so dead-code detection
-/// stays live in every configuration where a call site actually
-/// compiles, including a real `--features win` build on Windows itself
-/// (`cargo xwin`'s `target_os = "windows"` — see `docs/BACKEND.md`'s
-/// Win-GUI testing section), which does have one.
+/// exactly), `desktop.rs`'s `report_caught_panic_once` (live under plain
+/// `feature = "win"` on any OS — unlike `end_frame`'s call site, its
+/// callers `win::run::dispatch_event`/`render_frame` are deliberately
+/// *not* `target_os`-gated, see those functions' docs — or under
+/// `all(feature = "macos", target_os = "macos")`), and
+/// `terminal_engine.rs`. This module is not gated, so a configuration
+/// that enables none of them — a plain `cargo check -p quadraui` with no
+/// features, or `--features macos` on a non-macOS host — compiles `emit`
+/// with zero callers and trips `dead_code` under the workflow's `-D
+/// warnings`. The allow is scoped by `cfg_attr` to precisely that case
+/// rather than applied unconditionally, so dead-code detection stays
+/// live in every configuration where a call site actually compiles.
 #[cfg_attr(
     not(any(
         feature = "tui",
         feature = "gtk",
         feature = "terminal",
-        all(feature = "macos", target_os = "macos"),
-        all(feature = "win", target_os = "windows")
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
     )),
     allow(dead_code)
 )]
@@ -137,6 +141,28 @@ pub(crate) fn emit(message: impl AsRef<str>) {
     }
 }
 
+/// Serialises every test — in this module or any other — that exercises
+/// the process-global sink slot via [`set_sink`]/[`clear_sink`]. `cargo
+/// test` runs `#[test]` fns on separate threads by default, and two tests
+/// mutating the same global `Option<Sink>` concurrently would each risk
+/// observing (or clobbering) the other's installed sink instead of their
+/// own.
+///
+/// `pub(crate)`, not module-private: `desktop.rs`'s panic-report-dedup
+/// tests (#922) also call `set_sink`/`clear_sink` (to observe
+/// `report_caught_panic_once`'s output), and need to serialise against
+/// *this* module's tests too, not just against each other — a single
+/// shared lock is what makes that true, rather than each module quietly
+/// guarding its own tests against itself while still racing the other
+/// module's.
+#[cfg(test)]
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,15 +170,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // These tests share one process-global sink slot, so they can't run
-    // concurrently with each other without stomping on each other's
-    // installed sink. `cargo test` runs `#[test]` fns in this module on
-    // separate threads by default; serialise with a plain mutex rather
-    // than reaching for a test-only dependency.
+    // concurrently with each other (or with `desktop.rs`'s sink-using
+    // tests) without stomping on each other's installed sink — see
+    // `test_guard`'s doc.
     fn guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        super::test_guard()
     }
 
     #[test]
