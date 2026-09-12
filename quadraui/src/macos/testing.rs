@@ -499,6 +499,89 @@ mod tests {
         assert!(!driver.screen_contains("no such label"));
     }
 
+    /// Panics on its first `render` call, then paints a `StatusBar`
+    /// segment on every call after that — lets one test drive both "the
+    /// panicking frame" and "the recovered frame" through the same
+    /// `AppLogic` impl. Used by
+    /// `render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints`
+    /// below (#922).
+    struct PanicsOnceThenPaints {
+        panicked_yet: std::cell::Cell<bool>,
+    }
+
+    impl AppLogic for PanicsOnceThenPaints {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            if !self.panicked_yet.replace(true) {
+                panic!("PanicsOnceThenPaints: deliberate panic for #922 coverage");
+            }
+            backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &StatusBar {
+                    id: WidgetId::new("status"),
+                    left_segments: vec![StatusBarSegment {
+                        text: "known-pixel".to_string(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: KNOWN_BG,
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                &crate::InteractionState::new(),
+            );
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    /// Coverage for #922: `render_frame`'s `catch_unwind` around
+    /// `app.render` must (a) survive a panicking render — if it didn't,
+    /// `MacDriver::new` below (which paints the first frame as part of
+    /// construction) would itself panic and fail this test with an
+    /// *uncaught* panic rather than an assertion — and (b) leave
+    /// `MacBackend::enter_frame_scope`'s bracket balanced, so the *next*
+    /// frame still paints.
+    ///
+    /// This drives the real `super::run::render_frame` the live
+    /// `drawRect:` calls — the same production function — but not
+    /// `drawRect:`/objc2's dispatch trampoline itself: that only exists
+    /// on a live `NSView`, which `MacDriver` (like every headless macOS
+    /// test in this module) deliberately never constructs — see
+    /// `BitmapSurface`'s module doc. This is the closest reachable seam;
+    /// see `render_frame`'s "Panic safety" doc for why catching one level
+    /// below the C boundary is still a correct fix.
+    #[test]
+    fn render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints() {
+        // Frame 1 happens inside `MacDriver::new` (it paints the first
+        // frame as part of construction) and panics.
+        let mut driver = MacDriver::new(
+            PanicsOnceThenPaints {
+                panicked_yet: std::cell::Cell::new(false),
+            },
+            W,
+            H,
+        );
+
+        // Frame 2 — the acceptance criterion: painting must still work
+        // after the caught panic in frame 1.
+        driver.render();
+        let bounds = driver
+            .find_bounds("known-pixel")
+            .expect("frame 2 (after a caught panic in frame 1) must still paint");
+        let (r, g, b, _a) = dominant_pixel(&driver, bounds);
+        assert_eq!(
+            (r, g, b),
+            (KNOWN_BG.r, KNOWN_BG.g, KNOWN_BG.b),
+            "frame 2's dominant colour within find_bounds() must be the segment's bg — the \
+             BeginDraw/EndDraw-equivalent frame-scope bracket must have stayed balanced \
+             despite frame 1's panic, got ({r}, {g}, {b})"
+        );
+    }
+
     /// Most common `(r, g, b, a)` pixel within `bounds` — the background
     /// colour, since it covers far more area than a label's thin
     /// anti-aliased glyph strokes.
