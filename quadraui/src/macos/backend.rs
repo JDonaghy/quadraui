@@ -860,6 +860,41 @@ impl crate::runtime::PreprocessBackend for MacBackend {
 
 impl crate::backend::sealed::Sealed for MacBackend {}
 
+/// #931: report the #620 icon gap once, loudly, without aborting.
+///
+/// Per-tab icon glyphs (#620) have no CoreText icon-width pass in
+/// `mac_tab_bar_layout` yet, so the four `draw_tab_bar_icons*` /
+/// `*tab_bar_layout_icons` methods below forward to their icon-less
+/// twins whenever an icon sidecar is non-empty. That gap used to be
+/// guarded by a `debug_assert!`, which — despite its own message
+/// promising "tabs will paint without their icons" — hard-aborted the
+/// process on the very first frame that painted a tab with an icon
+/// (`use_nerd_fonts` defaults to `true`, so this was every debug build
+/// by default), and did so by unwinding across the AppKit `drawRect:`
+/// frame, which AppKit cannot catch: the process died with
+/// `libc++abi: terminating due to uncaught foreign exception` instead of
+/// a legible Rust panic.
+///
+/// Routed through [`crate::diagnostics::emit`] rather than `eprintln!`
+/// directly — #619's crate-wide `print_stderr` deny exists precisely so
+/// library code never writes into a host's live terminal (vimcode's TUI
+/// runs in raw mode on the alternate screen; a stray print lands as raw
+/// bytes in its cell grid). A host that wants to see this installs a
+/// sink via `diagnostics::set_sink`; one that doesn't gets silence, same
+/// as every other diagnostic this crate emits. `std::sync::Once`-gated
+/// so a tab bar repainted every frame reports the gap once per process,
+/// not once per frame — mirrors `desktop::report_caught_panic_once`'s
+/// dedup shape (#922).
+fn warn_tab_icons_unimplemented_once() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        crate::diagnostics::emit(
+            "quadraui: MacBackend TabIcon glyphs are not implemented yet \
+             (#620 follow-up); tabs will paint/lay out without their icons",
+        );
+    });
+}
+
 impl Backend for MacBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -1588,8 +1623,9 @@ impl Backend for MacBackend {
     /// a paint-only version would put every close-button hit box left of
     /// the glyph it draws. This forwards to the icon-less rasteriser so
     /// a macOS app that passes icons still paints correct (if
-    /// undecorated) tabs, and fires a `debug_assert!` so the gap is loud
-    /// in development rather than a silently-missing glyph.
+    /// undecorated) tabs, and fires a one-shot warning (#931) so the gap
+    /// is loud in development rather than a silently-missing glyph —
+    /// without aborting the process the way a `debug_assert!` used to.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
@@ -1598,11 +1634,9 @@ impl Backend for MacBackend {
         icons: &[Option<crate::TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits {
-        debug_assert!(
-            icons.iter().all(Option::is_none),
-            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
-             tabs will paint without their icons",
-        );
+        if !icons.iter().all(Option::is_none) {
+            warn_tab_icons_unimplemented_once();
+        }
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
     /// Issue #919's `TabBarLayout`-returning counterpart to
@@ -1656,11 +1690,9 @@ impl Backend for MacBackend {
         icons: &[Option<crate::TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout {
-        debug_assert!(
-            icons.iter().all(Option::is_none),
-            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
-             tabs will paint without their icons",
-        );
+        if !icons.iter().all(Option::is_none) {
+            warn_tab_icons_unimplemented_once();
+        }
         self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
     }
     fn draw_activity_bar(
@@ -1795,11 +1827,9 @@ impl Backend for MacBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarHits {
-        debug_assert!(
-            icons.iter().all(Option::is_none),
-            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
-             layout reserves no icon width",
-        );
+        if !icons.iter().all(Option::is_none) {
+            warn_tab_icons_unimplemented_once();
+        }
         self.tab_bar_layout(rect, bar)
     }
 
@@ -1838,11 +1868,9 @@ impl Backend for MacBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarLayout {
-        debug_assert!(
-            icons.iter().all(Option::is_none),
-            "MacBackend: TabIcon glyphs are not implemented yet (#620 follow-up); \
-             layout reserves no icon width",
-        );
+        if !icons.iter().all(Option::is_none) {
+            warn_tab_icons_unimplemented_once();
+        }
         self.resolve_tab_bar_layout(rect, bar)
     }
 
