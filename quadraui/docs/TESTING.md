@@ -835,6 +835,18 @@ test loudly rather than guessing which way it resolves.
 run against) and `compose/*`'s private `#[cfg(test)] mod tests` mocks are
 deliberately out of scope.
 
+**Statement-position macros are covered too.** `syn` parses a
+semicolon-terminated (or brace-delimited) macro invocation used as an
+ordinary mid-block statement — `todo!("x"); more_code();` — as a distinct
+`Stmt::Macro` node, not the tail-expression `Stmt::Expr(Expr::Macro(...))`
+shape. The walker has a `visit_stmt_macro` override running the identical
+classification logic for that shape, so an idiomatic non-tail `todo!()`
+can't slip past the gate unclassified the way a `visit_expr`-only walker
+would miss it; see `backend_todo_gate.rs`'s `self_test` module for the
+pinned fixtures. (A per-match-arm `#[cfg(...)]` is the same class of gap in
+principle — no `visit_arm` override — but no backend uses that pattern
+today, so it's undetected-but-inert rather than a live blind spot.)
+
 ## Live-app headless smoke (GD-5, quadraui#450)
 
 The offscreen `GtkDriver` above is deliberately display-free — no
