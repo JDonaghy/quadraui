@@ -2906,16 +2906,13 @@ pub trait Backend: sealed::Sealed {
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
-    /// rule 7). macOS has no Core Graphics/Core Text paint calls for this
-    /// yet (#382; #738 lifted the shared decision logic a future macOS
-    /// rasteriser would consume, but writing the actual paint calls was
-    /// not part of that lift) — rather than leaving that gap as a
-    /// reachable `todo!()` (#802: an app that reaches this on macOS would
-    /// otherwise take the whole host down), `MacBackend::draw_minimap`
-    /// computes the same real [`MinimapLayout`] every other backend does
-    /// (so hit-testing/click-routing is correct) and reports
-    /// [`MinimapPaintResult::painted`] `false` instead of rasterising
-    /// pixels — see that field's doc for the degrade contract.
+    /// rule 7). #382 scoped macOS's Core Graphics/Core Text paint calls
+    /// for this out for a time, and #802 covered the resulting gap with
+    /// an honest `painted: false` no-op rather than a reachable
+    /// `todo!()` — #961 closed it: `MacBackend::draw_minimap` now paints
+    /// real pixels through `crate::macos::minimap::draw_minimap` and
+    /// reports [`MinimapPaintResult::painted`] `true`, same as
+    /// TUI/GTK/Win-GUI.
     fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
 
     /// Compute [`Minimap`] layout without painting — mirrors
@@ -2925,9 +2922,9 @@ pub trait Backend: sealed::Sealed {
     /// against the same geometry the last paint used.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505). Real on every backend, including macOS (#802) —
-    /// `MacBackend` has no rasteriser yet (#382) but computes this exact
-    /// geometry, so it is always safe to call.
+    /// (issue #505). Real on every backend, including macOS, which
+    /// computes this exact geometry whether or not a paint has run yet
+    /// (#802, #961).
     fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
 
     /// Paint `image` within `rect`, honoring `image.fit` (see
@@ -2969,18 +2966,23 @@ pub trait Backend: sealed::Sealed {
 pub struct MinimapPaintResult {
     pub layout: MinimapLayout,
     /// Whether this call actually rasterised pixels into the target
-    /// rect. `true` on TUI/GTK/Win-GUI. `false` on macOS (#802): no
-    /// Core Graphics/Core Text rasteriser exists yet (#382), so nothing
-    /// paints — but `layout` is still the real geometry
+    /// rect. `true` on every backend as of #961 (TUI/GTK/Win-GUI, and
+    /// now macOS's own Core Graphics/Core Text rasteriser,
+    /// `crate::macos::minimap::draw_minimap`) — before that, macOS
+    /// reported `false` here (#802: no rasteriser existed yet, #382).
+    /// `layout` is always the real geometry
     /// [`Backend::minimap_layout`] would also return (the shared
-    /// `Minimap::layout_with_sizing` logic, not a stub), so a host can
-    /// still hit-test clicks against it. The bool-on-a-struct shape
-    /// (rather than an enum like [`ImagePaintResult`]) is because this
-    /// method already returns a struct carrying a layout; `painted`
-    /// draws the same Unsupported-vs-real distinction that enum's
-    /// `Unsupported` variant draws for `draw_image`. Defaults to `false`
-    /// via `#[derive(Default)]` — the honest "nothing happened yet"
-    /// starting point, same reasoning as [`BackendCaps::empty`].
+    /// `Minimap::layout_with_sizing` logic, not a stub), regardless of
+    /// `painted`, so a host can always hit-test clicks against it. The
+    /// bool-on-a-struct shape (rather than an enum like
+    /// [`ImagePaintResult`]) is because this method already returns a
+    /// struct carrying a layout; `painted` draws the same
+    /// Unsupported-vs-real distinction that enum's `Unsupported` variant
+    /// draws for `draw_image` (which still uses that shape — macOS has
+    /// no `NSImage` decoder yet, a separate, still-open gap). Defaults
+    /// to `false` via `#[derive(Default)]` — the honest "nothing
+    /// happened yet" starting point, same reasoning as
+    /// [`BackendCaps::empty`].
     pub painted: bool,
 }
 
