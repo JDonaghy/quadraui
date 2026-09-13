@@ -542,6 +542,42 @@ impl MacBackend {
         self.current_font = Some(font);
     }
 
+    /// Override the cached line height (in points) that every `draw_*`
+    /// method reads via `self.current_line_height` — mirrors
+    /// `GtkBackend::set_current_line_height` / `WinBackend::set_current_line_height`.
+    ///
+    /// Normally this backend derives `current_line_height` itself, from
+    /// the real `CTFont` metrics, inside [`Self::set_current_font`] —
+    /// unlike `GtkBackend`, which is *told* its metrics because Pango
+    /// layout only happens host-side. That asymmetry was flagged (issue
+    /// #934) as a real hazard: a host that computes its own chrome layout
+    /// generically across backends — sizing a header row, a toolbar strip,
+    /// or the first painted line's offset from a *portable* line-height
+    /// value — has no way to align that value with what `MacBackend`
+    /// actually paints with, because `GtkBackend`/`WinBackend` accept the
+    /// override and `MacBackend` silently ignored it (there was no method
+    /// to call). This setter closes that gap: a host that measures its own
+    /// notion of line height (or wants pixel-for-pixel parity with a
+    /// GTK/Win sibling build) can push it here, same call shape as the
+    /// other two backends, instead of being stuck with whatever
+    /// `set_current_font` derived.
+    ///
+    /// Does not touch `current_font` itself — glyph baseline positioning
+    /// inside [`super::text::draw_text`] still uses `font.ascent()`
+    /// directly, independent of this cached row-spacing value, exactly as
+    /// it did before this method existed.
+    pub fn set_current_line_height(&mut self, line_height: f64) {
+        self.current_line_height = line_height;
+    }
+
+    /// Override the cached character width (in points) that every
+    /// `draw_*` method reads via `self.current_char_width` — mirrors
+    /// [`Self::set_current_line_height`]'s rationale and
+    /// `GtkBackend::set_current_char_width` / `WinBackend::set_current_char_width`.
+    pub fn set_current_char_width(&mut self, char_width: f64) {
+        self.current_char_width = char_width;
+    }
+
     /// Override the current theme. The default ([`Theme::default()`])
     /// is installed at construction; apps that use a non-default
     /// theme call this from `setup()` or each frame.
@@ -3616,6 +3652,46 @@ mod tests {
         // (16.0, 8.0); both should be updated regardless.
         assert!(b.line_height() > 0.0);
         assert!(b.char_width() > 0.0);
+        assert!(b.current_font.is_some());
+    }
+
+    /// Issue #934: `MacBackend` previously had no public counterpart to
+    /// `GtkBackend::set_current_line_height` / `set_current_char_width` /
+    /// `WinBackend::set_current_line_height` / `set_current_char_width` —
+    /// a host computing chrome layout generically across backends had no
+    /// way to force this backend's cached row-spacing metrics to agree
+    /// with whatever value it used elsewhere. Confirms the new setters
+    /// (a) actually override the values `Backend::line_height`/
+    /// `char_width` return, taking priority over whatever
+    /// `set_current_font` last derived, and (b) don't require a font to
+    /// be installed at all — mirroring the other two backends' setters,
+    /// which are plain field writes with no font dependency.
+    ///
+    /// This test would not even compile before this fix — there was no
+    /// `set_current_line_height`/`set_current_char_width` method on
+    /// `MacBackend` to call, so it stands as its own RED-verification.
+    #[test]
+    fn set_current_line_height_and_char_width_override_font_derived_defaults() {
+        let mut b = MacBackend::new();
+        let font = super::super::text::make_font("Menlo", 14.0).expect("Menlo installed");
+        b.set_current_font(font);
+        let font_derived_line_height = b.line_height();
+        let font_derived_char_width = b.char_width();
+
+        // Override with values a host's own (portable) measurement
+        // produced — deliberately not equal to whatever Menlo-14pt
+        // resolved to, so the assertions below can't pass by coincidence.
+        let overridden_line_height = font_derived_line_height + 3.0;
+        let overridden_char_width = font_derived_char_width + 1.5;
+        b.set_current_line_height(overridden_line_height as f64);
+        b.set_current_char_width(overridden_char_width as f64);
+
+        assert_eq!(b.line_height(), overridden_line_height);
+        assert_eq!(b.char_width(), overridden_char_width);
+
+        // The override doesn't clear `current_font` — draw_* methods that
+        // require a font (see e.g. `draw_tree`'s `.expect(...)`) must
+        // keep working after a metrics override.
         assert!(b.current_font.is_some());
     }
 

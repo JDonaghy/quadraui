@@ -694,7 +694,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::tab_bar::{TabBar, TabIcon, TabItem};
+    use crate::primitives::tab_bar::{TabBar, TabBarSegment, TabIcon, TabItem};
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::Backend;
@@ -1573,8 +1573,91 @@ mod tests {
         assert_eq!(painted.slot_positions, computed.slot_positions);
         assert_eq!(painted.close_bounds, computed.close_bounds);
         assert_eq!(painted.right_segment_bounds, computed.right_segment_bounds);
+        // Non-blocking review note (#934 iteration 1): the zero-origin
+        // sibling `layout_twin_matches_the_painted_hits` also checks
+        // `available_cols`/`correct_scroll_offset` equality — neither
+        // depends on `rect.x` (both are pure functions of `rect.width` and
+        // the bar's own tab widths), but asserting them here too keeps
+        // this non-zero-origin case exercising the same fields the
+        // zero-origin case does, rather than a strict subset of them.
+        assert_eq!(painted.available_cols, computed.available_cols);
+        assert_eq!(
+            painted.correct_scroll_offset,
+            computed.correct_scroll_offset
+        );
         // Sanity: the agreement isn't just "both zero" — the geometry
         // actually moved with the origin.
         assert!(painted.slot_positions[0].0 >= SIDEBAR_W as f64);
+    }
+
+    /// Issue #934 review follow-up: the reported "editor toolbar" symptom
+    /// (three controls — split / actions / overflow — floating at the
+    /// wrong position) is not `crate::primitives::toolbar::Toolbar` (that
+    /// rasteriser, audited separately, already bakes `rect.x`/`rect.y`
+    /// absolutely and was never broken). It is `TabBar::right_segments` —
+    /// see `crate::primitives::tab_bar`'s module doc ("split buttons, diff
+    /// toolbar, overflow menu") — which paints through the exact same
+    /// `super::draw_tab_bar_icons` call, inside the exact same
+    /// `CGContextTranslateCTM(ctx, rect.x, 0.0)` wrap, that
+    /// [`tab_bar_paints_at_rect_x_not_at_window_origin`] proved fixes the
+    /// tabs. No test before this one exercised a non-empty
+    /// `right_segments` at a non-zero `rect.x`, so the fix's coverage of
+    /// this specific reported symptom was accidental, not verified.
+    ///
+    /// RED-verified by construction: pre-fix,
+    /// `MacBackend::draw_tab_bar`/`tab_bar_layout` never shifted
+    /// `TabBarHits` by `rect.x` at all (`shift_tab_bar_hits` didn't exist
+    /// yet), so `hits.right_segment_bounds[0]` would equal the bar-relative
+    /// `(rel_start, rel_end)` computed below, not `(rel_start + rect.x,
+    /// rel_end + rect.x)` — the `assert_eq!` fails pre-fix by exactly
+    /// `SIDEBAR_W`.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn right_segments_are_shifted_by_rect_x_like_the_tabs() {
+        const SIDEBAR_W: f32 = 120.0;
+        let canvas_w = SIDEBAR_W as u32 + W;
+        let surface = BitmapSurface::new(canvas_w, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut bar = sample_bar();
+        bar.right_segments = vec![TabBarSegment {
+            text: "\u{22ef}".into(), // "⋯" overflow glyph
+            width_cells: 3,
+            id: Some(WidgetId::new("tb:overflow")),
+            is_active: false,
+        }];
+
+        // Bar-relative geometry `draw_tab_bar_icons` computes internally,
+        // before any `rect.x` shift — the pre-fix behaviour.
+        let bar_relative = mac_tab_bar_layout(&font(), W as f64, &bar);
+        assert_eq!(
+            bar_relative.right_segment_bounds.len(),
+            1,
+            "fixture bar should have exactly one right segment",
+        );
+        let (rel_start, rel_end) = bar_relative.right_segment_bounds[0];
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar, None);
+            *hits.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        let hits = hits.into_inner().unwrap();
+
+        assert_eq!(hits.right_segment_bounds.len(), 1);
+        assert_eq!(
+            hits.right_segment_bounds[0],
+            (rel_start + SIDEBAR_W as f64, rel_end + SIDEBAR_W as f64),
+            "right segment bounds should be the bar-relative geometry shifted by rect.x={SIDEBAR_W}",
+        );
+
+        // `tab_bar_layout`'s no-paint twin must agree, same invariant as
+        // `layout_twin_matches_the_painted_hits_at_nonzero_origin` above.
+        let computed = backend.tab_bar_layout(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar);
+        assert_eq!(hits.right_segment_bounds, computed.right_segment_bounds);
     }
 }
