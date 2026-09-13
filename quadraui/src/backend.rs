@@ -1166,12 +1166,15 @@ pub trait Backend: sealed::Sealed {
     /// occupied by backend-drawn window controls, in the same native
     /// units every other `Rect` this trait returns uses. `Rect::default()`
     /// (the default, and the only value on every backend before #947)
-    /// means the backend draws no controls of its own into the band —
-    /// either because it has no window concept (TUI) or because it only
-    /// draws controls when [`crate::shell::ShellConfig::client_side_titlebar`]
-    /// is set (GTK/Win-GUI, whose controls sit on the *trailing* edge —
-    /// callers that need "leading" vs "trailing" placement branch on the
-    /// backend, this method only reports how much room to leave).
+    /// means the backend puts nothing of its own into that band, so the
+    /// app may paint the whole width of `title_bar_bounds`. That is the
+    /// answer on TUI (no window concept at all), and on GTK/Win-GUI,
+    /// which don't honour
+    /// [`crate::shell::ShellConfig::client_side_titlebar`] yet and so
+    /// always keep their window controls in native chrome *outside* the
+    /// app's content area (see `ACCEPTED_DEFAULTS` in
+    /// `tests/conformance/caps.rs` — when either grows client-side
+    /// decorations it has to override this and delete its entry).
     ///
     /// macOS is the one case where a non-empty inset does **not** imply
     /// the app must paint its own controls — quite the opposite: a
