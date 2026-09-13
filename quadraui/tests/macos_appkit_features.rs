@@ -49,8 +49,24 @@ use std::path::{Path, PathBuf};
 
 /// Every `objc2_app_kit::` symbol `src/macos/` may import, mapped to the
 /// `objc2-app-kit` Cargo feature that supplies it. Verified against
-/// `objc2-app-kit-0.2.2`'s `src/generated/mod.rs` re-export cfgs.
+/// `objc2-app-kit-0.3.2`'s `src/generated/mod.rs` re-export cfgs (the
+/// version `Cargo.lock` resolves the manifest's `"0.3"` requirement to).
 const REQUIRED_FEATURE: &[(&str, &str)] = &[
+    // Issue #936 (`NSAlert`-backed `show_message_dialog`): all three live
+    // in the `NSAlert` header, so unlike most of this list the feature
+    // *is* the symbol prefix here. Calling `addButtonWithTitle:` on the
+    // alert additionally needs "NSButton" + "NSControl" (on top of the
+    // "NSResponder"/"NSView" this manifest already enabled) — that is a
+    // cfg on the *method*, not on any imported symbol, so it can't be
+    // expressed as a row here; quadraui/Cargo.toml comments it instead.
+    ("NSAlert", "NSAlert"),
+    // `NSAlertFirstButtonReturn`'s re-export cfg is
+    // `all(feature = "NSAlert", feature = "NSApplication")` — the only
+    // compound one in this list, and this map holds a single feature per
+    // symbol. "NSApplication" is not lost: `src/macos/backend.rs` imports
+    // `NSApplication` itself, so the row below guards it independently.
+    ("NSAlertFirstButtonReturn", "NSAlert"),
+    ("NSAlertStyle", "NSAlert"),
     ("NSApplication", "NSApplication"),
     // Not `NSApplication` — see the module doc.
     ("NSApplicationActivationPolicy", "NSRunningApplication"),
@@ -178,8 +194,13 @@ fn enabled_app_kit_features() -> BTreeSet<String> {
         }
     }
     // The `features = [` array is the only quoted content left after the
-    // comment strip, apart from the version requirement.
-    features.remove("0.2");
+    // comment strip, apart from the version requirement — drop that by
+    // shape (leading digit) rather than by literal, so bumping the
+    // dependency doesn't silently leave it in the set. It used to be
+    // spelled `remove("0.2")`, which stopped matching when the manifest
+    // moved to `"0.3"`; harmless, but only because no feature is ever
+    // named after a version.
+    features.retain(|f| !f.starts_with(|c: char| c.is_ascii_digit()));
     features
 }
 
