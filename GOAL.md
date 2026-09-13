@@ -75,10 +75,16 @@ does.
 
 ## What this does not change
 
-- **The four-backend portability commitment stands.** A capability that cannot
-  be expressed on TUI degrades honestly (`BackendCaps`, defaulted no-op trait
-  methods per rule 7) rather than being refused. Electron parity is not a licence
-  to add GUI-only surfaces without a degradation story.
+- **The four-backend portability commitment stands, and TUI must actually
+  work.** Anything a user interacts with — menus, file and folder pickers,
+  dialogs, buttons, text boxes — has to *function* on TUI, not merely report its
+  absence honestly. It need not look like the GUI. vimcode's TUI build is the
+  existence proof: same `AppShell`, same activity bar, same omnibar.
+  `Unsupported` is reserved for what is *physically* absent on a terminal (a
+  tray icon, a dock badge, an OS global shortcut) — and the crate owns the
+  degrade, in `compose/`, rather than telling each app to rebuild it. Electron
+  parity is not a licence to add GUI-only surfaces. See CLAUDE.md's
+  *Cross-backend portability commitment*.
 - **The non-goals in `UI_CRATE_DESIGN.md` §2 stand** — not a general-purpose GUI
   framework, not a pixel-perfect renderer, not retained-mode, not an animation
   framework. Breadth of *platform capability* is the target; breadth of *widget
