@@ -65,13 +65,14 @@
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]
-use crate::backend::{BackendError, MessageDialogButton};
+use crate::backend::MessageDialogButton;
 use crate::backend::{
-    Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
-    PlatformServices, ServiceResult,
+    BackendError, Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
+    Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 #[cfg(target_os = "windows")]
 use crate::primitives::dialog::DialogSeverity;
+use crate::types::Color;
 
 #[cfg(target_os = "windows")]
 use std::cell::Cell;
@@ -114,6 +115,14 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, SW_SHOWNORMAL,
 };
+// WinRT (not Win32) — `system_theme` (quadraui#952). `UISettings` is the
+// same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
+// is its sibling in the same `Windows.UI.ViewManagement` namespace and the
+// natural WinRT source for "is high contrast active" — no separate Win32
+// `SystemParametersInfoW(SPI_GETHIGHCONTRAST)` call (and no extra
+// `Win32_UI_Accessibility` Cargo feature) needed.
+#[cfg(target_os = "windows")]
+use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings};
 
 /// System clipboard via raw Win32 calls (issue #23). Stateless — every
 /// call opens, does one thing, and closes the clipboard, matching the
@@ -281,6 +290,21 @@ impl PlatformServices for WinPlatformServices {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = url;
+        }
+    }
+
+    /// `UISettings::GetColorValue` (`Background`/`Accent`) +
+    /// `AccessibilitySettings::HighContrast` (quadraui#952) — see this
+    /// module's WinRT import comment for why the latter comes from the
+    /// same namespace rather than a separate Win32 SPI call.
+    fn system_theme(&self) -> ServiceResult<SystemTheme> {
+        #[cfg(target_os = "windows")]
+        {
+            win_system_theme()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
         }
     }
 }
@@ -786,6 +810,65 @@ fn win_open_url(url: &str) {
     }
 }
 
+// ─── System theme (quadraui#952) ────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn win_system_theme() -> ServiceResult<SystemTheme> {
+    let platform_failure = |context: &str| BackendError::PlatformFailure {
+        context: context.to_string(),
+    };
+    let settings = UISettings::new()
+        .map_err(|_| platform_failure("windows::UI::ViewManagement::UISettings::new"))?;
+    let bg = settings
+        .GetColorValue(UIColorType::Background)
+        .map_err(|_| platform_failure("UISettings::GetColorValue(Background)"))?;
+    let accent = settings
+        .GetColorValue(UIColorType::Accent)
+        .map_err(|_| platform_failure("UISettings::GetColorValue(Accent)"))?;
+    // High contrast is best-effort: a failure to read it degrades to
+    // `false` rather than failing the whole query — the caller asked for
+    // the theme, and background/accent above already answered that; one
+    // missing accessibility flag shouldn't turn a real answer into
+    // `Unsupported`.
+    let high_contrast = AccessibilitySettings::new()
+        .and_then(|a| a.HighContrast())
+        .unwrap_or(false);
+    Ok(system_theme_from_ui_colors(
+        (bg.R, bg.G, bg.B),
+        (accent.R, accent.G, accent.B),
+        high_contrast,
+    ))
+}
+
+/// Pure mapping from `UISettings`' background/accent RGB triples plus the
+/// high-contrast flag to [`SystemTheme`] — split out so it's unit-testable
+/// without the real WinRT `UISettings`/`AccessibilitySettings` classes,
+/// which this crate can't construct on a non-Windows host (same
+/// cross-platform-testable-helper posture as [`wide_nul_terminated`]
+/// above; see that function's doc for why this is `allow`-gated rather
+/// than `cfg`-gated).
+///
+/// `dark` is derived from `bg`'s perceptual luminance (ITU-R BT.601 luma,
+/// integer arithmetic) rather than a dedicated "is dark mode" WinRT
+/// property — `UISettings` only exposes raw colour values, not a boolean.
+/// A luma below 50% reads as the dark theme, matching the threshold
+/// Windows' own light/dark background colours (`#FFFFFF` vs `#000000`)
+/// land unambiguously on either side of.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn system_theme_from_ui_colors(
+    bg: (u8, u8, u8),
+    accent: (u8, u8, u8),
+    high_contrast: bool,
+) -> SystemTheme {
+    let (r, g, b) = bg;
+    let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+    SystemTheme {
+        dark: luma < 128,
+        accent: Some(Color::rgb(accent.0, accent.1, accent.2)),
+        high_contrast,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,6 +877,27 @@ mod tests {
     fn platform_name_is_win_gui() {
         let svc = WinPlatformServices::new();
         assert_eq!(svc.platform_name(), "win-gui");
+    }
+
+    // ── system_theme_from_ui_colors (quadraui#952) ──────────────────────
+
+    #[test]
+    fn system_theme_from_ui_colors_black_background_is_dark() {
+        let theme = system_theme_from_ui_colors((0, 0, 0), (0, 120, 215), false);
+        assert!(theme.dark);
+        assert_eq!(theme.accent, Some(Color::rgb(0, 120, 215)));
+        assert!(!theme.high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_ui_colors_white_background_is_light() {
+        let theme = system_theme_from_ui_colors((255, 255, 255), (0, 120, 215), false);
+        assert!(!theme.dark);
+    }
+
+    #[test]
+    fn system_theme_from_ui_colors_reports_high_contrast() {
+        assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true).high_contrast);
     }
 
     #[test]
@@ -873,6 +977,7 @@ mod tests {
             })
             .is_none());
         svc.open_url("https://example.com");
+        assert_eq!(svc.system_theme(), Err(BackendError::Unsupported));
     }
 
     /// `assign_button_ids` is pure id-assignment logic, host-independent

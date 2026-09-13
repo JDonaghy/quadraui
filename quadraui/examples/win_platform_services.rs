@@ -23,6 +23,10 @@
 //! - `m` — native message dialog (`TaskDialogIndirect`, #744) with
 //!   Save/Don't Save/Cancel buttons; reports which one was chosen
 //! - `u` — `open_url` a fixed address (the default browser should launch)
+//! - `t` — query the OS light/dark/accent/high-contrast preference
+//!   (`system_theme`, #952) and report it; flip Windows' Settings ->
+//!   Personalization -> Colors "Choose your mode" between runs to see the
+//!   answer change
 //! - `Esc` / `q` — quit
 //!
 //! `quadraui::win::run` only exists when compiled for `target_os =
@@ -155,6 +159,16 @@ impl AppLogic for PlatformServicesDemo {
             } => {
                 backend.services().open_url("https://example.com");
                 eprintln!("open_url called — the default browser should launch");
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('t'),
+                ..
+            } => {
+                match backend.services().system_theme() {
+                    Ok(theme) => eprintln!("system_theme: {theme:?}"),
+                    Err(e) => eprintln!("system_theme: unavailable ({e:?})"),
+                }
                 Reaction::Continue
             }
             _ => Reaction::Continue,

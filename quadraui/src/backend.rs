@@ -117,11 +117,12 @@ use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
-use crate::types::WidgetId;
+use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, ListView, Palette, PaletteLayout, StatusBar,
     TabBar, Terminal, TextDisplay, TreeView,
 };
+use serde::{Deserialize, Serialize};
 
 /// Which edge or corner of a window a resize gesture originates from.
 /// Mirrors `gdk4::SurfaceEdge` 1:1 (see [`Backend::begin_window_resize`]) so
@@ -3311,9 +3312,83 @@ pub trait PlatformServices {
         Ok(())
     }
 
+    /// Query the OS-level light/dark preference, accent colour, and
+    /// high-contrast setting (issue #952) — the `nativeTheme` gap named in
+    /// `ELECTRON_PARITY_AUDIT.md` §1.2 G4. Before this method existed,
+    /// [`Theme`][crate::theme::Theme] was entirely app-supplied: nothing in
+    /// this crate could tell an app "the user just flipped their OS to dark
+    /// mode", so an app had to either ignore the OS setting or build its own
+    /// per-platform detection outside quadraui.
+    ///
+    /// Returns [`BackendError::Unsupported`] rather than a guessed value on
+    /// a backend/session with no way to answer — unlike
+    /// [`Self::show_file_open_dialog`]'s ambiguous `None` (which needed a
+    /// dedicated `BackendCaps` flag to disambiguate "cancelled" from "no
+    /// native facility"), a `Result` already carries that distinction in
+    /// its own type, so this method gets no `BackendCaps` field of its own.
+    ///
+    /// Default: always `Err(BackendError::Unsupported)` — the honest
+    /// starting point (rule 2's "new function alongside the old one" isn't
+    /// in play here since no downstream consumer implements
+    /// `PlatformServices`, per `CLAUDE.md`'s *Downstream consumers* table,
+    /// but a default still means a future fifth backend compiles before it
+    /// has an opinion). Every backend in this crate overrides it:
+    ///
+    /// - **TUI** (`TuiPlatformServices`, `tui::caps`) — honest degrade,
+    ///   same detect/probe split as [`crate::backend::BackendCaps::kitty_keyboard`]:
+    ///   an environment-only heuristic (`COLORFGBG`) parsed by
+    ///   `tui::caps::detect_system_theme_from`. No OS accent colour or
+    ///   high-contrast signal exists in a terminal, so those fields are
+    ///   always `None`/`false` there. Returns `Unsupported` when
+    ///   `COLORFGBG` is unset or unparseable — a terminal that never sets
+    ///   it genuinely gives no signal, so guessing would be no more honest
+    ///   than refusing.
+    /// - **GTK** — `gtk4::Settings::gtk-application-prefer-dark-theme` /
+    ///   `gtk-theme-name` (no accent-colour API without libadwaita).
+    /// - **macOS** — `NSApp.effectiveAppearance` / `NSColor::controlAccentColor`.
+    /// - **Win-GUI** — `UISettings::GetColorValue` (`Background`/`Accent`
+    ///   `UIColorType`s).
+    ///
+    /// No backend pushes [`crate::UiEvent::SystemThemeChanged`] on a live OS
+    /// theme change yet (same "declare the gap, don't fake it" posture as
+    /// [`crate::UiEvent::WindowStateChanged`], which also has zero producers
+    /// today) — this method is a poll-on-demand query, not a subscription.
+    fn system_theme(&self) -> ServiceResult<SystemTheme> {
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
+}
+
+/// The OS-level theme preference [`PlatformServices::system_theme`]
+/// reports — light/dark, accent colour, and high-contrast (issue #952).
+///
+/// Deliberately flat and small, mirroring [`Notification`]'s shape: this is
+/// a snapshot an app reads once per query (or once per
+/// [`crate::UiEvent::SystemThemeChanged`], once some backend emits it), not
+/// a live-updating handle. `Serialize`/`Deserialize` (unlike the other
+/// `PlatformServices` option/config structs in this module) because it also
+/// travels inside [`crate::UiEvent::SystemThemeChanged`], and every
+/// `UiEvent` payload satisfies that bound — see `event.rs`'s module doc.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SystemTheme {
+    /// `true` when the OS is set to a dark appearance (Windows "Dark" app
+    /// mode, macOS Dark Appearance, GTK's `prefer-dark-theme`, or — on TUI —
+    /// `COLORFGBG`'s background index reads as dark).
+    pub dark: bool,
+    /// The OS accent colour, when the platform exposes one and the backend
+    /// can read it. `None` on backends/platforms with no accent-colour
+    /// concept (TUI always; GTK today, absent libadwaita) rather than a
+    /// guessed default — callers should fall back to their own accent
+    /// colour, not treat `None` as black/transparent.
+    pub accent: Option<Color>,
+    /// `true` when the OS high-contrast accessibility setting is active
+    /// (Windows High Contrast mode, GTK's `HighContrast*` theme names).
+    /// Always `false` on TUI — a terminal has no equivalent OS-level
+    /// setting to query.
+    pub high_contrast: bool,
 }
 
 /// Trait object-safe clipboard access.

@@ -67,6 +67,10 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // `NSApplication` itself, so the row below guards it independently.
     ("NSAlertFirstButtonReturn", "NSAlert"),
     ("NSAlertStyle", "NSAlert"),
+    // Issue #952 (`system_theme`): the `NSAppearanceCustomization` protocol
+    // (carries `effectiveAppearance`) lives in the `NSAppearance` header,
+    // not a feature of its own.
+    ("NSAppearanceCustomization", "NSAppearance"),
     ("NSApplication", "NSApplication"),
     // Not `NSApplication` — see the module doc.
     ("NSApplicationActivationPolicy", "NSRunningApplication"),
@@ -77,6 +81,9 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSApplicationTerminateReply", "NSApplication"),
     // Not `NSWindow` — see the module doc.
     ("NSBackingStoreType", "NSGraphics"),
+    // Issue #952 (`system_theme`): `NSColor::controlAccentColor` — the
+    // feature *is* the symbol's own name here, same shape as `NSAlert`.
+    ("NSColor", "NSColor"),
     ("NSControlStateValueOff", "NSCell"),
     ("NSControlStateValueOn", "NSCell"),
     ("NSCursor", "NSCursor"),
@@ -126,6 +133,9 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // AppKit's own title string so the app-drawn band doesn't
     // double-draw it. `NSWindow` header again, same as the style mask.
     ("NSWindowTitleVisibility", "NSWindow"),
+    // Issue #952 (`system_theme`): `NSWorkspace::accessibilityDisplayShouldIncreaseContrast`
+    // — the feature *is* the symbol's own name here, same shape as `NSColor`/`NSAlert`.
+    ("NSWorkspace", "NSWorkspace"),
 ];
 
 fn manifest_dir() -> PathBuf {

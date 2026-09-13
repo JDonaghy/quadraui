@@ -188,6 +188,18 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSDragging",
     "NSPasteboard",
     "NSPasteboardItem",
+    # `system_theme` (#952): `NSAppearance`/`effectiveAppearance` for
+    # light/dark, `NSWorkspace::accessibilityDisplayShouldIncreaseContrast`
+    # for high contrast. `NSColor::controlAccentColor` itself needs no new
+    # feature ("NSColor" is already listed above), but reading its RGB
+    # components back out via `getRed:green:blue:alpha:` does: that method
+    # (and `redComponent`/`greenComponent`/`blueComponent`) is cfg-gated
+    # inside `objc2-app-kit` itself on its own `objc2-core-foundation`
+    # feature (the crate that defines the `CGFloat` type those methods
+    # return), which is not implied by "NSColor" alone.
+    "NSAppearance",
+    "NSWorkspace",
+    "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",
@@ -291,6 +303,13 @@ windows = { version = "0.62", optional = true, features = [
     # parameter type lives here) even though this crate always passes
     # `None` for it — no actual `SECURITY_ATTRIBUTES` value is ever built.
     "Win32_Security",
+    # `system_theme` (#952): WinRT (not Win32) `UISettings`/
+    # `AccessibilitySettings` in the `Windows.UI.ViewManagement` namespace —
+    # `UISettings::GetColorValue` for background/accent colour,
+    # `AccessibilitySettings::HighContrast` for the high-contrast flag. No
+    # separate `Win32_UI_Accessibility`/SPI feature needed: both classes
+    # live in this one WinRT namespace.
+    "UI_ViewManagement",
 ] }
 # `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
 # `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover
