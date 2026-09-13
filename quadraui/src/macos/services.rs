@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearanceCustomization, NSApplication,
-    NSColor, NSOpenPanel, NSSavePanel, NSWorkspace,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSColor, NSOpenPanel,
+    NSSavePanel, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 

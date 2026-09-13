@@ -190,7 +190,19 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSPasteboardItem",
     # `system_theme` (#952): `NSAppearance`/`effectiveAppearance` for
     # light/dark, `NSWorkspace::accessibilityDisplayShouldIncreaseContrast`
-    # for high contrast. `NSColor::controlAccentColor` itself needs no new
+    # for high contrast.
+    #
+    # "NSAppearance" is load-bearing but guarded by NOTHING in
+    # tests/macos_appkit_features.rs — `src/macos/` imports no
+    # `objc2_app_kit::NSAppearance*` symbol. Both methods `system_theme`
+    # calls (`NSApplication::effectiveAppearance` and `NSAppearance::name`)
+    # are *inherent* methods cfg-gated on this feature, reached through the
+    # returned value, so there is no import for that test's map to key on
+    # (same inexpressible shape as the "NSButton"/"NSControl" note above).
+    # Dropping it compiles fine everywhere in this fleet and fails only on
+    # macos-latest. See that test's `NSApplication` row for the long form.
+    #
+    # `NSColor::controlAccentColor` itself needs no new
     # feature ("NSColor" is already listed above), but reading its RGB
     # components back out via `getRed:green:blue:alpha:` does: that method
     # (and `redComponent`/`greenComponent`/`blueComponent`) is cfg-gated

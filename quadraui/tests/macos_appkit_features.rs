@@ -67,10 +67,19 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // `NSApplication` itself, so the row below guards it independently.
     ("NSAlertFirstButtonReturn", "NSAlert"),
     ("NSAlertStyle", "NSAlert"),
-    // Issue #952 (`system_theme`): the `NSAppearanceCustomization` protocol
-    // (carries `effectiveAppearance`) lives in the `NSAppearance` header,
-    // not a feature of its own.
-    ("NSAppearanceCustomization", "NSAppearance"),
+    // Issue #952 (`system_theme`) deliberately has **no row** for the
+    // `NSAppearance` feature, even though `Cargo.toml` enables it and
+    // `system_theme` depends on it. `NSApplication::effectiveAppearance`
+    // and `NSAppearance::name` are generated as *inherent* methods gated
+    // on `#[cfg(feature = "NSAppearance")]`, reached through the value
+    // `effectiveAppearance` returns — so `src/macos/` never names an
+    // `objc2_app_kit::NSAppearance*` symbol, and a row here would be
+    // stale by `required_feature_map_has_no_unused_entries`'s definition.
+    // Same shape as the "NSButton"/"NSControl" cfg-on-the-method case the
+    // `NSAlert` comment above describes: inexpressible as a row, so
+    // `quadraui/Cargo.toml` carries the justification instead. Do not
+    // "tidy" `"NSAppearance"` out of the manifest — it is an
+    // `unresolved method` build failure on macos-latest only.
     ("NSApplication", "NSApplication"),
     // Not `NSApplication` — see the module doc.
     ("NSApplicationActivationPolicy", "NSRunningApplication"),
