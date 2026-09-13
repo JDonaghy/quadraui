@@ -200,25 +200,40 @@ pub trait AppLogic {
     /// injection.
     ///
     /// **Since quadraui#832, this is no longer called on a fixed
-    /// cadence.** Before #832, every backend polled unconditionally
-    /// (TUI every 16ms, GTK every 33ms) and called `tick` on every
-    /// timeout regardless of whether anything was scheduled — cheap to
-    /// rely on, but it burned CPU on a fully idle app. `tick` now runs:
+    /// cadence.** Before #832, TUI and GTK polled unconditionally (16ms /
+    /// 33ms respectively) and called `tick` on every timeout regardless
+    /// of whether anything was scheduled — cheap to rely on, but it
+    /// burned CPU on a fully idle app; macOS and Windows didn't call
+    /// `tick` at all. `tick` now runs:
     /// - after every batch of native events (as before), and
-    /// - after a backend's bounded idle-poll ceiling elapses (TUI/GTK
-    ///   keep a coarse fallback so time-based work with no explicit
-    ///   opt-in — e.g. an embedded terminal's PTY-output poll — still
-    ///   makes progress; see each backend's `run.rs` for the exact
-    ///   value), and
+    /// - after a backend's bounded idle-poll ceiling elapses, on the
+    ///   backends that keep one (see the per-backend table below), and
     /// - promptly after a [`Reaction::RedrawAfter`] deadline it
     ///   previously returned, via [`crate::Backend::request_frame_in`].
+    ///
+    /// **The cadence guarantee differs by backend — read this before
+    /// relying on `tick` running again "soon" with no explicit ask**
+    /// (quadraui#940 shipped without this table, which is exactly what
+    /// let a host silently rely on a guarantee two of four backends
+    /// don't make):
+    ///
+    /// | Backend | Idle-poll fallback (no explicit ask) | Native-event batches | `RedrawAfter` |
+    /// |---|---|---|---|
+    /// | TUI | `crate::runtime::IDLE_POLL_CEILING` (250ms) | yes | yes |
+    /// | GTK | `crate::runtime::IDLE_POLL_CEILING` (250ms) | yes | yes |
+    /// | macOS | `crate::runtime::IDLE_POLL_CEILING` (250ms), since quadraui#940 (`macos::run`'s repeating `idlePollTick:` timer) | yes | yes |
+    /// | Windows | **none** — see [`crate::backend::Backend::request_frame_in`]'s doc | yes | yes |
     ///
     /// An app with time-driven state (spinner frame, caret blink,
     /// countdown) should return [`Reaction::RedrawAfter`] with the exact
     /// interval it needs instead of assuming `tick` will be called again
-    /// soon on its own — that assumption no longer holds on GTK/macOS/
-    /// Windows once nothing else is scheduled, and even where a fallback
-    /// ceiling exists it's deliberately coarser than before.
+    /// soon on its own — that assumption doesn't hold on any of GTK/
+    /// macOS/Windows once nothing else is scheduled, and even where a
+    /// fallback ceiling exists (TUI/GTK/macOS) it's deliberately coarser
+    /// than before #832. On Windows specifically, deferred work that
+    /// only marks state dirty with no `RedrawAfter`/`request_frame_in`
+    /// of its own is never picked up until the next native event —
+    /// there is no fallback at all to eventually notice it.
     ///
     /// Default impl is a no-op so apps that don't need periodic
     /// callbacks don't have to write boilerplate.

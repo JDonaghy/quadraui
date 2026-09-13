@@ -943,11 +943,19 @@ pub trait Backend: sealed::Sealed {
     /// behavior: TUI/GTK's unconditional polls are gone (both now poll a
     /// much coarser fallback ceiling, `crate::runtime::IDLE_POLL_CEILING`,
     /// 250ms — see that constant's doc), and macOS/Windows gained their
-    /// first `tick` invocations ever, but *only* when something
-    /// (a native event or a `request_frame_in` deadline) asks for one —
-    /// this method's own latency contract is unchanged by any of that:
-    /// a `waker` call still forces a prompt wake exactly as described
-    /// above, independent of whatever cadence (if any) `tick` runs on.
+    /// first `tick` invocations ever, but at that point *only* when
+    /// something (a native event or a `request_frame_in` deadline) asked
+    /// for one. **Since quadraui#940**, macOS joined TUI/GTK's coarse
+    /// fallback ceiling too (`macos::run`'s repeating `idlePollTick:`
+    /// timer) — #832 alone had left macOS silently unable to notice
+    /// deferred host work that never called `request_frame_in`/returned
+    /// `RedrawAfter`, unlike TUI/GTK's idle-poll safety net. Windows
+    /// remains deliberately wake-only, with no fallback ceiling of its
+    /// own — see [`crate::runner::AppLogic::tick`]'s per-backend cadence
+    /// table for the current state of all four. This method's own
+    /// latency contract is unchanged by any of that: a `waker` call
+    /// still forces a prompt wake exactly as described above,
+    /// independent of whatever cadence (if any) `tick` runs on.
     ///
     /// Implementations must be safe to call from any thread, at any time,
     /// any number of times, including concurrently with each other and
@@ -1006,6 +1014,14 @@ pub trait Backend: sealed::Sealed {
     /// implementation records the deadline and folds it into the next
     /// `wait_events` call's timeout instead; see
     /// `crate::runtime::FrameScheduler`.
+    ///
+    /// This one-shot timer is independent of, and doesn't replace, the
+    /// separate always-repeating idle-poll fallback TUI/GTK/macOS also
+    /// keep (`crate::runtime::IDLE_POLL_CEILING` — see
+    /// [`crate::runner::AppLogic::tick`]'s per-backend cadence table):
+    /// this method exists for an app that knows the *exact* interval it
+    /// wants to be woken after, the fallback for an app that doesn't ask
+    /// at all.
     ///
     /// `WinBackend`'s implementation clamps `delay` to `u32::MAX`
     /// milliseconds (~49.7 days) — `SetTimer`'s elapse parameter is a
