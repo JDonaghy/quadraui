@@ -89,6 +89,25 @@ impl PlatformServices for MacPlatformServices {
         }
     }
 
+    /// quadraui#935: a two-line variant of `show_file_open_dialog` above —
+    /// the same `NSOpenPanel`, with the choose-directories/choose-files
+    /// pair flipped.
+    fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        let mtm = MainThreadMarker::new()
+            .expect("show_folder_open_dialog must be called from the main thread");
+        // SAFETY: same as `show_file_open_dialog` above.
+        unsafe {
+            let panel = NSOpenPanel::openPanel(mtm);
+            panel.setCanChooseFiles(false);
+            panel.setCanChooseDirectories(true);
+            configure_panel(&panel, &opts);
+            if panel.runModal() != NS_MODAL_RESPONSE_OK {
+                return None;
+            }
+            url_to_path(panel.URL().as_deref())
+        }
+    }
+
     /// Not yet implemented — no `native_dialogs` capability declared
     /// (`MacBackend::backend_caps`). A real `NSAlert`-backed
     /// implementation is follow-up work (quadraui#666); until then this

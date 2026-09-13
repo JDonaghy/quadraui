@@ -313,6 +313,18 @@ pub struct BackendCaps {
     /// only running a native dialog would tell the two apart. See
     /// `CAP_CONTRACTS`.
     pub file_dialogs: bool,
+    /// [`PlatformServices::show_folder_open_dialog`] shows a real native
+    /// directory chooser rather than unconditionally returning `None`
+    /// (quadraui#935). Split out from [`Self::file_dialogs`] rather than
+    /// folded into it: a backend can plausibly have one native facility
+    /// without the other, and a host reading this flag needs the honest,
+    /// narrower answer — "can I open a *directory* chooser", not "does
+    /// this backend have *some* file-picker facility".
+    ///
+    /// Not mechanically checkable for the same reason as
+    /// [`Self::file_dialogs`]: every backend implements the method, so its
+    /// *presence* proves nothing. See `CAP_CONTRACTS`.
+    pub folder_dialogs: bool,
     /// [`PlatformServices::show_message_dialog`] shows a real native
     /// alert/message dialog rather than unconditionally returning
     /// `None`. Same no-default, same `None`-is-ambiguous shape as
@@ -405,6 +417,7 @@ impl BackendCaps {
             pointer_cursor: false,
             ime: false,
             file_dialogs: false,
+            folder_dialogs: false,
             native_dialogs: false,
             notifications: false,
             app_font_registration: false,
@@ -465,6 +478,7 @@ impl BackendCaps {
         ("pointer_cursor", |c| c.pointer_cursor),
         ("ime", |c| c.ime),
         ("file_dialogs", |c| c.file_dialogs),
+        ("folder_dialogs", |c| c.folder_dialogs),
         ("native_dialogs", |c| c.native_dialogs),
         ("notifications", |c| c.notifications),
         ("app_font_registration", |c| c.app_font_registration),
@@ -2995,6 +3009,30 @@ pub trait PlatformServices {
     /// Show a native file-save dialog.
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
+    /// Show a native directory-select dialog (blocking). Returns `None`
+    /// if the user cancelled. quadraui#935: before this existed,
+    /// `PlatformServices` could pick a *file* (open or save) but not a
+    /// *directory* — a host that wanted "Open Folder" native had no
+    /// choice but to give up and build its own in-canvas picker (see
+    /// vimcode#815, which did exactly that and left a comment on the
+    /// tradeoff pointing at this gap).
+    ///
+    /// Reuses [`FileDialogOptions`] rather than a narrower type: only
+    /// [`FileDialogOptions::title`] and [`FileDialogOptions::initial_dir`]
+    /// apply to a directory chooser. [`FileDialogOptions::filters`] and
+    /// [`FileDialogOptions::initial_filename`] are meaningless for a
+    /// directory (no extension, no "file name" field to seed) and every
+    /// implementation of this method ignores them — callers should just
+    /// leave them at their `Default` rather than populating them.
+    ///
+    /// TUI backends have no native dialog to show and unconditionally
+    /// return `None` (no stderr hint is written), same as
+    /// [`Self::show_file_open_dialog`] — apps should provide an in-canvas
+    /// picker instead. Callers distinguish "no native chooser at all"
+    /// from "the user cancelled" via [`BackendCaps::folder_dialogs`], the
+    /// same way they already do for [`BackendCaps::file_dialogs`].
+    fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
+
     /// Show a native message/alert dialog (blocking). Returns the id of
     /// the button the user chose, or `None` if the dialog was dismissed
     /// without choosing one (Escape, close box) **or** this backend has
@@ -3071,17 +3109,22 @@ pub trait Clipboard {
     }
 }
 
-/// Options for [`PlatformServices::show_file_open_dialog`] and
-/// [`PlatformServices::show_file_save_dialog`].
+/// Options for [`PlatformServices::show_file_open_dialog`],
+/// [`PlatformServices::show_file_save_dialog`], and
+/// [`PlatformServices::show_folder_open_dialog`].
 #[derive(Debug, Clone, Default)]
 pub struct FileDialogOptions {
     /// Dialog window title.
     pub title: Option<String>,
     /// Suggested starting directory.
     pub initial_dir: Option<PathBuf>,
-    /// Suggested file name (save dialog only).
+    /// Suggested file name (save dialog only — ignored by
+    /// [`PlatformServices::show_file_open_dialog`] and
+    /// [`PlatformServices::show_folder_open_dialog`]).
     pub initial_filename: Option<String>,
-    /// File type filters — `(display_name, &[ext])` pairs.
+    /// File type filters — `(display_name, &[ext])` pairs. Ignored by
+    /// [`PlatformServices::show_folder_open_dialog`]: a directory has no
+    /// extension to filter on.
     pub filters: Vec<(String, Vec<String>)>,
 }
 
@@ -3194,6 +3237,7 @@ mod backend_caps_tests {
         ("pointer_cursor", |c| c.pointer_cursor = true),
         ("ime", |c| c.ime = true),
         ("file_dialogs", |c| c.file_dialogs = true),
+        ("folder_dialogs", |c| c.folder_dialogs = true),
         ("native_dialogs", |c| c.native_dialogs = true),
         ("notifications", |c| c.notifications = true),
         ("app_font_registration", |c| c.app_font_registration = true),
@@ -3226,6 +3270,7 @@ mod backend_caps_tests {
             pointer_cursor: _,
             ime: _,
             file_dialogs: _,
+            folder_dialogs: _,
             native_dialogs: _,
             notifications: _,
             app_font_registration: _,

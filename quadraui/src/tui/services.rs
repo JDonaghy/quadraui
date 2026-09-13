@@ -410,6 +410,15 @@ impl PlatformServices for TuiPlatformServices {
         None
     }
 
+    /// No native directory chooser on TUI — unconditionally `None`, same
+    /// as the file-dialog methods above (quadraui#935). Apps should
+    /// provide an in-canvas picker instead (see
+    /// `BackendCaps::folder_dialogs`'s doc for why this is a distinct
+    /// flag from `file_dialogs`).
+    fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
+        None
+    }
+
     /// No native alert facility on TUI — unconditionally `None`, same as
     /// the file-dialog methods above. The in-canvas `Dialog` primitive
     /// (`draw_dialog`) stays the only dialog path on this backend
@@ -446,5 +455,17 @@ mod message_dialog_tests {
             severity: None,
         };
         assert!(services.show_message_dialog(opts).is_none());
+    }
+
+    /// quadraui#935: TUI has no native directory chooser, so
+    /// `show_folder_open_dialog` unconditionally returns `None` — same
+    /// shape as `show_message_dialog` above, and matching
+    /// `BackendCaps::folder_dialogs` being `false` on `TuiBackend`.
+    #[test]
+    fn show_folder_open_dialog_always_returns_none() {
+        let services = TuiPlatformServices::new();
+        assert!(services
+            .show_folder_open_dialog(FileDialogOptions::default())
+            .is_none());
     }
 }

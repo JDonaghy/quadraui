@@ -11,6 +11,10 @@
 //!   live `HWND` [`WinBackend::attach_surface`][super::backend::WinBackend::attach_surface]
 //!   hands to [`WinPlatformServices::set_window`] — same role as
 //!   `GtkPlatformServices::window`.
+//! - **Folder dialog** (quadraui#935) — the same `IFileOpenDialog`, with
+//!   `FOS_PICKFOLDERS` set on its options: Windows has no separate
+//!   directory-picker COM object, so this is the documented way to turn
+//!   the file-open dialog into one.
 //! - **Notifications** — a transient `Shell_NotifyIconW` balloon tip:
 //!   add a tray icon with `NIF_INFO` set, then remove it a few seconds
 //!   later from a spawned thread (a balloon has no lifetime of its own
@@ -103,8 +107,8 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::{
     FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
-    SHCreateItemFromParsingName, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIIF_ERROR, NIIF_INFO,
-    NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
+    SHCreateItemFromParsingName, Shell_NotifyIconW, FOS_PICKFOLDERS, NIF_ICON, NIF_INFO,
+    NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -222,6 +226,20 @@ impl PlatformServices for WinPlatformServices {
         #[cfg(target_os = "windows")]
         {
             win_show_save_dialog(self.window.get(), &opts)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = opts;
+            None
+        }
+    }
+
+    /// The shell folder-picker (`IFileOpenDialog` + `FOS_PICKFOLDERS`,
+    /// quadraui#935) — see `win_show_folder_open_dialog` below.
+    fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        {
+            win_show_folder_open_dialog(self.window.get(), &opts)
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -507,6 +525,31 @@ fn win_show_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None::<&IUnknown>, CLSCTX_INPROC_SERVER).ok()?;
+        configure_file_dialog(&dialog, opts, None).ok()?;
+        dialog.Show(owner).ok()?;
+        let item = dialog.GetResult().ok()?;
+        shell_item_path(&item)
+    }
+}
+
+/// The shell folder-picker (quadraui#935): the same `IFileOpenDialog` as
+/// [`win_show_open_dialog`], with `FOS_PICKFOLDERS` set on its options —
+/// the documented way to turn the common file-open dialog into a
+/// directory chooser (Microsoft's own `IFileDialog::SetOptions` docs name
+/// this exact flag for exactly this purpose; there is no separate
+/// "folder dialog" COM object). `configure_file_dialog`'s
+/// `initial_name`/filters parameters aren't relevant to a directory
+/// chooser, so this passes `None` for `initial_name` and lets
+/// `configure_file_dialog` skip `SetFileTypes` when `opts.filters` is
+/// empty, same as `win_show_open_dialog` does for `opts.initial_filename`.
+#[cfg(target_os = "windows")]
+fn win_show_folder_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option<PathBuf> {
+    ensure_com_initialized();
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None::<&IUnknown>, CLSCTX_INPROC_SERVER).ok()?;
+        let current_options = dialog.GetOptions().ok()?;
+        dialog.SetOptions(current_options | FOS_PICKFOLDERS).ok()?;
         configure_file_dialog(&dialog, opts, None).ok()?;
         dialog.Show(owner).ok()?;
         let item = dialog.GetResult().ok()?;
@@ -812,6 +855,9 @@ mod tests {
             .is_none());
         assert!(svc
             .show_file_save_dialog(FileDialogOptions::default())
+            .is_none());
+        assert!(svc
+            .show_folder_open_dialog(FileDialogOptions::default())
             .is_none());
         svc.send_notification(Notification {
             title: "t".to_string(),

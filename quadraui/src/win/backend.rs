@@ -2149,6 +2149,10 @@ impl Backend for WinBackend {
             // APIs independent of the Direct2D rasteriser work above, so
             // they're honestly `true` on Windows itself.
             //
+            // `folder_dialogs` (#935): the same `IFileOpenDialog`, with
+            // `FOS_PICKFOLDERS` set — see
+            // `src/win/services.rs::win_show_folder_open_dialog`.
+            //
             // `native_dialogs` (#744): `show_message_dialog` now shows a
             // real `TaskDialogIndirect` alert and returns the chosen
             // button's id — see `src/win/services.rs::win_show_message_dialog`.
@@ -2177,6 +2181,7 @@ impl Backend for WinBackend {
             // `requires: ["text_selection"]`) now runs instead of skipping.
             crate::backend::BackendCaps {
                 file_dialogs: true,
+                folder_dialogs: true,
                 native_dialogs: true,
                 notifications: true,
                 pointer_cursor: true,

@@ -1783,8 +1783,9 @@ impl Backend for GtkBackend {
     /// - `pointer_cursor`: `set_cursor` is overridden.
     /// - `ime`: not declared — no backend positions an IME composition
     ///   window yet (see [`crate::backend::BackendCaps::ime`]).
-    /// - `file_dialogs`: `GtkPlatformServices` uses real `gtk4::FileDialog`
-    ///   pickers (`src/gtk/services.rs`), not a stub.
+    /// - `file_dialogs` / `folder_dialogs` (quadraui#935): `GtkPlatformServices`
+    ///   uses real `gtk4::FileDialog` pickers, including `select_folder`
+    ///   for the directory chooser (`src/gtk/services.rs`), not a stub.
     /// - `native_dialogs`: `GtkPlatformServices::show_message_dialog` uses
     ///   a real `gtk4::AlertDialog` (`src/gtk/services.rs`), pumped
     ///   through the same `pump_until_ready` + `pump_depth` guard the
@@ -1801,6 +1802,7 @@ impl Backend for GtkBackend {
             window_chrome: true,
             pointer_cursor: true,
             file_dialogs: true,
+            folder_dialogs: true,
             native_dialogs: true,
             app_font_registration: true,
             ..crate::backend::BackendCaps::empty()

@@ -707,14 +707,16 @@ fn clipboard_demo_escape_exits() {
 
 // ─── FileDialogDemo: TUI's documented "unsupported" contract ───────────────
 //
-// #427 implements real file dialogs for GTK only; `PlatformServices`'s TUI
-// impl keeps returning `None` unconditionally (apps should provide an
-// in-TUI picker instead). These tests pin that documented contract so a
-// future change can't silently make the TUI path block waiting on
-// something that will never resolve headlessly. The GTK path (a real,
-// modal, nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
+// #427 implements real file dialogs for GTK only (extended to folder
+// dialogs by #935); `PlatformServices`'s TUI impl keeps returning `None`
+// unconditionally for all three (apps should provide an in-canvas picker
+// instead). These tests pin that documented contract so a future change
+// can't silently make the TUI path block waiting on something that will
+// never resolve headlessly. The GTK path (a real, modal,
+// nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
 // `TuiDriver` — it's covered by the `gtk_file_dialog` example's manual
-// smoke test instead (see SMOKE_TESTS in the #427 PR).
+// smoke test instead (see SMOKE_TESTS in the #427 PR, and this repo's
+// #935 PR for the folder-dialog leg).
 
 #[test]
 fn file_dialog_demo_shows_starting_hint() {
@@ -723,6 +725,10 @@ fn file_dialog_demo_shows_starting_hint() {
     assert!(
         screen.contains("o = open"),
         "status bar should hint at the open/save keys:\n{screen}"
+    );
+    assert!(
+        screen.contains("f = folder"),
+        "status bar should hint at the folder key (quadraui#935):\n{screen}"
     );
 }
 
@@ -745,6 +751,21 @@ fn file_dialog_demo_save_reports_unsupported_on_tui() {
     assert!(
         screen.contains("unsupported"),
         "save dialog must report None as unsupported on TUI:\n{screen}"
+    );
+}
+
+// quadraui#935: `show_folder_open_dialog` gets the identical TUI
+// "unsupported" contract as open/save above — same reasoning, same test
+// shape, so a future change can't silently make the TUI folder path block
+// waiting on something that will never resolve headlessly either.
+#[test]
+fn file_dialog_demo_folder_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    driver.type_char('f');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("unsupported"),
+        "folder dialog must report None as unsupported on TUI:\n{screen}"
     );
 }
 

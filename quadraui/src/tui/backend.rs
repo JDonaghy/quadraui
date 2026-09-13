@@ -1457,10 +1457,12 @@ impl Backend for TuiBackend {
     ///   no IME positioning, and every `PlatformServices` dialog method
     ///   unconditionally returns `None`
     ///   (`TuiPlatformServices::show_file_open_dialog` /
-    ///   `show_file_save_dialog` / `show_message_dialog`) with
-    ///   notifications a no-op. The in-canvas `Dialog` primitive
-    ///   (`draw_dialog`) stays the only dialog path on this backend
-    ///   (quadraui#666).
+    ///   `show_file_save_dialog` / `show_folder_open_dialog` /
+    ///   `show_message_dialog`) with notifications a no-op. The in-canvas
+    ///   `Dialog` primitive (`draw_dialog`) stays the only dialog path on
+    ///   this backend (quadraui#666), same posture for `folder_dialogs`
+    ///   (quadraui#935): hosts keep whatever in-canvas picker they
+    ///   already have.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
             mouse: true,
@@ -3046,6 +3048,9 @@ mod tests {
             None
         }
         fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn show_folder_open_dialog(&self, _opts: FileDialogOptions) -> Option<std::path::PathBuf> {
             None
         }
         fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {

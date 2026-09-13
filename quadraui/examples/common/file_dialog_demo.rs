@@ -1,19 +1,21 @@
 //! File-dialog demo — exercises [`PlatformServices::show_file_open_dialog`]
-//! / `show_file_save_dialog` (#427).
+//! / `show_file_save_dialog` (#427) and, since quadraui#935,
+//! [`PlatformServices::show_folder_open_dialog`].
 //!
 //! - **GTK** (`gtk_file_dialog`): opens a real native `gtk4::FileDialog`
 //!   (via the nested-mainloop adapter in `gtk::services`) and blocks until
-//!   the user picks a file/location or cancels. This is the primary manual
-//!   smoke test for #427 — driving it headlessly isn't possible (no
-//!   `GtkDriver` yet, #301), so exercise it by hand: run the example, press
-//!   `o` / `s`, and confirm the native dialog appears, is parented to the
-//!   demo window, and the status bar reflects the picked path (or
-//!   "cancelled" on Escape/close).
+//!   the user picks a file/location/folder or cancels. This is the primary
+//!   manual smoke test for #427/#935 — driving it headlessly isn't possible
+//!   (no `GtkDriver` yet, #301), so exercise it by hand: run the example,
+//!   press `o` / `s` / `f`, and confirm the native dialog appears, is
+//!   parented to the demo window, and the status bar reflects the picked
+//!   path (or "cancelled" on Escape/close).
 //! - **TUI** (`tui_file_dialog`): `PlatformServices::show_file_open_dialog`
-//!   /`show_file_save_dialog` are documented to always return `None` on
-//!   TUI (apps should provide an in-TUI picker instead) — this demo
-//!   exercises that documented contract and is covered by the
-//!   `TuiDriver` test in `tests/tui_example_driver.rs`.
+//!   /`show_file_save_dialog`/`show_folder_open_dialog` are documented to
+//!   always return `None` on TUI (apps should provide an in-canvas picker
+//!   instead — see the separate `tui_folder_picker`/`gtk_folder_picker`
+//!   examples for that) — this demo exercises that documented contract and
+//!   is covered by the `TuiDriver` test in `tests/tui_example_driver.rs`.
 //!
 //! ```sh
 //! cargo run --example gtk_file_dialog --features gtk
@@ -23,6 +25,7 @@
 //! Controls:
 //! - `o` — open-file dialog (filtered to `*.rs`)
 //! - `s` — save-as dialog (initial name `untitled.txt`)
+//! - `f` — open-folder dialog (quadraui#935)
 //! - `Esc` / `q` — quit
 
 use quadraui::{
@@ -37,7 +40,7 @@ pub struct FileDialogDemo {
 impl FileDialogDemo {
     pub fn new() -> Self {
         Self {
-            status: "o = open · s = save-as · Esc quits".to_string(),
+            status: "o = open · s = save-as · f = folder · Esc quits".to_string(),
         }
     }
 
@@ -115,6 +118,20 @@ impl AppLogic for FileDialogDemo {
                 self.status = match backend.services().show_file_save_dialog(opts) {
                     Some(path) => format!("Save as: {}", path.display()),
                     None => "Save cancelled (or unsupported on this backend)".to_string(),
+                };
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('f'),
+                ..
+            } => {
+                let opts = FileDialogOptions {
+                    title: Some("Open Folder".to_string()),
+                    ..Default::default()
+                };
+                self.status = match backend.services().show_folder_open_dialog(opts) {
+                    Some(path) => format!("Folder: {}", path.display()),
+                    None => "Folder pick cancelled (or unsupported on this backend)".to_string(),
                 };
                 Reaction::Redraw
             }
