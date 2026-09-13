@@ -1084,9 +1084,14 @@ impl Backend for MacBackend {
     /// silently keeps whatever font was already installed rather than
     /// panicking or clearing it — same "degrade, don't fail" posture
     /// [`super::text::font_with_fallback`]'s doc already documents for
-    /// this backend's font handling generally.
+    /// this backend's font handling generally. That "doesn't resolve"
+    /// check goes through [`super::text::make_font_exact`], not plain
+    /// `make_font`: Core Text substitutes Helvetica for an unknown
+    /// family instead of failing, so the plain constructor would install
+    /// Helvetica as the *editor* font here rather than keeping the
+    /// caller's previous monospace face.
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
-        if let Some(font) = super::text::make_font(family, size_pt as f64) {
+        if let Some(font) = super::text::make_font_exact(family, size_pt as f64) {
             self.set_current_font(font);
         }
     }
@@ -1103,9 +1108,15 @@ impl Backend for MacBackend {
     /// when the named family isn't installed, rather than panicking or
     /// silently keeping a stale chrome font a caller explicitly asked to
     /// change.
+    ///
+    /// "Isn't installed" is decided by [`super::text::make_font_exact`]
+    /// rather than plain `make_font` — `CTFontCreateWithName` answers an
+    /// unknown family with Helvetica instead of an error, so the plain
+    /// constructor would quietly paint chrome in Helvetica here and never
+    /// reach the system-UI-font fallback this doc promises.
     fn set_ui_font(&mut self, font_desc: &str) {
         let font = match parse_ui_font_desc(font_desc) {
-            Some((family, size_pt)) => super::text::make_font(&family, size_pt)
+            Some((family, size_pt)) => super::text::make_font_exact(&family, size_pt)
                 .unwrap_or_else(|| super::text::system_ui_font(size_pt)),
             None => super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT),
         };
@@ -3379,6 +3390,47 @@ impl NativeSurface for ChromeSurface<'_> {
                 text,
                 rect.x as f64,
                 rect.y as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    /// The chrome twin of `MacBackend`'s own #810 override — same
+    /// `bold`/`italic`/`underline`-unsupported posture, same `scale_x`
+    /// support via [`super::text::draw_text_scaled_x`], just against
+    /// `chrome_font`.
+    ///
+    /// Not optional: this is the method the shared status-bar paint
+    /// actually calls. Without it the adapter would inherit the trait
+    /// default (forward to [`Self::surface_draw_text_run`]) — right font,
+    /// but `scale_x` silently dropped, a divergence from the editor path
+    /// that would only surface the day a chrome primitive uses it.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (bold, italic, underline);
+        let ctx = self.backend.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "ChromeSurface::surface_draw_text_run_styled called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text_scaled_x(
+                ctx,
+                &self.backend.chrome_font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                scale_x as f64,
                 ns_color_to_cg(color),
             );
         }
@@ -5859,6 +5911,35 @@ mod tests {
             "an unknown family must degrade to the system UI font at the requested size"
         );
         assert_eq!(b.chrome_font.pt_size(), 12.0);
+    }
+
+    /// `set_editor_font` keeps the previously installed face when the
+    /// requested family isn't installed — the doc'd "degrade, don't
+    /// fail" posture. Without [`super::super::text::make_font_exact`]
+    /// this silently installed Helvetica (Core Text's substitute for an
+    /// unknown name) as the *editor* font, i.e. a proportional face where
+    /// the app asked for monospace.
+    #[test]
+    fn set_editor_font_keeps_the_installed_font_for_an_unknown_family() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        Backend::set_editor_font(&mut b, "Menlo", 14.0);
+        let line_height_before = b.current_line_height;
+
+        Backend::set_editor_font(&mut b, "Definitely Not A Real Font Family", 30.0);
+        assert_eq!(
+            b.current_font
+                .as_ref()
+                .expect("editor font still installed")
+                .family_name(),
+            "Menlo",
+            "an unknown family must not replace the installed editor font",
+        );
+        assert_eq!(
+            b.current_line_height, line_height_before,
+            "a rejected set_editor_font must not move the cached line height",
+        );
     }
 
     /// Black-box acceptance test (issue #963): paint a `StatusBar`

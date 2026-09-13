@@ -66,11 +66,41 @@ pub struct FontMetrics {
 }
 
 /// Create a [`CTFont`] for the named family at the given point size.
-/// Returns `None` if the family is unknown to the system. Core Text
-/// applies its own fallback chain for missing glyphs at render time;
-/// this only flags "the family itself doesn't exist."
+///
+/// Returns `None` only when `CTFontCreateWithName` itself fails, which
+/// in practice never happens for an unknown family: Core Text
+/// **substitutes a default face (Helvetica) rather than failing**, so a
+/// `Some` here does *not* mean "the system has this family". Callers
+/// that need "this exact family or nothing" — a `Backend::set_ui_font`
+/// / `set_editor_font` caller naming a family that may not be installed
+/// — must use [`make_font_exact`] instead.
 pub fn make_font(family: &str, size_pt: f64) -> Option<CTFont> {
     font::new_from_name(family, size_pt).ok()
+}
+
+/// [`make_font`], but `None` unless Core Text actually resolved the
+/// family that was asked for.
+///
+/// `CTFontCreateWithName` has no "family not found" failure mode — hand
+/// it `"Definitely Not A Real Font Family"` and it hands back Helvetica,
+/// non-null and perfectly usable, with no indication that a substitution
+/// happened. Every caller that means "install this family, or fall back
+/// to *my* chosen default" (rather than "or fall back to whatever Core
+/// Text feels like") therefore has to compare the resolved font's own
+/// name against the request — that check is this function (issue #963:
+/// without it `set_ui_font("Bogus 12")` silently installed Helvetica as
+/// the chrome font instead of degrading to [`system_ui_font`]).
+///
+/// A request matches if it equals (ASCII-case-insensitively) either the
+/// resolved font's family name (`"Menlo"`, `"Helvetica"`) or its
+/// PostScript name (`"Menlo-Regular"`) — Core Text accepts both spellings
+/// in `CTFontCreateWithName`, so both must count as a hit.
+pub fn make_font_exact(family: &str, size_pt: f64) -> Option<CTFont> {
+    let requested = family.trim();
+    let font = make_font(requested, size_pt)?;
+    let matched = font.family_name().eq_ignore_ascii_case(requested)
+        || font.postscript_name().eq_ignore_ascii_case(requested);
+    matched.then_some(font)
 }
 
 /// Build the CoreText system UI font (`kCTFontSystemFontType`) at
@@ -477,6 +507,49 @@ mod tests {
     #[test]
     fn make_font_existing_returns_some() {
         assert!(make_font("Menlo", 12.0).is_some());
+    }
+
+    /// Pins the Core Text substitution gotcha [`make_font_exact`] exists
+    /// for (issue #963): plain [`make_font`] answers an unknown family
+    /// with a *usable font from a different family* rather than `None`,
+    /// so only the checked variant can tell a caller "that family isn't
+    /// here, use your own fallback".
+    #[test]
+    fn make_font_exact_rejects_an_unknown_family_that_make_font_substitutes() {
+        // Documented as an `if let` rather than an `expect`: the point of
+        // the test is `make_font_exact`'s answer. Should a future macOS
+        // ever make `CTFontCreateWithName` fail honestly, `make_font`
+        // returns `None`, the substitution assert is vacuous, and the
+        // assert that matters below still holds.
+        if let Some(substituted) = make_font("Definitely Not A Real Font Family", 12.0) {
+            assert_ne!(
+                substituted.family_name(),
+                "Definitely Not A Real Font Family",
+                "Core Text cannot have resolved a family that doesn't exist",
+            );
+        }
+        assert!(
+            make_font_exact("Definitely Not A Real Font Family", 12.0).is_none(),
+            "make_font_exact must reject the family Core Text substituted",
+        );
+    }
+
+    #[test]
+    fn make_font_exact_accepts_family_and_postscript_spellings() {
+        let by_family = make_font_exact("Menlo", TEST_SIZE).expect("Menlo by family name");
+        assert_eq!(by_family.family_name(), "Menlo");
+        assert_eq!(by_family.pt_size(), TEST_SIZE);
+
+        // Core Text accepts a PostScript name in the same argument, so
+        // the exactness check must not reject one.
+        assert!(
+            make_font_exact("Menlo-Regular", TEST_SIZE).is_some(),
+            "PostScript spelling must count as an exact match",
+        );
+
+        // Surrounding whitespace is trimmed before the request, so a
+        // padded family name still resolves.
+        assert!(make_font_exact("  Menlo  ", TEST_SIZE).is_some());
     }
 
     #[test]
