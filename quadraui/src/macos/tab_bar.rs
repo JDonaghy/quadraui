@@ -109,21 +109,25 @@ pub(crate) fn mac_tab_icon_extras(
 /// an empty icon sidecar, which is equivalent point for point — pass a
 /// real sidecar to that function to decorate tabs.
 ///
-/// # Coordinate space — bar-relative, not absolute (known divergence)
+/// # Coordinate space — bar-relative here; callers shift to absolute
 ///
-/// The [`crate::Backend::tab_bar_layout`] doc pins the *contract* at
-/// target-surface (absolute) coordinates, and the TUI / GTK backends shift
-/// by `rect.x` to honour it. The macOS rasteriser is not handed `rect.x`
-/// at all — [`crate::macos::MacBackend::draw_tab_bar`] passes only
-/// `rect.width` / `rect.y`, and paints tabs from `x = 0` — so both its
-/// paint and its hits are bar-relative. Making only the *hits* absolute
-/// here would put them out of step with the pixels, which is strictly
-/// worse than a documented offset. Closing the gap properly means teaching
-/// the rasteriser to paint at `rect.x`; that is a behaviour change to the
-/// live tab bar and is deliberately left to the #552 follow-up rather than
-/// smuggled into quadraui#484's compile fix. What this function guarantees
-/// is the invariant that is actually load-bearing: `tab_bar_layout` returns
-/// exactly what `draw_tab_bar` painted.
+/// This function itself returns **bar-relative** `x` (slots start at
+/// `0.0`) and is never handed `rect.x` — same shape as
+/// [`mac_tab_bar_native_layout_icons`] below. The
+/// [`crate::Backend::tab_bar_layout`] doc pins the `TabBarHits` *contract*
+/// at target-surface (absolute) coordinates though, so every caller that
+/// owes it — [`crate::macos::MacBackend::draw_tab_bar_icons`]'s paint path
+/// and [`crate::macos::MacBackend::tab_bar_layout_icons`]'s no-paint twin —
+/// runs this function's output through
+/// [`crate::backend::shift_tab_bar_hits`] with `rect.x` (issue #552 /
+/// #934), the same TUI / GTK convention. `MacBackend::draw_tab_bar_icons`
+/// additionally wraps its CGContext in `CGContextTranslateCTM(ctx, rect.x,
+/// rect.y)` before calling [`draw_tab_bar_icons`] below, so the ink lands
+/// at the shifted hits' position too — mirroring
+/// `GtkBackend::draw_activity_bar`'s `cr.translate` and this crate's own
+/// `MacBackend::draw_activity_bar`. What this function guarantees is the
+/// invariant that is actually load-bearing: `tab_bar_layout` returns
+/// exactly what `draw_tab_bar` painted, once both are shifted the same way.
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits {
     mac_tab_bar_layout_icons(font, width, bar, &[])
@@ -498,6 +502,20 @@ pub unsafe fn draw_tab_bar(
 /// rasterisers); the label and close glyph shift right by exactly the
 /// width [`mac_tab_icon_extras`] reserved for it, which is why the
 /// returned close-button hit boxes still land on the × the user sees.
+///
+/// # Coordinate space — paints bar-relative; caller supplies the origin
+///
+/// Like [`mac_tab_bar_layout_icons`] above, this paints into
+/// `(0, y_offset, width, row_height)` in `ctx`'s *current* coordinate
+/// space and returns bar-relative `TabBarHits`. It does not take an
+/// `x_offset` — [`crate::macos::MacBackend::draw_tab_bar_icons`] instead
+/// wraps this call in `CGContextTranslateCTM(ctx, rect.x, rect.y)` (issue
+/// #934) so the ink lands at the bar's real screen position, and
+/// separately shifts the returned hits by `rect.x` via
+/// [`crate::backend::shift_tab_bar_hits`] so they still describe exactly
+/// what was painted. Mirrors `MacBackend::draw_activity_bar`'s identical
+/// CTM-translate treatment of the (also bar-relative)
+/// `super::activity_bar::draw_activity_bar`.
 ///
 /// # Safety
 ///
@@ -1435,5 +1453,128 @@ mod tests {
             native_as_hits.right_segment_bounds
         );
         assert_eq!(hits.correct_scroll_offset, native.resolved_scroll_offset);
+    }
+
+    /// Issue #934 RED-verify: before the fix, `MacBackend::draw_tab_bar`
+    /// forwarded `rect.width` / `rect.y` into a rasteriser that always
+    /// painted its background flush against the CGContext's absolute
+    /// `x = 0`, ignoring `rect.x` entirely — colliding with whatever sits
+    /// to the left of the tab bar's real position (a sidebar, on the
+    /// reported bug). Painting at a `rect.x` that models a sidebar's
+    /// right edge must leave that sidebar column untouched and start the
+    /// tab bar's background exactly at `rect.x`.
+    ///
+    /// Uses an empty bar (no tabs) so the whole strip is uniformly
+    /// `tab_bar_bg` — same reasoning as [`empty_bar_paints_only_tab_bar_bg`]
+    /// — so a probe anywhere in the strip can't land on an active tab's
+    /// differently-coloured slot instead.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn tab_bar_paints_at_rect_x_not_at_window_origin() {
+        const SIDEBAR_W: f32 = 120.0;
+        let canvas_w = SIDEBAR_W as u32 + W;
+        let surface = BitmapSurface::new(canvas_w, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let bar = TabBar {
+            id: WidgetId::new("empty"),
+            tabs: vec![],
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let _ = b.draw_tab_bar(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar, None);
+        });
+        backend.end_frame();
+
+        // Left of the sidebar boundary must stay exactly as the surface
+        // was initialised — fully transparent — never the tab bar's
+        // background fill.
+        let (_, _, _, a) = surface.pixel(4, H / 2);
+        assert_eq!(
+            a, 0,
+            "sidebar column (x=4) must stay untouched by the tab bar fill",
+        );
+
+        // At (and past) the sidebar's right edge: tab bar background.
+        let theme = Theme::default();
+        let (r, g, b, _) = surface.pixel(SIDEBAR_W as u32 + 4, H / 2);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "tab bar background should start at rect.x, not the window origin",
+        );
+    }
+
+    /// Companion to [`tab_bar_paints_at_rect_x_not_at_window_origin`]:
+    /// `Backend::tab_bar_layout`/`draw_tab_bar` document absolute
+    /// (target-surface) coordinates for `TabBarHits` — the first tab's
+    /// slot must start at or after `rect.x`, never at bar-relative `0.0`.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn tab_bar_hits_are_absolute_at_nonzero_rect_x() {
+        const SIDEBAR_W: f32 = 120.0;
+        let canvas_w = SIDEBAR_W as u32 + W;
+        let surface = BitmapSurface::new(canvas_w, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let bar = sample_bar();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
+        let hits = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar, None);
+            *hits.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        let hits = hits.into_inner().unwrap();
+
+        let (first_start, _) = hits.slot_positions[0];
+        assert!(
+            first_start >= SIDEBAR_W as f64,
+            "first tab slot should start at/after rect.x={SIDEBAR_W}, got {first_start}",
+        );
+    }
+
+    /// Same invariant as [`layout_twin_matches_the_painted_hits`] above,
+    /// pinned at a non-zero `rect.x` — the case that #934 regressed on
+    /// before this fix (paint and no-paint must still agree once both are
+    /// shifted to the absolute contract `Backend::tab_bar_layout`
+    /// documents).
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn layout_twin_matches_the_painted_hits_at_nonzero_origin() {
+        const SIDEBAR_W: f32 = 120.0;
+        let canvas_w = SIDEBAR_W as u32 + W;
+        let surface = BitmapSurface::new(canvas_w, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let bar = sample_bar();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
+        let painted = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let h = b.draw_tab_bar(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar, None);
+            *painted.borrow_mut() = Some(h);
+        });
+        backend.end_frame();
+        let painted = painted.into_inner().unwrap();
+
+        let computed = backend.tab_bar_layout(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar);
+
+        assert_eq!(painted.slot_positions, computed.slot_positions);
+        assert_eq!(painted.close_bounds, computed.close_bounds);
+        assert_eq!(painted.right_segment_bounds, computed.right_segment_bounds);
+        // Sanity: the agreement isn't just "both zero" — the geometry
+        // actually moved with the origin.
+        assert!(painted.slot_positions[0].0 >= SIDEBAR_W as f64);
     }
 }

@@ -1639,8 +1639,20 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope.
+        // `super::tab_bar::draw_tab_bar_icons` already honours `rect.y`
+        // via its own `y_offset` parameter, but is never handed `rect.x`
+        // and always paints/measures from `x = 0` — issue #934. The
+        // `CGContextTranslateCTM` X-only shift is what places the ink at
+        // `rect.x` (mirroring `Self::draw_activity_bar`'s CTM treatment of
+        // that other bar-relative-in-both-axes rasteriser); `y_offset`
+        // stays `rect.y` as before, unaffected. `shift_tab_bar_hits`
+        // afterward is what makes the *returned* `TabBarHits` honour
+        // `Backend::tab_bar_layout`'s documented absolute-x contract,
+        // matching the TUI/GTK convention.
         unsafe {
-            super::tab_bar::draw_tab_bar_icons(
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
+            let mut hits = super::tab_bar::draw_tab_bar_icons(
                 ctx,
                 font,
                 rect.width as f64,
@@ -1651,7 +1663,10 @@ impl Backend for MacBackend {
                 &theme,
                 hovered_close_tab,
                 icons,
-            )
+            );
+            CGContextRestoreGState(ctx);
+            crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+            hits
         }
     }
     /// Issue #919's `TabBarLayout`-returning counterpart to
@@ -1697,9 +1712,14 @@ impl Backend for MacBackend {
             .expect("MacBackend::draw_tab_bar_layout requires set_current_font");
         let theme = self.current_theme;
         let line_height = self.current_line_height;
-        // SAFETY: `ctx` is non-null inside the frame scope.
+        // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
+        // CTM translate as `Self::draw_tab_bar_icons` above — this call
+        // discards the painted `TabBarHits` anyway, so there is no return
+        // value left to shift; only the ink needs to land at `rect.x`.
         #[allow(deprecated)] // discarded `TabBarHits` — issue #823
         unsafe {
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, 0.0);
             let _ = super::tab_bar::draw_tab_bar_icons(
                 ctx,
                 font,
@@ -1712,6 +1732,7 @@ impl Backend for MacBackend {
                 hovered_close_tab,
                 icons,
             );
+            CGContextRestoreGState(ctx);
         }
         super::tab_bar::mac_tab_bar_native_layout_icons(
             font,
@@ -1743,9 +1764,18 @@ impl Backend for MacBackend {
             .as_ref()
             .expect("MacBackend::draw_activity_bar requires set_current_font");
         let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope.
+        // SAFETY: ctx non-null inside frame scope. `super::activity_bar`'s
+        // rasteriser is bar-relative by contract (issue #552) — it always
+        // paints into `(0, 0, width, height)` and returns bar-relative hit
+        // spans — so the CTM translate below is what actually places the
+        // ink at `rect`'s absolute origin (issue #934), matching
+        // `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x, rect.y)`.
+        // The returned `ActivityBarRowHit`s are untouched by the
+        // translate — they stay bar-relative, per contract.
         unsafe {
-            super::activity_bar::draw_activity_bar(
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
+            let hits = super::activity_bar::draw_activity_bar(
                 ctx,
                 font,
                 rect.width as f64,
@@ -1754,7 +1784,9 @@ impl Backend for MacBackend {
                 &theme,
                 hovered_idx,
                 self.nerd_fonts_enabled,
-            )
+            );
+            CGContextRestoreGState(ctx);
+            hits
         }
     }
 
@@ -1779,9 +1811,13 @@ impl Backend for MacBackend {
             .as_ref()
             .expect("MacBackend::draw_activity_bar_with_style requires set_current_font");
         let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope.
+        // SAFETY: ctx non-null inside frame scope. See `draw_activity_bar`
+        // above for why the CTM translate is what makes this bar-relative
+        // rasteriser paint at `rect`'s absolute origin (issue #934).
         unsafe {
-            super::activity_bar::draw_activity_bar_with_style(
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
+            let hits = super::activity_bar::draw_activity_bar_with_style(
                 ctx,
                 font,
                 rect.width as f64,
@@ -1791,7 +1827,9 @@ impl Backend for MacBackend {
                 &theme,
                 hovered_idx,
                 self.nerd_fonts_enabled,
-            )
+            );
+            CGContextRestoreGState(ctx);
+            hits
         }
     }
 
@@ -1826,9 +1864,9 @@ impl Backend for MacBackend {
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
         // No-paint twin of `draw_tab_bar`, routed through the same
-        // `mac_tab_bar_layout_icons`. See `mac_tab_bar_layout`'s docs for
-        // why macOS returns bar-relative (not absolute) x, and why
-        // closing that #552 gap is a paint change left to a follow-up.
+        // `mac_tab_bar_layout_icons` + `shift_tab_bar_hits` pair
+        // `tab_bar_layout_icons` below uses, so both agree on the
+        // documented absolute contract (issue #552 / #934).
         self.tab_bar_layout_icons(rect, bar, &[])
     }
 
@@ -1846,7 +1884,14 @@ impl Backend for MacBackend {
     ) -> TabBarHits {
         match self.current_font.as_ref() {
             Some(font) => {
-                super::tab_bar::mac_tab_bar_layout_icons(font, rect.width as f64, bar, icons)
+                let mut hits =
+                    super::tab_bar::mac_tab_bar_layout_icons(font, rect.width as f64, bar, icons);
+                // Bar-relative → target-surface-absolute (issue #934),
+                // the same shift `Self::draw_tab_bar_icons` applies to its
+                // own returned hits after painting, so a caller that
+                // measures here and paints there sees one agreed geometry.
+                crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+                hits
             }
             None => TabBarHits {
                 slot_positions: vec![(0.0, 0.0); bar.tabs.len()],
@@ -3102,6 +3147,7 @@ pub(crate) unsafe fn ns_pop_clip(ctx: CGContextRef) {
 extern "C" {
     fn CGContextSaveGState(c: CGContextRef);
     fn CGContextRestoreGState(c: CGContextRef);
+    fn CGContextTranslateCTM(c: CGContextRef, tx: CGFloat, ty: CGFloat);
     fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
     fn CGContextSetRGBFillColor(
         c: CGContextRef,
