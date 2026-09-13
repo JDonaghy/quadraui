@@ -1312,6 +1312,52 @@ define_class!(
         fn should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
             self.evaluate_should_terminate()
         }
+
+        // ── Deep links / file associations (issue #957) ────────────
+        //
+        // Fires for any URL this app is asked to open — a registered
+        // `CFBundleURLTypes` scheme (`myapp://...`, an OAuth-callback
+        // redirect) or a `CFBundleDocumentTypes` document with no
+        // associated `NSDocument` subclass — both at launch (Launch
+        // Services starts the process *with* the URL already queued)
+        // and at runtime (the app is already running and gets
+        // reactivated with a new one; macOS's own single-instance
+        // activation for a bundled `.app` is what delivers that
+        // reactivation, not any mechanism quadraui installs itself —
+        // see `UiEvent::OpenRequested`'s doc for why there's no
+        // separate `single_instance` knob on this backend's
+        // `RunConfig`). Per Apple's own doc on this method,
+        // implementing it means `application:openFiles:` below is
+        // never actually called — kept anyway (issue #957 asks for
+        // both) as a defensive fallback.
+        //
+        // **Known gap**: this only fires once AppKit has finished
+        // enough of its own launch sequence to deliver the delegate
+        // callback. A URL that arrives *before* that point (a cold
+        // launch racing Launch Services) needs a raw
+        // `NSAppleEventManager`/`kAEGetURL` handler registered even
+        // earlier — issue #957 asks for this too, but it needs the
+        // `objc2-core-services` crate (for `AEEventClass`/`AEEventID`/
+        // `kAEGetURL`), which isn't a dependency of this crate yet and
+        // could not be added and verified in this pass (no macOS host
+        // available here to build/test against — see this file's
+        // module doc and `.github/workflows/macos.yml`'s header for
+        // why that verification can only happen on a real
+        // `macos-latest` runner). Tracked as a follow-up rather than
+        // guessed at blind.
+        #[unsafe(method(application:openURLs:))]
+        fn application_open_urls(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
+            self.dispatch_open_requested(ns_urls_to_open_requested(urls));
+        }
+
+        /// See `application_open_urls`'s doc — per Apple's documented
+        /// contract this is never actually invoked while that method is
+        /// implemented, but issue #957 asks for both, so it's wired the
+        /// same way as a defensive fallback.
+        #[unsafe(method(application:openFiles:))]
+        fn application_open_files(&self, _sender: &NSApplication, filenames: &NSArray<NSString>) {
+            self.dispatch_open_requested(ns_filenames_to_open_requested(filenames));
+        }
     }
 );
 
@@ -1389,6 +1435,73 @@ impl QuadraAppDelegate {
                 }
             }
         })
+    }
+
+    /// Dispatch a [`UiEvent::OpenRequested`] (issue #957) through the
+    /// shared `handle` closure — the delegate-side counterpart of
+    /// [`QuadraView::dispatch`], for the two entry points
+    /// (`application:openURLs:`/`application:openFiles:`) that reach
+    /// this delegate directly instead of through the view.
+    ///
+    /// # Panic safety (#922)
+    ///
+    /// Entered directly from AppKit's delegate dispatch trampoline — a
+    /// C ABI boundary that cannot unwind — same posture as
+    /// [`Self::evaluate_should_terminate`]. Unlike that method, both
+    /// Objective-C selectors this backs return `void`: there is no
+    /// veto/reply value to degrade to, so a caught panic is reported
+    /// and otherwise silently swallowed rather than answered with
+    /// anything.
+    fn dispatch_open_requested(&self, event: UiEvent) {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.ivars().handle)(event)
+        })) {
+            crate::desktop::report_caught_panic_once(
+                "macos::run::QuadraAppDelegate::dispatch_open_requested (app.handle)",
+                payload.as_ref(),
+            );
+        }
+    }
+}
+
+/// Translate `application:openURLs:`'s `NSArray<NSURL>` into
+/// [`UiEvent::OpenRequested`] (issue #957). `NSURL::isFileURL` splits
+/// each entry the same way `gtk::run`'s `connect_open` splits
+/// `gio::File::path()` vs `File::uri()`: a local file URL becomes a
+/// `files` entry (`NSURL::path`); anything else (a custom app scheme, an
+/// `https://` URL) becomes a `urls` entry (`NSURL::absoluteString`). A
+/// URL that reports `isFileURL() == true` but has no decodable `path()`
+/// (shouldn't happen in practice) is dropped rather than guessed at.
+fn ns_urls_to_open_requested(urls: &NSArray<NSURL>) -> UiEvent {
+    let mut open_urls = Vec::new();
+    let mut files = Vec::new();
+    for url in urls.iter() {
+        if url.isFileURL() {
+            if let Some(path) = url.path() {
+                files.push(PathBuf::from(path.to_string()));
+            }
+        } else if let Some(absolute) = url.absoluteString() {
+            open_urls.push(absolute.to_string());
+        }
+    }
+    UiEvent::OpenRequested {
+        urls: open_urls,
+        files,
+    }
+}
+
+/// Translate `application:openFiles:`'s `NSArray<NSString>` (plain
+/// filesystem paths, not URLs — see that method's doc) into
+/// [`UiEvent::OpenRequested`] with an empty `urls` list. See
+/// `application_open_urls`'s doc for why this path is only ever a
+/// defensive fallback in practice.
+fn ns_filenames_to_open_requested(filenames: &NSArray<NSString>) -> UiEvent {
+    UiEvent::OpenRequested {
+        urls: Vec::new(),
+        files: filenames
+            .iter()
+            .map(|name| PathBuf::from(name.to_string()))
+            .collect(),
     }
 }
 

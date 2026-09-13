@@ -162,7 +162,7 @@ use pangocairo::functions as pcfn;
 use super::backend::GtkBackend;
 use super::events::{
     gdk_button_to_quadraui, gdk_key_to_uievent, gdk_modifiers_to_quadraui, gdk_resize_to_uievent,
-    gdk_scroll_to_uievent_with_direction, gtk_drop_to_uievent,
+    gdk_scroll_to_uievent_with_direction, gtk_drop_to_uievent, gtk_open_to_uievent,
 };
 use crate::backend::Backend;
 use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
@@ -245,17 +245,43 @@ pub struct RunConfig {
     /// own fallback icon in place. Set via [`Self::with_icon_name`] — see
     /// quadraui#656.
     pub icon_name: Option<String>,
+    /// Whether a second launch of this app (same `app_id`) is forwarded
+    /// to the already-running instance instead of starting a new process
+    /// — issue #957. `true` (the default — see [`Self::default`]) is
+    /// GTK/GLib's own out-of-the-box behaviour for any `Application` with
+    /// a stable `app_id` and no `ApplicationFlags::NON_UNIQUE`: dedup and
+    /// D-Bus forwarding come free, no extra wiring needed beyond
+    /// `app_id` itself. `run_with` also always sets
+    /// `ApplicationFlags::HANDLES_OPEN`, so `argv` file/URL arguments
+    /// (at launch, or forwarded from a second launch when this is
+    /// `true`) reach the app as [`crate::UiEvent::OpenRequested`] via
+    /// `Application::connect_open` instead of being rejected. Set this
+    /// `false` (via [`Self::with_single_instance`]) to opt back into
+    /// GTK's `ApplicationFlags::NON_UNIQUE` — every launch gets its own
+    /// window, matching pre-#957 behaviour — useful for running several
+    /// debug instances side by side.
+    pub single_instance: bool,
 }
 
 impl RunConfig {
     /// Build a config with the given app id and window title. No icon
-    /// override — see [`Self::with_icon_name`].
+    /// override — see [`Self::with_icon_name`]. Single-instance dedup is
+    /// on — see [`Self::with_single_instance`] to opt out.
     pub fn new(app_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             app_id: app_id.into(),
             title: title.into(),
             icon_name: None,
+            single_instance: true,
         }
+    }
+
+    /// Opt in/out of single-instance dedup + `argv`/OS-open forwarding
+    /// (issue #957) — see [`Self::single_instance`]'s doc for the full
+    /// contract. Defaults to `true`.
+    pub fn with_single_instance(mut self, single_instance: bool) -> Self {
+        self.single_instance = single_instance;
+        self
     }
 
     /// Set a themed icon name for the window (quadraui#656). Feeds
@@ -276,6 +302,7 @@ impl Default for RunConfig {
             app_id: "org.quadraui.app".to_string(),
             title: "quadraui app".to_string(),
             icon_name: None,
+            single_instance: true,
         }
     }
 }
@@ -313,8 +340,29 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let smoke_failed = Rc::new(Cell::new(false));
     let title = config.title;
     let icon_name = config.icon_name;
+    // #957: fetched here (before `gapp` even exists) rather than inside
+    // `activate` alone, so `connect_open` below can push
+    // `UiEvent::OpenRequested` onto the same queue regardless of whether
+    // `activate` has run yet — `GtkBackend::new()` above already set up
+    // the underlying `VecDeque`, and `activate`'s idle-drain timer (once
+    // it starts) drains whatever is already sitting in it.
+    let events_handle = backend.borrow().events_handle();
 
-    let gapp = Application::builder().application_id(config.app_id).build();
+    // #957: `HANDLES_OPEN` is required for `argv` file/URL positional
+    // arguments to route to `connect_open` below instead of GLib
+    // rejecting them outright ("This application can not open files.").
+    // `NON_UNIQUE` opts *out* of GTK/GLib's default single-instance
+    // dedup — see `RunConfig::single_instance`'s doc for why the default
+    // (`true`, i.e. this flag absent) reproduces GTK's existing
+    // no-flags-set behaviour exactly.
+    let mut flags = gtk4::gio::ApplicationFlags::HANDLES_OPEN;
+    if !config.single_instance {
+        flags |= gtk4::gio::ApplicationFlags::NON_UNIQUE;
+    }
+    let gapp = Application::builder()
+        .application_id(config.app_id)
+        .flags(flags)
+        .build();
 
     {
         let app = app.clone();
@@ -333,6 +381,50 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
                 title.clone(),
                 icon_name.clone(),
             );
+        });
+    }
+
+    // #957: GLib emits `open` *instead of* `activate` whenever the
+    // launch carries file/URL arguments — at first launch (a registered
+    // `.myext` file double-clicked in a file manager, a `myapp://` URL
+    // activation) or, with `single_instance` on, forwarded here from a
+    // second launch via GLib's own D-Bus dedup (no extra wiring needed
+    // for that half — see `RunConfig::single_instance`'s doc). Either
+    // way `activate` never separately fires for this same launch, so
+    // `gapp.windows()` being empty is exactly the "no window built yet"
+    // signal: build one via the same `activate` this closure otherwise
+    // shares nothing with, so a files-at-launch invocation still gets a
+    // window instead of silently pushing an event nothing will ever
+    // read.
+    {
+        let app = app.clone();
+        let backend = backend.clone();
+        let smoke = smoke.clone();
+        let smoke_failed = smoke_failed.clone();
+        let title = title.clone();
+        let icon_name = icon_name.clone();
+        let events_handle = events_handle.clone();
+        gapp.connect_open(move |gapp, files, _hint| {
+            if gapp.windows().is_empty() {
+                activate(
+                    gapp,
+                    app.clone(),
+                    backend.clone(),
+                    smoke.clone(),
+                    smoke_failed.clone(),
+                    title.clone(),
+                    icon_name.clone(),
+                );
+            }
+            events_handle
+                .borrow_mut()
+                .push_back(gtk_open_to_uievent(files));
+            // Bring the (new-or-existing) window forward — the point of
+            // single-instance forwarding is that the user *sees* their
+            // request land, not just that the event reaches `AppLogic`.
+            if let Some(window) = gapp.windows().first() {
+                window.present();
+            }
         });
     }
 
@@ -1690,6 +1782,7 @@ mod run_config_tests {
         assert_eq!(config.app_id, "org.quadraui.app");
         assert_eq!(config.title, "quadraui app");
         assert_eq!(config.icon_name, None);
+        assert!(config.single_instance, "single-instance dedup defaults on");
     }
 
     #[test]
@@ -1698,6 +1791,16 @@ mod run_config_tests {
         assert_eq!(config.app_id, "io.github.jdonaghy.kubeui-gtk");
         assert_eq!(config.title, "kubeui");
         assert_eq!(config.icon_name, None);
+        assert!(config.single_instance);
+    }
+
+    /// #957: `with_single_instance(false)` is how an app opts out of
+    /// GTK's default single-instance dedup — e.g. to run several debug
+    /// instances side by side.
+    #[test]
+    fn with_single_instance_overrides_the_default() {
+        let config = RunConfig::new("a.b.c", "Title").with_single_instance(false);
+        assert!(!config.single_instance);
     }
 
     #[test]

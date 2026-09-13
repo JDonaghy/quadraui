@@ -168,6 +168,35 @@ pub fn gtk_drop_to_uievent(paths: Vec<std::path::PathBuf>, x: f64, y: f64) -> Ui
     crate::event::files_dropped(paths, x as f32, y as f32)
 }
 
+/// Translate a `gio::Application`'s `open` signal payload (issue #957) —
+/// a slice of `gio::File`s the OS handed the app, either from `argv` at
+/// launch (`ApplicationFlags::HANDLES_OPEN` routes file/URI positional
+/// arguments to `open` instead of `activate`) or forwarded from a second
+/// launch to the already-running primary instance — into
+/// [`UiEvent::OpenRequested`].
+///
+/// Each `gio::File` is classified by `File::path()`: `Some(_)` means a
+/// local filesystem path (bucketed into `files`); `None` means a
+/// non-local URI (`http://`, a custom app scheme, a GVfs mount) that
+/// `File::uri()` still resolves to a string (bucketed into `urls`).
+/// Unlike Win's plain-`String` `argv`, GTK's `gio::File` arrives
+/// pre-classified by GLib itself, so this doesn't need
+/// [`crate::event::classify_open_args`]'s `"://"` heuristic.
+pub fn gtk_open_to_uievent(files: &[gtk4::gio::File]) -> UiEvent {
+    let mut local_paths = Vec::new();
+    let mut urls = Vec::new();
+    for file in files {
+        match file.path() {
+            Some(path) => local_paths.push(path),
+            None => urls.push(file.uri().to_string()),
+        }
+    }
+    UiEvent::OpenRequested {
+        urls,
+        files: local_paths,
+    }
+}
+
 /// Translate `gdk::ModifierType` to `quadraui::Modifiers`. Maps the
 /// four standard modifiers — Ctrl, Shift, Alt, Super (Cmd on macOS;
 /// Win/Meta key on X11). The other GDK bits (Lock, Hyper, Mod1–5)
@@ -404,6 +433,37 @@ mod tests {
             }
             other => panic!("expected UiEvent::FilesDropped, got {other:?}"),
         }
+    }
+
+    /// Issue #957: local files go to `files` (via `File::path()`),
+    /// non-local URIs go to `urls` (via `File::uri()`) — GTK's `open`
+    /// signal arrives pre-classified, unlike Win's plain-string `argv`.
+    #[test]
+    fn open_to_uievent_splits_local_files_from_uris() {
+        let files = vec![
+            gtk4::gio::File::for_path("/tmp/report.pdf"),
+            gtk4::gio::File::for_uri("https://example.com/oauth/callback"),
+        ];
+        let ev = gtk_open_to_uievent(&files);
+        match ev {
+            UiEvent::OpenRequested { urls, files } => {
+                assert_eq!(files, vec![std::path::PathBuf::from("/tmp/report.pdf")]);
+                assert_eq!(urls, vec!["https://example.com/oauth/callback".to_string()]);
+            }
+            other => panic!("expected UiEvent::OpenRequested, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_to_uievent_handles_empty_list() {
+        let ev = gtk_open_to_uievent(&[]);
+        assert_eq!(
+            ev,
+            UiEvent::OpenRequested {
+                urls: vec![],
+                files: vec![],
+            }
+        );
     }
 
     #[test]
