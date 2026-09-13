@@ -433,17 +433,15 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // `c0_paint_smoke`'s columns — `draw_diff_view`'s known fake (see this
     // module's doc comment) would turn straight into a hard C0 failure,
     // which is its own follow-up, not this list's job.
-    (
-        "macos",
-        "set_editor_font",
-        "editor font override not wired to CoreText yet",
-    ),
-    (
-        "macos",
-        "set_ui_font",
-        "chrome font override not wired to CoreText yet — macOS chrome still paints with the \
-         renderer's own font (#624)",
-    ),
+    // `set_editor_font`/`set_ui_font` are no longer here (#963): both are
+    // now overridden — `set_editor_font` maps onto the existing
+    // `set_current_font` machinery, and `set_ui_font` installs a second,
+    // independent CoreText font (`chrome_font`) that defaults to the
+    // system UI font and backs `draw_status_bar_interactive`/
+    // `status_bar_layout` via `ChromeSurface`. Wiring the rest of the
+    // chrome rasterisers (tab bar, tree, menu bar, dialogs, …) off that
+    // same adapter is tracked follow-up — see `macos::backend::ChromeSurface`'s
+    // doc — same scope Win-GUI's #724 `chrome_dwrite` shipped with.
     (
         "macos",
         "scales_text_rows",

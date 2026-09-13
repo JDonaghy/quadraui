@@ -73,6 +73,21 @@ pub fn make_font(family: &str, size_pt: f64) -> Option<CTFont> {
     font::new_from_name(family, size_pt).ok()
 }
 
+/// Build the CoreText system UI font (`kCTFontSystemFontType`) at
+/// `size_pt` — [`super::backend::MacBackend`]'s default `chrome_font`
+/// before any [`crate::Backend::set_ui_font`] call overrides it (issue
+/// #963). This is the CoreText analogue of GTK's `"Sans 11"` / Win-GUI's
+/// `"Segoe UI"` chrome default: a proportional face reserved for UI
+/// chrome, distinct from whatever monospace family the app installs as
+/// the editor font via [`super::backend::MacBackend::set_current_font`].
+///
+/// Unlike [`make_font`], this can't fail to resolve a family — Core Text
+/// always has *a* system font — so it returns a `CTFont` directly rather
+/// than `Option`.
+pub fn system_ui_font(size_pt: f64) -> CTFont {
+    font::new_ui_font_for_language(font::kCTFontSystemFontType, size_pt, None)
+}
+
 // ── Nerd-Font fallback (issue #929) ─────────────────────────────────────
 //
 // macOS has no equivalent of GTK/Pango's implicit per-character font
