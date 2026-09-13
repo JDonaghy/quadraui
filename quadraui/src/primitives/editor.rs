@@ -377,6 +377,44 @@ fn default_lightbulb_glyph() -> char {
     '!'
 }
 
+// ─── EditorPaintOptions ─────────────────────────────────────────────────────
+
+/// Per-call paint options for [`Editor::layout`] / rasterisers that don't
+/// have a home directly on the [`Editor`] snapshot itself.
+///
+/// `Editor`'s other paint-affecting toggles (`cursorline`, `has_git_diff`,
+/// `has_breakpoints`, ...) are plain fields, but both known downstream
+/// consumers build `Editor` with **exhaustive struct literals** — no
+/// `..base`, no `..Default::default()` (`quadraui/tests/
+/// downstream_struct_literals.rs` documents and guards this exact class
+/// of struct; see that file's header, and issues #833/#913 for the two
+/// times this crate already hit it and backed out to a side-channel
+/// instead of growing the struct). Adding a field to `Editor` directly
+/// would break every one of those call sites with `E0063`. A small,
+/// independently-growable options struct with no existing call sites to
+/// break sidesteps that, and can gain more fields later for free.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EditorPaintOptions {
+    /// Suppress this editor's own vertical scrollbar even though the
+    /// buffer overflows the viewport (#968).
+    ///
+    /// `Editor::layout`'s `has_v_scrollbar` has no awareness of sibling
+    /// primitives — a host running a `Minimap` beside the editor
+    /// (vimcode#723 gave `Minimap` its own `scroll_thumb` overlay,
+    /// VS-Code-style: the slider draws *over* the minimap, which acts as
+    /// the track) has no other way to stop the editor from *also*
+    /// reserving and painting a `v_scrollbar_bounds` column immediately
+    /// next to it, short of narrowing `editor.rect` to near-zero text
+    /// width. Passing `suppress_v_scrollbar: true` avoids that redundant
+    /// side-by-side pair: `has_v_scrollbar` becomes `false`
+    /// unconditionally, so `v_scrollbar_bounds` is `None` and neither
+    /// `EditorLayout::hit_test` nor [`crate::gtk::draw_editor_with_options`]
+    /// reserves or paints that column. Leave at `false` (the default)
+    /// for editors with no minimap, or one that isn't acting as a
+    /// scrollbar.
+    pub suppress_v_scrollbar: bool,
+}
+
 // ─── EditorLayout + hit_test ──────────────────────────────────────────────────
 
 /// Classification of a hit-test result within an editor viewport.
@@ -534,15 +572,41 @@ impl Editor {
     /// - `viewport` — the rectangle this editor occupies.
     /// - `cell_width` — character advance width (1.0 for TUI, font px for GTK).
     /// - `line_height` — row height (1.0 for TUI, font px for GTK).
+    ///
+    /// Equivalent to [`Self::layout_with_options`] with
+    /// `EditorPaintOptions::default()` — kept as a separate, unchanged
+    /// method (rather than growing this one's argument list) so every
+    /// existing caller keeps compiling untouched. See
+    /// [`EditorPaintOptions`] for why a new parameter here would be a
+    /// breaking change for both known downstream consumers.
     pub fn layout(&self, viewport: Rect, cell_width: f32, line_height: f32) -> EditorLayout {
+        self.layout_with_options(
+            viewport,
+            cell_width,
+            line_height,
+            EditorPaintOptions::default(),
+        )
+    }
+
+    /// [`Self::layout`], plus [`EditorPaintOptions`] a host can set to
+    /// override otherwise-automatic geometry decisions — currently just
+    /// `suppress_v_scrollbar` (#968).
+    pub fn layout_with_options(
+        &self,
+        viewport: Rect,
+        cell_width: f32,
+        line_height: f32,
+        options: EditorPaintOptions,
+    ) -> EditorLayout {
         let gutter_w = self.gutter_char_width as f32 * cell_width;
         let visible_lines = if line_height > 0.0 {
             (viewport.height / line_height).floor() as usize
         } else {
             0
         };
-        let has_v_scrollbar =
-            self.total_lines > visible_lines && viewport.width > gutter_w + cell_width;
+        let has_v_scrollbar = !options.suppress_v_scrollbar
+            && self.total_lines > visible_lines
+            && viewport.width > gutter_w + cell_width;
         let v_scrollbar_w = if has_v_scrollbar { cell_width } else { 0.0 };
 
         let text_w = (viewport.width - gutter_w - v_scrollbar_w).max(0.0);
@@ -764,6 +828,39 @@ mod tests {
         let vsb = l.v_scrollbar_bounds.unwrap();
         assert_eq!(vsb.x, 79.0);
         assert_eq!(vsb.width, 1.0);
+    }
+
+    /// Regression for #968 (minimap interaction): a host running its own
+    /// scroll affordance beside the editor (e.g. a `Minimap` with
+    /// `scroll_thumb`, vimcode#723) can pass
+    /// `EditorPaintOptions { suppress_v_scrollbar: true, .. }` to stop
+    /// the editor from *also* reserving/painting a redundant vertical
+    /// scrollbar column, even though the buffer still overflows the
+    /// viewport (the condition that would otherwise force one).
+    /// `layout()` (no options) must remain unaffected.
+    #[test]
+    fn editor_layout_with_options_suppress_v_scrollbar_overrides_overflow() {
+        let ed = make_editor(4, 100, 40);
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+
+        // Baseline: plain `layout()` still reserves the column.
+        assert!(ed.layout(vp, 1.0, 1.0).v_scrollbar_bounds.is_some());
+
+        let l = ed.layout_with_options(
+            vp,
+            1.0,
+            1.0,
+            EditorPaintOptions {
+                suppress_v_scrollbar: true,
+            },
+        );
+        assert!(
+            l.v_scrollbar_bounds.is_none(),
+            "suppress_v_scrollbar should suppress the column even though total_lines overflows"
+        );
+        // The full width (minus gutter) goes back to text, exactly as
+        // the no-overflow case below.
+        assert_eq!(l.text_bounds.width, 76.0);
     }
 
     #[test]
