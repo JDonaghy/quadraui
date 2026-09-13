@@ -1121,10 +1121,10 @@ toward "things that genuinely need eyes".
   clipboard round-trip — see "Live-app headless smoke" above) doesn't open
   a dialog either, so it proves the window itself is alive, not that the
   alert appears or that its buttons behave. Same structural gap as
-  `PlatformServices::show_file_open_dialog`/`show_file_save_dialog`
-  (#427), which has never had automated coverage of the native picker
-  actually appearing. Manual smoke, until a `GtkDriver` successor can see
-  native windows:
+  `PlatformServices::show_file_open_dialog`/`show_file_save_dialog`/
+  `show_folder_open_dialog` (#427, #935), which has never had automated
+  coverage of the native picker actually appearing. Manual smoke, until a
+  `GtkDriver` successor can see native windows:
   1. `cargo run --example gtk_message_dialog --features gtk`
   2. Press `m`. Confirm a real OS dialog titled "Discard unsaved
      changes?" appears, parented to (centered on) the demo window, with

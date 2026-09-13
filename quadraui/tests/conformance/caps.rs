@@ -150,6 +150,14 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
         ),
     },
     CapContract {
+        cap: "folder_dialogs",
+        proof: Proof::Unprovable(
+            "`PlatformServices::show_folder_open_dialog` likewise has no no-op default — every \
+             backend implements it — so only *running* a native directory chooser distinguishes \
+             a real dialog from a `None`-returning stub, same as `file_dialogs` (quadraui#935)",
+        ),
+    },
+    CapContract {
         cap: "native_dialogs",
         proof: Proof::Unprovable(
             "`PlatformServices::show_message_dialog` likewise has no no-op default — every \

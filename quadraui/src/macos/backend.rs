@@ -1160,8 +1160,10 @@ impl Backend for MacBackend {
     ///   `macos::events`, so all three input kinds reach `poll_events`.
     /// - `native_menu`: `install_menu_bar` / `show_context_menu` are both
     ///   overridden below (`NSMenu`).
-    /// - `file_dialogs` / `notifications`: `MacPlatformServices` uses real
-    ///   `NSOpenPanel`/`NSSavePanel` and `osascript` notifications
+    /// - `file_dialogs` / `folder_dialogs` / `notifications`:
+    ///   `MacPlatformServices` uses real `NSOpenPanel`/`NSSavePanel` (the
+    ///   former in both file-picking and, since quadraui#935,
+    ///   directory-picking mode) and `osascript` notifications
     ///   (`src/macos/services.rs`), not stubs.
     /// - `native_dialogs`: **not** declared —
     ///   `MacPlatformServices::show_message_dialog` is still a `None`
@@ -1206,6 +1208,7 @@ impl Backend for MacBackend {
             drag: true,
             native_menu: true,
             file_dialogs: true,
+            folder_dialogs: true,
             notifications: true,
             window_chrome: true,
             pointer_cursor: true,

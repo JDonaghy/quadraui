@@ -1086,6 +1086,11 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
              exercises the app-side flow instead",
         ),
         (
+            "folder_dialogs",
+            "same as `file_dialogs` — a modal native directory chooser cannot run headless \
+             (quadraui#935)",
+        ),
+        (
             "native_dialogs",
             "same as `file_dialogs` — a modal native alert cannot run headless; \
              `GtkDriver` sees Cairo paint, not native windows (quadraui#666), so its \

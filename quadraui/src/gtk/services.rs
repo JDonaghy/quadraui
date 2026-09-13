@@ -142,6 +142,23 @@ impl PlatformServices for GtkPlatformServices {
             .and_then(|file| gtk4::prelude::FileExt::path(&file))
     }
 
+    /// `gtk4::FileDialog::select_folder` (quadraui#935) — the exact call
+    /// vimcode#815 removed when it gave up its native "Open Folder" panel
+    /// for lack of this primitive. Same builder, same nested-pump adapter
+    /// as the file dialogs above.
+    fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        let dialog = build_file_dialog(&opts, None);
+        let window = self.window.borrow().clone();
+        let result = Rc::new(RefCell::new(None));
+        let result_cb = Rc::clone(&result);
+        dialog.select_folder(window.as_ref(), gio::Cancellable::NONE, move |res| {
+            *result_cb.borrow_mut() = Some(res);
+        });
+        pump_until_ready(&result, &self.pumping)
+            .ok()
+            .and_then(|file| gtk4::prelude::FileExt::path(&file))
+    }
+
     /// `gtk4::AlertDialog::choose()` (quadraui#666) — see the module docs
     /// for why `AlertDialog`, not the deprecated `MessageDialog`. Driven
     /// through the same [`pump_until_ready`] + `pump_depth` guard the

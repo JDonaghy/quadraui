@@ -927,6 +927,7 @@ mod tests {
             pointer_cursor: true,
             ime: true,
             file_dialogs: true,
+            folder_dialogs: true,
             native_dialogs: true,
             notifications: true,
             app_font_registration: true,
