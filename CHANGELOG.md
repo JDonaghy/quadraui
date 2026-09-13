@@ -55,6 +55,21 @@ release time.
 
 ### Added
 
+- `gtk::draw_editor` now paints both editor scrollbars itself, the way
+  `tui::editor::draw_editor` already does (issue #968) — it used to defer
+  to a host path (vimcode's `draw_window_scrollbars`) that vimcode#731
+  deleted, so the capability had fallen through the gap between the two
+  repos. The content clip is narrowed by the reserved column *before*
+  painting text (mirroring TUI's `viewport_cols` narrowing), rather than
+  letting the scrollbar's translucent track paint over glyphs. New
+  `EditorPaintOptions` (currently just `suppress_v_scrollbar`, for a host
+  running a `Minimap` in scrollbar mode, vimcode#723) plus
+  `Editor::layout_with_options` / `gtk::draw_editor_with_options` are
+  additive alongside the unchanged `Editor::layout` / `gtk::draw_editor` —
+  deliberately *not* a new field on `Editor` itself, since both known
+  consumers build it with an exhaustive struct literal (see
+  `quadraui/tests/downstream_struct_literals.rs`'s new
+  `editor_exhaustive_struct_literal_still_compiles`).
 - `Backend::register_font_from_memory` + `Backend::set_nerd_font_fallback`
   (issue #929) — macOS and Win-GUI had no way to resolve Nerd-Font (or
   other PUA-codepoint) icon glyphs at all: unlike GTK, which cascades to

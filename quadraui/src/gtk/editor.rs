@@ -45,28 +45,61 @@
 //! the [`super::scrollbar::RawScrollbarSurface`] adapter — the same
 //! pattern `gtk::data_table` and `gtk::list` already use to paint an
 //! embedded scrollbar from a bare `cr: &Context` rather than a live
-//! `GtkBackend`. Both scrollbars paint *after* text/selections and
-//! *before* the cursor, mirroring `tui::editor::draw_editor`'s
-//! ordering: content paints first, the scrollbar overlays on top.
+//! `GtkBackend`.
+//!
+//! Unlike TUI's fixed-cell grid — where a cell can only ever hold one
+//! glyph, so "paint the scrollbar after the text" is only possible
+//! because `viewport_cols` was pre-narrowed by one column before any
+//! text was painted into it — Cairo's pixel surface *can* paint one
+//! thing directly on top of another. To still match TUI's actual
+//! result (a reserved column, not a glyph visible under a translucent
+//! track), this rasteriser narrows the **content clip** by the same
+//! `editor_geom.text_bounds.width` [`Editor::layout`] computes for
+//! hit-testing *before* painting any text/indent-guides/color-columns/
+//! diagnostic+spell-underlines/bracket-match (see "Clip to text area"
+//! below), then paints the scrollbar itself afterwards, once, directly
+//! into the now-untouched column. "Paints after" here means "paints
+//! into reserved pixels no glyph touched" — the same outcome as TUI's
+//! narrowing, reached by clipping instead of by shrinking a cell count,
+//! because that's what the two surfaces each make possible. Backgrounds
+//! painted *before* the clip is installed (window/cursorline/diff/DAP
+//! backgrounds, selection overlays) are deliberately left full-width,
+//! matching TUI's own `line_bg`/`render_selection`, which paint the
+//! full row before the scrollbar draw call overwrites whatever ended up
+//! in its column — narrowing those too would just be extra clipping
+//! for a region the scrollbar paints over regardless.
 //!
 //! ## Minimap interaction (#968, vimcode#723)
 //!
 //! This rasteriser has no awareness of a `Minimap` primitive sitting
 //! beside the editor — that would violate this crate's
 //! primitive-distinctness rule (`DECISIONS.md`), the same reason the
-//! status line isn't painted here either (see below). Avoiding a
-//! double-painted right edge when a minimap is present is a *host*
-//! composition concern: the host sizes `editor.rect` (and decides
-//! whether it overlaps a minimap strip) the same way it already
-//! shrinks `editor.rect` for the status row. vimcode#723 gave the
-//! minimap its own `Minimap::scroll_thumb` overlay for the
-//! minimap-as-scrollbar case; a host that enables that mode should
-//! keep `editor.rect` narrow enough that `Editor::layout` doesn't also
-//! reserve a `v_scrollbar_bounds` column over the same pixels.
+//! status line isn't painted here either (see below). But
+//! `Editor::layout`'s `has_v_scrollbar` fires whenever the buffer
+//! overflows the viewport, with no awareness of whether a sibling
+//! `Minimap` is already offering a scroll affordance — vimcode#723 gave
+//! `Minimap` its own `scroll_thumb` overlay for the minimap-as-scrollbar
+//! case (VS-Code-style: the slider draws *over* the minimap, which acts
+//! as the track), and narrowing `editor.rect` alone can't suppress this
+//! rasteriser's own column without also strangling the text viewport.
+//! [`crate::primitives::editor::EditorPaintOptions::suppress_v_scrollbar`]
+//! is the opt-out: a host running its minimap in scrollbar mode calls
+//! [`draw_editor_with_options`] with that flag set, which makes
+//! `Editor::layout_with_options` return `v_scrollbar_bounds: None`
+//! unconditionally — no column is reserved by the content clip above,
+//! and this function skips the vertical scrollbar paint entirely,
+//! leaving the minimap as the sole scroll affordance. It isn't a field
+//! on `Editor` itself: both known downstream consumers build `Editor`
+//! with exhaustive struct literals, so a new field there would break
+//! them with `E0063` (`quadraui/tests/downstream_struct_literals.rs`
+//! guards this exact class of mistake — see issues #833/#913 for the
+//! two prior times this crate hit it). `draw_editor` (unchanged,
+//! plain-`Editor` signature) keeps calling through with the default
+//! (`false`) options, so every existing caller is unaffected.
 
 use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLayout, EditorLine, EditorSelection,
-    EditorStyledSpan, GitLineStatus, SelectionKind,
+    CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLayout, EditorLine,
+    EditorPaintOptions, EditorSelection, EditorStyledSpan, GitLineStatus, SelectionKind,
 };
 use crate::primitives::scrollbar::Scrollbar;
 use crate::theme::Theme;
@@ -79,6 +112,11 @@ use gtk4::pango::{self, AttrColor, AttrList};
 /// `char_width` and `line_height` are surface-native pixel
 /// measurements obtained from the host's font metrics — passed in so
 /// the host's font/scale settings stay authoritative.
+///
+/// Equivalent to [`draw_editor_with_options`] with
+/// `EditorPaintOptions::default()` — kept as a separate, unchanged
+/// function (rather than growing this one's argument list) so every
+/// existing caller keeps compiling untouched.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_editor(
     cr: &Context,
@@ -89,10 +127,44 @@ pub fn draw_editor(
     char_width: f64,
     line_height: f64,
 ) {
+    draw_editor_with_options(
+        cr,
+        layout,
+        font_metrics,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        EditorPaintOptions::default(),
+    )
+}
+
+/// [`draw_editor`], plus [`EditorPaintOptions`] a host can set to
+/// override otherwise-automatic paint decisions — currently just
+/// `suppress_v_scrollbar` (#968; see the module doc's "Minimap
+/// interaction" section).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_editor_with_options(
+    cr: &Context,
+    layout: &pango::Layout,
+    font_metrics: &pango::FontMetrics,
+    editor: &Editor,
+    theme: &Theme,
+    char_width: f64,
+    line_height: f64,
+    options: EditorPaintOptions,
+) {
     let rect = &editor.rect;
     let gutter_width = editor.gutter_char_width as f64 * char_width;
     let h_scroll_offset = editor.scroll_left as f64 * char_width;
     let text_x_offset = rect.x as f64 + gutter_width - h_scroll_offset;
+    // Computed once up front (rather than after painting text, as a
+    // prior revision of this function did) so the content clip below
+    // can be narrowed by the same reserved scrollbar column the
+    // scrollbar paint and `EditorLayout::hit_test` already agree on —
+    // see the module doc's "Scrollbars" section.
+    let editor_geom =
+        editor.layout_with_options(*rect, char_width as f32, line_height as f32, options);
 
     // ── Window background ──────────────────────────────────────────────
     let bg = if editor.show_active_bg {
@@ -272,12 +344,20 @@ pub fn draw_editor(
         }
     }
 
-    // ── Clip to text area (excludes gutter) ────────────────────────────
+    // ── Clip to text area (excludes gutter AND the reserved vertical
+    // scrollbar column, when present) ───────────────────────────────────
+    //
+    // Narrowed to `editor_geom.text_bounds.width` rather than the full
+    // `rect.width - gutter_width`, mirroring `tui::editor::draw_editor`'s
+    // `viewport_cols` narrowing (#968) — text/indent-guides/color-columns/
+    // diagnostic+spell underlines/bracket-match stop short of the
+    // scrollbar column instead of painting glyphs that the scrollbar
+    // then overlays.
     cr.save().ok();
     cr.rectangle(
         rect.x as f64 + gutter_width,
         rect.y as f64,
-        rect.width as f64 - gutter_width,
+        editor_geom.text_bounds.width as f64,
         rect.height as f64,
     );
     cr.clip();
@@ -459,10 +539,13 @@ pub fn draw_editor(
 
     cr.restore().ok();
 
-    // ── Scrollbars (paint after text/selections so they overlay content,
-    // before the cursor — mirrors tui::editor::draw_editor; see module
-    // doc for the shared-geometry rationale and the minimap boundary) ──
-    let editor_geom = editor.layout(*rect, char_width as f32, line_height as f32);
+    // ── Scrollbars (painted last among the "content" layers — after
+    // text/selections, before the cursor — mirrors
+    // tui::editor::draw_editor's z-order; see module doc for the
+    // shared-geometry rationale and the minimap boundary). The content
+    // clip above already reserved this column, so this paints into
+    // pixels no glyph touched, not over them. `editor_geom` was computed
+    // up front, alongside the content clip. ──
     if let Some(v_track) = editor_geom.v_scrollbar_bounds {
         let sb = Scrollbar::vertical(
             "gtk:editor:v_scrollbar",
@@ -1257,6 +1340,43 @@ mod tests {
         (data, stride)
     }
 
+    /// [`scroll_test_paint`], but through [`draw_editor_with_options`] so
+    /// tests can exercise [`EditorPaintOptions`] (#968).
+    fn scroll_test_paint_with_options(
+        editor: &Editor,
+        theme: &Theme,
+        options: EditorPaintOptions,
+    ) -> (Vec<u8>, i32) {
+        let mut surface = ImageSurface::create(Format::ARgb32, SCROLL_TEST_W, SCROLL_TEST_H)
+            .expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+
+            draw_editor_with_options(
+                &cr,
+                &pango_layout,
+                &metrics,
+                editor,
+                theme,
+                SCROLL_TEST_CHAR_W,
+                SCROLL_TEST_LINE_H,
+                options,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
     /// Regression for #968: `gtk::draw_editor` used to paint no
     /// scrollbars at all (deferred to a host path vimcode#731 deleted).
     /// A buffer taller than the viewport must now paint a vertical
@@ -1285,6 +1405,82 @@ mod tests {
             px2,
             rgb(theme.background),
             "no vertical scrollbar should paint when the buffer fits the viewport"
+        );
+    }
+
+    /// Regression for the #968 review finding: the content clip must be
+    /// **narrowed** by the reserved v-scrollbar column width, not merely
+    /// overlaid afterwards — otherwise a translucent scrollbar track
+    /// paints on top of glyphs the (unnarrowed) text loop already
+    /// rendered underneath it, which is visible wherever the track/thumb
+    /// isn't fully opaque. Fill every visible line with far more text
+    /// than fits the viewport (so, pre-fix, glyphs would reach all the
+    /// way to the true right edge) and assert the reserved column's
+    /// pixel is identical whether or not that text is present — the only
+    /// way that can hold is if the text never reaches that column at all
+    /// (narrowed out), since the scrollbar itself paints identically in
+    /// both cases.
+    #[test]
+    fn draw_editor_scrollbar_column_unaffected_by_overflowing_text() {
+        let theme = Theme::default();
+
+        let mut with_text = scroll_test_editor(50, 0, 5);
+        for line in with_text.lines.iter_mut() {
+            // Comfortably wider than SCROLL_TEST_W under any reasonable
+            // font metrics — pre-#968-fix this would paint glyphs well
+            // past the reserved scrollbar column.
+            line.raw_text = "M".repeat(60);
+        }
+        let blank = scroll_test_editor(50, 0, 5);
+
+        let (data_text, stride) = scroll_test_paint(&with_text, &theme);
+        let (data_blank, stride2) = scroll_test_paint(&blank, &theme);
+        assert_eq!(stride, stride2);
+
+        // Same pixel the tests above assert is scrollbar-tinted.
+        let px_text = scroll_test_pixel(&data_text, stride as usize, 198, 40);
+        let px_blank = scroll_test_pixel(&data_blank, stride as usize, 198, 40);
+        assert_eq!(
+            px_text, px_blank,
+            "scrollbar column pixel must be identical regardless of overflowing text — \
+             the text loop should narrow around the reserved column instead of painting \
+             glyphs the scrollbar then overlays (#968)"
+        );
+    }
+
+    /// Regression for #968 (minimap interaction): passing
+    /// `EditorPaintOptions { suppress_v_scrollbar: true, .. }` through
+    /// `draw_editor_with_options` must stop the vertical scrollbar from
+    /// painting at all, even though the buffer still overflows the
+    /// viewport — this is the opt-out a host running a
+    /// `Minimap`-as-scrollbar (vimcode#723) passes to avoid a redundant
+    /// second affordance beside it. `draw_editor` (no options) must
+    /// remain unaffected.
+    #[test]
+    fn draw_editor_with_options_suppress_v_scrollbar_paints_no_column() {
+        let theme = Theme::default();
+        let overflowing = scroll_test_editor(50, 0, 5);
+
+        // Baseline: plain `draw_editor` still paints the column.
+        let (data0, stride0) = scroll_test_paint(&overflowing, &theme);
+        assert_ne!(
+            scroll_test_pixel(&data0, stride0 as usize, 198, 40),
+            rgb(theme.background)
+        );
+
+        let (data, stride) = scroll_test_paint_with_options(
+            &overflowing,
+            &theme,
+            EditorPaintOptions {
+                suppress_v_scrollbar: true,
+            },
+        );
+        let px = scroll_test_pixel(&data, stride as usize, 198, 40);
+        assert_eq!(
+            px,
+            rgb(theme.background),
+            "suppress_v_scrollbar should stop the vertical scrollbar from painting even \
+             though total_lines overflows the viewport"
         );
     }
 

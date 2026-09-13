@@ -203,3 +203,62 @@ fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
     // Registering nothing leaves the bar exactly as built.
     assert_eq!(ToolbarIcons::new().apply(&bar, true), bar);
 }
+
+/// `Editor`'s exhaustive struct literal, transcribed from vimcode's
+/// `render.rs::to_q_editor()` — field-for-field, and pointedly with no
+/// `..base`:
+///
+/// ```text
+/// $ grep -n 'Editor {$' ~/src/vimcode/src/render.rs
+/// 19236:    quadraui::Editor {
+/// ```
+///
+/// (`~/src/coord-tui/src` has zero hits — it doesn't construct `Editor`
+/// at all.) #968 added scrollbar-suppression as
+/// `quadraui::EditorPaintOptions` + `gtk::draw_editor_with_options`
+/// *instead of* a new field directly on `Editor`, specifically to keep
+/// this literal (and the one real consumer building it) compiling
+/// untouched — see that primitive's module doc and
+/// `docs/PRIMITIVE_RULES.md` rule 8. If this test stops compiling, a
+/// future change grew `Editor`'s field list the breaking way instead.
+#[test]
+fn editor_exhaustive_struct_literal_still_compiles() {
+    use quadraui::{Editor, EditorCursor, EditorCursorPos, EditorCursorShape, Rect, WidgetId};
+    use std::collections::{HashMap, HashSet};
+
+    let ed = Editor {
+        id: WidgetId::new("editor:0"),
+        rect: Rect::new(0.0, 0.0, 80.0, 24.0),
+        lines: Vec::new(),
+        cursor: Some(EditorCursor {
+            pos: EditorCursorPos {
+                view_line: 0,
+                col: 0,
+            },
+            shape: EditorCursorShape::Bar,
+        }),
+        extra_cursors: Vec::new(),
+        selection: None,
+        extra_selections: Vec::new(),
+        yank_highlight: None,
+        scroll_top: 0,
+        scroll_left: 0,
+        total_lines: 0,
+        max_col: 0,
+        gutter_char_width: 4,
+        is_active: true,
+        show_active_bg: false,
+        has_git_diff: false,
+        has_breakpoints: false,
+        diagnostic_gutter: HashMap::new(),
+        code_action_lines: HashSet::new(),
+        bracket_match_positions: Vec::new(),
+        active_indent_col: None,
+        tabstop: 4,
+        cursorline: true,
+        lightbulb_glyph: '!',
+    };
+
+    assert!(ed.is_active);
+    assert_eq!(ed.tabstop, 4);
+}
