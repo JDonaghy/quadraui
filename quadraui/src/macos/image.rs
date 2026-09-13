@@ -28,6 +28,17 @@
 //! every other clipping rasteriser in `macos::` uses — rather than
 //! hand-rolling a third clip helper.
 //!
+//! `draw_image` also counter-flips the CTM locally around the
+//! `CGContextDrawImage` call, for the same reason
+//! [`super::text::draw_text_impl`] counter-flips the text matrix before
+//! `CTLineDraw`: this whole backend paints through a permanently flipped,
+//! top-left-origin, y-down context (`QuadraView`'s translate +
+//! `CGContextScaleCTM(1, -1)`, documented on
+//! `headless::BitmapSurface::new`), and `CGContextDrawImage` has no
+//! matrix-setter equivalent to compensate for that the way text does —
+//! the caller has to re-flip the CTM locally around the draw itself. See
+//! the comment on the call site for the exact idiom.
+//!
 //! # Why raw FFI for `CGImageSource`
 //!
 //! Unlike `CGImage`/`CGDataProvider` (both wrapped by the `core-graphics`
@@ -48,6 +59,7 @@ use std::sync::Arc;
 
 use core_foundation::base::{CFRelease, CFTypeRef};
 use core_foundation::dictionary::CFDictionaryRef;
+use core_graphics::base::CGFloat;
 use core_graphics::data_provider::CGDataProvider;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::image::CGImage;
@@ -127,15 +139,35 @@ pub unsafe fn draw_image(ctx: CGContextRef, rect: Rect, image: &Image) -> ImageP
     );
 
     let dest = image.layout(rect).bounds;
-    let dest_rect = CGRect::new(
-        &CGPoint::new(dest.x as f64, dest.y as f64),
-        &CGSize::new(dest.width as f64, dest.height as f64),
-    );
 
     // SAFETY: `ctx` is valid per this function's own contract; `cg_image`
     // is a live, owned `CGImage` for the duration of this call.
     ns_push_clip(ctx, rect);
-    CGContextDrawImage(ctx, dest_rect, cg_image.as_ptr());
+
+    // Counter-flip around the draw, the same idiom
+    // `macos::text::draw_text_impl` uses for `CTLineDraw` and for the
+    // identical reason: `CGContextDrawImage` maps a `CGImage`'s row 0
+    // (the visual top of the decoded raster) to the *bottom* of the
+    // destination rect whenever the current user space is flipped —
+    // i.e. exactly the "isFlipped == YES" case `QuadraView` sets up via
+    // the permanent translate + `CGContextScaleCTM(1, -1)` documented on
+    // `headless::BitmapSurface::new` (top-left-origin, y-down, to match
+    // this whole backend's coordinate convention). Left uncorrected,
+    // every macOS-painted image would come out upside down relative to
+    // GTK/Win-GUI's output for the same source. Undo it locally: move
+    // the origin to the bottom of `dest` (in the current, already-once-
+    // flipped space) and scale y by -1, then draw into a zero-origin
+    // rect of the same size — `ns_pop_clip`'s `CGContextRestoreGState`
+    // below restores the CTM along with the clip, so this doesn't need
+    // its own save/restore pair.
+    CGContextTranslateCTM(ctx, dest.x as f64, (dest.y + dest.height) as f64);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    let local_rect = CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(dest.width as f64, dest.height as f64),
+    );
+    CGContextDrawImage(ctx, local_rect, cg_image.as_ptr());
+
     ns_pop_clip(ctx);
 
     ImagePaintResult::Painted
@@ -162,9 +194,15 @@ extern "C" {
 
 // Linked transitively via `core-graphics` — same pattern every other
 // `macos::*` rasteriser's raw CG FFI block uses (see e.g.
-// `macos::minimap`'s own `extern "C"` block).
+// `macos::minimap`'s own `extern "C"` block). `CGContextTranslateCTM`/
+// `CGContextScaleCTM` implement the counter-flip documented on
+// `draw_image` above — the same pair `headless::BitmapSurface::new` and
+// `macos::text::draw_text_impl`'s callers use for their own CTM/text-
+// matrix flips.
 extern "C" {
     fn CGContextDrawImage(c: CGContextRef, rect: CGRect, image: CGImageRef);
+    fn CGContextTranslateCTM(c: CGContextRef, tx: CGFloat, ty: CGFloat);
+    fn CGContextScaleCTM(c: CGContextRef, sx: CGFloat, sy: CGFloat);
 }
 
 #[cfg(test)]
@@ -187,6 +225,54 @@ mod tests {
         // (ImageIO) must parse this from scratch, so this is not a
         // stand-in for a "loads bytes" no-op — it exercises the actual
         // decode path.
+        //
+        // `clippy::same_item_push` misreads the filter-byte push as a
+        // "replace this loop with vec![0; N]" candidate — the loop body
+        // also appends the row's actual pixel bytes right after it, so
+        // that rewrite doesn't apply.
+        #[allow(clippy::same_item_push)]
+        let raw = {
+            let mut raw = Vec::new();
+            for _ in 0..4 {
+                raw.push(0u8);
+                for _ in 0..4 {
+                    raw.extend_from_slice(&[0xff, 0x00, 0x00]);
+                }
+            }
+            raw
+        };
+        png_from_rows(&raw)
+    }
+
+    /// A 4x4 PNG that is deliberately *not* symmetric top-to-bottom: rows
+    /// 0-1 (the top of the raster, in file order) are opaque red, rows
+    /// 2-3 (the bottom) are opaque blue. `tiny_png_bytes`'s uniform
+    /// solid colour can't distinguish right-side-up from upside-down —
+    /// swapping the two halves would still pass every assertion built on
+    /// it. This fixture exists so
+    /// [`draw_image_orientation_matches_raster_row_order`] actually fails
+    /// if `draw_image`'s counter-flip (see the module docs) is missing
+    /// or backwards.
+    fn two_tone_png_bytes() -> Vec<u8> {
+        let mut raw = Vec::new();
+        for row in 0..4u32 {
+            raw.push(0u8); // filter byte: None
+            let colour: [u8; 3] = if row < 2 {
+                [0xff, 0x00, 0x00] // top half: red
+            } else {
+                [0x00, 0x00, 0xff] // bottom half: blue
+            };
+            for _ in 0..4 {
+                raw.extend_from_slice(&colour);
+            }
+        }
+        png_from_rows(&raw)
+    }
+
+    /// Wrap `raw` (already-filtered 4x4 RGB scanline bytes, 8-bit,
+    /// no interlace) in a minimal PNG container — the shared plumbing
+    /// behind [`tiny_png_bytes`] and [`two_tone_png_bytes`].
+    fn png_from_rows(raw: &[u8]) -> Vec<u8> {
         let mut png = Vec::new();
         png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
 
@@ -206,24 +292,9 @@ mod tests {
         ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
         chunk(&mut png, b"IHDR", &ihdr);
 
-        // IDAT: 4 scanlines, each a filter byte (0 = None) + 4 RGB pixels
-        // of opaque red, zlib-wrapped with stored (uncompressed) blocks.
-        // `clippy::same_item_push` misreads the filter-byte push as a
-        // "replace this loop with vec![0; N]" candidate — the loop body
-        // also appends the row's actual pixel bytes right after it, so
-        // that rewrite doesn't apply.
-        #[allow(clippy::same_item_push)]
-        let raw = {
-            let mut raw = Vec::new();
-            for _ in 0..4 {
-                raw.push(0u8);
-                for _ in 0..4 {
-                    raw.extend_from_slice(&[0xff, 0x00, 0x00]);
-                }
-            }
-            raw
-        };
-        let idat = zlib_store(&raw);
+        // IDAT: `raw`'s scanlines, zlib-wrapped with a stored
+        // (uncompressed) block.
+        let idat = zlib_store(raw);
         chunk(&mut png, b"IDAT", &idat);
 
         chunk(&mut png, b"IEND", &[]);
@@ -383,6 +454,48 @@ mod tests {
             (r, g, b),
             (255, 0, 0),
             "expected the image inside the clip rect"
+        );
+    }
+
+    /// Catches the orientation bug flagged in review of #962: without the
+    /// counter-flip documented on `draw_image` (mirroring
+    /// `macos::text::draw_text_impl`'s text-matrix flip),
+    /// `CGContextDrawImage` paints upside down inside this backend's
+    /// permanently-flipped, top-left-origin context. `tiny_png_bytes`'s
+    /// uniform fill can't detect that — a mirrored image is pixel-for-
+    /// pixel identical to the original along any horizontal scanline.
+    /// `two_tone_png_bytes` (red top half, blue bottom half in raster
+    /// row order) fails this assertion if the flip is missing or
+    /// backwards.
+    #[test]
+    fn draw_image_orientation_matches_raster_row_order() {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+
+        let img = image(ImageSource::Bytes(two_tone_png_bytes()), ImageFit::Fill);
+        let rect = Rect::new(20.0, 20.0, 60.0, 60.0);
+
+        // SAFETY: surface context valid for this call.
+        let result = unsafe { draw_image(surface.context_ptr(), rect, &img) };
+        assert_eq!(result, ImagePaintResult::Painted);
+
+        // Near the top of the target rect: the raster's top half (red).
+        let (r, g, b, _) = surface.pixel(50, 25);
+        assert_eq!(
+            (r, g, b),
+            (255, 0, 0),
+            "top of the painted rect should show the raster's top-half colour (red) — \
+             a mirrored/upside-down paint would show blue here instead"
+        );
+
+        // Near the bottom of the target rect: the raster's bottom half
+        // (blue).
+        let (r, g, b, _) = surface.pixel(50, 75);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 255),
+            "bottom of the painted rect should show the raster's bottom-half colour (blue) — \
+             a mirrored/upside-down paint would show red here instead"
         );
     }
 }
