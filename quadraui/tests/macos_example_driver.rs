@@ -38,6 +38,11 @@ use minimap_app::MinimapApp;
 mod image_app;
 use image_app::ImageApp;
 
+#[path = "../examples/common/tab_icons_demo.rs"]
+#[allow(dead_code)] // `LABELS`/`TOGGLE_KEY` are read by some tests, not all
+mod tab_icons_demo;
+use tab_icons_demo::TabIconsDemo;
+
 // Point canvas — big enough for five pipeline stage boxes + arrow
 // connectors + the bottom status bar at macOS's native (point, not cell)
 // scale. Same size `tests/cross_backend_parity.rs` uses for its `MacDriver`
@@ -459,4 +464,141 @@ fn image_app_logo_paints_nothing_but_menu_click_routing_still_works() {
          icon-narrowed rect and update the status bar: {:?}",
         driver.painted_texts()
     );
+}
+
+// ─── TabIconsDemo: the #926 CoreText icon-width pass ───────────────────────
+//
+// The macOS half of #620. Before #926 `MacBackend::draw_tab_bar_icons`
+// dropped the sidecar entirely (behind a `debug_assert!` that killed the
+// host process on the first decorated frame, #931), so every assertion
+// below would have failed — the glyph would never paint and the labels
+// would never shift. The pixel-level paint↔hit round trip lives in
+// `src/macos/tab_bar.rs`'s `#[cfg(test)]` block; this file covers the same
+// behaviour through the example an operator actually runs.
+
+const TAB_ICONS_W: u32 = 640;
+const TAB_ICONS_H: u32 = 120;
+
+/// Mirrors the private `macos::tab_bar::TAB_ICON_GAP` (and GTK's
+/// `TAB_ICON_GAP`, deliberately the same value) — duplicated here on
+/// purpose so a backend that quietly changes its gap has to come and
+/// change this cross-backend parity number too.
+const TAB_ICON_GAP_PT: f32 = 6.0;
+
+#[test]
+fn tab_icons_demo_paints_the_icon_glyph_as_its_own_run() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    // One `draw_text` run per glyph, painted in `TabIcon::color` — the
+    // sidecar reaching CoreText at all is what #926 added.
+    for glyph in ["R", "T", "M"] {
+        assert!(
+            driver.painted_texts().contains(&glyph),
+            "icon glyph {glyph:?} should paint as its own text run: {:?}",
+            driver.painted_texts()
+        );
+    }
+
+    // …and it must stop painting when the sidecar is emptied, which is
+    // what proves the glyphs come from the sidecar rather than a label.
+    driver.type_char('i');
+    assert!(
+        driver.screen_contains("icons: off"),
+        "the toggle should be reflected in the hint bar: {:?}",
+        driver.painted_texts()
+    );
+    for glyph in ["R", "T", "M"] {
+        assert!(
+            !driver.painted_texts().contains(&glyph),
+            "with an empty sidecar no icon run should paint: {:?}",
+            driver.painted_texts()
+        );
+    }
+}
+
+#[test]
+fn tab_icons_demo_toggling_the_sidecar_shifts_labels_by_the_reservation() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    let with_icons = driver
+        .find_bounds("main.rs")
+        .expect("label should paint with icons on");
+    let glyph = driver
+        .find_bounds("R")
+        .expect("tab 0's icon glyph should paint ahead of its label");
+    assert!(
+        glyph.x < with_icons.x,
+        "the glyph paints at the tab's leading edge, before the label \
+         (glyph x {} vs label x {})",
+        glyph.x,
+        with_icons.x,
+    );
+
+    driver.type_char('i');
+    let without_icons = driver
+        .find_bounds("main.rs")
+        .expect("label should still paint with icons off");
+
+    // The reservation is exactly the CoreText-measured glyph width plus
+    // the gap — not a guessed constant, and not zero.
+    let shift = with_icons.x - without_icons.x;
+    assert!(
+        (shift - (glyph.width + TAB_ICON_GAP_PT)).abs() < 0.01,
+        "an empty sidecar must give back exactly the glyph width \
+         ({}) plus the {TAB_ICON_GAP_PT}pt gap, but the label moved {shift}",
+        glyph.width,
+    );
+}
+
+/// The guarantee #926 exists for: a click on the *trailing* end of a
+/// decorated tab — past where an icon-blind layout would have put that
+/// tab's slot — still routes to the tab the user saw. Three upstream icon
+/// reservations have pushed tab 2's slot right, so a rasteriser that
+/// painted glyphs without widening the slots would leave tab 0 active.
+#[test]
+fn tab_icons_demo_click_past_a_decorated_tab_label_activates_that_tab() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    let main = driver
+        .find_bounds("main.rs")
+        .expect("tab 0's label should paint");
+    let readme = driver
+        .find_bounds("README.md")
+        .expect("tab 2's label should paint");
+
+    // Sample each tab's background in the bare gap between its icon glyph
+    // and its label — `TAB_ICON_GAP_PT` wide, so no glyph ink lands there
+    // and the pixel is the tab's fill colour.
+    let bg_at = |d: &MacDriver<TabIconsDemo>, label: &quadraui::Rect| {
+        d.pixel(
+            (label.x - TAB_ICON_GAP_PT / 2.0) as u32,
+            (label.y + label.height / 2.0) as u32,
+        )
+    };
+    let main_before = bg_at(&driver, &main);
+    let readme_before = bg_at(&driver, &readme);
+    assert_ne!(
+        main_before, readme_before,
+        "tab 0 starts active and tab 2 inactive, so their fills differ",
+    );
+
+    // Just past the label's trailing edge — the close-glyph end of tab 2's
+    // slot, derived from painted geometry rather than hardcoded.
+    driver.click(
+        readme.x + readme.width + 4.0,
+        readme.y + readme.height / 2.0,
+    );
+
+    let main_after = bg_at(&driver, &main);
+    let readme_after = bg_at(&driver, &readme);
+    assert_eq!(
+        readme_after, main_before,
+        "clicking inside tab 2's painted slot should make it active",
+    );
+    assert_eq!(main_after, readme_before, "and tab 0 should go inactive");
+}
+
+#[test]
+fn tab_icons_demo_pressing_q_exits() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should make the demo exit");
 }

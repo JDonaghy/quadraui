@@ -896,6 +896,13 @@ name = "gtk_tab_icons"
 path = "examples/gtk_tab_icons.rs"
 required-features = ["gtk"]
 
+# #926 closed the macOS half of #620 (CoreText icon-width pass), so the
+# shared `TabIconsDemo` gets its third runner.
+[[example]]
+name = "macos_tab_icons"
+path = "examples/macos_tab_icons.rs"
+required-features = ["macos"]
+
 # #631 — active-tab bracket framing via `TabChrome::active_frame`, painted
 # through `Backend::draw_tab_bar_with_chrome`. Paired runners over one
 # shared `AppLogic`, per CLAUDE.md's examples-are-paired-by-shape rule.

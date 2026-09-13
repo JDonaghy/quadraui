@@ -860,41 +860,6 @@ impl crate::runtime::PreprocessBackend for MacBackend {
 
 impl crate::backend::sealed::Sealed for MacBackend {}
 
-/// #931: report the #620 icon gap once, loudly, without aborting.
-///
-/// Per-tab icon glyphs (#620) have no CoreText icon-width pass in
-/// `mac_tab_bar_layout` yet, so the four `draw_tab_bar_icons*` /
-/// `*tab_bar_layout_icons` methods below forward to their icon-less
-/// twins whenever an icon sidecar is non-empty. That gap used to be
-/// guarded by a `debug_assert!`, which — despite its own message
-/// promising "tabs will paint without their icons" — hard-aborted the
-/// process on the very first frame that painted a tab with an icon
-/// (`use_nerd_fonts` defaults to `true`, so this was every debug build
-/// by default), and did so by unwinding across the AppKit `drawRect:`
-/// frame, which AppKit cannot catch: the process died with
-/// `libc++abi: terminating due to uncaught foreign exception` instead of
-/// a legible Rust panic.
-///
-/// Routed through [`crate::diagnostics::emit`] rather than `eprintln!`
-/// directly — #619's crate-wide `print_stderr` deny exists precisely so
-/// library code never writes into a host's live terminal (vimcode's TUI
-/// runs in raw mode on the alternate screen; a stray print lands as raw
-/// bytes in its cell grid). A host that wants to see this installs a
-/// sink via `diagnostics::set_sink`; one that doesn't gets silence, same
-/// as every other diagnostic this crate emits. `std::sync::Once`-gated
-/// so a tab bar repainted every frame reports the gap once per process,
-/// not once per frame — mirrors `desktop::report_caught_panic_once`'s
-/// dedup shape (#922).
-fn warn_tab_icons_unimplemented_once() {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    WARNED.call_once(|| {
-        crate::diagnostics::emit(
-            "quadraui: MacBackend TabIcon glyphs are not implemented yet \
-             (#620 follow-up); tabs will paint/lay out without their icons",
-        );
-    });
-}
-
 impl Backend for MacBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -1592,6 +1557,28 @@ impl Backend for MacBackend {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits {
+        // Icon-less spelling of `draw_tab_bar_icons` — an empty sidecar
+        // reproduces this bar pixel for pixel (#926), so the two share
+        // one implementation rather than two paint paths that can drift.
+        self.draw_tab_bar_icons(rect, bar, &[], hovered_close_tab)
+    }
+    /// Per-tab icon glyphs (#620), implemented on macOS as of #926:
+    /// [`super::tab_bar::mac_tab_icon_extras`] measures each glyph with
+    /// CoreText and every geometry consumer reserves that width, so a
+    /// decorated tab's label and close-button hit box shift together and
+    /// a click on the painted × still closes the tab. Before #926 this
+    /// forwarded to the icon-less rasteriser (dropping the glyphs) behind
+    /// a `debug_assert!` that killed the host process on its first
+    /// decorated frame (#931 replaced the assert; this closes the gap it
+    /// was guarding).
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn draw_tab_bar_icons(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarHits {
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
@@ -1605,7 +1592,7 @@ impl Backend for MacBackend {
         let line_height = self.current_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope.
         unsafe {
-            super::tab_bar::draw_tab_bar(
+            super::tab_bar::draw_tab_bar_icons(
                 ctx,
                 font,
                 rect.width as f64,
@@ -1615,42 +1602,40 @@ impl Backend for MacBackend {
                 bar,
                 &theme,
                 hovered_close_tab,
+                icons,
             )
         }
-    }
-    /// Per-tab icon glyphs (#620) are **not implemented on macOS yet** —
-    /// `mac_tab_bar_layout` has no CoreText icon-width pass, and shipping
-    /// a paint-only version would put every close-button hit box left of
-    /// the glyph it draws. This forwards to the icon-less rasteriser so
-    /// a macOS app that passes icons still paints correct (if
-    /// undecorated) tabs, and fires a one-shot warning (#931) so the gap
-    /// is loud in development rather than a silently-missing glyph —
-    /// without aborting the process the way a `debug_assert!` used to.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn draw_tab_bar_icons(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarHits {
-        if !icons.iter().all(Option::is_none) {
-            warn_tab_icons_unimplemented_once();
-        }
-        self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
     /// Issue #919's `TabBarLayout`-returning counterpart to
     /// [`Self::draw_tab_bar`] above. Paints exactly as that method does
     /// (discarding the deprecated `TabBarHits` it returns), then
     /// separately resolves the real `TabBarLayout` via
-    /// [`super::tab_bar::mac_tab_bar_native_layout`] — see that
+    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] — see that
     /// function's doc for why macOS can't share one measurement path
     /// between its `TabBarHits` and `TabBarLayout` accessors the way
-    /// TUI/GTK/Win do.
+    /// TUI/GTK/Win do. Both halves happen inside
+    /// [`Self::draw_tab_bar_icons_layout`], which this forwards to with
+    /// an empty sidecar (#926).
     fn draw_tab_bar_layout(
         &mut self,
         rect: Rect,
         bar: &TabBar,
+        hovered_close_tab: Option<usize>,
+    ) -> TabBarLayout {
+        // Icon-less spelling of `draw_tab_bar_icons_layout` (#926) — see
+        // `draw_tab_bar` above for why the empty sidecar shares one path.
+        self.draw_tab_bar_icons_layout(rect, bar, &[], hovered_close_tab)
+    }
+    /// `TabBarLayout`-returning counterpart to
+    /// [`Self::draw_tab_bar_icons`] — same CoreText icon-width pass
+    /// (#926), applied to both the paint and the separately-computed
+    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] below so the
+    /// returned layout describes the pixels this call just painted.
+    fn draw_tab_bar_icons_layout(
+        &mut self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout {
         let ctx = self.current_cg();
@@ -1667,7 +1652,7 @@ impl Backend for MacBackend {
         // SAFETY: `ctx` is non-null inside the frame scope.
         #[allow(deprecated)] // discarded `TabBarHits` — issue #823
         unsafe {
-            let _ = super::tab_bar::draw_tab_bar(
+            let _ = super::tab_bar::draw_tab_bar_icons(
                 ctx,
                 font,
                 rect.width as f64,
@@ -1677,23 +1662,16 @@ impl Backend for MacBackend {
                 bar,
                 &theme,
                 hovered_close_tab,
+                icons,
             );
         }
-        super::tab_bar::mac_tab_bar_native_layout(font, rect.width as f64, rect.height as f64, bar)
-    }
-    /// See [`Self::draw_tab_bar_icons`]'s doc — same icon gap, same
-    /// icon-less forward (#620 follow-up).
-    fn draw_tab_bar_icons_layout(
-        &mut self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-        hovered_close_tab: Option<usize>,
-    ) -> TabBarLayout {
-        if !icons.iter().all(Option::is_none) {
-            warn_tab_icons_unimplemented_once();
-        }
-        self.draw_tab_bar_layout(rect, bar, hovered_close_tab)
+        super::tab_bar::mac_tab_bar_native_layout_icons(
+            font,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            icons,
+        )
     }
     fn draw_activity_bar(
         &mut self,
@@ -1800,11 +1778,28 @@ impl Backend for MacBackend {
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits {
         // No-paint twin of `draw_tab_bar`, routed through the same
-        // `mac_tab_bar_layout`. See that function's docs for why macOS
-        // returns bar-relative (not absolute) x, and why closing that
-        // #552 gap is a paint change left to a follow-up.
+        // `mac_tab_bar_layout_icons`. See `mac_tab_bar_layout`'s docs for
+        // why macOS returns bar-relative (not absolute) x, and why
+        // closing that #552 gap is a paint change left to a follow-up.
+        self.tab_bar_layout_icons(rect, bar, &[])
+    }
+
+    /// No-paint twin of [`Self::draw_tab_bar_icons`], routed through the
+    /// same [`super::tab_bar::mac_tab_bar_layout_icons`] with the same
+    /// sidecar — so the load-bearing macOS invariant (`tab_bar_layout*`
+    /// returns exactly what `draw_tab_bar*` painted) holds for decorated
+    /// tabs too, not just icon-less ones (#926).
+    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
+    fn tab_bar_layout_icons(
+        &self,
+        rect: Rect,
+        bar: &TabBar,
+        icons: &[Option<crate::TabIcon>],
+    ) -> TabBarHits {
         match self.current_font.as_ref() {
-            Some(font) => super::tab_bar::mac_tab_bar_layout(font, rect.width as f64, bar),
+            Some(font) => {
+                super::tab_bar::mac_tab_bar_layout_icons(font, rect.width as f64, bar, icons)
+            }
             None => TabBarHits {
                 slot_positions: vec![(0.0, 0.0); bar.tabs.len()],
                 close_bounds: vec![None; bar.tabs.len()],
@@ -1815,36 +1810,34 @@ impl Backend for MacBackend {
         }
     }
 
-    /// No-paint twin of [`Self::draw_tab_bar_icons`] — and, like it, an
-    /// icon-less forward until macOS grows a CoreText icon-width pass
-    /// (#620 follow-up). Keeping both halves icon-blind is what preserves
-    /// the load-bearing macOS invariant that `tab_bar_layout` returns
-    /// exactly what `draw_tab_bar` painted.
-    #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-    fn tab_bar_layout_icons(
+    /// Issue #919's `TabBarLayout`-returning counterpart to
+    /// [`Self::tab_bar_layout`] above, routed through
+    /// [`super::tab_bar::mac_tab_bar_native_layout_icons`] (via
+    /// [`Self::resolve_tab_bar_layout_icons`] with an empty sidecar,
+    /// #926) — see that function's doc for why macOS can't share one
+    /// measurement path between its `TabBarHits` and `TabBarLayout`
+    /// accessors.
+    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
+        self.resolve_tab_bar_layout_icons(rect, bar, &[])
+    }
+
+    /// No-paint twin of [`Self::draw_tab_bar_icons_layout`], routed
+    /// through [`super::tab_bar::mac_tab_bar_native_layout_icons`] with
+    /// the same sidecar (#926) — so a consumer that measures with this
+    /// and paints with `draw_tab_bar_icons` gets one agreed geometry.
+    fn resolve_tab_bar_layout_icons(
         &self,
         rect: Rect,
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
-    ) -> TabBarHits {
-        if !icons.iter().all(Option::is_none) {
-            warn_tab_icons_unimplemented_once();
-        }
-        self.tab_bar_layout(rect, bar)
-    }
-
-    /// Issue #919's `TabBarLayout`-returning counterpart to
-    /// [`Self::tab_bar_layout`] above, routed through
-    /// [`super::tab_bar::mac_tab_bar_native_layout`] — see that
-    /// function's doc for why macOS can't share one measurement path
-    /// between its `TabBarHits` and `TabBarLayout` accessors.
-    fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout {
+    ) -> TabBarLayout {
         match self.current_font.as_ref() {
-            Some(font) => super::tab_bar::mac_tab_bar_native_layout(
+            Some(font) => super::tab_bar::mac_tab_bar_native_layout_icons(
                 font,
                 rect.width as f64,
                 rect.height as f64,
                 bar,
+                icons,
             ),
             None => TabBarLayout {
                 bar_width: rect.width,
@@ -1857,21 +1850,6 @@ impl Backend for MacBackend {
                 resolved_scroll_offset: bar.scroll_offset,
             },
         }
-    }
-
-    /// No-paint twin of [`Self::draw_tab_bar_icons_layout`] — and, like
-    /// [`Self::tab_bar_layout_icons`], an icon-less forward until macOS
-    /// grows a CoreText icon-width pass (#620 follow-up).
-    fn resolve_tab_bar_layout_icons(
-        &self,
-        rect: Rect,
-        bar: &TabBar,
-        icons: &[Option<crate::TabIcon>],
-    ) -> TabBarLayout {
-        if !icons.iter().all(Option::is_none) {
-            warn_tab_icons_unimplemented_once();
-        }
-        self.resolve_tab_bar_layout(rect, bar)
     }
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
