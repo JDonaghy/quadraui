@@ -20,6 +20,12 @@
 //! AppKit window). `config.title` now reaches the runner via
 //! [`super::run::RunConfig`], mirroring `gtk::shell_runner::run_with_shell`
 //! / `win::shell_runner::run_with_shell`.
+//!
+//! #947: [`ShellConfig::client_side_titlebar`] reaches the runner the same
+//! way — copied onto [`RunConfig`] before this module's `config` is moved
+//! into [`build_shell_adapter`], since `RunConfig` (not `ShellConfig`) is
+//! what [`super::run::run_with`]'s window-creation call site actually
+//! consults.
 
 use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
@@ -33,7 +39,8 @@ pub fn run_with_shell<A: ShellApp + 'static>(
     app: A,
     config: ShellConfig,
 ) -> std::process::ExitCode {
-    let run_config = RunConfig::new(config.title.clone());
+    let run_config =
+        RunConfig::new(config.title.clone()).with_client_side_titlebar(config.client_side_titlebar);
     let adapter = build_shell_adapter(app, config);
     super::run::run_with(adapter, run_config)
 }

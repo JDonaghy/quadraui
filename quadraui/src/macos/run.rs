@@ -50,7 +50,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
     NSDragOperation, NSDraggingInfo, NSEvent, NSGraphicsContext, NSPasteboardTypeFileURL, NSView,
     NSViewFrameDidChangeNotification, NSWindow, NSWindowDidChangeBackingPropertiesNotification,
-    NSWindowStyleMask,
+    NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
@@ -1086,6 +1086,11 @@ impl QuadraAppDelegate {
 pub struct RunConfig {
     /// Window title shown by the titlebar, Mission Control, and the Dock.
     pub title: String,
+    /// Mirrors [`crate::shell::ShellConfig::client_side_titlebar`] (#947)
+    /// — `false` (the default) reproduces the exact style mask this
+    /// module hardcoded before #947. See [`window_style_mask`] for what
+    /// setting it changes.
+    pub client_side_titlebar: bool,
 }
 
 impl RunConfig {
@@ -1093,7 +1098,16 @@ impl RunConfig {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            client_side_titlebar: false,
         }
+    }
+
+    /// Opt into the client-side-titlebar style mask (#947) — see
+    /// [`crate::shell::ShellConfig::client_side_titlebar`] for the
+    /// mechanism and why the native traffic lights stay put on macOS.
+    pub fn with_client_side_titlebar(mut self, enabled: bool) -> Self {
+        self.client_side_titlebar = enabled;
+        self
     }
 }
 
@@ -1104,6 +1118,7 @@ impl Default for RunConfig {
     fn default() -> Self {
         Self {
             title: "quadraui (macos)".to_string(),
+            client_side_titlebar: false,
         }
     }
 }
@@ -1117,6 +1132,37 @@ impl Default for RunConfig {
 /// `mac_cursor_kind` / `mac_cursor_for_shape` uses for the same reason.
 fn window_title(config: &RunConfig) -> String {
     config.title.clone()
+}
+
+/// The `NSWindow` style mask [`run_with`]'s window-creation call site
+/// applies — pulled out for the same off-main-thread testability reason as
+/// [`window_title`] (quadraui#933/#947): `NSWindowStyleMask` is a plain
+/// `NSUInteger` bitflags wrapper (see its `objc2_app_kit` definition), so
+/// comparing bit patterns needs no live `NSApplication`, unlike window
+/// *construction* itself.
+///
+/// `config.client_side_titlebar` unset (the default) reproduces the exact
+/// mask this call site hardcoded before #947 — a regression guard for
+/// every existing consumer. Set, it additionally carries
+/// `FullSizeContentView`: the content view then extends under the full
+/// titlebar region while the native traffic lights float on top of it, per
+/// #947's "keep the native controls, don't emulate GTK's undecorated
+/// model" design. [`run_with`]'s call site pairs this with
+/// `setTitlebarAppearsTransparent(true)` + `NSWindowTitleVisibility::Hidden`
+/// to complete the look — those two aren't part of the style mask itself,
+/// so they can't be covered by this pure function; they're exercised by
+/// the same operator-run smoke tier as the rest of live AppKit window
+/// creation (see [`window_title`]'s doc).
+fn window_style_mask(config: &RunConfig) -> NSWindowStyleMask {
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Resizable
+        | NSWindowStyleMask::Miniaturizable;
+    if config.client_side_titlebar {
+        style | NSWindowStyleMask::FullSizeContentView
+    } else {
+        style
+    }
 }
 
 /// Open an AppKit window, install a [`MacBackend`], and drive `app`
@@ -1261,10 +1307,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     ns_app.setDelegate(Some(delegate_proto));
 
     let content_rect = NSRect::new(NSPoint::new(120.0, 120.0), NSSize::new(800.0, 600.0));
-    let style = NSWindowStyleMask::Titled
-        | NSWindowStyleMask::Closable
-        | NSWindowStyleMask::Resizable
-        | NSWindowStyleMask::Miniaturizable;
+    let style = window_style_mask(&config);
     let window: Retained<NSWindow> = unsafe {
         msg_send![
             mtm.alloc::<NSWindow>(),
@@ -1275,6 +1318,18 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         ]
     };
     window.setTitle(&NSString::from_str(&window_title(&config)));
+    // #947: client-side titlebar — keep the native traffic lights (they
+    // come along with `NSWindowStyleMask::Titled`, which
+    // `window_style_mask` still sets) but hide the native title text and
+    // stop the titlebar drawing an opaque background, so an app-painted
+    // band in `AppShellLayout::title_bar_bounds` shows through instead of
+    // being double-drawn under it. Must run after `FullSizeContentView`
+    // is already in `style` above — `setTitlebarAppearsTransparent` only
+    // has an effect when that mask bit is set (see its doc).
+    if config.client_side_titlebar {
+        window.setTitlebarAppearsTransparent(true);
+        window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+    }
 
     // #498: stash the window handle so `Backend::begin_window_drag` /
     // `Backend::toggle_window_maximize` / `Backend::set_cursor` have
@@ -1401,11 +1456,14 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
 #[allow(dead_code)]
 fn _unused_imports(_p: *mut c_void) {}
 
-/// Coverage for [`RunConfig`] / [`window_title`] (quadraui#933) —
-/// display-free, since both are plain Rust with no AppKit dependency.
-/// `run_with`'s actual wiring (title → `NSWindow::setTitle`) can't be
-/// exercised without a live main-thread `NSApplication`; that's covered by
-/// the operator-run smoke tier instead, same posture as
+/// Coverage for [`RunConfig`] / [`window_title`] / [`window_style_mask`]
+/// (quadraui#933, #947) — display-free, since all three are plain Rust
+/// (or, for `window_style_mask`, plain-Rust-comparable `NSWindowStyleMask`
+/// bit patterns) with no live-AppKit dependency. `run_with`'s actual
+/// wiring (title → `NSWindow::setTitle`, and the
+/// `setTitlebarAppearsTransparent`/`setTitleVisibility` pair #947 added)
+/// can't be exercised without a live main-thread `NSApplication`; that's
+/// covered by the operator-run smoke tier instead, same posture as
 /// `gtk::run::run_config_tests` / `win::run::tests`.
 #[cfg(test)]
 mod run_config_tests {
@@ -1421,6 +1479,21 @@ mod run_config_tests {
     fn new_accepts_owned_and_borrowed_strings() {
         assert_eq!(RunConfig::new("borrowed").title, "borrowed");
         assert_eq!(RunConfig::new(String::from("owned")).title, "owned");
+    }
+
+    #[test]
+    fn new_defaults_client_side_titlebar_to_false() {
+        // #947: every pre-existing `RunConfig::new(title)` call site
+        // (including `shell_runner::run_with_shell` before it started
+        // threading `ShellConfig::client_side_titlebar` through) must keep
+        // getting today's style mask, not silently opt into the new one.
+        assert!(!RunConfig::new("kubeui").client_side_titlebar);
+    }
+
+    #[test]
+    fn with_client_side_titlebar_sets_the_flag() {
+        let config = RunConfig::new("kubeui").with_client_side_titlebar(true);
+        assert!(config.client_side_titlebar);
     }
 
     #[test]
@@ -1449,6 +1522,39 @@ mod run_config_tests {
             "quadraui (macos)",
             "a custom RunConfig title must not fall back to the generic default"
         );
+    }
+
+    /// #947's regression guard: with `client_side_titlebar` unset, the
+    /// style mask [`window_style_mask`] returns must stay byte-identical
+    /// to what `run_with`'s call site hardcoded before this issue —
+    /// exactly `Titled | Closable | Resizable | Miniaturizable`, no
+    /// `FullSizeContentView` bit.
+    #[test]
+    fn style_mask_unset_matches_pre_947_hardcoded_mask() {
+        let config = RunConfig::new("kubeui");
+        let expected = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::Miniaturizable;
+        assert_eq!(window_style_mask(&config), expected);
+        assert!(!window_style_mask(&config).contains(NSWindowStyleMask::FullSizeContentView));
+    }
+
+    /// #947: `client_side_titlebar` ORs in `FullSizeContentView` on top of
+    /// the base mask above — it must not drop `Titled`/`Closable`/
+    /// `Resizable`/`Miniaturizable`, since dropping `Titled` in particular
+    /// would take the native traffic lights away entirely, which is
+    /// exactly the "keep them native" contract #947 requires (unlike
+    /// GTK's `set_decorated(false)` "undecorated" model).
+    #[test]
+    fn style_mask_set_adds_full_size_content_view_without_losing_the_rest() {
+        let config = RunConfig::new("kubeui").with_client_side_titlebar(true);
+        let mask = window_style_mask(&config);
+        assert!(mask.contains(NSWindowStyleMask::FullSizeContentView));
+        assert!(mask.contains(NSWindowStyleMask::Titled));
+        assert!(mask.contains(NSWindowStyleMask::Closable));
+        assert!(mask.contains(NSWindowStyleMask::Resizable));
+        assert!(mask.contains(NSWindowStyleMask::Miniaturizable));
     }
 }
 

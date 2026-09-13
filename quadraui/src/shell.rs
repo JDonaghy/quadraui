@@ -40,6 +40,28 @@ pub struct ShellConfig {
     pub position: ShellPosition,
     pub has_title_bar: bool,
     pub title_bar_height_lh: f32,
+    /// Ask the backend not to also draw its own native titlebar band on
+    /// top of an app-painted one (#947). `false` (the default) leaves
+    /// every backend's previous window-creation behavior unchanged.
+    ///
+    /// This is **not** GTK's `set_decorated(false)` "undecorated" model —
+    /// on macOS the native traffic-light controls (close/minimize/zoom)
+    /// stay live and native even with this set; only the native title
+    /// text and titlebar background go away
+    /// (`NSWindowStyleMask::FullSizeContentView` +
+    /// `setTitlebarAppearsTransparent(true)` +
+    /// `NSWindowTitleVisibility::Hidden` — see
+    /// `macos::run::window_style_mask`). GTK/Win-GUI instead hide the
+    /// whole native chrome and expect the app to paint its own
+    /// close/minimize/maximize glyphs. Query
+    /// [`crate::Backend::titlebar_control_inset`] to find out which case
+    /// applies and how much of the leading edge of
+    /// [`crate::compose::app_shell::AppShellLayout::title_bar_bounds`] to
+    /// leave clear for backend-drawn controls.
+    ///
+    /// Set via [`Self::with_client_side_titlebar`]. TUI has no window
+    /// concept and ignores this field.
+    pub client_side_titlebar: bool,
     pub has_bottom_panel: bool,
     pub bottom_panel_height_lh: f32,
     pub min_bottom_panel_height_lh: f32,
@@ -116,6 +138,7 @@ impl ShellConfig {
             position: ShellPosition::Left,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
+            client_side_titlebar: false,
             has_bottom_panel: false,
             bottom_panel_height_lh: 10.0,
             min_bottom_panel_height_lh: 3.0,
@@ -161,6 +184,20 @@ impl ShellConfig {
     pub fn with_title_bar(mut self, height_lh: f32) -> Self {
         self.has_title_bar = true;
         self.title_bar_height_lh = height_lh;
+        self
+    }
+
+    /// Opt into a client-side titlebar (#947): ask the backend not to
+    /// also paint its own native titlebar band on top of an app-drawn
+    /// [`Self::with_title_bar`] region. See [`Self::client_side_titlebar`]
+    /// for the per-backend mechanism and why it is not GTK's
+    /// "undecorated" model on macOS.
+    ///
+    /// Typically paired with [`Self::with_title_bar`] — this field alone
+    /// only affects window creation, not layout; the app still reserves
+    /// the band via `with_title_bar`.
+    pub fn with_client_side_titlebar(mut self) -> Self {
+        self.client_side_titlebar = true;
         self
     }
 
@@ -708,6 +745,24 @@ mod tests {
     fn shell_config_with_app_id_overrides_the_default() {
         let config = ShellConfig::new("test", Vec::new()).with_app_id("io.github.jdonaghy.VimCode");
         assert_eq!(config.app_id, "io.github.jdonaghy.VimCode");
+    }
+
+    /// #947: a fresh `ShellConfig` keeps `client_side_titlebar` off, so
+    /// every existing consumer's window-creation call keeps getting
+    /// today's native chrome unchanged.
+    #[test]
+    fn shell_config_client_side_titlebar_defaults_to_false() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert!(!config.client_side_titlebar);
+    }
+
+    /// #947: `with_client_side_titlebar` opts in, mirroring the no-arg
+    /// `with_command_line`/`with_status_bar` builders above since there's
+    /// no accompanying data (unlike `with_title_bar`'s height).
+    #[test]
+    fn shell_config_with_client_side_titlebar_opts_in() {
+        let config = ShellConfig::new("test", Vec::new()).with_client_side_titlebar();
+        assert!(config.client_side_titlebar);
     }
 
     /// #656: `with_icon_name` stores the themed icon name for the GTK
