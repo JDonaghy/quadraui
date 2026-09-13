@@ -411,15 +411,15 @@ const MINIMAP_W: u32 = 400;
 const MINIMAP_H: u32 = 300;
 
 /// `draw_minimap` is called every frame `MinimapApp::render` runs; this
-/// proves that keeps working (and keeps scrolling) on macOS even though
-/// nothing paints inside the minimap track itself yet (#382).
+/// proves that keeps working (and keeps scrolling) on macOS. The minimap
+/// track itself now has a real Core Graphics/Core Text rasteriser (#961,
+/// superseding the #382/#802 no-paint gap this test used to document).
 #[test]
 fn minimap_app_renders_every_frame_without_panicking_and_scrolls() {
     let mut driver = MacDriver::new(MinimapApp::new(), MINIMAP_W, MINIMAP_H);
     assert!(
         driver.screen_contains("Minimap demo — line 0"),
-        "initial status bar should paint fine even though the minimap track \
-         itself has no Core Graphics rasteriser yet (#382/#802): {:?}",
+        "initial status bar should paint fine alongside the minimap track: {:?}",
         driver.painted_texts()
     );
 

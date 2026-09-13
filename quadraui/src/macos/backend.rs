@@ -2936,37 +2936,47 @@ impl Backend for MacBackend {
     /// macOS rasteriser would otherwise have had to reinvent
     /// ([`crate::primitives::minimap::is_legible`] /
     /// `render_mode` / `minimap_font_px` / `SpanCursor` / `color_at_column`
-    /// / `truncate_to_columns`) — a future macOS rasteriser consumes those
-    /// directly, same as `gtk::minimap` and `win::minimap` do. What's left
-    /// for that future rasteriser is the actual Core Graphics/Core Text
-    /// paint calls (fill rects, `CTLine` glyph runs, the clip bracket) —
-    /// the same shape and size of backend-specific work #738 did for
-    /// Win-GUI, not a shim over shared logic.
+    /// / `truncate_to_columns`) — `super::minimap::draw_minimap` consumes
+    /// those directly, same as `gtk::minimap` and `win::minimap` do (#961).
     ///
-    /// Until that lands, this used to be a reachable `todo!()` — a panic
-    /// an app calling `Backend::draw_minimap` generically could hit on
-    /// macOS alone, the exact inverse of the four-backend promise (#802).
-    /// `super::minimap::mac_minimap_layout` computes the real
+    /// Before #961 this was a reachable `todo!()`-turned-honest-no-paint —
+    /// `super::minimap::mac_minimap_layout` always computed the real
     /// [`MinimapLayout`](crate::primitives::minimap::MinimapLayout) (the
     /// same `Minimap::layout_with_sizing` call GTK/Win-GUI make, not a
-    /// stub), so hit-testing/click-routing already works correctly; only
+    /// stub), so hit-testing/click-routing already worked correctly; only
+    /// the pixels were missing (#802). Now the Core Graphics/Core Text
+    /// paint calls (fill rects, `CTLine` glyph runs, the clip bracket) —
+    /// the same shape and size of backend-specific work #738 did for
+    /// Win-GUI, not a shim over shared logic — actually run, and
     /// [`MinimapPaintResult::painted`](crate::backend::MinimapPaintResult::painted)
-    /// comes back `false` in place of pixels.
+    /// reports `true`.
     fn draw_minimap(
         &mut self,
         rect: Rect,
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::backend::MinimapPaintResult {
-        let layout = super::minimap::mac_minimap_layout(minimap, rect);
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_minimap called outside enter_frame_scope",
+        );
         self.register_zone(minimap.id.clone(), rect);
+        let font = self
+            .current_font
+            .as_ref()
+            .expect("MacBackend::draw_minimap requires set_current_font");
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope (checked above).
+        let layout = unsafe { super::minimap::draw_minimap(ctx, font, rect, minimap, &theme) };
         crate::backend::MinimapPaintResult {
             layout,
-            painted: false,
+            painted: true,
         }
     }
 
-    /// Real geometry regardless of the paint gap above — see
-    /// [`Self::draw_minimap`]'s doc comment.
+    /// The no-paint layout query — same geometry `draw_minimap` computes
+    /// internally, exposed standalone for click-routing callers that don't
+    /// need a repaint. See [`Self::draw_minimap`]'s doc comment.
     fn minimap_layout(
         &self,
         rect: Rect,
@@ -4197,21 +4207,21 @@ mod tests {
         assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
     }
 
-    // ── #802: Minimap/Image must not panic on macOS ─────────────────────
+    // ── #802/#961: Minimap/Image must not panic on macOS, and Minimap
+    // must actually paint ──────────────────────────────────────────────
     //
-    // Before this issue, `MacBackend::draw_minimap`/`draw_image` were
-    // `todo!()` — any `AppLogic` calling either generically through `&mut
-    // dyn Backend` (exactly what `examples/common/minimap_app.rs` /
+    // Before #802, `MacBackend::draw_minimap`/`draw_image` were `todo!()`
+    // — any `AppLogic` calling either generically through `&mut dyn
+    // Backend` (exactly what `examples/common/minimap_app.rs` /
     // `image_app.rs` do, the same fixtures `tests/macos_example_driver.rs`
     // now drives) panicked and took the whole host down on macOS while
-    // working fine on TUI/GTK/Win-GUI. Observed RED before this fix: both
-    // methods hit their `todo!()` immediately, with no cfg gate to skip
-    // past on this (non-macOS) machine, so the confirmation here is
-    // structural — the calls below no longer reach a `todo!()`/
-    // `unimplemented!()` macro anywhere in their path — rather than a
-    // captured panic backtrace, which only `macos-latest` CI can produce
-    // for this target-gated module (see `CLAUDE.md`'s Downstream
-    // consumers / macOS sections).
+    // working fine on TUI/GTK/Win-GUI. #802 replaced that with an honest
+    // `painted: false` no-op. #961 replaces the no-op with a real Core
+    // Graphics/Core Text paint (`super::minimap::draw_minimap`) — macOS is
+    // no longer the only backend with no minimap rasteriser, so
+    // `draw_minimap_paints_and_reports_painted` below asserts pixels
+    // actually landed, not just "didn't panic". `draw_image` is unrelated
+    // scope (#961's "Out of scope" section) and keeps its #802 coverage.
 
     fn sample_minimap() -> crate::primitives::minimap::Minimap {
         crate::primitives::minimap::Minimap {
@@ -4229,28 +4239,55 @@ mod tests {
         }
     }
 
+    /// #961: `draw_minimap` must actually paint pixels + report
+    /// `painted: true` — the positive replacement for #802's
+    /// `draw_minimap_does_not_panic_and_reports_unpainted`, now that macOS
+    /// has a real Core Graphics/Core Text minimap rasteriser
+    /// (`super::minimap::draw_minimap`).
     #[test]
-    fn draw_minimap_does_not_panic_and_reports_unpainted() {
-        let mut b = MacBackend::new();
-        let minimap = sample_minimap();
-        let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
+    fn draw_minimap_paints_and_reports_painted() {
+        use super::super::headless::BitmapSurface;
+        use super::super::text::make_font;
 
-        let result = b.draw_minimap(rect, &minimap);
+        const W: u32 = 100;
+        const H: u32 = 200;
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut b = MacBackend::new();
+        b.set_current_font(make_font("Menlo", 12.0).expect("Menlo installed"));
+        let minimap = sample_minimap();
+        let rect = Rect::new(0.0, 0.0, 20.0, H as f32);
+
+        let result = std::cell::RefCell::new(None);
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            *result.borrow_mut() = Some(backend.draw_minimap(rect, &minimap));
+        });
+        let result = result
+            .into_inner()
+            .expect("draw_minimap ran inside the frame scope");
 
         assert!(
-            !result.painted,
-            "macOS has no Core Graphics/Core Text minimap rasteriser yet (#382) -- \
-             `painted` must honestly report `false`, not panic"
+            result.painted,
+            "macOS now has a Core Graphics/Core Text minimap rasteriser (#961) -- \
+             `painted` must report `true`"
         );
         assert!(
             !result.layout.visible_lines.is_empty(),
-            "the layout must still be real geometry, not an empty stub"
+            "the layout must be real geometry"
         );
         assert!(
             b.zones().iter().any(|z| z.id == minimap.id),
-            "a click zone must still be registered so a host can route clicks \
-             even though nothing painted"
+            "a click zone must be registered so a host can route clicks"
         );
+
+        let painted_any = (0..W).any(|x| {
+            (0..H).any(|y| {
+                let (r, g, bl, _) = surface.pixel(x, y);
+                (r, g, bl) != (255, 255, 255)
+            })
+        });
+        assert!(painted_any, "draw_minimap must paint non-background pixels");
     }
 
     /// `minimap_layout` (the no-paint query `AppLogic::handle` calls for
@@ -4258,11 +4295,22 @@ mod tests {
     /// returned — same contract every other backend upholds.
     #[test]
     fn minimap_layout_agrees_with_draw_minimap() {
+        use super::super::headless::BitmapSurface;
+        use super::super::text::make_font;
+
+        let surface = BitmapSurface::new(100, 200);
         let mut b = MacBackend::new();
+        b.set_current_font(make_font("Menlo", 12.0).expect("Menlo installed"));
         let minimap = sample_minimap();
         let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
 
-        let painted = b.draw_minimap(rect, &minimap);
+        let painted = std::cell::RefCell::new(None);
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            *painted.borrow_mut() = Some(backend.draw_minimap(rect, &minimap));
+        });
+        let painted = painted
+            .into_inner()
+            .expect("draw_minimap ran inside the frame scope");
         let layout_only = b.minimap_layout(rect, &minimap);
 
         assert_eq!(painted.layout, layout_only);
