@@ -89,7 +89,13 @@ impl DWrite {
     /// that wants to *diverge* from the format's fallback for one
     /// layout, which no rasteriser here needs. `None` leaves
     /// DirectWrite's own system fallback chain untouched, same as before
-    /// this parameter existed.
+    /// this parameter existed. If `SetFontFallback` itself errors (see
+    /// [`apply_fallback_to_format`]'s doc), this emits a
+    /// [`crate::diagnostics`] message and continues without the
+    /// fallback rather than returning `Err` — a missing fallback
+    /// degrades to tofu on uncovered characters, which is no worse than
+    /// the pre-#929 baseline every other font/layout error here does not
+    /// need to tolerate.
     ///
     /// Returns the constructed handles plus `(line_height, char_width)`
     /// resolved from the format's real font metrics, so the caller
@@ -108,8 +114,28 @@ impl DWrite {
         let bold_text_format =
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_BOLD)?;
         if let Some(fallback) = fallback {
-            apply_fallback_to_format(&text_format, fallback)?;
-            apply_fallback_to_format(&bold_text_format, fallback)?;
+            // Font fallback is a "nice to have that beats tofu," not a
+            // hard requirement (issue #929 review) — degrade to no
+            // fallback rather than failing the whole surface/headless
+            // attach (`WinBackend::attach_surface`/`attach_headless`
+            // `?`-propagate whatever `DWrite::new` returns) if
+            // `SetFontFallback` ever errors on some future Windows
+            // quirk. Both macOS and GTK's equivalent paths already
+            // silently continue without a fallback on failure; this
+            // matches that posture instead of taking down painting
+            // entirely over a cosmetic feature.
+            if let Err(err) = apply_fallback_to_format(&text_format, fallback) {
+                crate::diagnostics::emit(format!(
+                    "quadraui: IDWriteTextFormat1::SetFontFallback failed for the regular text \
+                     format ({err:?}); continuing without a Nerd-Font fallback"
+                ));
+            }
+            if let Err(err) = apply_fallback_to_format(&bold_text_format, fallback) {
+                crate::diagnostics::emit(format!(
+                    "quadraui: IDWriteTextFormat1::SetFontFallback failed for the bold text \
+                     format ({err:?}); continuing without a Nerd-Font fallback"
+                ));
+            }
         }
 
         let font_metrics = font_face_metrics(&factory, family)?;
@@ -214,10 +240,12 @@ fn create_text_format(
 /// `IDWriteTextFormat1` is a Windows-8-and-later interface; the `cast`
 /// only fails on a Windows 7 host DirectWrite 1.0, which this crate does
 /// not otherwise support (every other rasteriser already assumes
-/// `IDWriteFactory5`-era APIs — see [`register_font_from_memory`]) — so
-/// propagating the error here rather than silently skipping the fallback
-/// is consistent with the rest of this module's "don't hide a real
-/// platform gap" posture.
+/// `IDWriteFactory5`-era APIs — see [`register_font_from_memory`]).
+/// [`DWrite::new`]'s caller logs and continues without a fallback rather
+/// than propagating this error (issue #929 review): font fallback is a
+/// "nice to have that beats tofu," and a failure here should degrade,
+/// not take down the whole surface/headless attach the way an `Err`
+/// return from `DWrite::new` would.
 fn apply_fallback_to_format(
     format: &IDWriteTextFormat,
     fallback: &IDWriteFontFallback,

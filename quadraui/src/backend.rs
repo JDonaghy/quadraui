@@ -742,6 +742,19 @@ pub trait Backend: sealed::Sealed {
     /// — same "static for the process lifetime" convention as
     /// [`Self::set_editor_font`]/[`Self::set_ui_font`].
     ///
+    /// `bytes` itself does **not** need to outlive this call — a caller
+    /// may pass a local `Vec` read from disk and drop it the instant this
+    /// method returns, same as the `include_bytes!` case. Any backend
+    /// whose platform font manager keeps a raw, uncopied pointer into
+    /// `bytes` for longer than the call (Win-GUI's DirectWrite
+    /// `IDWriteInMemoryFontFileLoader` is documented to do exactly this —
+    /// see `win::text::register_font_from_memory`'s doc) is responsible
+    /// for making its own owned copy before handing that pointer to the
+    /// platform API, and for keeping that copy alive for the process
+    /// lifetime itself — mirroring the macOS backend's `Arc<Vec<u8>>`
+    /// copy into `CGDataProvider::from_buffer`. The caller's buffer is
+    /// never the one the platform ends up holding a live reference to.
+    ///
     /// Default: no-op, returns `None`. GTK can accept this default —
     /// fontconfig already resolves a system-installed Nerd Font via
     /// [`Self::set_nerd_fonts`]'s cascade, so there is nothing for GTK to

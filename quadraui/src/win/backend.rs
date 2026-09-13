@@ -728,15 +728,37 @@ pub struct WinBackend {
     /// `MacBackend`/vimcode's own single-subset-font usage.
     #[cfg(target_os = "windows")]
     registered_font_collection: Option<IDWriteFontCollection1>,
-    /// The raw bytes handed to the most recent
-    /// [`Backend::register_font_from_memory`] call, kept alive for the
-    /// process lifetime as a defensive belt-and-braces measure alongside
-    /// `registered_font_collection` — see that method's implementation
-    /// note on `IDWriteInMemoryFontFileLoader::CreateInMemoryFontFileReference`
-    /// for why this backend doesn't rely solely on DirectWrite's own
-    /// documented internal copy.
+    /// Every byte buffer ever handed to a
+    /// [`Backend::register_font_from_memory`] call, in an owned copy
+    /// that is **appended** here and never overwritten or dropped for
+    /// the rest of the process's lifetime.
+    ///
+    /// This is not a cosmetic cache: `IDWriteInMemoryFontFileLoader::
+    /// CreateInMemoryFontFileReference` (`win::text::register_font_from_memory`)
+    /// does **not** copy the `fontData` it's given — the memory it
+    /// points at must stay valid for as long as the `IDWriteFontFile` it
+    /// returns, and everything built from that file (the private
+    /// collection, any `IDWriteFontFallback` built against it, any live
+    /// `IDWriteTextFormat`/`IDWriteTextLayout` that resolves through
+    /// that fallback), remains alive — and DirectWrite gives this
+    /// backend no callback for when that chain is actually done with
+    /// the pointer (the API's `ownerObject` parameter exists precisely
+    /// to supply one, but this backend passes `None` for it — see
+    /// `register_font_from_memory`'s doc below).
+    ///
+    /// Rather than implement a custom `IUnknown` just to receive that
+    /// signal, this field sidesteps the problem: nothing is ever freed.
+    /// Each [`Backend::register_font_from_memory`] call's bytes are
+    /// copied into a fresh `Vec` and pushed here *before* DirectWrite
+    /// ever sees a pointer into it (never the caller's original `bytes`
+    /// slice, which the trait's own doc explicitly allows to be a local
+    /// dropped immediately after the call returns), and the entry is
+    /// kept even if a later call replaces
+    /// `registered_font_collection` — matching the "left registered for
+    /// the process lifetime" posture `register_font_from_memory`
+    /// already documents for the font-file loader itself.
     #[cfg(target_os = "windows")]
-    registered_font_bytes: Vec<u8>,
+    registered_font_bytes: Vec<Vec<u8>>,
     /// The active [`crate::Theme`], set via [`Backend::set_theme`] and
     /// read by every `draw_*` rasteriser that used to fall back to
     /// `Theme::default()` regardless of what the app configured (#724).
@@ -1748,19 +1770,40 @@ impl Backend for WinBackend {
     /// filesystem write, process-lifetime only. Stores the resulting
     /// private `IDWriteFontCollection1` (so a later
     /// [`Self::set_nerd_font_fallback`] resolves against the font that
-    /// was actually registered) and keeps `bytes` itself alive on
-    /// `self` — see `registered_font_bytes`'s field doc for why this
-    /// backend doesn't rely solely on DirectWrite's own copy.
+    /// was actually registered).
+    ///
+    /// Copies `bytes` into `self.registered_font_bytes` *first*, then
+    /// calls `text::register_font_from_memory` with a pointer into that
+    /// owned copy — never `bytes` itself. `bytes` is the caller's slice
+    /// and, per this trait method's doc, may be a local the caller drops
+    /// the instant this call returns; `CreateInMemoryFontFileReference`
+    /// does not copy its input, so handing it a pointer into a
+    /// caller-owned, possibly-transient buffer would leave DirectWrite
+    /// holding a dangling pointer the moment that buffer is freed. See
+    /// `registered_font_bytes`'s field doc for the rest of this
+    /// backend's lifetime story.
     fn register_font_from_memory(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
         #[cfg(target_os = "windows")]
         {
-            match crate::win::text::register_font_from_memory(bytes) {
+            self.registered_font_bytes.push(bytes.to_vec());
+            let owned: &[u8] = self
+                .registered_font_bytes
+                .last()
+                .expect("just pushed a value above");
+            match crate::win::text::register_font_from_memory(owned) {
                 Ok((collection, names)) => {
                     self.registered_font_collection = Some(collection);
-                    self.registered_font_bytes = bytes.to_vec();
                     Some(names)
                 }
-                Err(_) => None,
+                Err(_) => {
+                    // Registration failed, so nothing references this
+                    // copy — but there's no live pointer into it either,
+                    // and leaving it in place (rather than popping it
+                    // back off) keeps this method's error path as simple
+                    // as its success path. See `registered_font_bytes`'s
+                    // field doc: entries are never removed anyway.
+                    None
+                }
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -1786,8 +1829,25 @@ impl Backend for WinBackend {
                 family,
                 self.registered_font_collection.as_ref(),
             );
-            if let Ok(fallback) = built {
-                self.nerd_font_fallback = Some(fallback);
+            match built {
+                Ok(fallback) => self.nerd_font_fallback = Some(fallback),
+                Err(err) => {
+                    // This trait method returns `()`, so there's no
+                    // `Result`/`Option` to hand a caller the way
+                    // `register_font_from_memory` does — but silently
+                    // dropping the built fallback with no diagnostic at
+                    // all left a caller no way to learn this didn't take
+                    // effect (issue #929 review). Emit via
+                    // `crate::diagnostics` (never a raw `eprintln!` —
+                    // this is live library code a host may be running
+                    // with the terminal in raw mode, see that module's
+                    // doc) and keep whatever fallback, if any, was
+                    // already active.
+                    crate::diagnostics::emit(format!(
+                        "quadraui: set_nerd_font_fallback({family:?}) failed to build a font \
+                         fallback ({err:?}); icon glyphs may render as tofu"
+                    ));
+                }
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -5562,6 +5622,53 @@ mod tests {
         assert!(
             backend.register_font_from_memory(&garbage).is_none(),
             "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    /// Regression coverage for the issue #929 review finding:
+    /// `register_font_from_memory` used to call `bytes.to_vec()`
+    /// *after* already handing `crate::win::text::register_font_from_memory`
+    /// a raw pointer into the caller's original `bytes` slice —
+    /// `IDWriteInMemoryFontFileLoader::CreateInMemoryFontFileReference`
+    /// does not copy its input, so a caller passing a short-lived local
+    /// (a shape this trait method's own doc explicitly permits: "a local
+    /// `Vec` read from disk and dropped the instant this call returns")
+    /// left DirectWrite holding a dangling pointer the moment that local
+    /// went out of scope.
+    ///
+    /// This can't reproduce the resulting use-after-free directly (this
+    /// suite has no embedded valid-font fixture, so registration always
+    /// fails before DirectWrite parses anything — see
+    /// `register_font_from_memory_rejects_bytes_that_are_not_a_font`
+    /// above), but it does assert the actual fix: `bytes` is copied into
+    /// `self`-owned storage (`registered_font_bytes`) *before* the
+    /// caller's buffer goes out of scope, and that copy is a distinct
+    /// allocation from the caller's — not a `None`/empty placeholder — so
+    /// nothing downstream can still be holding a pointer into memory this
+    /// method just let its caller free.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn register_font_from_memory_copies_bytes_before_the_callers_buffer_can_be_dropped() {
+        let mut backend = WinBackend::new();
+        {
+            // Scoped so `transient` is dropped at the end of this block,
+            // before any assertion below runs — mirroring the exact
+            // "call once from setup(), then drop the source buffer"
+            // shape the trait doc permits.
+            let transient = vec![0xABu8; 64];
+            let _ = backend.register_font_from_memory(&transient);
+        }
+        assert_eq!(
+            backend.registered_font_bytes.len(),
+            1,
+            "the call must copy bytes into backend-owned storage regardless of whether \
+             registration itself succeeds"
+        );
+        assert_eq!(
+            backend.registered_font_bytes[0],
+            vec![0xABu8; 64],
+            "the stored copy must match what was passed in, read back from backend-owned \
+             memory rather than the (by now dropped) caller buffer"
         );
     }
 

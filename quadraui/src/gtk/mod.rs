@@ -298,9 +298,12 @@ pub(crate) fn current_nerd_font_fallback_family() -> String {
     NERD_FONT_FALLBACK.with(|f| f.borrow().clone())
 }
 
-/// Override the family every subsequent call in this process to
+/// Override the family every subsequent call on this thread to
 /// [`with_nerd_font_fallback`]/[`chrome_font_description`]/
-/// [`tab_bar::tab_icon_font`] resolves against. Backs
+/// [`tab_bar::tab_icon_font`] resolves against — thread-wide, not
+/// process-wide, since the backing store is a `thread_local` (see its
+/// doc above); GTK's single-threaded glib main loop is what makes that
+/// equivalent to "process-wide" in practice for a real app. Backs
 /// `GtkBackend::set_nerd_font_fallback` (issue #929).
 pub(crate) fn set_current_nerd_font_fallback_family(family: &str) {
     NERD_FONT_FALLBACK.with(|f| *f.borrow_mut() = family.to_string());
@@ -401,7 +404,7 @@ mod tests {
         assert_eq!(desc.size(), base.size());
     }
 
-    /// Resets the process-wide fallback family to
+    /// Resets the thread-local fallback family to
     /// [`NERD_FONT_FALLBACK_FAMILY`] on drop, including on an early
     /// return/panic — so a test that calls
     /// [`set_current_nerd_font_fallback_family`] can't leak its override
