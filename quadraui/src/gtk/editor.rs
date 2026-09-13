@@ -31,15 +31,44 @@
 //!
 //! ## Scrollbars
 //!
-//! GTK paints both scrollbars **outside** this rasteriser today
-//! (vimcode's `draw_window` calls scrollbar paint elsewhere — see
-//! `draw_window_scrollbars`). The host preserves that arrangement;
-//! `draw_editor` does not paint scrollbars on GTK.
+//! `draw_editor` paints both scrollbars itself, the way
+//! `tui::editor::draw_editor` already does. This used to defer to a
+//! host path (vimcode's `draw_window` called `draw_window_scrollbars`
+//! elsewhere) — that path no longer exists (vimcode#731 deleted the
+//! native `gtk4::Scrollbar` overlay along with it), so the capability
+//! had fallen through the gap between the two repos (#968).
+//!
+//! Geometry comes from [`Editor::layout`] (the same call hit-testing
+//! already uses, so paint and click agree by construction), converted
+//! to [`crate::primitives::scrollbar::Scrollbar`] and painted through
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`] via
+//! the [`super::scrollbar::RawScrollbarSurface`] adapter — the same
+//! pattern `gtk::data_table` and `gtk::list` already use to paint an
+//! embedded scrollbar from a bare `cr: &Context` rather than a live
+//! `GtkBackend`. Both scrollbars paint *after* text/selections and
+//! *before* the cursor, mirroring `tui::editor::draw_editor`'s
+//! ordering: content paints first, the scrollbar overlays on top.
+//!
+//! ## Minimap interaction (#968, vimcode#723)
+//!
+//! This rasteriser has no awareness of a `Minimap` primitive sitting
+//! beside the editor — that would violate this crate's
+//! primitive-distinctness rule (`DECISIONS.md`), the same reason the
+//! status line isn't painted here either (see below). Avoiding a
+//! double-painted right edge when a minimap is present is a *host*
+//! composition concern: the host sizes `editor.rect` (and decides
+//! whether it overlaps a minimap strip) the same way it already
+//! shrinks `editor.rect` for the status row. vimcode#723 gave the
+//! minimap its own `Minimap::scroll_thumb` overlay for the
+//! minimap-as-scrollbar case; a host that enables that mode should
+//! keep `editor.rect` narrow enough that `Editor::layout` doesn't also
+//! reserve a `v_scrollbar_bounds` column over the same pixels.
 
 use crate::primitives::editor::{
     CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLayout, EditorLine, EditorSelection,
     EditorStyledSpan, GitLineStatus, SelectionKind,
 };
+use crate::primitives::scrollbar::Scrollbar;
 use crate::theme::Theme;
 use crate::types::Color;
 use gtk4::cairo::Context;
@@ -429,6 +458,35 @@ pub fn draw_editor(
     }
 
     cr.restore().ok();
+
+    // ── Scrollbars (paint after text/selections so they overlay content,
+    // before the cursor — mirrors tui::editor::draw_editor; see module
+    // doc for the shared-geometry rationale and the minimap boundary) ──
+    let editor_geom = editor.layout(*rect, char_width as f32, line_height as f32);
+    if let Some(v_track) = editor_geom.v_scrollbar_bounds {
+        let sb = Scrollbar::vertical(
+            "gtk:editor:v_scrollbar",
+            v_track,
+            editor.scroll_top as f32,
+            editor.total_lines as f32,
+            editor_geom.visible_lines as f32,
+            line_height as f32,
+        );
+        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
+    }
+    if let Some(h_track) = editor_geom.h_scrollbar_bounds {
+        let sb = Scrollbar::horizontal(
+            "gtk:editor:h_scrollbar",
+            h_track,
+            editor.scroll_left as f32,
+            editor.max_col as f32,
+            editor_geom.visible_cols as f32,
+            line_height as f32,
+        );
+        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
+    }
 
     // ── Cursor (Block alpha rect / Bar 2px / Underline 12% line height) ─
     if let Some(cursor) = &editor.cursor {
@@ -1080,5 +1138,183 @@ mod tests {
             let _ = editor_col_at_x(&pango_layout, &line, &editor_layout, x);
             x += 1.0;
         }
+    }
+
+    // ── Scrollbar paint (#968) ──────────────────────────────────────────
+    //
+    // "State-derived paint geometry" (quadraui/docs/TESTING.md coverage
+    // taxonomy row 3): set `total_lines`/`max_col` to a known overflow (or
+    // non-overflow) state, paint into a headless Cairo `ImageSurface`, and
+    // assert the scrollbar track's translucent tint is present (or absent)
+    // at the exact pixel `Editor::layout`'s own geometry predicts — the
+    // same geometry `EditorLayout::hit_test` uses, so paint and click can't
+    // drift apart. Mirrors `gtk/data_table.rs`'s pixel-readback harness.
+
+    const SCROLL_TEST_W: i32 = 200;
+    const SCROLL_TEST_H: i32 = 80;
+    const SCROLL_TEST_CHAR_W: f64 = 8.0;
+    const SCROLL_TEST_LINE_H: f64 = 16.0;
+
+    fn rgb(c: Color) -> (u8, u8, u8) {
+        (c.r, c.g, c.b)
+    }
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y). Same
+    /// byte layout as `gtk/data_table.rs`'s test helper and `GtkDriver::pixel`.
+    fn scroll_test_pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn blank_line(line_idx: usize) -> EditorLine {
+        EditorLine {
+            raw_text: String::new(),
+            gutter_text: String::new(),
+            spans: Vec::new(),
+            line_idx,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: Vec::new(),
+            spell_errors: Vec::new(),
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: false,
+            segment_col_offset: 0,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: Vec::new(),
+            colorcolumns: Vec::new(),
+        }
+    }
+
+    /// Editor fixture at `SCROLL_TEST_W`x`SCROLL_TEST_H` (matching the
+    /// surface size the tests below paint into) with no gutter, so the
+    /// only geometry in play is the scrollbar reservation itself.
+    fn scroll_test_editor(total_lines: usize, max_col: usize, num_lines: usize) -> Editor {
+        Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, SCROLL_TEST_W as f32, SCROLL_TEST_H as f32),
+            lines: (0..num_lines).map(blank_line).collect(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines,
+            max_col,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        }
+    }
+
+    /// Paint `editor` into a fresh `theme.background`-filled surface and
+    /// return the raw pixel buffer + stride. Mirrors `gtk/data_table.rs`'s
+    /// identical test harness.
+    fn scroll_test_paint(editor: &Editor, theme: &Theme) -> (Vec<u8>, i32) {
+        let mut surface = ImageSurface::create(Format::ARgb32, SCROLL_TEST_W, SCROLL_TEST_H)
+            .expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+
+            draw_editor(
+                &cr,
+                &pango_layout,
+                &metrics,
+                editor,
+                theme,
+                SCROLL_TEST_CHAR_W,
+                SCROLL_TEST_LINE_H,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// Regression for #968: `gtk::draw_editor` used to paint no
+    /// scrollbars at all (deferred to a host path vimcode#731 deleted).
+    /// A buffer taller than the viewport must now paint a vertical
+    /// scrollbar track in the reserved rightmost `char_width`-wide
+    /// column; a buffer that fits must not tint that column at all.
+    #[test]
+    fn draw_editor_paints_vertical_scrollbar_when_buffer_overflows() {
+        let theme = Theme::default();
+
+        let overflowing = scroll_test_editor(50, 0, 5);
+        let (data, stride) = scroll_test_paint(&overflowing, &theme);
+        // Solidly inside the reserved v-scrollbar column (x in [192,200))
+        // and mid-track vertically — see `Editor::layout`'s
+        // `v_scrollbar_bounds` formula for why this pixel is in-track.
+        let px = scroll_test_pixel(&data, stride as usize, 198, 40);
+        assert_ne!(
+            px,
+            rgb(theme.background),
+            "vertical scrollbar track should tint this pixel when total_lines overflows the viewport"
+        );
+
+        let fits = scroll_test_editor(3, 0, 3);
+        let (data2, stride2) = scroll_test_paint(&fits, &theme);
+        let px2 = scroll_test_pixel(&data2, stride2 as usize, 198, 40);
+        assert_eq!(
+            px2,
+            rgb(theme.background),
+            "no vertical scrollbar should paint when the buffer fits the viewport"
+        );
+    }
+
+    /// Regression for #968: horizontal-overflow counterpart of the test
+    /// above — a line wider than the viewport must paint a horizontal
+    /// scrollbar track in the reserved bottom `line_height`-tall row; a
+    /// buffer whose longest line fits must not tint that row at all.
+    #[test]
+    fn draw_editor_paints_horizontal_scrollbar_when_line_overflows() {
+        let theme = Theme::default();
+
+        let overflowing = scroll_test_editor(3, 40, 3);
+        let (data, stride) = scroll_test_paint(&overflowing, &theme);
+        // Solidly inside the reserved h-scrollbar row (y in [64,80)) —
+        // no v-scrollbar column here (total_lines fits), so the full
+        // width is available for the horizontal track.
+        let px = scroll_test_pixel(&data, stride as usize, 100, 70);
+        assert_ne!(
+            px,
+            rgb(theme.background),
+            "horizontal scrollbar track should tint this pixel when max_col overflows the viewport"
+        );
+
+        let fits = scroll_test_editor(3, 5, 3);
+        let (data2, stride2) = scroll_test_paint(&fits, &theme);
+        let px2 = scroll_test_pixel(&data2, stride2 as usize, 100, 70);
+        assert_eq!(
+            px2,
+            rgb(theme.background),
+            "no horizontal scrollbar should paint when every line fits the viewport"
+        );
     }
 }
