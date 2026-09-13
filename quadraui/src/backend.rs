@@ -3107,6 +3107,32 @@ pub trait PlatformServices {
     /// Open a URL in the platform's default browser.
     fn open_url(&self, url: &str);
 
+    /// Fallible twin of [`Self::open_url`] (issue #949, D-009 seam-2's
+    /// `_result`-twin pattern — the same shape
+    /// [`Clipboard::write_text_result`] already carries): reports
+    /// [`BackendError::Unsupported`] on a backend with no way to open a
+    /// URL at all, instead of `open_url`'s silent no-op. `open_url`
+    /// itself keeps its infallible signature unchanged — this is rule 2's
+    /// "new function alongside the old one" from
+    /// `docs/PRIMITIVE_RULES.md`, chosen so both existing consumers (which
+    /// only ever call `open_url`) keep compiling untouched.
+    ///
+    /// Default: calls `open_url` and returns `Ok(())` — a backend whose
+    /// `open_url` is a real implementation (GTK via
+    /// `gio::AppInfo::launch_default_for_uri`, Win-GUI via
+    /// `ShellExecuteW`, macOS via `open`) answers exactly like this method
+    /// doesn't exist, at zero cost. `TuiPlatformServices` is the one
+    /// override: TUI has no browser to hand a URL to, so its `open_url`
+    /// is already an empty no-op body with no way for a caller to detect
+    /// that — quadraui#949's motivating example of a genuinely
+    /// undetectable silent no-op, made detectable by this method
+    /// returning `Err(BackendError::Unsupported)` instead of silently
+    /// calling the no-op `open_url` and reporting `Ok(())`.
+    fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        self.open_url(url);
+        Ok(())
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;

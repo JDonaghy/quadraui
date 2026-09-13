@@ -746,6 +746,136 @@ pub fn declared_in_source(name: &str) -> BTreeSet<&'static str> {
         .declared()
 }
 
+// ─── PlatformServices honesty (quadraui#949) ────────────────────────────
+//
+// `BackendCaps`/`CAP_CONTRACTS` above polices `Backend`'s defaulted
+// methods: declare a capability and the matching override must exist, in
+// both directions. `PlatformServices` had no equivalent — every one of
+// its methods was on the honour system, and `TuiPlatformServices::open_url`
+// shipped as `fn open_url(&self, _url: &str) {}` with no `BackendCaps`
+// entry at all: a `()`-returning no-op with nothing anywhere for an app
+// to check, the textbook case this module exists to rule out for
+// `Backend` itself.
+//
+// The fix mirrors `CAP_CONTRACTS`'s shape rather than reusing it
+// directly: `PlatformServices` methods aren't gated by a `BackendCaps`
+// bool the way `Backend`'s optional surfaces are — some *are* (`notifications`,
+// `file_dialogs`, …), but others report absence through a typed return
+// instead (`ServiceResult`'s `_result`-twin pattern, D-009 seam 2). Both
+// are legitimate honesty stories; a bare `()` return with *neither* is
+// the one thing this file exists to catch.
+
+/// Every `PlatformServices` method, in trait-declaration order:
+/// `(name, has_default_body, returns_service_result, is_bare_unit)`.
+///
+/// Parsed from `src/backend.rs` with the same technique
+/// [`defaulted_trait_methods`] uses for `Backend` — source is the only
+/// place "does this method return a typed signal or a bare `()`" can be
+/// read at all, since both compile to the same trait-object call.
+pub fn platform_services_methods() -> Vec<(&'static str, bool, bool, bool)> {
+    let mut lines = BACKEND_TRAIT_SRC
+        .lines()
+        .skip_while(|l| *l != "pub trait PlatformServices {");
+    assert!(
+        lines.next().is_some(),
+        "src/backend.rs: no line reads exactly `pub trait PlatformServices {{` — the trait \
+         header moved or was reformatted, and an empty parse here would report every method as \
+         honestly covered"
+    );
+    let body: Vec<&str> = lines.take_while(|l| *l != "}").collect();
+
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        // Exactly one indent level, so nested items are excluded.
+        if !(body[i].starts_with("    fn ") && !body[i].starts_with("     ")) {
+            i += 1;
+            continue;
+        }
+        let name = fn_name(body[i].trim_start());
+        // Walk the signature to its end: `;` = required, `{` = defaulted.
+        let mut j = i;
+        let mut sig = String::new();
+        while j < body.len() && !body[j].contains('{') && !body[j].trim_end().ends_with(';') {
+            sig.push_str(body[j].trim());
+            sig.push(' ');
+            j += 1;
+        }
+        if j < body.len() {
+            sig.push_str(body[j].trim());
+        }
+        if let Some(name) = name {
+            let has_default = j < body.len() && body[j].contains('{');
+            let returns_service_result = sig.contains("-> ServiceResult");
+            let is_bare_unit = !sig.contains("->");
+            out.push((name, has_default, returns_service_result, is_bare_unit));
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// How a `PlatformServices` method's absence on a given backend can be
+/// discovered by an app — the `PlatformServices` counterpart to [`Proof`]
+/// above.
+pub enum ServiceHonesty {
+    /// A [`BackendCaps`] field a caller reads before trusting this
+    /// method's answer — the same "`None`-is-ambiguous-without-it" shape
+    /// `file_dialogs` / `folder_dialogs` / `native_dialogs` /
+    /// `notifications` already use.
+    CapBacked(&'static str),
+    /// This method returns a bare `()`, so nothing on the method itself
+    /// can report absence — but a `<name>_result` twin exists, returning
+    /// `ServiceResult<()>` (D-009 seam 2, the pattern
+    /// `Clipboard::write_text`/`write_text_result` already established),
+    /// and that is the honest entry point a caller who cares should use.
+    ResultTwin(&'static str),
+    /// Vends another trait object (`Clipboard`) whose own methods carry
+    /// their own honesty story — not this trait's job to police further.
+    Delegates(&'static str),
+    /// Always meaningful on every backend — there is no "unsupported" a
+    /// caller could ever need to detect (a plain identifier, or a method
+    /// that already returns a fully typed, unambiguous signal on its
+    /// own).
+    AlwaysReal,
+}
+
+/// Every `PlatformServices` method, paired with its honesty story.
+///
+/// `platform_service_contracts_cover_every_method` asserts this names
+/// exactly [`platform_services_methods`], in trait-declaration order — a
+/// new method with no entry here is silently exempt from the whole
+/// check, the same "silence reads as a pass" failure `CAP_CONTRACTS`
+/// already guards against on the `Backend` side.
+pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
+    ("clipboard", ServiceHonesty::Delegates("Clipboard")),
+    (
+        "show_file_open_dialog",
+        ServiceHonesty::CapBacked("file_dialogs"),
+    ),
+    (
+        "show_file_save_dialog",
+        ServiceHonesty::CapBacked("file_dialogs"),
+    ),
+    (
+        "show_folder_open_dialog",
+        ServiceHonesty::CapBacked("folder_dialogs"),
+    ),
+    (
+        "show_message_dialog",
+        ServiceHonesty::CapBacked("native_dialogs"),
+    ),
+    (
+        "send_notification",
+        ServiceHonesty::CapBacked("notifications"),
+    ),
+    ("open_url", ServiceHonesty::ResultTwin("open_url_result")),
+    // The twin itself already returns a typed `ServiceResult` — there is
+    // nothing further to report absence of.
+    ("open_url_result", ServiceHonesty::AlwaysReal),
+    ("platform_name", ServiceHonesty::AlwaysReal),
+];
+
 // ─── The checks ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -766,6 +896,111 @@ mod tests {
              vocabulary order — a capability with no contract is silently unchecked, and a \
              contract for a capability that no longer exists is dead weight (quadraui#492)"
         );
+    }
+
+    /// Every `PlatformServices` method has a honesty story, and every
+    /// story names a real method. A new method added with no entry in
+    /// `PLATFORM_SERVICE_CONTRACTS` would be exempt from
+    /// [`every_bare_unit_service_method_has_a_typed_honesty_story`] by
+    /// omission — the same "silence reads as a pass" failure mode
+    /// `cap_contracts_cover_every_capability` guards against for
+    /// `BackendCaps` (quadraui#949).
+    #[test]
+    fn platform_service_contracts_cover_every_method() {
+        let parsed: Vec<&str> = platform_services_methods()
+            .iter()
+            .map(|(name, ..)| *name)
+            .collect();
+        let contracted: Vec<&str> = PLATFORM_SERVICE_CONTRACTS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            contracted, parsed,
+            "`PLATFORM_SERVICE_CONTRACTS` must name every `PlatformServices` method exactly \
+             once, in trait-declaration order — a method with no contract is silently \
+             unchecked, and a contract for a method that no longer exists is dead weight \
+             (quadraui#949)"
+        );
+    }
+
+    /// Guard against the parser degrading to "finds nothing", which would
+    /// make the two tests above and below pass vacuously for exactly the
+    /// reason they exist to catch.
+    #[test]
+    fn platform_services_parse_sanity() {
+        let methods = platform_services_methods();
+        assert!(
+            methods.len() >= 6,
+            "parsed only {} PlatformServices method(s) from src/backend.rs — the trait header \
+             moved or was reformatted, and a near-empty parse would make every other check here \
+             pass vacuously: {methods:?}",
+            methods.len()
+        );
+        assert!(
+            methods.iter().any(|(name, ..)| *name == "open_url_result"),
+            "`open_url_result` must be among the parsed methods — it is quadraui#949's own fix; \
+             parsed: {methods:?}"
+        );
+    }
+
+    /// **The honesty check.** A `PlatformServices` method that returns a
+    /// bare `()` has no way to report absence on itself — the trait
+    /// method and its no-op default compile to the same call. Every such
+    /// method must instead be backed by a [`BackendCaps`] field
+    /// (`send_notification`/`notifications`, same shape as `Backend`'s
+    /// optional surfaces) or have a `<name>_result` twin returning
+    /// `ServiceResult<...>` (`open_url`/`open_url_result`, D-009 seam 2).
+    /// `AlwaysReal`/`Delegates` are not valid stories for a bare-`()`
+    /// method — declaring one is exactly the
+    /// `TuiPlatformServices::open_url` bug quadraui#949 exists to catch,
+    /// reintroduced.
+    #[test]
+    fn every_bare_unit_service_method_has_a_typed_honesty_story() {
+        let methods = platform_services_methods();
+        for (name, _has_default, _returns_service_result, is_bare_unit) in &methods {
+            let honesty = PLATFORM_SERVICE_CONTRACTS
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, h)| h)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name}: no `PLATFORM_SERVICE_CONTRACTS` entry — should have been \
+                         caught by `platform_service_contracts_cover_every_method`"
+                    )
+                });
+            if !is_bare_unit {
+                continue;
+            }
+            match honesty {
+                ServiceHonesty::ResultTwin(twin) => {
+                    let twin_is_typed = methods.iter().any(|(n, _, ret, _)| n == twin && *ret);
+                    assert!(
+                        twin_is_typed,
+                        "{name}: declared `ResultTwin({twin:?})`, but no `PlatformServices` \
+                         method named {twin:?} returns `ServiceResult<...>` — the bare `()` \
+                         return has no honesty story after all"
+                    );
+                }
+                ServiceHonesty::CapBacked(cap) => {
+                    assert!(
+                        BackendCaps::vocabulary().contains(cap),
+                        "{name}: declared `CapBacked({cap:?})`, which is not a `BackendCaps` \
+                         field — capabilities are {:?}",
+                        BackendCaps::vocabulary()
+                    );
+                }
+                ServiceHonesty::Delegates(_) | ServiceHonesty::AlwaysReal => panic!(
+                    "{name}: returns a bare `()` with a {:?} honesty story — that is exactly \
+                     the undetectable silent no-op quadraui#949 exists to catch (see \
+                     `TuiPlatformServices::open_url` before its fix). Add a `<name>_result` \
+                     twin returning `ServiceResult<()>`, or gate it behind a `BackendCaps` \
+                     field.",
+                    match honesty {
+                        ServiceHonesty::Delegates(d) => format!("Delegates({d:?})"),
+                        ServiceHonesty::AlwaysReal => "AlwaysReal".to_string(),
+                        _ => unreachable!(),
+                    }
+                ),
+            }
+        }
     }
 
     /// Guard against the parser degrading to "finds nothing", which would

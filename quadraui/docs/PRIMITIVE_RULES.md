@@ -96,6 +96,10 @@ Read this when adding or changing a primitive.
 8. **Public API changes are versioned by deprecation, not by
    announcement.** See rule 8 in full below — it is the one rule whose
    failure mode lands in *other repos*.
+9. **A new `PlatformServices` capability states its TUI story and ships
+   a driver test proving it.** See rule 9 in full below — it is the rule
+   the Electron-parity push (`GOAL.md`) will lean on hardest, since that
+   is where most of the new capabilities land.
 
 ## Rule 8 — public-API lifecycle
 
@@ -214,6 +218,69 @@ state to bisect from. Split them.
 section** naming each consumer file that must move, or stating "no
 consumer hits" with the grep. A public-API PR without one should be sent
 back at review.
+
+## Rule 9 — `PlatformServices` honesty (issue #949)
+
+`Backend`'s defaulted (rule-7-adjacent) methods are policed mechanically
+by `tests/conformance/caps.rs`'s `CAP_CONTRACTS` / `backends_declare_only_what_they_override`:
+declare a `BackendCaps` field and the matching override must exist, in
+both directions. `PlatformServices` had no equivalent — every one of its
+methods was on the honour system — and that gap produced a real,
+shipped bug: `TuiPlatformServices::open_url` was
+`fn open_url(&self, _url: &str) {}`, returning `()` with **no**
+`BackendCaps` entry, so an app calling it on TUI had no way to learn it
+did nothing. `GtkPlatformServices::send_notification` is also `{}`, but
+`BackendCaps::notifications` is honestly `false` there — same empty
+body, but a caller can check first. The difference between those two is
+the entire point of this rule.
+
+**The mechanism.** `tests/conformance/caps.rs` now also carries
+`PLATFORM_SERVICE_CONTRACTS` — one entry per `PlatformServices` method,
+parsed from `src/backend.rs` the same source-parsing way
+`defaulted_trait_methods()` reads `Backend`. Every method needs a
+`ServiceHonesty`:
+
+| Honesty | When to use it | Example |
+|---|---|---|
+| `CapBacked(cap)` | The method's return type is already ambiguous (`Option<T>` — `None` on cancel vs. `None` on no-facility-at-all) and a `BackendCaps` field disambiguates it. | `show_message_dialog` / `native_dialogs` |
+| `ResultTwin(name)` | The method returns a bare `()` — there is nothing on the method itself that could report absence. Add a `<name>_result` twin returning `ServiceResult<...>` (D-009 seam 2, the same shape as `Clipboard::write_text`/`write_text_result`) and keep the old `()` method for source compatibility. | `open_url` / `open_url_result` |
+| `Delegates(trait)` | The method vends another trait object whose own methods carry their own honesty story. | `clipboard()` → `Clipboard` |
+| `AlwaysReal` | The method can never silently do nothing — a plain identifier, or a method whose return type is already fully typed and unambiguous with no cap needed. | `platform_name`, a `_result` twin itself |
+
+Two tests make this a gate, not a suggestion:
+
+- `platform_service_contracts_cover_every_method` — a new
+  `PlatformServices` method with no `PLATFORM_SERVICE_CONTRACTS` entry
+  fails the build. No silent exemption by omission.
+- `every_bare_unit_service_method_has_a_typed_honesty_story` — a method
+  that returns bare `()` **must** be `CapBacked` or `ResultTwin`.
+  Declaring `AlwaysReal` or `Delegates` for a `()`-returning method is
+  exactly the `open_url` bug this rule exists to catch, reintroduced.
+
+**What this means when you add a capability.** Every new
+`PlatformServices` method (or new capability *family* — see
+`CLAUDE.md`'s Electron-parity scope) needs, in the same PR:
+
+1. **A `PLATFORM_SERVICE_CONTRACTS` entry** stating its honesty story —
+   pick `ResultTwin` for a fire-and-forget action, `CapBacked` for
+   something whose success/failure is otherwise ambiguous, or (per the
+   issue's guidance for a whole new capability *family* — tray, window
+   control, etc.) prefer vending `Option<&mut dyn SubService>` so
+   absence is structural and there is no cap flag to keep in sync at
+   all.
+2. **An explicit TUI story.** TUI has no browser, no OS notification
+   centre, no system tray — most new platform capabilities degrade to
+   "unsupported" there, and that degrade must be a documented, typed
+   answer (`Err(BackendError::Unsupported)` from a `_result` method, or
+   `None` gated by a `false` `BackendCaps` field), never a silent no-op.
+3. **A `tui_*` driver test asserting the degrade** — build the example's
+   `AppLogic`, drive it through `TuiDriver`, and assert the typed
+   "unsupported" answer actually surfaces to the app. `examples/tui_file_dialog.rs`
+   + its driver tests in `tests/tui_example_driver.rs`
+   (`file_dialog_demo_open_reports_unsupported_on_tui` and siblings) are
+   the template: the demo exercises the exact contract ("always reports
+   unsupported"), and the driver test proves it end to end rather than
+   trusting the doc comment.
 
 ## Coordinate frames for `*_layout` methods (issue #505)
 
