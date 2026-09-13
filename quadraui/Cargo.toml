@@ -156,6 +156,15 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     # itself needs "NSAlert"; `addButtonWithTitle:`/`setKeyEquivalent:`
     # (an `NSButton` per alert button) need "NSButton" + "NSControl" on
     # top of the "NSResponder" + "NSView" already listed above.
+    #
+    # quadraui#947 leans on the same three: `NSWindow`'s
+    # `standardWindowButton:` (used to measure the inset AppKit's traffic
+    # lights reserve in a client-side titlebar) is cfg'd
+    # all(feature = "NSButton", feature = "NSControl", feature = "NSView")
+    # because it returns an `NSButton`. Both are cfgs on the *method*, so
+    # tests/macos_appkit_features.rs's per-symbol map can't guard them —
+    # do not drop "NSButton"/"NSControl" on the grounds that no import
+    # names them.
     "NSAlert",
     "NSButton",
     "NSControl",

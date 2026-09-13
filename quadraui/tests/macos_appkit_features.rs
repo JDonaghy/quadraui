@@ -92,10 +92,26 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSView", "NSView"),
     ("NSViewFrameDidChangeNotification", "NSView"),
     ("NSWindow", "NSWindow"),
+    // Issue #947 (client-side titlebar): the traffic-light identifiers
+    // handed to `NSWindow::standardWindowButton:` when measuring the
+    // inset AppKit reserves at the leading edge of a
+    // `FullSizeContentView` window. Lives in the `NSWindow` header, not a
+    // "NSWindowButton" feature of its own — there is no such feature.
+    // `standardWindowButton:` itself is additionally cfg'd
+    // `all(feature = "NSButton", feature = "NSControl", feature = "NSView")`
+    // because it hands back an `NSButton`; like `NSAlert`'s
+    // `addButtonWithTitle:` above that is a cfg on the *method*, which
+    // this per-symbol map can't express, so quadraui/Cargo.toml comments
+    // it instead. All three were already enabled for #936.
+    ("NSWindowButton", "NSWindow"),
     // Issue #834 (HiDPI runtime change): lives in the `NSWindow` header,
     // same as `NSWindowStyleMask` above.
     ("NSWindowDidChangeBackingPropertiesNotification", "NSWindow"),
     ("NSWindowStyleMask", "NSWindow"),
+    // Issue #947 (client-side titlebar): `setTitleVisibility:` hides
+    // AppKit's own title string so the app-drawn band doesn't
+    // double-draw it. `NSWindow` header again, same as the style mask.
+    ("NSWindowTitleVisibility", "NSWindow"),
 ];
 
 fn manifest_dir() -> PathBuf {
