@@ -1624,21 +1624,49 @@ have GitHub write access, coordinator: please open against #481)
    `windowShouldClose:` unless the app's `UiEvent::WindowClose` handler
    returns `Reaction::Exit`; `QuadraAppDelegate::applicationShouldTerminate:`
    applies the identical veto for Cmd-Q / the app-menu Quit item, which
-   otherwise bypasses `windowShouldClose:` entirely. Review caught that
-   the two hooks are *not* fully disjoint the other way: closing the
-   app's one window via the traffic light returns `true` from
-   `windowShouldClose:`, and since
-   `applicationShouldTerminateAfterLastWindowClosed:` is unconditionally
-   `true`, AppKit carries that straight into `applicationShouldTerminate:`
-   too — which, unguarded, would dispatch `UiEvent::WindowClose` to the
-   app a second time for one user action. Fixed with a shared
-   `Rc<Cell<bool>>` (`window_close_resolved`) that `windowShouldClose:`
-   sets the moment it resolves a close to `Reaction::Exit`, which
-   `applicationShouldTerminate:` checks first and, if set, skips
-   re-dispatching and answers `TerminateNow` directly. See
-   `should_skip_terminate_dispatch`'s doc in `macos::run` for the unit
-   coverage (the live two-hook interaction itself still can't be
-   exercised outside a real `macos-latest` host).
+   otherwise bypasses `windowShouldClose:` entirely.
+
+   Two review rounds then found that implementing
+   `applicationShouldTerminate:` at all makes it reachable by **three**
+   routes, only one of which is a fresh request the app hasn't already
+   answered:
+
+   1. Cmd-Q / menu Quit / Dock Quit — genuinely fresh, must dispatch.
+   2. Traffic light → `windowShouldClose:` returned `true` → last window
+      closed → `applicationShouldTerminateAfterLastWindowClosed:` is
+      unconditionally `true` → AppKit's ordinary termination sequence
+      lands back in `applicationShouldTerminate:`.
+   3. *Any* event whose handler returns `Reaction::Exit` →
+      `QuadraView::apply_reaction` → `ReactionSink::request_exit` →
+      `[NSApp terminate:]`, and `terminate:` is documented to always ask
+      the delegate first.
+
+   Unguarded, routes 2 and 3 dispatch `UiEvent::WindowClose` for
+   something the app already decided. Route 3 is the more damaging and
+   the more common: `Key::Char('q') | Key::Escape => Reaction::Exit` with
+   *no* `WindowClose` arm is the exit idiom in nearly every
+   `examples/common/*.rs`, so the synthetic re-dispatch hits their
+   catch-all `Reaction::Continue`, which maps to `TerminateCancel` — the
+   app silently refuses to quit on `q`.
+
+   Fixed with a shared `Rc<ExitGate>` (a `Cell<bool>` behind two
+   methods), held by both the view and the app delegate: whoever grants
+   an exit calls `note_exit_granted` (`windowShouldClose:` the moment it
+   resolves a close to `Reaction::Exit`; `request_exit` immediately
+   before `[NSApp terminate:]`), and `ExitGate::terminate_reply` — the
+   whole `applicationShouldTerminate:` decision — answers `TerminateNow`
+   without re-dispatching when a grant is already on record. GTK and Win
+   avoid the identical hazard structurally instead (`window.destroy()` /
+   `DestroyWindow`, neither of which re-enters that backend's close-veto
+   hook); AppKit offers no "terminate without consulting the delegate"
+   entry point, so macOS records the grant. `terminate_reply` takes the
+   dispatch as a closure specifically so `macos::run::window_close_tests`
+   can assert the app is *not called again*, not merely that its answer
+   was discarded. The single never-reset flag is sound only because
+   `run_with` builds exactly one window — see `ExitGate`'s doc for the
+   note that multi-window support would have to make it per-window. The
+   live AppKit interaction itself still can't be exercised outside a real
+   `macos-latest` host.
 2. Wire `DpiChanged` for GTK's live runtime case (`notify::scale-factor`
    on the surface, debounced like resize) — PORT-12's scope.
 3. Add `BackendCaps` fields for the four optional-capability variants
@@ -1688,7 +1716,7 @@ have GitHub write access, coordinator: please open against #481)
    mechanically re-checks the D-010 table's "macOS: ✅" `WindowClose`
    claim if a future edit regresses it — `macos::run::window_close_tests`'
    `dispatch_event` coverage plus the pure `window_should_close_for_reaction`/
-   `terminate_reply_for_reaction`/`should_skip_terminate_dispatch` unit
+   `terminate_reply_for_reaction`/`ExitGate` unit
    tests are the closest available substitute, same as D-010's own
    original GTK/Win coverage before the C2 harness existed. A `macos`
    `c2_event_parity` column — presumably native-event-injection driven,
