@@ -1624,7 +1624,21 @@ have GitHub write access, coordinator: please open against #481)
    `windowShouldClose:` unless the app's `UiEvent::WindowClose` handler
    returns `Reaction::Exit`; `QuadraAppDelegate::applicationShouldTerminate:`
    applies the identical veto for Cmd-Q / the app-menu Quit item, which
-   otherwise bypasses `windowShouldClose:` entirely.
+   otherwise bypasses `windowShouldClose:` entirely. Review caught that
+   the two hooks are *not* fully disjoint the other way: closing the
+   app's one window via the traffic light returns `true` from
+   `windowShouldClose:`, and since
+   `applicationShouldTerminateAfterLastWindowClosed:` is unconditionally
+   `true`, AppKit carries that straight into `applicationShouldTerminate:`
+   too — which, unguarded, would dispatch `UiEvent::WindowClose` to the
+   app a second time for one user action. Fixed with a shared
+   `Rc<Cell<bool>>` (`window_close_resolved`) that `windowShouldClose:`
+   sets the moment it resolves a close to `Reaction::Exit`, which
+   `applicationShouldTerminate:` checks first and, if set, skips
+   re-dispatching and answers `TerminateNow` directly. See
+   `should_skip_terminate_dispatch`'s doc in `macos::run` for the unit
+   coverage (the live two-hook interaction itself still can't be
+   exercised outside a real `macos-latest` host).
 2. Wire `DpiChanged` for GTK's live runtime case (`notify::scale-factor`
    on the surface, debounced like resize) — PORT-12's scope.
 3. Add `BackendCaps` fields for the four optional-capability variants
@@ -1662,6 +1676,24 @@ have GitHub write access, coordinator: please open against #481)
    `dispatch_event`-funnel level (`gtk::run::window_close_tests`) and
    for the one updated example — not end-to-end for the example set as
    a whole.
+6. Issue #951's brief preferred extending `tests/conformance/c2.rs`'s
+   `c2_event_parity` matrix with a `macos` column over ad hoc unit
+   tests, "to enforce what docs/BACKEND.md's D-010 prose claims." #951
+   didn't do that — deliberately, not by oversight: neither
+   `windowShouldClose:` nor `applicationShouldTerminate:` can run
+   headlessly (both need a live `NSWindow`/`NSApplication`, per
+   `macos::run`'s module doc), the same constraint that already keeps
+   macOS out of `tests/conformance/caps.rs`'s driver-executed rows and
+   limits it to source-parsed capability claims. So today nothing
+   mechanically re-checks the D-010 table's "macOS: ✅" `WindowClose`
+   claim if a future edit regresses it — `macos::run::window_close_tests`'
+   `dispatch_event` coverage plus the pure `window_should_close_for_reaction`/
+   `terminate_reply_for_reaction`/`should_skip_terminate_dispatch` unit
+   tests are the closest available substitute, same as D-010's own
+   original GTK/Win coverage before the C2 harness existed. A `macos`
+   `c2_event_parity` column — presumably native-event-injection driven,
+   gated to the existing `macos-latest`-only CI leg — is still open work,
+   not ruled out, just not attempted by this issue.
 
 ## D-011 — Clipboard paste/copy keypress contract: shift tolerance, letter case, forced redraw, native modifier (issue #728)
 
