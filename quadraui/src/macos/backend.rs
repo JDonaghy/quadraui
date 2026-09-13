@@ -124,8 +124,12 @@ use super::services::MacPlatformServices;
 /// - `current_cg_ptr` — frame-scope pointer; non-null only inside
 ///   [`Self::enter_frame_scope`].
 /// - `current_font` / `current_line_height` / `current_char_width` —
-///   per-app font state. Apps set these once in `setup()` via
+///   per-app *editor* font state. Apps set these once in `setup()` via
 ///   [`Self::set_current_font`].
+/// - `chrome_font` / `chrome_line_height` / `chrome_char_width` — the
+///   independent *chrome* (UI) font state (issue #963), defaulting to the
+///   CoreText system UI font. Set via [`Self::set_chrome_font`]
+///   (`Backend::set_ui_font`'s inherent twin).
 pub struct MacBackend {
     viewport: Viewport,
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
@@ -162,6 +166,28 @@ pub struct MacBackend {
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
+    /// Chrome (UI) font — issue #963's fix for macOS being the only
+    /// pixel backend where `set_ui_font` was a silent no-op and every
+    /// piece of chrome (status bar today; more rasterisers follow-up)
+    /// painted in `current_font`, the *editor* font, instead. Unlike
+    /// `current_font`, this is never `None`: [`Self::new`] seeds it with
+    /// the CoreText system UI font so chrome already looks right before
+    /// any [`Backend::set_ui_font`] call, mirroring GTK's `"Sans 11"` /
+    /// Win-GUI's `Segoe UI` un-set defaults rather than macOS's own
+    /// editor font falling back to "no font at all". Set via
+    /// [`Self::set_chrome_font`]; never touched by
+    /// [`Self::set_current_font`]/[`Backend::set_editor_font`] — see
+    /// #912 for the metric-mismatch hazard that separation exists to
+    /// avoid.
+    chrome_font: CTFont,
+    /// Cached [`super::text::font_metrics`] line height for
+    /// `chrome_font`, in points — the chrome twin of
+    /// `current_line_height`. Recomputed by [`Self::set_chrome_font`]
+    /// whenever `chrome_font` changes.
+    chrome_line_height: f64,
+    /// Cached `char_width` for `chrome_font` — the chrome twin of
+    /// `current_char_width`.
+    chrome_char_width: f64,
     /// Family last set via [`Backend::set_nerd_font_fallback`] (issue
     /// #929), if any. Applied to `current_font` immediately if one is
     /// already set (see [`Self::set_nerd_font_fallback`]), and consulted
@@ -302,6 +328,39 @@ type WakeCallback = Arc<std::sync::OnceLock<MainThreadBound<Rc<dyn Fn()>>>>;
 /// revisited, ideally verified on real hardware).
 const MAC_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 
+/// Default chrome (UI) font size in points, paired with the CoreText
+/// system UI font [`MacBackend::new`] installs as `chrome_font` before
+/// any [`Backend::set_ui_font`] call — matches GTK's `"Sans 11"` /
+/// Win-GUI's `DEFAULT_UI_FONT_SIZE_PT` default (issue #963).
+const DEFAULT_UI_FONT_SIZE_PT: f64 = 11.0;
+
+/// Parse a Pango-style font description (`Backend::set_ui_font`'s
+/// documented shape, e.g. `"Sans 13"`) into a Core-Text-ready
+/// `(family, size_pt)` pair — the same convention
+/// `win::backend::parse_ui_font_desc` implements for the identical trait
+/// contract (issue #963 ports Win-GUI's #724 shape onto macOS). A
+/// trailing whitespace-separated numeric token is the point size;
+/// everything before it is the family.
+///
+/// Returns `None` — rather than guessing at a partial split — if `desc`
+/// doesn't parse that way. Unlike Win-GUI (which has no installed-family
+/// check and falls back to a hardcoded default family string
+/// unconditionally), macOS can ask Core Text directly whether a family
+/// exists ([`super::text::make_font`]), so the "family isn't installed"
+/// case is handled by the caller ([`MacBackend::set_ui_font`]) instead of
+/// baked into this parser.
+fn parse_ui_font_desc(desc: &str) -> Option<(String, f64)> {
+    let desc = desc.trim();
+    let idx = desc.rfind(' ')?;
+    let (family, size_str) = desc.split_at(idx);
+    let family = family.trim();
+    if family.is_empty() {
+        return None;
+    }
+    let size_pt: f64 = size_str.trim().parse().ok()?;
+    Some((family.to_string(), size_pt))
+}
+
 /// Translate a parsed universal [`KeyBinding`] to macOS's native Cmd
 /// idiom.
 ///
@@ -415,6 +474,11 @@ impl MacBackend {
     /// the viewport each frame via [`Backend::begin_frame`]; apps
     /// install a font via [`Self::set_current_font`] in `setup()`.
     pub fn new() -> Self {
+        // Seed chrome with the CoreText system UI font (issue #963) so
+        // chrome paints correctly before any `set_ui_font` call — see
+        // `chrome_font`'s field doc.
+        let chrome_font = super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT);
+        let chrome_metrics = super::text::font_metrics(&chrome_font);
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
@@ -429,6 +493,9 @@ impl MacBackend {
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
+            chrome_font,
+            chrome_line_height: chrome_metrics.line_height,
+            chrome_char_width: chrome_metrics.char_width,
             nerd_font_fallback_family: None,
             menu_target: None,
             caret_visible: std::rc::Rc::new(std::cell::Cell::new(true)),
@@ -546,6 +613,20 @@ impl MacBackend {
         self.current_line_height = metrics.line_height;
         self.current_char_width = metrics.char_width;
         self.current_font = Some(font);
+    }
+
+    /// Install the chrome (UI) font and refresh `chrome_line_height` /
+    /// `chrome_char_width` from its metrics — the chrome twin of
+    /// [`Self::set_current_font`] (issue #963). Unlike that method, this
+    /// never consults [`Self::nerd_font_fallback_family`]: nerd-font
+    /// glyphs are an icon concern for `draw_tree`/`draw_activity_bar`,
+    /// which read `current_font`, not `chrome_font` — there is no chrome
+    /// call site yet that would need a fallback cascade applied here.
+    pub fn set_chrome_font(&mut self, font: CTFont) {
+        let metrics = super::text::font_metrics(&font);
+        self.chrome_line_height = metrics.line_height;
+        self.chrome_char_width = metrics.char_width;
+        self.chrome_font = font;
     }
 
     /// Override the cached line height (in points) that every `draw_*`
@@ -993,6 +1074,42 @@ impl Backend for MacBackend {
         if let Some(font) = self.current_font.take() {
             self.current_font = Some(super::text::font_with_fallback(&font, family));
         }
+    }
+
+    /// Maps onto the existing [`Self::set_current_font`] machinery
+    /// (issue #963) — `current_font` already *is* "the editor font" on
+    /// this backend; there was previously just no `Backend`-trait-level
+    /// way to reach it by (family, size) the way GTK/Win-GUI expose. If
+    /// `family` doesn't resolve to an installed Core Text family, this
+    /// silently keeps whatever font was already installed rather than
+    /// panicking or clearing it — same "degrade, don't fail" posture
+    /// [`super::text::font_with_fallback`]'s doc already documents for
+    /// this backend's font handling generally.
+    fn set_editor_font(&mut self, family: &str, size_pt: f32) {
+        if let Some(font) = super::text::make_font(family, size_pt as f64) {
+            self.set_current_font(font);
+        }
+    }
+
+    /// Chrome twin of [`Self::set_editor_font`] (issue #963) — installs
+    /// `font_desc` (Pango-style, e.g. `"Sans 13"`) as `chrome_font` via
+    /// [`Self::set_chrome_font`], parsed by [`parse_ui_font_desc`]. Never
+    /// touches `current_font`/`current_line_height`/`current_char_width`
+    /// — keeping editor and chrome metrics from the same font is exactly
+    /// the #912 hazard this separation exists to avoid.
+    ///
+    /// Degrades to the CoreText system UI font (at the requested size, or
+    /// [`DEFAULT_UI_FONT_SIZE_PT`] if `font_desc` doesn't parse at all)
+    /// when the named family isn't installed, rather than panicking or
+    /// silently keeping a stale chrome font a caller explicitly asked to
+    /// change.
+    fn set_ui_font(&mut self, font_desc: &str) {
+        let font = match parse_ui_font_desc(font_desc) {
+            Some((family, size_pt)) => super::text::make_font(&family, size_pt)
+                .unwrap_or_else(|| super::text::system_ui_font(size_pt)),
+            None => super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT),
+        };
+        self.set_chrome_font(font);
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
@@ -1702,11 +1819,18 @@ impl Backend for MacBackend {
         // `Self::surface_fill_rect` — so this method needs no separate
         // ctx/font fetch of its own, matching `Self::draw_panel`'s #859
         // shape.
+        //
+        // Issue #963: the status bar is chrome, not editor content, so it
+        // paints through `ChromeSurface` (routes text through
+        // `chrome_font`/`chrome_line_height`) rather than `self` directly
+        // (which would paint through `current_font`, the *editor* font,
+        // via `MacBackend`'s own `NativeSurface` impl below).
         let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
+        let line_height = self.chrome_line_height as f32;
+        let mut surface = ChromeSurface { backend: self };
         crate::primitives::status_bar::native_surface_paint::paint(
             bar,
-            self,
+            &mut surface,
             &theme,
             rect.x,
             rect.y,
@@ -1956,27 +2080,18 @@ impl Backend for MacBackend {
         // call, so hit regions match the painted frame exactly. Hit
         // regions are bar-local, so `rect.x` / `rect.y` are deliberately
         // not folded in (quadraui#552 — audited, no change needed).
-        match self.current_font.as_ref() {
-            Some(font) => super::status_bar::mac_status_bar_layout(
-                font,
-                rect.width as f64,
-                self.current_line_height,
-                bar,
-            ),
-            // Called before `set_current_font` (e.g. a click handler
-            // firing before the first paint): fall back to the backend's
-            // seeded `char_width` rather than panicking, matching the
-            // `sidebar_panel_layout` precedent below.
-            None => {
-                let cw = self.current_char_width as f32;
-                bar.layout(
-                    rect.width,
-                    self.current_line_height as f32,
-                    super::status_bar::MIN_GAP_PX,
-                    |seg| crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cw),
-                )
-            }
-        }
+        //
+        // Issue #963: measures against `chrome_font`/`chrome_line_height`,
+        // matching `draw_status_bar_interactive`'s `ChromeSurface` switch
+        // above — unlike `current_font`, `chrome_font` is never `None`
+        // (seeded at construction, see its field doc), so this no longer
+        // needs a "called before a font was installed" fallback branch.
+        super::status_bar::mac_status_bar_layout(
+            &self.chrome_font,
+            rect.width as f64,
+            self.chrome_line_height,
+            bar,
+        )
     }
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -3189,6 +3304,108 @@ impl WindowControl for MacBackend {
 // every existing rasteriser keeps using its own private copy untouched.
 // See `native_surface`'s module doc for the full scope note and why these
 // methods are `surface_`-prefixed instead of colliding with `Backend`'s.
+/// Adapts `&mut MacBackend` to [`NativeSurface`], routing text
+/// measurement and painting through `chrome_font`/`chrome_line_height`/
+/// `chrome_char_width` instead of the `current_font`/`current_line_height`/
+/// `current_char_width` `MacBackend`'s own `NativeSurface` impl (below)
+/// uses — that impl is the shared choke point every other `self`-as-surface
+/// primitive (`draw_form`, `draw_chart`, `draw_scrollbar`, …) still paints
+/// through, so it has to keep serving `current_font`; this adapter exists
+/// precisely so chrome primitives don't have to (issue #963 — see
+/// `chrome_font`'s field doc for why the two must stay separate, and #912
+/// for what goes wrong when they don't).
+///
+/// Every font-agnostic method (fills, strokes, clip, lines, images, frame
+/// lifecycle) forwards straight through to `MacBackend`'s own impl, which
+/// doesn't touch the font either way — only the three text-shaped methods
+/// below actually differ.
+///
+/// [`Backend::draw_status_bar_interactive`] is the first call site; wiring
+/// the rest of `super`'s chrome rasterisers (tab bar, tree, menu bar,
+/// dialogs, …) off this same adapter is tracked follow-up — the
+/// `ACCEPTED_DEFAULTS` entries this issue removes only gated on
+/// `set_ui_font`/`set_editor_font` no longer being no-ops, not on every
+/// chrome rasteriser having migrated yet (mirrors the scope Win-GUI's
+/// #724 `chrome_dwrite` shipped with).
+struct ChromeSurface<'a> {
+    backend: &'a mut MacBackend,
+}
+
+impl NativeSurface for ChromeSurface<'_> {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        self.backend.surface_begin_frame(viewport)
+    }
+
+    fn surface_end_frame(&mut self) {
+        self.backend.surface_end_frame()
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        self.backend.surface_viewport()
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        self.backend.chrome_line_height as f32
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        self.backend.chrome_char_width as f32
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let (w, h) = super::text::measure_text(&self.backend.chrome_font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+        self.backend.surface_fill_rect(rect, color)
+    }
+
+    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+        self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+        let ctx = self.backend.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "ChromeSurface::surface_draw_text_run called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text(
+                ctx,
+                &self.backend.chrome_font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+        self.backend
+            .surface_draw_line(from, to, color, stroke_width)
+    }
+
+    fn surface_push_clip(&mut self, rect: Rect) {
+        self.backend.surface_push_clip(rect)
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.backend.surface_pop_clip()
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        self.backend.surface_draw_image(rect, image)
+    }
+}
+
 impl NativeSurface for MacBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -5540,6 +5757,234 @@ mod tests {
         match layout.hit_test(local_x, local_y) {
             TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
             other => panic!("expected Line, got {:?}", other),
+        }
+    }
+
+    // ── Chrome font (issue #963) ─────────────────────────────────────
+    //
+    // Acceptance coverage: macOS now carries a `chrome_font` distinct
+    // from `current_font` (the editor font), defaulting to the CoreText
+    // system UI font, and `Backend::set_ui_font`/`set_editor_font` are no
+    // longer no-ops. See `ChromeSurface`'s doc for the paint-time wiring
+    // these tests exercise through `draw_status_bar_interactive`.
+
+    /// A `MacBackend` that never received a `set_ui_font` call must still
+    /// default its chrome to the CoreText system UI font, not a monospace
+    /// editor face — matching GTK's `"Sans 11"` / Win-GUI's `"Segoe UI"`
+    /// un-set defaults instead of macOS's old "no chrome font at all"
+    /// posture.
+    #[test]
+    fn chrome_font_defaults_to_system_ui_font_not_monospace() {
+        let b = MacBackend::new();
+        let expected = super::super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT);
+        assert_eq!(
+            b.chrome_font.family_name(),
+            expected.family_name(),
+            "an untouched MacBackend's chrome_font must be the CoreText system UI font"
+        );
+        assert_ne!(
+            b.chrome_font.family_name(),
+            "Menlo",
+            "the default chrome font must not be a monospace editor face"
+        );
+    }
+
+    /// `set_editor_font` and `set_ui_font` must land on independent state
+    /// — the #912 hazard this issue exists to avoid. Growing one must
+    /// never move the other's cached line height, and each setter must
+    /// install exactly the font it was asked for.
+    #[test]
+    fn set_editor_font_and_set_ui_font_are_independent() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        b.set_editor_font("Menlo", 14.0);
+        let editor_line_height_before = b.current_line_height;
+        let chrome_line_height_before = b.chrome_line_height;
+
+        // A much larger chrome font must move `chrome_line_height` but
+        // leave the editor's untouched.
+        Backend::set_ui_font(&mut b, "Helvetica 40");
+        assert_eq!(
+            b.current_line_height, editor_line_height_before,
+            "set_ui_font must not touch the editor font's cached line height"
+        );
+        assert!(
+            b.chrome_line_height > chrome_line_height_before,
+            "set_ui_font(\"Helvetica 40\") must grow chrome_line_height from the \
+             {DEFAULT_UI_FONT_SIZE_PT}pt default: before={chrome_line_height_before}, \
+             after={}",
+            b.chrome_line_height,
+        );
+        assert_eq!(b.chrome_font.family_name(), "Helvetica");
+        assert_eq!(b.chrome_font.pt_size(), 40.0);
+
+        // And the reverse: growing the editor font afterwards must not
+        // move `chrome_line_height` back.
+        let chrome_line_height_after_ui = b.chrome_line_height;
+        Backend::set_editor_font(&mut b, "Menlo", 40.0);
+        assert_eq!(
+            b.chrome_line_height, chrome_line_height_after_ui,
+            "set_editor_font must not touch chrome_line_height"
+        );
+        assert_eq!(
+            b.current_font
+                .as_ref()
+                .expect("set_current_font ran")
+                .family_name(),
+            "Menlo",
+        );
+    }
+
+    /// `set_ui_font` degrades to the CoreText system UI font (rather
+    /// than panicking or silently keeping the old chrome font) when the
+    /// description doesn't parse or names a family Core Text doesn't
+    /// have installed.
+    #[test]
+    fn set_ui_font_degrades_to_system_font_on_unparseable_or_unknown_family() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        Backend::set_ui_font(&mut b, "not-a-valid-description");
+        assert_eq!(
+            b.chrome_font.family_name(),
+            super::super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT).family_name(),
+            "an unparseable font_desc must degrade to the system UI font"
+        );
+
+        Backend::set_ui_font(&mut b, "Definitely Not A Real Font Family 12");
+        assert_eq!(
+            b.chrome_font.family_name(),
+            super::super::text::system_ui_font(12.0).family_name(),
+            "an unknown family must degrade to the system UI font at the requested size"
+        );
+        assert_eq!(b.chrome_font.pt_size(), 12.0);
+    }
+
+    /// Black-box acceptance test (issue #963): paint a `StatusBar`
+    /// through the real `Backend::draw_status_bar_interactive` path and
+    /// prove its painted geometry tracks `set_ui_font`, not
+    /// `set_editor_font` — the two-font separation actually reaching a
+    /// rasteriser, not just backend-internal state.
+    #[test]
+    fn draw_status_bar_interactive_paints_with_chrome_font_not_editor_font() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::Backend;
+
+        const W: u32 = 600;
+        const H: u32 = 40;
+
+        fn painted_segment_width(chrome_desc: &str, editor: (&str, f32)) -> f32 {
+            let surface = BitmapSurface::new(W, H);
+            let mut b = MacBackend::new();
+            Backend::set_editor_font(&mut b, editor.0, editor.1);
+            Backend::set_ui_font(&mut b, chrome_desc);
+            b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+            let bar = StatusBar {
+                id: WidgetId::new("status"),
+                left_segments: vec![StatusBarSegment {
+                    text: "Save".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(10, 10, 10),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            let layout = std::cell::RefCell::new(None);
+            b.enter_frame_scope(surface.context_ptr(), |backend| {
+                let l = backend.draw_status_bar_interactive(
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &bar,
+                    &crate::InteractionState::new(),
+                );
+                *layout.borrow_mut() = Some(l);
+            });
+            b.end_frame();
+            layout.into_inner().unwrap().visible_segments[0]
+                .bounds
+                .width
+        }
+
+        // Same chrome font, wildly different editor font sizes: painted
+        // width must not move — proves the status bar reads chrome_font,
+        // not current_font.
+        let w_small_editor = painted_segment_width("Menlo 11", ("Menlo", 10.0));
+        let w_huge_editor = painted_segment_width("Menlo 11", ("Menlo", 80.0));
+        assert!(
+            (w_small_editor - w_huge_editor).abs() < 0.01,
+            "status bar width must be unaffected by set_editor_font: {w_small_editor} vs \
+             {w_huge_editor}"
+        );
+
+        // Same editor font, wildly different chrome font sizes: painted
+        // width MUST move — proves it does read chrome_font.
+        let w_small_chrome = painted_segment_width("Menlo 8", ("Menlo", 14.0));
+        let w_huge_chrome = painted_segment_width("Menlo 60", ("Menlo", 14.0));
+        assert!(
+            w_huge_chrome > w_small_chrome * 2.0,
+            "status bar width must grow with set_ui_font: {w_small_chrome} vs {w_huge_chrome}"
+        );
+    }
+
+    /// `status_bar_layout` (the no-paint twin) must agree with what
+    /// `draw_status_bar_interactive` actually painted once both read
+    /// `chrome_font` — regression guard for #963 keeping the two
+    /// call sites in sync the way #484 already required for the
+    /// pre-#963 `current_font`-only world.
+    #[test]
+    fn status_bar_layout_matches_painted_layout_after_set_ui_font() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::Backend;
+
+        const W: u32 = 300;
+        const H: u32 = 30;
+
+        let mut b = MacBackend::new();
+        Backend::set_editor_font(&mut b, "Menlo", 14.0);
+        Backend::set_ui_font(&mut b, "Helvetica 22");
+        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![StatusBarSegment {
+                text: "Save".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(10, 10, 10),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        let painted = std::cell::RefCell::new(None);
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            let l = backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+            );
+            *painted.borrow_mut() = Some(l);
+        });
+        b.end_frame();
+        let painted = painted.into_inner().unwrap();
+
+        let computed = b.status_bar_layout(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        assert_eq!(
+            painted.visible_segments.len(),
+            computed.visible_segments.len(),
+        );
+        for (p, c) in painted
+            .visible_segments
+            .iter()
+            .zip(computed.visible_segments.iter())
+        {
+            assert!((p.bounds.x - c.bounds.x).abs() < 0.001);
+            assert!((p.bounds.width - c.bounds.width).abs() < 0.001);
         }
     }
 }
