@@ -22,13 +22,18 @@
 //!   `backend.enter_frame_scope(ctx, |b| app.render(b, area))`, and
 //!   manages `begin_frame` / `end_frame`.
 //!
-//! - `handle: Box<dyn Fn(UiEvent) -> Reaction + 'static>` — invoked by
+//! - `handle: Rc<dyn Fn(UiEvent) -> Reaction + 'static>` — invoked by
 //!   every responder override (mouse, scroll, key) after the
 //!   [`super::events`] translator produces a `UiEvent`. Calls
 //!   `app.handle(ev, &mut *backend)` and returns the reaction. The
 //!   responder dispatches `Reaction` synchronously through
 //!   [`QuadraView::apply_reaction`] — `Redraw` → `setNeedsDisplay`,
-//!   `Exit` → `[NSApp terminate:]`.
+//!   `Exit` → `[NSApp terminate:]`. `Rc`, not `Box` (issue #951): the
+//!   same closure is also handed to [`QuadraAppDelegate`], so
+//!   `applicationShouldTerminate:` (Cmd-Q / the app-menu Quit item) can
+//!   run the exact `UiEvent::WindowClose` veto decision
+//!   `QuadraView::windowShouldClose:` runs for the traffic-light button —
+//!   see that method's doc.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -47,10 +52,11 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType,
-    NSDragOperation, NSDraggingInfo, NSEvent, NSGraphicsContext, NSPasteboardTypeFileURL, NSView,
-    NSViewFrameDidChangeNotification, NSWindow, NSWindowDidChangeBackingPropertiesNotification,
-    NSWindowStyleMask, NSWindowTitleVisibility,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSBackingStoreType, NSDragOperation, NSDraggingInfo, NSEvent,
+    NSGraphicsContext, NSPasteboardTypeFileURL, NSView, NSViewFrameDidChangeNotification, NSWindow,
+    NSWindowDelegate, NSWindowDidChangeBackingPropertiesNotification, NSWindowStyleMask,
+    NSWindowTitleVisibility,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
@@ -110,7 +116,11 @@ extern "C" {
 /// AppLogic`; from `define_class!`'s perspective they're just two
 /// `Box<dyn Fn>` smart pointers.
 type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
-type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
+/// `Rc`, not `Box` — issue #951 shares one `handle` closure between
+/// `QuadraView` (every responder-method dispatch) and `QuadraAppDelegate`
+/// (`applicationShouldTerminate:`), so both can run the same
+/// `UiEvent::WindowClose` veto decision. See this file's module doc.
+type HandleFn = Rc<dyn Fn(UiEvent) -> Reaction + 'static>;
 /// Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` (quadraui#832)
 /// — the third leg of the type-erased-closure trio, alongside `paint`/
 /// `handle` above. Fired by [`MacBackend::request_frame_in`]'s
@@ -837,6 +847,38 @@ define_class!(
             }
         }
     }
+
+    // Needed to adopt `NSWindowDelegate` below — `QuadraView` inherits
+    // from `NSView` (which already conforms), but that conformance
+    // doesn't carry over to this distinct Rust type without saying so
+    // explicitly (the same requirement `QuadraAppDelegate` — a bare
+    // `NSObject` subclass — already states below).
+    unsafe impl NSObjectProtocol for QuadraView {}
+
+    // ── Window close (issue #951) ────────────────────────────────────
+    //
+    // Before this, the red traffic-light button, Cmd-W, and the
+    // AppKit-native "Close" menu item all closed the window directly —
+    // no `UiEvent` in between — so an app's unsaved-changes guard,
+    // written against `UiEvent::WindowClose`'s documented "required on
+    // every windowed backend" contract (D-010), simply never ran on
+    // macOS. `windowShouldClose:` fires before the window is torn down
+    // and lets the delegate veto it by returning `false` — the same
+    // "ask first" hook GTK's `connect_close_request` and Win's
+    // `WM_CLOSE` already use (see `gtk::run`'s window-close wiring and
+    // `win::run::wnd_proc`'s `WM_CLOSE` arm).
+    //
+    // `run_with` makes the view its own window delegate
+    // (`window.setDelegate`), so this reuses the exact `handle` closure
+    // (now `Rc`-shared, see `HandleFn`'s doc) every mouse/key/scroll
+    // responder above dispatches through — a real `AppLogic::handle`
+    // call, not a synthetic stand-in.
+    unsafe impl NSWindowDelegate for QuadraView {
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _sender: &NSWindow) -> bool {
+            self.evaluate_window_should_close()
+        }
+    }
 );
 
 impl QuadraView {
@@ -991,6 +1033,61 @@ impl QuadraView {
         self.apply_reaction(reaction);
     }
 
+    /// Backing logic for `windowShouldClose:` (issue #951) — the
+    /// `NSWindowDelegate` override above. Deliberately separate from
+    /// [`Self::dispatch`]: that method always runs [`Self::apply_reaction`]
+    /// and returns nothing, but `windowShouldClose:` must hand AppKit a
+    /// `bool` instead, and must *not* run `apply_reaction`'s
+    /// `Reaction::Exit` branch — that calls `request_exit` →
+    /// `[NSApp terminate:]`, which is redundant here (returning `true`
+    /// already lets AppKit's own close sequence proceed) and would risk
+    /// re-entering this same delegate callback via `terminate:`'s own
+    /// window-closing machinery.
+    ///
+    /// Only `Reaction::Exit` answers `true` (let the close proceed) —
+    /// every other reaction, including the `Reaction::Continue` an app
+    /// with no `WindowClose` opinion returns, vetoes it. Matches the veto
+    /// rule `gtk::run`'s `connect_close_request` documents: an app must
+    /// explicitly return `Reaction::Exit` from its `WindowClose` handler
+    /// to let the window close at all.
+    ///
+    /// # Panic safety (#922)
+    ///
+    /// Same C-ABI-boundary guard as [`Self::dispatch`], with one
+    /// difference in the fallback: a caught panic here vetoes the close
+    /// (`false`) rather than defaulting to `Reaction::Continue`'s usual
+    /// "apply nothing" behaviour, because `Reaction::Continue` already
+    /// means "veto" for this method — closing the window anyway after
+    /// `handle` panicked would silently skip the very unsaved-changes
+    /// guard this issue exists to make reliable.
+    fn evaluate_window_should_close(&self) -> bool {
+        let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.ivars().handle)(UiEvent::WindowClose)
+        })) {
+            Ok(reaction) => reaction,
+            Err(payload) => {
+                crate::desktop::report_caught_panic_once(
+                    "macos::run::QuadraView::evaluate_window_should_close (app.handle)",
+                    payload.as_ref(),
+                );
+                return false;
+            }
+        };
+        // Non-`Exit` reactions still need their usual effect (a `Redraw`
+        // shouldn't be silently dropped just because it arrived via
+        // `WindowClose`) — `apply_reaction` on `Reaction::Continue` is a
+        // documented no-op (`runtime::apply_outcome`), so this is safe to
+        // call unconditionally for every reaction except `Exit`, which
+        // must NOT go through `apply_reaction`'s `request_exit` path (see
+        // this method's doc for the re-entrancy hazard that would cause).
+        if window_should_close_for_reaction(reaction) {
+            true
+        } else {
+            self.apply_reaction(reaction);
+            false
+        }
+    }
+
     /// Fire `AppLogic::tick` and act on the returned [`Reaction`]
     /// (quadraui#832). The [`MacBackend::set_tick_callback`] target a
     /// [`MacBackend::request_frame_in`] timer invokes once its delay
@@ -1047,13 +1144,24 @@ impl ReactionSink for QuadraView {
     }
 }
 
+/// `QuadraAppDelegate`'s ivars — just the shared `handle` closure (issue
+/// #951), so `applicationShouldTerminate:` can run the exact same
+/// `UiEvent::WindowClose` veto decision `QuadraView::windowShouldClose:`
+/// runs. See [`HandleFn`]'s doc for why this is an `Rc`, not a `Box`.
+pub(crate) struct QuadraAppDelegateIvars {
+    handle: HandleFn,
+}
+
 define_class!(
-    /// Minimal `NSApplicationDelegate` — terminate the process when
-    /// the last window closes (red traffic-light → exit). #36 may
-    /// extend this with notification + URL-scheme handling.
+    /// `NSApplicationDelegate` — terminates the process when the last
+    /// window closes (red traffic-light → exit), and (issue #951) asks
+    /// the app before honouring Cmd-Q / the auto-prepended app-menu Quit
+    /// item / a Dock "Quit". #36 may extend this further with
+    /// notification + URL-scheme handling.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "QuadraUiAppDelegate"]
+    #[ivars = QuadraAppDelegateIvars]
     pub(crate) struct QuadraAppDelegate;
 
     unsafe impl NSObjectProtocol for QuadraAppDelegate {}
@@ -1063,14 +1171,89 @@ define_class!(
         fn should_terminate_after_last_window(&self, _sender: &NSApplication) -> bool {
             true
         }
+
+        // ── Cmd-Q / menu Quit (issue #951) ───────────────────────────
+        //
+        // `[NSApp terminate:]` — which Cmd-Q and the auto-prepended app
+        // menu's Quit item both send — asks the delegate this one
+        // question and, absent an override, defaults to
+        // `NSTerminateNow`: it does NOT walk open windows and ask each
+        // one `windowShouldClose:` the way an ordinary window-manager
+        // close does. Left unhandled, an app's unsaved-changes guard
+        // (written against `UiEvent::WindowClose`) would run for the
+        // traffic-light button but not for Cmd-Q — exactly the second
+        // hole this issue's brief calls out. Dispatching the same event
+        // here and vetoing on anything but `Reaction::Exit` closes it.
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+            self.evaluate_should_terminate()
+        }
     }
 );
 
 impl QuadraAppDelegate {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, handle: HandleFn) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(());
+        let this = this.set_ivars(QuadraAppDelegateIvars { handle });
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Backing logic for `applicationShouldTerminate:` — see that
+    /// method's doc for why Cmd-Q needs its own hook at all rather than
+    /// relying on `QuadraView::windowShouldClose:`.
+    ///
+    /// # Panic safety (#922)
+    ///
+    /// Same C-ABI-boundary guard as [`QuadraView::dispatch`]: this is
+    /// invoked directly from objc2's dispatch trampoline off AppKit's
+    /// termination machinery, which cannot unwind. A caught panic
+    /// answers `TerminateCancel` — same "veto, don't lose work" fallback
+    /// [`QuadraView::evaluate_window_should_close`] uses for the
+    /// identical case.
+    fn evaluate_should_terminate(&self) -> NSApplicationTerminateReply {
+        let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (self.ivars().handle)(UiEvent::WindowClose)
+        })) {
+            Ok(reaction) => reaction,
+            Err(payload) => {
+                crate::desktop::report_caught_panic_once(
+                    "macos::run::QuadraAppDelegate::evaluate_should_terminate (app.handle)",
+                    payload.as_ref(),
+                );
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
+        };
+        terminate_reply_for_reaction(reaction)
+    }
+}
+
+/// The veto rule `QuadraView::windowShouldClose:` applies to whatever
+/// [`Reaction`] the app's `UiEvent::WindowClose` handler returns (issue
+/// #951): only `Reaction::Exit` lets AppKit's close proceed. Pulled out
+/// as a pure function — same reasoning as [`window_title`]/
+/// [`window_style_mask`] (quadraui#933/#947) — so the actual veto
+/// decision is unit-testable without a live `NSWindow`/`NSView`, which
+/// can't be constructed or exercised outside a real `macos-latest` host
+/// (see this file's module doc and `.github/workflows/macos.yml`'s
+/// header for why).
+fn window_should_close_for_reaction(reaction: Reaction) -> bool {
+    matches!(reaction, Reaction::Exit)
+}
+
+/// Same rule as [`window_should_close_for_reaction`], answered in the
+/// shape `applicationShouldTerminate:` needs instead of a bare `bool`
+/// (issue #951) — the Cmd-Q / menu-Quit twin of the traffic-light veto.
+/// Deliberately never returns `NSApplicationTerminateReply::TerminateLater`:
+/// that variant exists for a delegate that needs to run an async sheet
+/// before answering (see its doc), which no quadraui backend does today —
+/// an app that wants a confirmation dialog first shows it synchronously
+/// inside its own `WindowClose` handler and returns `Reaction::Continue`
+/// (implicit veto) or `Reaction::Exit` (proceed) once it's decided.
+fn terminate_reply_for_reaction(reaction: Reaction) -> NSApplicationTerminateReply {
+    if window_should_close_for_reaction(reaction) {
+        NSApplicationTerminateReply::TerminateNow
+    } else {
+        NSApplicationTerminateReply::TerminateCancel
     }
 }
 
@@ -1262,7 +1445,7 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
         let backend = backend.clone();
         let caret_visible = caret_visible.clone();
         let caret_pause = caret_pause.clone();
-        Box::new(move |ev: UiEvent| -> Reaction {
+        Rc::new(move |ev: UiEvent| -> Reaction {
             let mut backend_mut = backend.borrow_mut();
             let mut app_mut = app.borrow_mut();
             match dispatch_event(
@@ -1302,7 +1485,12 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let ns_app = NSApplication::sharedApplication(mtm);
     let _ = ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 
-    let delegate = QuadraAppDelegate::new(mtm);
+    // #951: the app delegate needs its own handle to `handle` (Cmd-Q /
+    // menu Quit routes through `applicationShouldTerminate:`, not
+    // through any window's `windowShouldClose:`) — `handle` is `Rc`-
+    // shared for exactly this, see `HandleFn`'s doc. Cloned here, before
+    // `QuadraView::new` below moves the original into the view's ivars.
+    let delegate = QuadraAppDelegate::new(mtm, handle.clone());
     let delegate_proto = ProtocolObject::from_ref(&*delegate);
     ns_app.setDelegate(Some(delegate_proto));
 
@@ -1342,6 +1530,11 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     window.setContentView(Some(&view));
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
+    // #951: the view doubles as its own window delegate so
+    // `windowShouldClose:` (the red traffic-light button, Cmd-W, the
+    // native "Close" menu item) can veto the close via `UiEvent::WindowClose`
+    // — see `QuadraView`'s `NSWindowDelegate` impl above.
+    window.setDelegate(Some(ProtocolObject::from_ref(&*view)));
     window.makeKeyAndOrderFront(None);
 
     // OS file drop (issue #834): opt the view into `NSDraggingDestination`
@@ -1555,6 +1748,139 @@ mod run_config_tests {
         assert!(mask.contains(NSWindowStyleMask::Closable));
         assert!(mask.contains(NSWindowStyleMask::Resizable));
         assert!(mask.contains(NSWindowStyleMask::Miniaturizable));
+    }
+}
+
+/// Coverage for issue #951 — macOS never emitted `UiEvent::WindowClose`,
+/// so an app's unsaved-changes guard (written against D-010's "required
+/// on every windowed backend" contract) silently never ran. Two axes:
+///
+/// - [`window_should_close_for_reaction`] / [`terminate_reply_for_reaction`]
+///   are the actual veto *decision* `windowShouldClose:` /
+///   `applicationShouldTerminate:` apply, pulled out as pure functions
+///   (same split as [`window_title`]/[`window_style_mask`], quadraui#933/
+///   #947) specifically so this decision has real unit coverage: neither
+///   method itself can run here, or anywhere outside a live
+///   `macos-latest` host (see this file's module doc) — `windowShouldClose:`
+///   needs a real `NSWindow`/`NSView` pair, `applicationShouldTerminate:`
+///   a real `NSApplication`.
+/// - `dispatch_event(UiEvent::WindowClose, …)` needs neither: it's the
+///   same headless call [`super::testing::MacDriver::dispatch`] makes,
+///   proving the event reaches `app.handle` unrewritten and unswallowed
+///   before either live entry point's veto logic ever runs — mirrors
+///   `gtk::run`'s `#2244` `WindowClose` dispatch coverage almost exactly.
+#[cfg(test)]
+mod window_close_tests {
+    use super::*;
+
+    #[test]
+    fn only_exit_permits_the_window_to_close() {
+        assert!(window_should_close_for_reaction(Reaction::Exit));
+        assert!(!window_should_close_for_reaction(Reaction::Continue));
+        assert!(!window_should_close_for_reaction(Reaction::Redraw));
+        assert!(!window_should_close_for_reaction(Reaction::RedrawAfter(
+            std::time::Duration::from_millis(50)
+        )));
+    }
+
+    #[test]
+    fn only_exit_answers_terminate_now() {
+        assert_eq!(
+            terminate_reply_for_reaction(Reaction::Exit),
+            NSApplicationTerminateReply::TerminateNow
+        );
+        assert_eq!(
+            terminate_reply_for_reaction(Reaction::Continue),
+            NSApplicationTerminateReply::TerminateCancel
+        );
+        assert_eq!(
+            terminate_reply_for_reaction(Reaction::Redraw),
+            NSApplicationTerminateReply::TerminateCancel
+        );
+        assert_eq!(
+            terminate_reply_for_reaction(Reaction::RedrawAfter(std::time::Duration::from_millis(
+                50
+            ))),
+            NSApplicationTerminateReply::TerminateCancel
+        );
+    }
+
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+        reaction: Reaction,
+    }
+
+    impl RecordingApp {
+        /// `reaction` is what every `handle` call answers with — the
+        /// tests below only care about the one `WindowClose` dispatch
+        /// each drives, so a single fixed reaction (rather than a
+        /// per-event script) keeps each test's setup to one line.
+        fn new(reaction: Reaction) -> Self {
+            Self {
+                events: Vec::new(),
+                reaction,
+            }
+        }
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            self.reaction
+        }
+    }
+
+    fn dispatch(ev: UiEvent, backend: &mut MacBackend, app: &mut RecordingApp) -> EventOutcome {
+        let caret_visible = backend.caret_visible_handle();
+        let caret_pause = backend.caret_blink_pause_handle();
+        dispatch_event(ev, backend, app, &caret_visible, &caret_pause)
+    }
+
+    /// `WindowClose` doesn't match any of `dispatch_event`'s special-cased
+    /// arms (`MouseDown`/`MouseMoved`/`MouseUp`), so it must fall all the
+    /// way through to the shared `runtime::preprocess_event` → `app.handle`
+    /// unrewritten — not silently dropped, and not folded into some other
+    /// event the way a double-click gets folded.
+    #[test]
+    fn window_close_reaches_the_app_unrewritten() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::new(Reaction::Continue);
+        let _ = dispatch(UiEvent::WindowClose, &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![UiEvent::WindowClose],
+            "WindowClose must reach app.handle unchanged, matching gtk::run::dispatch_event/ \
+             win::run::dispatch_event"
+        );
+    }
+
+    /// The default reaction an app with no `WindowClose` opinion returns
+    /// (`Reaction::Continue`, from its catch-all match arm) must produce
+    /// `EventOutcome::Continue` — the implicit veto every other backend
+    /// applies too (see `window_should_close_for_reaction`'s doc).
+    #[test]
+    fn unhandled_window_close_does_not_exit() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::new(Reaction::Continue);
+        let outcome = dispatch(UiEvent::WindowClose, &mut backend, &mut app);
+        assert_eq!(outcome, EventOutcome::Continue);
+    }
+
+    /// An app that explicitly returns `Reaction::Exit` from its
+    /// `WindowClose` handler — the only way `window_should_close_for_reaction`/
+    /// `terminate_reply_for_reaction` let the window/process actually
+    /// close — must see that reaction survive the round trip through
+    /// `dispatch_event` as `EventOutcome::Exit`.
+    #[test]
+    fn exit_reaction_survives_the_round_trip() {
+        let mut backend = MacBackend::new();
+        let mut app = RecordingApp::new(Reaction::Exit);
+        let outcome = dispatch(UiEvent::WindowClose, &mut backend, &mut app);
+        assert_eq!(outcome, EventOutcome::Exit);
     }
 }
 

@@ -1600,7 +1600,10 @@ against it rather than rediscovering the hazard.
   re-read of this entry.
 - It does not mean macOS's `WindowClose` gap is resolved. It is
   explicitly **not** wired by this PR; #486 (or a new follow-up, if
-  #486's scope doesn't cover it) owns that.
+  #486's scope doesn't cover it) owns that. **Update:** issue #951 wired
+  it (`macos::run`'s `windowShouldClose:`/`applicationShouldTerminate:`,
+  covering the traffic-light button and Cmd-Q/menu-Quit respectively) —
+  follow-up 1 below is done.
 - It does not mean `BackendCaps` gained new fields for the optional
   variants above. `docs/BACKEND.md`'s emission matrix records the
   required/optional status in prose; wiring it into `BackendCaps` (so
@@ -1615,8 +1618,13 @@ against it rather than rediscovering the hazard.
 ### Follow-ups (issues to file — not filed by this PR; workers don't
 have GitHub write access, coordinator: please open against #481)
 
-1. Wire `WindowClose` for macOS (`macos::run`'s window-close delegate
-   methods) — likely folds into #486, confirm scope first.
+1. ~~Wire `WindowClose` for macOS (`macos::run`'s window-close delegate
+   methods) — likely folds into #486, confirm scope first.~~ **Done —
+   issue #951**: `QuadraView` adopts `NSWindowDelegate` and vetoes
+   `windowShouldClose:` unless the app's `UiEvent::WindowClose` handler
+   returns `Reaction::Exit`; `QuadraAppDelegate::applicationShouldTerminate:`
+   applies the identical veto for Cmd-Q / the app-menu Quit item, which
+   otherwise bypasses `windowShouldClose:` entirely.
 2. Wire `DpiChanged` for GTK's live runtime case (`notify::scale-factor`
    on the surface, debounced like resize) — PORT-12's scope.
 3. Add `BackendCaps` fields for the four optional-capability variants

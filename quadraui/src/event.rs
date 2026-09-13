@@ -51,7 +51,9 @@
 //! comment reflects. Two variants get their own doc-comment note below
 //! because the matrix alone doesn't explain *why*: [`Self::CharTyped`]
 //! (the IME-vs-raw-keystroke duality) and [`Self::WindowClose`] (wired
-//! for GTK/Win, tracked as a gap elsewhere for macOS/TUI).
+//! for GTK/Win/macOS — issue #951 closed the macOS gap — with TUI's
+//! legitimate non-applicability tracked as a separate, non-gap
+//! disposition).
 
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -466,11 +468,13 @@ pub enum UiEvent {
     /// OS-level window close (the "×" button, Alt-F4, window-manager
     /// close). Not applicable to TUI: a terminal has no OS window to
     /// close independently of the process exiting, so TUI legitimately
-    /// never emits this. GTK's `close-request` signal (`gtk::run`) and
-    /// Win's `WM_CLOSE` (`win::run`) both dispatch this event and only
-    /// let the close proceed when the app's `Reaction` is `Exit` —
-    /// anything else vetoes it. macOS wiring is tracked separately
-    /// (issue #486's window-lifecycle scope), not by this issue.
+    /// never emits this. GTK's `close-request` signal (`gtk::run`),
+    /// Win's `WM_CLOSE` (`win::run`), and — since issue #951 — macOS's
+    /// `windowShouldClose:`/`applicationShouldTerminate:` (`macos::run`,
+    /// covering the traffic-light button and Cmd-Q/menu-Quit
+    /// respectively) all dispatch this event and only let the close/quit
+    /// proceed when the app's `Reaction` is `Exit` — anything else
+    /// vetoes it.
     WindowClose,
     WindowFocused(bool),
     /// **Optional capability** (D-010, issue #501; wired for GTK/macOS by
