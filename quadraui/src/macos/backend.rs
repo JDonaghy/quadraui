@@ -1201,11 +1201,14 @@ impl Backend for MacBackend {
     ///   former in both file-picking and, since quadraui#935,
     ///   directory-picking mode) and `osascript` notifications
     ///   (`src/macos/services.rs`), not stubs.
-    /// - `native_dialogs`: **not** declared —
-    ///   `MacPlatformServices::show_message_dialog` is still a `None`
-    ///   stub pending an `NSAlert` implementation (quadraui#666); the
-    ///   in-canvas `Dialog` primitive stays the only dialog path here
-    ///   for now, same as TUI.
+    /// - `native_dialogs` (quadraui#936): `MacPlatformServices::show_message_dialog`
+    ///   now shows a real `NSAlert` and returns the chosen button's id —
+    ///   see `src/macos/services.rs`. Like Win-GUI's equivalent
+    ///   declaration (`win/backend.rs`, #744), `CAP_CONTRACTS`'s
+    ///   `native_dialogs` entry is `Unprovable` (there is no no-op
+    ///   default `show_message_dialog` diverges from — every backend
+    ///   implements it), so this declaration isn't source-checked by the
+    ///   honesty test; it's true because the alert is real.
     /// - `window_chrome`: `begin_window_drag` / `toggle_window_maximize`
     ///   are overridden below, via the shared `crate::desktop::WindowDragArm`
     ///   (#498) — `CAP_CONTRACTS`'s `window_chrome` cap only requires
@@ -1250,6 +1253,7 @@ impl Backend for MacBackend {
             pointer_cursor: true,
             text_selection: true,
             app_font_registration: true,
+            native_dialogs: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -3854,6 +3858,18 @@ mod tests {
         let caps = b.backend_caps();
         assert!(caps.window_chrome);
         assert!(caps.pointer_cursor);
+    }
+
+    /// quadraui#936 (RED-verify companion): before this issue's fix,
+    /// `backend_caps().native_dialogs` was `false` (the stub's own doc
+    /// comment said so). `native_dialogs` is `Unprovable` in
+    /// `CAP_CONTRACTS` (see `backend_caps`'s doc comment above), so
+    /// nothing else pins this mechanically — this direct assertion is
+    /// the whole gate.
+    #[test]
+    fn backend_caps_declares_native_dialogs() {
+        let b = MacBackend::new();
+        assert!(b.backend_caps().native_dialogs);
     }
 
     /// Build a flat `ListView` whose widest row is `content_width` chars

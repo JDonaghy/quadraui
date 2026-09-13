@@ -152,6 +152,13 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSGraphics",
     "NSColor",
     "NSEvent",
+    # quadraui#936: `NSAlert`-backed `show_message_dialog`. `NSAlert`
+    # itself needs "NSAlert"; `addButtonWithTitle:`/`setKeyEquivalent:`
+    # (an `NSButton` per alert button) need "NSButton" + "NSControl" on
+    # top of the "NSResponder" + "NSView" already listed above.
+    "NSAlert",
+    "NSButton",
+    "NSControl",
     # `objc2-app-kit` gates every generated class behind a same-named
     # feature: without this one, `objc2_app_kit::NSCursor` simply does not
     # exist and `macos::backend`'s `set_cursor` / `mac_cursor_for_shape`
