@@ -109,7 +109,6 @@ pub use form::{draw_settings_chrome, mac_form_layout};
 // downstream" section for why that split is deliberate.
 #[allow(deprecated)]
 pub use form::draw_form;
-pub use image::mac_draw_image;
 pub use list::{draw_list, mac_list_layout};
 pub use menu_bar::{draw_menu_bar, mac_menu_bar_layout};
 pub use message_list::draw_message_list;

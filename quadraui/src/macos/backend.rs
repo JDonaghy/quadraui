@@ -3111,25 +3111,32 @@ impl Backend for MacBackend {
         super::minimap::mac_minimap_layout(minimap, rect)
     }
 
-    /// #662 scopes the `Image` rasteriser to GTK only for this first
-    /// pass — macOS's natural decoder is `NSImage`, not `gdk_pixbuf`, and
-    /// wiring that up is real, backend-specific work, not a shim over
-    /// shared logic, the same way `draw_minimap` above is scoped out of
-    /// #382. Until a real `NSImage` decoder lands here, this used to be
-    /// a reachable `todo!()` — a panic an app calling
-    /// `Backend::draw_image` generically could hit on macOS alone (#802).
-    /// `super::image::mac_draw_image` reports
-    /// [`ImagePaintResult::Unsupported`](crate::backend::ImagePaintResult::Unsupported)
-    /// instead — the same signal TUI already uses for its own categorical
-    /// "no pixel grid" case — so a host degrades deliberately rather than
-    /// losing the whole app.
+    /// #662 scoped the `Image` rasteriser to GTK only for its first
+    /// pass, and #802 replaced macOS's reachable `todo!()` with an
+    /// honest [`ImagePaintResult::Unsupported`] — a panic an app calling
+    /// `Backend::draw_image` generically could hit on macOS alone. That
+    /// made macOS the only backend painting nothing at all for an image
+    /// (TUI at least paints `image.fallback_text`); #962 closes the gap
+    /// with a real Core Graphics/ImageIO decode-and-paint
+    /// (`super::image::draw_image`), the same shape and size of
+    /// backend-specific work #739 did for Win-GUI.
     fn draw_image(
         &mut self,
         rect: Rect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
         self.register_zone(image.id.clone(), rect);
-        super::image::mac_draw_image()
+        let ctx = self.current_cg();
+        // Unlike `draw_minimap`, `draw_image` can legitimately return
+        // `Unsupported` (a decode failure, or a zero-size `rect`) without
+        // ever touching `ctx` — so the null-context guard lives inside
+        // `super::image::draw_image` itself, right before the CoreGraphics
+        // calls that actually need it, rather than an unconditional
+        // upfront `debug_assert!` here.
+        //
+        // SAFETY: `super::image::draw_image` only dereferences `ctx` after
+        // confirming it's non-null.
+        unsafe { super::image::draw_image(ctx, rect, image) }
     }
 }
 
@@ -4476,8 +4483,8 @@ mod tests {
         assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
     }
 
-    // ── #802/#961: Minimap/Image must not panic on macOS, and Minimap
-    // must actually paint ──────────────────────────────────────────────
+    // ── #802/#961/#962: Minimap/Image must not panic on macOS, and both
+    // must actually paint ────────────────────────────────────────────────
     //
     // Before #802, `MacBackend::draw_minimap`/`draw_image` were `todo!()`
     // — any `AppLogic` calling either generically through `&mut dyn
@@ -4485,12 +4492,16 @@ mod tests {
     // `image_app.rs` do, the same fixtures `tests/macos_example_driver.rs`
     // now drives) panicked and took the whole host down on macOS while
     // working fine on TUI/GTK/Win-GUI. #802 replaced that with an honest
-    // `painted: false` no-op. #961 replaces the no-op with a real Core
-    // Graphics/Core Text paint (`super::minimap::draw_minimap`) — macOS is
-    // no longer the only backend with no minimap rasteriser, so
-    // `draw_minimap_paints_and_reports_painted` below asserts pixels
-    // actually landed, not just "didn't panic". `draw_image` is unrelated
-    // scope (#961's "Out of scope" section) and keeps its #802 coverage.
+    // `painted: false` no-op / `Unsupported` result. #961 replaced the
+    // minimap no-op with a real Core Graphics/Core Text paint
+    // (`super::minimap::draw_minimap`); #962 does the same for `draw_image`
+    // via `super::image::draw_image` (Core Graphics + ImageIO). macOS is
+    // no longer the only backend painting nothing for either primitive, so
+    // `draw_minimap_paints_and_reports_painted` and
+    // `draw_image_paints_and_reports_painted` below assert pixels actually
+    // landed, not just "didn't panic" — the corrupt/missing-source cases
+    // still assert the clean `Unsupported` degrade (`draw_image_from_*`
+    // below).
 
     fn sample_minimap() -> crate::primitives::minimap::Minimap {
         crate::primitives::minimap::Minimap {
@@ -4585,8 +4596,16 @@ mod tests {
         assert_eq!(painted.layout, layout_only);
     }
 
+    /// Renamed from #802-era `draw_image_does_not_panic_and_reports_unsupported`:
+    /// with a real decoder now wired in (#962), an empty byte source is no
+    /// longer "there's no decoder to try" but "the decoder was tried and
+    /// had nothing to decode" — still a clean `Unsupported`, just for a
+    /// different reason. Deliberately called outside `enter_frame_scope`
+    /// (no `ctx`) to prove decoding is attempted, and fails, before
+    /// `draw_image` ever needs a live CoreGraphics context — see
+    /// `super::image::draw_image`'s doc comment.
     #[test]
-    fn draw_image_does_not_panic_and_reports_unsupported() {
+    fn draw_image_from_empty_bytes_reports_unsupported() {
         let mut b = MacBackend::new();
         let image = crate::primitives::image::Image {
             id: WidgetId::new("logo"),
@@ -4602,13 +4621,146 @@ mod tests {
         assert_eq!(
             result,
             crate::backend::ImagePaintResult::Unsupported,
-            "macOS has no NSImage decoder yet (#662's first pass, #802) -- this must \
-             be a clean Unsupported result, not a panic"
+            "an empty byte source has nothing to decode -- this must be a clean \
+             Unsupported result, not a panic"
         );
         assert!(
             b.zones().iter().any(|z| z.id == image.id),
             "a click/hover zone must still be registered even though nothing painted"
         );
+    }
+
+    /// A tiny solid-colour PNG, generated at test time — same fixture
+    /// shape `super::super::image::tests::tiny_png_bytes` /
+    /// `win::image::tests::tiny_png_bytes` build, duplicated here (rather
+    /// than shared) because it's a test-only fixture with no runtime
+    /// purpose, matching how each backend's own `image.rs` test module
+    /// already keeps its own copy.
+    fn tiny_png_bytes() -> Vec<u8> {
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut body = Vec::with_capacity(4 + data.len());
+            body.extend_from_slice(kind);
+            body.extend_from_slice(data);
+            out.extend_from_slice(&body);
+            out.extend_from_slice(&crc32(&body).to_be_bytes());
+        }
+
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&4u32.to_be_bytes());
+        ihdr.extend_from_slice(&4u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        chunk(&mut png, b"IHDR", &ihdr);
+
+        // `clippy::same_item_push` misreads the filter-byte push as a
+        // "replace this loop with vec![0; N]" candidate — the loop body
+        // also appends the row's actual pixel bytes right after it, so
+        // that rewrite doesn't apply (see `macos::image::tests::tiny_png_bytes`,
+        // whose scanline loop has the same shape).
+        #[allow(clippy::same_item_push)]
+        let raw = {
+            let mut raw = Vec::new();
+            for _ in 0..4 {
+                raw.push(0u8);
+                for _ in 0..4 {
+                    raw.extend_from_slice(&[0x00, 0xff, 0x00]);
+                }
+            }
+            raw
+        };
+        let idat = zlib_store(&raw);
+        chunk(&mut png, b"IDAT", &idat);
+
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    fn zlib_store(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x78, 0x01];
+        let len = data.len() as u16;
+        out.push(1);
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(data);
+        out.extend_from_slice(&adler32(data).to_be_bytes());
+        out
+    }
+
+    fn adler32(data: &[u8]) -> u32 {
+        let mut a: u32 = 1;
+        let mut b: u32 = 0;
+        for &byte in data {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        (b << 16) | a
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// #962: `draw_image` must actually paint pixels + report `Painted` —
+    /// the positive replacement for #802's degrade-to-`Unsupported`
+    /// coverage, now that macOS has a real Core Graphics/ImageIO image
+    /// rasteriser (`super::image::draw_image`). Mirrors
+    /// `draw_minimap_paints_and_reports_painted` above.
+    #[test]
+    fn draw_image_paints_and_reports_painted() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 64;
+        const H: u32 = 64;
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut b = MacBackend::new();
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("logo"),
+            source: crate::primitives::image::ImageSource::Bytes(tiny_png_bytes()),
+            intrinsic_size: Some((4, 4)),
+            fit: crate::primitives::image::ImageFit::Fill,
+            fallback_text: "[Q]".into(),
+        };
+        let rect = Rect::new(10.0, 10.0, 20.0, 20.0);
+
+        let result = std::cell::RefCell::new(None);
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            *result.borrow_mut() = Some(backend.draw_image(rect, &image));
+        });
+        let result = result
+            .into_inner()
+            .expect("draw_image ran inside the frame scope");
+
+        assert_eq!(
+            result,
+            crate::backend::ImagePaintResult::Painted,
+            "macOS now has a Core Graphics/ImageIO image rasteriser (#962) -- a \
+             decodable source must report Painted"
+        );
+        assert!(
+            b.zones().iter().any(|z| z.id == image.id),
+            "a click/hover zone must be registered"
+        );
+
+        let painted_any = (0..W).any(|x| {
+            (0..H).any(|y| {
+                let (r, g, bl, _) = surface.pixel(x, y);
+                (r, g, bl) != (255, 255, 255)
+            })
+        });
+        assert!(painted_any, "draw_image must paint non-background pixels");
     }
 
     // ── Text selection (#803) ────────────────────────────────────────
@@ -5085,10 +5237,11 @@ mod tests {
                 fit: crate::primitives::image::ImageFit::Contain,
                 fallback_text: "[i]".to_string(),
             };
-            // macOS categorically returns `Unsupported` here until #802
-            // lands a real `NSImage` decoder — this call only needs to
-            // prove it reaches the same code `Backend::draw_image` does,
-            // not any particular decode outcome.
+            // Empty bytes have nothing to decode, so this stays
+            // `Unsupported` even with #962's real decoder wired in — this
+            // call only needs to prove it reaches the same code
+            // `Backend::draw_image` does (inside a live frame scope, this
+            // time), not any particular decode outcome.
             let _ = b.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
         });
 

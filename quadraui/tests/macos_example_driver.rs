@@ -16,7 +16,7 @@
 
 use quadraui::macos::testing::{driver_with_shell, MacDriver};
 use quadraui::testing::ConformanceDriver;
-use quadraui::{NamedKey, Reaction};
+use quadraui::{Backend, NamedKey, Reaction};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -434,29 +434,49 @@ fn minimap_app_renders_every_frame_without_panicking_and_scrolls() {
 const IMAGE_W: u32 = 400;
 const IMAGE_H: u32 = 200;
 
-/// `draw_image` reports a clean [`quadraui::ImagePaintResult::Unsupported`]
-/// on macOS (no `NSImage` decoder yet, #662/#802) rather than a silent
-/// no-op or a panic — and the menu bar beside the (unpainted) icon still
-/// routes clicks correctly, proving the degrade is contained to the one
-/// primitive that can't paint yet.
+/// `draw_image` now decodes the demo's real `quadra_logo.png` asset and
+/// paints it via Core Graphics/ImageIO (#962), superseding the #662/#802
+/// no-paint gap this test used to document — macOS is no longer the only
+/// backend painting nothing for `ImageApp`'s logo (GTK already decoded it
+/// via `gdk_pixbuf`). The menu bar beside the icon still routes clicks
+/// correctly, proving the real paint doesn't disturb the icon-narrowed
+/// rect math both `render` and `handle` share.
 #[test]
-fn image_app_logo_paints_nothing_but_menu_click_routing_still_works() {
+fn image_app_logo_paints_and_menu_click_routing_still_works() {
     let mut driver = MacDriver::new(ImageApp::new(), IMAGE_W, IMAGE_H);
 
     // Unlike TUI (which paints `Image::fallback_text` for its own
-    // categorical Unsupported case), macOS paints nothing at all: no
-    // real pixels, and no "[Q]" fallback text either.
+    // categorical Unsupported case), macOS never paints fallback text —
+    // it now paints the real decoded asset instead.
     assert!(
         !driver.screen_contains("[Q]"),
-        "macOS has no image rasteriser yet -- neither real pixels nor \
-         fallback text should reach the screen: {:?}",
+        "a decodable source must not fall back to fallback_text: {:?}",
         driver.painted_texts()
+    );
+
+    // The icon column is `4 * line_height` wide, anchored at the bar's
+    // top-left corner (`ImageApp::bar_rects`) — scan inside it for a
+    // pixel that isn't plain background, proving the logo actually
+    // rasterised rather than leaving the column blank.
+    let lh = driver.backend().line_height();
+    let icon_w = (lh * 4.0).round() as u32;
+    let icon_h = lh.round() as u32;
+    let painted_any = (0..icon_w).any(|x| {
+        (0..icon_h.max(1)).any(|y| {
+            let (_, _, _, a) = driver.pixel(x, y);
+            a > 0
+        })
+    });
+    assert!(
+        painted_any,
+        "expected the real Core Graphics/ImageIO decoder (#962) to paint \
+         non-transparent pixels somewhere in the icon column"
     );
 
     // The icon's reserved width still narrows the menu bar's hit-test
     // rect (`ImageApp::bar_rects`, shared by every backend), so a real
-    // click on "File" must still route correctly even though the icon
-    // beside it painted nothing this frame.
+    // click on "File" must still route correctly alongside the now-real
+    // icon paint.
     driver.click_text("File");
     assert!(
         driver.screen_contains("activated: &File"),
