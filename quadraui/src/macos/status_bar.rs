@@ -240,6 +240,27 @@ mod tests {
         make_font("Menlo", FONT_SIZE).expect("Menlo installed on every macOS host")
     }
 
+    /// A backend with **both** font slots set to the harness font.
+    ///
+    /// Since issue #963 the status bar is chrome: it paints and measures
+    /// through `MacBackend::chrome_font` / `chrome_line_height`, not the
+    /// editor `current_font` these tests used to be the sole consumer of.
+    /// `MacBackend::new` seeds chrome with the ~11pt system UI font, whose
+    /// line height is under half of this module's `H = 24` surface — so a
+    /// harness that set only the editor font would paint a bar that stops
+    /// short of the probes below (that is exactly how
+    /// `empty_bar_falls_back_to_theme_background`, which samples at
+    /// `H / 2`, first caught the switch). Setting both keeps every
+    /// assertion here about status-bar geometry at a known `FONT_SIZE`,
+    /// rather than about whichever metrics the system UI font happens to
+    /// have on the running host.
+    fn backend_with_test_fonts() -> MacBackend {
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_chrome_font(font());
+        backend
+    }
+
     /// Three-segment bar:
     /// - Left[0]: "(L) " sentinel with bg `(10, 20, 30)` — sets the
     ///   bar fill (first segment's bg) to a colour distinct from the
@@ -297,8 +318,7 @@ mod tests {
         // "untouched memory" cleanly.
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
         let layout = std::cell::RefCell::new(None);
@@ -435,8 +455,7 @@ mod tests {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.set_current_theme(Theme {
             background: Color::rgb(1, 2, 3),
             ..Theme::default()
@@ -466,8 +485,7 @@ mod tests {
         // sample comes back lighter than the un-tinted version.
         let bar = sample_bar();
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
         let surface = BitmapSurface::new(W, H);
@@ -506,8 +524,10 @@ mod tests {
         let bar = sample_bar();
         let (_surface, painted) = paint_via_backend(&bar);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        // No `mut`: `status_bar_layout` is the `&self` no-paint twin, and
+        // the helper does all the mutating (`-D warnings` denies
+        // `unused_mut`).
+        let backend = backend_with_test_fonts();
         let computed = backend.status_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
 
         assert_eq!(
@@ -533,8 +553,7 @@ mod tests {
     fn layout_twin_is_bar_local_at_a_nonzero_origin() {
         let bar = sample_bar();
         let (_surface, painted) = paint_via_backend_at(&bar, 0.0, 0.0);
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let backend = backend_with_test_fonts();
         let computed = backend.status_bar_layout(QRect::new(17.0, 3.0, W as f32, H as f32), &bar);
         for (p, c) in painted
             .visible_segments
