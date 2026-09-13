@@ -153,6 +153,139 @@ pub enum PointerShape {
     Resize(ResizeEdge),
 }
 
+/// Window-state control surface — set/get the title, size, position and
+/// tri-state chrome (fullscreen/always-on-top/minimize) of the OS window a
+/// backend owns, once a real window exists (issue #950).
+///
+/// Reached through [`Backend::window`], which returns `Option<&mut dyn
+/// WindowControl>` rather than requiring every backend to implement this
+/// trait unconditionally — `None` is the honest, *structural* answer for
+/// a backend with no OS window at all (TUI has no window even though it
+/// implements [`Self::set_title`] — see that method's doc) or for any
+/// backend before its window is constructed (the same "no window yet"
+/// state [`Backend::begin_window_drag`] and friends already handle by
+/// returning `false`). There is deliberately no `BackendCaps` bool for
+/// "has a window at all" to keep in sync by hand — `Backend::window`
+/// returning `Option` makes the absence a compile-time-checkable match
+/// arm instead of a capability flag that could drift from reality.
+///
+/// Individual methods still return [`ServiceResult<()>`] (D-009 seam-2
+/// shape, same as [`PlatformServices`]/[`Clipboard`]'s `_result` twins)
+/// rather than a bare `bool`/no-op: `Backend::window` returning `Some`
+/// only promises *some* window-control surface is real, not that every
+/// method on it is — GTK4/Wayland, for example, has no way to pin a
+/// window always-on-top at all (X11-only, via `gdk_x11`, quadraui#950),
+/// so [`Self::set_always_on_top`] must report [`BackendError::Unsupported`]
+/// honestly there rather than either silently no-op'ing or making the
+/// caller distrust the whole surface because one call in it can fail.
+///
+/// Every method defaults to `Err(BackendError::Unsupported)`, mirroring
+/// [`Clipboard::read_primary_selection`]'s "the trait states a capability
+/// only some implementors have" shape: a backend that implements
+/// `WindowControl` at all (i.e. ever returns `Some` from
+/// [`Backend::window`]) overrides only the methods it can genuinely back
+/// with a native call, and callers that hit `Unsupported` on the rest
+/// treat that exactly like a `None` from `Backend::window` — a real,
+/// nameable gap, not a crash.
+pub trait WindowControl {
+    /// Set the window's title / (GTK) taskbar label / (macOS) titlebar
+    /// text / (Win) `WM_SETTEXT` caption.
+    ///
+    /// **TUI's one genuine `WindowControl` capability**: `TuiBackend`
+    /// emits the OSC 0/2 terminal escape sequence (crossterm's
+    /// `SetTitle`) to retitle the terminal emulator's tab/window, which
+    /// is the terminal-native equivalent of a desktop window's title —
+    /// see `TuiBackend`'s `impl WindowControl` for why this is the one
+    /// method TUI overrides while every other method here stays
+    /// `Unsupported` on it.
+    fn set_title(&mut self, _title: &str) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Resize the window's content area to `width` × `height`, in the
+    /// backend's native units (DIPs on GTK/Win/macOS).
+    fn set_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Floor the window's resizable range at `width` × `height` — the
+    /// user (and [`Self::set_size`]/[`Self::set_bounds`]) can no longer
+    /// shrink it smaller.
+    fn set_min_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Cap the window's resizable range at `width` × `height` — the user
+    /// (and [`Self::set_size`]/[`Self::set_bounds`]) can no longer grow it
+    /// larger.
+    fn set_max_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// The window's current position + size, in the backend's native
+    /// units. Position is screen-relative where the platform exposes one
+    /// at all — see overriding backends' docs for platforms (GTK4/Wayland)
+    /// that structurally cannot report a position and what they return
+    /// instead.
+    fn bounds(&self) -> ServiceResult<Rect> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Move and/or resize the window to `bounds` in one call.
+    fn set_bounds(&mut self, _bounds: Rect) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Center the window on its current monitor.
+    fn center(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Enter (`true`) or exit (`false`) fullscreen. Idempotent — calling
+    /// with the state the window is already in is not an error.
+    fn set_fullscreen(&mut self, _fullscreen: bool) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Pin (`true`) or unpin (`false`) the window above all others.
+    ///
+    /// **Not available on GTK4/Wayland** — Wayland's window-stacking
+    /// model has no client-requestable always-on-top protocol (X11 only,
+    /// via `gdk_x11`, quadraui#950's design note); `GtkBackend` reports
+    /// [`BackendError::Unsupported`] there rather than silently doing
+    /// nothing, so a caller can tell "not pinned because it's
+    /// unsupported here" from "not pinned because nobody asked".
+    fn set_always_on_top(&mut self, _on_top: bool) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Minimize (iconify) the window.
+    fn minimize(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Restore a minimized window to its prior size/position.
+    fn restore(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Hide the window (removes it from the screen and taskbar/dock
+    /// without minimizing) — [`Self::show`] is the inverse.
+    fn hide(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Show a window previously hidden via [`Self::hide`].
+    fn show(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Bring the window to the front and give it keyboard focus.
+    fn focus(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+}
+
 /// Colour fidelity a render target actually supports (quadraui#826).
 ///
 /// Unlike every `bool` field on [`BackendCaps`], this is not a "this
@@ -357,6 +490,16 @@ pub struct BackendCaps {
     /// Font to point at and no need to register app-supplied bytes) or
     /// only the registration half.
     pub app_font_registration: bool,
+    /// [`Backend::window`] is overridden and returns `Some` at least
+    /// sometimes — this backend has a real [`WindowControl`] surface
+    /// rather than the trait's always-`None` default (issue #950).
+    ///
+    /// Doesn't promise every [`WindowControl`] method succeeds — see
+    /// that trait's own doc for why individual methods (GTK's
+    /// always-on-top, notably) still fail honestly with
+    /// [`BackendError::Unsupported`] even on a backend that declares this
+    /// `true`.
+    pub window_control: bool,
     /// This render target's actual colour fidelity — see [`ColorDepth`].
     /// Not part of the bool-capability vocabulary below ([`Self::names`] /
     /// [`Self::has`] / [`Self::vocabulary`] / `ALL_NAMES`): those model
@@ -421,6 +564,7 @@ impl BackendCaps {
             native_dialogs: false,
             notifications: false,
             app_font_registration: false,
+            window_control: false,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: false,
         }
@@ -482,6 +626,7 @@ impl BackendCaps {
         ("native_dialogs", |c| c.native_dialogs),
         ("notifications", |c| c.notifications),
         ("app_font_registration", |c| c.app_font_registration),
+        ("window_control", |c| c.window_control),
     ];
 }
 
@@ -1192,6 +1337,37 @@ pub trait Backend: sealed::Sealed {
     /// (macOS) needs to override it.
     fn titlebar_control_inset(&self) -> Rect {
         Rect::default()
+    }
+
+    // ─── Window control (issue #950) ────────────────────────────────────
+    /// This backend's window-state control surface, or `None` when this
+    /// backend has no OS window to control right now.
+    ///
+    /// `None` is the *structural* absence this issue's design calls for:
+    /// TUI (no OS window concept at all, though see
+    /// [`WindowControl::set_title`] for the one thing it genuinely can
+    /// do) and any windowed backend before its window is constructed
+    /// both answer `None` here, and a caller that only ever sees `Option`
+    /// cannot forget to check it the way a silently-false-returning
+    /// capability flag can be forgotten. See [`WindowControl`]'s own doc
+    /// for why individual methods on the returned trait object still
+    /// report [`ServiceResult`] rather than being infallible once
+    /// `Some` is reached.
+    ///
+    /// `&mut self`, not `&self`: every [`WindowControl`] method mutates
+    /// OS window state, so the borrow this returns has to allow that —
+    /// matching [`Self::modal_stack_handle`]'s reasoning for why that
+    /// one is `Rc<RefCell<_>>` instead (window control has no
+    /// stash-then-reuse-from-an-unrelated-borrow requirement the way the
+    /// modal stack does, so a plain borrow is simpler and sufficient
+    /// here).
+    ///
+    /// Default: `None` — a backend that hasn't wired a `WindowControl`
+    /// impl yet is indistinguishable from one that genuinely has no
+    /// window, which is the honest answer before this issue's `gtk`/
+    /// `macos`/`win`/`tui` implementations land.
+    fn window(&mut self) -> Option<&mut dyn WindowControl> {
+        None
     }
 
     // ─── Modal-overlay tracking ────────────────────────────────────────
@@ -3316,6 +3492,7 @@ mod backend_caps_tests {
         ("native_dialogs", |c| c.native_dialogs = true),
         ("notifications", |c| c.notifications = true),
         ("app_font_registration", |c| c.app_font_registration = true),
+        ("window_control", |c| c.window_control = true),
     ];
 
     #[test]
@@ -3349,6 +3526,7 @@ mod backend_caps_tests {
             native_dialogs: _,
             notifications: _,
             app_font_registration: _,
+            window_control: _,
             color_depth: _,
             kitty_keyboard: _,
         } = BackendCaps::empty();

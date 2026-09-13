@@ -931,6 +931,7 @@ mod tests {
             native_dialogs: true,
             notifications: true,
             app_font_registration: true,
+            window_control: true,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: true,
         };

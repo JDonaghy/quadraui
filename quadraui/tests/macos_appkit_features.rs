@@ -108,6 +108,11 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // same as `NSWindowStyleMask` above.
     ("NSWindowDidChangeBackingPropertiesNotification", "NSWindow"),
     ("NSWindowStyleMask", "NSWindow"),
+    // Issue #950 (window control, `set_always_on_top`): both level
+    // constants live in the `NSWindow` header, not a feature of their
+    // own — same shape as `NSWindowButton`/`NSWindowStyleMask` above.
+    ("NSFloatingWindowLevel", "NSWindow"),
+    ("NSNormalWindowLevel", "NSWindow"),
     // Issue #947 (client-side titlebar): `setTitleVisibility:` hides
     // AppKit's own title string so the app-drawn band doesn't
     // double-draw it. `NSWindow` header again, same as the style mask.

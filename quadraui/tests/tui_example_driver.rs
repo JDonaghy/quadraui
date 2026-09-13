@@ -141,6 +141,8 @@ mod toast_app;
 mod tooltip_demo;
 #[path = "../examples/common/wide_tab_bar_demo.rs"]
 mod wide_tab_bar_demo;
+#[path = "../examples/common/window_control_demo.rs"]
+mod window_control_demo;
 // `BACKLOG` / `INITIAL` are read by some of this file's tests and not
 // others; `examples/common/mod.rs`'s blanket `#![allow(dead_code)]`
 // doesn't reach a `#[path]` include, so opt out locally (same as
@@ -199,6 +201,7 @@ use text_input_demo::TextInputDemo;
 use toast_app::ToastApp;
 use tooltip_demo::TooltipDemo;
 use wide_tab_bar_demo::WideTabBarDemo;
+use window_control_demo::WindowControlDemo;
 use workspace_demo::WorkspaceDemo;
 
 // ─── PipelineApp: mouse + keyboard + reset ──────────────────────────────────
@@ -700,6 +703,64 @@ fn clipboard_demo_typing_then_backspace_edits_the_line() {
 #[test]
 fn clipboard_demo_escape_exits() {
     let mut driver = TuiDriver::new(ClipboardDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
+}
+
+// ─── WindowControlDemo: `Backend::window()` / `WindowControl` (#950) ───────
+//
+// TUI's `WindowControl` surface has exactly one real capability
+// (`set_title`, via OSC 0/2 — see `TuiBackend`'s `impl WindowControl` doc)
+// and reports `Unsupported` for everything else, so both outcomes are
+// deterministic and assertable headlessly with no live window required.
+
+#[test]
+fn window_control_demo_shows_starting_hint() {
+    let driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
+    assert!(
+        driver.screen_contains("t=title"),
+        "status bar should hint at the key bindings:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn window_control_demo_set_title_succeeds_on_tui() {
+    let mut driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
+    driver.type_char('t');
+    assert!(
+        driver.screen_contains("set_title: ok"),
+        "TUI genuinely supports set_title (OSC 0/2):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn window_control_demo_fullscreen_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
+    driver.type_char('f');
+    assert!(
+        driver.screen_contains("set_fullscreen: Unsupported"),
+        "TUI has no OS window to fullscreen:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn window_control_demo_always_on_top_reports_unsupported_on_tui() {
+    let mut driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
+    driver.type_char('a');
+    assert!(
+        driver.screen_contains("set_always_on_top: Unsupported"),
+        "TUI has no OS window to pin on top:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn window_control_demo_escape_exits() {
+    let mut driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
     assert!(!driver.exited());
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the demo");

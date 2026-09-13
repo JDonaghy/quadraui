@@ -1076,6 +1076,14 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
              `FrameInventory` has no notion of the cursor",
         ),
         (
+            "window_control",
+            "every `WindowControl` method (issue #950) acts on a real OS toplevel — title, \
+             size, position, fullscreen, minimize/restore/hide/show/focus — the same \
+             `GtkDriver`-renders-to-an-offscreen-`ImageSurface`-with-no-window-to-drive gap \
+             `window_chrome` above already names, and nothing paints, so `FrameInventory` has \
+             no observable to assert on even where a window did exist",
+        ),
+        (
             "ime",
             "no backend declares it (there is no backend-level IME method yet — see \
              `BackendCaps::ime`), so a gate on it would skip everywhere",

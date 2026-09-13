@@ -43,11 +43,17 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSCursor, NSEvent, NSWindow, NSWindowButton};
-use objc2_foundation::MainThreadMarker;
+use objc2_app_kit::{
+    NSCursor, NSEvent, NSFloatingWindowLevel, NSNormalWindowLevel, NSWindow, NSWindowButton,
+    NSWindowStyleMask,
+};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{Backend, EditorPaintResult, PointerShape, ResizeEdge};
+use crate::backend::{
+    Backend, BackendError, EditorPaintResult, PointerShape, ResizeEdge, ServiceResult,
+    WindowControl,
+};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
@@ -1254,6 +1260,11 @@ impl Backend for MacBackend {
             text_selection: true,
             app_font_registration: true,
             native_dialogs: true,
+            // `window` (issue #950) is overridden below and returns
+            // `Some` once `set_window` has stashed a real `NSWindow` —
+            // see `impl WindowControl for MacBackend`'s doc for the
+            // AppKit calls backing each method.
+            window_control: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -1319,6 +1330,12 @@ impl Backend for MacBackend {
         // inside the live AppKit run loop.
         mac_cursor_for_shape(shape).set();
         true
+    }
+
+    // ─── Window control (issue #950) ────────────────────────────────────
+    fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
+        self.window.as_ref()?;
+        Some(self)
     }
 
     /// #947: reports the region AppKit's native traffic-light controls
@@ -2977,6 +2994,176 @@ impl Backend for MacBackend {
     ) -> crate::backend::ImagePaintResult {
         self.register_zone(image.id.clone(), rect);
         super::image::mac_draw_image()
+    }
+}
+
+/// macOS's `WindowControl` surface (issue #950), backed by exactly the
+/// `NSWindow` methods the issue's own design note names:
+/// `setTitle`/`setContentSize`/`setContentMinSize`/`setContentMaxSize`/
+/// `setLevel(NSFloatingWindowLevel)`/`toggleFullScreen:`/`miniaturize:`/
+/// `orderOut:`/`makeKeyAndOrderFront:`. Every method is real here — macOS
+/// has no `GtkBackend`-style structural gap the way Wayland's missing
+/// window-position/always-on-top protocols force on GTK.
+///
+/// **Coordinate note:** [`Self::bounds`]/[`Self::set_bounds`] hand back
+/// and accept `NSWindow::frame()`'s raw AppKit screen coordinates —
+/// **origin bottom-left, Y increasing upward** — unlike every other
+/// in-tree backend's top-left/Y-down convention (GTK's `bounds` — itself
+/// position-less on Wayland — and Win's `GetWindowRect`/`SetWindowPos`
+/// both use top-left/Y-down screen space). This is a genuine AppKit
+/// platform difference, not an oversight: flipping it would need the
+/// *screen's* height (`NSScreen::frame()`, tracked separately per
+/// display and changeable at runtime as displays are added/removed/
+/// resized), and getting that flip wrong silently would be worse than
+/// documenting the native convention plainly. Contrast
+/// [`Self::titlebar_control_inset`], which *does* flip — but that flips
+/// relative to the window's own content-view height, a value already at
+/// hand for an unrelated reason, not the screen's.
+impl WindowControl for MacBackend {
+    fn set_title(&mut self, title: &str) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setTitle(&NSString::from_str(title));
+        Ok(())
+    }
+
+    fn set_size(&mut self, width: f32, height: f32) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setContentSize(NSSize {
+            width: width as f64,
+            height: height as f64,
+        });
+        Ok(())
+    }
+
+    fn set_min_size(&mut self, width: f32, height: f32) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setContentMinSize(NSSize {
+            width: width as f64,
+            height: height as f64,
+        });
+        Ok(())
+    }
+
+    fn set_max_size(&mut self, width: f32, height: f32) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setContentMaxSize(NSSize {
+            width: width as f64,
+            height: height as f64,
+        });
+        Ok(())
+    }
+
+    /// `NSWindow::frame()` — see this `impl` block's own doc for the
+    /// bottom-left-origin coordinate note.
+    fn bounds(&self) -> ServiceResult<Rect> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        let frame = window.frame();
+        Ok(Rect::new(
+            frame.origin.x as f32,
+            frame.origin.y as f32,
+            frame.size.width as f32,
+            frame.size.height as f32,
+        ))
+    }
+
+    fn set_bounds(&mut self, bounds: Rect) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setFrame_display(
+            NSRect {
+                origin: NSPoint {
+                    x: bounds.x as f64,
+                    y: bounds.y as f64,
+                },
+                size: NSSize {
+                    width: bounds.width as f64,
+                    height: bounds.height as f64,
+                },
+            },
+            true,
+        );
+        Ok(())
+    }
+
+    /// `NSWindow::center()` — unlike [`crate::win::backend::WinBackend`]'s
+    /// `center`/[`crate::gtk::backend::GtkBackend`]'s `Unsupported`, this
+    /// needs no manual monitor-geometry math: AppKit centers on whichever
+    /// screen "most closely intersects [the window's] current position"
+    /// (Apple's own doc for the call) in one round trip.
+    fn center(&mut self) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.center();
+        Ok(())
+    }
+
+    /// `NSWindow::toggleFullScreen:` — unlike
+    /// [`Backend::toggle_window_maximize`]'s `zoom:` (the
+    /// double-click-to-maximize equivalent, see that method's doc for why
+    /// it is deliberately *not* this call), this is the real AppKit
+    /// fullscreen transition. Idempotent: reports the current state via
+    /// `styleMask().contains(NSWindowStyleMask::FullScreen)` and only
+    /// calls `toggleFullScreen:` when the requested state actually
+    /// differs, so entering while already fullscreen (or exiting while
+    /// not) is a no-op rather than toggling to the wrong state.
+    fn set_fullscreen(&mut self, fullscreen: bool) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        let currently_fullscreen = window.styleMask().contains(NSWindowStyleMask::FullScreen);
+        if currently_fullscreen != fullscreen {
+            window.toggleFullScreen(None);
+        }
+        Ok(())
+    }
+
+    /// `NSWindow::setLevel(NSFloatingWindowLevel)` — the one always-on-top
+    /// mechanism among the four in-tree backends with no platform-level
+    /// gap (contrast [`crate::gtk::backend::GtkBackend`]'s `Unsupported`
+    /// on GTK4/Wayland).
+    fn set_always_on_top(&mut self, on_top: bool) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.setLevel(if on_top {
+            NSFloatingWindowLevel
+        } else {
+            NSNormalWindowLevel
+        });
+        Ok(())
+    }
+
+    fn minimize(&mut self) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.miniaturize(None);
+        Ok(())
+    }
+
+    /// Undoes both a minimize (`deminiaturize:`) and a maximize (`zoom:`,
+    /// if currently zoomed) — same "restore from either state" posture as
+    /// [`crate::gtk::backend::GtkBackend::restore`] (see that method's
+    /// doc for the Electron-parity rationale).
+    fn restore(&mut self) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        if window.isMiniaturized() {
+            window.deminiaturize(None);
+        }
+        if window.isZoomed() {
+            window.zoom(None);
+        }
+        Ok(())
+    }
+
+    fn hide(&mut self) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.orderOut(None);
+        Ok(())
+    }
+
+    fn show(&mut self) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.makeKeyAndOrderFront(None);
+        Ok(())
+    }
+
+    fn focus(&mut self) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.makeKeyAndOrderFront(None);
+        Ok(())
     }
 }
 
