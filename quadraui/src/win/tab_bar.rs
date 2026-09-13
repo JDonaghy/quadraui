@@ -468,7 +468,7 @@ mod tests {
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
 
@@ -528,7 +528,7 @@ mod tests {
     /// measurer.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(5.0, 0.0, W, H);
 
@@ -555,7 +555,7 @@ mod tests {
     /// `compute_layout` so the two can't silently diverge later.
     #[test]
     fn native_layout_no_paint_matches_native_layout_paint() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(5.0, 0.0, W, H);
 
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn native_layout_agrees_with_hits_layout() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
 

@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn draw_minimap_paints_column_blocks_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             foreground: Color::rgb(0, 0, 0),
@@ -277,7 +277,7 @@ mod tests {
         let origin_x = 7.0_f32;
         let origin_y = 13.0_f32;
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let mm = minimap_from(vec!["x"; 8], 8);
         let rect = Rect::new(origin_x, origin_y, 40.0, 100.0);
@@ -306,7 +306,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let mm = minimap_from(vec!["fn main() {}"; 8], 8);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = surface
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn zero_size_rect_is_a_no_op() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             ..Theme::default()
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn characters_branch_paints_a_truncated_line_directly() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             foreground: Color::rgb(0, 0, 0),

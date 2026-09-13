@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let mut tree = make_tree(vec![
             branch(0, "src", true),
             leaf(1, "main.rs"),
@@ -351,7 +351,7 @@ mod tests {
         let mut tree = make_tree((0..8).map(|i| leaf(i, &format!("file-{i}.rs"))).collect());
         tree.scroll_offset = 2;
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let layout = surface
@@ -390,7 +390,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let tree = make_tree(vec![branch(0, "src", true), leaf(1, "main.rs")]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = surface
@@ -434,7 +434,7 @@ mod tests {
         let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
 
         let painted_width = |nerd_fonts_enabled: bool| -> u32 {
-            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
             let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
             surface
                 .paint(|target| {

@@ -235,7 +235,7 @@ mod tests {
 
     fn paint_via_backend_at(bar: &Toolbar, x: f32, y: f32) -> ToolbarLayout {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(x, y, W - x, H - y);
 
         surface
@@ -350,7 +350,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let bar = sample_bar();
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = surface

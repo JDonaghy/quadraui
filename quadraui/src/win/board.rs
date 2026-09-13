@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn draw_board_paints_text_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             surface_bg: Color::rgb(255, 255, 255),
@@ -307,7 +307,7 @@ mod tests {
         let origin_x = 12.0_f32;
         let origin_y = 5.0_f32;
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let model = sample_model();
         let rect = Rect::new(origin_x, origin_y, W - origin_x, H - origin_y);
@@ -349,7 +349,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let model = sample_model();
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = surface
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn zero_size_rect_is_a_no_op() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let model = sample_model();
         let rect = Rect::new(0.0, 0.0, 0.0, H);
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn selected_card_uses_the_selection_background() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let model = sample_model();
         let rect = Rect::new(0.0, 0.0, W, H);

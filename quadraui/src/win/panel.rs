@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let panel = panel();
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
@@ -259,7 +259,7 @@ mod tests {
         panel.actions = Vec::new();
 
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         let layout = paint(&surface, &dwrite, rect, &panel);
@@ -277,7 +277,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let painted = paint(&surface, &dwrite, rect, &panel);
         let no_paint = win_panel_layout(rect, &panel, LINE_HEIGHT);
 

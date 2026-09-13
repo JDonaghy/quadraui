@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn draw_command_line_with_multibyte_cursor_does_not_panic() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
 
         // ":éditer" — byte 2 sits inside the 2-byte 'é' (starts at byte 1).
@@ -155,7 +155,7 @@ mod tests {
         let origin_x = 24.0_f32;
         let origin_y = 3.0_f32;
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         assert!(char_width > 1.0, "char_width should be several px");
         let theme = Theme {
             command_line_bg: Color::rgb(255, 255, 255),
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn cursor_paints_at_the_shared_layout_column() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let cmd = sample(":wq", Some(1), false);
         let rect = Rect::new(0.0, 0.0, W, H);
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn zero_width_rect_is_a_no_op() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let cmd = sample(":wq", Some(1), false);
         let rect = Rect::new(0.0, 0.0, 0.0, H);

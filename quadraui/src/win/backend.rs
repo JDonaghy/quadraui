@@ -397,6 +397,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_RENDER_TARGET_PROPERTIES,
 };
 #[cfg(target_os = "windows")]
+use windows::Win32::Graphics::DirectWrite::{IDWriteFontCollection1, IDWriteFontFallback};
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -703,6 +705,38 @@ pub struct WinBackend {
     /// to [`DEFAULT_UI_FONT_SIZE_PT`].
     #[cfg(target_os = "windows")]
     ui_font_size_pt: f32,
+    /// Live font fallback built by [`Backend::set_nerd_font_fallback`]
+    /// (issue #929) — `None` until that method is called. Read by
+    /// [`Self::attach_surface`]/[`Self::attach_headless`] when they build
+    /// [`DWrite`] for the editor/chrome fonts, so a `set_nerd_font_fallback`
+    /// call made before either (the documented "call once from `setup()`"
+    /// convention every font setter on this backend shares) is baked into
+    /// both `IDWriteTextFormat`s at construction. Like `editor_font_family`
+    /// above, a live surface does not rebuild immediately on a later
+    /// change — same accepted limitation `set_editor_font`'s doc already
+    /// names.
+    #[cfg(target_os = "windows")]
+    nerd_font_fallback: Option<IDWriteFontFallback>,
+    /// Private font collection built by the most recent
+    /// [`Backend::register_font_from_memory`] call, if any — passed to
+    /// [`crate::win::text::build_nerd_font_fallback`] so a later
+    /// `set_nerd_font_fallback(family)` resolves `family` against the
+    /// font this process actually registered rather than a same-named
+    /// system font (issue #929). Only the most recent registration is
+    /// kept: nothing in this backend's contract promises more than one
+    /// app-registered font resolves at a time, mirroring
+    /// `MacBackend`/vimcode's own single-subset-font usage.
+    #[cfg(target_os = "windows")]
+    registered_font_collection: Option<IDWriteFontCollection1>,
+    /// The raw bytes handed to the most recent
+    /// [`Backend::register_font_from_memory`] call, kept alive for the
+    /// process lifetime as a defensive belt-and-braces measure alongside
+    /// `registered_font_collection` — see that method's implementation
+    /// note on `IDWriteInMemoryFontFileLoader::CreateInMemoryFontFileReference`
+    /// for why this backend doesn't rely solely on DirectWrite's own
+    /// documented internal copy.
+    #[cfg(target_os = "windows")]
+    registered_font_bytes: Vec<u8>,
     /// The active [`crate::Theme`], set via [`Backend::set_theme`] and
     /// read by every `draw_*` rasteriser that used to fall back to
     /// `Theme::default()` regardless of what the app configured (#724).
@@ -818,6 +852,12 @@ impl WinBackend {
             ui_font_family: DEFAULT_UI_FONT_FAMILY.to_string(),
             #[cfg(target_os = "windows")]
             ui_font_size_pt: DEFAULT_UI_FONT_SIZE_PT,
+            #[cfg(target_os = "windows")]
+            nerd_font_fallback: None,
+            #[cfg(target_os = "windows")]
+            registered_font_collection: None,
+            #[cfg(target_os = "windows")]
+            registered_font_bytes: Vec::new(),
             current_theme: crate::theme::Theme::default(),
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
@@ -948,8 +988,11 @@ impl WinBackend {
         // except here it only needs to happen once per surface, since
         // DirectWrite text formats aren't tied to the Direct2D device the
         // way the render target is.
-        let (dwrite, line_height, char_width) =
-            DWrite::new(&self.editor_font_family, self.editor_font_size_pt)?;
+        let (dwrite, line_height, char_width) = DWrite::new(
+            &self.editor_font_family,
+            self.editor_font_size_pt,
+            self.nerd_font_fallback.as_ref(),
+        )?;
         self.dwrite = Some(dwrite);
         self.current_line_height = line_height;
         self.current_char_width = char_width;
@@ -959,7 +1002,11 @@ impl WinBackend {
         // `line_height`/`char_width` from this format aren't needed:
         // those are always resolved from the editor font, so they're
         // discarded here rather than overwriting `self.current_line_height`.
-        let (chrome_dwrite, _, _) = DWrite::new(&self.ui_font_family, self.ui_font_size_pt)?;
+        let (chrome_dwrite, _, _) = DWrite::new(
+            &self.ui_font_family,
+            self.ui_font_size_pt,
+            self.nerd_font_fallback.as_ref(),
+        )?;
         self.chrome_dwrite = Some(chrome_dwrite);
 
         Ok(())
@@ -1006,14 +1053,21 @@ impl WinBackend {
 
         // Same DirectWrite bootstrap as `attach_surface` — text formats
         // aren't tied to which kind of render target they paint onto.
-        let (dwrite, line_height, char_width) =
-            DWrite::new(&self.editor_font_family, self.editor_font_size_pt)?;
+        let (dwrite, line_height, char_width) = DWrite::new(
+            &self.editor_font_family,
+            self.editor_font_size_pt,
+            self.nerd_font_fallback.as_ref(),
+        )?;
         self.dwrite = Some(dwrite);
         self.current_line_height = line_height;
         self.current_char_width = char_width;
 
         // Chrome (UI) font bootstrap — see `attach_surface`'s comment.
-        let (chrome_dwrite, _, _) = DWrite::new(&self.ui_font_family, self.ui_font_size_pt)?;
+        let (chrome_dwrite, _, _) = DWrite::new(
+            &self.ui_font_family,
+            self.ui_font_size_pt,
+            self.nerd_font_fallback.as_ref(),
+        )?;
         self.chrome_dwrite = Some(chrome_dwrite);
 
         Ok(())
@@ -1689,6 +1743,59 @@ impl Backend for WinBackend {
         }
     }
 
+    /// Register `bytes` with DirectWrite via
+    /// [`crate::win::text::register_font_from_memory`] (issue #929) — no
+    /// filesystem write, process-lifetime only. Stores the resulting
+    /// private `IDWriteFontCollection1` (so a later
+    /// [`Self::set_nerd_font_fallback`] resolves against the font that
+    /// was actually registered) and keeps `bytes` itself alive on
+    /// `self` — see `registered_font_bytes`'s field doc for why this
+    /// backend doesn't rely solely on DirectWrite's own copy.
+    fn register_font_from_memory(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
+        #[cfg(target_os = "windows")]
+        {
+            match crate::win::text::register_font_from_memory(bytes) {
+                Ok((collection, names)) => {
+                    self.registered_font_collection = Some(collection);
+                    self.registered_font_bytes = bytes.to_vec();
+                    Some(names)
+                }
+                Err(_) => None,
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = bytes;
+            None
+        }
+    }
+
+    /// Build a Nerd-Font (or other PUA-codepoint) fallback for `family`
+    /// via [`crate::win::text::build_nerd_font_fallback`] and store it
+    /// for the next [`Self::attach_surface`]/[`Self::attach_headless`]
+    /// call to bake into both `IDWriteTextFormat`s (issue #929). Resolves
+    /// against `registered_font_collection` when a prior
+    /// [`Self::register_font_from_memory`] call populated one, otherwise
+    /// against the system font collection — see
+    /// `build_nerd_font_fallback`'s doc. Same "doesn't rebuild a live
+    /// surface immediately" limitation as [`Self::set_editor_font`].
+    fn set_nerd_font_fallback(&mut self, family: &str) {
+        #[cfg(target_os = "windows")]
+        {
+            let built = crate::win::text::build_nerd_font_fallback(
+                family,
+                self.registered_font_collection.as_ref(),
+            );
+            if let Ok(fallback) = built {
+                self.nerd_font_fallback = Some(fallback);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = family;
+        }
+    }
+
     // ─── Events + keybindings ─────────────────────────────────────────
 
     /// Drain [`Self::events`] (the `docs/BACKEND.md` queue adapter,
@@ -2017,6 +2124,12 @@ impl Backend for WinBackend {
                 scroll: true,
                 drag: true,
                 text_selection: true,
+                // `register_font_from_memory`/`set_nerd_font_fallback`
+                // (#929): both overridden above, backed by real
+                // DirectWrite calls (`crate::win::text::register_font_from_memory`
+                // / `build_nerd_font_fallback`) rather than the trait's
+                // no-op default.
+                app_font_registration: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }
@@ -5372,7 +5485,7 @@ mod tests {
         // unsatisfiable and its failure would say nothing about the
         // override under test. Fail with a message that names *that*
         // instead.
-        let (probe, _, _) = DWrite::new(FONT, SIZE_PT).expect("create probe DWrite");
+        let (probe, _, _) = DWrite::new(FONT, SIZE_PT, None).expect("create probe DWrite");
         let (probe_regular, _) = probe
             .measure_text_styled(TEXT, false)
             .expect("measure regular");
@@ -5431,6 +5544,97 @@ mod tests {
             (regular_width, bold_width),
             (probe_regular, probe_bold),
             "resolved segment widths must match DirectWrite's own per-weight measurement"
+        );
+    }
+
+    // ── #929: register_font_from_memory / set_nerd_font_fallback ────────
+
+    /// Garbage bytes aren't a font Core Graphics/DirectWrite can parse —
+    /// `register_font_from_memory` must report that as `None` rather than
+    /// panicking or returning a bogus family list. Doesn't need a real
+    /// font file fixture (which this suite has none of), so it covers the
+    /// one path that's fully exercisable without one.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn register_font_from_memory_rejects_bytes_that_are_not_a_font() {
+        let mut backend = WinBackend::new();
+        let garbage = [0u8; 64];
+        assert!(
+            backend.register_font_from_memory(&garbage).is_none(),
+            "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    /// `set_nerd_font_fallback` works with no prior
+    /// `register_font_from_memory` call at all — it should resolve
+    /// `family` against the *system* font collection (see
+    /// `crate::win::text::build_nerd_font_fallback`'s doc), which is the
+    /// shape an app pointing at an already-installed Nerd Font uses.
+    /// Asserts the whole pipeline (`set_nerd_font_fallback` ->
+    /// `attach_headless` -> `DWrite::new` baking the fallback into both
+    /// `IDWriteTextFormat`s -> a real paint) survives end to end and
+    /// keeps painting ordinary text correctly — the regression this test
+    /// guards is "wiring a fallback breaks normal (non-fallback) text",
+    /// not "the fallback glyph is pixel-identical to some reference",
+    /// which would need an embedded custom font fixture this suite
+    /// doesn't have.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_nerd_font_fallback_against_the_system_collection_does_not_break_normal_paint() {
+        use crate::win::testing::HeadlessSurface;
+        use crate::Color;
+
+        const W: u32 = 200;
+        const H: u32 = 30;
+        const TEXT: &str = "OK";
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        // "Segoe UI Symbol" ships on every supported Windows version and
+        // is a real, distinct family from the default UI font — a
+        // plausible stand-in for an app-installed Nerd Font pointed at
+        // via a plain family name with no `register_font_from_memory`
+        // call. Must precede `attach_headless`, same "bake at surface
+        // construction" convention as `set_editor_font`/`set_ui_font`.
+        backend.set_nerd_font_fallback("Segoe UI Symbol");
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach_headless must still succeed with a fallback wired in");
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let sentinel = Color::rgb(0, 0, 0);
+        backend.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), sentinel);
+        backend.draw_text(
+            TEXT,
+            Rect::new(4.0, 4.0, W as f32 - 8.0, H as f32 - 8.0),
+            Color::rgb(255, 255, 255),
+        );
+        backend.end_frame();
+
+        let (w, h) = backend.measure_text(TEXT);
+        assert!(
+            w > 0.0 && h > 0.0,
+            "ordinary text must still measure to a real, positive size with a fallback wired \
+             in (w={w}, h={h})"
+        );
+
+        // At least one non-background pixel landed inside the paint
+        // target — a coarse but real proof that `draw_text` actually
+        // painted glyphs rather than silently no-op'ing once a fallback
+        // was attached.
+        let mut painted_something = false;
+        'outer: for y in 0..H {
+            for x in 0..W {
+                let px = surface.pixel_at(x, y);
+                if (px.r, px.g, px.b) != (sentinel.r, sentinel.g, sentinel.b) {
+                    painted_something = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            painted_something,
+            "draw_text must paint something other than the sentinel background"
         );
     }
 

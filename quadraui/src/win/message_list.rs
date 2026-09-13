@@ -104,7 +104,9 @@ mod tests {
     const PANEL_BG: Color = Color::rgb(13, 13, 13);
 
     fn dwrite() -> DWrite {
-        DWrite::new("Segoe UI", 10.0).expect("create DWrite").0
+        DWrite::new("Segoe UI", 10.0, None)
+            .expect("create DWrite")
+            .0
     }
 
     fn sample_list() -> MessageList {

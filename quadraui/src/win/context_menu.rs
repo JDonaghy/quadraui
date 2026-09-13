@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let m = menu();
         let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
         let layout = m.layout(10.0, 10.0, viewport, 120.0, |i| {

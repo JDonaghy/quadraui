@@ -55,6 +55,43 @@ release time.
 
 ### Added
 
+- `Backend::register_font_from_memory` + `Backend::set_nerd_font_fallback`
+  (issue #929) — macOS and Win-GUI had no way to resolve Nerd-Font (or
+  other PUA-codepoint) icon glyphs at all: unlike GTK, which cascades to
+  a system-installed `Symbols Nerd Font` automatically
+  (`crate::gtk::NERD_FONT_FALLBACK_FAMILY`), a `CTFont`/`IDWriteTextFormat`
+  resolves every character against exactly one family, so an icon
+  codepoint that family doesn't cover painted as a last-resort tofu box
+  on both backends. `register_font_from_memory` hands the backend raw
+  TTF/OTF bytes (e.g. an `include_bytes!`-embedded subset) to register
+  with the platform font manager for the process lifetime — no
+  filesystem write, no `fc-cache` — and returns the family name(s) it
+  registered under; `set_nerd_font_fallback` names the family every
+  subsequent `draw_*` call should consult for characters the primary
+  font can't cover. Both default to a no-op (`None`/nothing) so every
+  existing backend impl keeps compiling unchanged (rule 7).
+
+  **Per backend:** macOS registers via `CTFontManagerRegisterGraphicsFont`
+  and applies the fallback via a `kCTFontCascadeListAttribute` cascade
+  list (`CTFontCreateCopyWithAttributes`) on the shared `current_font`,
+  re-applied automatically regardless of whether `set_current_font` or
+  `set_nerd_font_fallback` is called first. Win-GUI registers via
+  `IDWriteFactory5::CreateInMemoryFontFileLoader` into a private
+  `IDWriteFontCollection1` and builds a `IDWriteFontFallback` (via
+  `IDWriteFontFallbackBuilder`, layered on top of — not replacing — the
+  system's own fallback chain) applied to both `IDWriteTextFormat`s at
+  the next `attach_surface`/`attach_headless`. GTK overrides
+  `set_nerd_font_fallback` too, replacing the hardcoded
+  `NERD_FONT_FALLBACK_FAMILY` constant with a process-wide settable
+  value, so an app that targets this portable API gets the same effect
+  on every backend rather than needing a GTK-specific escape hatch;
+  `register_font_from_memory` stays a no-op there since fontconfig
+  already resolves a system-installed Nerd Font. TUI takes both
+  defaults — a fixed-cell backend has no font concept.
+
+  New `BackendCaps::app_font_registration` field (declared by GTK,
+  macOS, and Win-GUI; not TUI) lets a caller check either capability is
+  wired before relying on it.
 - `ToolbarIcons` + `Backend::nerd_fonts_enabled()` (issue #913) — a
   Nerd-Font glyph + ASCII fallback path for `ToolbarButton::Action`
   icons, which previously had none: `icon` is a single `Option<String>`,

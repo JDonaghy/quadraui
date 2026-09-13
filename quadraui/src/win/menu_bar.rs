@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
         let theme = Theme::default();
@@ -213,7 +213,7 @@ mod tests {
     /// `draw_menu_bar` painted.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(3.0, 0.0, W, H);
 

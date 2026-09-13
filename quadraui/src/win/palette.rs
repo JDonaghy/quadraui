@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn renders_and_highlights_match_positions() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let p = palette();
         let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
         let line_height = 18.0;
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn selected_row_paints_selection_bg() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let p = palette();
         let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
         let line_height = 18.0;

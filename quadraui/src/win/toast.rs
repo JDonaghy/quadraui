@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let stack = stack_br(vec![colored_toast("t1", "Saved")]);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
         let theme = Theme::default();
@@ -312,7 +312,7 @@ mod tests {
         let theme = Theme::default();
 
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let painted = surface
             .paint(|target| {
                 let mut raw = RawWinToastSurface {
@@ -343,7 +343,7 @@ mod tests {
     /// overlay's absolute origin, not silently treated as `(0, 0)`.
     #[test]
     fn paint_and_hit_test_round_trip_at_nonzero_origin() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let stack = stack_br(vec![colored_toast("t1", "Saved")]);
         let rect = Rect::new(20.0, 30.0, W as f32, H as f32);
         let theme = Theme::default();

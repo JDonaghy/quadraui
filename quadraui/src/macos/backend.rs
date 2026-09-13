@@ -156,6 +156,14 @@ pub struct MacBackend {
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
+    /// Family last set via [`Backend::set_nerd_font_fallback`] (issue
+    /// #929), if any. Applied to `current_font` immediately if one is
+    /// already set (see [`Self::set_nerd_font_fallback`]), and consulted
+    /// by [`Self::set_current_font`] so a later `set_current_font` call
+    /// (e.g. a runtime font-preference change) doesn't silently drop a
+    /// fallback that was configured first — the two setters can land in
+    /// either order.
+    nerd_font_fallback_family: Option<String>,
     /// Retained installer target from the last [`Backend::install_menu_bar`]
     /// call. Holds it alive so action selectors on installed `NSMenuItem`s
     /// don't dangle. Replaced wholesale on each re-install.
@@ -415,6 +423,7 @@ impl MacBackend {
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
+            nerd_font_fallback_family: None,
             menu_target: None,
             caret_visible: std::rc::Rc::new(std::cell::Cell::new(true)),
             caret_blink_pause_until: std::rc::Rc::new(std::cell::Cell::new(
@@ -515,7 +524,18 @@ impl MacBackend {
     /// Install the font that subsequent `draw_*` calls use for text.
     /// Updates `current_line_height` + `current_char_width` from the
     /// font's typographic metrics.
+    ///
+    /// If [`Backend::set_nerd_font_fallback`] was already called, `font`
+    /// gets that fallback family applied (via
+    /// [`super::text::font_with_fallback`]) before it's stored — issue
+    /// #929, and the reason `set_nerd_font_fallback`/`set_current_font`
+    /// can land in either order: whichever runs second re-applies the
+    /// other's effect instead of silently dropping it.
     pub fn set_current_font(&mut self, font: CTFont) {
+        let font = match &self.nerd_font_fallback_family {
+            Some(family) => super::text::font_with_fallback(&font, family),
+            None => font,
+        };
         let metrics = super::text::font_metrics(&font);
         self.current_line_height = metrics.line_height;
         self.current_char_width = metrics.char_width;
@@ -949,6 +969,25 @@ impl Backend for MacBackend {
         self.nerd_fonts_enabled
     }
 
+    /// Register `bytes` with Core Text via
+    /// [`super::text::register_font_from_memory`] (issue #929) — no
+    /// filesystem write, process-lifetime only.
+    fn register_font_from_memory(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
+        super::text::register_font_from_memory(bytes).map(|name| vec![name])
+    }
+
+    /// Store `family` as the Nerd-Font (or other PUA-codepoint) fallback
+    /// and, if [`Self::set_current_font`] already installed a font,
+    /// re-apply it immediately via [`super::text::font_with_fallback`]
+    /// (issue #929) — see that method's doc for why the two setters can
+    /// land in either order without either effect being lost.
+    fn set_nerd_font_fallback(&mut self, family: &str) {
+        self.nerd_font_fallback_family = Some(family.to_string());
+        if let Some(font) = self.current_font.take() {
+            self.current_font = Some(super::text::font_with_fallback(&font, family));
+        }
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         // Issue #831: fold in any `UiEvent::User` payloads a background
@@ -1188,6 +1227,11 @@ impl Backend for MacBackend {
     ///   instead of skipping. Before #803 this backend declared neither
     ///   `register_text_region` nor a drag pipeline for it, so the cap
     ///   stayed unset (see #493's original note, now stale).
+    /// - `app_font_registration` (#929): `register_font_from_memory` /
+    ///   `set_nerd_font_fallback` are both overridden above, backed by
+    ///   real `CTFontManagerRegisterGraphicsFont` /
+    ///   `CTFontCreateCopyWithAttributes` calls in `super::text` rather
+    ///   than the trait's no-op default.
     /// - Everything else — `ime` — is **not** declared: no macOS IME
     ///   integration exists yet.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
@@ -1201,6 +1245,7 @@ impl Backend for MacBackend {
             window_chrome: true,
             pointer_cursor: true,
             text_selection: true,
+            app_font_registration: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -3899,6 +3944,84 @@ mod tests {
             b.backend_caps().text_selection,
             "#803: MacBackend must declare text_selection now that register_text_region/\
              cancel_text_selection_drag are both overridden"
+        );
+    }
+
+    // ── #929: register_font_from_memory / set_nerd_font_fallback ────────
+
+    #[test]
+    fn mac_backend_declares_app_font_registration_capability() {
+        let b = MacBackend::new();
+        assert!(
+            b.backend_caps().app_font_registration,
+            "#929: MacBackend must declare app_font_registration now that \
+             register_font_from_memory/set_nerd_font_fallback are both overridden"
+        );
+    }
+
+    /// `set_nerd_font_fallback` called *before* `set_current_font` (the
+    /// documented "call once from `setup()`" order) must still land on
+    /// the font `set_current_font` installs.
+    #[test]
+    fn set_nerd_font_fallback_then_set_current_font_carries_the_fallback() {
+        use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
+        use core_text::font_descriptor::kCTFontCascadeListAttribute;
+
+        let mut b = MacBackend::new();
+        b.set_nerd_font_fallback("Helvetica");
+        b.set_current_font(font());
+        let attrs = b
+            .current_font
+            .as_ref()
+            .expect("set_current_font must install a font")
+            .copy_descriptor()
+            .attributes()
+            .to_untyped();
+        let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
+        assert!(
+            attrs.contains_key(&cascade_key.as_CFTypeRef()),
+            "a fallback set before set_current_font must still be applied to the installed font"
+        );
+    }
+
+    /// The reverse order — `set_current_font` first, `set_nerd_font_fallback`
+    /// second — must retroactively apply the fallback to the
+    /// already-installed font rather than requiring `set_current_font`
+    /// to be called again.
+    #[test]
+    fn set_current_font_then_set_nerd_font_fallback_retroactively_applies() {
+        use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
+        use core_text::font_descriptor::kCTFontCascadeListAttribute;
+
+        let mut b = MacBackend::new();
+        b.set_current_font(font());
+        b.set_nerd_font_fallback("Helvetica");
+        let attrs = b
+            .current_font
+            .as_ref()
+            .expect("current_font must still be installed")
+            .copy_descriptor()
+            .attributes()
+            .to_untyped();
+        let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
+        assert!(
+            attrs.contains_key(&cascade_key.as_CFTypeRef()),
+            "set_nerd_font_fallback must retroactively apply to an already-installed \
+             current_font"
+        );
+    }
+
+    /// Garbage bytes aren't a font Core Graphics can parse —
+    /// `register_font_from_memory` must report that as `None`.
+    #[test]
+    fn mac_backend_register_font_from_memory_rejects_bytes_that_are_not_a_font() {
+        let mut b = MacBackend::new();
+        let garbage = [0u8; 64];
+        assert!(
+            b.register_font_from_memory(&garbage).is_none(),
+            "64 zero bytes are not a parseable font — must report None, not a fabricated family"
         );
     }
 

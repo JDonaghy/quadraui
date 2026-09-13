@@ -1608,6 +1608,15 @@ impl Backend for GtkBackend {
         self.ui_font = font_desc.to_string();
     }
 
+    /// Overrides [`crate::gtk::NERD_FONT_FALLBACK_FAMILY`] for every
+    /// subsequent `with_nerd_font_fallback`/`chrome_font_description`/
+    /// `tab_bar::tab_icon_font` call in this process (issue #929). Process-
+    /// wide rather than a field on `self` — see
+    /// `crate::gtk::current_nerd_font_fallback_family`'s doc for why.
+    fn set_nerd_font_fallback(&mut self, family: &str) {
+        crate::gtk::set_current_nerd_font_fallback_family(family);
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain the queue without blocking. Stage 4 wires up the
         // signal-callback producers; until then this is always empty.
@@ -1793,6 +1802,7 @@ impl Backend for GtkBackend {
             pointer_cursor: true,
             file_dialogs: true,
             native_dialogs: true,
+            app_font_registration: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
