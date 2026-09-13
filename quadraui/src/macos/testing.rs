@@ -164,6 +164,34 @@ impl<A: AppLogic> MacDriver<A> {
         render_frame(backend, app, viewport, context_ptr);
     }
 
+    /// Fire `AppLogic::tick` directly, the same call
+    /// [`super::run::QuadraView::dispatch_tick`] makes from either the
+    /// wake-scheduled `Backend::request_frame_in` timer or (quadraui#940)
+    /// the repeating `idlePollTick:` idle-poll fallback the live runner
+    /// now installs — see that timer's doc for why macOS needed one.
+    /// Neither of those native `NSTimer`s exists in this headless driver
+    /// (there's no live `NSApplication` run loop for one to fire against
+    /// — see the module doc's "Limitations" section), so this is the
+    /// seam a test uses to assert on `tick`'s *effect* directly: queue
+    /// deferred work from [`Self::dispatch`], call this with **no**
+    /// further input, and check the queued work drained. Repaints on
+    /// `Reaction::Redraw` and latches `exited` on `Reaction::Exit`,
+    /// mirroring [`Self::dispatch`].
+    pub fn tick(&mut self) -> Reaction {
+        if self.core.exited() {
+            return Reaction::Exit;
+        }
+        let reaction = {
+            let (backend, app) = self.core.parts_mut();
+            app.tick(backend)
+        };
+        let viewport = crate::Viewport::new(self.width as f32, self.height as f32, 1.0);
+        let context_ptr = self.surface.context_ptr();
+        self.core.apply_outcome(reaction.into(), |backend, app| {
+            render_frame(backend, app, viewport, context_ptr);
+        })
+    }
+
     /// Feed one synthetic event through the shared production
     /// [`dispatch_event`] path. Repaints on redraw and latches `exited`.
     pub fn dispatch(&mut self, event: UiEvent) -> Reaction {
@@ -953,6 +981,116 @@ mod tests {
                 .as_deref(),
             Some(SELECTABLE_LINE),
             "Ctrl-C must copy the dragged text to the real OS clipboard"
+        );
+    }
+
+    /// Models vimcode's `PendingFileDialog` pattern (quadraui#940): a
+    /// host's event handler can't call `Backend::services().
+    /// show_file_open_dialog` directly — that needs the runner-owned
+    /// `MacBackend` handle `handle` doesn't have — so it queues the
+    /// request and drains it from `tick` instead (see the issue's
+    /// "Cause" section). `handle` here queues on any `KeyPressed` and
+    /// deliberately returns `Reaction::Continue`, not `Redraw`:
+    /// nothing about the triggering event forces a repaint on its own,
+    /// which is exactly the #940 symptom — on GTK/TUI the next coarse
+    /// idle tick drains `pending` regardless of that, but macOS had no
+    /// such tick at all before this issue.
+    struct DeferredWorkApp {
+        pending: std::cell::Cell<bool>,
+        drained: std::cell::Cell<bool>,
+    }
+
+    impl AppLogic for DeferredWorkApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            if !self.drained.get() {
+                return;
+            }
+            backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &StatusBar {
+                    id: WidgetId::new("status"),
+                    left_segments: vec![StatusBarSegment {
+                        text: "dialog-open".to_string(),
+                        fg: Color::rgb(255, 255, 255),
+                        bg: KNOWN_BG,
+                        bold: false,
+                        action_id: None,
+                    }],
+                    right_segments: vec![],
+                },
+                &crate::InteractionState::new(),
+            );
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.pending.set(true);
+            Reaction::Continue
+        }
+
+        fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+            if self.pending.replace(false) {
+                self.drained.set(true);
+                return Reaction::Redraw;
+            }
+            Reaction::Continue
+        }
+    }
+
+    /// RED-verify for quadraui#940: before this issue, `MacDriver` had no
+    /// way to invoke `AppLogic::tick` at all. The only two mechanisms
+    /// that ever reached it in production —
+    /// [`crate::backend::Backend::request_frame_in`]'s scheduled
+    /// `NSTimer` and (this same PR) `run_with`'s repeating
+    /// `idlePollTick:` fallback — are both live-`NSApplication` timer
+    /// machinery a headless driver can't run (see the module doc's
+    /// "Limitations" section). Without [`MacDriver::tick`], the exact
+    /// scenario this issue is about — a host that queues deferred work
+    /// in `handle` and marks the frame dirty, with **no further
+    /// input**, and expects it to eventually drain — was simply
+    /// unwritable as a test on this backend.
+    ///
+    /// Asserts on the drained work's *observable paint effect*, never on
+    /// a callback merely firing, per the issue's acceptance bar.
+    #[test]
+    fn tick_drains_deferred_work_queued_with_no_further_input() {
+        let mut driver = MacDriver::new(
+            DeferredWorkApp {
+                pending: std::cell::Cell::new(false),
+                drained: std::cell::Cell::new(false),
+            },
+            W,
+            H,
+        );
+
+        assert!(!driver.screen_contains("dialog-open"));
+
+        let reaction = driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Char('o'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        assert_eq!(
+            reaction,
+            Reaction::Continue,
+            "queuing deferred work must not force an immediate redraw — that's the whole \
+             reason this pattern needs `tick` at all"
+        );
+        assert!(
+            !driver.screen_contains("dialog-open"),
+            "the deferred work must not already be drained by dispatch itself"
+        );
+
+        let tick_reaction = driver.tick();
+        assert_eq!(
+            tick_reaction,
+            Reaction::Redraw,
+            "tick must drain the queued work and force a redraw"
+        );
+        assert!(
+            driver.screen_contains("dialog-open"),
+            "tick's Redraw must actually repaint the drained work's effect, not just report it"
         );
     }
 }

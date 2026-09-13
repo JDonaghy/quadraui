@@ -114,9 +114,10 @@ type HandleFn = Box<dyn Fn(UiEvent) -> Reaction + 'static>;
 /// Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` (quadraui#832)
 /// — the third leg of the type-erased-closure trio, alongside `paint`/
 /// `handle` above. Fired by [`MacBackend::request_frame_in`]'s
-/// scheduled-wake timer via [`MacBackend::set_tick_callback`], not
-/// called on any fixed cadence — macOS never called `tick` at all before
-/// #832 (see [`crate::backend::Backend::waker`]'s doc for that history).
+/// scheduled-wake timer via [`MacBackend::set_tick_callback`] *and* by
+/// [`run_with`]'s repeating `idlePollTick:` timer (quadraui#940 — see
+/// that method's doc for why the wake-only path alone left deferred
+/// host work stranded).
 type TickFn = Box<dyn Fn() -> Reaction + 'static>;
 
 // `EventOutcome` — what the caller should do after [`dispatch_event`]
@@ -733,6 +734,24 @@ define_class!(
             }
         }
 
+        // ── Idle-poll fallback tick (issue #940) ─────────────────────
+        //
+        // Target of [`run_with`]'s repeating `NSTimer`, armed at
+        // `crate::runtime::IDLE_POLL_CEILING` (250ms) — mirrors GTK's
+        // `glib::timeout_add_local(IDLE_POLL_CEILING, ...)` idle safety
+        // net (`gtk::run::run_with`'s `drain_and_tick` install site).
+        // Before this, macOS only ever called `AppLogic::tick` off a
+        // native event or an explicit `Backend::request_frame_in`
+        // deadline — a host that queued deferred work (a file dialog
+        // request, a dirty-frame flag) with no further input and no
+        // explicit re-arm had that work stranded forever. This timer is
+        // the coarse backstop: whatever the app didn't ask to be woken
+        // for gets picked up within a quarter second regardless.
+        #[unsafe(method(idlePollTick:))]
+        fn idle_poll_tick(&self, _timer: &NSTimer) {
+            self.dispatch_tick();
+        }
+
         // ── HiDPI runtime change (issue #834) ───────────────────────
         //
         // Registered (in [`run`]) as the observer for
@@ -975,9 +994,11 @@ impl QuadraView {
     /// Fire `AppLogic::tick` and act on the returned [`Reaction`]
     /// (quadraui#832). The [`MacBackend::set_tick_callback`] target a
     /// [`MacBackend::request_frame_in`] timer invokes once its delay
-    /// elapses — never called on any fixed cadence, mirroring
-    /// [`Self::dispatch`]'s "translate, then apply" shape for the tick
-    /// path instead of an event.
+    /// elapses, *and* (quadraui#940) the target of `run_with`'s own
+    /// repeating `idlePollTick:` timer — see that timer's doc for why a
+    /// wake-only path alone wasn't enough. Mirrors [`Self::dispatch`]'s
+    /// "translate, then apply" shape for the tick path instead of an
+    /// event.
     ///
     /// Guarded the same way as [`Self::dispatch`] (#922) — this is also
     /// invoked directly from an objc2/AppKit callback (the `NSTimer`
@@ -1320,6 +1341,25 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
             Some(view_obj),
         );
     }
+
+    // quadraui#940: coarse idle-poll fallback — see `idlePollTick:`'s doc
+    // on `QuadraView` and `crate::runtime::IDLE_POLL_CEILING`'s doc for
+    // the full rationale. Mirrors `gtk::run::run_with`'s
+    // `glib::timeout_add_local(IDLE_POLL_CEILING, ...)` install site:
+    // a repeating timer targeting the view itself, kept alive for the
+    // app's lifetime as a local binding (same pattern as
+    // `_blink_timer`/`_blink_target` below) rather than stored on
+    // `QuadraViewIvars` — nothing needs to reach it again after this
+    // point, unlike `resize_timer`, which a live drag replaces.
+    let _idle_poll_timer: Retained<NSTimer> = unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+            crate::runtime::IDLE_POLL_CEILING.as_secs_f64(),
+            view_obj,
+            sel!(idlePollTick:),
+            None,
+            true,
+        )
+    };
 
     // HiDPI runtime change (issue #834): unlike the frame-change
     // notification above (which the *view* posts about itself), it's the
