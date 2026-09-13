@@ -71,7 +71,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
-use crate::backend::{Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape};
+use crate::backend::{
+    Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape, ServiceResult,
+    WindowControl,
+};
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::modal_stack::ModalStack;
@@ -400,12 +403,24 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{IDWriteFontCollection1, IDWriteFontFallback};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+// `MonitorFromWindow`/`GetMonitorInfoW`/`MONITORINFO` (issue #950's
+// `WindowControl::set_fullscreen`): HMONITOR queries live under `Gdi` in
+// the `windows` crate, not `WindowsAndMessaging`, even though they're
+// conceptually "window" APIs — already-enabled `Win32_Graphics_Gdi`
+// feature (Cargo.toml), no new feature needed.
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, LoadCursorW, PostMessageW, SetCursor, SetTimer, IDC_ARROW, IDC_SIZENESW,
-    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE,
+    GetClientRect, GetWindowLongPtrW, GetWindowRect, LoadCursorW, PostMessageW, SetCursor,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
+    IDC_SIZEWE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_OVERLAPPEDWINDOW,
 };
 
 #[cfg(target_os = "windows")]
@@ -641,6 +656,16 @@ pub struct WinBackend {
     /// `attach_surface` call succeeds.
     #[cfg(target_os = "windows")]
     hwnd: Option<HWND>,
+    /// Window rect + `GWL_STYLE` value saved by
+    /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
+    /// the moment it enters fullscreen, so exiting can restore both —
+    /// Win-GUI's fullscreen is a manual `WS_OVERLAPPEDWINDOW` style
+    /// strip + `SetWindowPos` to the monitor rect (issue #950's "style
+    /// toggle plus `MonitorFromWindow`" design note), not a single
+    /// reversible OS call the way GTK's `fullscreen`/`unfullscreen` or
+    /// AppKit's `toggleFullScreen:` are. `None` outside fullscreen.
+    #[cfg(target_os = "windows")]
+    fullscreen_saved: Option<(RECT, isize)>,
     /// Live, thread-safe mirror of `hwnd`'s raw handle value, read fresh
     /// on every invocation of the closure [`Self::waker`] hands out
     /// (issue #831 review fix). `HWND` itself isn't `Send`, so it can't
@@ -860,6 +885,8 @@ impl WinBackend {
             headless_target: None,
             #[cfg(target_os = "windows")]
             hwnd: None,
+            #[cfg(target_os = "windows")]
+            fullscreen_saved: None,
             #[cfg(target_os = "windows")]
             hwnd_raw: std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(0)),
             #[cfg(target_os = "windows")]
@@ -2108,6 +2135,19 @@ impl Backend for WinBackend {
         }
     }
 
+    // ─── Window control (issue #950) ────────────────────────────────────
+    fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
+        #[cfg(target_os = "windows")]
+        {
+            self.hwnd?;
+            Some(self)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
     // ─── Capability declaration ──────────────────────────────────────────
 
     /// quadraui#492: honest, not aspirational. #19 landed the window +
@@ -2195,6 +2235,17 @@ impl Backend for WinBackend {
                 // / `build_nerd_font_fallback`) rather than the trait's
                 // no-op default.
                 app_font_registration: true,
+                // `window` (issue #950) is overridden below and returns
+                // `Some` once `attach_surface` has stashed a real
+                // `HWND` — see `impl WindowControl for WinBackend`'s doc
+                // for which methods it backs with real `SetWindowPos`/
+                // `ShowWindow`/`SetWindowTextW` calls versus report
+                // `Unsupported` (`set_min_size`/`set_max_size`, which
+                // would need `WM_GETMINMAXINFO` wired into `win::run`'s
+                // `wndproc` to mean anything during a live interactive
+                // resize — tracked as follow-up, not silently faked
+                // here as a one-shot clamp).
+                window_control: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }
@@ -4068,6 +4119,390 @@ impl Backend for WinBackend {
             },
         )
     }
+}
+
+/// Win-GUI's `WindowControl` surface (issue #950). Every method guards on
+/// `self.hwnd` the same way [`Backend::set_cursor`] does — cheap defense
+/// against a caller that stashed the trait object past a window teardown,
+/// even though [`Backend::window`] only ever hands one out once `hwnd` is
+/// `Some`. `bounds`/`set_bounds`/`set_size` operate on the **outer window
+/// rect** (`GetWindowRect`/`SetWindowPos` semantics — includes the
+/// title bar and borders), not the client area: computing an exact
+/// client-area size would need an `AdjustWindowRectEx` round-trip through
+/// the window's current style, which this issue doesn't attempt — see
+/// [`Self::bounds`]'s own doc.
+///
+/// All coordinates cross the DIP ⇄ physical-pixel boundary via
+/// [`WinBackend::dpi_scale`], the same field [`Backend::viewport`]'s
+/// `scale` mirrors — so a caller working in this crate's native units
+/// (DIPs, per every other backend) gets consistent numbers back from
+/// [`Self::bounds`] regardless of the monitor's DPI.
+impl WindowControl for WinBackend {
+    fn set_title(&mut self, title: &str) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let wide = win_wide_nul_terminated(title);
+            unsafe { SetWindowTextW(hwnd, windows::core::PCWSTR::from_raw(wide.as_ptr())) }.map_err(
+                |e| BackendError::PlatformFailure {
+                    context: format!("SetWindowTextW: {e}"),
+                },
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = title;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn set_size(&mut self, width: f32, height: f32) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let scale = self.dpi_scale;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    (width * scale).round() as i32,
+                    (height * scale).round() as i32,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            }
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("SetWindowPos: {e}"),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (width, height);
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// **Not available.** A real minimum-size *floor* has to keep holding
+    /// during live interactive resize, which Win32 only offers through
+    /// `WM_GETMINMAXINFO` — a `wndproc` message this issue doesn't wire
+    /// into `win::run` (out of this issue's file list, which names only
+    /// `src/win/backend.rs`). A one-shot `SetWindowPos` clamp applied
+    /// only at call time would silently stop enforcing the moment the
+    /// user next drags an edge, which is a worse lie than declaring the
+    /// gap outright — see this trait's own doc for why every method here
+    /// prefers `Unsupported` over a partial, silently-abandoned effect.
+    fn set_min_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// **Not available**, same `WM_GETMINMAXINFO` reasoning as
+    /// [`Self::set_min_size`].
+    fn set_max_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// The outer window rect (`GetWindowRect`), converted from physical
+    /// pixels to DIPs via [`WinBackend::dpi_scale`] — see this `impl`
+    /// block's own doc for why this is the outer rect, not the client
+    /// area.
+    fn bounds(&self) -> ServiceResult<Rect> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let mut rect = RECT::default();
+            unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| {
+                BackendError::PlatformFailure {
+                    context: format!("GetWindowRect: {e}"),
+                }
+            })?;
+            let scale = self.dpi_scale.max(0.01);
+            Ok(Rect::new(
+                rect.left as f32 / scale,
+                rect.top as f32 / scale,
+                (rect.right - rect.left) as f32 / scale,
+                (rect.bottom - rect.top) as f32 / scale,
+            ))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn set_bounds(&mut self, bounds: Rect) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let scale = self.dpi_scale;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    (bounds.x * scale).round() as i32,
+                    (bounds.y * scale).round() as i32,
+                    (bounds.width * scale).round() as i32,
+                    (bounds.height * scale).round() as i32,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            }
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("SetWindowPos: {e}"),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = bounds;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn center(&mut self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let mut window_rect = RECT::default();
+            unsafe { GetWindowRect(hwnd, &mut window_rect) }.map_err(|e| {
+                BackendError::PlatformFailure {
+                    context: format!("GetWindowRect: {e}"),
+                }
+            })?;
+            let monitor_rect = win_monitor_rect(hwnd)?;
+            let w = window_rect.right - window_rect.left;
+            let h = window_rect.bottom - window_rect.top;
+            let mw = monitor_rect.right - monitor_rect.left;
+            let mh = monitor_rect.bottom - monitor_rect.top;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    monitor_rect.left + (mw - w) / 2,
+                    monitor_rect.top + (mh - h) / 2,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            }
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("SetWindowPos: {e}"),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// Manual `WS_OVERLAPPEDWINDOW` style strip + `SetWindowPos` to the
+    /// nearest monitor's full rect (issue #950's own design note for
+    /// Win-GUI fullscreen) — Win32 has no single reversible "fullscreen"
+    /// call the way GTK's `fullscreen`/`unfullscreen` or AppKit's
+    /// `toggleFullScreen:` are, so [`WinBackend::fullscreen_saved`] does
+    /// the remembering `toggleFullScreen:`'s own window-manager state
+    /// would otherwise do for free. Idempotent: entering while already
+    /// fullscreen, or exiting while not, is a no-op `Ok(())` rather than
+    /// clobbering the saved rect with an already-fullscreen one.
+    fn set_fullscreen(&mut self, fullscreen: bool) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            if fullscreen {
+                if self.fullscreen_saved.is_some() {
+                    return Ok(());
+                }
+                let mut rect = RECT::default();
+                unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| {
+                    BackendError::PlatformFailure {
+                        context: format!("GetWindowRect: {e}"),
+                    }
+                })?;
+                let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+                self.fullscreen_saved = Some((rect, style));
+                let stripped = style & !(WS_OVERLAPPEDWINDOW.0 as isize);
+                unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, stripped) };
+                let monitor_rect = win_monitor_rect(hwnd)?;
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        monitor_rect.left,
+                        monitor_rect.top,
+                        monitor_rect.right - monitor_rect.left,
+                        monitor_rect.bottom - monitor_rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    )
+                }
+                .map_err(|e| BackendError::PlatformFailure {
+                    context: format!("SetWindowPos: {e}"),
+                })
+            } else {
+                let Some((rect, style)) = self.fullscreen_saved.take() else {
+                    return Ok(());
+                };
+                unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, style) };
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    )
+                }
+                .map_err(|e| BackendError::PlatformFailure {
+                    context: format!("SetWindowPos: {e}"),
+                })
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = fullscreen;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST)` — the one always-on-top
+    /// mechanism among the four in-tree backends that actually works
+    /// (contrast [`crate::gtk::backend::GtkBackend`]'s `Unsupported` on
+    /// GTK4/Wayland).
+    fn set_always_on_top(&mut self, on_top: bool) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let insert_after = if on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    Some(insert_after),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+            }
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("SetWindowPos: {e}"),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = on_top;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn minimize(&mut self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `ShowWindow(SW_RESTORE)` undoes both a minimize and a maximize —
+    /// matching `GtkBackend::restore`'s "restores from either state"
+    /// posture (see that method's doc for why).
+    fn restore(&mut self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn hide(&mut self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn show(&mut self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn focus(&mut self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            unsafe {
+                let _ = SetForegroundWindow(hwnd);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+}
+
+/// UTF-16, NUL-terminated — the framing every `PCWSTR`-taking Win32 call
+/// in this backend needs. Mirrors `win::services::wide_nul_terminated`
+/// (private to that module, so not reused directly rather than exposed
+/// just for this one cross-module call).
+#[cfg(target_os = "windows")]
+fn win_wide_nul_terminated(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// The nearest monitor's full rect (not the work area — `set_fullscreen`
+/// wants to cover the taskbar too) for the monitor `hwnd` is currently
+/// on, via `MonitorFromWindow(MONITOR_DEFAULTTONEAREST)` +
+/// `GetMonitorInfoW`. Shared by [`WindowControl::center`] (work area
+/// would arguably be more correct there, but a single helper covering
+/// both callers is a smaller diff than two, and centering a couple of
+/// taskbar-heights off from work-area-perfect is a cosmetic gap, not a
+/// correctness one) and [`WindowControl::set_fullscreen`].
+#[cfg(target_os = "windows")]
+fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
+    let hmonitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetMonitorInfoW(hmonitor, &mut info) }
+        .ok()
+        .map_err(|e| BackendError::PlatformFailure {
+            context: format!("GetMonitorInfoW: {e}"),
+        })?;
+    Ok(info.rcMonitor)
 }
 
 // ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────

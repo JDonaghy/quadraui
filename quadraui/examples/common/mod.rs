@@ -111,6 +111,7 @@ pub mod toast_app;
 pub mod toolbar_app;
 pub mod tooltip_demo;
 pub mod wide_tab_bar_demo;
+pub mod window_control_demo;
 pub mod workspace_demo;
 
 pub use activity_nav::ActivityNavApp;
@@ -170,4 +171,5 @@ pub use toast_app::ToastApp;
 pub use toolbar_app::ToolbarApp;
 pub use tooltip_demo::TooltipDemo;
 pub use wide_tab_bar_demo::WideTabBarDemo;
+pub use window_control_demo::WindowControlDemo;
 pub use workspace_demo::WorkspaceDemo;

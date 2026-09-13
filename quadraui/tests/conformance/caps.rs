@@ -179,6 +179,10 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
         cap: "app_font_registration",
         proof: Proof::Any(&["register_font_from_memory", "set_nerd_font_fallback"]),
     },
+    CapContract {
+        cap: "window_control",
+        proof: Proof::All(&["window"]),
+    },
 ];
 
 // ─── Every backend in the tree, compiled here or not ────────────────────

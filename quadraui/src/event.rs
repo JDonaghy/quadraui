@@ -488,6 +488,31 @@ pub enum UiEvent {
     /// enough here.
     DpiChanged(f32),
 
+    /// **Optional capability** (D-010, issue #501; added by issue #950) —
+    /// the OS toggled one of the window's tri-state chrome flags
+    /// (maximize/restore, fullscreen enter/exit, minimize/restore) other
+    /// than through [`Backend::toggle_window_maximize`] or
+    /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
+    /// themselves — a window-manager keyboard shortcut, a title-bar
+    /// double-click GTK/macOS handle natively, `Cmd+Ctrl+F`, etc. Backends
+    /// that wire this connect to their native "state changed" signal
+    /// (`gtk4::Window`'s `notify::maximized`/`notify::fullscreened`,
+    /// AppKit's `NSWindowDidMiniaturize`/`NSWindowDidEnterFullScreen`
+    /// notifications, Win's `WM_SIZE` with `SIZE_MINIMIZED`/
+    /// `SIZE_MAXIMIZED`) and push this with the window's fresh tri-state
+    /// snapshot; apps use it to keep their own "is maximized" UI (a
+    /// CSD-titlebar restore icon, say) in sync with state the user
+    /// changed outside the app's own controls. Not applicable to TUI: a
+    /// terminal has no OS-level maximize/fullscreen/minimize state
+    /// distinct from the alt-screen it already occupies. A backend that
+    /// never emits this is fully conformant — declare the gap, don't
+    /// fake it (same posture as [`Self::MouseEntered`]).
+    WindowStateChanged {
+        maximized: bool,
+        fullscreen: bool,
+        minimized: bool,
+    },
+
     // ── Drops + paste ──────────────────────────────────────────────────
     /// **Optional capability** (D-010, issue #501; wired by issue #834) —
     /// emitted by GTK (`gtk::DropTarget` on the `DrawingArea`), macOS

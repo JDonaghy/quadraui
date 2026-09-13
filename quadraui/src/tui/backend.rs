@@ -1469,6 +1469,13 @@ impl Backend for TuiBackend {
             scroll: true,
             drag: true,
             text_selection: true,
+            // `window` is overridden below and always returns `Some` —
+            // see `impl WindowControl for TuiBackend`'s doc for why
+            // `set_title` (OSC 0/2 via crossterm's `SetTitle`) is the one
+            // genuine capability behind it, with every other
+            // `WindowControl` method staying `Unsupported` on a backend
+            // with no OS window (issue #950).
+            window_control: true,
             color_depth: self.color_depth,
             kitty_keyboard: self.kitty_keyboard,
             ..crate::backend::BackendCaps::empty()
@@ -2990,6 +2997,36 @@ impl Backend for TuiBackend {
         };
         self.register_zone(image.id.clone(), rect);
         result
+    }
+
+    // ─── Window control (issue #950) ────────────────────────────────────
+    fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
+        Some(self)
+    }
+}
+
+/// TUI's `WindowControl` surface — a terminal has no OS window, so this
+/// overrides exactly one method ([`WindowControl::set_title`], via the
+/// OSC 0/2 escape sequence) and leaves every other method on the trait's
+/// `Unsupported` default. See [`Backend::window`]'s doc on `TuiBackend`
+/// for why the getter still returns `Some` rather than `None` — the
+/// title-set capability is real, not a stand-in for "no window", even
+/// though the size/position/fullscreen/minimize/always-on-top surface
+/// genuinely has no terminal equivalent.
+impl crate::backend::WindowControl for TuiBackend {
+    /// Retitles the terminal emulator's tab/window via crossterm's
+    /// `SetTitle` (OSC 0/2). Whether the *emulator* honours it (some
+    /// terminals ignore OSC 0/2 entirely, or only in specific modes) is
+    /// outside crossterm's — and this backend's — control; the write
+    /// itself succeeding is all this method can promise.
+    fn set_title(&mut self, title: &str) -> crate::backend::ServiceResult<()> {
+        use ratatui::crossterm::execute;
+        use ratatui::crossterm::terminal::SetTitle;
+        execute!(std::io::stdout(), SetTitle(title)).map_err(|e| {
+            crate::backend::BackendError::PlatformFailure {
+                context: format!("crossterm SetTitle: {e}"),
+            }
+        })
     }
 }
 

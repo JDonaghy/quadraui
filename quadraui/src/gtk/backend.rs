@@ -48,10 +48,10 @@ use gtk4::glib;
 use gtk4::pango;
 use gtk4::prelude::*;
 
-use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout};
+use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, BackendError};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
-use crate::event::Point;
+use crate::event::{Point, Rect};
 use crate::native_surface::NativeSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
@@ -1805,6 +1805,15 @@ impl Backend for GtkBackend {
             folder_dialogs: true,
             native_dialogs: true,
             app_font_registration: true,
+            // `window` (issue #950) is overridden below and returns
+            // `Some` once `set_window` has stashed a real
+            // `gtk4::ApplicationWindow` — see `impl WindowControl for
+            // GtkBackend`'s doc for which methods that surface actually
+            // backs (title/size/min-size/fullscreen/minimize/restore/
+            // hide/show/focus) versus report `Unsupported` (position —
+            // `bounds`/`set_bounds`/`center` — and `set_always_on_top`,
+            // both structurally absent on GTK4/Wayland).
+            window_control: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -1887,6 +1896,12 @@ impl Backend for GtkBackend {
         };
         window.set_cursor_from_name(Some(pointer_shape_cursor_name(shape)));
         true
+    }
+
+    // ─── Window control (issue #950) ────────────────────────────────────
+    fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
+        self.window.as_ref()?;
+        Some(self)
     }
 
     // ─── Drawing ───────────────────────────────────────────────────────────
@@ -4416,6 +4431,140 @@ impl Backend for GtkBackend {
             rect.width as f64,
             rect.height as f64,
         )
+    }
+}
+
+/// GTK's `WindowControl` surface (issue #950). Backed by `gtk4::Window`'s
+/// own methods wherever GTK4 exposes one; everything GTK4 structurally
+/// can't do reports [`BackendError::Unsupported`] honestly rather than
+/// silently no-op'ing — see each method's doc for which bucket it's in.
+///
+/// Every method guards on `self.window.is_some()` the same way
+/// [`Backend::set_cursor`]/[`Backend::toggle_window_maximize`] do, even
+/// though `Backend::window` only ever hands out `&mut dyn WindowControl`
+/// once `self.window` is `Some` — cheap defense against a caller that
+/// stashed the trait object past a window teardown, matching this
+/// backend's existing posture everywhere else it touches `self.window`.
+impl crate::backend::WindowControl for GtkBackend {
+    fn set_title(&mut self, title: &str) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.set_title(Some(title));
+        Ok(())
+    }
+
+    fn set_size(&mut self, width: f32, height: f32) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.set_default_size(width.round() as i32, height.round() as i32);
+        Ok(())
+    }
+
+    /// `gtk4::Widget::set_size_request` — GTK4's only minimum-size
+    /// primitive; there is no separate "resizable floor" concept beyond
+    /// it.
+    fn set_min_size(&mut self, width: f32, height: f32) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.set_size_request(width.round() as i32, height.round() as i32);
+        Ok(())
+    }
+
+    /// **Not available.** GTK4 removed the GTK3 `GDK_HINT_MAX_SIZE`
+    /// geometry-hint mechanism outright — there is no maximum-size API
+    /// left to call.
+    fn set_max_size(&mut self, _width: f32, _height: f32) -> crate::backend::ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Size-only: GTK4 (and Wayland in particular, which every current
+    /// desktop compositor speaks) exposes **no way for a client to learn
+    /// its own on-screen position** — the position-hint APIs GTK3 had
+    /// were removed as a matter of Wayland security policy, not GTK
+    /// preference. `x`/`y` are always `0.0`, meaning "unknown", not "at
+    /// the screen origin" — callers that need real position should treat
+    /// this backend as one where position is structurally unavailable,
+    /// not zero.
+    fn bounds(&self) -> crate::backend::ServiceResult<Rect> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        Ok(Rect::new(
+            0.0,
+            0.0,
+            window.width() as f32,
+            window.height() as f32,
+        ))
+    }
+
+    /// **Not available**, for the same reason [`Self::bounds`] can't
+    /// report a position: there is no GTK4 API to move a top-level
+    /// window at all (Wayland has no client-side move protocol). Use
+    /// [`Self::set_size`] instead when only the size half is needed.
+    fn set_bounds(&mut self, _bounds: Rect) -> crate::backend::ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// **Not available** — centering requires knowing (and setting) a
+    /// screen position, which GTK4/Wayland exposes neither half of; see
+    /// [`Self::bounds`].
+    fn center(&mut self) -> crate::backend::ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    fn set_fullscreen(&mut self, fullscreen: bool) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        if fullscreen {
+            window.fullscreen();
+        } else {
+            window.unfullscreen();
+        }
+        Ok(())
+    }
+
+    /// **Not available on GTK4/Wayland** — see this trait method's own
+    /// doc comment (`WindowControl::set_always_on_top`) for the
+    /// X11-only-via-`gdk_x11` background quadraui#950 documents.
+    fn set_always_on_top(&mut self, _on_top: bool) -> crate::backend::ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    fn minimize(&mut self) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.minimize();
+        Ok(())
+    }
+
+    /// Undoes both a minimize (`unminimize`) and a maximize
+    /// (`unmaximize`, if currently maximized) — matching Electron's
+    /// `BrowserWindow.restore()`, which likewise restores from either
+    /// state rather than tracking which one the window was actually in.
+    fn restore(&mut self) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.unminimize();
+        if window.is_maximized() {
+            window.unmaximize();
+        }
+        Ok(())
+    }
+
+    fn hide(&mut self) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        // `WidgetExt::hide` is deprecated since GTK 4.10 in favour of
+        // `set_visible(false)` — same effect, current API.
+        window.set_visible(false);
+        Ok(())
+    }
+
+    fn show(&mut self) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.set_visible(true);
+        Ok(())
+    }
+
+    /// `gtk4::Window::present` — raises the window and gives it input
+    /// focus, the same call [`Backend::toggle_window_maximize`]'s
+    /// double-click-to-maximize sibling gestures rely on elsewhere in
+    /// this backend for "bring to front".
+    fn focus(&mut self) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.present();
+        Ok(())
     }
 }
 
