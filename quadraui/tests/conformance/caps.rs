@@ -499,6 +499,46 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pixel backend — DirectWrite paints fractional heights exactly, so the identity default \
          is correct, not unfinished work (quadraui#632); unrelated to the #19 stub gaps above",
     ),
+    // ── issue #947: `titlebar_control_inset` reports how much of the
+    // leading edge of the app-drawn title band the *backend's own*
+    // chrome already occupies, so the app can leave that region unpainted.
+    // macOS overrides it (AppKit's traffic lights float over the content
+    // area once `ShellConfig::client_side_titlebar` turns on
+    // `FullSizeContentView`); the other three take the empty default, but
+    // for two different reasons, which is why they're listed separately
+    // rather than under one blanket line:
+    //
+    //   * TUI has no window concept at all — there is no native chrome
+    //     that could overlap the band, ever. Permanent, like `snap_height`
+    //     above: the default *is* the answer, not a stand-in for one.
+    //   * GTK and Win-GUI could one day overlap it, but don't today:
+    //     neither backend reads `ShellConfig::client_side_titlebar` (#947
+    //     wired macOS only), so their windows keep full native decorations
+    //     and their window controls stay outside the app's content area.
+    //     These two entries are live TODOs — whichever backend grows
+    //     client-side decorations must override this method in the same PR
+    //     and delete its line here, which the staleness check below turns
+    //     into a hard failure if it forgets.
+    (
+        "tui",
+        "titlebar_control_inset",
+        "no window concept — a terminal has no native window controls that could overlap the \
+         title band, so the empty default is the correct answer, not a missing one (#947)",
+    ),
+    (
+        "gtk",
+        "titlebar_control_inset",
+        "doesn't honour `ShellConfig::client_side_titlebar` yet (#947 wired macOS only) — GTK \
+         windows keep native decorations, so no GTK-drawn control overlaps the app's title band; \
+         override this and delete this line when CSD lands",
+    ),
+    (
+        "win",
+        "titlebar_control_inset",
+        "doesn't honour `ShellConfig::client_side_titlebar` yet (#947 wired macOS only) — the \
+         Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
+         the app's title band; override this and delete this line when CSD lands",
+    ),
     // ── issue #506: `terminal_layout` / `editor_layout` / `diff_view_layout`
     // each ship with a trait default that is a pure function of
     // `Backend::char_width()` / `Backend::line_height()` (plus, for

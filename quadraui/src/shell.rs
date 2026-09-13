@@ -51,16 +51,21 @@ pub struct ShellConfig {
     /// (`NSWindowStyleMask::FullSizeContentView` +
     /// `setTitlebarAppearsTransparent(true)` +
     /// `NSWindowTitleVisibility::Hidden` — see
-    /// `macos::run::window_style_mask`). GTK/Win-GUI instead hide the
-    /// whole native chrome and expect the app to paint its own
-    /// close/minimize/maximize glyphs. Query
-    /// [`crate::Backend::titlebar_control_inset`] to find out which case
-    /// applies and how much of the leading edge of
-    /// [`crate::compose::app_shell::AppShellLayout::title_bar_bounds`] to
-    /// leave clear for backend-drawn controls.
+    /// `macos::run::window_style_mask`).
     ///
-    /// Set via [`Self::with_client_side_titlebar`]. TUI has no window
-    /// concept and ignores this field.
+    /// **macOS is the only backend that acts on this today.** TUI has no
+    /// window concept, and GTK/Win-GUI still ignore the field: their
+    /// windows keep full native chrome whether it is set or not. Don't
+    /// hardcode "macOS reserves 78pt, everyone else reserves nothing" on
+    /// the strength of that — ask
+    /// [`crate::Backend::titlebar_control_inset`] instead, which reports
+    /// how much of the leading edge of
+    /// [`crate::compose::app_shell::AppShellLayout::title_bar_bounds`] to
+    /// leave clear (`Rect::default()`, i.e. "paint the whole band", on
+    /// every backend that ignores this field) and keeps working
+    /// unchanged when GTK/Win-GUI do grow client-side decorations.
+    ///
+    /// Set via [`Self::with_client_side_titlebar`].
     pub client_side_titlebar: bool,
     pub has_bottom_panel: bool,
     pub bottom_panel_height_lh: f32,
