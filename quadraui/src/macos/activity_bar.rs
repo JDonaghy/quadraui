@@ -11,13 +11,25 @@
 //! Returns per-row [`ActivityBarRowHit`]s so callers can route clicks
 //! and query tooltips against the same frame's painted positions.
 //!
-//! # Coordinate space (issue #552)
+//! # Coordinate space (issue #552 / #934)
 //!
 //! Spans are **bar-relative**, matching the [`crate::Backend::draw_activity_bar`]
 //! contract: this function paints into `(0, 0, width, height)` and is never
-//! handed the bar's origin at all (`MacBackend::draw_activity_bar` passes only
-//! `rect.width` / `rect.height`), so it *cannot* fold the origin in — the
-//! mistake the TUI rasteriser made. Audited and compliant; no change needed.
+//! handed the bar's origin at all, so it *cannot* fold the origin in — the
+//! mistake the TUI rasteriser made. That part was audited under #552 and is
+//! still compliant; no change needed here.
+//!
+//! What #552's audit missed: painting into `(0, 0, width, height)` only
+//! lands at the bar's *actual* screen position if the caller separately
+//! places the CGContext's origin there first. Before #934,
+//! `MacBackend::draw_activity_bar[_with_style]` called straight into this
+//! module with no such adjustment, so every frame painted the strip at the
+//! CGContext's literal `(0, 0)` regardless of where `rect` said the bar
+//! should be. Those two methods now wrap this module's calls in
+//! `CGContextTranslateCTM(ctx, rect.x, rect.y)` (save/translate/restore),
+//! mirroring `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x,
+//! rect.y)` — this module itself needed no change, since bar-relative paint
+//! is exactly what a translated context wants.
 //!
 //! Known divergence, deliberately left alone: this rasteriser emits **top
 //! items first, then bottom-pinned**, whereas the TUI and GTK rasterisers
@@ -331,6 +343,32 @@ mod tests {
         (surface, regions.into_inner())
     }
 
+    /// Like [`paint_via_backend`] but paints into a canvas larger than the
+    /// bar itself, at an arbitrary `(x, y)` origin — models the bar sitting
+    /// below a title bar and/or right of other chrome (issue #934).
+    fn paint_via_backend_at(
+        bar: &ActivityBar,
+        hovered: Option<usize>,
+        x: f32,
+        y: f32,
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> (BitmapSurface, Vec<ActivityBarRowHit>) {
+        let surface = BitmapSurface::new(canvas_w, canvas_h);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
+        let regions = std::cell::RefCell::new(Vec::new());
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let r = b.draw_activity_bar(QRect::new(x, y, W as f32, H as f32), bar, hovered);
+            *regions.borrow_mut() = r;
+        });
+        backend.end_frame();
+        (surface, regions.into_inner())
+    }
+
     fn paint_via_backend_with_style(
         bar: &ActivityBar,
         style: &crate::ActivityBarStyle,
@@ -537,5 +575,58 @@ mod tests {
                 m.y_start,
             );
         }
+    }
+
+    /// Issue #934 RED-verify: before the fix, `MacBackend::draw_activity_bar`
+    /// forwarded only `rect.width` / `rect.height` into this bar-relative
+    /// rasteriser, with no CTM translate to place it at `rect`'s actual
+    /// origin — so the strip always painted at the CGContext's literal
+    /// `(0, 0)`, no matter where the caller said it should sit (e.g. below
+    /// a title bar, as on the reported bug). Painting at a non-zero origin
+    /// must leave `(0, 0)` untouched and land the strip's background +
+    /// right-edge separator exactly at `(rect.x, rect.y)`.
+    #[test]
+    fn background_paints_at_rect_origin_not_at_window_origin() {
+        const ORIGIN_X: f32 = 30.0;
+        const ORIGIN_Y: f32 = 28.0; // e.g. a title bar's height
+        let canvas_w = ORIGIN_X as u32 + W;
+        let canvas_h = ORIGIN_Y as u32 + H;
+
+        let bar = sample_bar();
+        let (surface, regions) =
+            paint_via_backend_at(&bar, None, ORIGIN_X, ORIGIN_Y, canvas_w, canvas_h);
+        let theme = Theme::default();
+
+        // The window's literal top-left corner must stay exactly as the
+        // surface was initialised — fully transparent — never the
+        // activity bar's background fill.
+        let (_, _, _, a) = surface.pixel(0, 0);
+        assert_eq!(
+            a, 0,
+            "window origin (0,0) must stay untouched when the bar sits at ({ORIGIN_X}, {ORIGIN_Y})",
+        );
+
+        // Deep inside the (non-active) second row, offset by the bar's
+        // real origin: activity-bar background.
+        let probe_x = ORIGIN_X as u32 + W - 6;
+        let probe_y = ORIGIN_Y as u32 + ACTIVITY_ROW_PX as u32 + 4;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "activity bar background should paint at rect's origin, not the window origin",
+        );
+
+        // Right-edge separator (1 pt) shifts with the origin too.
+        let (sr, sg, sb, _) = surface.pixel(ORIGIN_X as u32 + W - 1, ORIGIN_Y as u32 + H / 2);
+        assert_eq!(
+            (sr, sg, sb),
+            (theme.separator.r, theme.separator.g, theme.separator.b),
+            "right-edge separator should shift with the bar's origin",
+        );
+
+        // Hit regions stay bar-relative (issue #552's audited contract) —
+        // the CTM translate must not leak into the returned spans.
+        assert_eq!(regions[0].y_start, 0.0);
     }
 }
