@@ -1,26 +1,22 @@
 //! macOS rasteriser for [`crate::primitives::editor::Editor`].
 //!
-//! Minimum viable port of `crate::gtk::editor::draw_editor`: background,
-//! per-line text via Core Text, line-number gutter, and the primary
-//! cursor (Block / Bar / Underline). Returns a default
-//! [`EditorPaintResult`] — macOS, like GTK, paints its own caret rather
-//! than delegating to a terminal cursor.
+//! Port of `crate::gtk::editor::draw_editor`: background (incl. DAP
+//! stopped-line / diff / cursorline priority), per-line text via Core
+//! Text, selection overlays (`selection`, `extra_selections`,
+//! `yank_highlight`), line-number gutter, and the primary cursor
+//! (Block / Bar / Underline). Returns a default [`EditorPaintResult`]
+//! — macOS, like GTK, paints its own caret rather than delegating to a
+//! terminal cursor.
 //!
 //! ## Scope omissions (follow-up)
 //!
-//! Deferred to subsequent tickets to keep #39 manageable; each ships
-//! when a kubeui-class consumer exercises it on macOS:
+//! Deferred to subsequent tickets (#943); each ships when a
+//! kubeui-class consumer exercises it on macOS:
 //!
-//! - **Selection overlays** — `editor.selection`, `extra_selections`,
-//!   `yank_highlight`. Need the unified text-attribute path that also
-//!   carries bold/italic and selection-bg.
 //! - **Diagnostics + spell underlines** — wavy/dotted underlines via
 //!   `kCTUnderlineStyleAttributeName` (deferred with attrs).
 //! - **Indent guides, color columns, bracket-match alpha rects**.
 //! - **AI ghost text + multi-cursor secondary carets**.
-//! - **Diff backgrounds** (`DiffLine::Added`/`Removed`/`Padding`) and
-//!   **cursorline highlight** — straightforward pixel fills, will land
-//!   alongside the consumer that needs them.
 //! - **Gutter chrome** beyond line numbers — breakpoint glyph, git
 //!   column, diagnostic dot, lightbulb glyph.
 
@@ -30,7 +26,9 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::backend::EditorPaintResult;
-use crate::primitives::editor::{CursorShape, Editor};
+use crate::primitives::editor::{
+    CursorShape, DiffLine, Editor, EditorLine, EditorSelection, SelectionKind,
+};
 use crate::text_util::snap_to_char_boundary;
 use crate::theme::Theme;
 use crate::types::Color;
@@ -74,14 +72,76 @@ pub unsafe fn draw_editor(
     let h_scroll_offset = editor.scroll_left as f64 * char_width;
     let text_x_offset = x + gutter_width - h_scroll_offset;
 
-    // Cursorline highlight (active editor only) — painted before text.
-    if editor.is_active && editor.cursorline {
-        for (view_idx, line) in editor.lines.iter().enumerate() {
-            if line.is_current_line {
-                let line_y = y + view_idx as f64 * line_height;
-                fill_rect(ctx, x, line_y, w, line_height, theme.cursorline_bg);
+    // Cursorline / diff / DAP stopped-line backgrounds — painted before
+    // text. Priority mirrors GTK: DAP-stopped > diff status >
+    // cursorline (crate::gtk::editor::draw_editor).
+    for (view_idx, line) in editor.lines.iter().enumerate() {
+        let row_bg = if line.is_dap_current {
+            Some(theme.dap_stopped_bg)
+        } else if let Some(diff_status) = line.diff_status {
+            match diff_status {
+                DiffLine::Added => Some(theme.diff_added_bg),
+                DiffLine::Removed => Some(theme.diff_removed_bg),
+                DiffLine::Padding => Some(theme.diff_padding_bg),
+                DiffLine::Same => None,
             }
+        } else if line.is_current_line && editor.is_active && editor.cursorline {
+            Some(theme.cursorline_bg)
+        } else {
+            None
+        };
+        if let Some(color) = row_bg {
+            let line_y = y + view_idx as f64 * line_height;
+            fill_rect(ctx, x, line_y, w, line_height, color);
         }
+    }
+
+    // Selection overlays — painted before text so text reads on top,
+    // matching GTK's ordering (see module doc on crate::gtk::editor).
+    if let Some(sel) = &editor.selection {
+        draw_visual_selection(
+            ctx,
+            font,
+            sel,
+            &editor.lines,
+            x,
+            y,
+            w,
+            line_height,
+            text_x_offset,
+            theme.selection,
+            theme.selection_alpha as f64,
+        );
+    }
+    for esel in &editor.extra_selections {
+        draw_visual_selection(
+            ctx,
+            font,
+            esel,
+            &editor.lines,
+            x,
+            y,
+            w,
+            line_height,
+            text_x_offset,
+            theme.selection,
+            theme.selection_alpha as f64,
+        );
+    }
+    if let Some(yh) = &editor.yank_highlight {
+        draw_visual_selection(
+            ctx,
+            font,
+            yh,
+            &editor.lines,
+            x,
+            y,
+            w,
+            line_height,
+            text_x_offset,
+            theme.yank_highlight_bg,
+            theme.yank_highlight_alpha as f64,
+        );
     }
 
     // Lines + gutter.
@@ -212,6 +272,112 @@ unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color)
     let (r, g, b, a) = color_to_cg(c);
     CGContextSetRGBFillColor(ctx, r, g, b, a);
     CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
+}
+
+/// Like [`fill_rect`], but the alpha channel is `alpha` instead of the
+/// colour's own — mirrors GTK's `cr.set_source_rgba(r, g, b, alpha)`
+/// for selection overlays, where `theme.selection_alpha` /
+/// `theme.yank_highlight_alpha` carry the opacity independent of the
+/// colour's own (always-opaque) `a` channel.
+unsafe fn fill_rect_alpha(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color, alpha: f64) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let (r, g, b, _) = color_to_cg(c);
+    CGContextSetRGBFillColor(ctx, r, g, b, alpha);
+    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
+}
+
+/// Paint one visual-selection overlay (`editor.selection`,
+/// `extra_selections`, or `yank_highlight` — they share a shape) across
+/// `lines`. Port of `crate::gtk::editor::draw_visual_selection`, using
+/// Core Text glyph-run measurement in place of Pango's
+/// `index_to_pos`/`pixel_size`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_visual_selection(
+    ctx: CGContextRef,
+    font: &CTFont,
+    sel: &EditorSelection,
+    lines: &[EditorLine],
+    x: f64,
+    y: f64,
+    w: f64,
+    line_height: f64,
+    text_x_offset: f64,
+    color: Color,
+    alpha: f64,
+) {
+    for (view_idx, rl) in lines.iter().enumerate() {
+        if rl.is_ghost_continuation || rl.diff_status == Some(DiffLine::Padding) {
+            continue;
+        }
+        let line_idx = rl.line_idx;
+        if line_idx < sel.start_line || line_idx > sel.end_line {
+            continue;
+        }
+        let line_y = y + view_idx as f64 * line_height;
+
+        if sel.kind == SelectionKind::Line {
+            let highlight_width = w - (text_x_offset - x);
+            fill_rect_alpha(
+                ctx,
+                text_x_offset,
+                line_y,
+                highlight_width,
+                line_height,
+                color,
+                alpha,
+            );
+            continue;
+        }
+
+        // Char / Block: both resolve to a per-line [start_col, end_col]
+        // range — Char narrows it to the selection's own start/end line,
+        // Block applies the same column range to every covered line.
+        let sco = rl.segment_col_offset;
+        let seg_chars = rl.raw_text.chars().count();
+        let (sel_start, sel_end) = if sel.kind == SelectionKind::Char {
+            let s = if line_idx == sel.start_line {
+                sel.start_col
+            } else {
+                0
+            };
+            let e = if line_idx == sel.end_line {
+                sel.end_col + 1
+            } else {
+                usize::MAX
+            };
+            (s, e)
+        } else {
+            (sel.start_col, sel.end_col + 1)
+        };
+
+        let hi_start = sel_start.max(sco).saturating_sub(sco);
+        let hi_end = sel_end.min(sco + seg_chars).saturating_sub(sco);
+        if hi_start >= hi_end {
+            continue;
+        }
+
+        let start_byte = char_byte_offset(&rl.raw_text, hi_start);
+        let (prefix_w, _) = measure_text(font, &rl.raw_text[..start_byte]);
+        let start_x = text_x_offset + prefix_w;
+
+        let width = if hi_end >= seg_chars && sel_end > sco + seg_chars {
+            // Selection runs past this visual segment's text — extend
+            // the highlight to the end of the rendered line content
+            // (matches GTK's use of the Pango layout's full pixel
+            // width in this branch).
+            let (line_w, _) = measure_text(font, &rl.raw_text);
+            (text_x_offset + line_w - start_x).max(0.0)
+        } else {
+            let end_byte = char_byte_offset(&rl.raw_text, hi_end);
+            let (end_w, _) = measure_text(font, &rl.raw_text[..end_byte]);
+            (text_x_offset + end_w - start_x).max(0.0)
+        };
+        if width > 0.0 {
+            fill_rect_alpha(ctx, start_x, line_y, width, line_height, color, alpha);
+        }
+    }
 }
 
 trait CGRectExt {
@@ -476,5 +642,154 @@ mod tests {
         });
         backend.end_frame();
         assert_eq!(result.into_inner().unwrap(), EditorPaintResult::default(),);
+    }
+
+    /// `a` and `b` agree within `tol` — used for alpha-blended overlay
+    /// pixels, where the exact composited value depends on CG's
+    /// blending internals and only the *direction* (blended toward the
+    /// overlay colour) is being asserted.
+    fn approx(a: u8, b: u8, tol: u8) -> bool {
+        a.abs_diff(b) <= tol
+    }
+
+    /// Issue #943: `editor.selection` was never read by the macOS
+    /// rasteriser — visual-mode / mouse selection painted nothing.
+    /// Probe a pixel inside a `Line`-kind selection and assert it
+    /// reads as `theme.selection` alpha-blended over the background,
+    /// not the plain background.
+    #[test]
+    fn line_selection_paints_over_background() {
+        let mut editor = editor_with_cursor("let x = 1;", CursorShape::Bar, 99);
+        editor.selection = Some(EditorSelection {
+            kind: SelectionKind::Line,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+        });
+        let surface = paint_via_backend(&editor);
+        let theme = Theme::default();
+
+        // Far right of any glyph ink, same probe spot as the cursorline
+        // test — inside the full-width Line-selection highlight.
+        let (r, g, b, _) = surface.pixel(W - 4, 4);
+        assert_ne!(
+            (r, g, b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "selected row should not read as plain background"
+        );
+        let expected_r = (theme.selection.r as f32 * theme.selection_alpha
+            + theme.background.r as f32 * (1.0 - theme.selection_alpha))
+            as u8;
+        let expected_g = (theme.selection.g as f32 * theme.selection_alpha
+            + theme.background.g as f32 * (1.0 - theme.selection_alpha))
+            as u8;
+        let expected_b = (theme.selection.b as f32 * theme.selection_alpha
+            + theme.background.b as f32 * (1.0 - theme.selection_alpha))
+            as u8;
+        assert!(
+            approx(r, expected_r, 4) && approx(g, expected_g, 4) && approx(b, expected_b, 4),
+            "expected ~({expected_r}, {expected_g}, {expected_b}), got ({r}, {g}, {b})"
+        );
+    }
+
+    /// Issue #943: `yank_highlight` was set on `Editor` but never read
+    /// — `yy` flashed on TUI and did nothing on macOS. Assert the
+    /// yank overlay paints its own themed colour (distinct from a
+    /// plain `editor.selection` overlay).
+    #[test]
+    fn yank_highlight_paints_distinct_color() {
+        let mut editor = editor_with_cursor("let x = 1;", CursorShape::Bar, 99);
+        editor.yank_highlight = Some(EditorSelection {
+            kind: SelectionKind::Line,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+        });
+        let surface = paint_via_backend(&editor);
+        let theme = Theme::default();
+
+        let (r, g, b, _) = surface.pixel(W - 4, 4);
+        assert_ne!(
+            (r, g, b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "yanked row should not read as plain background"
+        );
+        let expected_r = (theme.yank_highlight_bg.r as f32 * theme.yank_highlight_alpha
+            + theme.background.r as f32 * (1.0 - theme.yank_highlight_alpha))
+            as u8;
+        let expected_g = (theme.yank_highlight_bg.g as f32 * theme.yank_highlight_alpha
+            + theme.background.g as f32 * (1.0 - theme.yank_highlight_alpha))
+            as u8;
+        let expected_b = (theme.yank_highlight_bg.b as f32 * theme.yank_highlight_alpha
+            + theme.background.b as f32 * (1.0 - theme.yank_highlight_alpha))
+            as u8;
+        assert!(
+            approx(r, expected_r, 4) && approx(g, expected_g, 4) && approx(b, expected_b, 4),
+            "expected ~({expected_r}, {expected_g}, {expected_b}), got ({r}, {g}, {b})"
+        );
+    }
+
+    /// A `Char`-kind selection must only highlight the selected column
+    /// range — columns outside it stay plain background.
+    #[test]
+    fn char_selection_highlights_only_selected_columns() {
+        let mut editor = editor_with_cursor("alpha beta", CursorShape::Bar, 99);
+        editor.selection = Some(EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 2, // inclusive -> covers chars 0..=2, "alp"
+        });
+        let surface = paint_via_backend(&editor);
+        let theme = Theme::default();
+        let metrics = font_metrics(&font());
+        let text_start = 3.0 * metrics.char_width; // gutter width
+
+        // Inside the selected range (char index 1, "l").
+        let in_px = (text_start + metrics.char_width * 1.5) as u32;
+        let (r, g, b, _) = surface.pixel(in_px, 0);
+        assert_ne!(
+            (r, g, b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "column inside selection should be highlighted"
+        );
+
+        // Outside the selected range (char index 6, "e" of "beta").
+        let out_px = (text_start + metrics.char_width * 6.5) as u32;
+        let (r2, g2, b2, _) = surface.pixel(out_px, 0);
+        assert_eq!(
+            (r2, g2, b2),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "column outside selection should stay plain background"
+        );
+    }
+
+    /// Issue #943: diff backgrounds (`DiffLine::Added` /
+    /// `Removed` / `Padding`) were never painted on macOS. Also
+    /// verifies diff status takes priority over cursorline, matching
+    /// `crate::gtk::editor::draw_editor`'s priority order.
+    #[test]
+    fn diff_added_background_overrides_cursorline() {
+        let mut line = one_line("added line");
+        line.diff_status = Some(DiffLine::Added);
+        let mut editor = editor_with_cursor("added line", CursorShape::Bar, 99);
+        editor.lines = vec![line];
+        editor.cursorline = true; // would paint cursorline_bg if diff didn't win
+        let surface = paint_via_backend(&editor);
+        let theme = Theme::default();
+
+        let (r, g, b, _) = surface.pixel(W - 4, 4);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.diff_added_bg.r,
+                theme.diff_added_bg.g,
+                theme.diff_added_bg.b
+            ),
+            "diff-added row should paint theme.diff_added_bg, not cursorline_bg"
+        );
     }
 }
