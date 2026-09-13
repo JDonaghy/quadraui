@@ -1053,9 +1053,56 @@ impl QuadraAppDelegate {
     }
 }
 
+/// Configuration for [`run_with`]: the window title [`run`] hardcodes to
+/// a generic default (`"quadraui (macos)"`).
+///
+/// A `ShellConfig`-driven consumer (`macos::shell_runner::run_with_shell`)
+/// needs its own window title to reach the real AppKit window instead of
+/// always showing `"quadraui (macos)"` — mirrors `gtk::run::RunConfig` /
+/// `win::run::RunConfig`, minus the GTK-specific `app_id`/`icon_name`
+/// fields AppKit has no equivalent concept for (quadraui#933).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunConfig {
+    /// Window title shown by the titlebar, Mission Control, and the Dock.
+    pub title: String,
+}
+
+impl RunConfig {
+    /// Build a config with the given window title.
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+        }
+    }
+}
+
+impl Default for RunConfig {
+    /// Mirrors [`run`]'s previously-hardcoded window title, so
+    /// `run_with(app, RunConfig::default())` and `run(app)` behave
+    /// identically.
+    fn default() -> Self {
+        Self {
+            title: "quadraui (macos)".to_string(),
+        }
+    }
+}
+
+/// The window title [`run_with`] sets via `NSWindow::setTitle` — pulled
+/// out of the AppKit call site so the config→window-creation seam is
+/// testable off the main thread (quadraui#933). Window creation itself
+/// still needs a live `NSApplication` on the real main thread and can't be
+/// exercised by a plain `#[test]`; this function is the pure "which string
+/// do we hand AppKit" decision, mirroring the split `macos::backend`'s
+/// `mac_cursor_kind` / `mac_cursor_for_shape` uses for the same reason.
+fn window_title(config: &RunConfig) -> String {
+    config.title.clone()
+}
+
 /// Open an AppKit window, install a [`MacBackend`], and drive `app`
-/// against it. Returns when the user closes the window (red
-/// traffic-light) or `app.handle` returns [`Reaction::Exit`].
+/// against it, using the default [`RunConfig`] (a generic window title).
+/// See [`run_with`] to set a custom title (quadraui#933) — needed by any
+/// app that isn't quadraui itself. Returns when the user closes the
+/// window (red traffic-light) or `app.handle` returns [`Reaction::Exit`].
 ///
 /// **Must be called from the main thread** — enforced by the
 /// [`MainThreadMarker::new`] check at entry.
@@ -1080,6 +1127,15 @@ impl QuadraAppDelegate {
 /// }
 /// ```
 pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
+    run_with(app, RunConfig::default())
+}
+
+/// Same as [`run`], but with a caller-supplied [`RunConfig`] (window
+/// title) instead of the generic quadraui default (quadraui#933).
+///
+/// **Must be called from the main thread** — enforced by the
+/// [`MainThreadMarker::new`] check at entry.
+pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::process::ExitCode {
     let mtm =
         MainThreadMarker::new().expect("quadraui::macos::run must be called from the main thread");
 
@@ -1197,7 +1253,7 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
             defer: false,
         ]
     };
-    window.setTitle(&NSString::from_str("quadraui (macos)"));
+    window.setTitle(&NSString::from_str(&window_title(&config)));
 
     // #498: stash the window handle so `Backend::begin_window_drag` /
     // `Backend::toggle_window_maximize` / `Backend::set_cursor` have
@@ -1304,6 +1360,57 @@ pub fn run<A: AppLogic + 'static>(app: A) -> std::process::ExitCode {
 // future opaque-pointer dancing in this file as it grows.
 #[allow(dead_code)]
 fn _unused_imports(_p: *mut c_void) {}
+
+/// Coverage for [`RunConfig`] / [`window_title`] (quadraui#933) —
+/// display-free, since both are plain Rust with no AppKit dependency.
+/// `run_with`'s actual wiring (title → `NSWindow::setTitle`) can't be
+/// exercised without a live main-thread `NSApplication`; that's covered by
+/// the operator-run smoke tier instead, same posture as
+/// `gtk::run::run_config_tests` / `win::run::tests`.
+#[cfg(test)]
+mod run_config_tests {
+    use super::*;
+
+    #[test]
+    fn new_sets_the_title() {
+        let config = RunConfig::new("kubeui");
+        assert_eq!(config.title, "kubeui");
+    }
+
+    #[test]
+    fn new_accepts_owned_and_borrowed_strings() {
+        assert_eq!(RunConfig::new("borrowed").title, "borrowed");
+        assert_eq!(RunConfig::new(String::from("owned")).title, "owned");
+    }
+
+    #[test]
+    fn default_matches_runs_previously_hardcoded_title() {
+        // `run(app)` used to always show a `"quadraui (macos)"` window
+        // title; `RunConfig::default()` must reproduce that exact value
+        // so `run(app)` staying `run_with(app, RunConfig::default())`
+        // (see both functions above) doesn't change existing behaviour.
+        assert_eq!(RunConfig::default().title, "quadraui (macos)");
+    }
+
+    /// The actual regression this issue fixes: before quadraui#933,
+    /// `run_with`'s window-creation call site handed AppKit the literal
+    /// `"quadraui (macos)"` no matter what the caller configured. This
+    /// pins `window_title` — the pure function that call site now
+    /// delegates to — to `config.title`, so a future edit that goes back
+    /// to hardcoding the string at that call site (bypassing this
+    /// function, or reintroducing a literal inside it) fails here instead
+    /// of only being discoverable by running a real app.
+    #[test]
+    fn window_title_comes_from_config_not_a_literal() {
+        let config = RunConfig::new("vimcode");
+        assert_eq!(window_title(&config), "vimcode");
+        assert_ne!(
+            window_title(&config),
+            "quadraui (macos)",
+            "a custom RunConfig title must not fall back to the generic default"
+        );
+    }
+}
 
 /// Coverage for #803: `dispatch_event`'s `MouseDown`/`MouseMoved`/`MouseUp`
 /// text-selection routing plus its Ctrl-C/Ctrl-A/`TextSelectionChanged`

@@ -13,18 +13,27 @@
 //! `draw_tab_bar`, `draw_panel`, `draw_status_bar`, …), so no new rasteriser
 //! work is needed here — this is pure composition, same as the TUI/GTK
 //! runners.
+//!
+//! Before quadraui#933, this always ran through [`super::run::run`], which
+//! hardcodes the generic window title (`"quadraui (macos)"` —
+//! [`ShellConfig::title`] was captured but never actually reached the
+//! AppKit window). `config.title` now reaches the runner via
+//! [`super::run::RunConfig`], mirroring `gtk::shell_runner::run_with_shell`
+//! / `win::shell_runner::run_with_shell`.
 
+use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::build_shell_adapter;
 
 /// Run a [`ShellApp`] with AppShell chrome on the macOS backend.
 ///
 /// **Must be called from the main thread** — enforced transitively by
-/// [`super::run::run`].
+/// [`super::run::run_with`].
 pub fn run_with_shell<A: ShellApp + 'static>(
     app: A,
     config: ShellConfig,
 ) -> std::process::ExitCode {
+    let run_config = RunConfig::new(config.title.clone());
     let adapter = build_shell_adapter(app, config);
-    super::run::run(adapter)
+    super::run::run_with(adapter, run_config)
 }
