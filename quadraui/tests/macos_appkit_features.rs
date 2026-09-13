@@ -71,6 +71,10 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // Not `NSApplication` — see the module doc.
     ("NSApplicationActivationPolicy", "NSRunningApplication"),
     ("NSApplicationDelegate", "NSApplication"),
+    // Issue #951 (`applicationShouldTerminate:` so Cmd-Q / the app-menu
+    // Quit item run the app's `UiEvent::WindowClose` veto): lives in the
+    // `NSApplication` header, so here the feature *is* the symbol prefix.
+    ("NSApplicationTerminateReply", "NSApplication"),
     // Not `NSWindow` — see the module doc.
     ("NSBackingStoreType", "NSGraphics"),
     ("NSControlStateValueOff", "NSCell"),
@@ -104,6 +108,11 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // this per-symbol map can't express, so quadraui/Cargo.toml comments
     // it instead. All three were already enabled for #936.
     ("NSWindowButton", "NSWindow"),
+    // Issue #951 (`windowShouldClose:` so the red traffic light / Cmd-W
+    // run the app's `UiEvent::WindowClose` veto): the delegate protocol
+    // is declared in the `NSWindow` header, not a "NSWindowDelegate"
+    // feature of its own — same shape as `NSWindowButton` above.
+    ("NSWindowDelegate", "NSWindow"),
     // Issue #834 (HiDPI runtime change): lives in the `NSWindow` header,
     // same as `NSWindowStyleMask` above.
     ("NSWindowDidChangeBackingPropertiesNotification", "NSWindow"),
