@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn draw_text_input_paints_and_does_not_panic_on_multibyte_cursor() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             foreground: Color::rgb(0, 0, 0),
@@ -188,7 +188,7 @@ mod tests {
     fn paint_and_click_round_trip_at_nonzero_origin() {
         let origin_x = 12.0_f32;
         let origin_y = 5.0_f32;
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let theme = Theme::default();
         let ti = sample(vec!["hello", "world"], 0, 0);
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn cursor_paints_at_the_shared_layout_bounds() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             cursor: Color::rgb(255, 0, 0),
             ..Theme::default()
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn zero_width_rect_is_a_no_op() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let ti = sample(vec!["hello"], 0, 0);
         let rect = Rect::new(0.0, 0.0, 0.0, H);
@@ -286,7 +286,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let ti = sample(vec!["hello", "world"], 1, 2);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = surface

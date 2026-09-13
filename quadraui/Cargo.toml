@@ -93,6 +93,7 @@ macos = [
     "dep:core-graphics",
     "dep:core-text",
     "dep:core-foundation",
+    "dep:foreign-types",
     "dep:arboard",
     "dep:dispatch2",
 ]
@@ -187,6 +188,17 @@ objc2-foundation = { version = "0.3", optional = true, features = [
 core-graphics = { version = "0.23", optional = true }
 core-text = { version = "20.1", optional = true }
 core-foundation = { version = "0.9", optional = true }
+# Issue #929: `CGFont::as_ptr()` (needed to hand a raw `CGFontRef` to
+# `CTFontManagerRegisterGraphicsFont` — `macos::text::register_font_from_memory`)
+# is a `foreign_types::ForeignType` trait method, and Rust only resolves trait
+# methods from crates in the caller's own dependency graph, not merely
+# transitively present ones — `core-graphics` already depends on the same
+# `foreign-types` 0.5.0 to implement `CGFont` itself (see its own
+# `Cargo.toml`), so this adds no new version to the dependency graph, only a
+# direct name for `macos::text` to spell the trait with. Same "already
+# resolved transitively, just need our own name for it" rationale as
+# `windows-numerics` below for the `win` feature.
+foreign-types = { version = "0.5", optional = true }
 # Issue #831: `DispatchQueue::main().exec_async` is the safe, GCD-native
 # "run this on the main thread" primitive `MacBackend::waker` uses to wake
 # a background-thread-queued `UiEvent::User` — same purpose as `glib::

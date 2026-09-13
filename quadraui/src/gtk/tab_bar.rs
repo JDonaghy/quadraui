@@ -58,13 +58,19 @@ const TAB_CHIP_RADIUS: f64 = 4.0;
 /// glyph with no ASCII-fallback text form (`TabIcon` carries just one
 /// `glyph` field, unlike `Icon`'s `glyph`/`fallback` pair), so there's
 /// no caller-family text to preserve. Built from
-/// [`super::NERD_FONT_FALLBACK_FAMILY`] (unlike
-/// [`super::activity_bar::ICON_FONT_DESC`], which hand-rolls the same
-/// family name because it's a `pub const` and consts can't be
-/// concatenated on stable) so the two can't drift apart.
+/// [`super::current_nerd_font_fallback_family`] (unlike
+/// [`super::activity_bar::ICON_FONT_DESC`], which hand-rolls
+/// [`super::NERD_FONT_FALLBACK_FAMILY`] as a literal because it's a
+/// `pub const` and consts can't be concatenated on stable, so it does
+/// not pick up a `Backend::set_nerd_font_fallback` override — see that
+/// const's doc for the known gap) so this and `with_nerd_font_fallback`
+/// can't drift apart.
 pub(crate) fn tab_icon_font(base: &pango::FontDescription) -> pango::FontDescription {
     let mut f = base.clone();
-    f.set_family(&format!("{}, monospace", super::NERD_FONT_FALLBACK_FAMILY));
+    f.set_family(&format!(
+        "{}, monospace",
+        super::current_nerd_font_fallback_family()
+    ));
     f
 }
 

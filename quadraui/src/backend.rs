@@ -336,6 +336,15 @@ pub struct BackendCaps {
     /// notification rather than silently discarding it. Not mechanically
     /// checkable, same as [`Self::file_dialogs`].
     pub notifications: bool,
+    /// At least one of [`Backend::register_font_from_memory`] /
+    /// [`Backend::set_nerd_font_fallback`] is overridden — this backend
+    /// can resolve Nerd-Font (or other PUA-codepoint) glyphs to a real
+    /// fallback family instead of painting tofu (issue #929). `Any`
+    /// rather than `All`: a backend may reasonably wire only the
+    /// fallback half (GTK, which already has a system-installed Nerd
+    /// Font to point at and no need to register app-supplied bytes) or
+    /// only the registration half.
+    pub app_font_registration: bool,
     /// This render target's actual colour fidelity — see [`ColorDepth`].
     /// Not part of the bool-capability vocabulary below ([`Self::names`] /
     /// [`Self::has`] / [`Self::vocabulary`] / `ALL_NAMES`): those model
@@ -398,6 +407,7 @@ impl BackendCaps {
             file_dialogs: false,
             native_dialogs: false,
             notifications: false,
+            app_font_registration: false,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: false,
         }
@@ -457,6 +467,7 @@ impl BackendCaps {
         ("file_dialogs", |c| c.file_dialogs),
         ("native_dialogs", |c| c.native_dialogs),
         ("notifications", |c| c.notifications),
+        ("app_font_registration", |c| c.app_font_registration),
     ];
 }
 
@@ -705,6 +716,71 @@ pub trait Backend: sealed::Sealed {
     /// every glyph already occupies exactly one terminal cell. GTK is
     /// currently the only backend that overrides this (#624).
     fn set_ui_font(&mut self, _font_desc: &str) {}
+
+    /// Register an application-supplied font (raw TTF/OTF bytes) with the
+    /// platform font manager for the lifetime of this process — no
+    /// filesystem write, no user font directory, no `fc-cache`-style
+    /// daemon (issue #929).
+    ///
+    /// This exists because a backend has no built-in Nerd-Font glyph
+    /// coverage to fall back to (unlike GTK, which cascades to
+    /// fontconfig's installed `Symbols Nerd Font` automatically — see
+    /// `crate::gtk::NERD_FONT_FALLBACK_FAMILY`): an app that wants icon
+    /// glyphs to resolve on macOS/Win-GUI has to hand the backend its own
+    /// font bytes (e.g. an `include_bytes!`-embedded subset) before
+    /// [`Self::set_nerd_font_fallback`] can name a family for [`Self::draw_tree`]/
+    /// [`Self::draw_activity_bar`]/etc. to actually resolve glyphs against.
+    ///
+    /// Returns the family name(s) the font registered under (read back
+    /// from the font's own name table, not the caller's guess), so a
+    /// caller can pass one straight to [`Self::set_nerd_font_fallback`]
+    /// without hardcoding it — or `None` if `bytes` isn't a font this
+    /// backend's platform font manager can parse, or registration itself
+    /// failed.
+    ///
+    /// Call once from `setup()`, before [`Self::set_nerd_font_fallback`]
+    /// — same "static for the process lifetime" convention as
+    /// [`Self::set_editor_font`]/[`Self::set_ui_font`].
+    ///
+    /// Default: no-op, returns `None`. GTK can accept this default —
+    /// fontconfig already resolves a system-installed Nerd Font via
+    /// [`Self::set_nerd_fonts`]'s cascade, so there is nothing for GTK to
+    /// register at the backend level (an app still wants its own
+    /// `fc-cache`-based installer for a *system*-wide install, which is
+    /// out of scope for a process-local API like this one). TUI takes
+    /// this default for the same reason [`Self::set_editor_font`] does:
+    /// a fixed-cell backend has no font concept at all.
+    fn register_font_from_memory(&mut self, _bytes: &[u8]) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Set the font family consulted for characters the primary
+    /// (editor/UI) font cannot cover — the portable, explicit form of
+    /// what GTK already does implicitly via
+    /// `crate::gtk::NERD_FONT_FALLBACK_FAMILY` (issue #929).
+    ///
+    /// `family` is looked up first among any fonts this backend
+    /// registered via [`Self::register_font_from_memory`], then (for a
+    /// backend that supports it) the platform's own installed fonts —
+    /// so this also works for a system-installed Nerd Font with no
+    /// `register_font_from_memory` call at all.
+    ///
+    /// Call once from `setup()` for a static fallback, or again any time
+    /// the app's font preference changes at runtime — same convention as
+    /// [`Self::set_editor_font`]/[`Self::set_ui_font`], including the
+    /// same "a live surface may not rebuild immediately" caveat on
+    /// backends that build their text-shaping state once per surface
+    /// rather than once per frame.
+    ///
+    /// Default: no-op. GTK overrides it anyway, even though it already
+    /// has a working (if hardcoded) fallback via
+    /// `crate::gtk::NERD_FONT_FALLBACK_FAMILY`: this method makes that
+    /// family *settable* instead, so an app that treats this as the
+    /// portable entry point (rather than reaching for the GTK-specific
+    /// constant) gets the same effect on every backend, including GTK.
+    /// TUI takes the default for the same fixed-cell reason
+    /// [`Self::set_ui_font`] does.
+    fn set_nerd_font_fallback(&mut self, _family: &str) {}
 
     // ─── Text selection ────────────────────────────────────────────────
     /// Register a selectable text region for the current frame.
@@ -3107,6 +3183,7 @@ mod backend_caps_tests {
         ("file_dialogs", |c| c.file_dialogs = true),
         ("native_dialogs", |c| c.native_dialogs = true),
         ("notifications", |c| c.notifications = true),
+        ("app_font_registration", |c| c.app_font_registration = true),
     ];
 
     #[test]
@@ -3138,6 +3215,7 @@ mod backend_caps_tests {
             file_dialogs: _,
             native_dialogs: _,
             notifications: _,
+            app_font_registration: _,
             color_depth: _,
             kitty_keyboard: _,
         } = BackendCaps::empty();

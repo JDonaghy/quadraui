@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn full_border_paints_bg_and_stroke() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let tooltip = sample_tooltip();
         let layout = sample_layout();
         let theme = Theme::default();
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn none_border_paints_no_stroke() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let tooltip = sample_tooltip();
         let layout = sample_layout();
         let theme = Theme::default();

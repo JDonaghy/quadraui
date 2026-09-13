@@ -167,6 +167,10 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
             "`PlatformServices::send_notification` likewise has no default to diverge from",
         ),
     },
+    CapContract {
+        cap: "app_font_registration",
+        proof: Proof::Any(&["register_font_from_memory", "set_nerd_font_fallback"]),
+    },
 ];
 
 // ─── Every backend in the tree, compiled here or not ────────────────────

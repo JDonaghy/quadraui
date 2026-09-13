@@ -24,19 +24,26 @@
 //! construction and drop to `extern "C"` for `CTLineDraw` +
 //! `CGContextSetTextPosition` + matrix manipulation.
 
+use core_foundation::array::CFArray;
 use core_foundation::attributed_string::{CFAttributedString, CFAttributedStringRef};
 use core_foundation::base::{CFAllocatorRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+use core_foundation::error::CFErrorRef;
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::base::CGFloat;
+use core_graphics::data_provider::CGDataProvider;
+use core_graphics::font::CGFont;
 use core_graphics::geometry::CGAffineTransform;
-use core_graphics::sys::CGContextRef;
-use core_text::font::{self, CTFont};
+use core_graphics::sys::{CGContextRef, CGFontRef};
+use core_text::font::{self, CTFont, CTFontRef};
+use core_text::font_descriptor::{self, kCTFontCascadeListAttribute, kCTFontFamilyNameAttribute};
 use core_text::line::CTLine;
 use core_text::string_attributes::{
     kCTFontAttributeName, kCTForegroundColorFromContextAttributeName,
 };
+use foreign_types::ForeignType;
+use std::sync::Arc;
 
 use crate::testing::TextRun;
 use crate::Rect;
@@ -64,6 +71,112 @@ pub struct FontMetrics {
 /// this only flags "the family itself doesn't exist."
 pub fn make_font(family: &str, size_pt: f64) -> Option<CTFont> {
     font::new_from_name(family, size_pt).ok()
+}
+
+// ── Nerd-Font fallback (issue #929) ─────────────────────────────────────
+//
+// macOS has no equivalent of GTK/Pango's implicit per-character font
+// cascade (`crate::gtk::with_nerd_font_fallback`) — a `CTFont` built by
+// [`make_font`] resolves every character against exactly one family, and
+// a Private-Use-Area codepoint (where Nerd Font icon glyphs live) that
+// family doesn't cover renders as the last-resort tofu box. Core Text
+// *does* support an explicit per-font cascade list
+// (`kCTFontCascadeListAttribute`, consulted only for characters the
+// primary font can't cover — the same "later entry, uncovered characters
+// only" contract Pango's cascade already has), it just has to be
+// requested per font rather than applying automatically.
+
+/// Copy `font` with `fallback_family` appended to its Core Text cascade
+/// list — every metric (size, ascent/descent, any symbolic traits `font`
+/// already carries) is preserved; only glyph resolution for characters
+/// `font`'s own family can't cover changes, consulting `fallback_family`
+/// before Core Text's own system default cascade.
+///
+/// Used by [`super::backend::MacBackend::set_current_font`] /
+/// [`super::backend::MacBackend::set_nerd_font_fallback`] to apply
+/// whatever family `Backend::set_nerd_font_fallback` last set to the
+/// backend's single shared `current_font`, regardless of which of the
+/// two calls happens first.
+///
+/// Drops to direct CoreText FFI for `CTFontCreateCopyWithAttributes` —
+/// the same "the safe wrapper doesn't expose what we need" rationale
+/// [`draw_text`]'s own module doc gives for `CTLineDraw`: `core-text`
+/// 20.1 only calls this function from its own private
+/// `clone_with_font_size`/`clone_with_symbolic_traits` methods (passing
+/// `ptr::null()` for the attributes parameter both times), so a caller
+/// that wants to pass real attributes — a cascade list, here — has no
+/// public wrapper to reach for.
+pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont {
+    let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
+    let cascade_list = CFArray::from_CFTypes(&[descriptor_for_family(fallback_family)]);
+    let attrs = CFDictionary::from_CFType_pairs(&[(cascade_key, cascade_list.as_CFType())]);
+    let desc = font_descriptor::new_from_attributes(&attrs);
+    // SAFETY: `font.as_concrete_TypeRef()` is a valid, live `CTFontRef`;
+    // `desc.as_concrete_TypeRef()` outlives the call (it's a local
+    // binding dropped after this statement, and CTFontCreateCopyWithAttributes
+    // reads it synchronously); `0.0` for `size` means "keep the
+    // original font's point size" per Core Text's own documented
+    // convention for this parameter, and a null `matrix` means "no
+    // transform", matching what `core_text::font::CTFont::clone_with_font_size`
+    // itself passes for the same two trailing-but-one parameters. The
+    // returned ref is `+1`-retained per Core Foundation's create-rule,
+    // which `wrap_under_create_rule` takes ownership of.
+    let font_ref = unsafe {
+        CTFontCreateCopyWithAttributes(
+            font.as_concrete_TypeRef(),
+            0.0,
+            std::ptr::null(),
+            desc.as_concrete_TypeRef(),
+        )
+    };
+    unsafe { CTFont::wrap_under_create_rule(font_ref) }
+}
+
+/// A bare [`core_text::font_descriptor::CTFontDescriptor`] carrying only
+/// `family`'s [`kCTFontFamilyNameAttribute`] — the shape
+/// [`font_with_fallback`]'s cascade-list entry needs; Core Text resolves
+/// the rest (weight, size, …) from context when the descriptor is
+/// consulted as a fallback rather than as the primary font.
+fn descriptor_for_family(family: &str) -> font_descriptor::CTFontDescriptor {
+    let key = unsafe { CFString::wrap_under_get_rule(kCTFontFamilyNameAttribute) };
+    let attrs = CFDictionary::from_CFType_pairs(&[(key, CFString::new(family).as_CFType())]);
+    font_descriptor::new_from_attributes(&attrs)
+}
+
+/// Register `bytes` (raw TTF/OTF font data) with Core Text for the
+/// lifetime of this process via `CTFontManagerRegisterGraphicsFont` — no
+/// filesystem write, no user font directory, matching
+/// [`crate::Backend::register_font_from_memory`]'s contract (issue
+/// #929). Returns the family name Core Text resolves the font to, or
+/// `None` if `bytes` isn't a font Core Graphics can parse, or
+/// registration itself fails (e.g. a duplicate PostScript name already
+/// registered in this process).
+///
+/// `CTFontManagerRegisterGraphicsFont` (unlike
+/// `CTFontManagerRegisterFontsForURL`, whose scope parameter this method
+/// would otherwise need to thread through) has no registration-scope
+/// argument at all — every font it registers is process-local for as
+/// long as the process runs, which is exactly the lifetime this method
+/// promises.
+pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
+    let provider = CGDataProvider::from_buffer(Arc::new(bytes.to_vec()));
+    let cgfont = CGFont::from_data_provider(provider).ok()?;
+
+    let mut error: CFErrorRef = std::ptr::null_mut();
+    // SAFETY: `cgfont.as_ptr()` is a valid, live `CGFontRef` for the
+    // duration of this call; `error` is a valid out-param CoreText only
+    // ever writes through. Its value is discarded on failure —
+    // `register_font_from_memory`'s `None` already tells the caller
+    // registration failed, and a `CFError` is a caller convenience this
+    // method doesn't need to expose.
+    let registered = unsafe { CTFontManagerRegisterGraphicsFont(cgfont.as_ptr(), &mut error) };
+    if !registered {
+        return None;
+    }
+    // A throwaway size is fine here — only `family_name()` is read, and
+    // family membership doesn't depend on point size.
+    let ctfont = font::new_from_CGFont(&cgfont, 12.0);
+    Some(ctfont.family_name())
 }
 
 /// Sample a font's typographic metrics. The returned `char_width`
@@ -292,6 +405,21 @@ fn build_ctline(font: &CTFont, text: &str) -> CTLine {
 #[link(name = "CoreText", kind = "framework")]
 extern "C" {
     fn CTLineDraw(line: core_text::line::CTLineRef, context: CGContextRef);
+    // `core-text` 20.1 only calls this from its own private
+    // `clone_with_font_size`/`clone_with_symbolic_traits` — see
+    // `font_with_fallback`'s doc for why this crate needs its own
+    // binding to pass a real `attributes` descriptor (a cascade list)
+    // rather than the `ptr::null()` those two always pass.
+    fn CTFontCreateCopyWithAttributes(
+        font: CTFontRef,
+        size: CGFloat,
+        matrix: *const CGAffineTransform,
+        attributes: core_text::font_descriptor::CTFontDescriptorRef,
+    ) -> CTFontRef;
+    // `core-text` 20.1 comments this one out entirely
+    // (`font_manager.rs`: "//pub fn CTFontManagerRegisterGraphicsFont") —
+    // see `register_font_from_memory`'s doc for why this method needs it.
+    fn CTFontManagerRegisterGraphicsFont(font: CGFontRef, error: *mut CFErrorRef) -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -493,5 +621,69 @@ mod tests {
         // Defensive default — a caller that forgets the matching
         // `start_recording_text()` gets an empty `Vec`, not a panic.
         assert!(stop_recording_text().is_empty());
+    }
+
+    // ── Nerd-Font fallback (issue #929) ──────────────────────────────
+
+    /// `font_with_fallback` must actually attach a
+    /// `kCTFontCascadeListAttribute` to the returned font's descriptor —
+    /// not just return a font that happens to still work. "Helvetica" is
+    /// a plausible fallback family (present on every macOS install) and
+    /// deliberately different from `TEST_FONT` so a copy-paste bug that
+    /// silently no-ops (returning `font` unchanged) would still fail this
+    /// assertion.
+    #[test]
+    fn font_with_fallback_attaches_a_cascade_list_attribute() {
+        let base = font();
+        let with_fallback = font_with_fallback(&base, "Helvetica");
+        // `contains_key` needs `ToVoid`, which core-foundation only
+        // implements for `*const c_void` and `CFType` — not `CFString`
+        // itself — so both the dictionary and the probed key are
+        // dropped to their untyped/raw forms first.
+        let attrs = with_fallback.copy_descriptor().attributes().to_untyped();
+        let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
+        assert!(
+            attrs.contains_key(&cascade_key.as_CFTypeRef()),
+            "font_with_fallback's returned font must carry a cascade-list attribute"
+        );
+    }
+
+    /// `font_with_fallback` must not otherwise change what the font
+    /// resolves to for ordinary text: same family name and same point
+    /// size as the font it was given, only the cascade extended.
+    #[test]
+    fn font_with_fallback_preserves_family_and_size() {
+        let base = font();
+        let with_fallback = font_with_fallback(&base, "Helvetica");
+        assert_eq!(with_fallback.family_name(), base.family_name());
+        assert_eq!(with_fallback.pt_size(), base.pt_size());
+    }
+
+    /// `font_with_fallback` still measures ordinary (non-fallback-needing)
+    /// text sanely — the cascade only matters for characters `base`
+    /// itself can't cover, so painting/measuring plain ASCII must be
+    /// unaffected.
+    #[test]
+    fn font_with_fallback_still_measures_ordinary_text() {
+        let base = font();
+        let with_fallback = font_with_fallback(&base, "Helvetica");
+        let (w, h) = measure_text(&with_fallback, "hello");
+        assert!(
+            w > 0.0 && h > 0.0,
+            "measuring plain text through a font with a fallback attached must still work \
+             (w={w}, h={h})"
+        );
+    }
+
+    /// Garbage bytes aren't a font Core Graphics can parse —
+    /// `register_font_from_memory` must report that as `None` rather
+    /// than panicking or fabricating a family name.
+    #[test]
+    fn register_font_from_memory_rejects_bytes_that_are_not_a_font() {
+        let garbage = [0u8; 64];
+        assert!(
+            register_font_from_memory(&garbage).is_none(),
+            "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
     }
 }

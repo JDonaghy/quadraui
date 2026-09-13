@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn paints_and_returns_link_hit_regions() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let p = popup();
         let viewport = Rect::new(0.0, 0.0, 300.0, 200.0);
         let measure = RichTextPopupMeasure::new(200.0, 16.0);

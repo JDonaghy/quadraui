@@ -15,17 +15,21 @@
 //! for why the rest of this repo's `--features win` compile gate stays
 //! meaningful without a Windows host.
 
-use windows::core::{Error as WinError, Result as WinResult, BOOL, HSTRING};
+use windows::core::{
+    Error as WinError, IUnknown, Interface, Result as WinResult, BOOL, HSTRING, PCWSTR,
+};
 use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
     ID2D1RenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat,
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    DWriteCreateFactory, IDWriteFactory, IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection,
+    IDWriteFontCollection1, IDWriteFontFallback, IDWriteFontFile, IDWriteLocalizedStrings,
+    IDWriteTextFormat, IDWriteTextFormat1, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_UNICODE_RANGE,
 };
 use windows_numerics::Vector2;
 
@@ -71,18 +75,42 @@ impl DWrite {
     /// [`pt_to_dip`] before it reaches DirectWrite — see that function's
     /// docs for why a straight passthrough is wrong.
     ///
+    /// `fallback` — built by [`build_nerd_font_fallback`] from whatever
+    /// [`Backend::set_nerd_font_fallback`][crate::Backend::set_nerd_font_fallback]
+    /// last set — is applied once here, to both text formats, via
+    /// [`IDWriteTextFormat1::SetFontFallback`] (issue #929). Every
+    /// `IDWriteTextLayout` created against a format afterward — whether
+    /// built explicitly by [`Self::measure_text`]/[`Self::measure_text_styled`]
+    /// or internally by [`ID2D1RenderTarget::DrawText`] inside
+    /// [`Self::draw_text`]/[`Self::draw_text_styled`] — inherits it from
+    /// the format it was created from, the same way it inherits
+    /// alignment/wrapping; `IDWriteTextLayout2::SetFontFallback` (the
+    /// per-layout override the same interface exposes) is for a caller
+    /// that wants to *diverge* from the format's fallback for one
+    /// layout, which no rasteriser here needs. `None` leaves
+    /// DirectWrite's own system fallback chain untouched, same as before
+    /// this parameter existed.
+    ///
     /// Returns the constructed handles plus `(line_height, char_width)`
     /// resolved from the format's real font metrics, so the caller
     /// ([`super::backend::WinBackend::attach_surface`]) can feed them
     /// straight into `set_current_line_height`/`set_current_char_width`
     /// without a second round-trip through this module.
-    pub fn new(family: &str, size_pt: f32) -> WinResult<(Self, f32, f32)> {
+    pub fn new(
+        family: &str,
+        size_pt: f32,
+        fallback: Option<&IDWriteFontFallback>,
+    ) -> WinResult<(Self, f32, f32)> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let size_dip = pt_to_dip(size_pt);
         let text_format =
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_NORMAL)?;
         let bold_text_format =
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_BOLD)?;
+        if let Some(fallback) = fallback {
+            apply_fallback_to_format(&text_format, fallback)?;
+            apply_fallback_to_format(&bold_text_format, fallback)?;
+        }
 
         let font_metrics = font_face_metrics(&factory, family)?;
         let units_per_em = (font_metrics.designUnitsPerEm as f32).max(1.0);
@@ -176,6 +204,148 @@ fn create_text_format(
             &HSTRING::from("en-us"),
         )
     }
+}
+
+/// Apply `fallback` to `format` via `IDWriteTextFormat1::SetFontFallback`
+/// — see [`DWrite::new`]'s doc for why setting it here (rather than per
+/// layout) is enough to cover every layout DirectWrite later builds from
+/// `format`, including `ID2D1RenderTarget::DrawText`'s internal one.
+///
+/// `IDWriteTextFormat1` is a Windows-8-and-later interface; the `cast`
+/// only fails on a Windows 7 host DirectWrite 1.0, which this crate does
+/// not otherwise support (every other rasteriser already assumes
+/// `IDWriteFactory5`-era APIs — see [`register_font_from_memory`]) — so
+/// propagating the error here rather than silently skipping the fallback
+/// is consistent with the rest of this module's "don't hide a real
+/// platform gap" posture.
+fn apply_fallback_to_format(
+    format: &IDWriteTextFormat,
+    fallback: &IDWriteFontFallback,
+) -> WinResult<()> {
+    let format1: IDWriteTextFormat1 = format.cast()?;
+    unsafe { format1.SetFontFallback(fallback) }
+}
+
+/// Register `bytes` (raw TTF/OTF font data) with DirectWrite for the
+/// lifetime of this process via an `IDWriteInMemoryFontFileLoader` — no
+/// filesystem write, matching [`crate::Backend::register_font_from_memory`]'s
+/// contract (issue #929).
+///
+/// Returns a private `IDWriteFontCollection1` containing just this font,
+/// plus every family name it exposes (read back from the font's own name
+/// table via `IDWriteFontFamily::GetFamilyNames`, not the caller's
+/// guess) — [`build_nerd_font_fallback`] takes the collection so a
+/// fallback built from one of these names resolves against the font
+/// that was actually registered, not whatever the system happens to
+/// have installed under the same family name.
+///
+/// Requires `IDWriteFactory5` (Windows 10 1809+); every in-tree Win-GUI
+/// rasteriser already assumes DirectWrite APIs at least this new (see
+/// `apply_fallback_to_format`'s doc), so this is not a new floor.
+pub fn register_font_from_memory(bytes: &[u8]) -> WinResult<(IDWriteFontCollection1, Vec<String>)> {
+    let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+    let loader = unsafe { factory.CreateInMemoryFontFileLoader()? };
+    // The loader must be registered on the factory before a file
+    // reference it creates can be resolved — see
+    // `IDWriteFactory::RegisterFontFileLoader`'s docs. Left registered
+    // for the process lifetime, matching this method's own contract.
+    unsafe { factory.RegisterFontFileLoader(&loader)? };
+    let factory_base: IDWriteFactory = factory.cast()?;
+    let file: IDWriteFontFile = unsafe {
+        loader.CreateInMemoryFontFileReference(
+            &factory_base,
+            bytes.as_ptr().cast(),
+            bytes.len() as u32,
+            None::<&IUnknown>,
+        )?
+    };
+
+    let builder = unsafe { factory.CreateFontSetBuilder()? };
+    unsafe { builder.AddFontFile(&file)? };
+    let font_set = unsafe { builder.CreateFontSet()? };
+    let collection = unsafe { factory.CreateFontCollectionFromFontSet(&font_set)? };
+
+    let count = unsafe { collection.GetFontFamilyCount() };
+    let mut names = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let family = unsafe { collection.GetFontFamily(i)? };
+        let localized = unsafe { family.GetFamilyNames()? };
+        names.push(read_localized_string(&localized, 0)?);
+    }
+    Ok((collection, names))
+}
+
+/// Read the string at `index` out of an `IDWriteLocalizedStrings` (the
+/// two-call length-then-fill pattern every DirectWrite string-table
+/// accessor uses) as a Rust `String`.
+fn read_localized_string(strings: &IDWriteLocalizedStrings, index: u32) -> WinResult<String> {
+    let len = unsafe { strings.GetStringLength(index)? };
+    // +1 for the NUL terminator `GetString` writes into the buffer.
+    let mut buf = vec![0u16; len as usize + 1];
+    unsafe { strings.GetString(index, &mut buf)? };
+    Ok(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
+/// Build an [`IDWriteFontFallback`] that resolves `family` for
+/// characters the primary font can't cover, falling back to it only
+/// *after* every mapping the system's own default fallback chain
+/// already provides (issue #929) — mirrors the "later family in the
+/// list, consulted only for uncovered characters" contract
+/// `crate::gtk::with_nerd_font_fallback` already documents for Pango's
+/// cascade, so an app moving from GTK's implicit behaviour to this
+/// explicit API sees the same shape.
+///
+/// `collection` should be the value [`register_font_from_memory`]
+/// returned when `family` came from an app-registered font, so `family`
+/// resolves against that private collection rather than a
+/// same-named system font; pass `None` to resolve `family` against the
+/// system collection instead (a system-installed Nerd Font, for
+/// instance).
+///
+/// The mapped range is the full Unicode codepoint space
+/// (`0x0..=0x10FFFF`) rather than just the Private-Use-Area block Nerd
+/// Font glyphs live in: `family` is only ever *consulted* for a
+/// character none of the higher-priority system mappings already
+/// resolved (that's what `AddMappings(system_fallback)` before our own
+/// `AddMapping` call buys), so a wider range costs nothing and doesn't
+/// need updating if a future icon set uses codepoints outside PUA-A.
+pub fn build_nerd_font_fallback(
+    family: &str,
+    collection: Option<&IDWriteFontCollection1>,
+) -> WinResult<IDWriteFontFallback> {
+    let factory: IDWriteFactory2 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+    let system_fallback = unsafe { factory.GetSystemFontFallback()? };
+    let builder = unsafe { factory.CreateFontFallbackBuilder()? };
+    unsafe { builder.AddMappings(&system_fallback)? };
+
+    let ranges = [DWRITE_UNICODE_RANGE {
+        first: 0x0000_0000,
+        last: 0x0010_FFFF,
+    }];
+    let family_wide = HSTRING::from(family);
+    let family_ptrs = [family_wide.as_ptr()];
+    // `AddMapping` wants an `Option<&IDWriteFontCollection>` (the base
+    // interface), not the `IDWriteFontCollection1` this module otherwise
+    // deals in — `windows-core`'s `Param` blanket impl for `Option<&T>`
+    // requires the exact interface type, so the derived-to-base upcast
+    // has to happen explicitly via `cast` (a `QueryInterface` on the same
+    // underlying COM object, not a new one) rather than relying on the
+    // interface hierarchy to coerce it implicitly.
+    let base_collection: Option<IDWriteFontCollection> = match collection {
+        Some(c) => Some(c.cast()?),
+        None => None,
+    };
+    unsafe {
+        builder.AddMapping(
+            &ranges,
+            &family_ptrs,
+            base_collection.as_ref(),
+            &HSTRING::from("en-us"),
+            PCWSTR::null(),
+            1.0,
+        )?
+    };
+    unsafe { builder.CreateFontFallback() }
 }
 
 /// Resolve `family`'s `DWRITE_FONT_METRICS` (design-unit ascent/descent/

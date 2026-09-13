@@ -697,7 +697,7 @@ mod tests {
 
     fn paint_via(view: &MultiSectionView) -> (HeadlessSurface, MultiSectionViewLayout) {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W, H);
         let layout = surface
             .paint(|target| {

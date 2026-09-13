@@ -87,7 +87,7 @@ mod tests {
     /// there's no dismiss/action sub-region to cover).
     #[test]
     fn layout_hit_test_round_trip() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let spinner = spinner(0);
         let rect = Rect::new(10.0, 10.0, 0.0, 0.0);
 
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn paints_without_panicking() {
         let surface = HeadlessSurface::new(200, 20).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let spinner = spinner(3);
         let rect = Rect::new(0.0, 0.0, 0.0, 0.0);
 
@@ -136,7 +136,7 @@ mod tests {
     /// probing).
     #[test]
     fn accent_colour_is_used_when_set() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let mut spinner = spinner(9);
         spinner.accent = Some(Color::rgb(255, 0, 0));
         let rect = Rect::new(0.0, 0.0, 0.0, 0.0);

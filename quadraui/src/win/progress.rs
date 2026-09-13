@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn determinate_fill_paints_and_hit_tests() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar(Some(0.5), false);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
@@ -176,7 +176,7 @@ mod tests {
     /// indices paint the pulse at different positions.
     #[test]
     fn indeterminate_mode_animates_via_frame_idx() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         let mut bar0 = bar(None, false);
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn cancellable_bar_hit_tests_cancel_affordance() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar(Some(1.0), true);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
@@ -238,7 +238,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         let surface = HeadlessSurface::new(W, H).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let painted = surface
             .paint(|target| {
                 draw_progress(target, &dwrite, rect, &bar);

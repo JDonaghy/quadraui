@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn draw_diff_view_paints_text_and_returns_layout() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             ..Theme::default()
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn divider_paints_border_colour() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let view = sample_view(DiffMode::SideBySide);
         let rect = Rect::new(0.0, 0.0, W, H);
@@ -280,7 +280,7 @@ mod tests {
         let origin_x = 40.0_f32;
         let origin_y = 24.0_f32;
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let view = sample_view(DiffMode::SideBySide);
         let rect = Rect::new(origin_x, origin_y, W - origin_x, H - origin_y);
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn unified_mode_counts_hunk_headers_in_total_rows() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme::default();
         let view = sample_view(DiffMode::Unified);
         let rect = Rect::new(0.0, 0.0, W, H);
@@ -352,7 +352,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let view = sample_view(DiffMode::SideBySide);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let theme = Theme::default();
 
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn zero_size_rect_is_a_no_op() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
             ..Theme::default()

@@ -1097,6 +1097,15 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
             "fire-and-forget to a system daemon — nothing paints, so no assertion in this \
              suite's vocabulary can observe it",
         ),
+        (
+            "app_font_registration",
+            "declared by GTK (which already had a working fallback before #929 and overrides \
+             `set_nerd_font_fallback` for portability) plus macOS/Win-GUI, neither of which has \
+             a `ConformanceDriver` (#493) — and even GTK's own coverage would need per-glyph \
+             font-resolution inspection `FrameInventory` doesn't do (it records painted text \
+             runs, not which family resolved each character), so there is no headless \
+             assertion this suite's vocabulary can gate on",
+        ),
     ];
 
     let required: std::collections::BTreeSet<String> = load_scenarios()

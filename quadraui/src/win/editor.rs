@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn paints_without_panicking_and_gutter_is_visible() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Consolas", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Consolas", 10.0, None).expect("create DWrite");
         let mut lines = vec![
             plain_line(0, "fn main() {"),
             plain_line(1, "    ok();"),
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn line_selection_spans_full_row() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Consolas", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Consolas", 10.0, None).expect("create DWrite");
         // 2 visible characters + 23 trailing spaces: `line_len` (25,
         // matching the selection's full-row width) is unaffected by the
         // trailing spaces, but space glyphs paint no ink — so the

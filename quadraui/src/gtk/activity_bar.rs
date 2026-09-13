@@ -28,13 +28,34 @@ pub const ACTIVITY_ROW_PX: f64 = 48.0;
 /// Code's 24px codicons — the pre-#620 "… 20" size rendered ≈ 26.7px,
 /// visibly oversized against the unchanged 48px row (`ACTIVITY_ROW_PX`).
 ///
-/// The family (`"Symbols Nerd Font"`) is the same one
+/// The family (`"Symbols Nerd Font"`) is the same default
 /// [`super::NERD_FONT_FALLBACK_FAMILY`] names for every other GTK
 /// chrome glyph path (#416) — kept as a literal here rather than built
 /// from the constant because `pub const` string concatenation isn't
-/// expressible on stable Rust; if the fallback family ever changes,
-/// update both.
+/// expressible on stable Rust; if the default fallback family ever
+/// changes, update both. Only a *default*, unlike the family
+/// [`activity_bar_icon_font`] actually paints with: this constant does
+/// not track a `Backend::set_nerd_font_fallback` override
+/// (`GtkBackend::set_nerd_font_fallback`, issue #929) — it exists for
+/// its point size (`draw_activity_bar`'s size-assertion tests read
+/// `ICON_FONT_DESC.ends_with(" 18")`) and as the literal every draw call
+/// starts from before substituting in the live family.
 pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
+
+/// [`ICON_FONT_DESC`] with its family swapped for whatever
+/// [`super::current_nerd_font_fallback_family`] currently resolves to —
+/// [`NERD_FONT_FALLBACK_FAMILY`][super::NERD_FONT_FALLBACK_FAMILY] until
+/// a `Backend::set_nerd_font_fallback` call overrides it. The point size
+/// (`" 18"`) always comes from `ICON_FONT_DESC` itself, so the two can
+/// never drift on that axis.
+fn activity_bar_icon_font() -> FontDescription {
+    let mut f = FontDescription::from_string(ICON_FONT_DESC);
+    f.set_family(&format!(
+        "{}, monospace",
+        super::current_nerd_font_fallback_family()
+    ));
+    f
+}
 
 /// Draw an [`ActivityBar`] into `(0, 0, width, height)` on `cr`.
 ///
@@ -131,7 +152,7 @@ pub fn draw_activity_bar_with_style(
     cr.fill().ok();
 
     let saved_font = pango_layout.font_description().unwrap_or_default();
-    let icon_font = FontDescription::from_string(ICON_FONT_DESC);
+    let icon_font = activity_bar_icon_font();
     pango_layout.set_font_description(Some(&icon_font));
     pango_layout.set_attributes(None);
 

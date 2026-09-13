@@ -252,7 +252,7 @@ mod tests {
     fn text_ok_round_trip_click_hits_toolbar_button() {
         let panel = panel_with_toolbar();
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W, H);
 
         let layout = paint(&surface, &dwrite, line_height, rect, &panel, None, None);
@@ -272,7 +272,7 @@ mod tests {
     fn no_toolbar_click_hits_content_local_coords() {
         let panel = panel_without_toolbar();
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(10.0, 5.0, W - 10.0, H - 5.0);
 
         let layout = paint(&surface, &dwrite, line_height, rect, &panel, None, None);
@@ -296,7 +296,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let panel = panel_with_toolbar();
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, line_height) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = paint(&surface, &dwrite, line_height, rect, &panel, None, None);

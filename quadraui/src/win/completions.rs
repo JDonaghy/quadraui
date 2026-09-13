@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn paints_background_border_and_selection() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let c = completions();
         let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
         let layout = c.layout(10.0, 10.0, 16.0, viewport, 120.0, 60.0, |_| {

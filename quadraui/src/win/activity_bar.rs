@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
 
@@ -226,7 +226,7 @@ mod tests {
     /// at `y_start == 0.0`, regardless of where `rect` sits (issue #552).
     #[test]
     fn hit_regions_are_bar_relative_not_absolute() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let surface = HeadlessSurface::new(W as u32, (H + 40.0) as u32).expect("create surface");
         let rect = Rect::new(0.0, 40.0, W, H);

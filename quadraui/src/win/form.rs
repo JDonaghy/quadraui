@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let form = make_form(vec![
             field(
                 "name",
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn focused_row_paints_selected_bg() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let mut form = make_form(vec![
             field("a", "A", FieldKind::Toggle { value: false }),
             field("b", "B", FieldKind::Toggle { value: true }),
@@ -517,7 +517,7 @@ mod tests {
             ),
         ]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let _ = paint(&surface, &dwrite, rect, &form);
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn settings_chrome_paints_header_and_inactive_search_rows() {
         let surface = HeadlessSurface::new(200, 60).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
         let line_height = 18.0_f32;
 
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn settings_chrome_active_search_row_paints_selected_bg() {
         let surface = HeadlessSurface::new(200, 60).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
         let line_height = 18.0_f32;
 

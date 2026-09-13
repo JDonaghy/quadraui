@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let table = table(vec![
             row("a.txt", "1kb"),
             row("b.txt", "2kb"),
@@ -441,7 +441,7 @@ mod tests {
     /// the first body row resolves to row index 1.
     #[test]
     fn scroll_offset_hit_test_agrees() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let mut t = table(vec![row("a", "1"), row("b", "2"), row("c", "3")]);
         t.scroll_offset = 1;
         let rect = Rect::new(0.0, 0.0, W, H);
@@ -457,7 +457,7 @@ mod tests {
     fn no_paint_layout_matches_paint_layout() {
         let table = table(vec![row("a.txt", "1kb"), row("b.txt", "2kb")]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
         let painted = surface

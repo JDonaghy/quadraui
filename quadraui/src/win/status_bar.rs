@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
 
@@ -360,7 +360,7 @@ mod tests {
     /// measurer, same bar, same rect.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, W, H);
 
@@ -387,7 +387,7 @@ mod tests {
         // Narrow enough that "NORMAL" alone overflows it.
         let bar_rect = Rect::new(20.0, 10.0, 40.0, H);
         let bar = bar();
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
 
         let surface = HeadlessSurface::new(canvas_w, canvas_h).expect("create surface");
         surface
@@ -422,7 +422,7 @@ mod tests {
     /// `macos::status_bar`'s zero-size guard.
     #[test]
     fn zero_size_rect_is_a_no_op() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar();
         let rect = Rect::new(0.0, 0.0, 0.0, 0.0);
 

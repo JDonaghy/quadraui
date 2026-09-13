@@ -253,7 +253,10 @@ pub(crate) fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, r:
 /// on `gtk4::pango` directly.
 pub use pango::Layout as PangoLayout;
 
-/// Font family GTK chrome text falls back to for Nerd-Font glyphs.
+/// Default font family GTK chrome text falls back to for Nerd-Font
+/// glyphs, and the value [`current_nerd_font_fallback_family`] returns
+/// until [`Backend::set_nerd_font_fallback`][crate::Backend::set_nerd_font_fallback]
+/// overrides it.
 ///
 /// Matches the family [`activity_bar::ICON_FONT_DESC`] and
 /// [`tab_bar::tab_icon_font`] already pin for the activity bar and tab
@@ -262,6 +265,46 @@ pub use pango::Layout as PangoLayout;
 /// is a one-line change instead of hunting every rasteriser that
 /// references the literal.
 pub const NERD_FONT_FALLBACK_FAMILY: &str = "Symbols Nerd Font";
+
+// ── Runtime-settable fallback family (issue #929) ───────────────────────
+//
+// `chrome_font_description`/`with_nerd_font_fallback`/`tab_icon_font`
+// used to bake in `NERD_FONT_FALLBACK_FAMILY` directly. GTK's own
+// glyph resolution already worked without any of this — fontconfig
+// cascades to a system-installed Nerd Font on its own — but #929 asks
+// for `Backend::set_nerd_font_fallback` to be the *portable* entry
+// point on every backend, GTK included, so an app that targets the
+// trait method rather than this module's GTK-specific constant gets
+// the same effect everywhere. A `thread_local` (not a `GtkBackend`
+// field) because the constant it replaces was itself free-standing,
+// consulted by plain functions (`tab_icon_font`, and — via
+// `chrome_font_description` — dozens of `GtkBackend` rasterisers) with
+// no `&self` in scope; threading an instance field through every one
+// of those call sites for a value that is, in practice, one process's
+// one fontconfig-visible font family would have been a much larger
+// diff for no behavioural difference. GTK is single-threaded (the glib
+// main loop owns rendering), so a plain `RefCell` is enough — no
+// `Mutex` needed.
+thread_local! {
+    static NERD_FONT_FALLBACK: std::cell::RefCell<String> =
+        std::cell::RefCell::new(NERD_FONT_FALLBACK_FAMILY.to_string());
+}
+
+/// The family [`with_nerd_font_fallback`]/[`chrome_font_description`]/
+/// [`tab_bar::tab_icon_font`] currently append/substitute for Nerd-Font
+/// glyphs — [`NERD_FONT_FALLBACK_FAMILY`] until
+/// [`set_current_nerd_font_fallback_family`] overrides it.
+pub(crate) fn current_nerd_font_fallback_family() -> String {
+    NERD_FONT_FALLBACK.with(|f| f.borrow().clone())
+}
+
+/// Override the family every subsequent call in this process to
+/// [`with_nerd_font_fallback`]/[`chrome_font_description`]/
+/// [`tab_bar::tab_icon_font`] resolves against. Backs
+/// `GtkBackend::set_nerd_font_fallback` (issue #929).
+pub(crate) fn set_current_nerd_font_fallback_family(family: &str) {
+    NERD_FONT_FALLBACK.with(|f| *f.borrow_mut() = family.to_string());
+}
 
 /// Build a Pango font description for GTK chrome text (list/tree/
 /// palette rows, status bar segments, menu items, dialogs, ...) from a
@@ -298,11 +341,12 @@ pub(crate) fn chrome_font_description(ui_font: &str) -> pango::FontDescription {
 /// rationale.
 pub(crate) fn with_nerd_font_fallback(base: &pango::FontDescription) -> pango::FontDescription {
     let mut desc = base.clone();
+    let fallback = current_nerd_font_fallback_family();
     let family = desc.family().map(|f| f.to_string()).unwrap_or_default();
     let with_fallback = if family.is_empty() {
-        NERD_FONT_FALLBACK_FAMILY.to_string()
+        fallback
     } else {
-        format!("{family},{NERD_FONT_FALLBACK_FAMILY}")
+        format!("{family},{fallback}")
     };
     desc.set_family(&with_fallback);
     desc
@@ -355,5 +399,56 @@ mod tests {
         let family = desc.family().expect("family set").to_string();
         assert_eq!(family, "Monospace,Symbols Nerd Font");
         assert_eq!(desc.size(), base.size());
+    }
+
+    /// Resets the process-wide fallback family to
+    /// [`NERD_FONT_FALLBACK_FAMILY`] on drop, including on an early
+    /// return/panic — so a test that calls
+    /// [`set_current_nerd_font_fallback_family`] can't leak its override
+    /// into a later test that happens to land on the same worker thread
+    /// (`cargo test`'s harness reuses OS threads across `#[test]`
+    /// functions, and this module's override lives in a `thread_local`
+    /// — see that function's doc for why it isn't a per-instance field).
+    struct FallbackFamilyGuard;
+    impl Drop for FallbackFamilyGuard {
+        fn drop(&mut self) {
+            set_current_nerd_font_fallback_family(NERD_FONT_FALLBACK_FAMILY);
+        }
+    }
+
+    /// [`set_current_nerd_font_fallback_family`] is what
+    /// `GtkBackend::set_nerd_font_fallback` calls — this test exercises
+    /// the module-level primitive directly (a `GtkBackend` needs a live
+    /// GTK application to construct) and confirms every reader
+    /// (`with_nerd_font_fallback`, and therefore
+    /// `chrome_font_description`) picks up the override.
+    #[test]
+    fn set_current_nerd_font_fallback_family_is_read_back_by_with_nerd_font_fallback() {
+        let _guard = FallbackFamilyGuard;
+        assert_eq!(
+            current_nerd_font_fallback_family(),
+            NERD_FONT_FALLBACK_FAMILY
+        );
+
+        set_current_nerd_font_fallback_family("Consumer Icons");
+        assert_eq!(current_nerd_font_fallback_family(), "Consumer Icons");
+
+        let desc = chrome_font_description("Sans 11");
+        let family = desc.family().expect("family set").to_string();
+        assert_eq!(family, "Sans,Consumer Icons");
+    }
+
+    /// [`tab_bar::tab_icon_font`] replaces the family entirely (see its
+    /// own doc for why) rather than appending — confirm it also tracks
+    /// the override, not just `with_nerd_font_fallback`'s append path.
+    #[test]
+    fn tab_icon_font_tracks_the_overridden_fallback_family() {
+        let _guard = FallbackFamilyGuard;
+        set_current_nerd_font_fallback_family("Consumer Icons");
+
+        let base = pango::FontDescription::from_string("Sans 11");
+        let desc = tab_bar::tab_icon_font(&base);
+        let family = desc.family().expect("family set").to_string();
+        assert_eq!(family, "Consumer Icons, monospace");
     }
 }

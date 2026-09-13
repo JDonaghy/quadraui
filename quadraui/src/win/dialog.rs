@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn paints_and_returns_per_button_hit_rects() {
         let surface = HeadlessSurface::new(300, 300).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0).expect("create DWrite");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let d = dialog();
         let viewport = QRect::new(0.0, 0.0, 300.0, 300.0);
         let layout = d.layout(viewport, measure(), |_| ToolbarItemMeasure::new(0.0));

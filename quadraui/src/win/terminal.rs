@@ -57,7 +57,9 @@ mod tests {
     }
 
     fn dwrite() -> DWrite {
-        DWrite::new("Segoe UI", 10.0).expect("create DWrite").0
+        DWrite::new("Segoe UI", 10.0, None)
+            .expect("create DWrite")
+            .0
     }
 
     /// Paints `term` via `RawFormSurface` — the same adapter
