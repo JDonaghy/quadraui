@@ -144,15 +144,8 @@ impl PlatformServices for MacPlatformServices {
         for &i in &order {
             let button = &opts.buttons[i];
             let ns_button = alert.addButtonWithTitle(&NSString::from_str(&button.label));
-            // A button that is both `is_default` and `is_cancel` (a
-            // single-button "OK" alert) binds Escape, not Return —
-            // matches `gtk::services::hig_button_order`'s doc: the
-            // dismiss gesture is the one every alert honours even when
-            // the button also carries the "primary action" styling.
-            if button.is_cancel {
-                ns_button.setKeyEquivalent(&NSString::from_str("\u{1b}"));
-            } else if button.is_default {
-                ns_button.setKeyEquivalent(&NSString::from_str("\r"));
+            if let Some(key) = key_equivalent_for_button(button) {
+                ns_button.setKeyEquivalent(&NSString::from_str(key));
             }
         }
         let response = alert.runModal();
@@ -250,7 +243,7 @@ fn applescript_escape(s: &str) -> String {
 ///
 /// A button with both `is_default` and `is_cancel` set (a single-button
 /// "OK" alert) lands in the default slot here — `show_message_dialog`
-/// still binds it to Escape, not Return, when assigning the key
+/// also binds it to Return, not Escape, when assigning the key
 /// equivalent (see that method's doc comment), so which bucket this
 /// function sorts it into only affects visual position, not behaviour.
 fn native_button_order(buttons: &[MessageDialogButton]) -> Vec<usize> {
@@ -273,13 +266,42 @@ fn native_button_order(buttons: &[MessageDialogButton]) -> Vec<usize> {
     order
 }
 
-/// Map [`DialogSeverity`] onto `NSAlertStyle` (quadraui#936) — mirrors
-/// `win::services::win_show_message_dialog`'s `icon` match arm-for-arm,
-/// including the same "`Question` has no dedicated native icon" gap:
-/// `NSAlertStyle` (like `TaskDialogIndirect`'s icon set) has no
-/// question-mark style, so `Question` degrades to the same neutral
-/// `Informational` style as `None`, matching [`DialogSeverity`]'s own
-/// "`None` = neutral" doc.
+/// Pick the `NSButton::setKeyEquivalent` string for `button`, or `None`
+/// to leave `NSAlert`'s own default untouched (quadraui#936).
+///
+/// `setKeyEquivalent` only ever holds one string, so a button that is
+/// both `is_default` and `is_cancel` (a single-button "OK" alert — the
+/// most common message-dialog shape in this codebase) can only be bound
+/// to one of Return/Escape here. `is_default` wins: `NSAlert`'s own
+/// native default (its docs: "By default, the first button has a key
+/// equivalent of Return...") already gives such a button Return for
+/// free when `setKeyEquivalent` is never called, and both sibling
+/// backends bind *both* keys to this button —
+/// `gtk::services::hig_button_order`'s doc points `set_cancel_button`
+/// *and* `set_default_button` at it, and
+/// `win::services::assign_button_ids` gives it `TASKDIALOG_IDCANCEL`
+/// *and* looks it up as `pszDefaultButton` — so Return is the one to
+/// keep when only one of the two can survive on this platform.
+fn key_equivalent_for_button(button: &MessageDialogButton) -> Option<&'static str> {
+    if button.is_default {
+        Some("\r")
+    } else if button.is_cancel {
+        Some("\u{1b}")
+    } else {
+        None
+    }
+}
+
+/// Map [`DialogSeverity`] onto `NSAlertStyle` (quadraui#936) — shares
+/// `win::services::win_show_message_dialog`'s `icon` match's "`Question`
+/// has no dedicated native icon" gap: `NSAlertStyle` (like
+/// `TaskDialogIndirect`'s icon set) has no question-mark style, so
+/// `Question` degrades to a neutral style, matching [`DialogSeverity`]'s
+/// own "`None` = neutral" doc. Unlike the Windows arm, though,
+/// `NSAlertStyle` also has no dedicated "no icon" state the way
+/// `PCWSTR::null()` gives Windows one, so `Info` is folded into the same
+/// `Informational` bucket as `Question`/`None` here rather than getting
+/// its own arm the way `TD_INFORMATION_ICON` does on Windows.
 fn severity_to_alert_style(severity: Option<DialogSeverity>) -> NSAlertStyle {
     match severity {
         Some(DialogSeverity::Error) => NSAlertStyle::Critical,
@@ -385,6 +407,43 @@ mod tests {
     fn native_button_order_no_default_or_cancel_keeps_declared_order() {
         let buttons = [msg_btn("a", false, false), msg_btn("b", false, false)];
         assert_eq!(native_button_order(&buttons), vec![0, 1]);
+    }
+
+    #[test]
+    fn key_equivalent_for_button_default_only_binds_return() {
+        assert_eq!(
+            key_equivalent_for_button(&msg_btn("ok", true, false)),
+            Some("\r")
+        );
+    }
+
+    #[test]
+    fn key_equivalent_for_button_cancel_only_binds_escape() {
+        assert_eq!(
+            key_equivalent_for_button(&msg_btn("cancel", false, true)),
+            Some("\u{1b}")
+        );
+    }
+
+    #[test]
+    fn key_equivalent_for_button_neither_binds_nothing() {
+        assert_eq!(
+            key_equivalent_for_button(&msg_btn("middle", false, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn key_equivalent_for_button_both_default_and_cancel_binds_return_not_escape() {
+        // Regression test (quadraui#936 review): a single "OK" button
+        // that carries both flags — the most common message-dialog
+        // shape — MUST get Return, not just Escape, or pressing Enter
+        // does nothing and the dialog is keyboard-unresponsive on its
+        // most common shape.
+        assert_eq!(
+            key_equivalent_for_button(&msg_btn("ok", true, true)),
+            Some("\r")
+        );
     }
 
     #[test]
