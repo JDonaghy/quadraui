@@ -41,8 +41,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::backend::{
-    Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
-    PlatformServices,
+    BackendError, Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
+    Notification, PlatformServices, ServiceResult,
 };
 
 // ── OSC 52 support ────────────────────────────────────────────────────────────
@@ -431,6 +431,15 @@ impl PlatformServices for TuiPlatformServices {
 
     fn open_url(&self, _url: &str) {}
 
+    /// quadraui#949: TUI has no browser to hand a URL to, and `open_url`
+    /// above is an empty no-op body a caller has no way to distinguish
+    /// from "it worked" — this is the fix. Skips calling `open_url`
+    /// (there is nothing for it to do) and reports the gap directly
+    /// instead of falling through to the trait's default `Ok(())`.
+    fn open_url_result(&self, _url: &str) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
     fn platform_name(&self) -> &'static str {
         "tui"
     }
@@ -467,5 +476,20 @@ mod message_dialog_tests {
         assert!(services
             .show_folder_open_dialog(FileDialogOptions::default())
             .is_none());
+    }
+
+    /// quadraui#949: before `open_url_result` existed, `open_url`'s empty
+    /// no-op body was a genuinely undetectable silent failure — a caller
+    /// had no way to tell "the browser opened" from "TUI silently
+    /// discarded this". `open_url_result` closes that gap by reporting
+    /// `Unsupported` explicitly rather than falling through to the
+    /// trait's default `Ok(())`.
+    #[test]
+    fn open_url_result_reports_unsupported_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(
+            services.open_url_result("https://example.com"),
+            Err(BackendError::Unsupported)
+        );
     }
 }
