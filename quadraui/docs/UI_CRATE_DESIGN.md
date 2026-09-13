@@ -32,6 +32,12 @@ Targets:
 
 - **Not a general-purpose GUI framework** like GTK, Qt, Iced, Slint, or egui. We're biased toward keyboard-driven, productivity-class apps: IDEs, database tools, devops consoles. Apps with heavy custom drawing (games, video editors, Figma) are out of scope.
 - **Not a web-tech shim** like Tauri or Electron. No WebView. No HTML/CSS. No JavaScript.
+  **This rejects Electron's *implementation*, not its *capability bar*** — see the root
+  [`GOAL.md`](../../GOAL.md). What an app can do from Electron's main process (dialogs,
+  clipboard, notifications, menus, tray, custom title bar, drag-and-drop) is a fair
+  benchmark for quadraui; "Electron exposes this and we don't" is on its own a valid
+  basis for an issue, provided the capability isn't web-specific. It is the browser
+  runtime and the web surfaces (`webContents`, `session`, cookies) we don't want.
 - **Not a pixel-perfect Figma-style renderer.** Widgets look *consistent* with each platform's conventions (font, accent, spacing, scrollbar style) but do not attempt to mimic `NSButton` or `ttk::Button` exactly.
 - **Not retained-mode DOM.** No virtual DOM diffing. Full rebuild each frame — see §3.
 - **Not an animation framework.** Transitions are out of scope v1. Fades and spinners can be added later as primitives.
