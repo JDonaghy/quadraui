@@ -464,14 +464,43 @@ pub struct RunConfig {
     /// terminator. Not a concern for any title a real app would set, but
     /// worth knowing if this is ever built from untrusted input.
     pub title: String,
+    /// Whether a second launch of this app is forwarded to the
+    /// already-running instance instead of opening a second window —
+    /// issue #957. `false` (the default — see [`Self::default`])
+    /// reproduces every pre-#957 launch: one independent window per
+    /// process, no dedup of any kind.
+    ///
+    /// When `true`, `run`/`run_with` creates a named `CreateMutexW`
+    /// keyed off [`Self::title`] (Win has no `app_id` concept the way
+    /// `gtk::RunConfig` does, so the title doubles as this backend's
+    /// stable app identity) before opening a window. If that mutex
+    /// already exists — another instance of this same app is already
+    /// running — this process forwards its own `argv` to the existing
+    /// instance's window via `WM_COPYDATA`, brings that window to the
+    /// foreground, and exits without ever creating a window of its own.
+    /// The receiving instance decodes the forwarded `argv` the same way
+    /// it decodes its own at startup — through
+    /// [`crate::event::classify_open_args`] — and dispatches the result
+    /// as [`crate::UiEvent::OpenRequested`].
+    pub single_instance: bool,
 }
 
 impl RunConfig {
-    /// Build a config with the given window title.
+    /// Build a config with the given window title. Single-instance
+    /// forwarding is off — see [`Self::with_single_instance`] to opt in.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            single_instance: false,
         }
+    }
+
+    /// Opt in/out of single-instance dedup + `WM_COPYDATA` `argv`
+    /// forwarding (issue #957) — see [`Self::single_instance`]'s doc for
+    /// the full contract. Defaults to `false`.
+    pub fn with_single_instance(mut self, single_instance: bool) -> Self {
+        self.single_instance = single_instance;
+        self
     }
 }
 
@@ -482,6 +511,7 @@ impl Default for RunConfig {
     fn default() -> Self {
         Self {
             title: "quadraui".to_string(),
+            single_instance: false,
         }
     }
 }
@@ -537,11 +567,20 @@ mod win32 {
     use std::rc::Rc;
 
     use windows::core::{Error as WinError, PCWSTR};
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    };
     use windows::Win32::Graphics::Gdi::{
         InvalidateRect, ScreenToClient, UpdateWindow, ValidateRect,
     };
+    // Issue #957 single-instance forwarding: `WM_COPYDATA`'s payload
+    // struct lives in `System::DataExchange`, not `WindowsAndMessaging`
+    // (the message id itself, and every other API this feature needs —
+    // `FindWindowW`/`SendMessageW`/`SetForegroundWindow`/`SW_RESTORE` —
+    // do).
+    use windows::Win32::System::DataExchange::COPYDATASTRUCT;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::CreateMutexW;
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
@@ -549,11 +588,12 @@ mod win32 {
         GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-        GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage, RegisterClassExW,
-        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, MSG,
-        SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
+        GetClientRect, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage,
+        RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
+        SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
+        CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, MSG, SWP_NOACTIVATE, SWP_NOZORDER,
+        SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY,
         WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
         WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
@@ -572,7 +612,7 @@ mod win32 {
     use crate::desktop::{
         smoke_clipboard_round_trip_ok, smoke_size_ok, ModalPumpDepth, SmokeConfig,
     };
-    use crate::event::UiEvent;
+    use crate::event::{classify_open_args, UiEvent};
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
     // Message → `UiEvent` translation lives in `super::events` so it can
@@ -713,6 +753,93 @@ mod win32 {
         unsafe { GetKeyState(vk.0 as i32) < 0 }
     }
 
+    /// Issue #957 single-instance gate. Creates a named `CreateMutexW`
+    /// keyed off `title` (Win has no `app_id` concept the way
+    /// `gtk::RunConfig` does, so the window title doubles as this
+    /// backend's stable app identity) and reports whether *this* call is
+    /// the one that actually created it.
+    ///
+    /// `CreateMutexW` itself succeeds either way — whether the name is
+    /// new or already held by another process, it returns a handle
+    /// referring to whichever instance owns it — so telling "I created
+    /// this" apart from "this already existed" needs the standard Win32
+    /// idiom: check `GetLastError()` for `ERROR_ALREADY_EXISTS`
+    /// immediately after a successful call, before anything else can run
+    /// and clobber the thread-local error code.
+    ///
+    /// The returned handle is deliberately never closed: Win32 releases
+    /// every handle a process still holds open when it exits, and a
+    /// single-instance guard is meant to live exactly that long — there
+    /// is no earlier point at which `CloseHandle` would be correct rather
+    /// than premature.
+    ///
+    /// A `CreateMutexW` failure for any *other* reason (out of handles,
+    /// say) fails open — returns `true` — so a `RunConfig` opting into
+    /// this convenience never silently refuses to open a window over it;
+    /// it degrades to "act as the primary instance", not "don't start".
+    fn is_primary_instance(title: &str) -> bool {
+        let name = wide(&format!("Local\\quadraui-single-instance-{title}\0"));
+        match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
+            Ok(_handle) => (unsafe { GetLastError() }) != ERROR_ALREADY_EXISTS,
+            Err(_) => true,
+        }
+    }
+
+    /// Issue #957: called only once [`is_primary_instance`] has reported
+    /// another instance already holds the single-instance mutex. Finds
+    /// that instance's window — by [`CLASS_NAME`], which every `A:
+    /// AppLogic` shares regardless of which concrete type either process
+    /// was launched with, so this works even if the two launches somehow
+    /// used different `A`s — and forwards this process's own `argv` to
+    /// it via `WM_COPYDATA`, the same message [`wndproc`]'s `WM_COPYDATA`
+    /// arm decodes back into a `UiEvent::OpenRequested` on the receiving
+    /// end. `SendMessageW` (unlike `PostMessageW`) blocks until the
+    /// receiver has processed the message, so it's safe to let
+    /// `payload_wide`/`cds` drop right after this call returns.
+    ///
+    /// A `FindWindowW` failure (the mutex's owner exited in the narrow
+    /// window between creating it and this call reaching it) silently
+    /// does nothing further — there's no window left to forward to, and
+    /// this function's contract is "don't open a second window", not
+    /// "guarantee delivery".
+    fn forward_argv_to_existing_instance() {
+        let class_name = wide(CLASS_NAME);
+        let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) }) else {
+            return;
+        };
+        // `argv[0]` is this process's own executable path, not part of
+        // the open request — every other backend's argv-classification
+        // (see `classify_open_args`'s callers) skips it the same way.
+        let payload = std::env::args().skip(1).collect::<Vec<_>>().join("\n");
+        let payload_wide = wide(&format!("{payload}\0"));
+        let cds = COPYDATASTRUCT {
+            // Not inspected on the receiving end — `wndproc`'s
+            // `WM_COPYDATA` arm today only ever expects one payload
+            // shape (a `\n`-joined argv list), so there's nothing to
+            // discriminate against yet. Kept non-zero as a basic sanity
+            // tag for whoever adds a second `WM_COPYDATA` payload kind
+            // later.
+            dwData: 0x957,
+            cbData: (payload_wide.len() * size_of::<u16>()) as u32,
+            lpData: payload_wide.as_ptr() as *mut c_void,
+        };
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_COPYDATA,
+                Some(WPARAM(0)),
+                Some(LPARAM(std::ptr::addr_of!(cds) as isize)),
+            );
+            // Best-effort: the receiving instance is what the user
+            // actually wanted to see come forward. A failure here
+            // (e.g. the foreground-lock restrictions Windows applies to
+            // background processes) still leaves the `WM_COPYDATA`
+            // delivery itself intact.
+            let _ = SetForegroundWindow(hwnd);
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+    }
+
     pub(super) fn run<A: AppLogic + 'static>(
         app: A,
         config: super::RunConfig,
@@ -729,6 +856,16 @@ mod win32 {
         // active rather than aborting startup over it.
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+
+        // #957: checked *before* any window/backend/`A` setup below — if
+        // another instance already holds the single-instance mutex, this
+        // process's only job is to forward its own `argv` to that
+        // instance's window and get out of the way, never touching `app`
+        // (dropped unused) or opening a `WNDCLASSEXW` of its own.
+        if config.single_instance && !is_primary_instance(&config.title) {
+            forward_argv_to_existing_instance();
+            return std::process::ExitCode::SUCCESS;
         }
 
         match unsafe { run_inner(app, &config.title) } {
@@ -912,6 +1049,33 @@ mod win32 {
             if let Some(cfg) = &ws.smoke {
                 unsafe {
                     SetTimer(Some(hwnd), SMOKE_TIMER_ID, cfg.after_ms as u32, None);
+                }
+            }
+        }
+
+        // #957: dispatch `argv` (skipping `argv[0]`, the executable path
+        // itself) as an `OpenRequested` right away, unconditionally —
+        // independent of `RunConfig::single_instance`, which only gates
+        // *runtime* forwarding from a second launch. A document app
+        // registered as a file/URL handler is launched with the
+        // file/URL as a plain command-line argument the same way on its
+        // very first run as on every subsequent one, so this needs no
+        // opt-in.
+        {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if !args.is_empty() {
+                // SAFETY: same as the smoke-timer borrow just above.
+                let ws: &WindowState<A> = unsafe { &*state_ptr };
+                if dispatch(ws, hwnd, classify_open_args(args)) == Reaction::Exit {
+                    // Mirrors every other in-loop `Reaction::Exit`
+                    // handling (e.g. `WM_QUADRAUI_USER_EVENT` below):
+                    // `DestroyWindow` posts `WM_QUIT` via `WM_DESTROY`,
+                    // so the message loop below still runs, sees it
+                    // immediately, and exits cleanly instead of this
+                    // function skipping straight past it.
+                    unsafe {
+                        let _ = DestroyWindow(hwnd);
+                    }
                 }
             }
         }
@@ -1640,6 +1804,51 @@ mod win32 {
                 }
                 LRESULT(0)
             }
+            WM_COPYDATA => {
+                // Issue #957: arrives from `forward_argv_to_existing_instance`
+                // (this same module) — a second launch of this app, with
+                // `RunConfig::single_instance` on, detected this instance
+                // already holds the single-instance mutex and forwarded
+                // its own `argv` here instead of opening a second window.
+                //
+                // SAFETY: `WM_COPYDATA`'s contract guarantees `lparam` is
+                // a valid `*const COPYDATASTRUCT` for the duration of
+                // this call — `SendMessageW` (unlike `PostMessageW`)
+                // blocks the sender until this handler returns, so the
+                // buffer it points into can't be freed out from under us
+                // mid-decode.
+                let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+                let code_units = cds.cbData as usize / size_of::<u16>();
+                // SAFETY: `cds.lpData`/`cds.cbData` describe the same
+                // live buffer `cds` itself points into, per the same
+                // `WM_COPYDATA` contract above.
+                let units =
+                    unsafe { std::slice::from_raw_parts(cds.lpData.cast::<u16>(), code_units) };
+                let payload = String::from_utf16_lossy(units);
+                let args: Vec<String> = payload
+                    .trim_end_matches('\0')
+                    .split('\n')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                // A bare relaunch with no `argv` (the user just wants
+                // the existing window brought forward) forwards an empty
+                // payload — don't bother the app with a no-op
+                // `OpenRequested { urls: [], files: [] }` for that case.
+                if !args.is_empty() {
+                    dispatch(ws, hwnd, classify_open_args(args));
+                }
+                // The whole point of forwarding rather than silently
+                // dropping a second launch: the user should see *this*
+                // window respond, not wonder why nothing happened.
+                unsafe {
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                // Win32 convention: a `WM_COPYDATA` receiver returns
+                // nonzero (`TRUE`) to report the message was handled.
+                LRESULT(1)
+            }
             WM_CLOSE => {
                 // Reached both from the title bar's close button and
                 // (since #743) from Alt+F4: `WM_SYSKEYDOWN`'s arm above
@@ -1717,6 +1926,10 @@ mod tests {
     fn new_sets_the_title() {
         let config = RunConfig::new("kubeui");
         assert_eq!(config.title, "kubeui");
+        assert!(
+            !config.single_instance,
+            "single-instance forwarding defaults off — see RunConfig::single_instance's doc"
+        );
     }
 
     #[test]
@@ -1732,6 +1945,15 @@ mod tests {
         // so `run(app)` staying `run_with(app, RunConfig::default())`
         // (see both functions above) doesn't change existing behaviour.
         assert_eq!(RunConfig::default().title, "quadraui");
+        assert!(!RunConfig::default().single_instance);
+    }
+
+    /// #957: `with_single_instance(true)` is how an app opts into
+    /// `CreateMutexW` + `WM_COPYDATA` single-instance forwarding.
+    #[test]
+    fn with_single_instance_overrides_the_default() {
+        let config = RunConfig::new("kubeui").with_single_instance(true);
+        assert!(config.single_instance);
     }
 
     /// Reproduces the exact hazard `win32::dispatch`'s doc comment used

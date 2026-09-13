@@ -279,6 +279,18 @@ windows = { version = "0.62", optional = true, features = [
     # crate's `Win32/UI/mod.rs`) — `TaskDialogIndirect` itself is also
     # gated on `Win32_UI_WindowsAndMessaging`, already present above.
     "Win32_UI_Controls",
+    # `CreateMutexW` (issue #957): `win::RunConfig::single_instance`'s
+    # single-instance guard, checked before opening a window. `WM_COPYDATA`
+    # itself, its `COPYDATASTRUCT` payload struct, and the `FindWindowW`/
+    # `SendMessageW`/`SetForegroundWindow` calls that forward `argv` to an
+    # already-running instance's window are all already covered by
+    # `Win32_System_DataExchange`/`Win32_UI_WindowsAndMessaging` above.
+    "Win32_System_Threading",
+    # `CreateMutexW` itself is gated on this feature inside the `windows`
+    # crate (its `lpmutexattributes: Option<*const SECURITY_ATTRIBUTES>`
+    # parameter type lives here) even though this crate always passes
+    # `None` for it — no actual `SECURITY_ATTRIBUTES` value is ever built.
+    "Win32_Security",
 ] }
 # `windows_numerics::Vector2` — the point type `ID2D1RenderTarget::DrawLine`/
 # `DrawEllipse`'s `D2D1_ELLIPSE` take (issue #26's chart line paths and hover

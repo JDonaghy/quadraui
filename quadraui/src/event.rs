@@ -35,6 +35,7 @@
 //! | `ClipboardPaste` | Focus |
 //! | `TextCopied` | Broadcast (no target) |
 //! | `FocusChanged` | Broadcast — names the new focus, if any |
+//! | `OpenRequested` | Broadcast (no target) |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -531,6 +532,74 @@ pub enum UiEvent {
     },
     ClipboardPaste(String),
 
+    // ── Deep links / file associations / single-instance forwarding ────
+    /// The OS asked this app to open one or more URLs and/or files —
+    /// issue #957. Emitted in two situations that apps handle identically:
+    ///
+    /// 1. **At startup**, decoded from `argv` (a `myapp://...` URL or a
+    ///    document path the OS launched the process with — "open with",
+    ///    a registered URL scheme handler, an OAuth callback redirect).
+    /// 2. **At runtime**, when [`RunConfig::single_instance`] is enabled
+    ///    (GTK: `gtk::RunConfig`; Win: `win::RunConfig` — see each
+    ///    backend's doc for its forwarding mechanism) and a second launch
+    ///    of the same app hands its request to the already-running
+    ///    instance instead of starting a new process.
+    ///
+    /// `urls` and `files` are populated independently — a single launch
+    /// can carry either, both, or (rarely) neither. Deliberately `String`
+    /// rather than a parsed URL type: every value here is copied verbatim
+    /// from whatever the OS handed the process (`argv`, a `gio::File`
+    /// URI, an `NSURL` string, or a `WM_COPYDATA` payload) with no
+    /// validation, and quadraui takes no dependency on a URL-parsing
+    /// crate just to pass this value through unmodified — an app that
+    /// wants real scheme/host/query parsing pulls in `url` (or similar)
+    /// itself. `files` uses `PathBuf` — same convention as
+    /// [`Self::FilesDropped`].
+    ///
+    /// **Registering as the OS handler for a scheme or extension is a
+    /// packaging concern** (`Info.plist`'s `CFBundleURLTypes`, a
+    /// `.desktop` file's `MimeType=`, an `HKCU\Software\Classes` registry
+    /// key) — quadraui does not do this for you. This variant only
+    /// covers the runtime half: receiving the event once the OS has
+    /// already routed it here.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`] — there is no
+    /// widget to hit-test or focus to route through.
+    ///
+    /// ## Backend coverage
+    ///
+    /// - **GTK** (`gtk::run`) — `ApplicationFlags::HANDLES_OPEN` +
+    ///   `Application::connect_open`, covering both argv-at-launch and
+    ///   runtime single-instance forwarding (free once `HANDLES_OPEN` +
+    ///   a stable `app_id` are set — GLib does the D-Bus forwarding).
+    /// - **Win** (`win::run`) — argv is classified and dispatched once at
+    ///   startup unconditionally; `RunConfig::single_instance` additionally
+    ///   arms a `CreateMutexW` guard + `WM_COPYDATA` forwarding to the
+    ///   primary window's `HWND`.
+    /// - **macOS** (`macos::run`) — `application:openURLs:` /
+    ///   `application:openFiles:` delegate methods. No single-instance
+    ///   forwarding: Launch Services already reactivates the running
+    ///   instance for a bundled `.app` and redelivers through the same
+    ///   delegate methods, so there is no separate mechanism for
+    ///   quadraui to opt into here. **Not yet wired**: a raw
+    ///   `NSAppleEventManager`/`kAEGetURL` handler for the narrow race
+    ///   where a URL arrives before AppKit has finished enough of launch
+    ///   to deliver the delegate callback — needs the `objc2-core-services`
+    ///   crate (for `AEEventClass`/`AEEventID`), which wasn't added in
+    ///   the issue #957 pass that landed the two delegate methods above
+    ///   (no macOS host was available to build/verify it against — see
+    ///   `application_open_urls`'s doc comment in `macos/run.rs`).
+    ///   Tracked as a follow-up.
+    /// - **TUI** — not wired by issue #957 (`quadraui/src/tui/run.rs`
+    ///   wasn't in that issue's file scope). A terminal process has no
+    ///   OS window to forward a second launch's request to, so only the
+    ///   argv-at-launch half would ever apply there; left for a follow-up
+    ///   issue rather than bundled in here.
+    OpenRequested {
+        urls: Vec<String>,
+        files: Vec<PathBuf>,
+    },
+
     // ── Clipboard copy notification ────────────────────────────────
     /// Text was copied to the clipboard by the TUI runner's built-in
     /// text-selection mechanism (click-drag → Ctrl-C). The payload is
@@ -785,6 +854,35 @@ pub fn files_dropped(paths: Vec<PathBuf>, x: f32, y: f32) -> UiEvent {
     }
 }
 
+/// Build a [`UiEvent::OpenRequested`] (issue #957) by classifying a flat
+/// list of raw OS-provided strings — `argv`, or a decoded
+/// `WM_COPYDATA`/single-instance-forwarding payload — into the variant's
+/// `urls`/`files` buckets.
+///
+/// A string containing `"://"` is treated as a URL (`myapp://callback`,
+/// `https://example.com/...`); everything else is treated as a
+/// filesystem path. This is the same heuristic a shell already applies
+/// when it decides whether to hand a bare command-line argument to a
+/// URL-scheme handler or open it as a file.
+///
+/// Not every backend needs this: GTK's `gio::File` arrives
+/// pre-classified (`File::path()` vs `File::uri()`) and macOS's Launch
+/// Services delegate methods are already split into
+/// `application:openURLs:` / `application:openFiles:`, so only Win's
+/// plain-string `argv` and `WM_COPYDATA` payload actually call this.
+pub fn classify_open_args(args: impl IntoIterator<Item = String>) -> UiEvent {
+    let mut urls = Vec::new();
+    let mut files = Vec::new();
+    for arg in args {
+        if arg.contains("://") {
+            urls.push(arg);
+        } else {
+            files.push(PathBuf::from(arg));
+        }
+    }
+    UiEvent::OpenRequested { urls, files }
+}
+
 #[cfg(test)]
 mod user_payload_tests {
     use super::*;
@@ -953,6 +1051,41 @@ mod shared_constructor_tests {
             ev,
             UiEvent::WindowResized {
                 viewport: Viewport::new(1920.0, 1080.0, 2.0),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_open_args_splits_urls_from_files() {
+        let ev = classify_open_args(vec![
+            "myapp://callback?code=abc".to_string(),
+            "/home/user/report.pdf".to_string(),
+            "https://example.com/oauth".to_string(),
+            "relative/path.txt".to_string(),
+        ]);
+        assert_eq!(
+            ev,
+            UiEvent::OpenRequested {
+                urls: vec![
+                    "myapp://callback?code=abc".to_string(),
+                    "https://example.com/oauth".to_string(),
+                ],
+                files: vec![
+                    PathBuf::from("/home/user/report.pdf"),
+                    PathBuf::from("relative/path.txt"),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn classify_open_args_handles_empty_input() {
+        let ev = classify_open_args(Vec::<String>::new());
+        assert_eq!(
+            ev,
+            UiEvent::OpenRequested {
+                urls: vec![],
+                files: vec![],
             }
         );
     }
