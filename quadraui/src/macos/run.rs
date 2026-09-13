@@ -34,6 +34,16 @@
 //!   run the exact `UiEvent::WindowClose` veto decision
 //!   `QuadraView::windowShouldClose:` runs for the traffic-light button —
 //!   see that method's doc.
+//!
+//!   These two hooks are **not** disjoint paths: closing the app's one
+//!   window via the traffic light also ends up inside
+//!   `applicationShouldTerminate:`, because
+//!   `applicationShouldTerminateAfterLastWindowClosed: → true` carries a
+//!   last-window close straight into AppKit's ordinary termination
+//!   sequence. A shared `Rc<Cell<bool>>` (`window_close_resolved`,
+//!   constructed once in [`run_with`] alongside `handle` itself) stops
+//!   that from re-dispatching `UiEvent::WindowClose` twice for one user
+//!   action — see [`QuadraAppDelegate::evaluate_should_terminate`]'s doc.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -428,6 +438,17 @@ pub(crate) struct QuadraViewIvars {
     /// `WM_SIZE`/`WM_TIMER` arms) and GTK's cancel-and-reschedule
     /// `glib::SourceId`.
     resize_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// One-shot double-dispatch guard (issue #951 review fix) — shared
+    /// with [`QuadraAppDelegateIvars::window_close_resolved`] via the same
+    /// `Rc` (constructed once in [`run_with`]). Set by
+    /// [`QuadraView::evaluate_window_should_close`] the moment it resolves
+    /// a close to `Reaction::Exit`; checked by
+    /// [`QuadraAppDelegate::evaluate_should_terminate`] so AppKit's own
+    /// last-window-closed → `applicationShouldTerminate:` follow-up
+    /// doesn't re-dispatch `UiEvent::WindowClose` a second time for one
+    /// user action. See [`QuadraView::evaluate_window_should_close`]'s doc
+    /// for the full sequence this prevents.
+    window_close_resolved: Rc<Cell<bool>>,
 }
 
 define_class!(
@@ -873,6 +894,12 @@ define_class!(
     // (now `Rc`-shared, see `HandleFn`'s doc) every mouse/key/scroll
     // responder above dispatches through — a real `AppLogic::handle`
     // call, not a synthetic stand-in.
+    //
+    // When this is the app's last open window, returning `true` here
+    // does not end the story: AppKit carries the close straight into
+    // `applicationShouldTerminate:` next (see this file's module doc and
+    // `QuadraAppDelegate::evaluate_should_terminate`'s doc for the
+    // one-shot guard that stops that from re-dispatching `WindowClose`).
     unsafe impl NSWindowDelegate for QuadraView {
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _sender: &NSWindow) -> bool {
@@ -888,6 +915,7 @@ impl QuadraView {
         paint: PaintFn,
         handle: HandleFn,
         tick: TickFn,
+        window_close_resolved: Rc<Cell<bool>>,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(QuadraViewIvars {
@@ -898,6 +926,7 @@ impl QuadraView {
             tick,
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
             resize_timer: RefCell::new(None),
+            window_close_resolved,
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1060,6 +1089,28 @@ impl QuadraView {
     /// means "veto" for this method — closing the window anyway after
     /// `handle` panicked would silently skip the very unsaved-changes
     /// guard this issue exists to make reliable.
+    ///
+    /// # One-shot guard against a second dispatch (issue #951 review fix)
+    ///
+    /// When this returns `true` and this is the app's last open window,
+    /// AppKit doesn't stop here — `applicationShouldTerminateAfterLastWindowClosed:`
+    /// (unconditionally `true`, see [`QuadraAppDelegate::should_terminate_after_last_window`])
+    /// carries the close straight into its ordinary termination sequence,
+    /// which calls `applicationShouldTerminate:` on the very same app
+    /// delegate before the process actually exits. Left alone, that would
+    /// dispatch `UiEvent::WindowClose` to `app.handle` a *second* time for
+    /// what the user experienced as one action — showing a synchronous
+    /// unsaved-changes dialog twice, or worse, answering
+    /// `NSApplicationTerminateReply::TerminateCancel` after the window has
+    /// already visually closed if the handler's second answer differs
+    /// from its first. Setting `window_close_resolved` here, the moment
+    /// this method itself resolves the close to `Reaction::Exit`, lets
+    /// [`QuadraAppDelegate::evaluate_should_terminate`] recognise that
+    /// this exact close was already fully decided moments earlier in the
+    /// same call chain and skip re-dispatching entirely. A veto (`false`)
+    /// never sets the flag: the window stays open, so no last-window
+    /// termination sequence follows, and a *later*, independent Cmd-Q
+    /// must still get its own fresh dispatch.
     fn evaluate_window_should_close(&self) -> bool {
         let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.ivars().handle)(UiEvent::WindowClose)
@@ -1081,6 +1132,10 @@ impl QuadraView {
         // must NOT go through `apply_reaction`'s `request_exit` path (see
         // this method's doc for the re-entrancy hazard that would cause).
         if window_should_close_for_reaction(reaction) {
+            // See "One-shot guard" above: mark this close resolved before
+            // AppKit's last-window-close path can reach
+            // `applicationShouldTerminate:` and ask again.
+            self.ivars().window_close_resolved.set(true);
             true
         } else {
             self.apply_reaction(reaction);
@@ -1144,12 +1199,18 @@ impl ReactionSink for QuadraView {
     }
 }
 
-/// `QuadraAppDelegate`'s ivars — just the shared `handle` closure (issue
-/// #951), so `applicationShouldTerminate:` can run the exact same
+/// `QuadraAppDelegate`'s ivars — the shared `handle` closure (issue #951),
+/// so `applicationShouldTerminate:` can run the exact same
 /// `UiEvent::WindowClose` veto decision `QuadraView::windowShouldClose:`
 /// runs. See [`HandleFn`]'s doc for why this is an `Rc`, not a `Box`.
 pub(crate) struct QuadraAppDelegateIvars {
     handle: HandleFn,
+    /// The other half of [`QuadraViewIvars::window_close_resolved`] — same
+    /// `Rc<Cell<bool>>`, shared so this delegate can tell whether the
+    /// single open window's own `windowShouldClose:` already resolved
+    /// this exact close moments earlier in the same call chain. See
+    /// [`QuadraAppDelegate::evaluate_should_terminate`]'s doc.
+    window_close_resolved: Rc<Cell<bool>>,
 }
 
 define_class!(
@@ -1172,11 +1233,12 @@ define_class!(
             true
         }
 
-        // ── Cmd-Q / menu Quit (issue #951) ───────────────────────────
+        // ── Cmd-Q / menu Quit, and the last-window-closed follow-up
+        //    (issue #951) ────────────────────────────────────────────
         //
         // `[NSApp terminate:]` — which Cmd-Q and the auto-prepended app
-        // menu's Quit item both send — asks the delegate this one
-        // question and, absent an override, defaults to
+        // menu's Quit item both send directly — asks the delegate this
+        // one question and, absent an override, defaults to
         // `NSTerminateNow`: it does NOT walk open windows and ask each
         // one `windowShouldClose:` the way an ordinary window-manager
         // close does. Left unhandled, an app's unsaved-changes guard
@@ -1184,6 +1246,15 @@ define_class!(
         // traffic-light button but not for Cmd-Q — exactly the second
         // hole this issue's brief calls out. Dispatching the same event
         // here and vetoing on anything but `Reaction::Exit` closes it.
+        //
+        // This method is *also* reached the other way around: closing
+        // the app's last window via the traffic light returns `true`
+        // from `windowShouldClose:`, and because
+        // `should_terminate_after_last_window` below is unconditionally
+        // `true`, AppKit carries that straight into its normal
+        // termination sequence, landing right back here. See
+        // `evaluate_should_terminate`'s doc for the one-shot guard that
+        // stops that from asking the app twice.
         #[unsafe(method(applicationShouldTerminate:))]
         fn should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
             self.evaluate_should_terminate()
@@ -1192,15 +1263,38 @@ define_class!(
 );
 
 impl QuadraAppDelegate {
-    fn new(mtm: MainThreadMarker, handle: HandleFn) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        handle: HandleFn,
+        window_close_resolved: Rc<Cell<bool>>,
+    ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(QuadraAppDelegateIvars { handle });
+        let this = this.set_ivars(QuadraAppDelegateIvars {
+            handle,
+            window_close_resolved,
+        });
         unsafe { msg_send![super(this), init] }
     }
 
     /// Backing logic for `applicationShouldTerminate:` — see that
     /// method's doc for why Cmd-Q needs its own hook at all rather than
-    /// relying on `QuadraView::windowShouldClose:`.
+    /// relying on `QuadraView::windowShouldClose:`, and for the second
+    /// path (last-window-closed) that also reaches this method.
+    ///
+    /// # One-shot guard against a second dispatch (issue #951 review fix)
+    ///
+    /// Checks [`QuadraAppDelegateIvars::window_close_resolved`] first: if
+    /// it's already set, [`QuadraView::evaluate_window_should_close`]
+    /// resolved this exact close to `Reaction::Exit` moments earlier in
+    /// the same call chain (the traffic-light-closes-the-last-window
+    /// path — see that method's doc), and re-running `app.handle` here
+    /// would dispatch `UiEvent::WindowClose` a second time for what the
+    /// user experienced as one action. In that case this method skips
+    /// `app.handle` entirely and answers `TerminateNow` directly — the
+    /// close was already fully decided. A standalone Cmd-Q/menu-Quit
+    /// request is never preceded by `windowShouldClose:` (see
+    /// `should_terminate`'s doc), so the flag is still unset when this
+    /// runs for that gesture, and it dispatches fresh exactly as before.
     ///
     /// # Panic safety (#922)
     ///
@@ -1210,7 +1304,29 @@ impl QuadraAppDelegate {
     /// answers `TerminateCancel` — same "veto, don't lose work" fallback
     /// [`QuadraView::evaluate_window_should_close`] uses for the
     /// identical case.
+    ///
+    /// # Known asymmetry: non-`Exit` side effects (review non-blocker)
+    ///
+    /// For a *fresh* dispatch (the guard above didn't short-circuit — a
+    /// standalone Cmd-Q/menu-Quit, unrelated to any window close), this
+    /// method only ever returns [`terminate_reply_for_reaction`]'s verdict
+    /// and never calls [`QuadraView::apply_reaction`]: unlike
+    /// `evaluate_window_should_close`, this delegate has no view reference
+    /// to call it on. So a `Reaction::Redraw`/`RedrawAfter` returned from a
+    /// `WindowClose` handler is honoured (`setNeedsDisplay`/timer
+    /// scheduling) when the veto came from the traffic light, but not when
+    /// it came from Cmd-Q. This is unrelated to the double-dispatch guard
+    /// above (the guarded path never calls `app.handle` a second time at
+    /// all, so it has no side effects to apply either way) — it's a
+    /// pre-existing, independent gap for the *first* dispatch of a
+    /// standalone Cmd-Q, considered low-risk (most `WindowClose` handlers
+    /// only care about `Exit` vs. not) and left as a documented follow-up
+    /// rather than plumbing a `QuadraView` reference into the delegate for
+    /// this one case.
     fn evaluate_should_terminate(&self) -> NSApplicationTerminateReply {
+        if should_skip_terminate_dispatch(&self.ivars().window_close_resolved) {
+            return NSApplicationTerminateReply::TerminateNow;
+        }
         let reaction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.ivars().handle)(UiEvent::WindowClose)
         })) {
@@ -1255,6 +1371,20 @@ fn terminate_reply_for_reaction(reaction: Reaction) -> NSApplicationTerminateRep
     } else {
         NSApplicationTerminateReply::TerminateCancel
     }
+}
+
+/// The one-shot double-dispatch guard [`QuadraAppDelegate::evaluate_should_terminate`]
+/// applies (issue #951 review fix), pulled out as a pure function for the
+/// same reason as [`window_should_close_for_reaction`]: `already_resolved`
+/// is the current value of the `window_close_resolved` flag shared with
+/// [`QuadraView::evaluate_window_should_close`], `true` exactly when that
+/// method already resolved this exact close to `Reaction::Exit` earlier in
+/// the same call chain (the traffic-light-closes-the-last-window path).
+/// When `true`, `evaluate_should_terminate` must skip re-dispatching
+/// `UiEvent::WindowClose` and answer `TerminateNow` directly instead —
+/// see that method's doc for the full sequence this prevents.
+fn should_skip_terminate_dispatch(already_resolved: &Cell<bool>) -> bool {
+    already_resolved.get()
 }
 
 /// Configuration for [`run_with`]: the window title [`run`] hardcodes to
@@ -1490,7 +1620,14 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     // through any window's `windowShouldClose:`) — `handle` is `Rc`-
     // shared for exactly this, see `HandleFn`'s doc. Cloned here, before
     // `QuadraView::new` below moves the original into the view's ivars.
-    let delegate = QuadraAppDelegate::new(mtm, handle.clone());
+    //
+    // `window_close_resolved` is the one-shot double-dispatch guard (issue
+    // #951 review fix, see `QuadraView::evaluate_window_should_close`'s
+    // and `QuadraAppDelegate::evaluate_should_terminate`'s docs) — shared
+    // the same way, cloned into the delegate here and moved into the view
+    // below.
+    let window_close_resolved = Rc::new(Cell::new(false));
+    let delegate = QuadraAppDelegate::new(mtm, handle.clone(), window_close_resolved.clone());
     let delegate_proto = ProtocolObject::from_ref(&*delegate);
     ns_app.setDelegate(Some(delegate_proto));
 
@@ -1526,7 +1663,14 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     // opt into a CSD titlebar).
     backend.borrow_mut().set_window(window.clone());
 
-    let view = QuadraView::new(mtm, backend.clone(), paint, handle, tick);
+    let view = QuadraView::new(
+        mtm,
+        backend.clone(),
+        paint,
+        handle,
+        tick,
+        window_close_resolved,
+    );
     window.setContentView(Some(&view));
     window.setAcceptsMouseMovedEvents(true);
     window.makeFirstResponder(Some(view.as_super()));
@@ -1753,7 +1897,7 @@ mod run_config_tests {
 
 /// Coverage for issue #951 — macOS never emitted `UiEvent::WindowClose`,
 /// so an app's unsaved-changes guard (written against D-010's "required
-/// on every windowed backend" contract) silently never ran. Two axes:
+/// on every windowed backend" contract) silently never ran. Three axes:
 ///
 /// - [`window_should_close_for_reaction`] / [`terminate_reply_for_reaction`]
 ///   are the actual veto *decision* `windowShouldClose:` /
@@ -1769,6 +1913,13 @@ mod run_config_tests {
 ///   proving the event reaches `app.handle` unrewritten and unswallowed
 ///   before either live entry point's veto logic ever runs — mirrors
 ///   `gtk::run`'s `#2244` `WindowClose` dispatch coverage almost exactly.
+/// - [`should_skip_terminate_dispatch`] is the one-shot double-dispatch
+///   guard added in review (a traffic-light close of the app's last
+///   window also reaches `applicationShouldTerminate:` — see this file's
+///   module doc), pulled out the same way so the flag's set/check
+///   protocol has unit coverage without needing the live two-hook AppKit
+///   interaction that motivated it, which — like the two decisions
+///   above — can't be exercised outside a real host.
 #[cfg(test)]
 mod window_close_tests {
     use super::*;
@@ -1881,6 +2032,69 @@ mod window_close_tests {
         let mut app = RecordingApp::new(Reaction::Exit);
         let outcome = dispatch(UiEvent::WindowClose, &mut backend, &mut app);
         assert_eq!(outcome, EventOutcome::Exit);
+    }
+
+    /// Coverage for the review-fix double-dispatch guard: once
+    /// `windowShouldClose:` (`evaluate_window_should_close`) has resolved
+    /// a close to `Reaction::Exit`, the flag it sets must tell
+    /// `applicationShouldTerminate:` (`evaluate_should_terminate`) to skip
+    /// re-dispatching `UiEvent::WindowClose` for the AppKit-initiated
+    /// last-window-closed follow-up — see `should_skip_terminate_dispatch`'s
+    /// doc for the exact sequence this models.
+    #[test]
+    fn resolved_window_close_tells_terminate_to_skip_a_second_dispatch() {
+        let flag = Cell::new(false);
+        assert!(
+            !should_skip_terminate_dispatch(&flag),
+            "a fresh app lifetime must not start with the flag already set"
+        );
+
+        // Mirrors `evaluate_window_should_close`'s own body: only a
+        // reaction that permits the close (`Reaction::Exit`) sets the
+        // flag.
+        if window_should_close_for_reaction(Reaction::Exit) {
+            flag.set(true);
+        }
+
+        assert!(
+            should_skip_terminate_dispatch(&flag),
+            "applicationShouldTerminate: must skip re-dispatching once \
+             windowShouldClose: already resolved this close to Exit"
+        );
+    }
+
+    /// The inverse: a veto (anything but `Reaction::Exit`) must never set
+    /// the flag, because the window stays open — there is no last-window
+    /// termination follow-up to guard against, and a later, independent
+    /// Cmd-Q must still get its own fresh `UiEvent::WindowClose` dispatch.
+    #[test]
+    fn vetoed_window_close_leaves_terminate_dispatching_fresh() {
+        let flag = Cell::new(false);
+        for reaction in [
+            Reaction::Continue,
+            Reaction::Redraw,
+            Reaction::RedrawAfter(std::time::Duration::from_millis(50)),
+        ] {
+            if window_should_close_for_reaction(reaction) {
+                flag.set(true);
+            }
+        }
+        assert!(
+            !should_skip_terminate_dispatch(&flag),
+            "a vetoed windowShouldClose: must not suppress a later, \
+             independent applicationShouldTerminate: dispatch"
+        );
+    }
+
+    /// A standalone Cmd-Q / menu-Quit request is never preceded by
+    /// `windowShouldClose:` at all (see `should_terminate`'s doc), so the
+    /// flag starts (and stays) unset until the app closes some window —
+    /// `evaluate_should_terminate` must dispatch fresh in that case, not
+    /// skip.
+    #[test]
+    fn cmd_q_with_no_prior_window_close_dispatches_fresh() {
+        let flag = Cell::new(false);
+        assert!(!should_skip_terminate_dispatch(&flag));
     }
 }
 
