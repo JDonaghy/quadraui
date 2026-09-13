@@ -43,7 +43,7 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSCursor, NSEvent, NSWindow};
+use objc2_app_kit::{NSCursor, NSEvent, NSWindow, NSWindowButton};
 use objc2_foundation::MainThreadMarker;
 
 use crate::accelerator::{key_to_binding_name, parse_binding};
@@ -1319,6 +1319,67 @@ impl Backend for MacBackend {
         // inside the live AppKit run loop.
         mac_cursor_for_shape(shape).set();
         true
+    }
+
+    /// #947: reports the region AppKit's native traffic-light controls
+    /// (close/minimize/zoom) occupy, in `QuadraView`'s own top-left-origin,
+    /// y-down coordinate space — the same space every other `Rect` this
+    /// trait hands back (and receives, e.g. `draw_focus_ring`) already
+    /// uses, since `QuadraView` sets `isFlipped = YES` (see
+    /// `macos::headless`'s module doc for the same convention on the
+    /// headless bitmap path).
+    ///
+    /// Derives the inset from
+    /// `standardWindowButton(NSWindowButton::CloseButton)`'s immediate
+    /// superview — AppKit's own private container view for the
+    /// three-button cluster, already sized to exactly their combined
+    /// bounding box — rather than unioning three individual button
+    /// frames or hardcoding the ~78pt Apple's HIG happens to use today.
+    /// That spacing is not an API contract: it moves with accessibility
+    /// settings (`Increase contrast`, larger click targets) and could
+    /// change in a future macOS release, so reading AppKit's own layout
+    /// is the only way this stays correct without needing to be
+    /// revisited by hand.
+    ///
+    /// Returns `Rect::default()` — same as the trait default — when no
+    /// window is set yet (`self.window` stays `None` until
+    /// `macos::run::run_with` calls [`Self::set_window`]) or AppKit
+    /// hands back no button/container, e.g. a borderless style mask with
+    /// no `Titled` bit. Never called before `client_side_titlebar` was
+    /// set at window-creation time in practice, but safe to call any
+    /// time regardless.
+    fn titlebar_control_inset(&self) -> Rect {
+        let Some(window) = self.window.as_ref() else {
+            return Rect::default();
+        };
+        let Some(close_button) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+            return Rect::default();
+        };
+        // SAFETY: `superview` is safe to call on any live `NSView` on the
+        // main thread — `close_button` is a retained, currently-installed
+        // subview of the window's titlebar, so it always has one.
+        let Some(container) = (unsafe { close_button.superview() }) else {
+            return Rect::default();
+        };
+        // `convertRect_toView(_, None)` reaches the window's base
+        // coordinate system (bottom-left origin) directly, regardless of
+        // how deep `container` sits in AppKit's private titlebar view
+        // hierarchy — more robust than assuming `container.frame()` is
+        // already in window coordinates.
+        let in_window = container.convertRect_toView(container.bounds(), None);
+        let content_height = window
+            .contentView()
+            .map(|view| view.frame().size.height)
+            .unwrap_or_else(|| window.frame().size.height);
+        // Flip AppKit's bottom-left-origin button frame into
+        // `QuadraView`'s top-left-origin, y-down space.
+        let bottom_from_top = (content_height - in_window.origin.y).max(0.0);
+        Rect::new(
+            0.0,
+            0.0,
+            (in_window.origin.x + in_window.size.width) as f32,
+            bottom_from_top as f32,
+        )
     }
 
     fn line_height(&self) -> f32 {
@@ -3742,6 +3803,19 @@ mod tests {
             &mut b,
             PointerShape::Resize(ResizeEdge::North)
         ));
+    }
+
+    /// #947: same no-window guard as the three tests above —
+    /// `titlebar_control_inset` must short-circuit to the trait's own
+    /// `Rect::default()` before touching `standardWindowButton` at all.
+    /// The live-window case (non-empty inset matching AppKit's actual
+    /// traffic-light layout) can't be constructed headlessly in this test
+    /// binary either, same rationale as `begin_window_drag`'s sibling
+    /// comment above — covered by the operator-run smoke tier instead.
+    #[test]
+    fn titlebar_control_inset_default_without_window() {
+        let b = MacBackend::new();
+        assert_eq!(Backend::titlebar_control_inset(&b), Rect::default());
     }
 
     /// Regression test for the blocking review finding on this PR: the

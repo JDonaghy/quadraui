@@ -1161,6 +1161,36 @@ pub trait Backend: sealed::Sealed {
         false
     }
 
+    /// Inset at the leading edge of the title-bar band
+    /// ([`crate::compose::app_shell::AppShellLayout::title_bar_bounds`])
+    /// occupied by backend-drawn window controls, in the same native
+    /// units every other `Rect` this trait returns uses. `Rect::default()`
+    /// (the default, and the only value on every backend before #947)
+    /// means the backend draws no controls of its own into the band —
+    /// either because it has no window concept (TUI) or because it only
+    /// draws controls when [`crate::shell::ShellConfig::client_side_titlebar`]
+    /// is set (GTK/Win-GUI, whose controls sit on the *trailing* edge —
+    /// callers that need "leading" vs "trailing" placement branch on the
+    /// backend, this method only reports how much room to leave).
+    ///
+    /// macOS is the one case where a non-empty inset does **not** imply
+    /// the app must paint its own controls — quite the opposite: a
+    /// non-empty return there means AppKit's native traffic lights
+    /// (close/minimize/zoom) are floating over that region and the app
+    /// must paint nothing underneath, not that it owns drawing them (see
+    /// [`crate::shell::ShellConfig::client_side_titlebar`]'s doc for why
+    /// macOS keeps them native rather than app-drawn).
+    ///
+    /// Defaulted, not required (`PRIMITIVE_RULES.md` rule 7): unlike
+    /// [`Self::draw_focus_ring`], a backend that doesn't override this
+    /// yet is indistinguishable from one that correctly draws no window
+    /// controls, so there is no portability hazard in leaving it
+    /// no-op — only a backend that actually reserves native chrome space
+    /// (macOS) needs to override it.
+    fn titlebar_control_inset(&self) -> Rect {
+        Rect::default()
+    }
+
     // ─── Modal-overlay tracking ────────────────────────────────────────
     /// Shared handle to the backend's modal stack, usable across
     /// unrelated `&mut dyn Backend` (or `&dyn Backend`) borrows. Apps
