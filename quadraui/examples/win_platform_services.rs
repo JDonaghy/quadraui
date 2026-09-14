@@ -110,11 +110,9 @@ impl AppLogic for PlatformServicesDemo {
                 key: Key::Char('n'),
                 ..
             } => {
-                backend.services().send_notification(Notification {
-                    title: "quadraui".to_string(),
-                    body: "#23 platform services demo".to_string(),
-                    urgent: false,
-                });
+                backend
+                    .services()
+                    .send_notification(Notification::new("quadraui", "#23 platform services demo"));
                 eprintln!("notification fired — check the notification area");
                 Reaction::Continue
             }

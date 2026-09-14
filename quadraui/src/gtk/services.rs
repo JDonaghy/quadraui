@@ -7,8 +7,43 @@
 //! has been deprecated since GTK 4.10, and the fleet is on 4.14.5 — both
 //! behind the same nested-mainloop adapter (see [`pump_until_ready`]) so
 //! the trait's synchronous signatures can be honored even though GTK4
-//! only exposes async dialog APIs (#427). Notifications remain stubbed
-//! pending an async-aware trait shape.
+//! only exposes async dialog APIs (#427).
+//!
+//! ## Notifications (issue #955)
+//!
+//! `send_notification` is a real `gio::Notification` sent through the
+//! `gtk4::Application` the window belongs to
+//! (`GtkWindowExt::application`) — no async trait shape was needed after
+//! all; `gio::Application::send_notification` is itself synchronous
+//! (fire-and-forget, like every other `PlatformServices` method). This
+//! is the one backend [`crate::backend::BackendCaps::notifications`]
+//! reports `true` for — see that field's own doc and
+//! `compose::notification::notify_or_toast` for how a caller that wants
+//! to work on every backend degrades on the other three.
+//!
+//! Action buttons and the notification body itself route back through a
+//! single app-scoped `GAction` (`app.quadraui-notification-activated`,
+//! [`NOTIFICATION_ACTION_ID`]), registered once per `Application` by
+//! [`GtkPlatformServices::ensure_notification_action`] and never
+//! per-notification — which `Notification`/action a given activation
+//! belongs to travels in the `GAction`'s own `(ss)` target `Variant`
+//! ([`notification_target`]/[`decode_notification_target`]), not in the
+//! action's identity. The activation handler decodes that target and
+//! pushes [`crate::UiEvent::NotificationActivated`] onto the same shared
+//! event queue [`crate::gtk::backend::GtkBackend::poll_events`] drains —
+//! wired via [`GtkPlatformServices::set_events_handle`], called once from
+//! [`crate::gtk::backend::GtkBackend::new`] right after both the queue
+//! and the services exist, mirroring [`GtkPlatformServices::set_window`].
+//!
+//! `n.icon()` maps to `gio::BytesIcon`/`gio::FileIcon` — GIO's own
+//! `GLoadableIcon` machinery decodes/loads it, not this crate's image
+//! pipeline, so no pixel decoding happens in-process for a notification
+//! icon the way [`Backend::draw_image`][crate::Backend::draw_image] does
+//! for a painted one. `n.is_silent()` has nothing to bind to: GTK4's
+//! `gio::Notification` carries no sound-control property at all — the
+//! desktop shell/notification daemon decides, same as
+//! [`Self::show_message_dialog`]'s `opts.severity` having nowhere to go
+//! on `gtk4::AlertDialog`.
 //!
 //! ## Tray / status-bar icon (issue #953) — deliberately not implemented
 //! here
@@ -55,24 +90,37 @@
 //! `runModal` and Win32's `IFileOpenDialog::Show` have the identical
 //! nested-pump re-entrancy hazard.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gtk4::gio;
+use gtk4::gio::prelude::*;
 use gtk4::glib;
+use gtk4::prelude::GtkWindowExt;
 
 use crate::backend::{
     BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
     MessageDialogOptions, Notification, RgbaImage, ServiceResult, SystemTheme,
 };
 use crate::desktop::{ModalPumpDepth, ModalPumpGuard};
+use crate::event::UiEvent;
+use crate::primitives::image::ImageSource;
+use crate::types::WidgetId;
 use crate::PlatformServices;
+
+/// The event queue `GtkBackend::poll_events` drains — the same handle
+/// `GtkBackend::events_handle` returns. Aliased so [`GtkPlatformServices::events`]'s
+/// type stays under clippy's `type_complexity` threshold.
+type EventQueueHandle = Rc<RefCell<VecDeque<UiEvent>>>;
 
 /// GTK platform-services impl. Clipboard is backed by `arboard` for
 /// cross-platform synchronous access. File dialogs use `gtk4::FileDialog`
 /// pumped through a nested main-loop iteration (see module docs).
-/// Notifications stay stubbed pending an async-aware trait shape.
+/// Notifications use a real `gio::Notification` (issue #955, see module
+/// docs).
 pub struct GtkPlatformServices {
     clipboard: GtkClipboard,
     /// Top-level window used to parent file dialogs, so they open modal
@@ -89,6 +137,21 @@ pub struct GtkPlatformServices {
     /// re-entrant-pump condition and skip touching the backend's
     /// `RefCell` — see the module-level re-entrancy note.
     pumping: ModalPumpDepth,
+    /// The queue `GtkBackend::poll_events` drains, shared via
+    /// [`Self::set_events_handle`] (issue #955) — `None` until that's
+    /// called (and in unit tests, which never call it), mirroring
+    /// `window`'s own "`None` until wired" shape. A notification action
+    /// activated before this is set (or in a test-only
+    /// `GtkPlatformServices` that never wires it) simply has nowhere to
+    /// deliver [`crate::UiEvent::NotificationActivated`] — see
+    /// [`Self::ensure_notification_action`].
+    events: Rc<RefCell<Option<EventQueueHandle>>>,
+    /// Whether [`Self::ensure_notification_action`] has already
+    /// registered `app.quadraui-notification-activated` on the current
+    /// `Application`. Checked first so `send_notification` doesn't pay
+    /// for `ActionMap::lookup_action` on every call once it's
+    /// registered.
+    action_registered: Cell<bool>,
 }
 
 impl GtkPlatformServices {
@@ -97,6 +160,8 @@ impl GtkPlatformServices {
             clipboard: GtkClipboard::new(),
             window: Rc::new(RefCell::new(None)),
             pumping: ModalPumpDepth::new(),
+            events: Rc::new(RefCell::new(None)),
+            action_registered: Cell::new(false),
         }
     }
 
@@ -105,6 +170,60 @@ impl GtkPlatformServices {
     /// window is constructed.
     pub(crate) fn set_window(&self, window: gtk4::ApplicationWindow) {
         *self.window.borrow_mut() = Some(window);
+    }
+
+    /// Share the backend's event queue so a notification-action
+    /// activation can push [`crate::UiEvent::NotificationActivated`]
+    /// onto it (issue #955). Called once by [`crate::gtk::backend::GtkBackend::new`]
+    /// right after both the queue and `self` exist — see the module doc.
+    pub(crate) fn set_events_handle(&self, events: EventQueueHandle) {
+        *self.events.borrow_mut() = Some(events);
+    }
+
+    /// Register the shared `app.quadraui-notification-activated`
+    /// [`gio::SimpleAction`] on `app`, exactly once. Idempotent two ways:
+    /// [`Self::action_registered`] short-circuits repeat calls from this
+    /// `GtkPlatformServices`, and `app.lookup_action` guards against a
+    /// second `GtkPlatformServices` (or a second call before the first
+    /// one's `events` handle was wired — see below) sharing the same
+    /// `Application`, e.g. across two windows of the same app.
+    ///
+    /// A no-op when [`Self::events`] hasn't been wired yet
+    /// ([`Self::set_events_handle`] not called) — the next
+    /// `send_notification` retries. This only happens before
+    /// `GtkBackend::new` finishes, or in a unit test that constructs
+    /// `GtkPlatformServices` directly and calls `send_notification`
+    /// without a backend at all; a real app always has both wired before
+    /// the event loop starts.
+    fn ensure_notification_action(&self, app: &gtk4::Application) {
+        if self.action_registered.get() {
+            return;
+        }
+        if app.lookup_action(NOTIFICATION_ACTION_ID).is_some() {
+            self.action_registered.set(true);
+            return;
+        }
+        let Some(events) = self.events.borrow().clone() else {
+            return;
+        };
+        let param_type = <(String, String)>::static_variant_type();
+        let action = gio::SimpleAction::new(NOTIFICATION_ACTION_ID, Some(&*param_type));
+        action.connect_activate(move |_action, parameter| {
+            let Some(parameter) = parameter else {
+                return;
+            };
+            let Some((tag, action_id)) = decode_notification_target(parameter) else {
+                return;
+            };
+            events
+                .borrow_mut()
+                .push_back(UiEvent::NotificationActivated {
+                    tag,
+                    action: action_id,
+                });
+        });
+        app.add_action(&action);
+        self.action_registered.set(true);
     }
 
     /// Clone of the pump-depth counter (see the `pumping` field docs).
@@ -223,7 +342,68 @@ impl PlatformServices for GtkPlatformServices {
         Some(opts.buttons[orig].id.clone())
     }
 
-    fn send_notification(&self, _n: Notification) {}
+    /// `gio::Notification` sent through the window's owning
+    /// `gtk4::Application` (issue #955) — see the module doc for the full
+    /// design (action routing, icon decode, the `silent` gap). A no-op
+    /// when there is no window yet, or the window has no `Application`
+    /// (a `GtkPlatformServices` used outside `quadraui::gtk::run`, e.g.
+    /// directly in a unit test) — the same "nothing to parent this to
+    /// yet" degrade `show_file_open_dialog` et al. already have via
+    /// `self.window.borrow().clone()`.
+    fn send_notification(&self, n: Notification) {
+        let Some(window) = self.window.borrow().clone() else {
+            return;
+        };
+        let Some(app) = window.application() else {
+            return;
+        };
+        self.ensure_notification_action(&app);
+
+        let notification = gio::Notification::new(&n.title);
+        notification.set_body(Some(&n.body));
+        notification.set_priority(if n.urgent {
+            gio::NotificationPriority::Urgent
+        } else {
+            gio::NotificationPriority::Normal
+        });
+        if let Some(icon_source) = n.icon() {
+            notification.set_icon(&decode_gio_icon(icon_source));
+        }
+
+        let tag = n.tag();
+        notification.set_default_action_and_target_value(
+            NOTIFICATION_ACTION_DETAILED,
+            Some(&notification_target(tag, None)),
+        );
+        for (id, label) in n.actions() {
+            notification.add_button_with_target_value(
+                label,
+                NOTIFICATION_ACTION_DETAILED,
+                Some(&notification_target(tag, Some(id.as_str()))),
+            );
+        }
+
+        // `gio::Application::send_notification`'s `id` both dedupes
+        // repeat calls (a second `send_notification` with the same id
+        // replaces the on-screen notification instead of stacking a
+        // second one) and is what a later
+        // `gio::Application::withdraw_notification(id)` would target —
+        // `Notification::with_tag`'s doc names this as the intended use.
+        // Untagged notifications each get a fresh id from the counter
+        // below so they never collide with each other.
+        let owned_tag;
+        let notif_id: &str = match tag {
+            Some(tag) => tag,
+            None => {
+                owned_tag = format!(
+                    "quadraui-notification-{}",
+                    NEXT_NOTIFICATION_ID.fetch_add(1, Ordering::Relaxed)
+                );
+                &owned_tag
+            }
+        };
+        app.send_notification(Some(notif_id), &notification);
+    }
 
     fn open_url(&self, url: &str) {
         let _ =
@@ -245,6 +425,83 @@ impl PlatformServices for GtkPlatformServices {
 
     fn platform_name(&self) -> &'static str {
         "gtk"
+    }
+}
+
+// ── Notifications (issue #955) ───────────────────────────────────────────
+
+/// Counter backing an untagged notification's `gio::Application::send_notification`
+/// id — a fresh value per call, so two untagged notifications never
+/// collide and replace each other the way two calls with the same `tag`
+/// deliberately do. Mirrors `win::services::NEXT_NOTIFICATION_ID`'s exact
+/// role for the Win-GUI balloon-tip path.
+static NEXT_NOTIFICATION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Bare name [`gio::SimpleAction::new`]/`ActionMap::add_action` register
+/// under — no `app.` prefix, since that's implied by which action group
+/// (`Application`'s own) it's added to.
+const NOTIFICATION_ACTION_ID: &str = "quadraui-notification-activated";
+
+/// The same action, `app.`-prefixed, as
+/// [`gio::Notification::set_default_action_and_target_value`]/
+/// `add_button_with_target_value` expect — those two are NOT "detailed
+/// action name" parsers (no `::target` suffix syntax); they take a plain
+/// action name scoped by group prefix, which for an app-registered
+/// action is always `app.`.
+const NOTIFICATION_ACTION_DETAILED: &str = "app.quadraui-notification-activated";
+
+/// Encode `(tag, action)` as the `(ss)` `Variant` the shared
+/// notification action's target carries — empty string standing in for
+/// `None` on each side (see [`decode_notification_target`]'s doc for the
+/// resulting edge case). A tuple over a custom `GVariant` dict/struct
+/// because `(ss)` is exactly two fixed fields, no future third one
+/// anticipated, and glib's tuple `ToVariant`/`FromVariant` impls need no
+/// extra ceremony to round-trip through.
+fn notification_target(tag: Option<&str>, action: Option<&str>) -> glib::Variant {
+    (tag.unwrap_or_default(), action.unwrap_or_default()).to_variant()
+}
+
+/// Inverse of [`notification_target`] — decodes a notification action's
+/// activation `Variant` back into `(tag, action)`. `None` on a
+/// non-`(ss)` payload (shouldn't happen: this crate is the only writer
+/// of this action's target), rather than panicking on a malformed
+/// `Variant` from a source this module doesn't control.
+///
+/// An empty string on either side round-trips as `None` — so a
+/// `Notification` tagged `""` (rather than `with_tag` never called) or
+/// an action registered with `WidgetId::new("")` is indistinguishable
+/// from having no tag/action at all. Both are degenerate inputs no
+/// caller in this crate constructs; documented here rather than guarded
+/// against, matching this module's existing posture on similarly
+/// unreachable-in-practice edge cases (e.g. `hig_button_order`'s
+/// declared-order fallback).
+fn decode_notification_target(
+    variant: &glib::Variant,
+) -> Option<(Option<String>, Option<WidgetId>)> {
+    let (tag, action) = variant.get::<(String, String)>()?;
+    let tag = if tag.is_empty() { None } else { Some(tag) };
+    let action = if action.is_empty() {
+        None
+    } else {
+        Some(WidgetId::new(action))
+    };
+    Some((tag, action))
+}
+
+/// Decode a [`ImageSource`] into a `gio::Icon` for
+/// [`gio::Notification::set_icon`]. GIO does its own format sniffing
+/// (`GLoadableIcon`) for `Bytes`; `Path` hands the file path straight to
+/// the notification daemon via `gio::FileIcon` rather than this process
+/// reading the bytes itself — the daemon needs the file to still exist
+/// when it gets around to rendering the notification either way, so
+/// there's no correctness difference, only one less read in this
+/// process.
+fn decode_gio_icon(source: &ImageSource) -> gio::Icon {
+    match source {
+        ImageSource::Bytes(bytes) => {
+            gio::BytesIcon::new(&glib::Bytes::from_owned(bytes.clone())).upcast()
+        }
+        ImageSource::Path(path) => gio::FileIcon::new(&gio::File::for_path(path)).upcast(),
     }
 }
 
@@ -886,5 +1143,78 @@ mod tests {
     #[test]
     fn system_theme_from_gtk_settings_no_theme_name_is_not_high_contrast() {
         assert!(!system_theme_from_gtk_settings(true, None).high_contrast);
+    }
+
+    // ── Notification target encode/decode + icon decode (issue #955) ────
+    //
+    // Pure functions — no `gtk4::init()`/display needed (unlike
+    // `build_file_dialog_behaviors` above), so these run as ordinary
+    // `#[test]` fns with no `require_gtk()` guard. The full
+    // `send_notification` → real `gio::Notification` → on-screen click
+    // path needs a live desktop notification daemon and is covered by
+    // `examples/gtk_platform_services.rs`'s manual smoke test instead.
+
+    #[test]
+    fn notification_target_round_trips_tag_and_action() {
+        let variant = notification_target(Some("build-status"), Some("open-problems"));
+        assert_eq!(
+            decode_notification_target(&variant),
+            Some((
+                Some("build-status".to_string()),
+                Some(WidgetId::new("open-problems"))
+            ))
+        );
+    }
+
+    #[test]
+    fn notification_target_no_tag_or_action_decodes_to_none_none() {
+        let variant = notification_target(None, None);
+        assert_eq!(decode_notification_target(&variant), Some((None, None)));
+    }
+
+    #[test]
+    fn notification_target_tag_only() {
+        let variant = notification_target(Some("t"), None);
+        assert_eq!(
+            decode_notification_target(&variant),
+            Some((Some("t".to_string()), None))
+        );
+    }
+
+    #[test]
+    fn decode_gio_icon_bytes_produces_a_bytes_icon() {
+        let icon = decode_gio_icon(&ImageSource::Bytes(vec![1, 2, 3]));
+        assert!(icon.is::<gio::BytesIcon>());
+    }
+
+    #[test]
+    fn decode_gio_icon_path_produces_a_file_icon() {
+        let icon = decode_gio_icon(&ImageSource::Path(PathBuf::from(
+            "/tmp/quadraui-955-icon.png",
+        )));
+        assert!(icon.is::<gio::FileIcon>());
+    }
+
+    /// No window wired ⇒ `send_notification` returns before touching any
+    /// GTK/GIO object that would need a live display — safe to run
+    /// headlessly, unlike `build_file_dialog_behaviors`.
+    #[test]
+    fn send_notification_without_a_window_is_a_no_op() {
+        let services = GtkPlatformServices::new();
+        services.send_notification(Notification::new("t", "b"));
+    }
+
+    #[test]
+    fn notification_action_ids_agree_on_the_app_prefix() {
+        // `NOTIFICATION_ACTION_DETAILED` must be exactly
+        // `NOTIFICATION_ACTION_ID` with `"app."` prepended — a drift
+        // between the two would mean `send_notification`'s buttons
+        // target an action name that doesn't match what
+        // `ensure_notification_action` actually registers, and clicks
+        // would silently do nothing.
+        assert_eq!(
+            NOTIFICATION_ACTION_DETAILED,
+            format!("app.{NOTIFICATION_ACTION_ID}")
+        );
     }
 }

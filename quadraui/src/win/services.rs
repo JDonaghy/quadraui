@@ -19,7 +19,18 @@
 //!   add a tray icon with `NIF_INFO` set, then remove it a few seconds
 //!   later from a spawned thread (a balloon has no lifetime of its own
 //!   independent of the icon it's attached to, and this backend has no
-//!   persistent tray icon to hang it off).
+//!   persistent tray icon to hang it off). Issue #955's `silent` field
+//!   maps onto `NIIF_NOSOUND`; `icon`/`actions`/`tag` don't fit a
+//!   balloon's shape and are dropped — see `win_send_notification`'s own
+//!   doc. A real fix is WinRT `ToastNotificationManager` (needs an
+//!   AUMID/shortcut), kept as a documented follow-up rather than
+//!   implemented blind — this module has no Windows host to build/verify
+//!   the WinRT toast XML + activation-token plumbing against beyond
+//!   `cargo check`'s type-check, and a toast's click-through is exactly
+//!   the kind of behavioural correctness `cargo check` can't see (see
+//!   `CLAUDE.md`'s "Win-GUI: building and testing for real" section).
+//!   The balloon stays the fallback either way, per this issue's own
+//!   note.
 //! - **Message dialogs** (#744) — `TaskDialogIndirect`, the modern
 //!   common-controls v6 alert (preferred over the legacy `MessageBoxW`
 //!   for its richer, arbitrarily-labelled button row — `MessageDialogOptions`
@@ -109,7 +120,8 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
     DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog,
     IShellItem, SHCreateItemFromParsingName, Shell_NotifyIconW, FOS_PICKFOLDERS, HDROP, NIF_ICON,
-    NIF_INFO, NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
+    NIF_INFO, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    SIGDN_FILESYSPATH,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -877,13 +889,29 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
         let icon = LoadIconW(None, icon_resource).unwrap_or(HICON(std::ptr::null_mut()));
         let uid = NEXT_NOTIFICATION_ID.fetch_add(1, Ordering::Relaxed);
 
+        // Issue #955 extended `Notification` with `icon`/`actions`/
+        // `silent`/`tag`. Only `silent` has anywhere to go on this
+        // balloon-tip path — `NIIF_NOSOUND` is a real, documented
+        // `dwInfoFlags` bit (combined with the severity flag below, not
+        // a replacement for it). `icon`, `actions`, and `tag` are
+        // dropped: a balloon has no caller-supplied icon slot beyond the
+        // severity icon already chosen above, no button/action UI at
+        // all, and (like macOS's `osascript` fallback) no click-through
+        // channel to report an activation back through — see this
+        // module's doc and `UiEvent::NotificationActivated`'s own doc
+        // for what a real fix (WinRT `ToastNotificationManager`, which
+        // has all three) would need.
+        let mut severity_flags = if n.urgent { NIIF_ERROR } else { NIIF_INFO };
+        if n.is_silent() {
+            severity_flags |= NIIF_NOSOUND;
+        }
         let mut data = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
             uID: uid,
             uFlags: NIF_ICON | NIF_INFO,
             hIcon: icon,
-            dwInfoFlags: if n.urgent { NIIF_ERROR } else { NIIF_INFO },
+            dwInfoFlags: severity_flags,
             ..Default::default()
         };
         copy_wide_truncated(&mut data.szInfo, &n.body);
@@ -1091,11 +1119,7 @@ mod tests {
         assert!(svc
             .show_folder_open_dialog(FileDialogOptions::default())
             .is_none());
-        svc.send_notification(Notification {
-            title: "t".to_string(),
-            body: "b".to_string(),
-            urgent: false,
-        });
+        svc.send_notification(Notification::new("t", "b"));
         assert!(svc
             .show_message_dialog(MessageDialogOptions {
                 title: "t".to_string(),

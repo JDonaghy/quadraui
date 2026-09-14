@@ -28,6 +28,9 @@
 //!   opaque ids, one active) rendered through the `TabBar` primitive.
 //!   Unlike [`TabGroupController`] it owns no content, so the host can
 //!   paint a body that borrows app state (#596).
+//! - [`notify_or_toast`] — send a [`crate::backend::Notification`]
+//!   natively where the backend supports it, degrade to the in-canvas
+//!   `Toast` primitive where it doesn't (issue #955).
 //!
 //! # Adopt-or-demote pass (#825, before the `v0.1.0` tag)
 //!
@@ -57,6 +60,7 @@ pub mod form_controller;
 pub mod help_layer;
 pub mod markdown;
 pub mod menu_system;
+pub mod notification;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
 pub mod tab_group;
@@ -81,6 +85,7 @@ pub use help_layer::{
 };
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
+pub use notification::notify_or_toast;
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };

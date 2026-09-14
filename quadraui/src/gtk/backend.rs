@@ -517,6 +517,13 @@ impl GtkBackend {
     /// `Rc<RefCell<GtkBackend>>` to every widget callback that needs
     /// access.
     pub fn new() -> Self {
+        let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
+        // #955: share the same queue with `GtkPlatformServices` so a
+        // notification-action activation can push
+        // `UiEvent::NotificationActivated` onto it — see
+        // `gtk::services`'s module doc.
+        let services = GtkPlatformServices::new();
+        services.set_events_handle(events.clone());
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             dpi_scale: 1.0,
@@ -524,8 +531,8 @@ impl GtkBackend {
             drag_state: Rc::new(std::cell::RefCell::new(DragState::new())),
             accelerators: HashMap::new(),
             parsed_accelerators: Vec::new(),
-            events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
-            services: GtkPlatformServices::new(),
+            events,
+            services,
             current_cr_ptr: Cell::new(std::ptr::null()),
             current_layout_ptr: Cell::new(std::ptr::null()),
             current_theme: crate::Theme::default(),

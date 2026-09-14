@@ -542,9 +542,9 @@ pub use compose::markdown::{
     render_markdown_to_styled, render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown,
 };
 pub use compose::{
-    filter_help_actions, help_actions_to_palette_items, AppShell, AppShellEvent, AppShellLayout,
-    BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
-    BottomPanelTab, ChatController, ChatControllerEvent, ChatRole, ChatTurn,
+    filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
+    AppShellLayout, BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent,
+    BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerEvent, ChatRole, ChatTurn,
     DualModePaletteController, DualModePaletteEvent, FocusGroup, FocusRing, FolderPickerController,
     FolderPickerEvent, FormController, FormControllerEvent, GroupLayout, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, MenuDef, MenuEvent, MenuSystem,
