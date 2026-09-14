@@ -26,7 +26,7 @@ use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 
 use crate::backend::{
     BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
-    MessageDialogOptions, Notification, ServiceResult, SystemTheme,
+    MessageDialogOptions, Notification, RgbaImage, ServiceResult, SystemTheme,
 };
 use crate::primitives::dialog::DialogSeverity;
 use crate::types::Color;
@@ -415,6 +415,26 @@ impl MacClipboard {
     }
 }
 
+/// Context string used when there is no live `arboard::Clipboard` handle
+/// at all (construction failed — e.g. no `WindowServer` session) rather
+/// than a native call on a real handle failing. Shared by
+/// [`MacClipboard`]'s `Clipboard` methods below.
+const NO_PASTEBOARD_CONTEXT: &str = "arboard::Clipboard::new (no NSPasteboard session)";
+
+/// Map an `arboard::Error` from a named native call into a
+/// [`BackendError::PlatformFailure`] (issue #954). `arboard::Error` has
+/// no "unsupported" variant of its own — every arm here (including
+/// `ContentNotAvailable`, e.g. "clipboard has no image right now") is a
+/// real outcome of a call this backend *does* implement, so
+/// `PlatformFailure` — not `BackendError::Unsupported` — is the honest
+/// mapping; see `BackendError::Unsupported`'s own doc for why that
+/// variant is reserved for "this backend has no implementation" instead.
+fn map_arboard_error(call: &str, err: arboard::Error) -> BackendError {
+    BackendError::PlatformFailure {
+        context: format!("{call}: {err}"),
+    }
+}
+
 impl Clipboard for MacClipboard {
     fn read_text(&self) -> Option<String> {
         self.inner.borrow_mut().as_mut()?.get_text().ok()
@@ -424,6 +444,66 @@ impl Clipboard for MacClipboard {
         if let Some(cb) = self.inner.borrow_mut().as_mut() {
             let _ = cb.set_text(text);
         }
+    }
+
+    /// Decoded RGBA pixels via `arboard::Clipboard::get_image` (issue
+    /// #954) — the `image-data`-featured leg of the same `arboard`
+    /// handle `read_text`/`write_text` already share.
+    fn read_image(&self) -> ServiceResult<RgbaImage> {
+        let mut inner = self.inner.borrow_mut();
+        let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
+            context: NO_PASTEBOARD_CONTEXT.to_string(),
+        })?;
+        let img = cb
+            .get_image()
+            .map_err(|e| map_arboard_error("arboard::get_image", e))?;
+        Ok(RgbaImage {
+            width: img.width as u32,
+            height: img.height as u32,
+            pixels: img.bytes.into_owned(),
+        })
+    }
+
+    fn write_image(&self, image: &RgbaImage) -> ServiceResult<()> {
+        let mut inner = self.inner.borrow_mut();
+        let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
+            context: NO_PASTEBOARD_CONTEXT.to_string(),
+        })?;
+        let data = arboard::ImageData {
+            width: image.width as usize,
+            height: image.height as usize,
+            bytes: std::borrow::Cow::Borrowed(&image.pixels),
+        };
+        cb.set_image(data)
+            .map_err(|e| map_arboard_error("arboard::set_image", e))
+    }
+
+    fn write_html(&self, html: &str, alt_text: &str) -> ServiceResult<()> {
+        let mut inner = self.inner.borrow_mut();
+        let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
+            context: NO_PASTEBOARD_CONTEXT.to_string(),
+        })?;
+        cb.set_html(html, Some(alt_text))
+            .map_err(|e| map_arboard_error("arboard::set_html", e))
+    }
+
+    fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
+        let mut inner = self.inner.borrow_mut();
+        let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
+            context: NO_PASTEBOARD_CONTEXT.to_string(),
+        })?;
+        cb.get()
+            .file_list()
+            .map_err(|e| map_arboard_error("arboard::get().file_list()", e))
+    }
+
+    fn clear(&self) -> ServiceResult<()> {
+        let mut inner = self.inner.borrow_mut();
+        let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
+            context: NO_PASTEBOARD_CONTEXT.to_string(),
+        })?;
+        cb.clear()
+            .map_err(|e| map_arboard_error("arboard::clear", e))
     }
 }
 
@@ -435,6 +515,95 @@ mod tests {
     fn platform_name_is_macos() {
         let svc = MacPlatformServices::new();
         assert_eq!(svc.platform_name(), "macos");
+    }
+
+    // ── Clipboard image/html/file-list/clear (#954) ────────────────────
+
+    /// Real `NSPasteboard` round trip through every method #954 added,
+    /// in one `#[test]` fn rather than several: `cargo test` runs
+    /// `#[test]` fns in parallel by default, and separate fns would fight
+    /// over the one real systemwide pasteboard (same reasoning as
+    /// `build_file_dialog_behaviors`'s single-fn consolidation elsewhere
+    /// in this crate, different shared resource). Skips gracefully — like
+    /// `build_file_dialog_behaviors` does for a missing display — on a
+    /// runner with no live `NSPasteboard` session at all, rather than
+    /// failing the whole crate's test run over an environment gap this
+    /// test isn't trying to cover.
+    #[allow(clippy::print_stderr)]
+    #[test]
+    fn clipboard_image_html_file_list_and_clear_round_trip() {
+        let svc = MacPlatformServices::new();
+        let cb = svc.clipboard();
+
+        // write_image → read_image: dimensions and pixel-buffer length
+        // round-trip even though NSPasteboard may re-encode the bytes
+        // internally (TIFF) — this doesn't assert byte-for-byte pixel
+        // equality, only shape.
+        let image = RgbaImage {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                255, 0, 0, 255, // red
+                0, 255, 0, 255, // green
+                0, 0, 255, 255, // blue
+                255, 255, 0, 255, // yellow
+            ],
+        };
+        if let Err(e) = cb.write_image(&image) {
+            eprintln!("skipping: no live NSPasteboard session in this environment ({e:?})");
+            return;
+        }
+        let read_back = cb
+            .read_image()
+            .expect("read_image should see what write_image just wrote");
+        assert_eq!(read_back.width, image.width);
+        assert_eq!(read_back.height, image.height);
+        assert_eq!(
+            read_back.pixels.len(),
+            (image.width * image.height * 4) as usize
+        );
+
+        // write_html: no read-back method exists (see `ClipboardFormat`'s
+        // doc for why) — just assert it succeeds.
+        cb.write_html("<b>hi</b>", "hi").expect(
+            "write_html should succeed once write_image already proved the pasteboard is live",
+        );
+
+        // read_file_list: `Clipboard` has no `write_file_list` (only
+        // `read_file_list` — again see `ClipboardFormat`'s doc), so seed
+        // the pasteboard directly via a second `arboard::Clipboard`
+        // handle, then confirm `MacClipboard::read_file_list` reads back
+        // what was set.
+        let tmp = std::env::temp_dir().join("quadraui-954-clipboard-test-file.txt");
+        std::fs::write(&tmp, b"quadraui#954").expect("write temp file");
+        arboard::Clipboard::new()
+            .expect("a second arboard handle should also see the live pasteboard")
+            .set()
+            .file_list(&[&tmp])
+            .expect("seeding the pasteboard with a file list should succeed");
+        let files = cb
+            .read_file_list()
+            .expect("read_file_list should see the seeded file");
+        // Canonicalize before comparing: NSPasteboard round-trips the
+        // path through `/private/var/...` even though `std::env::temp_dir()`
+        // returns the `/var/...` symlink on macOS — a path-spelling
+        // artifact of the OS pasteboard, not something `read_file_list`
+        // got wrong.
+        assert_eq!(
+            files
+                .iter()
+                .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+                .collect::<Vec<_>>(),
+            vec![tmp.canonicalize().expect("temp file should exist")]
+        );
+        let _ = std::fs::remove_file(&tmp);
+
+        // clear: removes everything, regardless of format.
+        cb.write_text("some text #954");
+        assert_eq!(cb.read_text(), Some("some text #954".to_string()));
+        cb.clear()
+            .expect("clear should succeed once the pasteboard has proven live");
+        assert_eq!(cb.read_text(), None);
     }
 
     #[test]

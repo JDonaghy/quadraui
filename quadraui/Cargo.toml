@@ -56,7 +56,14 @@ terminal = ["dep:portable-pty", "dep:vt100"]
 tui = ["dep:ratatui", "dep:arboard"]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
-gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard"]
+# `arboard/image-data` (issue #954): `GtkClipboard::read_image`/
+# `write_image` need arboard's `get_image`/`set_image`, which are
+# `#[cfg(feature = "image-data")]` inside arboard itself. Enabling it
+# only here (not on the bare `tui` feature below) keeps a `tui`-only
+# build's dependency footprint exactly what it was before #954 — see
+# `arboard`'s own dependency comment for why that footprint was
+# deliberately kept minimal.
+gtk = ["dep:gtk4", "dep:pangocairo", "dep:arboard", "arboard/image-data"]
 
 # Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
 # target-specific optional dependency (see the
@@ -95,6 +102,9 @@ macos = [
     "dep:core-foundation",
     "dep:foreign-types",
     "dep:arboard",
+    # `MacClipboard::read_image`/`write_image` (#954) — see `gtk`'s
+    # matching comment above; same reasoning, same arboard feature.
+    "arboard/image-data",
     "dep:dispatch2",
 ]
 
@@ -128,11 +138,15 @@ ratatui = { version = "0.30", optional = true }
 # that conflict, and the `[patch.crates-io]` vendored shim it once
 # required, are both gone now.
 unicode-width = "0.2"
-# Optional — pulled in by `tui` and `gtk` for system clipboard access.
-# `default-features = false`: arboard's defaults pull in `image-data`
-# (and transitively `image` 0.25), which quadraui never uses — we only
-# ever read/write clipboard *text* (`ClipboardPaste`/`TextCopied`, see
-# CLAUDE.md's event-model section). See #796.
+# Optional — pulled in by `tui`, `gtk`, and `macos` for system clipboard
+# access. `default-features = false`: arboard's defaults pull in
+# `image-data` (and transitively `image` 0.25) unconditionally (#796).
+# quadraui's `tui` feature genuinely never needs it — TUI's clipboard is
+# text-only by design (OSC 52 has no image form, #954) — so it stays off
+# there; `gtk` and `macos` turn it back on explicitly (`arboard/image-data`
+# on each of those features, above) since `GtkClipboard`/`MacClipboard`
+# do use `get_image`/`set_image` for `Clipboard::read_image`/`write_image`
+# (#954). A `tui`-only build's dependency footprint is unaffected.
 arboard = { version = "3", optional = true, default-features = false }
 # Optional — pulled in by the `terminal` feature.
 portable-pty = { version = "0.9", optional = true }

@@ -3499,6 +3499,48 @@ pub struct SystemTheme {
     pub high_contrast: bool,
 }
 
+/// Decoded RGBA8 pixel buffer for a clipboard image round-trip
+/// ([`Clipboard::read_image`] / [`Clipboard::write_image`], issue #954).
+///
+/// Deliberately a bare pixel buffer, not [`ImageSource`] — the type
+/// [`TrayService::set_icon`] shares with `Backend::draw_image` per that
+/// trait's own doc note. `ImageSource::Bytes`/`Path` describe *where an
+/// image comes from* (encoded bytes a backend still has to sniff and
+/// decode); a clipboard image is already-decoded pixels the moment it
+/// comes off the OS clipboard (`CF_DIB` on Windows, an `NSImage` bitmap
+/// on macOS, a decoded PNG atom on Linux) — there is nothing left to
+/// decode, so a bare pixel buffer is the honest shape here instead of
+/// forcing a round trip through an encoded format.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RgbaImage {
+    pub width: u32,
+    pub height: u32,
+    /// Straight (non-premultiplied) RGBA8 pixels, row-major, top-to-bottom,
+    /// left-to-right. Always `width * height * 4` bytes long.
+    pub pixels: Vec<u8>,
+}
+
+/// One data format present on the clipboard right now — the vocabulary
+/// [`Clipboard::formats`] reports over (issue #954).
+///
+/// No `Html` variant: [`Clipboard::write_html`] has no `read_html` twin
+/// (no in-tree caller needs to read HTML back off the clipboard, only
+/// write it), so [`Clipboard::formats`]'s generic default — which only
+/// probes formats it has a matching `read_*` method to probe with — has
+/// nothing to detect HTML presence with. A backend that can tell HTML is
+/// on the clipboard may still surface that by overriding `formats`
+/// itself; this enum only names what the default can honestly report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardFormat {
+    /// Plain text — what [`Clipboard::read_text`] returns `Some` for.
+    Text,
+    /// A raster image — what [`Clipboard::read_image`] returns `Ok` for.
+    Image,
+    /// A non-empty file-path list (a Finder/Explorer copy) — what
+    /// [`Clipboard::read_file_list`] returns a non-empty `Ok` for.
+    FileList,
+}
+
 /// Trait object-safe clipboard access.
 pub trait Clipboard {
     /// Read the current clipboard contents as plain text. `None` on
@@ -3542,6 +3584,87 @@ pub trait Clipboard {
     /// (quadraui#415).
     fn read_primary_selection(&self) -> Option<String> {
         None
+    }
+
+    /// Read the current clipboard contents as a decoded RGBA image
+    /// (issue #954).
+    ///
+    /// Default: `Err(BackendError::Unsupported)` — kept **defaulted**,
+    /// unlike the rest of [`PlatformServices`]'s required methods, so
+    /// every existing `impl Clipboard` (TUI, GTK, macOS, Win) keeps
+    /// compiling unchanged; but the default is `Err`, not `Ok(None)` /
+    /// `None`, so a backend that never overrides this is honest per call
+    /// ("I cannot do this") rather than indistinguishable from "the
+    /// clipboard happens to be empty right now" the way an `Option`
+    /// return would read. TUI never overrides this — OSC 52 (its only
+    /// remote-reachable clipboard channel) has no image form, so TUI's
+    /// clipboard is text-only by construction, not by omission.
+    fn read_image(&self) -> ServiceResult<RgbaImage> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Write an RGBA image to the clipboard (issue #954).
+    ///
+    /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
+    fn write_image(&self, _image: &RgbaImage) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Write HTML to the clipboard, with a plain-text `alt_text`
+    /// fallback for a paste target that only understands text — the same
+    /// "rich content + text degrade" shape every native clipboard API
+    /// exposes this as (`NSPasteboard` HTML + string types, GTK's
+    /// `text/html` + `UTF8_STRING` targets, Win32's `CF_HTML` +
+    /// `CF_UNICODETEXT`) (issue #954).
+    ///
+    /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
+    /// There is deliberately no `read_html` twin; see
+    /// [`ClipboardFormat`]'s doc for why.
+    fn write_html(&self, _html: &str, _alt_text: &str) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Read the list of file paths currently on the clipboard (a
+    /// Finder/Explorer copy) (issue #954).
+    ///
+    /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
+    fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Which formats the clipboard currently holds (issue #954).
+    ///
+    /// Default: probes [`Self::read_text`], [`Self::read_image`], and
+    /// [`Self::read_file_list`] **through `self`** — so on a backend that
+    /// overrides those, this default already reports real data without
+    /// needing its own override — and reports [`ClipboardFormat::Text`] /
+    /// [`ClipboardFormat::Image`] / [`ClipboardFormat::FileList`] for
+    /// whichever succeeded. On a backend that overrides none of the
+    /// three (plain TUI), this correctly degrades to "`Text` if there is
+    /// any, otherwise nothing". A backend may still override this
+    /// directly to avoid paying for three real clipboard round trips just
+    /// to answer "what's there", or to report a format its `read_*`
+    /// methods can't (there is none today, but a future one might).
+    fn formats(&self) -> Vec<ClipboardFormat> {
+        let mut out = Vec::new();
+        if self.read_text().is_some() {
+            out.push(ClipboardFormat::Text);
+        }
+        if self.read_image().is_ok() {
+            out.push(ClipboardFormat::Image);
+        }
+        if matches!(self.read_file_list(), Ok(list) if !list.is_empty()) {
+            out.push(ClipboardFormat::FileList);
+        }
+        out
+    }
+
+    /// Clear the clipboard of all content, regardless of format
+    /// (issue #954).
+    ///
+    /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
+    fn clear(&self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
     }
 }
 
@@ -3751,5 +3874,141 @@ mod backend_caps_tests {
             vocab,
             "with every field true, `names()` must be the whole vocabulary"
         );
+    }
+}
+
+#[cfg(test)]
+mod clipboard_default_tests {
+    //! Coverage for [`Clipboard`]'s new-in-#954 defaulted methods
+    //! (`read_image`/`write_image`/`write_html`/`read_file_list`/
+    //! `formats`/`clear`), backend-agnostic: a bare fake `impl Clipboard`
+    //! that overrides nothing but `read_text`/`write_text` stands in for
+    //! "a backend that hasn't touched this issue's surface at all" (the
+    //! whole point of keeping these methods defaulted rather than
+    //! required — every existing implementor keeps compiling). Real
+    //! per-backend wiring (arboard-backed image/html/file-list on
+    //! macOS/GTK, `CF_HDROP` file-list + `EmptyClipboard` on Win) is
+    //! covered in each backend's own `services.rs` tests instead, since
+    //! it needs that backend's real native clipboard.
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Minimal `Clipboard` impl backed by an in-process `RefCell<Option<String>>`
+    /// — enough to exercise every trait *default* without touching any OS
+    /// clipboard API.
+    #[derive(Default)]
+    struct FakeTextOnlyClipboard {
+        text: RefCell<Option<String>>,
+    }
+
+    impl Clipboard for FakeTextOnlyClipboard {
+        fn read_text(&self) -> Option<String> {
+            self.text.borrow().clone()
+        }
+
+        fn write_text(&self, text: &str) {
+            *self.text.borrow_mut() = Some(text.to_string());
+        }
+    }
+
+    #[test]
+    fn image_html_file_list_and_clear_default_to_unsupported() {
+        let cb = FakeTextOnlyClipboard::default();
+        assert_eq!(cb.read_image(), Err(BackendError::Unsupported));
+        assert_eq!(
+            cb.write_image(&RgbaImage {
+                width: 1,
+                height: 1,
+                pixels: vec![0, 0, 0, 255],
+            }),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            cb.write_html("<b>hi</b>", "hi"),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(cb.read_file_list(), Err(BackendError::Unsupported));
+        assert_eq!(cb.clear(), Err(BackendError::Unsupported));
+    }
+
+    #[test]
+    fn formats_is_empty_when_clipboard_is_empty() {
+        let cb = FakeTextOnlyClipboard::default();
+        assert!(cb.formats().is_empty());
+    }
+
+    #[test]
+    fn formats_reports_text_once_written_and_nothing_else() {
+        let cb = FakeTextOnlyClipboard::default();
+        cb.write_text("hello");
+        // Image/file-list stay `Unsupported` on this fake, so `formats`
+        // must not report them just because text is present.
+        assert_eq!(cb.formats(), vec![ClipboardFormat::Text]);
+    }
+
+    /// A fake that also backs `read_image`/`read_file_list`, to prove
+    /// `formats`'s default dispatches through `self` (i.e. reaches an
+    /// override) rather than hardcoding the trait's own default bodies.
+    #[derive(Default)]
+    struct FakeFullClipboard {
+        text: RefCell<Option<String>>,
+        image: RefCell<Option<RgbaImage>>,
+        file_list: RefCell<Vec<PathBuf>>,
+    }
+
+    impl Clipboard for FakeFullClipboard {
+        fn read_text(&self) -> Option<String> {
+            self.text.borrow().clone()
+        }
+
+        fn write_text(&self, text: &str) {
+            *self.text.borrow_mut() = Some(text.to_string());
+        }
+
+        fn read_image(&self) -> ServiceResult<RgbaImage> {
+            self.image.borrow().clone().ok_or(BackendError::Unsupported)
+        }
+
+        fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
+            Ok(self.file_list.borrow().clone())
+        }
+    }
+
+    #[test]
+    fn formats_dispatches_through_overrides_for_image_and_file_list() {
+        let cb = FakeFullClipboard::default();
+        assert!(cb.formats().is_empty());
+
+        *cb.image.borrow_mut() = Some(RgbaImage {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 16],
+        });
+        assert_eq!(cb.formats(), vec![ClipboardFormat::Image]);
+
+        cb.file_list.borrow_mut().push(PathBuf::from("/tmp/a.txt"));
+        assert_eq!(
+            cb.formats(),
+            vec![ClipboardFormat::Image, ClipboardFormat::FileList]
+        );
+
+        cb.write_text("hi");
+        assert_eq!(
+            cb.formats(),
+            vec![
+                ClipboardFormat::Text,
+                ClipboardFormat::Image,
+                ClipboardFormat::FileList
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_file_list_does_not_count_as_the_file_list_format() {
+        let cb = FakeFullClipboard::default();
+        // `read_file_list` returns `Ok(vec![])` (empty, but not
+        // `Unsupported`) — `formats` must treat that the same as "no
+        // file list present", not report `ClipboardFormat::FileList`.
+        assert!(cb.formats().is_empty());
     }
 }
