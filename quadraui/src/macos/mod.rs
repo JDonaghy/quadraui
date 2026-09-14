@@ -180,3 +180,46 @@ pub use toast::{draw_toast_stack, mac_toast_stack_layout};
 pub use toolbar::{draw_toolbar, mac_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::{draw_tree, mac_tree_layout};
+
+/// Serialises every `#[test]` fn in this module tree that drives the
+/// **one real systemwide `NSPasteboard`**.
+///
+/// `cargo test` runs `#[test]` fns on a pool of spawned threads, so any
+/// two tests that write to the OS clipboard race each other — and the
+/// loser reads back whatever the winner just wrote (or, after a
+/// `write_image`/`clear`, no text at all).
+///
+/// [`services::tests::clipboard_image_html_file_list_and_clear_round_trip`]
+/// originally handled this by consolidating every #954 clipboard
+/// assertion into a *single* `#[test]` fn, which is only sufficient
+/// while that fn is the sole real-pasteboard user in the crate. It
+/// stopped being the sole user when
+/// [`testing::tests::drag_select_paints_highlight_then_ctrl_c_copies_to_clipboard`]
+/// (#803) started asserting that Ctrl-C reaches the real clipboard, and
+/// the pair then raced: `write_image` replaces the pasteboard contents
+/// with image-only data, so a `read_text()` landing just after it sees
+/// `None`. That is exactly how quadraui#965 failed on `macos-latest` —
+/// its 21 new `compose::file_picker` tests changed nothing about either
+/// clipboard test, but did change the scheduler's interleaving enough to
+/// make the pre-existing race lose.
+///
+/// A "one fn per shared resource" rule can't survive a second caller in
+/// a different module, so the invariant lives here instead: **anything
+/// that reads or writes the real pasteboard takes this lock first**, for
+/// its whole read/write sequence, and holds it until the assertions are
+/// done. Poisoning is recovered from rather than propagated — one
+/// already-failing clipboard test should report its own failure, not
+/// convert every other clipboard test into a second red line.
+#[cfg(test)]
+static REAL_PASTEBOARD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire [`REAL_PASTEBOARD_LOCK`] — see that static's doc for the
+/// invariant this enforces. Bind the guard to a named local (`let
+/// _pasteboard = …`), never to `_`, or it is dropped immediately and
+/// the lock buys nothing.
+#[cfg(test)]
+pub(crate) fn lock_real_pasteboard() -> std::sync::MutexGuard<'static, ()> {
+    REAL_PASTEBOARD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}

@@ -935,6 +935,12 @@ mod tests {
 
     #[test]
     fn drag_select_paints_highlight_then_ctrl_c_copies_to_clipboard() {
+        // The Ctrl-C assertion at the bottom reads the *real* systemwide
+        // `NSPasteboard`, which `macos::services`'s #954 round-trip test
+        // also writes to (and, via `write_image`/`clear`, wipes the text
+        // flavour of). Hold the shared lock for the whole test — see
+        // `crate::macos::lock_real_pasteboard`.
+        let _pasteboard = crate::macos::lock_real_pasteboard();
         let mut driver = MacDriver::new(SelectableApp, W, H);
 
         // Sample a glyph-free padding pixel before any selection exists —
