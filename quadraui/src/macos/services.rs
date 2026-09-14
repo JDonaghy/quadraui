@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSColor, NSOpenPanel,
-    NSSavePanel, NSWorkspace,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSColor, NSColorSpace,
+    NSOpenPanel, NSSavePanel, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 
@@ -221,20 +221,27 @@ fn system_theme_from_mac_appearance(
 }
 
 /// `NSColor::controlAccentColor`'s RGB components, converted to
-/// [`Color`]. `getRed:green:blue:alpha:` needs the colour resolved to a
-/// device/generic RGB colour space first for a non-catalog colour, but
-/// `controlAccentColor` (a dynamic system colour that always resolves to
-/// RGB in a live app context) doesn't need that extra
-/// `colorUsingColorSpace:` step — same assumption `NSAlert`'s
-/// `severity_to_alert_style` doc makes about running with a live AppKit
-/// context.
+/// [`Color`]. `getRed:green:blue:alpha:` raises `NSInvalidArgumentException`
+/// if the receiver isn't already in an RGB-compatible colour space, and an
+/// ObjC exception unwinding across this Rust/FFI boundary is UB (likely an
+/// abort) — Apple's docs don't guarantee `controlAccentColor` (a dynamic,
+/// catalog-backed system colour) is pre-resolved to RGB in every runtime
+/// context, so this defensively runs it through `colorUsingColorSpace:`
+/// first rather than assuming it. `colorUsingColorSpace:` returns `None`
+/// only when the conversion itself is impossible (no live colour-management
+/// pipeline), which — like the rest of this crate's platform-services
+/// layer — is treated as "feature unavailable" rather than an error.
 fn mac_accent_color() -> Option<Color> {
     let color = NSColor::controlAccentColor();
+    let rgb_color = color.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
     let (mut r, mut g, mut b, mut a) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
     // SAFETY: four valid, non-null `f64` out-pointers, matching
-    // `getRed:green:blue:alpha:`'s documented safety requirement.
+    // `getRed:green:blue:alpha:`'s documented safety requirement. Calling
+    // it on `rgb_color` rather than `color` is what makes this safe from
+    // the ObjC-exception hazard described above: `colorUsingColorSpace:`
+    // above already guarantees an RGB-compatible receiver.
     unsafe {
-        color.getRed_green_blue_alpha(&mut r, &mut g, &mut b, &mut a);
+        rgb_color.getRed_green_blue_alpha(&mut r, &mut g, &mut b, &mut a);
     }
     Some(Color::rgba(
         unit_to_u8(r),

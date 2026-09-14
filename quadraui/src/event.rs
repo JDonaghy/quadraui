@@ -687,6 +687,36 @@ pub enum UiEvent {
     /// answer a query — so it will never emit this variant.
     ///
     /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::system_theme` method and `SystemTheme` struct
+    /// as well as this variant — all three landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'SystemThemeChanged\|SystemTheme\|system_theme' ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of the three new
+    /// items yet, but the real question for a *new enum variant* is
+    /// whether either consumer's existing `match`es over `UiEvent` are
+    /// exhaustive (no wildcard arm), since those would need to add one:
+    ///
+    /// - `vimcode`'s `tui_main/shell_app.rs` top-level `UiEvent` dispatch
+    ///   (`shell_app.rs:2403,2689`) already ends in a wildcard `_ =>` arm.
+    /// - `coord-tui`'s `app/events.rs` top-level `UiEvent` dispatch
+    ///   (`events.rs:1390,3973`) likewise already ends in a wildcard
+    ///   `_ =>` arm.
+    ///
+    /// Every other `UiEvent` match in both consumers is either an `if
+    /// let` on one specific variant or itself wildcard-terminated. Adding
+    /// `SystemThemeChanged` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
     SystemThemeChanged(SystemTheme),
 
     // ── Cross-primitive scroll event ──────────────────────────────────

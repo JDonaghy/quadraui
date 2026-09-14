@@ -212,6 +212,14 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSAppearance",
     "NSWorkspace",
     "objc2-core-foundation",
+    # `mac_accent_color` (#952 review follow-up): `controlAccentColor` is a
+    # dynamic/catalog system color, not guaranteed pre-resolved to an
+    # RGB-compatible color space in every runtime context. Calling
+    # `getRed:green:blue:alpha:` on a non-RGB color raises
+    # `NSInvalidArgumentException`, and an ObjC exception unwinding across
+    # this Rust/FFI boundary is UB. "NSColorSpace" gates
+    # `colorUsingColorSpace:`, used to defensively convert to sRGB first.
+    "NSColorSpace",
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",

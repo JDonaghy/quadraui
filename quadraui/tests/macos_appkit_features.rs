@@ -93,6 +93,12 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // Issue #952 (`system_theme`): `NSColor::controlAccentColor` — the
     // feature *is* the symbol's own name here, same shape as `NSAlert`.
     ("NSColor", "NSColor"),
+    // #952 review follow-up (`mac_accent_color`): `colorUsingColorSpace:`'s
+    // `NSColorSpace` argument type, used to defensively convert
+    // `controlAccentColor` to sRGB before reading its RGB components —
+    // the feature *is* the symbol's own name here, same shape as
+    // `NSColor`/`NSAlert`.
+    ("NSColorSpace", "NSColorSpace"),
     ("NSControlStateValueOff", "NSCell"),
     ("NSControlStateValueOn", "NSCell"),
     ("NSCursor", "NSCursor"),
