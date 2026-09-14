@@ -360,12 +360,39 @@ fn emit_osc8_hyperlink_to(url: &str, writer: &mut dyn std::io::Write) -> bool {
 /// succeeded, `false` only when neither stream accepted anything — the
 /// genuinely headless case that earns `Err(BackendError::Unsupported)`.
 fn emit_osc8_hyperlink(url: &str) -> bool {
-    let mut wrote = emit_osc8_hyperlink_to(url, &mut std::io::stdout());
-    #[cfg(unix)]
-    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        wrote |= emit_osc8_hyperlink_to(url, &mut tty);
+    // `|`, not `||`: both writes always run. A successful stdout write must
+    // not short-circuit the `/dev/tty` one, because stdout may have been
+    // redirected away from the terminal the user is actually looking at —
+    // the whole reason this writes to both.
+    let stdout_wrote = emit_osc8_hyperlink_to(url, &mut std::io::stdout());
+    let tty_wrote = emit_osc8_hyperlink_to_tty(url);
+    stdout_wrote | tty_wrote
+}
+
+/// The `/dev/tty` half of [`emit_osc8_hyperlink`], as a `cfg`-overloaded
+/// pair (the same shape [`try_platform_opener`] below uses) rather than a
+/// `#[cfg(unix)]` statement inside the caller: an inline `#[cfg(unix)]`
+/// block forces the accumulator above to be `let mut`, which is then an
+/// `unused_mut` **error** on Windows under CI's workspace-wide
+/// `RUSTFLAGS: -D warnings` — a `cfg`-only failure invisible to a Unix
+/// build of the identical source.
+///
+/// Reports whether the write reached the controlling terminal; a missing
+/// or unopenable `/dev/tty` is simply `false`, never an error.
+#[cfg(unix)]
+fn emit_osc8_hyperlink_to_tty(url: &str) -> bool {
+    match std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        Ok(mut tty) => emit_osc8_hyperlink_to(url, &mut tty),
+        Err(_) => false,
     }
-    wrote
+}
+
+/// Non-Unix: there is no `/dev/tty` to write a second copy to, so the
+/// stdout leg in [`emit_osc8_hyperlink`] stands alone. See the `unix`
+/// overload of this same function (above) for the shared doc.
+#[cfg(not(unix))]
+fn emit_osc8_hyperlink_to_tty(_url: &str) -> bool {
+    false
 }
 
 // ── URL opener command (#969) ────────────────────────────────────────────────
@@ -884,6 +911,44 @@ mod open_url_tests {
     fn emit_osc8_hyperlink_to_reports_failure_when_the_writer_fails() {
         let mut w = FailingWriter;
         assert!(!emit_osc8_hyperlink_to("https://example.com", &mut w));
+    }
+
+    /// Off Unix there is no `/dev/tty` to write a second copy to, so
+    /// [`emit_osc8_hyperlink_to_tty`]'s `not(unix)` arm must report a hard
+    /// `false` rather than claiming a write it never made — leaving the
+    /// stdout leg to carry [`emit_osc8_hyperlink`] on its own.
+    ///
+    /// Together with the `unix` arm below, this pins the `cfg`-overloaded
+    /// pair that replaced an inline `#[cfg(unix)]` block inside
+    /// `emit_osc8_hyperlink`. That block mutated a `let mut` accumulator,
+    /// which made the `mut` an `unused_mut` **error** on Windows under
+    /// CI's `RUSTFLAGS: -D warnings` while every Unix build of the exact
+    /// same source stayed green.
+    #[cfg(not(unix))]
+    #[test]
+    fn emit_osc8_hyperlink_to_tty_reports_false_without_a_dev_tty() {
+        assert!(!emit_osc8_hyperlink_to_tty("https://example.com/969"));
+    }
+
+    /// On Unix whether `/dev/tty` opens is environment-dependent (CI
+    /// runners usually have no controlling terminal), so both answers are
+    /// legitimate — this asserts only that the call is total. See the
+    /// `not(unix)` arm above for the shared doc.
+    #[cfg(unix)]
+    #[test]
+    fn emit_osc8_hyperlink_to_tty_is_total_on_unix() {
+        let _ = emit_osc8_hyperlink_to_tty("https://example.com/969");
+    }
+
+    /// [`emit_osc8_hyperlink`] reports success whenever *either* stream
+    /// accepted the sequence. Under `cargo test` stdout is always a
+    /// writable stream (a pipe, if not a tty), so the stdout leg alone
+    /// carries this on every platform — including Windows, where
+    /// [`emit_osc8_hyperlink_to_tty`] is the constant-`false` arm and the
+    /// combined result must still be `true`.
+    #[test]
+    fn emit_osc8_hyperlink_succeeds_on_the_stdout_leg_alone() {
+        assert!(emit_osc8_hyperlink("https://example.com/969"));
     }
 
     /// Per-platform opener command shape, asserted on the *command that
