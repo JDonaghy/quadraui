@@ -755,8 +755,50 @@ impl GtkBackend {
     /// [`Backend::set_editor_font`] overrides it. `gtk/run.rs`'s draw
     /// closure reads this every frame to build the shared editor
     /// `pango::Layout` (#422).
-    pub(crate) fn editor_font_pango_string(&self) -> String {
+    ///
+    /// Public since #971: a consumer that paints its editor content
+    /// itself (bespoke Cairo, not [`Backend::draw_editor`]) can read this
+    /// to build its *own* paint-time layout from the exact same family/
+    /// size [`Self::editor_pango_layout`] resolves for click-time
+    /// measurement — one field backing both, instead of a second copy of
+    /// the app's font setting living only in the consumer's click path.
+    pub fn editor_font_pango_string(&self) -> String {
         format!("{} {}", self.editor_font_family, self.editor_font_size_pt)
+    }
+
+    /// Build a `pango::Layout` carrying the *live* editor font — the
+    /// same `editor_font_family` / `editor_font_size_pt` [`Self::set_editor_font`]
+    /// stores and `gtk/run.rs`'s per-frame draw closure reads via
+    /// [`Self::editor_font_pango_string`] — from the stable widget Pango
+    /// context ([`Self::set_pango_context`]).
+    ///
+    /// #971: this is the entry point a GTK consumer needs to map a click
+    /// x-coordinate to an editor column (via [`crate::gtk::editor_col_at_x`])
+    /// without constructing a second, private `GtkBackend` purely to
+    /// mimic the real one's font — pass the *same* `GtkBackend` the
+    /// consumer already owns (or set the editor font on a bare one built
+    /// just for this) and this always reflects the current
+    /// [`Backend::set_editor_font`] call, at any size. It does not
+    /// require an in-progress frame (unlike [`Self::create_stable_pango_layout`]
+    /// composed with the raw `pango_ctx`, which carries whatever font the
+    /// context was initialized with — historically the UI chrome font,
+    /// not the editor font) and does not require having painted an
+    /// editor this frame (unlike the `Backend::editor_col_at_x` trait
+    /// method's `last_editor_pango_layout` cache, which is `None` until
+    /// the first `draw_editor` call).
+    ///
+    /// Single-line, no-wrap (`set_width(-1)`), matching the recipe
+    /// `gtk/run.rs::render_frame` uses to build the frame's shared editor
+    /// layout — [`crate::gtk::editor_col_at_x`] resolves one line at a
+    /// time and expects that shape. Returns `None` if no Pango context
+    /// has been stored (mirrors [`Self::create_stable_pango_layout`]).
+    pub fn editor_pango_layout(&self) -> Option<pango::Layout> {
+        let ctx = self.pango_ctx.as_ref()?;
+        let layout = pango::Layout::new(ctx);
+        let font_desc = pango::FontDescription::from_string(&self.editor_font_pango_string());
+        layout.set_font_description(Some(&font_desc));
+        layout.set_width(-1);
+        Some(layout)
     }
 
     /// Shared handle to the modal stack. The App and widget callbacks
@@ -3616,7 +3658,16 @@ impl Backend for GtkBackend {
         let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
         let pango_layout = frame_layout
             .or_else(|| self.last_editor_pango_layout.clone())
-            .or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
+            // #971: previously fell back to a bare `pango::Layout::new`
+            // off `pango_ctx` — that context carries whatever font it was
+            // initialized with (historically the UI chrome font, not the
+            // editor font), so a `GtkBackend` that had never painted an
+            // editor (no frame, no `last_editor_pango_layout` yet) would
+            // silently resolve clicks against the wrong glyph widths.
+            // `editor_pango_layout()` builds from the same `pango_ctx` but
+            // applies the live editor font first, so this last resort
+            // still tracks `Backend::set_editor_font`.
+            .or_else(|| self.editor_pango_layout());
         let Some(pango_layout) = pango_layout else {
             return layout.col_at_x(editor, view_row, x);
         };
@@ -6142,6 +6193,107 @@ mod tests {
         Backend::set_editor_font(&mut backend, "Fira Code", 13.0);
         assert_eq!(backend.ui_font, "Cantarell 12");
         assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
+    }
+
+    /// #971: a GTK consumer that paints its editor content itself
+    /// (bespoke Cairo, not [`Backend::draw_editor`]) must be able to
+    /// resolve `Backend::editor_col_at_x` off a single `GtkBackend` it
+    /// owns — no `enter_frame_scope`, no prior `draw_editor` call to
+    /// populate `last_editor_pango_layout`, and critically no *second*
+    /// `GtkBackend` built purely to mimic the real one's font (the
+    /// vimcode `src/gtk/click.rs` workaround this issue removes). That
+    /// third fallback used to build a bare `pango::Layout` straight off
+    /// `pango_ctx`, ignoring the editor font entirely — this test drives
+    /// it directly (no frame scope is ever entered) and proves the
+    /// result tracks `Backend::set_editor_font` at two different sizes,
+    /// not a font baked in once at setup.
+    #[test]
+    fn gtk_backend_editor_col_at_x_tracks_set_editor_font_without_a_frame() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        // The only click-time setup a #971 consumer needs: the stable
+        // widget Pango context, exactly as `gtk::run::activate` seeds it
+        // on `DrawingArea` realize via `set_pango_context`.
+        let stable_ctx = pangocairo::functions::create_context(&cr);
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(stable_ctx);
+
+        let line = crate::EditorLine {
+            raw_text: "abcdefghijklmnopqrstuvwxyz".to_string(),
+            gutter_text: String::new(),
+            spans: Vec::new(),
+            line_idx: 0,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: Vec::new(),
+            spell_errors: Vec::new(),
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: false,
+            segment_col_offset: 0,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: Vec::new(),
+            colorcolumns: Vec::new(),
+        };
+        let editor = crate::Editor {
+            id: WidgetId::new("ed"),
+            rect: Rect::new(0.0, 0.0, 400.0, 40.0),
+            lines: vec![line],
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 1,
+            max_col: 26,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '!',
+        };
+        // No gutter, no scroll: `EditorLayout::text_bounds.x` is 0 and
+        // `col_at_x`'s scroll term drops out, so `editor_layout` needn't
+        // be recomputed per font size below — the glyph-level resolution
+        // (`pango::Layout::xy_to_index`) is where the live font actually
+        // matters, not this geometry.
+        let editor_layout = Backend::editor_layout(&backend, editor.rect, &editor);
+        let click_x = 80.0_f32;
+
+        Backend::set_editor_font(&mut backend, "Monospace", 8.0);
+        let small_font_col =
+            Backend::editor_col_at_x(&backend, &editor_layout, &editor, 0, click_x);
+
+        Backend::set_editor_font(&mut backend, "Monospace", 32.0);
+        let large_font_col =
+            Backend::editor_col_at_x(&backend, &editor_layout, &editor, 0, click_x);
+
+        assert!(
+            small_font_col > 0 && small_font_col < 26,
+            "a small font must fit several but not all 26 chars before x=80: got {small_font_col}"
+        );
+        assert!(
+            large_font_col < small_font_col,
+            "a 4x larger editor font must fit strictly fewer characters before the same \
+             x=80 click: small_font(8pt)={small_font_col}, large_font(32pt)={large_font_col}"
+        );
     }
 
     // --- #624: chrome primitives must paint/measure with `ui_font`, not
