@@ -453,6 +453,23 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
 /// `win::shell_runner::run_with_shell` constructs one unconditionally
 /// (same "compiles everywhere, only *works* on Windows" posture as the
 /// rest of `src/win/` — see `Cargo.toml`'s `win`-example comments).
+///
+/// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field (#957)
+///
+/// `RunConfig` is a plain, all-`pub`-field struct with no
+/// `#[non_exhaustive]`, so adding [`Self::single_instance`] is only safe
+/// if no consumer builds one with an exhaustive struct literal. Blast
+/// radius, per CLAUDE.md's mandatory rule 1:
+///
+/// ```text
+/// $ grep -rn 'RunConfig' ~/src/coord-tui/src ~/src/vimcode/src
+/// (no output — zero hits in both)
+/// ```
+///
+/// Both consumers reach this backend exclusively through
+/// `run_with_shell(app, ShellConfig)` (`shell_runner`), which builds its
+/// own `RunConfig` internally — neither consumer constructs or names
+/// `win::RunConfig` at all. Adding this field is a no-op for both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunConfig {
     /// Window title shown by the title bar, taskbar, and Alt-Tab switcher.
@@ -482,6 +499,16 @@ pub struct RunConfig {
     /// it decodes its own at startup — through
     /// [`crate::event::classify_open_args`] — and dispatches the result
     /// as [`crate::UiEvent::OpenRequested`].
+    ///
+    /// The registered window class (what `FindWindowW` searches by to
+    /// locate that existing instance's window) is scoped by this same
+    /// `title` too — via a hash, not `title` embedded verbatim, see
+    /// `instance_identity`'s doc comment in `win/run.rs` — so two
+    /// different-titled quadraui apps running at once never collide on
+    /// either name. Review fix for issue #957: before this, the class
+    /// name was one literal shared by every quadraui Win app regardless
+    /// of `title`, so a second launch of app A could find and hijack app
+    /// B's window instead.
     pub single_instance: bool,
 }
 

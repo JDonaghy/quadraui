@@ -230,6 +230,23 @@ const SMOKE_PASTE_VAR: &str = "QUADRAUI_GTK_SMOKE_PASTE";
 /// let config = RunConfig::new("io.github.jdonaghy.kubeui-gtk", "kubeui");
 /// quadraui::gtk::run_with(MyApp, config);
 /// ```
+///
+/// ## Downstream impact (CLAUDE.md rule 8): `single_instance` field (#957)
+///
+/// `RunConfig` is a plain, all-`pub`-field struct with no
+/// `#[non_exhaustive]`, so adding [`Self::single_instance`] is only safe
+/// if no consumer builds one with an exhaustive struct literal. Blast
+/// radius, per CLAUDE.md's mandatory rule 1:
+///
+/// ```text
+/// $ grep -rn 'RunConfig' ~/src/coord-tui/src ~/src/vimcode/src
+/// (no output — zero hits in both)
+/// ```
+///
+/// Both consumers reach this backend exclusively through
+/// `run_with_shell(app, ShellConfig)` (`shell_runner`), which builds its
+/// own `RunConfig` internally — neither consumer constructs or names
+/// `gtk::RunConfig` at all. Adding this field is a no-op for both.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunConfig {
     /// GTK application id, e.g. `"io.github.jdonaghy.kubeui-gtk"`. Used by
