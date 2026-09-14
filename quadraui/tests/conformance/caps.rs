@@ -879,6 +879,17 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // The twin itself already returns a typed `ServiceResult` — there is
     // nothing further to report absence of.
     ("open_url_result", ServiceHonesty::AlwaysReal),
+    // quadraui#956's four `shell.*`-style methods all return
+    // `ServiceResult<()>` directly (D-009 seam-2 shape from the start,
+    // not a bare-`()` method retrofitted with a `_result` twin the way
+    // `open_url`/`open_url_result` needed) — same reasoning as
+    // `open_url_result`/`system_theme`: the `Result` type itself already
+    // carries the "unsupported" signal, so there is no separate
+    // `BackendCaps` flag or `_result` twin to check.
+    ("reveal_in_file_manager", ServiceHonesty::AlwaysReal),
+    ("open_path", ServiceHonesty::AlwaysReal),
+    ("move_to_trash", ServiceHonesty::AlwaysReal),
+    ("beep", ServiceHonesty::AlwaysReal),
     // `system_theme` (quadraui#952) returns `ServiceResult<SystemTheme>`
     // directly — same reasoning as `open_url_result` just above: the
     // `Result` type itself already carries the "unsupported" signal, so

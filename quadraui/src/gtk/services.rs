@@ -9,6 +9,18 @@
 //! the trait's synchronous signatures can be honored even though GTK4
 //! only exposes async dialog APIs (#427).
 //!
+//! ## `shell.*` parity (issue #956)
+//!
+//! `reveal_in_file_manager` calls `org.freedesktop.FileManager1.ShowItems`
+//! over the session D-Bus directly (no dedicated GIO wrapper exists for
+//! this interface — see [`GtkPlatformServices::reveal_in_file_manager`]'s
+//! doc). `open_path` reuses the same `gio::AppInfo::launch_default_for_uri`
+//! call `open_url` makes, fed a `file://` URI instead of a caller-supplied
+//! URL string. `move_to_trash` delegates to
+//! [`crate::desktop::move_to_trash`] — the cross-platform `trash` crate,
+//! not a hand-rolled `gio::File::trash` — see that function's doc for why
+//! every backend shares it. `beep` is `gdk::Display::beep`.
+//!
 //! ## Notifications (issue #955)
 //!
 //! `send_notification` is a real `gio::Notification` sent through the
@@ -92,14 +104,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gtk4::gio;
 use gtk4::gio::prelude::*;
 use gtk4::glib;
-use gtk4::prelude::GtkWindowExt;
+use gtk4::prelude::{GtkWindowExt, WidgetExt};
 
 use crate::backend::{
     BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
@@ -408,6 +420,83 @@ impl PlatformServices for GtkPlatformServices {
     fn open_url(&self, url: &str) {
         let _ =
             gtk4::gio::AppInfo::launch_default_for_uri(url, None::<&gtk4::gio::AppLaunchContext>);
+    }
+
+    /// `org.freedesktop.FileManager1.ShowItems` over the session D-Bus
+    /// (issue #956) — the standard method every major Linux file manager
+    /// (Nautilus/Files, Dolphin, Nemo, Thunar via a plugin) implements
+    /// for "reveal this file, selected, in a file-manager window." GIO
+    /// ships no dedicated wrapper for this interface the way it does for
+    /// [`Self::open_path`]'s `AppInfo::launch_default_for_uri`, so this
+    /// drives it directly through [`gio::DBusConnection::call_sync`] —
+    /// the same synchronous session-bus machinery GIO's own generated
+    /// D-Bus proxies use internally. `Err(BackendError::Unsupported)`
+    /// only on `gio::bus_get_sync` itself failing (no session bus at
+    /// all — e.g. a bare TTY with no desktop session); a live bus with no
+    /// `FileManager1` listener (headless container, minimal window
+    /// manager) instead surfaces as `BackendError::PlatformFailure` from
+    /// the `ShowItems` call itself, since that's a real answer from a
+    /// real bus rather than "this backend has no implementation."
+    fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
+        let uri = gio::File::for_path(path).uri();
+        let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+            .map_err(|_| BackendError::Unsupported)?;
+        let params = (vec![uri.to_string()], String::new()).to_variant();
+        connection
+            .call_sync(
+                Some("org.freedesktop.FileManager1"),
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1",
+                "ShowItems",
+                Some(&params),
+                None,
+                gio::DBusCallFlags::NONE,
+                -1,
+                gio::Cancellable::NONE,
+            )
+            .map(|_| ())
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("org.freedesktop.FileManager1.ShowItems: {e}"),
+            })
+    }
+
+    /// `gio::AppInfo::launch_default_for_uri` on `path`'s `file://` URI
+    /// (issue #956) — the same launch call [`Self::open_url`] makes,
+    /// just fed a path converted to a URI (`gio::File::for_path(..).uri()`)
+    /// instead of a caller-supplied URL string directly.
+    fn open_path(&self, path: &Path) -> ServiceResult<()> {
+        let uri = gio::File::for_path(path).uri();
+        gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>).map_err(|e| {
+            BackendError::PlatformFailure {
+                context: format!("gio::AppInfo::launch_default_for_uri: {e}"),
+            }
+        })
+    }
+
+    /// [`crate::desktop::move_to_trash`] (issue #956) — see that
+    /// function's doc for why every backend, GTK included, shares this
+    /// one `trash`-crate-backed implementation instead of hand-rolling
+    /// `gio::File::trash` here.
+    fn move_to_trash(&self, path: &Path) -> ServiceResult<()> {
+        crate::desktop::move_to_trash(path)
+    }
+
+    /// `gdk::Display::beep` (issue #956) — the parented window's own
+    /// display when one is attached (mirrors
+    /// [`Self::show_file_open_dialog`]'s parenting), falling back to
+    /// [`gtk4::gdk::Display::default`] otherwise (unit tests, or a
+    /// `GtkPlatformServices` used before [`Self::set_window`] is called).
+    /// `Err(BackendError::Unsupported)` only when neither exists — no
+    /// window *and* no default display at all, i.e. no live GTK display
+    /// connection (headless CI, no X11/Wayland).
+    fn beep(&self) -> ServiceResult<()> {
+        use gtk4::gdk::prelude::DisplayExt;
+        let display = match self.window.borrow().as_ref() {
+            Some(window) => WidgetExt::display(window),
+            None => gtk4::gdk::Display::default().ok_or(BackendError::Unsupported)?,
+        };
+        display.beep();
+        Ok(())
     }
 
     /// quadraui#952: `gtk4::Settings`' dark-preference + theme-name
@@ -1027,6 +1116,19 @@ mod tests {
         {
             let dialog = build_file_dialog(&FileDialogOptions::default(), None);
             assert!(dialog.filters().is_none());
+        }
+
+        // `beep` (issue #956) also needs a real live GTK/GDK object
+        // (`gdk4::Display::default()`, since no window is attached to
+        // this bare `GtkPlatformServices`) — folded in here, despite this
+        // function's file-dialog-flavoured name, for the exact
+        // thread-affinity reason `require_gtk`'s doc comment gives: a
+        // separate `#[test]` fn touching a real GTK/GDK object would run
+        // on its own OS thread and panic unless it happens to be the one
+        // that won the `gtk4::init()` race.
+        {
+            let services = GtkPlatformServices::new();
+            assert_eq!(services.beep(), Ok(()));
         }
     }
 

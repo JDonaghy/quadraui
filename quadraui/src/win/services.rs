@@ -40,6 +40,14 @@
 //!   this module's `#702` audit note below, which applies identically
 //!   here.
 //! - **`open_url`** — `ShellExecuteW(NULL, "open", url, ...)`.
+//! - **`shell.*` parity (#956)** — `reveal_in_file_manager`
+//!   (`SHOpenFolderAndSelectItems`, see `win_reveal_in_file_manager`'s own
+//!   doc for the PIDL dance it takes), `open_path` (the same
+//!   `ShellExecuteW` call `open_url` makes, factored into
+//!   `win_shell_execute_open` and shared by both), `move_to_trash`
+//!   (delegates to [`crate::desktop::move_to_trash`] — the cross-platform
+//!   `trash` crate, not a hand-rolled `SHFileOperationW`, see that
+//!   function's doc for why), and `beep` (`MessageBeep(MB_OK)`).
 //!
 //! Real WinAPI/COM calls are gated on `cfg(target_os = "windows")` —
 //! see `super`'s module docs and `Cargo.toml`'s `win` feature comment for
@@ -73,7 +81,7 @@
 //! redundant, not additive — there is only one `WindowState::pump_depth`
 //! counter, and it's already live for this entire call stack.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "windows")]
 use crate::backend::MessageDialogButton;
@@ -104,6 +112,8 @@ use windows::Win32::System::DataExchange::{
     SetClipboardData,
 };
 #[cfg(target_os = "windows")]
+use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+#[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
@@ -115,17 +125,18 @@ use windows::Win32::UI::Controls::{
     TDF_ALLOW_DIALOG_CANCELLATION, TD_ERROR_ICON, TD_INFORMATION_ICON, TD_WARNING_ICON,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::UI::Shell::Common::{COMDLG_FILTERSPEC, ITEMIDLIST};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::{
     DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog,
-    IShellItem, SHCreateItemFromParsingName, Shell_NotifyIconW, FOS_PICKFOLDERS, HDROP, NIF_ICON,
-    NIF_INFO, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
-    SIGDN_FILESYSPATH,
+    ILClone, ILCreateFromPathW, ILFindLastID, ILFree, ILRemoveLastID, IShellItem,
+    SHCreateItemFromParsingName, SHOpenFolderAndSelectItems, ShellExecuteW, Shell_NotifyIconW,
+    FOS_PICKFOLDERS, HDROP, NIF_ICON, NIF_INFO, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND, NIM_ADD,
+    NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, SW_SHOWNORMAL,
+    LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, SW_SHOWNORMAL,
 };
 // WinRT (not Win32) — `system_theme` (quadraui#952). `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
@@ -342,6 +353,72 @@ impl PlatformServices for WinPlatformServices {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = url;
+        }
+    }
+
+    /// `SHOpenFolderAndSelectItems` (issue #956) — see
+    /// `win_reveal_in_file_manager`'s doc for the `ILCreateFromPathW`/
+    /// `ILClone`/`ILRemoveLastID` PIDL dance it takes.
+    fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_reveal_in_file_manager(path)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = path;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `ShellExecuteW(NULL, "open", path, ...)` (issue #956) — the exact
+    /// same call [`Self::open_url`] makes above, just fed a filesystem
+    /// path instead of a URL string; `ShellExecuteW`'s `"open"` verb
+    /// already accepts either. See [`win_shell_execute_open`]'s doc for
+    /// why this method, unlike `open_url`, surfaces the call's real
+    /// success/failure instead of discarding it.
+    fn open_path(&self, path: &Path) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_shell_execute_open(&path.to_string_lossy())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = path;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// [`crate::desktop::move_to_trash`] (issue #956) — see that
+    /// function's doc for why every backend, Win-GUI included, shares
+    /// this one `trash`-crate-backed implementation rather than
+    /// hand-rolling `SHFileOperationW(FOF_ALLOWUNDO)` here.
+    fn move_to_trash(&self, path: &Path) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            crate::desktop::move_to_trash(path)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = path;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `MessageBeep(MB_OK)` (issue #956) — the default system
+    /// notification sound (Windows' Settings maps `MB_OK`'s alias, "Asterisk"/
+    /// "Default Beep" depending on the Windows version, to whichever sound
+    /// scheme the user picked; there is no dedicated "just beep" API
+    /// distinct from this legacy `MessageBoxW`-family sound-alias
+    /// mechanism).
+    fn beep(&self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_beep()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
         }
     }
 
@@ -937,22 +1014,112 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
     }
 }
 
-// ─── open_url (#23) ─────────────────────────────────────────────────────
+// ─── open_url (#23) / open_path (#956) ───────────────────────────────────
 
+/// `ShellExecuteW(NULL, "open", target, ...)` — shared by [`win_open_url`]
+/// (a URL string) and [`PlatformServices::open_path`]'s Windows arm (a
+/// filesystem path): the `"open"` verb accepts either, so there is
+/// nothing target-kind-specific left to branch on. Unlike `win_open_url`
+/// (which predates issue #956's fallible `open_path` and keeps its
+/// original fire-and-forget `void` shape for that reason — `open_url`'s
+/// own signature is infallible, so its call site simply discards this
+/// function's `Result`), this reports `ShellExecuteW`'s real outcome:
+/// per its own docs, success is any return value greater than 32; the
+/// low range 0..=32 is a documented failure code (e.g. `SE_ERR_FNF` = 2,
+/// `SE_ERR_NOASSOC` = 31).
 #[cfg(target_os = "windows")]
-fn win_open_url(url: &str) {
+fn win_shell_execute_open(target: &str) -> ServiceResult<()> {
     let operation = wide_nul_terminated("open");
-    let file = wide_nul_terminated(url);
-    unsafe {
-        let _ = windows::Win32::UI::Shell::ShellExecuteW(
+    let file = wide_nul_terminated(target);
+    let result = unsafe {
+        ShellExecuteW(
             None,
             PCWSTR::from_raw(operation.as_ptr()),
             PCWSTR::from_raw(file.as_ptr()),
             PCWSTR::null(),
             PCWSTR::null(),
             SW_SHOWNORMAL,
-        );
+        )
+    };
+    if (result.0 as isize) > 32 {
+        Ok(())
+    } else {
+        Err(BackendError::PlatformFailure {
+            context: format!("ShellExecuteW returned {}", result.0 as isize),
+        })
     }
+}
+
+#[cfg(target_os = "windows")]
+fn win_open_url(url: &str) {
+    let _ = win_shell_execute_open(url);
+}
+
+// ─── reveal_in_file_manager (issue #956) ─────────────────────────────────
+
+/// `SHOpenFolderAndSelectItems` — "Reveal in Explorer." Needs two PIDLs:
+/// the *containing folder*'s absolute PIDL, and the *item*'s PIDL
+/// relative to it. `ILCreateFromPathW` builds one absolute PIDL for the
+/// whole path; `ILFindLastID` finds the pointer to its last segment
+/// (the item itself) without copying, and `ILRemoveLastID` truncates a
+/// PIDL down to its parent *in place*, by zeroing the length prefix of
+/// what was the last segment.
+///
+/// That in-place zeroing is why this clones the full PIDL before
+/// truncating rather than truncating `full_pidl` directly: `pidl_last`
+/// (from `ILFindLastID`) points *into* `full_pidl`'s own buffer, so
+/// truncating that same buffer would zero out the very segment
+/// `pidl_last` still needs to hand `SHOpenFolderAndSelectItems` a valid
+/// length-prefixed item id. Truncating an independent `ILClone` instead
+/// leaves `full_pidl` — and the `pidl_last` pointer into it — untouched.
+/// This is the documented Win32 idiom for this API (Microsoft's own
+/// samples pair `SHOpenFolderAndSelectItems` with exactly this
+/// clone-then-truncate sequence), not a novel workaround.
+#[cfg(target_os = "windows")]
+fn win_reveal_in_file_manager(path: &Path) -> ServiceResult<()> {
+    ensure_com_initialized();
+    let wide = wide_nul_terminated(&path.to_string_lossy());
+    unsafe {
+        let full_pidl = ILCreateFromPathW(PCWSTR::from_raw(wide.as_ptr()));
+        if full_pidl.is_null() {
+            return Err(BackendError::PlatformFailure {
+                context: "ILCreateFromPathW returned null".to_string(),
+            });
+        }
+        let pidl_last: *const ITEMIDLIST = ILFindLastID(full_pidl);
+        let folder_pidl = ILClone(full_pidl);
+        let result = if folder_pidl.is_null() {
+            Err(BackendError::PlatformFailure {
+                context: "ILClone returned null".to_string(),
+            })
+        } else if !ILRemoveLastID(Some(folder_pidl)).as_bool() {
+            // `false` means `folder_pidl` had no last id to remove at
+            // all — i.e. `path` resolved to the desktop root, with no
+            // parent folder to reveal it in.
+            Err(BackendError::PlatformFailure {
+                context: "ILRemoveLastID: path has no parent folder".to_string(),
+            })
+        } else {
+            let children: [*const ITEMIDLIST; 1] = [pidl_last];
+            SHOpenFolderAndSelectItems(folder_pidl, Some(&children), 0).map_err(|e| {
+                BackendError::PlatformFailure {
+                    context: format!("SHOpenFolderAndSelectItems: {e}"),
+                }
+            })
+        };
+        ILFree(Some(folder_pidl));
+        ILFree(Some(full_pidl));
+        result
+    }
+}
+
+// ─── beep (issue #956) ────────────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn win_beep() -> ServiceResult<()> {
+    unsafe { MessageBeep(MB_OK) }.map_err(|e| BackendError::PlatformFailure {
+        context: format!("MessageBeep: {e}"),
+    })
 }
 
 // ─── System theme (quadraui#952) ────────────────────────────────────────
@@ -1130,6 +1297,18 @@ mod tests {
             .is_none());
         svc.open_url("https://example.com");
         assert_eq!(svc.system_theme(), Err(BackendError::Unsupported));
+        // #956: every one of these four *is* fully implemented on real
+        // Windows (unlike `open_url` above, which stays a fire-and-forget
+        // no-op everywhere), but off-Windows they degrade the same honest
+        // way the rest of this stub does.
+        let scratch = std::path::Path::new("ignored");
+        assert_eq!(
+            svc.reveal_in_file_manager(scratch),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(svc.open_path(scratch), Err(BackendError::Unsupported));
+        assert_eq!(svc.move_to_trash(scratch), Err(BackendError::Unsupported));
+        assert_eq!(svc.beep(), Err(BackendError::Unsupported));
     }
 
     /// `assign_button_ids` is pure id-assignment logic, host-independent
