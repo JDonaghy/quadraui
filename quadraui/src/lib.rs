@@ -500,9 +500,10 @@ pub use accelerator::{
     AcceleratorScope, KeyBinding, ParsedBinding, Platform,
 };
 pub use backend::{
-    Backend, BackendCaps, BackendError, Clipboard, ColorDepth, FileDialogOptions,
+    Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, FileDialogOptions,
     MessageDialogButton, MessageDialogChoice, MessageDialogOptions, Metrics, Notification,
-    PlatformServices, PointerShape, ResizeEdge, ServiceResult, SystemTheme, WindowControl,
+    PlatformServices, PointerShape, ResizeEdge, RgbaImage, ServiceResult, SystemTheme,
+    WindowControl,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
