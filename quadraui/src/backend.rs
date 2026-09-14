@@ -3332,7 +3332,8 @@ pub trait BackendWidget: Send + 'static {
 }
 
 /// Platform services the backend exposes to apps: clipboard, file
-/// dialogs, message/alert dialogs, notifications, URL opening.
+/// dialogs, message/alert dialogs, notifications, URL opening, and the
+/// OS credential store ([`Self::secret_store`]).
 pub trait PlatformServices {
     fn clipboard(&self) -> &dyn Clipboard;
 
@@ -3544,9 +3545,157 @@ pub trait PlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// The OS credential store — Keychain (macOS), Secret Service
+    /// (Linux), Windows Credential Manager — for apps that hold an API
+    /// token, a password, or an OAuth refresh token and would otherwise
+    /// have no choice but to invent their own storage or write it to
+    /// plaintext config (issue #958, `ELECTRON_PARITY_AUDIT.md` §1.2 G16,
+    /// ranked #9b: "value-to-effort ratio is the best on the list").
+    ///
+    /// Unlike every other capability in that audit, this one is
+    /// **backend-independent**: the returned [`SecretStore`] is backed by
+    /// the cross-platform `keyring` crate directly, not by a per-backend
+    /// native implementation, so it needs no override in
+    /// `tui`/`gtk`/`macos`/`win::services` — the same default body serves
+    /// all four. `keyring` itself needs no window, no display server, and
+    /// no desktop session (its Linux store talks to the Secret Service
+    /// over D-Bus, not through any GUI toolkit), so this is **full
+    /// support on TUI**, not a degrade — the reason issue #958 prioritised
+    /// it. See [`SecretStore`]'s own doc for the get/set/delete shape.
+    ///
+    /// Default: a `keyring`-backed [`SecretStore`] when this crate was
+    /// built with any of the `tui`/`gtk`/`macos`/`win` features (the same
+    /// four that already pull in the cross-platform `trash` crate for
+    /// [`Self::move_to_trash`] — see that dependency's Cargo.toml comment
+    /// for why the list is exactly those four); a `SecretStore` whose
+    /// every method returns `Err(BackendError::Unsupported)` when none of
+    /// them are enabled (a bare `cargo check -p quadraui` with no
+    /// features, which this crate supports — see `lib.rs`'s unconditional
+    /// `pub mod backend;`). No in-tree backend overrides this — there is
+    /// nothing backend-specific left to override.
+    fn secret_store(&self) -> &dyn SecretStore {
+        static STORE: KeyringSecretStore = KeyringSecretStore;
+        &STORE
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
+}
+
+/// A single named entry in the OS credential store, keyed by `service` +
+/// `account` — [`PlatformServices::secret_store`] (issue #958).
+///
+/// Deliberately small and string-keyed, mirroring the `keyring` crate's
+/// own `Entry::new(service, username)` shape it wraps: an app names its
+/// own `service` (e.g. `"my-app"`) and one `account` per credential it
+/// wants to keep separate (e.g. a username, or a fixed string like
+/// `"api-token"` for an app with only one secret). There is no "list all
+/// entries" method — none of macOS Keychain, Windows Credential Manager,
+/// or Secret Service expose a *portable* enumeration API without extra
+/// per-platform querying `keyring` itself doesn't attempt, so this trait
+/// doesn't promise one either.
+///
+/// `get` returns `Ok(None)` for "no entry has ever been set" — the same
+/// "nothing here, not a failure" idiom [`Clipboard::read_text`] already
+/// uses — reserving `Err` for a real platform failure (the credential
+/// store is locked, unreachable, or returned malformed data). `set` and
+/// `delete` have no such "nothing to report" case: a write either
+/// succeeds or fails, and deleting an entry that was never set is a real,
+/// reportable outcome (`Err`), not silently `Ok(())` — the same "surface
+/// the native call's actual outcome rather than papering over it" stance
+/// [`PlatformServices::move_to_trash`]'s own doc and test already take
+/// for a nonexistent path.
+pub trait SecretStore {
+    /// Read the secret stored for `service` + `account`. `Ok(None)` when
+    /// no entry has ever been set (or it was already deleted); `Err` on a
+    /// real platform failure.
+    fn get(&self, service: &str, account: &str) -> ServiceResult<Option<String>>;
+
+    /// Write `secret` for `service` + `account`, creating the entry if it
+    /// doesn't exist or overwriting it if it does.
+    fn set(&self, service: &str, account: &str, secret: &str) -> ServiceResult<()>;
+
+    /// Delete the entry for `service` + `account`. `Err` if no such entry
+    /// exists — see this trait's own doc for why that's a real outcome
+    /// here, not a no-op success.
+    fn delete(&self, service: &str, account: &str) -> ServiceResult<()>;
+}
+
+/// `SecretStore` backed by the cross-platform `keyring` crate — the one
+/// implementation [`PlatformServices::secret_store`]'s default vends on
+/// every backend, TUI included (see that method's doc for why no backend
+/// needs its own override).
+///
+/// A zero-sized marker, not a handle: `keyring::Entry` is cheap to build
+/// per call (it does no I/O until `get_password`/`set_password`/
+/// `delete_credential` is actually invoked) and this crate has no
+/// process-wide keyring state of its own to cache — every call opens a
+/// fresh `Entry` for exactly the `service`/`account` pair it was asked
+/// for.
+#[cfg(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win"))]
+struct KeyringSecretStore;
+
+#[cfg(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win"))]
+impl SecretStore for KeyringSecretStore {
+    fn get(&self, service: &str, account: &str) -> ServiceResult<Option<String>> {
+        let entry = keyring::Entry::new(service, account).map_err(keyring_error_to_backend)?;
+        match entry.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(keyring_error_to_backend(e)),
+        }
+    }
+
+    fn set(&self, service: &str, account: &str, secret: &str) -> ServiceResult<()> {
+        let entry = keyring::Entry::new(service, account).map_err(keyring_error_to_backend)?;
+        entry.set_password(secret).map_err(keyring_error_to_backend)
+    }
+
+    fn delete(&self, service: &str, account: &str) -> ServiceResult<()> {
+        let entry = keyring::Entry::new(service, account).map_err(keyring_error_to_backend)?;
+        entry.delete_credential().map_err(keyring_error_to_backend)
+    }
+}
+
+/// Map a `keyring` crate error onto this crate's own error vocabulary.
+/// `keyring::Error` has no equivalent of [`BackendError::Unsupported`] —
+/// every variant is a real failure of *some* underlying store operation
+/// (see [`keyring::Error`]'s own doc) — so every arm becomes
+/// [`BackendError::PlatformFailure`] with the `Display` text as context;
+/// [`keyring::Error::NoEntry`] is handled separately by
+/// [`KeyringSecretStore::get`] before it would ever reach here.
+#[cfg(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win"))]
+fn keyring_error_to_backend(e: keyring::Error) -> BackendError {
+    BackendError::PlatformFailure {
+        context: format!("keyring: {e}"),
+    }
+}
+
+/// `SecretStore` fallback for a build with none of the
+/// `tui`/`gtk`/`macos`/`win` features enabled — the `keyring` crate isn't
+/// even a dependency in that configuration (see its Cargo.toml gate), so
+/// there is no store to reach; every method honestly reports
+/// [`BackendError::Unsupported`] rather than the crate failing to build
+/// at all. See [`PlatformServices::secret_store`]'s doc for why a bare,
+/// feature-less `cargo check -p quadraui` must still compile this trait's
+/// default method.
+#[cfg(not(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win")))]
+struct KeyringSecretStore;
+
+#[cfg(not(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win")))]
+impl SecretStore for KeyringSecretStore {
+    fn get(&self, _service: &str, _account: &str) -> ServiceResult<Option<String>> {
+        Err(BackendError::Unsupported)
+    }
+
+    fn set(&self, _service: &str, _account: &str, _secret: &str) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    fn delete(&self, _service: &str, _account: &str) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
 }
 
 /// The OS-level theme preference [`PlatformServices::system_theme`]
@@ -4261,5 +4410,130 @@ mod clipboard_default_tests {
         // `Unsupported`) — `formats` must treat that the same as "no
         // file list present", not report `ClipboardFormat::FileList`.
         assert!(cb.formats().is_empty());
+    }
+}
+
+/// Coverage for [`KeyringSecretStore`] — the real, `keyring`-backed
+/// implementation [`PlatformServices::secret_store`]'s default vends
+/// (issue #958). Tests a real round trip against this host's actual
+/// credential store, same headless-skip posture as `desktop.rs`'s
+/// `move_to_trash_tests`: a store that's genuinely unreachable (no D-Bus
+/// session, a locked/sandboxed keychain) is an environment limitation,
+/// not a bug in this code, so those cases skip with an explanation
+/// rather than fail.
+#[cfg(all(
+    test,
+    any(feature = "tui", feature = "gtk", feature = "macos", feature = "win")
+))]
+mod secret_store_tests {
+    use super::*;
+
+    /// Every entry this module's tests touch shares this service name and
+    /// gets its own `account`, namespaced by process id plus a
+    /// test-specific suffix so concurrent test runs (and re-runs against
+    /// a real, persistent OS credential store) never collide with each
+    /// other or leave state a later run trips over.
+    const SERVICE: &str = "quadraui-958-secret-store-test";
+
+    fn unique_account(suffix: &str) -> String {
+        format!("account-{}-{suffix}", std::process::id())
+    }
+
+    /// Set → get → delete → get against a fresh service/account pair.
+    /// Skips (doesn't fail) when `set` itself can't reach a credential
+    /// store in this environment — see the module doc.
+    #[allow(clippy::print_stderr)]
+    #[test]
+    fn round_trip_set_get_delete() {
+        let store = KeyringSecretStore;
+        let account = unique_account("round-trip");
+
+        if let Err(e) = store.set(SERVICE, &account, "s3cr3t") {
+            eprintln!(
+                "skipping: secret_store set() failed in this environment ({e:?}) — \
+                 likely no live keyring/D-Bus session"
+            );
+            return;
+        }
+
+        assert_eq!(
+            store.get(SERVICE, &account),
+            Ok(Some("s3cr3t".to_string())),
+            "get() must return exactly what set() just wrote"
+        );
+
+        store
+            .delete(SERVICE, &account)
+            .expect("delete() right after a successful set() should succeed");
+
+        assert_eq!(
+            store.get(SERVICE, &account),
+            Ok(None),
+            "get() after delete() must report no entry, not the deleted secret"
+        );
+    }
+
+    /// A service/account pair that was never set reads as `Ok(None)` —
+    /// this trait's "nothing here, not a failure" idiom (see
+    /// [`SecretStore`]'s own doc) — not `Err`. Tolerates `Err` from the
+    /// underlying store as an environment-limitation skip, same as
+    /// [`round_trip_set_get_delete`], but a `Some` would mean a leaked
+    /// entry from a previous run and is always a real failure.
+    #[allow(clippy::print_stderr)]
+    #[test]
+    fn get_on_an_entry_that_was_never_set_reports_no_entry() {
+        let store = KeyringSecretStore;
+        let account = unique_account("never-set");
+
+        match store.get(SERVICE, &account) {
+            Ok(None) => {}
+            Ok(Some(secret)) => panic!(
+                "fresh service/account pair should have no entry, found {secret:?} — \
+                 leftover from a previous test run?"
+            ),
+            Err(e) => eprintln!(
+                "skipping: secret_store get() failed in this environment ({e:?}) — \
+                 likely no live keyring/D-Bus session"
+            ),
+        }
+    }
+
+    /// Deleting an entry that doesn't exist is a real, reported failure —
+    /// not silently `Ok(())` — matching
+    /// [`PlatformServices::move_to_trash`]'s identical stance for a
+    /// nonexistent path (see [`SecretStore`]'s own doc).
+    #[test]
+    fn delete_on_a_nonexistent_entry_is_a_reported_failure() {
+        let store = KeyringSecretStore;
+        let account = unique_account("delete-missing");
+
+        assert!(
+            store.delete(SERVICE, &account).is_err(),
+            "delete() on an entry that was never set must not report success"
+        );
+    }
+}
+
+/// [`KeyringSecretStore`]'s fallback for a build with none of the
+/// `tui`/`gtk`/`macos`/`win` features enabled — see that variant's own
+/// doc. Exercised by `cargo test --no-default-features` (not part of
+/// this crate's CI quality gate, which always enables at least `tui`,
+/// but still a real, buildable configuration this crate supports).
+#[cfg(all(
+    test,
+    not(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win"))
+))]
+mod secret_store_unsupported_tests {
+    use super::*;
+
+    #[test]
+    fn every_method_reports_unsupported_without_a_keyring_backend() {
+        let store = KeyringSecretStore;
+        assert_eq!(store.get("svc", "acct"), Err(BackendError::Unsupported));
+        assert_eq!(
+            store.set("svc", "acct", "secret"),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(store.delete("svc", "acct"), Err(BackendError::Unsupported));
     }
 }

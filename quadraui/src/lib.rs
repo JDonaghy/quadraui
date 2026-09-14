@@ -502,7 +502,7 @@ pub use accelerator::{
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, FileDialogOptions,
     MessageDialogButton, MessageDialogChoice, MessageDialogOptions, Metrics, Notification,
-    PlatformServices, PointerShape, ResizeEdge, RgbaImage, ServiceResult, SystemTheme,
+    PlatformServices, PointerShape, ResizeEdge, RgbaImage, SecretStore, ServiceResult, SystemTheme,
     WindowControl,
 };
 pub use event::{

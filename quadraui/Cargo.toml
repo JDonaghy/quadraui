@@ -56,7 +56,12 @@ terminal = ["dep:portable-pty", "dep:vt100"]
 # `dep:trash` (issue #956): `PlatformServices::move_to_trash` — see
 # `desktop::move_to_trash`'s doc for why the same cross-platform `trash`
 # crate backs every backend's override, TUI included.
-tui = ["dep:ratatui", "dep:arboard", "dep:trash"]
+# `dep:keyring` (issue #958): `PlatformServices::secret_store` — see
+# `backend::KeyringSecretStore`'s doc for why the same cross-platform
+# `keyring` crate backs every backend's default, TUI included (this is
+# the one Electron-parity capability that needs no window, no display
+# server, and no desktop session).
+tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring"]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 # `arboard/image-data` (issue #954): `GtkClipboard::read_image`/
@@ -66,14 +71,15 @@ tui = ["dep:ratatui", "dep:arboard", "dep:trash"]
 # build's dependency footprint exactly what it was before #954 — see
 # `arboard`'s own dependency comment for why that footprint was
 # deliberately kept minimal.
-# `dep:trash` (issue #956): see `tui`'s own comment above — same crate,
-# same reason.
+# `dep:trash` (issue #956) / `dep:keyring` (issue #958): see `tui`'s own
+# comments above — same crates, same reasons.
 gtk = [
     "dep:gtk4",
     "dep:pangocairo",
     "dep:arboard",
     "arboard/image-data",
     "dep:trash",
+    "dep:keyring",
 ]
 
 # Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
@@ -88,9 +94,9 @@ gtk = [
 # point of the ubuntu "win compile gate" in ci.yml — see its comment)
 # without needing a real WinAPI. Most `Backend::draw_*` methods are
 # still `todo!()` stubs — later issues implement each rasteriser.
-# `dep:trash` (issue #956): see the `tui` feature's comment above — same
-# crate, same reason.
-win = ["dep:windows", "dep:windows-numerics", "dep:trash"]
+# `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
+# feature's comments above — same crates, same reasons.
+win = ["dep:windows", "dep:windows-numerics", "dep:trash", "dep:keyring"]
 
 # Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
 # keeps working as a deprecated spelling. Prefer `--features gtk` going
@@ -119,9 +125,10 @@ macos = [
     # matching comment above; same reasoning, same arboard feature.
     "arboard/image-data",
     "dep:dispatch2",
-    # `dep:trash` (issue #956): see the `tui` feature's comment above —
-    # same crate, same reason.
+    # `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
+    # feature's comments above — same crates, same reasons.
     "dep:trash",
+    "dep:keyring",
 ]
 
 [dependencies]
@@ -181,6 +188,18 @@ vt100 = { version = "0.16", optional = true }
 # dependencies exactly, so enabling it alongside them unifies rather than
 # duplicating either dependency graph.
 trash = { version = "5", optional = true }
+# Optional — pulled in by `tui`, `gtk`, `macos`, and `win` (issue #958):
+# `PlatformServices::secret_store`'s one shared implementation across
+# every backend (`backend::KeyringSecretStore`) — see that type's own doc
+# for why no backend needs its own override. Default features (`v1`)
+# unify macOS Keychain, Windows Credential Manager, and Linux Secret
+# Service (over D-Bus via the pure-Rust `zbus` client — no `libdbus`,
+# no GUI toolkit, no display server) behind one `keyring::Entry` API,
+# which is exactly the `get`/`set`/`delete`-by-service-and-account shape
+# `SecretStore` wraps. Same "genuinely needs only a background service
+# session, not a live desktop" reasoning as `trash`'s own comment above,
+# which is why this pulls in on TUI too instead of degrading.
+keyring = { version = "4", optional = true }
 
 # macOS-only optional deps. Gated on `target_os = "macos"` so the `macos`
 # feature is a no-op on other platforms — keeps cross-platform CI green.

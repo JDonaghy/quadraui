@@ -55,6 +55,23 @@ release time.
 
 ### Added
 
+- `PlatformServices::secret_store()` + `SecretStore` trait (issue #958,
+  `ELECTRON_PARITY_AUDIT.md` §1.2 G16, ranked #9b) — get/set/delete access
+  to the OS credential store (macOS Keychain, Windows Credential Manager,
+  Linux Secret Service over D-Bus), keyed by `service` + `account`,
+  backed by the cross-platform `keyring` crate. Unlike every other
+  capability in the audit, this one is backend-independent: the same
+  default body serves `tui`/`gtk`/`macos`/`win` with no per-backend
+  override, and needs no window, display server, or desktop session — so
+  it is **full support on TUI**, not a degrade. `get` returns `Ok(None)`
+  for an entry that was never set (the same "nothing here, not a
+  failure" idiom `Clipboard::read_text` already uses); `delete` on a
+  nonexistent entry is a reported `Err`, matching
+  `PlatformServices::move_to_trash`'s identical stance for a nonexistent
+  path. Pulled in by the same four features (`tui`/`gtk`/`macos`/`win`)
+  that already pull in `trash`; a build with none of them enabled gets a
+  `SecretStore` whose every method honestly returns
+  `BackendError::Unsupported` instead of failing to compile.
 - `gtk::draw_editor` now paints both editor scrollbars itself, the way
   `tui::editor::draw_editor` already does (issue #968) — it used to defer
   to a host path (vimcode's `draw_window_scrollbars`) that vimcode#731
