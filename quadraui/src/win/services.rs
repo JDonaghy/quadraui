@@ -109,7 +109,7 @@ use windows::core::{IUnknown, BOOL, PCWSTR};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, POINT, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Com::{
@@ -1243,10 +1243,13 @@ unsafe extern "system" fn win_collect_monitor(
 ) -> BOOL {
     let monitors = &mut *(lparam.0 as *mut Vec<HMONITOR>);
     monitors.push(hmonitor);
-    // Nonzero — continue enumeration. `windows_core::BOOL` is a bare
-    // `i32` alias in this crate version, not `windows::Win32::Foundation::BOOL`'s
-    // wrapper-struct shape other Win32 crates use.
-    1
+    // `TRUE` — continue enumeration; returning `FALSE` would stop
+    // `EnumDisplayMonitors` early and silently drop the remaining
+    // monitors. `windows::core::BOOL` is a newtype over `i32` in this
+    // crate version (re-exported from `windows-result`), not a bare
+    // `i32` alias, so the value has to be wrapped rather than returned
+    // as a plain integer literal.
+    BOOL(1)
 }
 
 /// `EnumDisplayMonitors` + `GetMonitorInfoW` for
@@ -1278,7 +1281,9 @@ fn win_displays() -> ServiceResult<Vec<Display>> {
         // passed rather than the base `MONITORINFO` — the documented
         // Win32 idiom for this API.
         let ok = unsafe { GetMonitorInfoW(hmonitor, &mut info.monitorInfo) };
-        if ok == 0 {
+        // `windows::core::BOOL` is a newtype, not a bare `i32` — compare
+        // through `as_bool()` rather than against a `0` literal.
+        if !ok.as_bool() {
             // A monitor that vanished (unplugged) between `EnumDisplayMonitors`
             // enumerating its handle and this query is skipped rather than
             // failing the whole call — the same "one bad entry doesn't
