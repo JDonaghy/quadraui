@@ -1839,9 +1839,11 @@ impl Backend for GtkBackend {
     ///   a real `gtk4::AlertDialog` (`src/gtk/services.rs`), pumped
     ///   through the same `pump_until_ready` + `pump_depth` guard the
     ///   file dialogs use (quadraui#666).
-    /// - `notifications`: **not** declared —
-    ///   `GtkPlatformServices::send_notification` is still stubbed pending
-    ///   an async-aware trait shape (`src/gtk/services.rs` module docs).
+    /// - `notifications` (quadraui#955): `GtkPlatformServices::send_notification`
+    ///   sends a real `gio::Notification` through the window's owning
+    ///   `gtk4::Application` (`src/gtk/services.rs`), and activation routes
+    ///   back through a `GAction` into [`crate::UiEvent::NotificationActivated`].
+    ///   This is the one backend that declares the capability today.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
         crate::backend::BackendCaps {
             mouse: true,
@@ -1853,6 +1855,7 @@ impl Backend for GtkBackend {
             file_dialogs: true,
             folder_dialogs: true,
             native_dialogs: true,
+            notifications: true,
             app_font_registration: true,
             // `window` (issue #950) is overridden below and returns
             // `Some` once `set_window` has stashed a real
