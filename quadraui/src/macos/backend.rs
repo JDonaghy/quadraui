@@ -200,6 +200,9 @@ pub struct MacBackend {
     /// call. Holds it alive so action selectors on installed `NSMenuItem`s
     /// don't dangle. Replaced wholesale on each re-install.
     menu_target: Option<objc2::rc::Retained<super::menu_bar_install::QuadraMenuTarget>>,
+    /// Tray/status-bar icon state (issue #953) — see [`super::tray`]'s
+    /// module doc and `impl TrayService for MacBackend` below.
+    tray: super::tray::MacTrayState,
     /// Whether `InlineInput` carets should currently paint their stroke
     /// (the "on" half of the blink cycle). Shared `Rc<Cell>` so the
     /// macOS run-loop blink timer can toggle it without holding a
@@ -498,6 +501,7 @@ impl MacBackend {
             chrome_char_width: chrome_metrics.char_width,
             nerd_font_fallback_family: None,
             menu_target: None,
+            tray: super::tray::MacTrayState::default(),
             caret_visible: std::rc::Rc::new(std::cell::Cell::new(true)),
             caret_blink_pause_until: std::rc::Rc::new(std::cell::Cell::new(
                 std::time::Instant::now(),
@@ -1393,6 +1397,10 @@ impl Backend for MacBackend {
             // see `impl WindowControl for MacBackend`'s doc for the
             // AppKit calls backing each method.
             window_control: true,
+            // `tray` (issue #953) is overridden below and always returns
+            // `Some` — see `impl TrayService for MacBackend`'s doc for
+            // the `NSStatusBar`/`NSStatusItem` calls backing each method.
+            tray: true,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -1463,6 +1471,16 @@ impl Backend for MacBackend {
     // ─── Window control (issue #950) ────────────────────────────────────
     fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
         self.window.as_ref()?;
+        Some(self)
+    }
+
+    // ─── Tray / status-bar icon (issue #953) ────────────────────────────
+    /// Unlike [`Self::window`], not gated on any prior state — an
+    /// `NSStatusItem` is created lazily, on first [`TrayService::set_icon`]
+    /// call (see `impl TrayService for MacBackend`'s doc), so there is no
+    /// "not constructed yet" case to report `None` for the way an
+    /// `NSWindow` genuinely can be absent before `macos::run` builds one.
+    fn tray(&mut self) -> Option<&mut dyn crate::backend::TrayService> {
         Some(self)
     }
 
@@ -3307,6 +3325,31 @@ impl WindowControl for MacBackend {
         let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
         window.makeKeyAndOrderFront(None);
         Ok(())
+    }
+}
+
+/// macOS's `TrayService` surface (issue #953), backed by
+/// `NSStatusBar`/`NSStatusItem` — see [`super::tray`]'s module doc for
+/// the full design (lazy item creation, the menu-vs-plain-click
+/// trade-off, why `ContextMenuDismissed` doesn't fire for a tray menu).
+/// Every method here just forwards to a free function in that module,
+/// the same "thin impl on the struct, real logic in a sibling module"
+/// shape `Backend::install_menu_bar`/`Backend::show_context_menu` already
+/// use for `super::menu_bar_install`.
+impl crate::backend::TrayService for MacBackend {
+    fn set_icon(&mut self, icon: crate::primitives::image::ImageSource) -> ServiceResult<()> {
+        super::tray::set_icon(&mut self.tray, self.events.clone(), icon)
+    }
+
+    fn set_tooltip(&mut self, tooltip: &str) -> ServiceResult<()> {
+        super::tray::set_tooltip(&mut self.tray, self.events.clone(), tooltip)
+    }
+
+    fn set_menu(
+        &mut self,
+        menu: &crate::primitives::context_menu::ContextMenu,
+    ) -> ServiceResult<()> {
+        super::tray::set_menu(&mut self.tray, self.events.clone(), menu)
     }
 }
 

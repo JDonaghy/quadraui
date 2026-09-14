@@ -879,7 +879,7 @@ mod win32 {
     // it too, so it lives next to that field rather than being
     // duplicated). `FRAME_TIMER_ID` (quadraui#832) is its
     // `request_frame_in` sibling, same rationale.
-    use crate::win::backend::{FRAME_TIMER_ID, WM_QUADRAUI_USER_EVENT};
+    use crate::win::backend::{FRAME_TIMER_ID, WM_QUADRAUI_TRAY_CALLBACK, WM_QUADRAUI_USER_EVENT};
 
     /// Live modifier state for the message currently being dispatched,
     /// via `GetKeyState` — see `super::events`' module docs on why Win32
@@ -1957,6 +1957,51 @@ mod win32 {
                             let _ = DestroyWindow(hwnd);
                         }
                         break;
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_QUADRAUI_TRAY_CALLBACK => {
+                // Issue #953: `NOTIFYICONDATAW::uCallbackMessage` — posted
+                // by `Shell_NotifyIconW` on every mouse event over the
+                // tray icon. Classic (pre-`NOTIFYICON_VERSION_4`)
+                // contract: `lparam` carries the raw Win32 mouse message
+                // that fired (`WM_LBUTTONUP`/`WM_RBUTTONUP`/etc — see
+                // `win::tray::tray_click_button`'s doc); `wparam` carries
+                // the icon's `uID`, unread here since this backend owns
+                // exactly one tray icon (`win::tray::TRAY_ICON_UID`).
+                let Some(button) = crate::win::tray::tray_click_button(lparam.0 as u32) else {
+                    return LRESULT(0);
+                };
+                let menu = ws.state.borrow().backend.tray_menu();
+                if let Some(menu) = menu {
+                    // A menu is attached — show it and stop there,
+                    // mirroring `NSStatusItem.menu`'s "the menu
+                    // supersedes the plain click" behaviour (see
+                    // `win::tray`'s module doc). `track_menu` blocks
+                    // synchronously on `TrackPopupMenuEx`, the same
+                    // modal-pop-up posture
+                    // `macos::menu_bar_install::show_context_menu` has.
+                    if let Some(id) = crate::win::tray::track_menu(hwnd, &menu) {
+                        if dispatch(ws, hwnd, UiEvent::ContextMenuItemActivated(id))
+                            == Reaction::Exit
+                        {
+                            unsafe {
+                                let _ = DestroyWindow(hwnd);
+                            }
+                            return LRESULT(0);
+                        }
+                    }
+                    if dispatch(ws, hwnd, UiEvent::ContextMenuDismissed) == Reaction::Exit {
+                        unsafe {
+                            let _ = DestroyWindow(hwnd);
+                        }
+                    }
+                } else if dispatch(ws, hwnd, crate::win::tray::plain_click_event(button))
+                    == Reaction::Exit
+                {
+                    unsafe {
+                        let _ = DestroyWindow(hwnd);
                     }
                 }
                 LRESULT(0)

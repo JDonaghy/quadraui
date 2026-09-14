@@ -10,6 +10,28 @@
 //! only exposes async dialog APIs (#427). Notifications remain stubbed
 //! pending an async-aware trait shape.
 //!
+//! ## Tray / status-bar icon (issue #953) — deliberately not implemented
+//! here
+//!
+//! `GtkBackend::tray` (see [`crate::backend::Backend::tray`]) is left at
+//! the trait's `None` default rather than gaining a `GtkTrayService` in
+//! this file. Unlike every other gap this module documents, this one
+//! isn't "stubbed pending a trait shape" — it's "no GTK4 API exists at
+//! all": GTK4 itself ships no status-icon widget (`GtkStatusIcon` was
+//! removed in the GTK3→4 transition), so a real implementation needs
+//! StatusNotifierItem over D-Bus (the `ksni` crate, or a hand-rolled
+//! implementation) or `libayatana-appindicator`, and must additionally
+//! report honest `Unsupported`/`None` on desktops with no SNI host
+//! running at all (stock GNOME without an extension, notably) rather
+//! than silently no-oping. That's a materially larger, separate piece of
+//! work than the macOS (`NSStatusBar`) and Win (`Shell_NotifyIconW`)
+//! implementations, which reuse existing in-tree image-decode and
+//! `ContextMenu`-rendering machinery — see `macos::tray`/`win::tray`'s
+//! module docs for those. Tracked as GTK follow-up, not silently
+//! dropped: `Backend::tray` returning `None` here is the honest,
+//! structural "not yet" this crate's docs consistently prefer over a
+//! capability flag nobody set.
+//!
 //! ## Re-entrancy guard (#427 follow-up)
 //!
 //! `pump_until_ready` is called from inside `AppLogic::handle`, which

@@ -183,6 +183,10 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
         cap: "window_control",
         proof: Proof::All(&["window"]),
     },
+    CapContract {
+        cap: "tray",
+        proof: Proof::All(&["tray"]),
+    },
 ];
 
 // ─── Every backend in the tree, compiled here or not ────────────────────

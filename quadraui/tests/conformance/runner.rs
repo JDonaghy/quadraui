@@ -932,6 +932,7 @@ mod tests {
             notifications: true,
             app_font_registration: true,
             window_control: true,
+            tray: true,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: true,
         };

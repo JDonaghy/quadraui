@@ -344,8 +344,13 @@ fn decode_wide_nul_terminated(slice: &[u16]) -> String {
 /// `szInfo`/`szInfoTitle` arrays, which can't grow to fit an arbitrarily
 /// long notification title/body. See [`wide_nul_terminated`]'s doc
 /// comment for why this is `allow`-gated rather than `cfg`-gated.
+///
+/// `pub(crate)`, not private: issue #953's `super::tray` reuses this
+/// for `NOTIFYICONDATAW::szTip`, the persistent tray icon's fixed-size
+/// tooltip buffer — the exact same truncate-and-NUL-terminate contract
+/// this module's own `szInfo`/`szInfoTitle` calls already rely on.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn copy_wide_truncated(dst: &mut [u16], text: &str) {
+pub(crate) fn copy_wide_truncated(dst: &mut [u16], text: &str) {
     if dst.is_empty() {
         return;
     }

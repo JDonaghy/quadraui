@@ -88,7 +88,7 @@ use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::{Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
-use crate::primitives::image::Image;
+use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::ListViewLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
@@ -283,6 +283,71 @@ pub trait WindowControl {
 
     /// Bring the window to the front and give it keyboard focus.
     fn focus(&mut self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+}
+
+/// Tray / status-bar icon control surface (issue #953) — set the icon,
+/// tooltip, and right-click menu of an OS notification-area/menu-bar
+/// icon, once one exists.
+///
+/// Reached through [`Backend::tray`], which returns `Option<&mut dyn
+/// TrayService>` — the same *structural* absence pattern
+/// [`Backend::window`] established for [`WindowControl`] (issue #950):
+/// `None` on a backend with no tray facility at all (TUI, genuinely —
+/// see [`Backend::tray`]'s own doc for why that is not merely "not
+/// implemented yet" the way GTK's gap is) or before a lazily-created
+/// tray icon exists. Every method still returns [`ServiceResult<()>`]
+/// rather than a bare `bool`, mirroring `WindowControl`'s own reasoning:
+/// a backend can genuinely implement part of this surface (a status
+/// item with an icon but no attached menu) without the whole surface
+/// being fake.
+///
+/// Every method defaults to `Err(BackendError::Unsupported)` — a
+/// backend that implements `TrayService` at all overrides only the
+/// methods it can genuinely back with a native call.
+///
+/// ## Icon source
+///
+/// [`Self::set_icon`] takes an [`ImageSource`] — the same source type
+/// [`crate::primitives::image::Image`] already decodes behind
+/// `Backend::draw_image` — rather than a tray-specific type, per this
+/// issue's own design note (it shares the source type with the
+/// clipboard-formats work, quadraui#953).
+///
+/// ## Menu
+///
+/// [`Self::set_menu`] takes a [`ContextMenu`] — the same primitive
+/// [`Backend::show_context_menu`] already renders natively — rather than
+/// a tray-specific menu model, so there is one menu vocabulary and one
+/// `WidgetId` activation path (`UiEvent::ContextMenuItemActivated`)
+/// shared between a right-click context menu and a tray menu. See each
+/// backend's `impl TrayService` for how its native menu-tracking API
+/// interacts with the click event `Backend::tray`'s own doc describes
+/// (some platforms show the menu automatically on any click once one is
+/// attached, superseding the plain click event for that click).
+pub trait TrayService {
+    /// Set (or replace) the tray icon's image. The first successful call
+    /// is what makes the icon appear at all on backends that create the
+    /// underlying OS resource lazily (macOS's `NSStatusItem`, Windows'
+    /// `Shell_NotifyIconW` slot) — a host that never calls this never
+    /// shows anything in the tray, rather than showing an empty/default
+    /// icon.
+    fn set_icon(&mut self, _icon: ImageSource) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Set the icon's hover tooltip text.
+    fn set_tooltip(&mut self, _tooltip: &str) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Attach (or replace) the icon's right-click/click menu. Passing a
+    /// menu with no items is not the same as never calling this method —
+    /// backends that model "no menu attached" and "menu attached with
+    /// zero items" differently should treat an empty
+    /// [`ContextMenu::items`] as detaching the menu.
+    fn set_menu(&mut self, _menu: &ContextMenu) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 }
@@ -501,6 +566,15 @@ pub struct BackendCaps {
     /// [`BackendError::Unsupported`] even on a backend that declares this
     /// `true`.
     pub window_control: bool,
+    /// [`Backend::tray`] is overridden and returns `Some` at least
+    /// sometimes — this backend has a real [`TrayService`] surface
+    /// rather than the trait's always-`None` default (issue #953).
+    ///
+    /// Doesn't promise every [`TrayService`] method succeeds, same
+    /// caveat as [`Self::window_control`]. TUI declares this `false`
+    /// permanently — see [`Backend::tray`]'s doc for why that is a
+    /// structural fact, not a gap to close.
+    pub tray: bool,
     /// This render target's actual colour fidelity — see [`ColorDepth`].
     /// Not part of the bool-capability vocabulary below ([`Self::names`] /
     /// [`Self::has`] / [`Self::vocabulary`] / `ALL_NAMES`): those model
@@ -566,6 +640,7 @@ impl BackendCaps {
             notifications: false,
             app_font_registration: false,
             window_control: false,
+            tray: false,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: false,
         }
@@ -628,6 +703,7 @@ impl BackendCaps {
         ("notifications", |c| c.notifications),
         ("app_font_registration", |c| c.app_font_registration),
         ("window_control", |c| c.window_control),
+        ("tray", |c| c.tray),
     ];
 }
 
@@ -1368,6 +1444,38 @@ pub trait Backend: sealed::Sealed {
     /// window, which is the honest answer before this issue's `gtk`/
     /// `macos`/`win`/`tui` implementations land.
     fn window(&mut self) -> Option<&mut dyn WindowControl> {
+        None
+    }
+
+    // ─── Tray / status-bar icon (issue #953) ────────────────────────────
+    /// This backend's tray/status-bar icon control surface, or `None`
+    /// when this backend has no way to show one right now.
+    ///
+    /// `None` is the *structural* absence [`Self::window`] already
+    /// established for [`WindowControl`] (issue #950): a backend that
+    /// hasn't wired a [`TrayService`] impl yet is indistinguishable from
+    /// one with no tray facility at all, which is the honest default
+    /// before a given backend's implementation lands.
+    ///
+    /// **TUI is genuinely, permanently `None` here** — not merely
+    /// "not implemented yet" the way [`WindowControl::set_title`] still
+    /// found one real capability (`OSC 0/2`) for a backend with no OS
+    /// window at all. A terminal has no notification-area/menu-bar
+    /// concept whatsoever, so there is no terminal-native analogue this
+    /// method could ever back with a real call — unlike `window()`,
+    /// which TUI overrides to return `Some` for its one genuine
+    /// capability, `tray()` stays at this trait's default on `TuiBackend`
+    /// forever. This is exactly why the compose layer's `hide_to_tray`
+    /// helper (a host convenience that hides the window and relies on
+    /// the tray icon being the only way back) must refuse to run when
+    /// `tray()` is `None`: on TUI, hiding "to the tray" would simply
+    /// make the app vanish with no way back.
+    ///
+    /// `&mut self`, not `&self` — same reasoning as [`Self::window`]:
+    /// every [`TrayService`] method mutates OS tray state.
+    ///
+    /// Default: `None`.
+    fn tray(&mut self) -> Option<&mut dyn TrayService> {
         None
     }
 
@@ -3570,6 +3678,7 @@ mod backend_caps_tests {
         ("notifications", |c| c.notifications = true),
         ("app_font_registration", |c| c.app_font_registration = true),
         ("window_control", |c| c.window_control = true),
+        ("tray", |c| c.tray = true),
     ];
 
     #[test]
@@ -3604,6 +3713,7 @@ mod backend_caps_tests {
             notifications: _,
             app_font_registration: _,
             window_control: _,
+            tray: _,
             color_depth: _,
             kitty_keyboard: _,
         } = BackendCaps::empty();

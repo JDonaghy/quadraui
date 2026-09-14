@@ -220,9 +220,25 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     # this Rust/FFI boundary is UB. "NSColorSpace" gates
     # `colorUsingColorSpace:`, used to defensively convert to sRGB first.
     "NSColorSpace",
+    # Issue #953 (tray/status-bar icon): `NSStatusBar::systemStatusBar`/
+    # `statusItemWithLength:` and the `NSStatusItem` it returns.
+    "NSStatusBar",
+    "NSStatusItem",
+    # `NSStatusItem::button(mtm)` — the clickable/imaged control inside
+    # the status item — additionally needs "NSButton"/"NSControl"/
+    # "NSResponder"/"NSView" (all already enabled above) on top of this
+    # one, per that method's own `cfg(all(...))` in `objc2-app-kit`.
+    "NSStatusBarButton",
+    # `TrayService::set_icon`'s `NSImage::initWithData`/
+    # `initWithContentsOfFile`, and `NSStatusBarButton::setImage`.
+    "NSImage",
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",
+    # Issue #953 (tray/status-bar icon): `NSData::with_bytes` feeds
+    # `NSImage::initWithData` when `TrayService::set_icon` is handed an
+    # `ImageSource::Bytes`.
+    "NSData",
     "NSDate",
     "NSGeometry",
     "NSNotification",
