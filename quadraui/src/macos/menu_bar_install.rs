@@ -120,7 +120,12 @@ define_class!(
 );
 
 impl QuadraMenuTarget {
-    fn new(
+    /// `pub(crate)`: reused directly by `super::tray`'s `TrayService::set_menu`
+    /// (issue #953), which builds its own `QuadraMenuTarget` (with
+    /// `MenuKind::Context`, same as `show_context_menu`) so tray-menu
+    /// activations push `UiEvent::ContextMenuItemActivated` through the
+    /// identical `WidgetId` path.
+    pub(crate) fn new(
         mtm: MainThreadMarker,
         events: Rc<RefCell<VecDeque<UiEvent>>>,
         kind: MenuKind,
@@ -454,6 +459,34 @@ fn cmd() -> NSEventModifierFlags {
 
 fn shift() -> NSEventModifierFlags {
     NSEventModifierFlags::Shift
+}
+
+/// Build a standalone `NSMenu` from `items`, wiring `target`'s
+/// `quadraMenuAction:` selector on every leaf item — the exact
+/// leaf-wiring loop [`show_context_menu`] runs inline below, factored out
+/// so [`super::tray`]'s `TrayService::set_menu` (issue #953) can reuse
+/// the identical `ContextMenu` → `NSMenu` conversion for a tray icon's
+/// attached menu, rather than a second hand-rolled walk of
+/// `ContextMenuItem`. `target` should be a [`QuadraMenuTarget`] built
+/// with [`MenuKind::Context`] so activations push
+/// `UiEvent::ContextMenuItemActivated`, the same variant a right-click
+/// context menu produces.
+pub(crate) fn build_ns_menu(
+    mtm: MainThreadMarker,
+    items: &[ContextMenuItem],
+    target: &QuadraMenuTarget,
+) -> Retained<NSMenu> {
+    let ns_menu: Retained<NSMenu> = unsafe {
+        msg_send![
+            mtm.alloc::<NSMenu>(),
+            initWithTitle: &*NSString::from_str(""),
+        ]
+    };
+    let mut next_tag: isize = 1;
+    for item in items {
+        append_menu_item(mtm, &ns_menu, target, item, &mut next_tag);
+    }
+    ns_menu
 }
 
 /// Show `menu` as a native right-click context menu at view-local

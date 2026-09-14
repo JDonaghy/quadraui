@@ -107,14 +107,33 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSDragOperation", "NSDragging"),
     ("NSDraggingInfo", "NSDragging"),
     ("NSEvent", "NSEvent"),
+    // Issue #953 (tray click button detection, `NSEventMask` widening a
+    // status-item button's `sendActionOn:` to include right-clicks):
+    // both live in the `NSEvent` header, not features of their own.
+    ("NSEventMask", "NSEvent"),
     ("NSEventModifierFlags", "NSEvent"),
+    ("NSEventType", "NSEvent"),
     ("NSGraphicsContext", "NSGraphicsContext"),
+    // Issue #953 (tray icon): `TrayService::set_icon` decodes into this
+    // directly (`NSImage::initWithData`/`initWithContentsOfFile`) rather
+    // than going through `super::image`'s `CGImage` path — the feature
+    // is the symbol's own name, same shape as `NSColor`/`NSAlert`.
+    ("NSImage", "NSImage"),
     ("NSMenu", "NSMenu"),
     ("NSMenuItem", "NSMenuItem"),
     ("NSOpenPanel", "NSOpenPanel"),
     // Issue #834 (OS file drop): lives in the `NSPasteboard` header.
     ("NSPasteboardTypeFileURL", "NSPasteboard"),
     ("NSSavePanel", "NSSavePanel"),
+    // Issue #953 (tray icon): both live in their own same-named headers,
+    // same shape as `NSImage`/`NSColor`/`NSAlert` above.
+    // `NSVariableStatusItemLength` (the sentinel `statusItemWithLength:`
+    // takes) lives in the `NSStatusBar` header, not a feature of its own
+    // — same shape as `NSFloatingWindowLevel`/`NSNormalWindowLevel`
+    // living in `NSWindow` above.
+    ("NSStatusBar", "NSStatusBar"),
+    ("NSStatusItem", "NSStatusItem"),
+    ("NSVariableStatusItemLength", "NSStatusBar"),
     ("NSView", "NSView"),
     ("NSViewFrameDidChangeNotification", "NSView"),
     ("NSWindow", "NSWindow"),

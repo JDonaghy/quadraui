@@ -226,6 +226,12 @@ mod toolbar;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod tooltip;
+/// Tray/status-bar icon control (`Shell_NotifyIconW`) for `Backend::tray`
+/// (#953). `pub(crate)` (not target-gated) for the same "compiles
+/// everywhere via internal `cfg(target_os = "windows")`, only *works* on
+/// Windows" reason as `backend`/`services`/`run` above — see this
+/// module's own doc and `tray`'s module doc.
+pub(crate) mod tray;
 /// Direct2D / DirectWrite rasteriser for [`crate::TreeView`] (#26).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]

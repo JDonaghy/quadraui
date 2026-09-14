@@ -1119,6 +1119,14 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
              runs, not which family resolved each character), so there is no headless \
              assertion this suite's vocabulary can gate on",
         ),
+        (
+            "tray",
+            "only macOS declares it (issue #953), and macOS has no `ConformanceDriver` yet \
+             (#493) — same gap `native_menu` above already names. Even with one, a tray icon \
+             lives outside any window `FrameInventory` observes (the OS menu bar / \
+             notification area, not the app's own render surface), so there is nothing this \
+             suite's paint-and-click vocabulary could assert on even then",
+        ),
     ];
 
     let required: std::collections::BTreeSet<String> = load_scenarios()

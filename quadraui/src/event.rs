@@ -805,6 +805,36 @@ pub enum UiEvent {
     /// open-menu state can ignore this variant.
     ContextMenuDismissed,
 
+    // ── Tray / status-bar icon (issue #953) ─────────────────────────────
+    /// The user clicked the app's tray/status-bar icon
+    /// ([`crate::backend::TrayService::set_icon`]) with no menu currently
+    /// intercepting the click. Carries which mouse button was pressed —
+    /// tray icons commonly bind left-click to "show/focus the main
+    /// window" and right-click to something else, so apps need the
+    /// distinction the way [`Self::MouseDown`] already carries one.
+    ///
+    /// **Does not fire while a menu is attached** via
+    /// [`crate::backend::TrayService::set_menu`] on every backend that
+    /// implements one today — clicking (either button) opens the menu
+    /// instead, and menu selection arrives as
+    /// [`Self::ContextMenuItemActivated`], the same variant a right-click
+    /// context menu produces (see each backend's `impl TrayService` doc,
+    /// e.g. `macos::tray`'s module doc, for the native platform
+    /// behaviour this mirrors). Detach the menu (an empty
+    /// [`ContextMenu`][crate::primitives::context_menu::ContextMenu]) to
+    /// go back to receiving this variant.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`] — a tray icon has no
+    /// `WidgetId` of its own to route through.
+    ///
+    /// Not applicable to TUI: [`crate::backend::Backend::tray`] is
+    /// permanently `None` there (a terminal has no notification-area
+    /// concept — see that method's doc), so `TuiBackend` never produces
+    /// this variant.
+    TrayClicked {
+        button: MouseButton,
+    },
+
     // ── Primitive-specific events bubble up by WidgetId ───────────────
     Tree(WidgetId, TreeEvent),
     List(WidgetId, ListViewEvent),

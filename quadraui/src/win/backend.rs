@@ -558,6 +558,18 @@ const WIN_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const WM_QUADRAUI_USER_EVENT: u32 = 0x8000 + 1;
 
+/// `NOTIFYICONDATAW::uCallbackMessage` (issue #953) — the message
+/// `Shell_NotifyIconW`'s tray icon posts back to this app's `HWND` on
+/// every mouse event over the icon (`lparam` carries the Win32 mouse
+/// message: `WM_LBUTTONUP`/`WM_RBUTTONUP`/etc — see
+/// `super::tray::tray_click_button`'s doc for the decode). `win::run`'s
+/// `wndproc` match arm on this value is what actually decodes and
+/// dispatches — see that arm's doc. Same `WM_APP`-range numbering
+/// rationale as [`WM_QUADRAUI_USER_EVENT`] above, offset by one so the
+/// two custom messages never collide.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) const WM_QUADRAUI_TRAY_CALLBACK: u32 = 0x8000 + 2;
+
 /// `SetTimer`/`KillTimer`'s `nIDEvent` for [`WinBackend::request_frame_in`]'s
 /// one-shot scheduled-wake timer (quadraui#832) — the sibling of
 /// [`WM_QUADRAUI_USER_EVENT`] for a scheduled frame rather than a
@@ -656,6 +668,10 @@ pub struct WinBackend {
     /// `attach_surface` call succeeds.
     #[cfg(target_os = "windows")]
     hwnd: Option<HWND>,
+    /// Tray/status-bar icon state (issue #953) — see [`super::tray`]'s
+    /// module doc and `impl TrayService for WinBackend` below.
+    #[cfg(target_os = "windows")]
+    tray: super::tray::WinTrayState,
     /// Window rect + `GWL_STYLE` value saved by
     /// [`WindowControl::set_fullscreen`][crate::backend::WindowControl::set_fullscreen]
     /// the moment it enters fullscreen, so exiting can restore both —
@@ -885,6 +901,8 @@ impl WinBackend {
             headless_target: None,
             #[cfg(target_os = "windows")]
             hwnd: None,
+            #[cfg(target_os = "windows")]
+            tray: super::tray::WinTrayState::default(),
             #[cfg(target_os = "windows")]
             fullscreen_saved: None,
             #[cfg(target_os = "windows")]
@@ -2148,6 +2166,23 @@ impl Backend for WinBackend {
         }
     }
 
+    // ─── Tray / status-bar icon (issue #953) ────────────────────────────
+    /// Gated on `self.hwnd` for the same reason as [`Self::window`]:
+    /// `Shell_NotifyIconW` needs a real `HWND` to own the icon and
+    /// receive its callback message, which only exists once
+    /// `attach_surface` has run.
+    fn tray(&mut self) -> Option<&mut dyn crate::backend::TrayService> {
+        #[cfg(target_os = "windows")]
+        {
+            self.hwnd?;
+            Some(self)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
     // ─── Capability declaration ──────────────────────────────────────────
 
     /// quadraui#492: honest, not aspirational. #19 landed the window +
@@ -2246,6 +2281,12 @@ impl Backend for WinBackend {
                 // resize — tracked as follow-up, not silently faked
                 // here as a one-shot clamp).
                 window_control: true,
+                // `tray` (issue #953) is overridden below and returns
+                // `Some` once `attach_surface` has stashed a real
+                // `HWND` — see `impl TrayService for WinBackend`'s doc
+                // for the real `Shell_NotifyIconW`/`TrackPopupMenuEx`
+                // calls backing each method.
+                tray: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }
@@ -4470,6 +4511,69 @@ impl WindowControl for WinBackend {
         {
             Err(BackendError::Unsupported)
         }
+    }
+}
+
+/// Win-GUI's `TrayService` surface (issue #953), backed by
+/// `Shell_NotifyIconW` — see [`super::tray`]'s module doc for the full
+/// design (icon decode, the menu-vs-plain-click sequencing, why
+/// `ContextMenuDismissed` fires here unlike macOS). Every method just
+/// forwards to a free function in that module and a `self.hwnd`
+/// guard, the same "thin impl on the struct, real logic in a sibling
+/// module" shape [`WindowControl for WinBackend`](WindowControl) above
+/// already uses for `super::tray`'s sibling gaps.
+impl crate::backend::TrayService for WinBackend {
+    fn set_icon(&mut self, icon: crate::primitives::image::ImageSource) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            super::tray::set_icon(&mut self.tray, hwnd, icon)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = icon;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn set_tooltip(&mut self, tooltip: &str) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            super::tray::set_tooltip(&mut self.tray, hwnd, tooltip)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = tooltip;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    fn set_menu(
+        &mut self,
+        menu: &crate::primitives::context_menu::ContextMenu,
+    ) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            super::tray::set_menu(&mut self.tray, hwnd, menu)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = menu;
+            Err(BackendError::Unsupported)
+        }
+    }
+}
+
+impl WinBackend {
+    /// The currently-attached tray menu, if any — read by `win::run`'s
+    /// `WM_QUADRAUI_TRAY_CALLBACK` wndproc arm to decide whether a tray
+    /// click should show a menu or dispatch `UiEvent::TrayClicked`. See
+    /// [`super::tray::attached_menu`].
+    #[cfg(target_os = "windows")]
+    pub(crate) fn tray_menu(&self) -> Option<crate::primitives::context_menu::ContextMenu> {
+        super::tray::attached_menu(&self.tray)
     }
 }
 

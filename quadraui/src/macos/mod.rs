@@ -73,6 +73,11 @@ pub mod toast;
 pub mod toolbar;
 pub mod tooltip;
 pub mod tree;
+// Tray / status-bar icon control (#953) — `NSStatusBar`/`NSStatusItem`
+// glue for `Backend::tray`. `pub(crate)`, not `pub`: only
+// `impl TrayService for MacBackend` (`backend.rs`) calls into it,
+// mirroring `menu_bar_install`'s visibility above.
+pub(crate) mod tray;
 
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, mac_activity_bar_layout};
 pub use backend::MacBackend;
