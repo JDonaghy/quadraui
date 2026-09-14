@@ -40,6 +40,10 @@
 //!   -trashItemAtURL:resultingItemURL:error:` — see that function's doc
 //!   for why every backend shares it; `beep` is the bare `NSBeep` C
 //!   function.
+//! - **Displays (issue #959)** → `displays` reads `NSScreen::screens()`;
+//!   `cursor_screen_point` reads `NSEvent::mouseLocation()`. See each
+//!   method's own doc for the exact field mapping and coordinate-system
+//!   note.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -47,14 +51,15 @@ use std::process::Command;
 
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBeep, NSColor, NSColorSpace,
-    NSOpenPanel, NSSavePanel, NSWorkspace,
+    NSEvent, NSOpenPanel, NSSavePanel, NSScreen, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
+use objc2_foundation::{MainThreadMarker, NSArray, NSRect, NSString, NSURL};
 
 use crate::backend::{
-    BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
+    BackendError, Clipboard, Display, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
     MessageDialogOptions, Notification, RgbaImage, ServiceResult, SystemTheme,
 };
+use crate::event::{Point, Rect};
 use crate::primitives::dialog::DialogSeverity;
 use crate::types::Color;
 use crate::PlatformServices;
@@ -278,9 +283,61 @@ impl PlatformServices for MacPlatformServices {
         ))
     }
 
+    /// `NSScreen::screens()` (issue #959) — `frame()`/`visibleFrame()` map
+    /// straight to [`Display::bounds`]/[`Display::work_area`], and
+    /// `backingScaleFactor()` to [`Display::scale`]. `screens()[0]` is
+    /// always the screen containing the menu bar (documented AppKit
+    /// behaviour) — used as [`Display::primary`], distinct from
+    /// `NSScreen::mainScreen()`, which tracks the *key window*'s screen,
+    /// not the platform's primary one.
+    ///
+    /// `Err(BackendError::Unsupported)` only off the main thread (no
+    /// `MainThreadMarker`) — same guard [`Self::system_theme`] uses.
+    fn displays(&self) -> ServiceResult<Vec<Display>> {
+        let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
+        let screens = NSScreen::screens(mtm);
+        let count = screens.count();
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let screen = screens.objectAtIndex(i);
+            out.push(Display {
+                bounds: rect_from_ns_rect(screen.frame()),
+                work_area: rect_from_ns_rect(screen.visibleFrame()),
+                scale: screen.backingScaleFactor() as f32,
+                primary: i == 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// `NSEvent::mouseLocation()` (issue #959) — a bare AppKit class
+    /// method, like [`Self::beep`]'s `NSBeep`, needing no
+    /// `MainThreadMarker`/receiver of its own. Returns coordinates in the
+    /// same bottom-left-origin, y-up screen space [`Self::displays`]'s
+    /// `bounds`/`work_area` do — both come from the same `NSScreen`/
+    /// `NSEvent` global-coordinate system, so the two stay directly
+    /// comparable (testing which [`Display`] contains the cursor is a
+    /// plain point-in-rect check, no coordinate flip needed).
+    fn cursor_screen_point(&self) -> ServiceResult<Point> {
+        let p = NSEvent::mouseLocation();
+        Ok(Point::new(p.x as f32, p.y as f32))
+    }
+
     fn platform_name(&self) -> &'static str {
         "macos"
     }
+}
+
+/// Convert an AppKit `NSRect` (`CGRect`: `f64` origin + size) to
+/// [`Rect`]'s `f32` shape — shared by every [`Display`] field
+/// [`MacPlatformServices::displays`] reads off `NSScreen`.
+fn rect_from_ns_rect(r: NSRect) -> Rect {
+    Rect::new(
+        r.origin.x as f32,
+        r.origin.y as f32,
+        r.size.width as f32,
+        r.size.height as f32,
+    )
 }
 
 /// Pure mapping from an `NSAppearance` name plus the two other
@@ -633,6 +690,28 @@ mod tests {
     fn beep_reports_success() {
         let svc = MacPlatformServices::new();
         assert_eq!(svc.beep(), Ok(()));
+    }
+
+    /// quadraui#959: `displays` needs a `MainThreadMarker` the same way
+    /// `system_theme`/`show_message_dialog` above do, so off the spawned
+    /// thread `cargo test` runs every `#[test]` fn on, it reports
+    /// `Unsupported` rather than panicking — same shape
+    /// `show_message_dialog_off_main_thread_returns_none_not_panic`
+    /// pins for that method.
+    #[test]
+    fn displays_off_main_thread_returns_unsupported_not_panic() {
+        let svc = MacPlatformServices::new();
+        assert_eq!(svc.displays(), Err(BackendError::Unsupported));
+    }
+
+    /// `NSEvent::mouseLocation()` (issue #959) — a bare AppKit class
+    /// method with no receiver, like `NSBeep` above, so this is safe to
+    /// call from a spawned test thread without a `MainThreadMarker` and
+    /// always reports a real point.
+    #[test]
+    fn cursor_screen_point_reports_a_point() {
+        let svc = MacPlatformServices::new();
+        assert!(svc.cursor_screen_point().is_ok());
     }
 
     // ── Clipboard image/html/file-list/clear (#954) ────────────────────

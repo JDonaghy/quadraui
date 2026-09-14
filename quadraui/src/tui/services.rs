@@ -49,14 +49,25 @@
 //! [`TuiPlatformServices::open_path`]'s own doc). Only
 //! `reveal_in_file_manager` stays `Err(BackendError::Unsupported)`: a
 //! terminal genuinely has no file-manager window to reveal anything in.
+//!
+//! ## Displays (issue #959)
+//!
+//! `displays` is also genuinely implemented, not a stub: one
+//! [`crate::backend::Display`] whose bounds are `crossterm::terminal::size()`
+//! — the honest "one display = the terminal cell grid" degrade, not
+//! `Unsupported`. `cursor_screen_point` stays `Unsupported`: a terminal
+//! has no synchronous cursor-position query at all. See
+//! [`TuiPlatformServices::displays`]/
+//! [`TuiPlatformServices::cursor_screen_point`]'s own docs.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use crate::backend::{
-    BackendError, Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
+    BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
     Notification, PlatformServices, ServiceResult, SystemTheme,
 };
+use crate::event::{Point, Rect};
 
 // ── OSC 52 support ────────────────────────────────────────────────────────────
 
@@ -616,6 +627,49 @@ impl PlatformServices for TuiPlatformServices {
         super::caps::detect_system_theme().ok_or(BackendError::Unsupported)
     }
 
+    /// A truthful degrade, not `Unsupported` (issue #959, see the crate's
+    /// `CLAUDE.md` "TUI story" note for this issue): one [`Display`]
+    /// whose `bounds`/`work_area` are both the terminal's cell grid —
+    /// `crossterm::terminal::size()`, the same query
+    /// [`crate::tui::run::paint_frame`]'s own doc names as reaching the
+    /// process's real controlling terminal (`/dev/tty` on Unix) rather
+    /// than whatever `Write` sink a backend happens to be constructed
+    /// with. `scale` is always `1.0` (a cell has no DPI concept) and
+    /// `primary` is always `true` (one grid, trivially the only one).
+    ///
+    /// `Err(BackendError::PlatformFailure)` when that query itself fails
+    /// — no controlling terminal at all (piped stdout, `cargo test`'s
+    /// captured output with no pty attached). An honest outcome for a
+    /// headless environment that genuinely has no terminal size to
+    /// report, not a bug to paper over with a guessed value.
+    fn displays(&self) -> ServiceResult<Vec<Display>> {
+        let (width, height) =
+            ratatui::crossterm::terminal::size().map_err(|e| BackendError::PlatformFailure {
+                context: format!("crossterm::terminal::size: {e}"),
+            })?;
+        let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
+        Ok(vec![Display {
+            bounds,
+            work_area: bounds,
+            scale: 1.0,
+            primary: true,
+        }])
+    }
+
+    /// **Deliberately not overridden** — kept explicit purely so a reader
+    /// scanning this file for #959 coverage finds this note instead of
+    /// wondering why the method is missing (same posture
+    /// [`Self::reveal_in_file_manager`]'s doc explains for an identical
+    /// case). A terminal has no synchronous "where is the mouse right
+    /// now" query at all — only `UiEvent::MouseMoved`, delivered when
+    /// the terminal's mouse-tracking mode is on, and only ever in cell
+    /// coordinates relative to this terminal's own grid, not a
+    /// cross-display screen position. `Err(BackendError::Unsupported)`,
+    /// the trait's own default, is the honest final answer here.
+    fn cursor_screen_point(&self) -> ServiceResult<Point> {
+        Err(BackendError::Unsupported)
+    }
+
     fn platform_name(&self) -> &'static str {
         "tui"
     }
@@ -693,5 +747,47 @@ mod message_dialog_tests {
     fn beep_reports_success() {
         let services = TuiPlatformServices::new();
         assert_eq!(services.beep(), Ok(()));
+    }
+
+    /// quadraui#959: a terminal has no synchronous cursor-position query
+    /// — `cursor_screen_point` always reports `Unsupported`, on every
+    /// host this runs on (no environment dependency, unlike `displays`
+    /// below).
+    #[test]
+    fn cursor_screen_point_always_reports_unsupported_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(
+            services.cursor_screen_point(),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// quadraui#959: `displays` reads the real controlling terminal via
+    /// `crossterm::terminal::size()` — genuinely environment-dependent
+    /// (no pty under `cargo test`'s captured output is a real,
+    /// non-bug `Err`, same "skip rather than fail" posture
+    /// `backend::secret_store_tests`' `answered` helper documents for an
+    /// unreachable OS credential store). When it *does* answer, pin the
+    /// honest-degrade shape this backend promises: exactly one display,
+    /// `work_area == bounds`, `scale == 1.0`, `primary == true`.
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn displays_reports_one_cell_grid_display_or_skips_headless() {
+        let services = TuiPlatformServices::new();
+        match services.displays() {
+            Ok(displays) => {
+                assert_eq!(displays.len(), 1);
+                let d = displays[0];
+                assert_eq!(d.work_area, d.bounds);
+                assert_eq!(d.scale, 1.0);
+                assert!(d.primary);
+            }
+            Err(e) => {
+                eprintln!(
+                    "skipping: displays() failed in this environment ({e:?}) — no controlling \
+                     terminal attached (piped/captured output, no pty)"
+                );
+            }
+        }
     }
 }

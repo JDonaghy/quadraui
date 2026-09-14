@@ -34,6 +34,10 @@
 //! - `x` — write a *second* temp file and `move_to_trash` (#956) it —
 //!   check the Recycle Bin afterward
 //! - `b` — `beep` (#956)
+//! - `d` — issue #959's `displays`/`cursor_screen_point`: prints every
+//!   connected monitor (bounds, work area, scale, primary) and the
+//!   current cursor position to stderr — move the window to a second
+//!   monitor and press `d` again to see the list/cursor position change
 //! - `Esc` / `q` — quit
 //!
 //! `quadraui::win::run` only exists when compiled for `target_os =
@@ -228,6 +232,24 @@ impl AppLogic for PlatformServicesDemo {
                 match backend.services().beep() {
                     Ok(()) => eprintln!("beep: ok"),
                     Err(e) => eprintln!("beep FAILED: {e:?}"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('d'),
+                ..
+            } => {
+                match backend.services().displays() {
+                    Ok(displays) => {
+                        for (i, d) in displays.iter().enumerate() {
+                            eprintln!("display[{i}]: {d:?}");
+                        }
+                    }
+                    Err(e) => eprintln!("displays FAILED: {e:?}"),
+                }
+                match backend.services().cursor_screen_point() {
+                    Ok(p) => eprintln!("cursor_screen_point: {p:?}"),
+                    Err(e) => eprintln!("cursor_screen_point FAILED: {e:?}"),
                 }
                 Reaction::Continue
             }

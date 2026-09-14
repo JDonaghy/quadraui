@@ -79,6 +79,16 @@
 //! structural "not yet" this crate's docs consistently prefer over a
 //! capability flag nobody set.
 //!
+//! ## Displays (issue #959)
+//!
+//! `displays` reads `gdk::Display::monitors()` +
+//! `Monitor::geometry()`/`scale_factor()`. `cursor_screen_point` stays
+//! `Err(BackendError::Unsupported)` — GDK4 has no global pointer-position
+//! query at all, a real Wayland protocol restriction, not a missing
+//! binding. See [`GtkPlatformServices::displays`]/
+//! [`GtkPlatformServices::cursor_screen_point`]'s own docs for the full
+//! detail, including the GDK4 work-area and primary-monitor gaps.
+//!
 //! ## Re-entrancy guard (#427 follow-up)
 //!
 //! `pump_until_ready` is called from inside `AppLogic::handle`, which
@@ -114,11 +124,11 @@ use gtk4::glib;
 use gtk4::prelude::{GtkWindowExt, WidgetExt};
 
 use crate::backend::{
-    BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
+    BackendError, Clipboard, Display, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
     MessageDialogOptions, Notification, RgbaImage, ServiceResult, SystemTheme,
 };
 use crate::desktop::{ModalPumpDepth, ModalPumpGuard};
-use crate::event::UiEvent;
+use crate::event::{Point, Rect, UiEvent};
 use crate::primitives::image::ImageSource;
 use crate::types::WidgetId;
 use crate::PlatformServices;
@@ -510,6 +520,77 @@ impl PlatformServices for GtkPlatformServices {
         let dark = settings.is_gtk_application_prefer_dark_theme();
         let theme_name = settings.gtk_theme_name();
         Ok(system_theme_from_gtk_settings(dark, theme_name.as_deref()))
+    }
+
+    /// `gdk::Display::monitors()` + `Monitor::geometry()`/
+    /// `scale_factor()` (issue #959) — the parented window's own display
+    /// when one is attached, falling back to [`gtk4::gdk::Display::default`]
+    /// otherwise, the exact same fallback chain [`Self::beep`] uses (see
+    /// that method's doc).
+    ///
+    /// No work-area API exists in GDK4 **at all** — removed from GDK3
+    /// entirely, not merely absent on Wayland — so [`Display::work_area`]
+    /// is always a copy of [`Display::bounds`] here, on every desktop,
+    /// X11 included, rather than faking a value on some and not others.
+    /// GDK4 also dropped GDK3's `is_primary` monitor flag entirely, so
+    /// [`Display::primary`] is a best-effort proxy: index `0` in
+    /// `monitors()`'s enumeration order — documented, not a native
+    /// signal (see [`Display::primary`]'s own doc).
+    ///
+    /// `Err(BackendError::Unsupported)` only when neither exists — no
+    /// window *and* no default display at all, i.e. no live GTK display
+    /// connection (headless CI, no X11/Wayland), same condition
+    /// [`Self::beep`]/[`Self::system_theme`] already guard against.
+    fn displays(&self) -> ServiceResult<Vec<Display>> {
+        use gtk4::gdk::prelude::{DisplayExt, MonitorExt};
+        use gtk4::glib::prelude::Cast;
+
+        let display = match self.window.borrow().as_ref() {
+            Some(window) => WidgetExt::display(window),
+            None => gtk4::gdk::Display::default().ok_or(BackendError::Unsupported)?,
+        };
+        let monitors = display.monitors();
+        let count = monitors.n_items();
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let Some(monitor) = monitors
+                .item(i)
+                .and_then(|o| o.downcast::<gtk4::gdk::Monitor>().ok())
+            else {
+                continue;
+            };
+            let geom = monitor.geometry();
+            let bounds = Rect::new(
+                geom.x() as f32,
+                geom.y() as f32,
+                geom.width() as f32,
+                geom.height() as f32,
+            );
+            out.push(Display {
+                bounds,
+                work_area: bounds,
+                scale: monitor.scale_factor() as f32,
+                primary: i == 0,
+            });
+        }
+        Ok(out)
+    }
+
+    /// **Deliberately not overridden** — kept explicit purely so a reader
+    /// scanning this file for #959 coverage finds this note instead of
+    /// wondering why the method is missing (same posture
+    /// [`Self::reveal_in_file_manager`]'s TUI counterpart's doc explains
+    /// for an identical case). GDK4 removed the global/root-window
+    /// pointer-position query entirely: `Surface::device_position` only
+    /// returns a *surface-relative* position, and a GDK4 surface exposes
+    /// no screen origin of its own to translate that into a global point
+    /// with. This is a real protocol-level Wayland restriction — a
+    /// Wayland client is never told where its own surface sits on
+    /// screen — not a missing binding this module could add on top of.
+    /// `Err(BackendError::Unsupported)`, the trait's own default, is the
+    /// honest final answer here.
+    fn cursor_screen_point(&self) -> ServiceResult<Point> {
+        Err(BackendError::Unsupported)
     }
 
     fn platform_name(&self) -> &'static str {
@@ -1130,6 +1211,22 @@ mod tests {
             let services = GtkPlatformServices::new();
             assert_eq!(services.beep(), Ok(()));
         }
+
+        // `displays` (issue #959) needs the same real `gdk4::Display`
+        // `beep` above does — folded in for the identical thread-affinity
+        // reason. A live display always has at least one monitor; every
+        // returned `Display` must report the crate-wide "no work-area
+        // API on GTK" and "index-0-is-primary" degrades this backend's
+        // own doc promises (see `GtkPlatformServices::displays`).
+        {
+            let services = GtkPlatformServices::new();
+            let displays = services.displays().expect("a live display has monitors");
+            assert!(!displays.is_empty());
+            assert!(displays[0].primary);
+            for d in &displays {
+                assert_eq!(d.work_area, d.bounds);
+            }
+        }
     }
 
     /// `set_window` stores the handle used to parent future dialogs.
@@ -1139,6 +1236,20 @@ mod tests {
     fn set_window_is_none_until_called() {
         let services = GtkPlatformServices::new();
         assert!(services.window.borrow().is_none());
+    }
+
+    /// quadraui#959: GDK4 has no global pointer-position query at all —
+    /// `cursor_screen_point` always reports `Unsupported`, on every host
+    /// this runs on (no `gtk4::init()`/display needed, unlike `displays`
+    /// above, so this is an ordinary `#[test]` fn with no
+    /// `require_gtk()` guard).
+    #[test]
+    fn cursor_screen_point_always_reports_unsupported_on_gtk() {
+        let services = GtkPlatformServices::new();
+        assert_eq!(
+            services.cursor_screen_point(),
+            Err(BackendError::Unsupported)
+        );
     }
 
     // Regression test for #427 ("depth counter stays positive until the

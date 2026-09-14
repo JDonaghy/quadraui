@@ -130,6 +130,11 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // Issue #834 (OS file drop): lives in the `NSPasteboard` header.
     ("NSPasteboardTypeFileURL", "NSPasteboard"),
     ("NSSavePanel", "NSSavePanel"),
+    // Issue #959 (`PlatformServices::displays`): `NSScreen::screens`/
+    // `frame`/`visibleFrame`/`backingScaleFactor`. Lives in its own
+    // same-named header, same shape as `NSImage`/`NSColor`/`NSAlert`
+    // above.
+    ("NSScreen", "NSScreen"),
     // Issue #953 (tray icon): both live in their own same-named headers,
     // same shape as `NSImage`/`NSColor`/`NSAlert` above.
     // `NSVariableStatusItemLength` (the sentinel `statusItemWithLength:`

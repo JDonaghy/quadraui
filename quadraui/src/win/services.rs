@@ -48,6 +48,10 @@
 //!   (delegates to [`crate::desktop::move_to_trash`] — the cross-platform
 //!   `trash` crate, not a hand-rolled `SHFileOperationW`, see that
 //!   function's doc for why), and `beep` (`MessageBeep(MB_OK)`).
+//! - **Displays (#959)** — `displays` uses `EnumDisplayMonitors` +
+//!   `GetMonitorInfoW` (`rcMonitor`/`rcWork`/`MONITORINFOF_PRIMARY`) and
+//!   `GetDpiForMonitor`; `cursor_screen_point` uses `GetCursorPos`. See
+//!   `win_displays`/`win_cursor_screen_point`'s own docs.
 //!
 //! Real WinAPI/COM calls are gated on `cfg(target_os = "windows")` —
 //! see `super`'s module docs and `Cargo.toml`'s `win` feature comment for
@@ -86,9 +90,10 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "windows")]
 use crate::backend::MessageDialogButton;
 use crate::backend::{
-    BackendError, Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
+    BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
     Notification, PlatformServices, ServiceResult, SystemTheme,
 };
+use crate::event::{Point, Rect};
 #[cfg(target_os = "windows")]
 use crate::primitives::dialog::DialogSeverity;
 use crate::types::Color;
@@ -99,9 +104,13 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(target_os = "windows")]
-use windows::core::{IUnknown, PCWSTR};
+use windows::core::{IUnknown, BOOL, PCWSTR};
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, LPARAM, POINT, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, IBindCtx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -125,6 +134,8 @@ use windows::Win32::UI::Controls::{
     TDF_ALLOW_DIALOG_CANCELLATION, TD_ERROR_ICON, TD_INFORMATION_ICON, TD_WARNING_ICON,
 };
 #[cfg(target_os = "windows")]
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+#[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::Common::{COMDLG_FILTERSPEC, ITEMIDLIST};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::{
@@ -136,7 +147,8 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, SW_SHOWNORMAL,
+    GetCursorPos, LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY,
+    SW_SHOWNORMAL, USER_DEFAULT_SCREEN_DPI,
 };
 // WinRT (not Win32) — `system_theme` (quadraui#952). `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
@@ -430,6 +442,34 @@ impl PlatformServices for WinPlatformServices {
         #[cfg(target_os = "windows")]
         {
             win_system_theme()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `EnumDisplayMonitors` + `GetMonitorInfoW` for `bounds`/`work_area`/
+    /// `primary` (`rcMonitor`/`rcWork`/`MONITORINFOF_PRIMARY`),
+    /// `GetDpiForMonitor` for `scale` (issue #959).
+    fn displays(&self) -> ServiceResult<Vec<Display>> {
+        #[cfg(target_os = "windows")]
+        {
+            win_displays()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `GetCursorPos` (issue #959) — the global cursor position in
+    /// virtual-screen coordinates, the same coordinate space
+    /// [`Self::displays`]'s `bounds`/`work_area` use.
+    fn cursor_screen_point(&self) -> ServiceResult<Point> {
+        #[cfg(target_os = "windows")]
+        {
+            win_cursor_screen_point()
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1181,6 +1221,139 @@ fn system_theme_from_ui_colors(
     }
 }
 
+// ─── Displays (issue #959) ──────────────────────────────────────────────
+
+/// `EnumDisplayMonitors` callback: appends the enumerated `HMONITOR` to
+/// the `Vec<HMONITOR>` `lparam` points at. Collecting handles first and
+/// querying each with `GetMonitorInfoW`/`GetDpiForMonitor` afterwards —
+/// rather than doing that work inside the callback itself, which runs on
+/// an arbitrary call stack inside `EnumDisplayMonitors` — keeps this
+/// `extern "system"` trampoline to the bare minimum FFI surface.
+///
+/// # Safety
+///
+/// `lparam` must be `LPARAM(&mut Vec<HMONITOR> as *mut _ as isize)` —
+/// the exact contract [`win_displays`], its only caller, upholds.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn win_collect_monitor(
+    hmonitor: HMONITOR,
+    _hdc: HDC,
+    _clip_rect: *mut RECT,
+    lparam: LPARAM,
+) -> BOOL {
+    let monitors = &mut *(lparam.0 as *mut Vec<HMONITOR>);
+    monitors.push(hmonitor);
+    // Nonzero — continue enumeration. `windows_core::BOOL` is a bare
+    // `i32` alias in this crate version, not `windows::Win32::Foundation::BOOL`'s
+    // wrapper-struct shape other Win32 crates use.
+    1
+}
+
+/// `EnumDisplayMonitors` + `GetMonitorInfoW` for
+/// `bounds`/`work_area`/`primary`, `GetDpiForMonitor` for `scale`
+/// (issue #959) — see [`PlatformServices::displays`]'s doc for the full
+/// field-by-field contract.
+#[cfg(target_os = "windows")]
+fn win_displays() -> ServiceResult<Vec<Display>> {
+    let mut handles: Vec<HMONITOR> = Vec::new();
+    // SAFETY: `win_collect_monitor` only ever dereferences `lparam` as
+    // the `Vec<HMONITOR>` constructed on the line above, which outlives
+    // the call (`EnumDisplayMonitors` is synchronous — it returns only
+    // after every callback invocation has completed).
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(win_collect_monitor),
+            LPARAM(&mut handles as *mut Vec<HMONITOR> as isize),
+        );
+    }
+    let mut out = Vec::with_capacity(handles.len());
+    for hmonitor in handles {
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        // SAFETY: `info.monitorInfo.cbSize` is set to `MONITORINFOEXW`'s
+        // size immediately above, which is how a caller tells
+        // `GetMonitorInfoW` the extended (`szDevice`-carrying) struct was
+        // passed rather than the base `MONITORINFO` — the documented
+        // Win32 idiom for this API.
+        let ok = unsafe { GetMonitorInfoW(hmonitor, &mut info.monitorInfo) };
+        if ok == 0 {
+            // A monitor that vanished (unplugged) between `EnumDisplayMonitors`
+            // enumerating its handle and this query is skipped rather than
+            // failing the whole call — the same "one bad entry doesn't
+            // discard the rest" posture `win_system_theme`'s high-contrast
+            // fallback already takes.
+            continue;
+        }
+        // DPI is likewise best-effort per monitor: a failure degrades
+        // `scale` to 1.0 (`USER_DEFAULT_SCREEN_DPI`'s own ratio) rather
+        // than dropping the monitor.
+        let mut dpi_x = USER_DEFAULT_SCREEN_DPI;
+        let mut dpi_y = USER_DEFAULT_SCREEN_DPI;
+        // SAFETY: `hmonitor` came from `EnumDisplayMonitors` above and
+        // `GetMonitorInfoW` just proved it's still valid; `dpi_x`/`dpi_y`
+        // are plain stack `u32`s `GetDpiForMonitor` writes through.
+        let _ = unsafe { GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+        let r = info.monitorInfo.rcMonitor;
+        let w = info.monitorInfo.rcWork;
+        out.push(display_from_monitor_rects(
+            (r.left, r.top, r.right, r.bottom),
+            (w.left, w.top, w.right, w.bottom),
+            (info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0,
+            dpi_x,
+        ));
+    }
+    Ok(out)
+}
+
+/// `GetCursorPos` (issue #959) — the global cursor position in
+/// virtual-screen coordinates, the same coordinate space
+/// [`win_displays`]'s `bounds`/`work_area` use (both come from Win32's
+/// one virtual-screen coordinate system).
+#[cfg(target_os = "windows")]
+fn win_cursor_screen_point() -> ServiceResult<Point> {
+    let mut point = POINT::default();
+    // SAFETY: `point` is a plain stack `POINT` `GetCursorPos` writes
+    // through; no other precondition.
+    unsafe { GetCursorPos(&mut point) }.map_err(|e| BackendError::PlatformFailure {
+        context: format!("GetCursorPos: {e}"),
+    })?;
+    Ok(Point::new(point.x as f32, point.y as f32))
+}
+
+/// Pure mapping from a monitor's `(left, top, right, bottom)` full and
+/// work rects, its primary flag, and a horizontal DPI reading, to
+/// [`Display`] — split out so the field arithmetic is unit-testable
+/// without the real `GetMonitorInfoW`/`GetDpiForMonitor` calls, which
+/// this crate can't make on a non-Windows host (same
+/// cross-platform-testable-helper posture as [`system_theme_from_ui_colors`]
+/// above; see [`wide_nul_terminated`]'s doc for why this is
+/// `allow`-gated rather than `cfg`-gated). Takes raw tuples rather than
+/// the native `RECT`/`MONITORINFO` types for the same reason —
+/// those types themselves are only defined under `cfg(target_os =
+/// "windows")`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn display_from_monitor_rects(
+    monitor_rect: (i32, i32, i32, i32),
+    work_rect: (i32, i32, i32, i32),
+    primary: bool,
+    dpi: u32,
+) -> Display {
+    let (ml, mt, mr, mb) = monitor_rect;
+    let (wl, wt, wr, wb) = work_rect;
+    Display {
+        bounds: Rect::new(ml as f32, mt as f32, (mr - ml) as f32, (mb - mt) as f32),
+        work_area: Rect::new(wl as f32, wt as f32, (wr - wl) as f32, (wb - wt) as f32),
+        // 96.0: `USER_DEFAULT_SCREEN_DPI`'s value, Win32's un-scaled DPI
+        // baseline (100% scaling). Inlined rather than imported so this
+        // function stays free of the `cfg(target_os = "windows")`-gated
+        // `windows` crate import — see this function's own doc.
+        scale: dpi as f32 / 96.0,
+        primary,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1210,6 +1383,36 @@ mod tests {
     #[test]
     fn system_theme_from_ui_colors_reports_high_contrast() {
         assert!(system_theme_from_ui_colors((0, 0, 0), (255, 255, 0), true).high_contrast);
+    }
+
+    // ── display_from_monitor_rects (issue #959) ──────────────────────────
+
+    #[test]
+    fn display_from_monitor_rects_converts_rects_to_bounds() {
+        // A 1920x1080 primary monitor at the virtual-desktop origin, work
+        // area shrunk by a 40px taskbar along the bottom.
+        let d = display_from_monitor_rects((0, 0, 1920, 1080), (0, 0, 1920, 1040), true, 96);
+        assert_eq!(d.bounds, Rect::new(0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!(d.work_area, Rect::new(0.0, 0.0, 1920.0, 1040.0));
+        assert!(d.primary);
+        assert_eq!(d.scale, 1.0);
+    }
+
+    #[test]
+    fn display_from_monitor_rects_handles_negative_origin_and_non_primary() {
+        // A secondary monitor to the left of the primary — negative `x`,
+        // matching the virtual-desktop coordinate space every monitor
+        // shares (quadraui#959, `Display`'s own doc).
+        let d = display_from_monitor_rects((-1920, 0, 0, 1080), (-1920, 0, 0, 1080), false, 96);
+        assert_eq!(d.bounds, Rect::new(-1920.0, 0.0, 1920.0, 1080.0));
+        assert!(!d.primary);
+    }
+
+    #[test]
+    fn display_from_monitor_rects_scales_by_dpi() {
+        // 192 DPI is Windows' 200% scaling preset.
+        let d = display_from_monitor_rects((0, 0, 3840, 2160), (0, 0, 3840, 2120), true, 192);
+        assert_eq!(d.scale, 2.0);
     }
 
     #[test]
@@ -1309,6 +1512,11 @@ mod tests {
         assert_eq!(svc.open_path(scratch), Err(BackendError::Unsupported));
         assert_eq!(svc.move_to_trash(scratch), Err(BackendError::Unsupported));
         assert_eq!(svc.beep(), Err(BackendError::Unsupported));
+        // #959: `displays`/`cursor_screen_point` are likewise fully
+        // implemented on real Windows but degrade the same honest way
+        // off it.
+        assert_eq!(svc.displays(), Err(BackendError::Unsupported));
+        assert_eq!(svc.cursor_screen_point(), Err(BackendError::Unsupported));
     }
 
     /// `assign_button_ids` is pure id-assignment logic, host-independent
