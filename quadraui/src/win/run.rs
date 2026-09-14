@@ -516,6 +516,112 @@ impl Default for RunConfig {
     }
 }
 
+/// Encode `args` as a `WM_COPYDATA` payload body (issue #957): joined on
+/// `'\0'`, not `'\n'` — a NUL byte can never appear inside a real `argv`
+/// entry on any platform (C-style `argv` strings are themselves
+/// NUL-terminated), whereas `'\n'` is a legal, if unusual, path
+/// character. [`decode_copydata_argv`] is this function's inverse.
+///
+/// Pure string joining, no WinAPI dependency, so it's unit-tested off
+/// Windows below.
+///
+/// `#[allow(dead_code)]`: this function's only caller,
+/// `forward_argv_to_existing_instance`, is `#[cfg(target_os =
+/// "windows")]`-gated (it lives inside `mod win32`), so on a non-Windows
+/// host (`cargo check`/`cargo test --features win` on the
+/// `ubuntu-latest` CI leg) it has no caller and would trip `-D warnings`'
+/// dead-code lint despite being genuinely used on the `windows-latest`
+/// leg — same rationale as [`dispatch_event`]'s identical attribute
+/// above.
+#[allow(dead_code)]
+fn encode_copydata_argv(args: &[String]) -> String {
+    args.join("\0")
+}
+
+/// Inverse of [`encode_copydata_argv`]: splits a decoded `WM_COPYDATA`
+/// payload body back into the original `argv` entries. Trims trailing
+/// NUL(s) first — `forward_argv_to_existing_instance` appends one
+/// defensively even though `cbData`'s exact byte count means Win32
+/// doesn't strictly need it — then drops any empty entry a trailing
+/// separator would otherwise turn into a bogus empty path.
+///
+/// Pure string splitting, no WinAPI dependency, so it's unit-tested off
+/// Windows below.
+///
+/// `#[allow(dead_code)]`: same rationale as [`encode_copydata_argv`] —
+/// its only caller (`wndproc`'s `WM_COPYDATA` arm) is Windows-only.
+#[allow(dead_code)]
+fn decode_copydata_argv(payload: &str) -> Vec<String> {
+    payload
+        .trim_end_matches('\0')
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Prefix for [`window_class_name_string`]'s per-title window class name.
+const CLASS_NAME_PREFIX: &str = "QuadrauiWin32WindowClass";
+
+/// Issue #957 (review fix): a deterministic identity derived from
+/// `RunConfig::title`, shared by the single-instance mutex
+/// (`win32::is_primary_instance`) and the window class name
+/// ([`window_class_name_string`]).
+///
+/// Before this, the mutex name was scoped by `title`
+/// (`Local\quadraui-single-instance-{title}`) but the window class name
+/// was one process-wide literal shared by *every* quadraui Win app. That
+/// mismatch meant `win32::forward_argv_to_existing_instance`'s
+/// `FindWindowW` — which only had the shared class name to search by —
+/// could find and hijack a completely unrelated app's window (same
+/// class, different title) whenever two different quadraui-based apps
+/// happened to be running at once: app A's second launch would deliver
+/// its `argv` to app B's window instead of app A's, force app B to the
+/// foreground, and app A's own request would go nowhere. Deriving *both*
+/// names from this one function keeps the two scopes locked together by
+/// construction — there's no second literal left to drift out of sync.
+///
+/// A hash (rather than embedding `title` verbatim in the class name)
+/// also sidesteps Win32's ~256-character class-name limit and any
+/// characters in an arbitrary title that Win32 class names can't carry,
+/// and — since neither the mutex name nor the class name embeds `title`
+/// literally any more — sidesteps the embedded-`\`/embedded-`\0` mutex
+/// namespace hazard [`RunConfig::title`]'s doc flags too.
+///
+/// `DefaultHasher`'s `SipHash` keys have been fixed (not
+/// process-randomized) since Rust 1.36, so this is deterministic across
+/// the two separate process launches that need to agree on it. It is
+/// *not* guaranteed stable across different Rust/std versions —
+/// irrelevant here, since both launches being compared are always the
+/// same build of the same binary.
+///
+/// Pure hashing, no WinAPI dependency, so it's unit-tested off Windows
+/// below.
+fn instance_identity(title: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    title.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Window class name for `title`'s instance family — see
+/// [`instance_identity`]. Not `\0`-terminated or wide-encoded; callers in
+/// `mod win32` do both before handing this to `lpszClassName`/
+/// `FindWindowW`.
+///
+/// Pure string formatting, no WinAPI dependency, so it's unit-tested off
+/// Windows below.
+///
+/// `#[allow(dead_code)]`: same rationale as [`encode_copydata_argv`] —
+/// its only callers (`win32::run_inner`'s `RegisterClassExW` and
+/// `win32::forward_argv_to_existing_instance`'s `FindWindowW`) are
+/// Windows-only.
+#[allow(dead_code)]
+fn window_class_name_string(title: &str) -> String {
+    format!("{CLASS_NAME_PREFIX}-{:016x}", instance_identity(title))
+}
+
 // `ModalPumpDepth`/`ModalPumpGuard`/`RefCell` are only reachable from
 // `guarded_call` and its test module below — both `#[cfg(any(target_os
 // = "windows", test))]`, matching `win32`'s own `target_os = "windows"`
@@ -633,10 +739,27 @@ mod win32 {
     };
     use crate::{ButtonMask, Key, Modifiers};
 
-    /// Window-class name. Null-terminated up front — every `PCWSTR` this
-    /// module builds from a Rust string does the same, since Win32 wide
-    /// strings have no length field.
-    const CLASS_NAME: &str = "QuadrauiWin32WindowClass\0";
+    /// Window class name for `title`'s instance family, wide-encoded and
+    /// `\0`-terminated, ready for `lpszClassName`/`FindWindowW`. The pure
+    /// identity/formatting logic lives in `super::window_class_name_string`
+    /// (unit-tested off Windows below its definition) — this just adds
+    /// the Win32-specific encoding, which needs `mod win32`'s own `wide`.
+    fn window_class_name(title: &str) -> Vec<u16> {
+        wide(&format!("{}\0", super::window_class_name_string(title)))
+    }
+
+    /// `COPYDATASTRUCT::dwData` tag identifying an argv-forward payload
+    /// (issue #957). Checked by `wndproc`'s `WM_COPYDATA` arm on receipt
+    /// (review fix, non-blocking concern) so a `WM_COPYDATA` message from
+    /// something other than [`forward_argv_to_existing_instance`] isn't
+    /// mistaken for one and acted on as `UiEvent::OpenRequested`. This is
+    /// a same-process-family sanity tag, not an authentication mechanism
+    /// — any local process that can `FindWindowW` this window (trivial;
+    /// it's the same lookup this backend itself relies on) can read this
+    /// constant from the source and forge a matching one. `WM_COPYDATA`
+    /// has no stronger built-in provenance check than that; see the
+    /// module docs / issue #957 review notes for the accepted tradeoff.
+    const ARGV_FORWARD_TAG: usize = 0x957;
 
     /// Seed window size in DIPs, matching the GTK runner's
     /// `DEFAULT_WINDOW_WIDTH`/`HEIGHT`. `WM_SIZE` (fired synchronously
@@ -754,8 +877,8 @@ mod win32 {
     }
 
     /// Issue #957 single-instance gate. Creates a named `CreateMutexW`
-    /// keyed off `title` (Win has no `app_id` concept the way
-    /// `gtk::RunConfig` does, so the window title doubles as this
+    /// keyed off [`super::instance_identity`] (Win has no `app_id` concept the
+    /// way `gtk::RunConfig` does, so the window title doubles as this
     /// backend's stable app identity) and reports whether *this* call is
     /// the one that actually created it.
     ///
@@ -777,8 +900,17 @@ mod win32 {
     /// say) fails open — returns `true` — so a `RunConfig` opting into
     /// this convenience never silently refuses to open a window over it;
     /// it degrades to "act as the primary instance", not "don't start".
+    ///
+    /// Named via [`super::instance_identity`] rather than `title` embedded
+    /// verbatim (review fix, #957): a raw title could contain `\`, which
+    /// the kernel-object namespace treats as a hierarchy separator, or an
+    /// embedded `\0`, which would silently truncate the effective name —
+    /// hashing sidesteps both.
     fn is_primary_instance(title: &str) -> bool {
-        let name = wide(&format!("Local\\quadraui-single-instance-{title}\0"));
+        let name = wide(&format!(
+            "Local\\quadraui-single-instance-{:016x}\0",
+            super::instance_identity(title)
+        ));
         match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
             Ok(_handle) => (unsafe { GetLastError() }) != ERROR_ALREADY_EXISTS,
             Err(_) => true,
@@ -787,39 +919,49 @@ mod win32 {
 
     /// Issue #957: called only once [`is_primary_instance`] has reported
     /// another instance already holds the single-instance mutex. Finds
-    /// that instance's window — by [`CLASS_NAME`], which every `A:
-    /// AppLogic` shares regardless of which concrete type either process
-    /// was launched with, so this works even if the two launches somehow
-    /// used different `A`s — and forwards this process's own `argv` to
-    /// it via `WM_COPYDATA`, the same message [`wndproc`]'s `WM_COPYDATA`
-    /// arm decodes back into a `UiEvent::OpenRequested` on the receiving
-    /// end. `SendMessageW` (unlike `PostMessageW`) blocks until the
-    /// receiver has processed the message, so it's safe to let
-    /// `payload_wide`/`cds` drop right after this call returns.
+    /// that instance's window — by [`window_class_name`], scoped to this
+    /// same `title` the mutex check just used (review fix: previously
+    /// this searched by a process-wide class-name literal shared by
+    /// *every* quadraui Win app, which could find and hijack a different
+    /// app's window entirely — see [`super::instance_identity`]'s doc comment)
+    /// — and forwards this process's own `argv` to it via `WM_COPYDATA`,
+    /// the same message [`wndproc`]'s `WM_COPYDATA` arm decodes back into
+    /// a `UiEvent::OpenRequested` on the receiving end. `SendMessageW`
+    /// (unlike `PostMessageW`) blocks until the receiver has processed
+    /// the message, so it's safe to let `payload_wide`/`cds` drop right
+    /// after this call returns.
     ///
     /// A `FindWindowW` failure (the mutex's owner exited in the narrow
     /// window between creating it and this call reaching it) silently
     /// does nothing further — there's no window left to forward to, and
     /// this function's contract is "don't open a second window", not
     /// "guarantee delivery".
-    fn forward_argv_to_existing_instance() {
-        let class_name = wide(CLASS_NAME);
+    fn forward_argv_to_existing_instance(title: &str) {
+        let class_name = window_class_name(title);
         let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) }) else {
             return;
         };
         // `argv[0]` is this process's own executable path, not part of
         // the open request — every other backend's argv-classification
         // (see `classify_open_args`'s callers) skips it the same way.
-        let payload = std::env::args().skip(1).collect::<Vec<_>>().join("\n");
+        //
+        // Encoded via `super::encode_copydata_argv` (review fix, #957
+        // non-blocking concern), not a raw `"\n"`.join`: an argv entry
+        // (an unusual but legal path) could itself contain a literal
+        // newline, which would silently split into two bogus entries on
+        // the receiving end — see that function's doc for why `'\0'`
+        // is the separator that can't collide with real argv content.
+        let payload = super::encode_copydata_argv(&std::env::args().skip(1).collect::<Vec<_>>());
         let payload_wide = wide(&format!("{payload}\0"));
         let cds = COPYDATASTRUCT {
-            // Not inspected on the receiving end — `wndproc`'s
-            // `WM_COPYDATA` arm today only ever expects one payload
-            // shape (a `\n`-joined argv list), so there's nothing to
-            // discriminate against yet. Kept non-zero as a basic sanity
-            // tag for whoever adds a second `WM_COPYDATA` payload kind
-            // later.
-            dwData: 0x957,
+            // Checked on the receiving end (review fix, #957 non-blocking
+            // concern): `wndproc`'s `WM_COPYDATA` arm rejects any payload
+            // that doesn't carry this exact tag, so a message forged by
+            // some other local process that merely knows how to
+            // `FindWindowW` this window (trivial — the same mechanism
+            // this function itself uses) can't be mistaken for a real
+            // argv-forward and acted on as `UiEvent::OpenRequested`.
+            dwData: ARGV_FORWARD_TAG,
             cbData: (payload_wide.len() * size_of::<u16>()) as u32,
             lpData: payload_wide.as_ptr() as *mut c_void,
         };
@@ -864,7 +1006,7 @@ mod win32 {
         // instance's window and get out of the way, never touching `app`
         // (dropped unused) or opening a `WNDCLASSEXW` of its own.
         if config.single_instance && !is_primary_instance(&config.title) {
-            forward_argv_to_existing_instance();
+            forward_argv_to_existing_instance(&config.title);
             return std::process::ExitCode::SUCCESS;
         }
 
@@ -909,7 +1051,11 @@ mod win32 {
     ) -> windows::core::Result<bool> {
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null())?.into() };
 
-        let class_name = wide(CLASS_NAME);
+        // Issue #957 (review fix): scoped by `title` via
+        // `window_class_name`, matching `is_primary_instance`'s mutex
+        // scope — see [`super::instance_identity`]'s doc comment for why
+        // the two must agree.
+        let class_name = window_class_name(title);
         // `wide()` expects an already-`\0`-terminated string (see its doc
         // comment) — `title` (from `RunConfig::title`) carries no
         // terminator of its own, unlike the `\0`-suffixed string literals
@@ -1818,6 +1964,16 @@ mod win32 {
                 // buffer it points into can't be freed out from under us
                 // mid-decode.
                 let cds = unsafe { &*(lparam.0 as *const COPYDATASTRUCT) };
+                // Review fix (#957 non-blocking concern): reject anything
+                // that isn't tagged as an argv-forward before touching
+                // `cds.lpData`/bringing this window forward — see
+                // `ARGV_FORWARD_TAG`'s doc comment for what this does and
+                // doesn't guard against. `LRESULT(0)` here means
+                // "unhandled", the same as any other `WM_COPYDATA` this
+                // window doesn't recognize.
+                if cds.dwData != ARGV_FORWARD_TAG {
+                    return LRESULT(0);
+                }
                 let code_units = cds.cbData as usize / size_of::<u16>();
                 // SAFETY: `cds.lpData`/`cds.cbData` describe the same
                 // live buffer `cds` itself points into, per the same
@@ -1825,12 +1981,12 @@ mod win32 {
                 let units =
                     unsafe { std::slice::from_raw_parts(cds.lpData.cast::<u16>(), code_units) };
                 let payload = String::from_utf16_lossy(units);
-                let args: Vec<String> = payload
-                    .trim_end_matches('\0')
-                    .split('\n')
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect();
+                // Decoded via `super::decode_copydata_argv` (review fix,
+                // #957 non-blocking concern), the exact inverse of
+                // `forward_argv_to_existing_instance`'s
+                // `super::encode_copydata_argv` — see that function's doc
+                // for why the separator is `'\0'`, not `'\n'`.
+                let args = super::decode_copydata_argv(&payload);
                 // A bare relaunch with no `argv` (the user just wants
                 // the existing window brought forward) forwards an empty
                 // payload — don't bother the app with a no-op
@@ -1954,6 +2110,92 @@ mod tests {
     fn with_single_instance_overrides_the_default() {
         let config = RunConfig::new("kubeui").with_single_instance(true);
         assert!(config.single_instance);
+    }
+
+    /// #957 review (non-blocking concern): round-tripping an ordinary
+    /// argv through the `WM_COPYDATA` wire encoding must reproduce it
+    /// exactly.
+    #[test]
+    fn copydata_argv_round_trips() {
+        let args = vec!["file.txt".to_string(), "--flag".to_string()];
+        let payload = encode_copydata_argv(&args);
+        assert_eq!(decode_copydata_argv(&payload), args);
+    }
+
+    /// The bug this replaced a `'\n'`-joined payload to fix: an argv
+    /// entry containing a literal newline (an unusual but legal path
+    /// character on both Windows and POSIX) must not be split into two
+    /// bogus entries.
+    #[test]
+    fn copydata_argv_survives_embedded_newline() {
+        let args = vec!["weird\npath.txt".to_string(), "second.txt".to_string()];
+        let payload = encode_copydata_argv(&args);
+        assert_eq!(decode_copydata_argv(&payload), args);
+    }
+
+    /// `forward_argv_to_existing_instance` appends a defensive trailing
+    /// `'\0'` terminator on top of whatever `encode_copydata_argv`
+    /// produced — decoding must still land on the original entries, not
+    /// a bogus trailing empty one.
+    #[test]
+    fn decode_copydata_argv_ignores_trailing_terminator() {
+        let payload = format!("{}\0", encode_copydata_argv(&["a.txt".to_string()]));
+        assert_eq!(decode_copydata_argv(&payload), vec!["a.txt".to_string()]);
+    }
+
+    /// A bare relaunch (no argv beyond the executable path, which callers
+    /// already skip before encoding) must decode to an empty list, not a
+    /// list containing one bogus empty string.
+    #[test]
+    fn decode_copydata_argv_of_empty_payload_is_empty() {
+        assert!(decode_copydata_argv("").is_empty());
+        assert!(decode_copydata_argv("\0").is_empty());
+    }
+
+    /// #957 review (blocking finding): the core scoping guarantee this
+    /// fix exists for — two different `RunConfig::title`s must never
+    /// collide on [`instance_identity`], since that's what the
+    /// single-instance mutex name and the window class name are both
+    /// keyed off. Before the fix, the window class name was one literal
+    /// shared by every title, which is exactly the bug this asserts
+    /// against.
+    #[test]
+    fn instance_identity_differs_across_titles() {
+        assert_ne!(instance_identity("kubeui"), instance_identity("vimcode"));
+    }
+
+    /// [`instance_identity`] must be a pure function of `title` — the two
+    /// separate process launches that need to agree on it (the one
+    /// holding the mutex, and the one calling
+    /// `forward_argv_to_existing_instance`) call it independently, with
+    /// no shared state between them.
+    #[test]
+    fn instance_identity_is_deterministic() {
+        assert_eq!(instance_identity("kubeui"), instance_identity("kubeui"));
+    }
+
+    /// [`window_class_name_string`] must embed [`instance_identity`]
+    /// verbatim (as lowercase hex) so `win32::run_inner`'s
+    /// `RegisterClassExW` and `win32::forward_argv_to_existing_instance`'s
+    /// `FindWindowW` — which both build their class name from this same
+    /// function — always agree for the same `title`.
+    #[test]
+    fn window_class_name_string_embeds_instance_identity() {
+        let title = "kubeui";
+        let expected = format!("{CLASS_NAME_PREFIX}-{:016x}", instance_identity(title));
+        assert_eq!(window_class_name_string(title), expected);
+    }
+
+    /// The other half of the blocking finding: two different titles must
+    /// produce two different window class names, or `FindWindowW` in
+    /// `forward_argv_to_existing_instance` can still find a different
+    /// app's window.
+    #[test]
+    fn window_class_name_string_differs_across_titles() {
+        assert_ne!(
+            window_class_name_string("kubeui"),
+            window_class_name_string("vimcode")
+        );
     }
 
     /// Reproduces the exact hazard `win32::dispatch`'s doc comment used
