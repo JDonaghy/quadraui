@@ -394,3 +394,58 @@ pub use toolbar::{draw_toolbar, win_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]
 pub use tree::{draw_tree, win_tree_layout};
+
+/// Serialises every `#[test]` fn in this module tree that drives the
+/// **one real systemwide Windows clipboard**.
+///
+/// `cargo test` runs `#[test]` fns on a pool of spawned threads, so any
+/// two tests that write to the OS clipboard race each other — and the
+/// loser reads back whatever the winner just wrote. On Windows the
+/// clipboard is a single global owned by whichever thread most recently
+/// called `OpenClipboard`/`SetClipboardData`, so there is no per-test
+/// isolation to fall back on.
+///
+/// Three tests in [`run`] touch it, all only on `target_os = "windows"`
+/// (off Windows `WinClipboard` is an unconditional no-op stub, so they
+/// can't race):
+///
+/// - `paste_dispatch_tests::ctrl_v_delivers_real_clipboard_text_as_clipboard_paste`
+///   seeds a distinctive payload, reads it back to confirm the host's
+///   clipboard is usable at all, then asserts Ctrl-V delivers *that*
+///   payload — a three-step sequence that is only sound if nothing else
+///   writes in between.
+/// - `text_selection_dispatch_tests::drag_select_then_ctrl_c_copies_the_selection`
+///   presses Ctrl-C over a selection, which copies `"hello world"` to
+///   that same real clipboard.
+/// - `paste_dispatch_tests::ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress`
+///   reads it (its assertion tolerates any contents, but it holds the
+///   clipboard open while doing so, which is enough to make a concurrent
+///   `OpenClipboard` fail).
+///
+/// This is the Windows twin of [`crate::macos::lock_real_pasteboard`],
+/// added for the same reason and after the same failure: quadraui#965's
+/// 21 new `compose::file_picker` tests changed nothing about any
+/// clipboard test, but did change libtest's thread interleaving enough
+/// for the pre-existing race to start losing — first on `macos-latest`,
+/// then on `ci.yml`'s `Test (win feature, real Windows)` step, which is
+/// the only place these three ever execute against a real clipboard.
+///
+/// **Anything that reads or writes the real clipboard takes this lock
+/// first**, for its whole read/write sequence, and holds it until the
+/// assertions are done. Poisoning is recovered from rather than
+/// propagated — one already-failing clipboard test should report its own
+/// failure, not convert every other clipboard test into a second red
+/// line.
+#[cfg(test)]
+static REAL_CLIPBOARD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquire [`REAL_CLIPBOARD_LOCK`] — see that static's doc for the
+/// invariant this enforces. Bind the guard to a named local (`let
+/// _clipboard = …`), never to `_`, or it is dropped immediately and the
+/// lock buys nothing.
+#[cfg(test)]
+pub(crate) fn lock_real_clipboard() -> std::sync::MutexGuard<'static, ()> {
+    REAL_CLIPBOARD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}

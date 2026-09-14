@@ -2416,8 +2416,15 @@ mod paste_dispatch_tests {
     /// (everywhere else, always) only changes *what else* the app sees —
     /// a `ClipboardPaste`, or nothing — never whether the raw key event
     /// leaks through underneath it.
+    ///
+    /// Takes [`crate::win::lock_real_clipboard`] even though its own
+    /// assertion tolerates any clipboard contents: on Windows the Ctrl-V
+    /// interception *reads* the real clipboard, and a read that lands
+    /// while another test holds the clipboard open fails rather than
+    /// blocking — see that function's doc for the whole invariant.
     #[test]
     fn ctrl_v_is_never_forwarded_to_the_app_as_a_raw_keypress() {
+        let _clipboard = crate::win::lock_real_clipboard();
         let mut backend = WinBackend::new();
         let mut app = RecordingApp::default();
         let _ = dispatch_event(ctrl_v(), &mut backend, &mut app);
@@ -2472,6 +2479,15 @@ mod paste_dispatch_tests {
     /// above still covers the interception path unconditionally on this
     /// same host.
     ///
+    /// The seed → read-back → `dispatch_event` sequence below is only
+    /// sound while nothing else writes the one systemwide clipboard in
+    /// between, so it runs under [`crate::win::lock_real_clipboard`] —
+    /// without it, `text_selection_dispatch_tests`'
+    /// `drag_select_then_ctrl_c_copies_the_selection` (which copies
+    /// `"hello world"` with Ctrl-C) can land between the read-back and
+    /// the dispatch and this test then reports a `ClipboardPaste`
+    /// interception bug that is really just the other test's payload.
+    ///
     /// `#[allow(clippy::print_stderr)]`: same #619-style exemption
     /// `run_smoke_check` above carries — this is test-harness diagnostic
     /// output, never reached by a host embedding a live quadraui backend,
@@ -2481,6 +2497,7 @@ mod paste_dispatch_tests {
     #[test]
     #[allow(clippy::print_stderr)]
     fn ctrl_v_delivers_real_clipboard_text_as_clipboard_paste() {
+        let _clipboard = crate::win::lock_real_clipboard();
         let mut backend = WinBackend::new();
         backend.services().clipboard().write_text(PASTE_PAYLOAD);
         let seeded = backend.services().clipboard().read_text();
@@ -2583,8 +2600,16 @@ mod text_selection_dispatch_tests {
     /// default metrics (16.0 line height, 8.0 char width) make the pixel
     /// math easy to reason about: a region one line tall and 88 DIPs wide
     /// covers exactly 11 columns — the length of "hello world".
+    ///
+    /// The Ctrl-C at the end writes `"hello world"` to the **real**
+    /// systemwide clipboard on Windows (`runtime`'s copy path emits
+    /// `TextCopied` unconditionally, but it still performs the write), so
+    /// this takes [`crate::win::lock_real_clipboard`] for its whole body
+    /// — see that function's doc for the pair of `paste_dispatch_tests`
+    /// it would otherwise race.
     #[test]
     fn drag_select_then_ctrl_c_copies_the_selection() {
+        let _clipboard = crate::win::lock_real_clipboard();
         let mut backend = WinBackend::new();
         let mut app = RecordingApp::default();
         backend.register_text_region(region("body", 0.0, 0.0, 88.0, 16.0, &["hello world"]));
