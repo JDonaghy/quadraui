@@ -90,6 +90,11 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSApplicationTerminateReply", "NSApplication"),
     // Not `NSWindow` — see the module doc.
     ("NSBackingStoreType", "NSGraphics"),
+    // Issue #956 (`shell.beep`): the bare `NSBeep()` C function is
+    // declared in the `NSGraphics` header alongside `NSBackingStoreType`
+    // above — there is no "NSBeep" feature. A prefix heuristic would get
+    // this wrong in the same way it gets `NSBackingStoreType` wrong.
+    ("NSBeep", "NSGraphics"),
     // Issue #952 (`system_theme`): `NSColor::controlAccentColor` — the
     // feature *is* the symbol's own name here, same shape as `NSAlert`.
     ("NSColor", "NSColor"),
