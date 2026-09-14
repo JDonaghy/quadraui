@@ -41,8 +41,8 @@ use gtk4::gio;
 use gtk4::glib;
 
 use crate::backend::{
-    Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
-    Notification,
+    BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
+    MessageDialogOptions, Notification, ServiceResult, SystemTheme,
 };
 use crate::desktop::{ModalPumpDepth, ModalPumpGuard};
 use crate::PlatformServices;
@@ -208,8 +208,40 @@ impl PlatformServices for GtkPlatformServices {
             gtk4::gio::AppInfo::launch_default_for_uri(url, None::<&gtk4::gio::AppLaunchContext>);
     }
 
+    /// quadraui#952: `gtk4::Settings`' dark-preference + theme-name
+    /// properties. `Settings::default()` returns `None` only when GTK has
+    /// no default display connection at all (headless dev box, CI) — the
+    /// same condition this module's own `require_gtk` test helper skips
+    /// its dialog tests on — so that's the one case this reports
+    /// `Unsupported` rather than a guessed value.
+    fn system_theme(&self) -> ServiceResult<SystemTheme> {
+        let settings = gtk4::Settings::default().ok_or(BackendError::Unsupported)?;
+        let dark = settings.is_gtk_application_prefer_dark_theme();
+        let theme_name = settings.gtk_theme_name();
+        Ok(system_theme_from_gtk_settings(dark, theme_name.as_deref()))
+    }
+
     fn platform_name(&self) -> &'static str {
         "gtk"
+    }
+}
+
+/// Pure mapping from `gtk4::Settings`' two theme properties to
+/// [`SystemTheme`] — split out from `system_theme` so it's unit-testable
+/// without a live GTK display, mirroring this module's
+/// `hig_button_order`/`native_button_order`-style helpers.
+///
+/// No accent-colour source: GTK4 itself exposes none (that lives on
+/// libadwaita's `AdwStyleManager`, which this crate doesn't depend on), so
+/// `accent` is always `None` here.
+fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> SystemTheme {
+    let high_contrast = theme_name
+        .map(|name| name.to_ascii_lowercase().contains("highcontrast"))
+        .unwrap_or(false);
+    SystemTheme {
+        dark,
+        accent: None,
+        high_contrast,
     }
 }
 
@@ -650,5 +682,34 @@ mod tests {
     fn hig_button_order_no_default_or_cancel_keeps_declared_order() {
         let buttons = vec![msg_btn("a", false, false), msg_btn("b", false, false)];
         assert_eq!(hig_button_order(&buttons), vec![0, 1]);
+    }
+
+    // ── system_theme_from_gtk_settings (quadraui#952) ───────────────────
+
+    #[test]
+    fn system_theme_from_gtk_settings_reports_dark() {
+        let theme = system_theme_from_gtk_settings(true, Some("Adwaita-dark"));
+        assert!(theme.dark);
+        assert_eq!(theme.accent, None);
+        assert!(!theme.high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_gtk_settings_reports_light() {
+        let theme = system_theme_from_gtk_settings(false, Some("Adwaita"));
+        assert!(!theme.dark);
+        assert!(!theme.high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_gtk_settings_detects_high_contrast_case_insensitively() {
+        assert!(system_theme_from_gtk_settings(false, Some("HighContrast")).high_contrast);
+        assert!(system_theme_from_gtk_settings(false, Some("HighContrastInverse")).high_contrast);
+        assert!(system_theme_from_gtk_settings(true, Some("highcontrast")).high_contrast);
+    }
+
+    #[test]
+    fn system_theme_from_gtk_settings_no_theme_name_is_not_high_contrast() {
+        assert!(!system_theme_from_gtk_settings(true, None).high_contrast);
     }
 }

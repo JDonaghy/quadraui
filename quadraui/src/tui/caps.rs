@@ -85,7 +85,7 @@
 //!    [`crate::backend::BackendCaps::kitty_keyboard`] exposes it to the
 //!    app before it relies on any gesture that needs it.
 
-use crate::backend::ColorDepth;
+use crate::backend::{ColorDepth, SystemTheme};
 
 /// Detect this process's terminal colour depth from `COLORTERM`/`TERM`.
 /// See the module doc for the exact precedence. [`crate::tui::backend::TuiBackend::new`]
@@ -184,6 +184,57 @@ pub(crate) fn detect_kitty_keyboard_from(getenv: impl Fn(&str) -> Option<String>
 pub(crate) fn probe_kitty_keyboard() -> bool {
     ratatui::crossterm::terminal::supports_keyboard_enhancement()
         .unwrap_or_else(|_| detect_kitty_keyboard())
+}
+
+/// System dark/light detection (quadraui#952) — the TUI half of
+/// `PlatformServices::system_theme`'s "honest degrade" story. Unlike
+/// [`detect_color_depth`]/[`detect_kitty_keyboard`], there is no `probe_*`
+/// live-query twin here yet: a real answer would need an OSC 11
+/// background-colour query/response round trip (xterm, kitty, WezTerm,
+/// iTerm2, foot, and tmux-with-passthrough all answer it), which needs raw
+/// terminal I/O timed against the same 2s-ish window
+/// [`probe_kitty_keyboard`] uses — deferred rather than guessed at here,
+/// so this reads only the one static environment signal terminals already
+/// set for exactly this purpose.
+///
+/// `COLORFGBG` is set by rxvt, urxvt, and several other terminals (and
+/// forwarded by tmux) as `"<fg-index>;<bg-index>"` (occasionally a third
+/// `;default` suffix, ignored) — ANSI colour indices, not RGB. Terminals
+/// that don't set it at all (a large majority — xterm, GNOME Terminal,
+/// Alacritty, Windows Terminal, iTerm2, kitty, WezTerm all leave it unset)
+/// give this function nothing to work with, so it returns `None` rather
+/// than guessing: `PlatformServices::system_theme` turns that into
+/// `Err(BackendError::Unsupported)`, the same "no signal, don't fake one"
+/// posture [`detect_kitty_keyboard_from`]'s doc argues for.
+pub fn detect_system_theme() -> Option<SystemTheme> {
+    detect_system_theme_from(|key| std::env::var(key).ok())
+}
+
+/// The pure decision behind [`detect_system_theme`], parameterised over an
+/// environment lookup for the same reason as [`detect_color_depth_from`].
+///
+/// Background indices `7` (white) and `15` (bright white) are the only two
+/// conventional "light background" values a terminal actually sets in
+/// `COLORFGBG` — every other index (`0`/`8` black, and every other hue) is
+/// treated as dark. That is the cheaper failure mode, mirroring
+/// [`detect_color_depth_from`]'s reasoning rather than
+/// [`detect_kitty_keyboard_from`]'s: a dark background is both the more
+/// common terminal default and the safer wrong guess (an app that themes
+/// itself for dark-on-light when the terminal is actually light-on-dark
+/// merely looks duller, not unreadable, the same asymmetry that section's
+/// doc names for colour depth).
+pub(crate) fn detect_system_theme_from(
+    getenv: impl Fn(&str) -> Option<String>,
+) -> Option<SystemTheme> {
+    let colorfgbg = getenv("COLORFGBG")?;
+    let bg_index: u8 = colorfgbg.rsplit(';').next()?.trim().parse().ok()?;
+    Some(SystemTheme {
+        dark: !matches!(bg_index, 7 | 15),
+        // No accent-colour or high-contrast signal exists in a terminal
+        // environment — see `SystemTheme`'s field docs.
+        accent: None,
+        high_contrast: false,
+    })
 }
 
 #[cfg(test)]
@@ -337,5 +388,56 @@ mod tests {
     #[test]
     fn alacritty_term_is_not_guessed() {
         assert!(!detect_kitty_keyboard_from(env(&[("TERM", "alacritty")])));
+    }
+
+    // ── System theme detection (quadraui#952) ───────────────────────────
+
+    #[test]
+    fn no_colorfgbg_returns_none() {
+        assert_eq!(detect_system_theme_from(env(&[])), None);
+    }
+
+    #[test]
+    fn dark_background_index_zero_is_detected() {
+        let theme = detect_system_theme_from(env(&[("COLORFGBG", "15;0")]))
+            .expect("COLORFGBG should be parsed");
+        assert!(theme.dark);
+        assert_eq!(theme.accent, None);
+        assert!(!theme.high_contrast);
+    }
+
+    #[test]
+    fn light_background_index_seven_is_detected() {
+        let theme = detect_system_theme_from(env(&[("COLORFGBG", "0;7")]))
+            .expect("COLORFGBG should be parsed");
+        assert!(!theme.dark);
+    }
+
+    #[test]
+    fn light_background_index_fifteen_is_detected() {
+        let theme = detect_system_theme_from(env(&[("COLORFGBG", "0;15")]))
+            .expect("COLORFGBG should be parsed");
+        assert!(!theme.dark);
+    }
+
+    /// Every background index other than the two conventional "light"
+    /// values (7, 15) reads as dark — the cheaper failure mode this
+    /// function's doc argues for.
+    #[test]
+    fn other_background_indices_read_as_dark() {
+        for bg in [0, 1, 4, 8, 9, 14] {
+            let theme = detect_system_theme_from(env(&[("COLORFGBG", &format!("15;{bg}"))]))
+                .unwrap_or_else(|| panic!("COLORFGBG with bg={bg} should be parsed"));
+            assert!(theme.dark, "bg index {bg} should read as dark");
+        }
+    }
+
+    #[test]
+    fn malformed_colorfgbg_returns_none() {
+        assert_eq!(
+            detect_system_theme_from(env(&[("COLORFGBG", "not-a-number")])),
+            None
+        );
+        assert_eq!(detect_system_theme_from(env(&[("COLORFGBG", "")])), None);
     }
 }

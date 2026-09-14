@@ -36,6 +36,7 @@
 //! | `TextCopied` | Broadcast (no target) |
 //! | `FocusChanged` | Broadcast — names the new focus, if any |
 //! | `OpenRequested` | Broadcast (no target) |
+//! | `SystemThemeChanged` | Broadcast (no target) |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -62,6 +63,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::backend::SystemTheme;
 use crate::types::{Modifiers, WidgetId};
 use crate::{
     ActivityBarEvent, ChartEvent, DataTableEvent, FormEvent, ListViewEvent, PaletteEvent,
@@ -665,6 +667,57 @@ pub enum UiEvent {
     /// for the full opt-in contract, including why Tab/Shift+Tab stop
     /// reaching [`Self::KeyPressed`] once an app opts in.
     FocusChanged(Option<WidgetId>),
+
+    // ── System theme change (issue #952) ────────────────────────────────
+    /// The OS-level light/dark/accent/high-contrast preference changed
+    /// while the app was running — the live counterpart to
+    /// [`PlatformServices::system_theme`][crate::PlatformServices::system_theme]'s
+    /// poll-on-demand query. Payload is the new value; apps that want the
+    /// theme at startup call `system_theme()` once instead of waiting for
+    /// this to fire.
+    ///
+    /// **No backend emits this yet.** Same "declare the gap, don't fake
+    /// it" posture as [`Self::WindowStateChanged`] (also zero producers
+    /// today): the variant exists so app code and the event vocabulary are
+    /// ready before a backend wires the native change notification (GTK's
+    /// `Settings::connect_gtk_application_prefer_dark_theme_notify`,
+    /// macOS KVO on `effectiveAppearance`, Win's
+    /// `WM_SETTINGCHANGE("ImmersiveColorSet")`) into it. TUI has no
+    /// equivalent OS notification at all — a terminal can't push, only
+    /// answer a query — so it will never emit this variant.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::system_theme` method and `SystemTheme` struct
+    /// as well as this variant — all three landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'SystemThemeChanged\|SystemTheme\|system_theme' ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of the three new
+    /// items yet, but the real question for a *new enum variant* is
+    /// whether either consumer's existing `match`es over `UiEvent` are
+    /// exhaustive (no wildcard arm), since those would need to add one:
+    ///
+    /// - `vimcode`'s `tui_main/shell_app.rs` top-level `UiEvent` dispatch
+    ///   (`shell_app.rs:2403,2689`) already ends in a wildcard `_ =>` arm.
+    /// - `coord-tui`'s `app/events.rs` top-level `UiEvent` dispatch
+    ///   (`events.rs:1390,3973`) likewise already ends in a wildcard
+    ///   `_ =>` arm.
+    ///
+    /// Every other `UiEvent` match in both consumers is either an `if
+    /// let` on one specific variant or itself wildcard-terminated. Adding
+    /// `SystemThemeChanged` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
+    SystemThemeChanged(SystemTheme),
 
     // ── Cross-primitive scroll event ──────────────────────────────────
     /// A scrollbar drag or click resolved to a new offset. Generic

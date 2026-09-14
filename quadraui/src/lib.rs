@@ -502,7 +502,7 @@ pub use accelerator::{
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ColorDepth, FileDialogOptions,
     MessageDialogButton, MessageDialogChoice, MessageDialogOptions, Metrics, Notification,
-    PlatformServices, PointerShape, ResizeEdge, ServiceResult, WindowControl,
+    PlatformServices, PointerShape, ResizeEdge, ServiceResult, SystemTheme, WindowControl,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,

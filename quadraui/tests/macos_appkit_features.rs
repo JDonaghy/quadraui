@@ -67,6 +67,19 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // `NSApplication` itself, so the row below guards it independently.
     ("NSAlertFirstButtonReturn", "NSAlert"),
     ("NSAlertStyle", "NSAlert"),
+    // Issue #952 (`system_theme`) deliberately has **no row** for the
+    // `NSAppearance` feature, even though `Cargo.toml` enables it and
+    // `system_theme` depends on it. `NSApplication::effectiveAppearance`
+    // and `NSAppearance::name` are generated as *inherent* methods gated
+    // on `#[cfg(feature = "NSAppearance")]`, reached through the value
+    // `effectiveAppearance` returns — so `src/macos/` never names an
+    // `objc2_app_kit::NSAppearance*` symbol, and a row here would be
+    // stale by `required_feature_map_has_no_unused_entries`'s definition.
+    // Same shape as the "NSButton"/"NSControl" cfg-on-the-method case the
+    // `NSAlert` comment above describes: inexpressible as a row, so
+    // `quadraui/Cargo.toml` carries the justification instead. Do not
+    // "tidy" `"NSAppearance"` out of the manifest — it is an
+    // `unresolved method` build failure on macos-latest only.
     ("NSApplication", "NSApplication"),
     // Not `NSApplication` — see the module doc.
     ("NSApplicationActivationPolicy", "NSRunningApplication"),
@@ -77,6 +90,15 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     ("NSApplicationTerminateReply", "NSApplication"),
     // Not `NSWindow` — see the module doc.
     ("NSBackingStoreType", "NSGraphics"),
+    // Issue #952 (`system_theme`): `NSColor::controlAccentColor` — the
+    // feature *is* the symbol's own name here, same shape as `NSAlert`.
+    ("NSColor", "NSColor"),
+    // #952 review follow-up (`mac_accent_color`): `colorUsingColorSpace:`'s
+    // `NSColorSpace` argument type, used to defensively convert
+    // `controlAccentColor` to sRGB before reading its RGB components —
+    // the feature *is* the symbol's own name here, same shape as
+    // `NSColor`/`NSAlert`.
+    ("NSColorSpace", "NSColorSpace"),
     ("NSControlStateValueOff", "NSCell"),
     ("NSControlStateValueOn", "NSCell"),
     ("NSCursor", "NSCursor"),
@@ -126,6 +148,9 @@ const REQUIRED_FEATURE: &[(&str, &str)] = &[
     // AppKit's own title string so the app-drawn band doesn't
     // double-draw it. `NSWindow` header again, same as the style mask.
     ("NSWindowTitleVisibility", "NSWindow"),
+    // Issue #952 (`system_theme`): `NSWorkspace::accessibilityDisplayShouldIncreaseContrast`
+    // — the feature *is* the symbol's own name here, same shape as `NSColor`/`NSAlert`.
+    ("NSWorkspace", "NSWorkspace"),
 ];
 
 fn manifest_dir() -> PathBuf {

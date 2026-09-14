@@ -42,7 +42,7 @@ use std::path::PathBuf;
 
 use crate::backend::{
     BackendError, Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
-    Notification, PlatformServices, ServiceResult,
+    Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 
 // ── OSC 52 support ────────────────────────────────────────────────────────────
@@ -438,6 +438,17 @@ impl PlatformServices for TuiPlatformServices {
     /// instead of falling through to the trait's default `Ok(())`.
     fn open_url_result(&self, _url: &str) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
+    }
+
+    /// quadraui#952: the honest TUI degrade — see
+    /// `crate::tui::caps::detect_system_theme`'s doc for exactly what
+    /// signal this reads (`COLORFGBG`) and why there is no OSC 11 live
+    /// probe here yet. `Err(BackendError::Unsupported)` on any terminal
+    /// that doesn't set `COLORFGBG` (the majority — xterm, GNOME
+    /// Terminal, kitty, WezTerm, iTerm2, Alacritty, Windows Terminal all
+    /// leave it unset).
+    fn system_theme(&self) -> ServiceResult<SystemTheme> {
+        super::caps::detect_system_theme().ok_or(BackendError::Unsupported)
     }
 
     fn platform_name(&self) -> &'static str {

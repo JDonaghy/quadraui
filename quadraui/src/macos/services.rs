@@ -18,14 +18,18 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
 
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSOpenPanel, NSSavePanel};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSColor, NSColorSpace,
+    NSOpenPanel, NSSavePanel, NSWorkspace,
+};
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 
 use crate::backend::{
-    Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
-    Notification,
+    BackendError, Clipboard, FileDialogOptions, MessageDialogButton, MessageDialogChoice,
+    MessageDialogOptions, Notification, ServiceResult, SystemTheme,
 };
 use crate::primitives::dialog::DialogSeverity;
+use crate::types::Color;
 use crate::PlatformServices;
 
 /// `NSModalResponseOK` — the user clicked Open / Save.
@@ -167,9 +171,93 @@ impl PlatformServices for MacPlatformServices {
         let _ = Command::new("open").arg(url).spawn();
     }
 
+    /// `NSApp.effectiveAppearance` for light/dark,
+    /// `NSWorkspace::accessibilityDisplayShouldIncreaseContrast` for high
+    /// contrast, `NSColor::controlAccentColor` for the accent colour
+    /// (quadraui#952). Reads `effectiveAppearance().name()` and checks it
+    /// for `"Dark"` rather than building an `NSArray` and calling
+    /// `NSAppearance::bestMatchFromAppearancesWithNames` (the issue's
+    /// suggested API, and the one apps *drawing* per-appearance content
+    /// should reach for) — for a one-shot query like this, the name
+    /// itself already carries the answer, and every system appearance
+    /// name (`NSAppearanceNameDarkAqua`, and both
+    /// `NSAppearanceNameAccessibilityHighContrast*Dark*` variants)
+    /// contains the substring unambiguously.
+    fn system_theme(&self) -> ServiceResult<SystemTheme> {
+        let mtm = MainThreadMarker::new().ok_or(BackendError::Unsupported)?;
+        let appearance_name = NSApplication::sharedApplication(mtm)
+            .effectiveAppearance()
+            .name()
+            .to_string();
+        let high_contrast =
+            NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast();
+        Ok(system_theme_from_mac_appearance(
+            &appearance_name,
+            high_contrast,
+            mac_accent_color(),
+        ))
+    }
+
     fn platform_name(&self) -> &'static str {
         "macos"
     }
+}
+
+/// Pure mapping from an `NSAppearance` name plus the two other
+/// already-read signals to [`SystemTheme`] — split out from
+/// `system_theme` so the name-matching logic is unit-testable without a
+/// live `NSApplication` (mirrors this module's `native_button_order`/
+/// `severity_to_alert_style`-style helpers).
+fn system_theme_from_mac_appearance(
+    appearance_name: &str,
+    high_contrast: bool,
+    accent: Option<Color>,
+) -> SystemTheme {
+    SystemTheme {
+        dark: appearance_name.contains("Dark"),
+        accent,
+        high_contrast,
+    }
+}
+
+/// `NSColor::controlAccentColor`'s RGB components, converted to
+/// [`Color`]. `getRed:green:blue:alpha:` raises `NSInvalidArgumentException`
+/// if the receiver isn't already in an RGB-compatible colour space, and an
+/// ObjC exception unwinding across this Rust/FFI boundary is UB (likely an
+/// abort) — Apple's docs don't guarantee `controlAccentColor` (a dynamic,
+/// catalog-backed system colour) is pre-resolved to RGB in every runtime
+/// context, so this defensively runs it through `colorUsingColorSpace:`
+/// first rather than assuming it. `colorUsingColorSpace:` returns `None`
+/// only when the conversion itself is impossible (no live colour-management
+/// pipeline), which — like the rest of this crate's platform-services
+/// layer — is treated as "feature unavailable" rather than an error.
+fn mac_accent_color() -> Option<Color> {
+    let color = NSColor::controlAccentColor();
+    let rgb_color = color.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
+    let (mut r, mut g, mut b, mut a) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+    // SAFETY: four valid, non-null `f64` out-pointers, matching
+    // `getRed:green:blue:alpha:`'s documented safety requirement. Calling
+    // it on `rgb_color` rather than `color` is what makes this safe from
+    // the ObjC-exception hazard described above: `colorUsingColorSpace:`
+    // above already guarantees an RGB-compatible receiver.
+    unsafe {
+        rgb_color.getRed_green_blue_alpha(&mut r, &mut g, &mut b, &mut a);
+    }
+    Some(Color::rgba(
+        unit_to_u8(r),
+        unit_to_u8(g),
+        unit_to_u8(b),
+        unit_to_u8(a),
+    ))
+}
+
+/// Convert a `0.0..=1.0` colour component to a `0..=255` byte, clamping
+/// out-of-range input rather than wrapping/panicking (`as u8` on a
+/// negative or `NaN` float is technically defined since Rust 1.45's
+/// saturating float casts, but `clamp` here makes the intent explicit
+/// rather than relying on that cast behaviour).
+fn unit_to_u8(component: f64) -> u8 {
+    (component.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Apply common options (message, initial directory, file-type filters)
@@ -364,6 +452,59 @@ mod tests {
         // should produce `\\\"` (escaped slash + escaped quote),
         // not `\\\\\"` (double-escaped slash + quote).
         assert_eq!(applescript_escape("\\\""), "\\\\\\\"");
+    }
+
+    // ── system_theme_from_mac_appearance / unit_to_u8 (quadraui#952) ────
+
+    #[test]
+    fn dark_aqua_appearance_reports_dark() {
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameDarkAqua", false, None);
+        assert!(theme.dark);
+        assert!(!theme.high_contrast);
+        assert_eq!(theme.accent, None);
+    }
+
+    #[test]
+    fn aqua_appearance_reports_light() {
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, None);
+        assert!(!theme.dark);
+    }
+
+    #[test]
+    fn high_contrast_flag_is_passed_through_not_rederived_from_name() {
+        // The appearance name alone already implies high contrast, but
+        // `high_contrast` is a caller-supplied signal
+        // (`NSWorkspace::accessibilityDisplayShouldIncreaseContrast`),
+        // not derived from the name — this pins that the function trusts
+        // its caller's flag rather than re-deriving it from the name
+        // string.
+        let theme = system_theme_from_mac_appearance(
+            "NSAppearanceNameAccessibilityHighContrastDarkAqua",
+            true,
+            None,
+        );
+        assert!(theme.dark);
+        assert!(theme.high_contrast);
+    }
+
+    #[test]
+    fn accent_color_passes_through_unchanged() {
+        let accent = Some(Color::rgb(0, 122, 255));
+        let theme = system_theme_from_mac_appearance("NSAppearanceNameAqua", false, accent);
+        assert_eq!(theme.accent, accent);
+    }
+
+    #[test]
+    fn unit_to_u8_maps_the_full_range() {
+        assert_eq!(unit_to_u8(0.0), 0);
+        assert_eq!(unit_to_u8(1.0), 255);
+        assert_eq!(unit_to_u8(0.5), 128);
+    }
+
+    #[test]
+    fn unit_to_u8_clamps_out_of_range_input() {
+        assert_eq!(unit_to_u8(-1.0), 0);
+        assert_eq!(unit_to_u8(2.0), 255);
     }
 
     fn msg_btn(id: &str, is_default: bool, is_cancel: bool) -> MessageDialogButton {
