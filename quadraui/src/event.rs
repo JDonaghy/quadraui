@@ -595,6 +595,35 @@ pub enum UiEvent {
     ///   OS window to forward a second launch's request to, so only the
     ///   argv-at-launch half would ever apply there; left for a follow-up
     ///   issue rather than bundled in here.
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1:
+    ///
+    /// ```text
+    /// $ grep -rn 'OpenRequested' ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references this variant yet, but
+    /// the real question for a *new enum variant* is whether either
+    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
+    /// wildcard arm), since those would need to add one:
+    ///
+    /// - `vimcode`'s `tui_main/shell_app.rs::handle()` top-level dispatch
+    ///   (`match event { UiEvent::KeyPressed { .. } => .., ..,
+    ///   _ => Reaction::Continue }`) already ends in a wildcard arm.
+    /// - `coord-tui`'s `app/events.rs::dispatch_handle()` top-level
+    ///   dispatch (`match &event { UiEvent::KeyPressed { .. } => .., ..,
+    ///   _ => {} }`) likewise already ends in a wildcard arm.
+    ///
+    /// Every other `UiEvent` match in both consumers is either an `if
+    /// let` on one specific variant or itself wildcard-terminated. Adding
+    /// `OpenRequested` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
     OpenRequested {
         urls: Vec<String>,
         files: Vec<PathBuf>,
