@@ -15,6 +15,8 @@
 //! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar.
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
+//! - [`FilePickerController`] — cross-backend file open/save modal.
+//! - [`MessageDialogController`] — cross-backend message/alert-box driver.
 //! - [`DualModePaletteController`] — Palette that toggles between text-input
 //!   mode (free-text confirm) and list/search mode (item selection).
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
@@ -53,6 +55,7 @@ pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;
 pub mod dual_mode_palette;
+pub mod file_picker;
 pub mod focus_group;
 pub mod focus_ring;
 pub mod folder_picker;
@@ -60,6 +63,7 @@ pub mod form_controller;
 pub mod help_layer;
 pub mod markdown;
 pub mod menu_system;
+pub mod message_dialog;
 pub mod notification;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
@@ -75,6 +79,7 @@ pub use bottom_panel::{
 };
 pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
 pub use dual_mode_palette::{DualModePaletteController, DualModePaletteEvent};
+pub use file_picker::{FilePickerController, FilePickerEvent, FilePickerMode};
 pub use focus_group::FocusGroup;
 pub use focus_ring::FocusRing;
 pub use folder_picker::{FolderPickerController, FolderPickerEvent, PALETTE_CHROME_ROWS};
@@ -85,6 +90,7 @@ pub use help_layer::{
 };
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
+pub use message_dialog::{MessageDialogController, MessageDialogEvent};
 pub use notification::notify_or_toast;
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,

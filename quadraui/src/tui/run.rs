@@ -31,7 +31,9 @@
 //! event pre-processing (text selection, Ctrl-C copy) cannot drift,
 //! because there is only one implementation of each.
 
+use std::cell::RefCell;
 use std::io;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
@@ -199,14 +201,24 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     let depth_limited = DepthLimitedBackend::new(crossterm_backend, backend.color_depth());
     let mut terminal = Terminal::new(depth_limited)?;
     terminal.clear()?;
+    // Shared, not owned outright: issue #965's nested dialog loop
+    // (`TuiPlatformServices::show_file_open_dialog` et al.) needs to draw
+    // through this *same* `Terminal` instance — a second, independently
+    // constructed one would desync ratatui's diff cache from the
+    // physical screen the moment control returns here (see
+    // `tui::services`'s module doc, "Dialogs" section, for exactly why).
+    let terminal = Rc::new(RefCell::new(terminal));
+    let dialog_surface: Rc<RefCell<dyn crate::tui::services::DialogSurface>> = terminal.clone();
+    backend.tui_services().set_dialog_surface(dialog_surface);
 
     // Run the app inside `catch_unwind` so a panic in app code
     // doesn't leave the terminal in a broken state.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_inner(&mut terminal, &mut backend, &mut app)
+        run_inner(&terminal, &mut backend, &mut app)
     }));
 
     // ── Terminal tear-down (always) ─────────────────────────────
+    let mut terminal = terminal.borrow_mut();
     if kbd_enhanced {
         let _ = pop_keyboard_enhancement(terminal.backend_mut());
     }
@@ -226,6 +238,7 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
         );
     }
     let _ = terminal.show_cursor();
+    drop(terminal);
 
     match result {
         Ok(io_result) => io_result,
@@ -234,7 +247,7 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
 }
 
 fn run_inner<A: AppLogic>(
-    terminal: &mut Terminal<LiveBackend>,
+    terminal: &Rc<RefCell<Terminal<LiveBackend>>>,
     backend: &mut TuiBackend,
     app: &mut A,
 ) -> io::Result<()> {
@@ -248,7 +261,7 @@ fn run_inner<A: AppLogic>(
     // under-filled until the user's first interaction (quadraui#437, the
     // TUI counterpart of the original tiny-window bug). Sync the real
     // size up front so `setup()` sees true dimensions.
-    let size = terminal.size()?;
+    let size = terminal.borrow().size()?;
     backend.begin_frame(crate::Viewport::new(
         size.width as f32,
         size.height as f32,
@@ -271,7 +284,9 @@ fn run_inner<A: AppLogic>(
     let mut resize_deadline: Option<Instant> = None;
     loop {
         if needs_redraw {
-            render_frame(terminal, backend, app)?;
+            let mut guard = terminal.borrow_mut();
+            render_frame(&mut guard, backend, app)?;
+            drop(guard);
             needs_redraw = false;
         }
 
