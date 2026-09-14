@@ -43,7 +43,10 @@ pub struct Chart {
     /// Explicit y-axis range. `None` = auto-derived from data min/max.
     #[serde(default)]
     pub y_range: Option<(f64, f64)>,
-    /// Explicit x-axis range. `None` = `0..series.data.len()`.
+    /// Explicit x-axis range, used to compute x-tick *values* (#975).
+    /// `None` = ticks are labelled by data index, `0..series.data.len()`.
+    /// Data-point x *positions* stay index-evenly-spaced regardless —
+    /// this only changes what an x-tick's label reads.
     #[serde(default)]
     pub x_range: Option<(f64, f64)>,
     #[serde(default)]
@@ -51,7 +54,9 @@ pub struct Chart {
     /// Number of y-axis tick marks. `None` = auto (5).
     #[serde(default)]
     pub y_ticks: Option<usize>,
-    /// Number of x-axis tick marks. `None` = auto.
+    /// Number of x-axis tick marks. `None` = no x-axis tick row at all
+    /// (unlike `y_ticks`, this is opt-in, not auto-5 — many charts plot
+    /// against a plain index with nothing meaningful to label).
     #[serde(default)]
     pub x_ticks: Option<usize>,
     /// Show horizontal grid lines at y-tick positions.
@@ -462,6 +467,17 @@ impl Chart {
                 let (y_min, y_max) = self.effective_y_range();
                 let range = y_max - y_min;
                 let y_tick_count = self.y_ticks.unwrap_or(5);
+                // `None` means "no x ticks" (unlike `y_ticks`, which
+                // defaults to 5) — an opt-in axis row, not an always-on
+                // one, since a caller with no meaningful x-axis value
+                // (e.g. a plain index) shouldn't have to explicitly turn
+                // ticks off.
+                let x_tick_count = self.x_ticks.unwrap_or(0);
+                let x_ticks_height = if x_tick_count > 0 {
+                    measure.line_height
+                } else {
+                    0.0
+                };
                 let x_label_height = if self.x_label.is_some() {
                     measure.line_height
                 } else {
@@ -473,10 +489,11 @@ impl Chart {
                     0.0
                 };
                 // Independent of `y_label_width` (it only subtracts the
-                // x-label row and legend row), so it's safe to compute
-                // ahead of the gutter to know whether ticks will actually
-                // be painted into it.
-                let plot_h_avail = (measure.height - x_label_height - legend_height).max(0.0);
+                // x-ticks row, x-label row and legend row), so it's safe
+                // to compute ahead of the gutter to know whether ticks
+                // will actually be painted into it.
+                let plot_h_avail =
+                    (measure.height - x_ticks_height - x_label_height - legend_height).max(0.0);
 
                 // Size the gutter from the labels that will actually be
                 // painted — the interior tick values, not just the
@@ -599,13 +616,19 @@ impl Chart {
                     }
                 }
 
-                let x_tick_count = self.x_ticks.unwrap_or(0);
+                // #975: honour an explicit `x_range` for tick *values*
+                // (data-point x positions stay index-evenly-spaced —
+                // this only changes what a tick's label reads). Without
+                // one, ticks fall back to the pre-#975 behaviour of
+                // labelling by data index.
                 let data_len = self.max_data_len();
                 let mut x_tick_positions = Vec::new();
                 if x_tick_count > 0 && plot_w > 0.0 && data_len > 1 {
+                    let (x_min, x_max) = self.x_range.unwrap_or((0.0, (data_len - 1) as f64));
+                    let x_span = x_max - x_min;
                     for i in 0..=x_tick_count {
                         let frac = i as f64 / x_tick_count as f64;
-                        let val = frac * (data_len - 1) as f64;
+                        let val = x_min + frac * x_span;
                         let sx = plot_x + frac as f32 * plot_w;
                         x_tick_positions.push((sx, val));
                     }
@@ -1045,10 +1068,48 @@ mod native_surface_paint {
             }
         }
 
+        // X-axis ticks (#975): centred under each tick's screen x but
+        // clamped to stay inside the chart's own bounds — a tick at
+        // `frac == 1.0` sits exactly on the bounds' right edge, and a
+        // naive centred label there would always spill past it. A
+        // label that still collides with the previous (already-clamped)
+        // one is dropped rather than painted overlapping. `layout` only
+        // ever populates `x_tick_positions` when `chart.x_ticks` is
+        // `Some(n > 0)` (see `Chart::layout`), which is exactly the
+        // condition that reserved this row's height, so the two stay in
+        // sync without re-deriving it here.
+        let bounds = layout.bounds;
+        let x_ticks_height = if !layout.x_tick_positions.is_empty() {
+            surface.surface_line_height()
+        } else {
+            0.0
+        };
+        let mut prev_label_end: Option<f32> = None;
+        for &(sx, val) in &layout.x_tick_positions {
+            let label = super::format_tick_value(val);
+            let (tw, th) = surface.surface_measure_text(&label);
+            if tw > bounds.width {
+                continue;
+            }
+            let max_x = bounds.x + bounds.width - tw;
+            let lx = (sx - tw / 2.0).clamp(bounds.x, max_x);
+            if let Some(prev_end) = prev_label_end {
+                if lx < prev_end + 4.0 {
+                    continue;
+                }
+            }
+            surface.surface_draw_text_run(
+                Rect::new(lx, pa.y + pa.height, tw, th),
+                &label,
+                theme.muted_fg,
+            );
+            prev_label_end = Some(lx + tw);
+        }
+
         if let Some(label) = &chart.x_label {
             let (tw, th) = surface.surface_measure_text(label);
             let cx = pa.x + (pa.width - tw) / 2.0;
-            let cy = pa.y + pa.height;
+            let cy = pa.y + pa.height + x_ticks_height;
             surface.surface_draw_text_run(Rect::new(cx, cy, tw, th), label, theme.foreground);
         }
 
@@ -1161,6 +1222,7 @@ mod native_surface_paint {
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
             lines: Vec<(crate::Point, crate::Point, Color, f32)>,
+            texts: Vec<(Rect, String, Color)>,
             clip_pushes: Vec<Rect>,
             clip_pops: usize,
         }
@@ -1184,7 +1246,9 @@ mod native_surface_paint {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
-            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts.push((rect, text.to_string(), color));
+            }
             fn surface_draw_line(
                 &mut self,
                 from: crate::Point,
@@ -1282,6 +1346,72 @@ mod native_surface_paint {
             assert!(surface.clip_pushes.is_empty());
             assert_eq!(surface.clip_pops, 0);
             assert!(surface.fills.is_empty());
+        }
+
+        fn line_chart_with_x_ticks(
+            data: Vec<f64>,
+            x_range: Option<(f64, f64)>,
+            x_ticks: usize,
+        ) -> Chart {
+            Chart {
+                id: WidgetId::new("chart"),
+                kind: ChartKind::Line,
+                series: vec![Series {
+                    label: "a".into(),
+                    data,
+                    color: None,
+                    fill: false,
+                }],
+                x_label: None,
+                y_label: None,
+                y_range: None,
+                x_range,
+                show_legend: false,
+                y_ticks: Some(0),
+                x_ticks: Some(x_ticks),
+                show_grid: false,
+            }
+        }
+
+        /// #975: pixel backends (GTK/win/macOS) share this `paint_axis_labels`,
+        /// so a fix here covers all three at once. Before #975 the function
+        /// never read `layout.x_tick_positions` at all.
+        #[test]
+        fn x_axis_ticks_paint_text_runs_with_their_values() {
+            let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], None, 1);
+            let layout = layout_for(&chart);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            let labels: Vec<&str> = surface.texts.iter().map(|(_, t, _)| t.as_str()).collect();
+            assert!(
+                labels.contains(&"0") && labels.contains(&"2"),
+                "expected x-tick labels for data indices 0 and 2, got {labels:?}"
+            );
+        }
+
+        /// #975: an explicit `x_range` drives tick *values*, not the data
+        /// index — previously a dead field the layout never read.
+        #[test]
+        fn x_axis_tick_values_honour_x_range() {
+            let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), 1);
+            let layout = layout_for(&chart);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&chart, &layout, &mut surface, &theme, None, None);
+
+            let labels: Vec<&str> = surface.texts.iter().map(|(_, t, _)| t.as_str()).collect();
+            assert!(
+                labels.contains(&"100") && labels.contains(&"300"),
+                "expected x_range-derived labels, got {labels:?}"
+            );
+            assert!(
+                !labels.contains(&"0") && !labels.contains(&"2"),
+                "index-based labels should not appear once x_range is set: {labels:?}"
+            );
         }
 
         #[test]
@@ -1651,6 +1781,104 @@ mod tests {
             "gutter should widen to fit the y_label in full: \
              plot_area.x={}, expected >= {expected_min}",
             layout.plot_area.x
+        );
+    }
+
+    // ── X-axis ticks (#975) ──────────────────────────────────────────────
+
+    /// A `Line` chart with x-ticks enabled and no y-gutter, for exercising
+    /// x-tick geometry and value resolution in isolation.
+    fn line_chart_with_x_ticks(
+        data: Vec<f64>,
+        x_range: Option<(f64, f64)>,
+        x_ticks: usize,
+    ) -> Chart {
+        Chart {
+            id: WidgetId::new("chart"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "S".into(),
+                data,
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: Some(x_ticks),
+            show_grid: false,
+        }
+    }
+
+    #[test]
+    fn x_ticks_default_to_data_index_when_x_range_is_none() {
+        let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0, 4.0, 5.0], None, 2);
+        let m = ChartMeasure {
+            width: 30.0,
+            height: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+        };
+        let layout = chart.layout(0.0, 0.0, m);
+        let values: Vec<f64> = layout.x_tick_positions.iter().map(|&(_, v)| v).collect();
+        // 3 ticks (fracs 0, 0.5, 1) over 5 points (index range 0..4).
+        assert_eq!(values, vec![0.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn x_ticks_use_x_range_when_set() {
+        let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), 1);
+        let m = ChartMeasure {
+            width: 30.0,
+            height: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+        };
+        let layout = chart.layout(0.0, 0.0, m);
+        let values: Vec<f64> = layout.x_tick_positions.iter().map(|&(_, v)| v).collect();
+        assert_eq!(
+            values,
+            vec![100.0, 300.0],
+            "x_range must drive tick values instead of the data index"
+        );
+    }
+
+    #[test]
+    fn x_ticks_are_empty_when_x_ticks_field_is_none() {
+        // Pre-#975 behaviour, pinned: `x_ticks: None` means no x-tick row
+        // at all (unlike `y_ticks`, which defaults to 5).
+        let mut chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], None, 0);
+        chart.x_ticks = None;
+        let m = ChartMeasure {
+            width: 30.0,
+            height: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+        };
+        let layout = chart.layout(0.0, 0.0, m);
+        assert!(layout.x_tick_positions.is_empty());
+    }
+
+    #[test]
+    fn x_ticks_reserve_a_plot_height_row_when_enabled() {
+        let with_ticks = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], None, 2);
+        let mut without_ticks = with_ticks.clone();
+        without_ticks.x_ticks = None;
+        let m = ChartMeasure {
+            width: 30.0,
+            height: 20.0,
+            char_width: 1.0,
+            line_height: 1.0,
+        };
+        let layout_with = with_ticks.layout(0.0, 0.0, m);
+        let layout_without = without_ticks.layout(0.0, 0.0, m);
+        assert_eq!(
+            layout_without.plot_area.height - layout_with.plot_area.height,
+            m.line_height,
+            "enabling x_ticks should shrink the plot by exactly one tick row"
         );
     }
 
