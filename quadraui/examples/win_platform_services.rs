@@ -27,6 +27,13 @@
 //!   (`system_theme`, #952) and report it; flip Windows' Settings ->
 //!   Personalization -> Colors "Choose your mode" between runs to see the
 //!   answer change
+//! - `f` — `reveal_in_file_manager` (#956) a freshly-written temp file —
+//!   an Explorer window should open with it selected
+//! - `p` — `open_path` (#956) that same temp file with its default
+//!   handler
+//! - `x` — write a *second* temp file and `move_to_trash` (#956) it —
+//!   check the Recycle Bin afterward
+//! - `b` — `beep` (#956)
 //! - `Esc` / `q` — quit
 //!
 //! `quadraui::win::run` only exists when compiled for `target_os =
@@ -42,6 +49,18 @@ use quadraui::{
 
 #[cfg(target_os = "windows")]
 struct PlatformServicesDemo;
+
+/// Write a throwaway temp file for `f`/`p`/`x` to act on, so this demo
+/// never touches anything the user actually cares about (issue #956).
+#[cfg(target_os = "windows")]
+fn scratch_file(label: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "quadraui-956-win-platform-services-demo-{label}-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::write(&path, b"quadraui#956 demo scratch file");
+    path
+}
 
 #[cfg(target_os = "windows")]
 impl AppLogic for PlatformServicesDemo {
@@ -166,6 +185,49 @@ impl AppLogic for PlatformServicesDemo {
                 match backend.services().system_theme() {
                     Ok(theme) => eprintln!("system_theme: {theme:?}"),
                     Err(e) => eprintln!("system_theme: unavailable ({e:?})"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('f'),
+                ..
+            } => {
+                let path = scratch_file("reveal");
+                match backend.services().reveal_in_file_manager(&path) {
+                    Ok(()) => eprintln!("reveal_in_file_manager: opened Explorer at {path:?}"),
+                    Err(e) => eprintln!("reveal_in_file_manager FAILED: {e:?}"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('p'),
+                ..
+            } => {
+                let path = scratch_file("open");
+                match backend.services().open_path(&path) {
+                    Ok(()) => eprintln!("open_path: launched the default handler for {path:?}"),
+                    Err(e) => eprintln!("open_path FAILED: {e:?}"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('x'),
+                ..
+            } => {
+                let path = scratch_file("trash");
+                match backend.services().move_to_trash(&path) {
+                    Ok(()) => eprintln!("move_to_trash: moved {path:?} to the Recycle Bin"),
+                    Err(e) => eprintln!("move_to_trash FAILED: {e:?}"),
+                }
+                Reaction::Continue
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('b'),
+                ..
+            } => {
+                match backend.services().beep() {
+                    Ok(()) => eprintln!("beep: ok"),
+                    Err(e) => eprintln!("beep FAILED: {e:?}"),
                 }
                 Reaction::Continue
             }

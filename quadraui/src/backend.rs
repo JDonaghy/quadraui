@@ -64,7 +64,7 @@
 //! own TUI/GTK siblings about which frame it returns.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -3430,6 +3430,73 @@ pub trait PlatformServices {
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
         self.open_url(url);
         Ok(())
+    }
+
+    /// Reveal `path` in the platform's file manager with it selected —
+    /// "Reveal in Finder" / "Show in Explorer" / "Show in Files" (issue
+    /// #956, `ELECTRON_PARITY_AUDIT.md` §1.2 G8: Electron's
+    /// `shell.showItemInFolder`).
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, the same "future
+    /// backend compiles before it has an opinion" placeholder
+    /// [`Self::system_theme`]'s default doc explains. GTK, macOS, and
+    /// Win-GUI each override this with a real implementation; TUI keeps
+    /// the default — a terminal has no file manager window to reveal
+    /// anything in, so `Unsupported` there is the honest final answer,
+    /// not a placeholder (see `tui::services`'s module doc).
+    fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
+        let _ = path;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Open `path` with the platform's default handler for its type —
+    /// Electron's `shell.openPath`. Distinct from [`Self::open_url`]:
+    /// that method takes a URL string and always goes through the
+    /// scheme's registered handler (a browser for `https://`, a mail
+    /// client for `mailto:`); this one takes a filesystem path directly.
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, same placeholder
+    /// reasoning as [`Self::reveal_in_file_manager`]. GTK, macOS, and
+    /// Win-GUI override with a real implementation. TUI *also* overrides
+    /// this one — see `tui::services::TuiPlatformServices::open_path`'s
+    /// doc for why a terminal can still shell out to `xdg-open`/`open`
+    /// even though it has no browser for [`Self::open_url`] to hand a URL
+    /// to.
+    fn open_path(&self, path: &Path) -> ServiceResult<()> {
+        let _ = path;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Move `path` to the platform trash/recycle bin — recoverable,
+    /// unlike deleting it outright — Electron's `shell.trashItem`.
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, same placeholder
+    /// reasoning as [`Self::reveal_in_file_manager`]. Every backend in
+    /// this crate overrides it with the *same* implementation
+    /// ([`crate::desktop::move_to_trash`]): the cross-platform `trash`
+    /// crate already wraps `NSWorkspace`'s Objective-C
+    /// `-trashItemAtURL:resultingItemURL:error:`, `gio::File::trash`'s
+    /// freedesktop.org trash-spec equivalent, and
+    /// `SHFileOperationW(FOF_ALLOWUNDO)` internally, and needs only a
+    /// filesystem — no live desktop/window-server session — on any of
+    /// the three. So TUI gets the exact same real implementation as the
+    /// other three, not a degraded one (see the module doc's "TUI story"
+    /// note this issue itself made about this method).
+    fn move_to_trash(&self, path: &Path) -> ServiceResult<()> {
+        let _ = path;
+        Err(BackendError::Unsupported)
+    }
+
+    /// Ring the terminal bell / play the system alert sound — Electron's
+    /// `shell.beep`.
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, same placeholder
+    /// reasoning as [`Self::reveal_in_file_manager`]. Every backend
+    /// overrides it — TUI's BEL is arguably the most honest of the four:
+    /// it's a terminal's *only* notification channel, so this is full
+    /// support there, not a degrade.
+    fn beep(&self) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
     }
 
     /// Query the OS-level light/dark preference, accent colour, and

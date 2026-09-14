@@ -32,13 +32,21 @@
 //!   as the unbundled fallback" note.
 //! - **`open_url`** → `open <url>`. Equivalent to
 //!   `NSWorkspace.open(_:)` without needing AppKit initialisation.
+//! - **`shell.*` parity (issue #956)** → `reveal_in_file_manager` uses
+//!   `NSWorkspace::activateFileViewerSelectingURLs`; `open_path` reuses
+//!   the same `open <path>` shell-out `open_url` makes; `move_to_trash`
+//!   delegates to [`crate::desktop::move_to_trash`] — the cross-platform
+//!   `trash` crate, not a hand-rolled `NSFileManager
+//!   -trashItemAtURL:resultingItemURL:error:` — see that function's doc
+//!   for why every backend shares it; `beep` is the bare `NSBeep` C
+//!   function.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSColor, NSColorSpace,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBeep, NSColor, NSColorSpace,
     NSOpenPanel, NSSavePanel, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
@@ -191,6 +199,56 @@ impl PlatformServices for MacPlatformServices {
 
     fn open_url(&self, url: &str) {
         let _ = Command::new("open").arg(url).spawn();
+    }
+
+    /// `NSWorkspace::activateFileViewerSelectingURLs` on `path`'s
+    /// `file://` URL (issue #956) — "Reveal in Finder." `path.is_dir()`
+    /// decides `fileURLWithPath:isDirectory:`'s bool the same way
+    /// `configure_panel`'s directory-URL construction would need to, were
+    /// it not always `true` there (a directory *chooser*'s initial
+    /// folder); here `path` can be either a file or a directory, so this
+    /// checks rather than assuming.
+    fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
+        let Some(path_str) = path.to_str() else {
+            return Err(BackendError::PlatformFailure {
+                context: "reveal_in_file_manager: path is not valid UTF-8".to_string(),
+            });
+        };
+        let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path_str), path.is_dir());
+        let urls = NSArray::from_retained_slice(&[url]);
+        NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls);
+        Ok(())
+    }
+
+    /// `open <path>` (issue #956) — the same shell-out [`Self::open_url`]
+    /// makes; macOS's `open(1)` already accepts a filesystem path exactly
+    /// as readily as a URL (it's the command-line front end to
+    /// `NSWorkspace.open(_:)`), so there is nothing path-specific to add
+    /// beyond handing it a path instead of a URL string.
+    fn open_path(&self, path: &Path) -> ServiceResult<()> {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("open: {e}"),
+            })
+    }
+
+    /// [`crate::desktop::move_to_trash`] (issue #956) — see that
+    /// function's doc for why every backend, macOS included, shares this
+    /// one `trash`-crate-backed implementation rather than hand-rolling
+    /// `NSFileManager::trashItemAtURL_resultingItemURL_error` here.
+    fn move_to_trash(&self, path: &Path) -> ServiceResult<()> {
+        crate::desktop::move_to_trash(path)
+    }
+
+    /// `NSBeep` (issue #956) — a bare AppKit C function, not a method on
+    /// any object, so unlike every other AppKit call in this module it
+    /// needs no `MainThreadMarker`/receiver of its own.
+    fn beep(&self) -> ServiceResult<()> {
+        NSBeep();
+        Ok(())
     }
 
     /// `NSApp.effectiveAppearance` for light/dark,
@@ -558,6 +616,23 @@ mod tests {
     fn platform_name_is_macos() {
         let svc = MacPlatformServices::new();
         assert_eq!(svc.platform_name(), "macos");
+    }
+
+    /// `NSBeep` (issue #956) — a bare AppKit C function with no receiver
+    /// and no window/UI object graph to touch, so unlike
+    /// `show_message_dialog`'s `NSAlert::runModal` above this is safe to
+    /// call from a spawned test thread without a `MainThreadMarker`.
+    /// `reveal_in_file_manager`/`open_path` aren't covered by an
+    /// automated test here for the same reason `open_url` never has been
+    /// in this module: both have a real, visible side effect (a Finder
+    /// window opens; the default app for a file launches) that a test
+    /// suite shouldn't trigger — manual smoke-testing only, same posture
+    /// as `open_url`. `move_to_trash` is covered once, backend-neutrally,
+    /// by `crate::desktop`'s own real round-trip test.
+    #[test]
+    fn beep_reports_success() {
+        let svc = MacPlatformServices::new();
+        assert_eq!(svc.beep(), Ok(()));
     }
 
     // ── Clipboard image/html/file-list/clear (#954) ────────────────────

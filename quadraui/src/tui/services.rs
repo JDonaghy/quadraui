@@ -36,9 +36,22 @@
 //! Other services (file picker, notifications, URL open) remain no-op
 //! stubs — apps that need them supply their own `PlatformServices` or
 //! call platform APIs directly.
+//!
+//! ## `shell.*` parity (issue #956) — better than the rest of this list
+//!
+//! Three of #956's four methods are genuinely implemented here, not
+//! no-op stubs: `beep` (BEL, a terminal's only notification channel —
+//! full support, arguably more honest than any other backend's), and
+//! `move_to_trash` (delegates to [`crate::desktop::move_to_trash`] — the
+//! cross-platform `trash` crate needs only a filesystem, not a live
+//! desktop session, so TUI gets it too). `open_path` shells out to
+//! `xdg-open`/`open` directly on Unix (best-effort — see
+//! [`TuiPlatformServices::open_path`]'s own doc). Only
+//! `reveal_in_file_manager` stays `Err(BackendError::Unsupported)`: a
+//! terminal genuinely has no file-manager window to reveal anything in.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::backend::{
     BackendError, Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
@@ -512,6 +525,86 @@ impl PlatformServices for TuiPlatformServices {
         Err(BackendError::Unsupported)
     }
 
+    /// No file manager window a terminal could reveal anything in —
+    /// unconditionally `Err(BackendError::Unsupported)` (issue #956), same
+    /// as [`Self::open_url_result`]'s TUI degrade. Explicitly overridden
+    /// (rather than left to inherit
+    /// [`PlatformServices::reveal_in_file_manager`]'s identical default
+    /// body) purely so a reader scanning `TuiPlatformServices` for #956
+    /// coverage finds this note instead of wondering why the method is
+    /// missing — [`Self::open_path`] and [`Self::move_to_trash`] below are
+    /// the two members of this issue's four that TUI implements for real,
+    /// [`Self::beep`] is fully native to a terminal, and this one is the
+    /// genuine gap: a terminal has no windowed file manager to hand a
+    /// selection to.
+    fn reveal_in_file_manager(&self, _path: &Path) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// `xdg-open`/`open`, shelled out directly (issue #956) — unlike
+    /// [`Self::open_url`]/[`Self::open_url_result`] above, which have no
+    /// browser to hand a URL to and stay genuine no-ops, a terminal
+    /// running inside a desktop session (the common case — most TUI apps
+    /// run in a graphical terminal emulator, not a bare VT) can still
+    /// launch the OS's default handler for a *file*. Best-effort: a
+    /// successful `spawn()` reports `Ok(())` even though the spawned
+    /// `xdg-open`/`open` may itself fail asynchronously with no way for
+    /// this call to observe it (same "launch succeeded, outcome unknown"
+    /// contract [`crate::tui::services::write_clipboard_via_native_tool`]'s
+    /// tool-spawn leg already has). `Err(BackendError::Unsupported)` on a
+    /// non-Unix host — Windows Terminal has no equivalent this module
+    /// implements yet.
+    fn open_path(&self, path: &Path) -> ServiceResult<()> {
+        #[cfg(target_os = "macos")]
+        const OPENER: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER: &str = "xdg-open";
+
+        #[cfg(unix)]
+        {
+            std::process::Command::new(OPENER)
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| BackendError::PlatformFailure {
+                    context: format!("{OPENER}: {e}"),
+                })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// [`crate::desktop::move_to_trash`] (issue #956) — genuinely **full**
+    /// support on TUI, not a degrade: the `trash` crate needs only a
+    /// filesystem, no live desktop/window-server session, so this is the
+    /// exact same implementation GTK/macOS/Win-GUI use. See that
+    /// function's doc and the module doc's "TUI story" note.
+    fn move_to_trash(&self, path: &Path) -> ServiceResult<()> {
+        crate::desktop::move_to_trash(path)
+    }
+
+    /// BEL (`\x07`), written to both stdout and (Unix) `/dev/tty` for the
+    /// same reliability reason [`TuiClipboard::write_text`]'s OSC 52 leg
+    /// writes to both (issue #956): stdout may be redirected away from
+    /// the terminal by a wrapper script, but `/dev/tty` always reaches
+    /// the controlling terminal directly. Arguably the most *honest* of
+    /// this issue's four TUI overrides — BEL is a terminal's only
+    /// notification channel, so this is full support, not a fallback.
+    fn beep(&self) -> ServiceResult<()> {
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(b"\x07");
+        let _ = std::io::stdout().flush();
+        #[cfg(unix)]
+        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            let _ = tty.write_all(b"\x07");
+            let _ = tty.flush();
+        }
+        Ok(())
+    }
+
     /// quadraui#952: the honest TUI degrade — see
     /// `crate::tui::caps::detect_system_theme`'s doc for exactly what
     /// signal this reads (`COLORFGBG`) and why there is no OSC 11 live
@@ -574,5 +667,31 @@ mod message_dialog_tests {
             services.open_url_result("https://example.com"),
             Err(BackendError::Unsupported)
         );
+    }
+
+    /// quadraui#956: no file manager window a terminal could reveal
+    /// anything in — the one member of this issue's four TUI does not
+    /// implement for real (see `TuiPlatformServices::reveal_in_file_manager`'s
+    /// doc).
+    #[test]
+    fn reveal_in_file_manager_reports_unsupported_on_tui() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(
+            services.reveal_in_file_manager(std::path::Path::new("/tmp")),
+            Err(BackendError::Unsupported)
+        );
+    }
+
+    /// quadraui#956: BEL is a terminal's only notification channel — this
+    /// pins that `beep` reports success (rather than the trait's
+    /// `Unsupported` default) on every host this runs on, since writing
+    /// to stdout/`/dev/tty` never depends on a live desktop session the
+    /// way `open_path`/`move_to_trash` might. Doesn't assert on the
+    /// actual bytes written (stdout isn't captured here) — just that this
+    /// backend claims real support instead of silently degrading.
+    #[test]
+    fn beep_reports_success() {
+        let services = TuiPlatformServices::new();
+        assert_eq!(services.beep(), Ok(()));
     }
 }
