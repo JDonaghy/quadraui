@@ -523,7 +523,7 @@ fn walk_file_entries_recursive(
         if name.starts_with('.') && !show_hidden {
             continue;
         }
-        if path.is_dir() {
+        if dir_entry_is_dir(&entry, &path) {
             if ignore_dirs.iter().any(|d| d == &name) {
                 continue;
             }
@@ -545,6 +545,38 @@ fn walk_file_entries_recursive(
                 out.push(rel.to_path_buf());
             }
         }
+    }
+}
+
+/// Whether `entry` names a directory, preferring the file type the
+/// directory enumeration already handed us over a second trip to the
+/// filesystem.
+///
+/// # Why not just `path.is_dir()`
+///
+/// [`Path::is_dir`] issues a *fresh* `stat`/`GetFileAttributes` per
+/// entry and — because it returns `bool`, not `io::Result<bool>` —
+/// reports any failure as plain `false`. A directory that momentarily
+/// can't be stat'ed is therefore silently reclassified as a *file*,
+/// which is not a harmless downgrade here: files run the
+/// [`extension_matches`] gauntlet, so an active extension filter drops
+/// the row entirely and the user loses the ability to navigate through
+/// that directory (the exact invariant
+/// `filters_restrict_files_not_dirs` pins). Transient stat failures are
+/// routine on Windows, where an on-access virus scanner holds a brief
+/// exclusive handle on freshly created files and directories and
+/// unrelated opens come back `ERROR_SHARING_VIOLATION`.
+///
+/// [`std::fs::DirEntry::file_type`] answers from the data the directory
+/// read already returned, so on Windows (and Linux, and macOS) it costs
+/// no syscall at all and cannot fail for that reason. Its one documented
+/// gap is symlinks — it describes the *link*, never its target — so
+/// those alone fall through to the `is_dir()` probe, which follows the
+/// link the way this walk wants.
+fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
+    match entry.file_type() {
+        Ok(ft) if !ft.is_symlink() => ft.is_dir(),
+        _ => path.is_dir(),
     }
 }
 
@@ -839,6 +871,45 @@ mod tests {
             FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]).with_id("picker_b");
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         assert_eq!(picker.build_palette(rect).id.as_str(), "picker_b");
+    }
+
+    /// A symlink pointing at a directory must still behave like a
+    /// directory: listed even under an extension filter that its name
+    /// fails, and navigable with Enter.
+    ///
+    /// This is the case [`dir_entry_is_dir`] deliberately falls back to
+    /// `Path::is_dir` for — `DirEntry::file_type` describes the *link*,
+    /// so consulting it alone would classify this row as a file and an
+    /// active filter would then hide it. Unix-only because creating a
+    /// symlink on Windows needs either developer mode or
+    /// `SeCreateSymbolicLinkPrivilege`, neither of which a test may
+    /// assume.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_directory_is_listed_and_navigable_as_a_directory() {
+        let tmp = scratch_dir_with(&["a.rs"], &["real_dir"]);
+        std::os::unix::fs::symlink(tmp.path().join("real_dir"), tmp.path().join("link"))
+            .expect("symlink");
+
+        let mut picker = FilePickerController::new(
+            FilePickerMode::Open,
+            tmp.path(),
+            vec![("Rust".to_string(), vec!["rs".to_string()])],
+        );
+        assert!(
+            picker.all_entries.contains(&PathBuf::from("link")),
+            "a symlink to a directory must bypass the file extension filter, \
+             the same as a real directory"
+        );
+
+        let idx = picker
+            .filtered()
+            .iter()
+            .position(|p| p == &PathBuf::from("link"))
+            .expect("link listed");
+        picker.selected = idx;
+        assert_eq!(picker.confirm_selection(), FilePickerEvent::Consumed);
+        assert_eq!(picker.root(), tmp.path().join("link"));
     }
 
     #[test]
