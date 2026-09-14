@@ -120,24 +120,52 @@
 //!
 //! [`TuiPlatformServices::open_url_result`] now tries, in order:
 //!
-//! 1. **The platform opener**, shelled out directly and detached (stdout
-//!    and stderr nulled so it can't wedge the TUI's own streams):
-//!    `xdg-open` (Linux/BSD), `open` (macOS), `cmd /c start` with
-//!    `CREATE_NO_WINDOW` (Windows) — the same three-platform split
-//!    vimcode's `open_url_in_browser` (`src/core/engine/mod.rs`) hand-rolls
-//!    today, lifted here per this issue rather than reinvented, since
-//!    vimcode#945 deletes that hand-rolled copy once this fix lands.
-//!    [`build_url_opener_command`] is factored out purely so a test can
-//!    assert on the program name and arguments a call *would* spawn
-//!    without actually launching a browser.
+//! 1. **The platform opener** ([`try_platform_opener`]), reached without
+//!    ever going through a shell:
+//!    - **macOS/Linux/BSD**: [`build_url_opener_command`] shells out
+//!      directly and detached (stdout/stderr nulled so it can't wedge the
+//!      TUI's own streams) to `open` / `xdg-open` — `execve`, never a
+//!      shell, so the URL is never re-parsed for metacharacters. Lifted
+//!      from vimcode's `open_url_in_browser` (`src/core/engine/mod.rs`)
+//!      per this issue rather than reinvented, since vimcode#945 deletes
+//!      that hand-rolled copy once this fix lands. `build_url_opener_command`
+//!      is factored out purely so a test can assert on the program name
+//!      and arguments a call *would* spawn without actually launching a
+//!      browser.
+//!    - **Windows**: [`win_shell_execute_open`] calls `ShellExecuteW`
+//!      directly via a minimal hand-written FFI declaration — **not**
+//!      vimcode's `cmd /c start "" <url>`, and not a `std::process::Command`
+//!      at all. A first pass of this fix lifted vimcode's `cmd /c start`
+//!      leg verbatim; review caught that `cmd.exe`, once spawned, re-parses
+//!      its own command-line text and treats `&`/`|`/`^`/`%` as
+//!      metacharacters regardless of how the argument was quoted for
+//!      `CreateProcess` — an ordinary URL with a query string
+//!      (`?q=foo&run=bar`) or a crafted one can split into multiple
+//!      commands (CWE-78). `ShellExecuteW` hands the string straight to
+//!      the registered "open" handler with no shell in between, matching
+//!      the pattern [`crate::win::services`] already uses for the Win-GUI
+//!      backend's own `open_url`/`open_path` — that function isn't
+//!      reachable from here (it lives in the `win`-feature-gated module,
+//!      while this one must compile under a bare `--features tui` on a
+//!      Windows host), so this is a small, deliberate duplicate rather
+//!      than a shared helper.
 //! 2. **An OSC 8 hyperlink** ([`emit_osc8_hyperlink`]), when the opener
-//!    itself fails to spawn (headless box, no desktop session, opener
-//!    binary missing) — written to both stdout and (Unix) `/dev/tty`, the
-//!    same dual-write reliability reasoning [`TuiClipboard::write_text`]'s
-//!    OSC 52 leg already uses. A capable terminal renders the URL as a
-//!    clickable link even though nothing was launched on the user's
-//!    behalf.
-//! 3. Only when *both* legs fail — the opener won't spawn **and** neither
+//!    itself fails to spawn/execute (headless box, no desktop session,
+//!    opener binary missing) — written to both stdout and (Unix)
+//!    `/dev/tty`, the same dual-write reliability reasoning
+//!    [`TuiClipboard::write_text`]'s OSC 52 leg already uses. A capable
+//!    terminal renders the URL as a clickable link even though nothing
+//!    was launched on the user's behalf. Skipped entirely — falling
+//!    straight through to step 3 — when `url` contains a raw control
+//!    character: the OSC 8 sequence embeds `url` verbatim between two
+//!    `ESC` introducers, so an unescaped `ESC` (or other control byte) in
+//!    an attacker- or content-derived URL could break out of the intended
+//!    sequence and inject arbitrary further terminal escapes into a
+//!    capable-but-not-bulletproof emulator. Real URLs never contain an
+//!    unencoded control character (RFC 3986 requires percent-encoding),
+//!    so this costs nothing for a legitimate URL.
+//! 3. Only when *both* legs fail (or are skipped) — the opener won't
+//!    launch **and** either `url` has a control character or neither
 //!    stdout nor `/dev/tty` accepts a write — does this report
 //!    `Err(BackendError::Unsupported)`: a genuinely earned answer for a
 //!    genuinely headless environment, not an assumed one. `open_url`
@@ -342,30 +370,21 @@ fn emit_osc8_hyperlink(url: &str) -> bool {
 
 // ── URL opener command (#969) ────────────────────────────────────────────────
 
-/// Build the command that opens `url` via the platform's URL handler,
-/// without spawning it — factored out purely so tests can assert on the
-/// program name and arguments a real call would spawn, rather than
-/// actually launching a browser. Detached: stdout/stderr are nulled so a
-/// slow or chatty opener process can't wedge the TUI's own streams.
+/// macOS opener: `open <url>`, without spawning it — factored out purely
+/// so tests can assert on the program name and arguments a real call
+/// would spawn, rather than actually launching a browser. Detached:
+/// stdout/stderr are nulled so a slow or chatty opener process can't
+/// wedge the TUI's own streams.
 ///
-/// Lifted from vimcode's `open_url_in_browser`
-/// (`src/core/engine/mod.rs`) — the three-platform split (`xdg-open` /
-/// `open` / `cmd /c start` with `CREATE_NO_WINDOW`) already proven there.
-#[cfg(target_os = "windows")]
-fn build_url_opener_command(url: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = std::process::Command::new("cmd");
-    // Empty `""` title argument is required by `start`'s own argument
-    // parsing whenever the target itself might be quoted.
-    cmd.args(["/c", "start", "", url])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    cmd
-}
-
-/// macOS opener: `open <url>`. See the Windows `cfg` overload of this same
-/// function (above) for the shared shape and doc.
+/// Lifted from vimcode's `open_url_in_browser` (`src/core/engine/mod.rs`)
+/// — the macOS/Linux split already proven there. **Unix only**: Windows
+/// has no `build_url_opener_command` at all — see
+/// [`win_shell_execute_open`] below for why that leg calls `ShellExecuteW`
+/// directly instead of building a `Command` (issue #969 review: the
+/// original `cmd /c start "" <url>` this crate briefly lifted alongside
+/// the Unix legs is a CWE-78 command-injection hole, since `cmd.exe`
+/// re-parses its own command line for `&`/`|`/`^`/`%` regardless of how
+/// the argument was quoted for `CreateProcess`).
 #[cfg(target_os = "macos")]
 fn build_url_opener_command(url: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new("open");
@@ -375,8 +394,8 @@ fn build_url_opener_command(url: &str) -> std::process::Command {
     cmd
 }
 
-/// Linux/BSD opener: `xdg-open <url>`. See the Windows `cfg` overload of
-/// this same function (above) for the shared shape and doc.
+/// Linux/BSD opener: `xdg-open <url>`. See the macOS overload of this same
+/// function (above) for the shared shape and doc.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn build_url_opener_command(url: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new("xdg-open");
@@ -386,21 +405,122 @@ fn build_url_opener_command(url: &str) -> std::process::Command {
     cmd
 }
 
+/// UTF-16, nul-terminated — the string form every wide (`W`-suffixed)
+/// WinAPI call needs. Hoisted out of [`win_shell_execute_open`] purely so
+/// a test can pin the encoding independent of the real, side-effecting
+/// `ShellExecuteW` call.
+#[cfg(target_os = "windows")]
+fn wide_nul_terminated(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Windows opener (issue #969): `ShellExecuteW(NULL, "open", url, NULL,
+/// NULL, SW_SHOWNORMAL)`, called through a **minimal, hand-written FFI
+/// declaration** — not the `windows` crate. `windows` is `optional`,
+/// pulled in only by `dep:windows` on this crate's `win` feature (see
+/// `Cargo.toml`), so it is not a dependency of a bare `--features tui`
+/// build; this function must compile whenever `target_os = "windows"`
+/// alone, the same gate [`build_url_opener_command`]'s macOS/Unix arms
+/// above use, regardless of whether `win` is also enabled.
+///
+/// Never goes through `cmd.exe` (or any shell) at all — `ShellExecuteW`
+/// hands `url` straight to `CreateProcess`/the registered "open" handler,
+/// with nothing in between to re-parse `&`/`|`/`^`/`%` as metacharacters.
+/// That sidesteps the CWE-78 class of bug the original `cmd /c start ""
+/// <url>` approach (lifted from vimcode, then caught at review) was
+/// exposed to: a URL with an unescaped `&` in its query string — or a
+/// crafted `https://x&calc.exe&` — would land unquoted on `cmd.exe`'s own
+/// command line (Rust only quotes an argument that contains whitespace)
+/// and get split into multiple commands.
+///
+/// Mirrors `crate::win::services`'s own `ShellExecuteW`-based
+/// `open_url`/`open_path` for the Win-GUI backend — that function isn't
+/// reachable from here (it lives in the `win`-feature-gated module), so
+/// this is a small, deliberate duplicate kept independent of that
+/// feature, not a shared helper.
+///
+/// Returns whether `ShellExecuteW` reports success: per its own docs, any
+/// return value greater than 32 is success; the low range `0..=32` is a
+/// documented failure code (e.g. `SE_ERR_FNF = 2`, `SE_ERR_NOASSOC = 31`).
+#[cfg(target_os = "windows")]
+fn win_shell_execute_open(url: &str) -> bool {
+    // SAFETY: `ShellExecuteW` is a well-known, stable Win32 API. Both
+    // wide-string buffers passed below are nul-terminated and kept alive
+    // (as local `Vec<u16>`s) for the duration of the call; the remaining
+    // arguments are the documented "no window handle / no extra
+    // parameters / no explicit working directory" null pointers.
+    //
+    // `#[link(name = "shell32")]`: `ShellExecuteW` lives in
+    // `shell32.dll`/`shell32.lib` — unlike the `kernel32`/`user32`
+    // imports the MSVC CRT startup pulls in implicitly, this one needs an
+    // explicit link directive since nothing else in a bare `tui`-feature
+    // build references `shell32` at all.
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show_cmd: i32,
+        ) -> isize;
+    }
+    const SW_SHOWNORMAL: i32 = 1;
+
+    let operation = wide_nul_terminated("open");
+    let file = wide_nul_terminated(url);
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result > 32
+}
+
+/// The single "try the platform opener" step [`open_url_via`] runs first
+/// (issue #969): spawns [`build_url_opener_command`]'s `Command` on
+/// macOS/Linux/BSD, or calls [`win_shell_execute_open`] directly on
+/// Windows — no `Command`/shell involved on that leg at all. Returns
+/// whether the platform opener genuinely launched.
+#[cfg(target_os = "windows")]
+fn try_platform_opener(url: &str) -> bool {
+    win_shell_execute_open(url)
+}
+
+/// See the Windows overload of this same function (above) for the shared
+/// doc.
+#[cfg(not(target_os = "windows"))]
+fn try_platform_opener(url: &str) -> bool {
+    build_url_opener_command(url).spawn().is_ok()
+}
+
 /// The three-step "opener, then OSC 8, then honestly `Unsupported`" logic
 /// [`TuiPlatformServices::open_url_result`] runs (issue #969), factored
-/// out with `build_opener` injected so tests can swap in a harmless
-/// stand-in command instead of the real platform opener — see this
-/// module's `open_url_tests` for why `open_url_result` itself can't
-/// safely be exercised end-to-end without either launching a real browser
-/// or racing global process state (`$PATH`) against other tests.
-fn open_url_via(
-    url: &str,
-    build_opener: impl FnOnce(&str) -> std::process::Command,
-) -> ServiceResult<()> {
-    if build_opener(url).spawn().is_ok() {
+/// out with `try_opener` injected so tests can swap in a harmless
+/// stand-in instead of the real platform opener — see this module's
+/// `open_url_tests` for why `open_url_result` itself can't safely be
+/// exercised end-to-end without either launching a real browser or racing
+/// global process state (`$PATH`) against other tests.
+fn open_url_via(url: &str, try_opener: impl FnOnce(&str) -> bool) -> ServiceResult<()> {
+    if try_opener(url) {
         return Ok(());
     }
-    if emit_osc8_hyperlink(url) {
+    // The OSC 8 sequence embeds `url` verbatim between two `ESC`
+    // introducers (see `osc8_hyperlink_sequence`) — a raw control
+    // character (in particular another `ESC`) in an attacker- or
+    // content-derived URL could break out of the intended sequence and
+    // inject further terminal escapes into a capable-but-not-bulletproof
+    // emulator (issue #969 review). Real URLs never contain an unencoded
+    // control character (RFC 3986 requires percent-encoding), so
+    // rejecting the OSC 8 leg for one costs nothing legitimate.
+    let osc8_safe = !url.contains(|c: char| c.is_control());
+    if osc8_safe && emit_osc8_hyperlink(url) {
         return Ok(());
     }
     Err(BackendError::Unsupported)
@@ -766,12 +886,17 @@ mod open_url_tests {
         assert!(!emit_osc8_hyperlink_to("https://example.com", &mut w));
     }
 
-    /// Per-platform opener selection, asserted on the *command that would
-    /// be spawned* — program name and arguments — never on an actual
-    /// spawn. Exactly one of these three compiles for any given target,
-    /// mirroring [`build_url_opener_command`]'s own `cfg` split, so CI
-    /// exercises whichever branch matches the host it's actually running
-    /// on rather than assuming one platform.
+    /// Per-platform opener command shape, asserted on the *command that
+    /// would be spawned* — program name and arguments — never on an
+    /// actual spawn. **Unix only** (macOS/Linux-BSD): Windows has no
+    /// `build_url_opener_command` to assert on any more — see
+    /// [`win_shell_execute_open`]'s own doc, and
+    /// `wide_nul_terminated_encodes_utf16_and_appends_a_nul` /
+    /// `win_shell_execute_open_does_not_panic_on_shell_metacharacters`
+    /// below for that leg's coverage instead. Exactly one of these two compiles for any given
+    /// Unix target, mirroring [`build_url_opener_command`]'s own `cfg`
+    /// split, so CI exercises whichever branch matches the host it's
+    /// actually running on rather than assuming one platform.
     #[cfg(target_os = "macos")]
     #[test]
     fn build_url_opener_command_uses_macos_open() {
@@ -794,61 +919,96 @@ mod open_url_tests {
         );
     }
 
+    /// Pins [`wide_nul_terminated`]'s encoding independent of the real,
+    /// side-effecting `ShellExecuteW` call — UTF-16 code units followed
+    /// by exactly one trailing `0`.
     #[cfg(target_os = "windows")]
     #[test]
-    fn build_url_opener_command_uses_cmd_start() {
-        let cmd = build_url_opener_command("https://example.com/969");
-        assert_eq!(cmd.get_program(), "cmd");
+    fn wide_nul_terminated_encodes_utf16_and_appends_a_nul() {
         assert_eq!(
-            cmd.get_args().collect::<Vec<_>>(),
-            ["/c", "start", "", "https://example.com/969"]
+            wide_nul_terminated("ab"),
+            vec!['a' as u16, 'b' as u16, 0u16]
         );
+        assert_eq!(wide_nul_terminated(""), vec![0u16]);
+    }
+
+    /// [`win_shell_execute_open`] never builds a `std::process::Command`
+    /// (that's the whole point — no `cmd.exe`/shell in the loop at all),
+    /// so unlike the Unix opener tests above there is no command to
+    /// assert on without actually invoking `ShellExecuteW`. What *is*
+    /// checkable without a live desktop session: it never panics on a
+    /// URL containing the exact metacharacters (`&`, `|`, `^`, `%`) that
+    /// made the original `cmd /c start` approach exploitable (issue #969
+    /// review) — a bare FFI call has no command-line text for those
+    /// bytes to land in. Best-effort on `ShellExecuteW`'s actual verdict:
+    /// some CI Windows runners have no registered "open" handler at all,
+    /// so this doesn't assert on the boolean result, only that the call
+    /// completes.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_shell_execute_open_does_not_panic_on_shell_metacharacters() {
+        let _ = win_shell_execute_open("https://example.com/search?q=foo&run=bar|calc.exe^%1");
     }
 
     /// #969 acceptance bar: `open_url_result` reports `Ok(())` when an
     /// opener is present. Exercised through [`open_url_via`] with a
     /// harmless stand-in "opener" (a command every supported host can
     /// spawn without doing anything) instead of the real
-    /// `build_url_opener_command` — spawning the *actual* platform opener
-    /// in a test would launch a real browser as a side effect, which is
+    /// `try_platform_opener` — spawning the *actual* platform opener in a
+    /// test would launch a real browser as a side effect, which is
     /// exactly what this issue's acceptance bar says to avoid. This still
-    /// proves the production logic that matters: a successful spawn short
+    /// proves the production logic that matters: a successful open short
     /// circuits straight to `Ok(())` without ever touching the OSC 8
-    /// fallback.
+    /// fallback. See `open_url_result_returns_ok_through_the_real_delegation`
+    /// below for the one gap this stand-in leaves: the real,
+    /// fully-wired `PlatformServices::open_url_result` method itself.
     #[test]
     fn open_url_via_returns_ok_when_the_opener_spawns() {
         let result = open_url_via("https://example.com/969", |_url| {
             #[cfg(unix)]
             {
-                std::process::Command::new("true")
+                std::process::Command::new("true").spawn().is_ok()
             }
             #[cfg(windows)]
             {
-                let mut cmd = std::process::Command::new("cmd");
-                cmd.args(["/c", "exit", "0"]);
-                cmd
+                std::process::Command::new("cmd")
+                    .args(["/c", "exit", "0"])
+                    .spawn()
+                    .is_ok()
             }
         });
         assert_eq!(result, Ok(()));
     }
 
-    /// #969 acceptance bar: when the opener can't even be spawned (no
-    /// desktop session, binary missing), `open_url_via` falls back to
-    /// emitting an OSC 8 hyperlink — which succeeds here because stdout
-    /// is a writable stream even under `cargo test`, so this reports
-    /// `Ok(())` rather than `Unsupported`. Writes real OSC 8 bytes to the
-    /// test process's stdout as a side effect (harmless — the same
-    /// "doesn't assert on the actual bytes written" posture
-    /// `beep_reports_success` already accepts for its BEL byte).
+    /// #969 acceptance bar: when the opener can't even launch (no desktop
+    /// session, binary missing), `open_url_via` falls back to emitting an
+    /// OSC 8 hyperlink — which succeeds here because stdout is a writable
+    /// stream even under `cargo test`, so this reports `Ok(())` rather
+    /// than `Unsupported`. Writes real OSC 8 bytes to the test process's
+    /// stdout as a side effect (harmless — the same "doesn't assert on
+    /// the actual bytes written" posture `beep_reports_success` already
+    /// accepts for its BEL byte).
     #[test]
     fn open_url_via_falls_back_to_osc8_when_the_opener_is_missing() {
-        let result = open_url_via("https://example.com/969", |_url| {
-            std::process::Command::new("quadraui-969-this-binary-does-not-exist")
-        });
+        let result = open_url_via("https://example.com/969", |_url| false);
         assert_eq!(result, Ok(()));
     }
 
-    /// The genuinely-earned `Unsupported`: opener spawn fails *and* the
+    /// Issue #969 review: a URL carrying a raw control character (here, a
+    /// second `ESC`) must never reach the OSC 8 writer, even when the
+    /// opener leg fails and stdout is otherwise writable — which would
+    /// otherwise make this resolve `Ok` the same way
+    /// `open_url_via_falls_back_to_osc8_when_the_opener_is_missing` does
+    /// above. The control-character guard short-circuits straight to
+    /// `Unsupported` instead of ever calling `emit_osc8_hyperlink`.
+    #[test]
+    fn open_url_via_rejects_control_characters_in_the_osc8_fallback() {
+        let malicious_url = "https://example.com/\x1b]0;pwned\x07";
+        let result = open_url_via(malicious_url, |_url| false);
+        assert_eq!(result, Err(BackendError::Unsupported));
+    }
+
+    /// The genuinely-earned `Unsupported`: opener launch fails *and* the
     /// OSC 8 write fails. Forces the second leg to fail by injecting
     /// [`emit_osc8_hyperlink_to`]'s failure path directly rather than
     /// `open_url_via` (which always writes to the real stdout/tty) — see
@@ -859,7 +1019,7 @@ mod open_url_tests {
     /// opener) still resolves `Ok`.
     #[test]
     fn unsupported_is_only_reachable_when_both_legs_fail() {
-        // Opener leg: definitely fails to spawn.
+        // Opener leg: definitely fails to launch.
         let opener_failed = std::process::Command::new("quadraui-969-this-binary-does-not-exist")
             .spawn()
             .is_err();
@@ -873,6 +1033,81 @@ mod open_url_tests {
         assert!(osc8_failed, "expected the failing writer to fail the write");
         // Both legs failing is exactly `open_url_result`'s
         // `Err(BackendError::Unsupported)` condition.
+    }
+
+    /// Serializes the one test below that temporarily overrides the
+    /// process-wide `$PATH` — nothing else in this crate's test binary
+    /// spawns a bare `open`/`xdg-open` by name (the native-clipboard-tool
+    /// tests below spawn `wl-copy`/`xclip`/`xsel` instead), so this lock
+    /// only has to protect against that single test running more than
+    /// once concurrently (`cargo test` can run the same binary's tests in
+    /// parallel threads, never a second copy of the *same* test).
+    #[cfg(unix)]
+    static PATH_OVERRIDE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// #969 review (non-blocking gap): every other test above exercises
+    /// [`open_url_via`] with an injected stand-in opener — this is the
+    /// one test that calls the real, fully-wired
+    /// `PlatformServices::open_url_result` trait method (`TuiPlatformServices`'s
+    /// one-line delegation to `open_url_via(url, try_platform_opener)`),
+    /// so that delegation itself is actually exercised rather than
+    /// trusted by inspection.
+    ///
+    /// Safe to do without launching a real browser only because `$PATH`
+    /// is temporarily redirected (guarded by [`PATH_OVERRIDE_LOCK`], and
+    /// always restored via a drop guard even on panic) to a directory
+    /// containing a stub executable under the *exact* name
+    /// `build_url_opener_command` looks up on this platform (`open` on
+    /// macOS, `xdg-open` elsewhere on Unix) that exits `0` immediately —
+    /// so `try_platform_opener`'s real `Command::new(..).spawn()` finds
+    /// and successfully launches *that*, not a browser.
+    ///
+    /// **Unix only.** Windows' opener ([`win_shell_execute_open`]) is a
+    /// direct `ShellExecuteW` FFI call with no `$PATH`-resolved binary to
+    /// intercept this way, so there is no equivalent seam there; see
+    /// `win_shell_execute_open_does_not_panic_on_shell_metacharacters`
+    /// above for that platform's own coverage of the real function.
+    #[cfg(unix)]
+    #[test]
+    fn open_url_result_returns_ok_through_the_real_delegation() {
+        let _guard = PATH_OVERRIDE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        #[cfg(target_os = "macos")]
+        const OPENER_NAME: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER_NAME: &str = "xdg-open";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub_path = tmp.path().join(OPENER_NAME);
+        std::fs::write(&stub_path, b"#!/bin/sh\nexit 0\n").expect("write stub opener");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x stub opener");
+        }
+
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path.clone());
+
+        let mut new_path = std::ffi::OsString::from(tmp.path());
+        if let Some(existing) = &original_path {
+            new_path.push(":");
+            new_path.push(existing);
+        }
+        std::env::set_var("PATH", new_path);
+
+        let services = TuiPlatformServices::new();
+        let result = services.open_url_result("https://example.com/969");
+        assert_eq!(result, Ok(()));
     }
 }
 
@@ -1131,16 +1366,15 @@ impl PlatformServices for TuiPlatformServices {
 
     /// quadraui#969: genuinely opens `url`, rather than #949's honest but
     /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
-    /// URL opener first ([`build_url_opener_command`] — `xdg-open` /
-    /// `open` / `cmd /c start`, lifted from vimcode's
-    /// `open_url_in_browser`); if it can't even be spawned (no desktop
-    /// session, opener binary missing), falls back to an OSC 8 hyperlink
-    /// ([`emit_osc8_hyperlink`]) so a capable terminal still makes the URL
-    /// clickable. Only reports `Err(BackendError::Unsupported)` when
-    /// *neither* leg reached anything — see the module doc for the full
-    /// three-step story.
+    /// URL opener first ([`try_platform_opener`] — `xdg-open`/`open` on
+    /// Unix, `ShellExecuteW` directly on Windows, never a shell); if it
+    /// can't even launch (no desktop session, opener binary missing),
+    /// falls back to an OSC 8 hyperlink ([`emit_osc8_hyperlink`]) so a
+    /// capable terminal still makes the URL clickable. Only reports
+    /// `Err(BackendError::Unsupported)` when *neither* leg reached
+    /// anything — see the module doc for the full three-step story.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
-        open_url_via(url, build_url_opener_command)
+        open_url_via(url, try_platform_opener)
     }
 
     /// No file manager window a terminal could reveal anything in —
