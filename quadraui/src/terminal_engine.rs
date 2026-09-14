@@ -1569,6 +1569,84 @@ pub fn default_shell() -> String {
     }
 }
 
+/// Which "run a command string through the shell" convention applies.
+///
+/// Exists only to let [`shell_command_for`] be exercised for **both**
+/// platform branches from a single test binary — `shell_command()` itself
+/// picks the branch via `cfg(target_os = "windows")`, which a non-Windows
+/// CI host can only ever compile one arm of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellPlatform {
+    Unix,
+    // Only constructed by `shell_command()` when `cfg(target_os =
+    // "windows")`; on every other build target it's exercised solely by
+    // the platform-parameterised unit tests below, which is exactly what
+    // this variant is for (see `ShellPlatform`'s doc comment) — so
+    // dead_code would otherwise fire on every non-Windows CI host.
+    #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+    Windows,
+}
+
+/// Pure decision logic behind [`shell_command`]: given the platform and the
+/// already-read environment override (if any), returns `(shell, flag)`.
+///
+/// Factored out from [`shell_command`] so tests can cover both platform
+/// branches and both "env var set" / "env var unset" cases without
+/// mutating process-global `$SHELL` / `%COMSPEC%` state — that state is
+/// shared with every other test in this binary (e.g.
+/// `default_shell_is_nonempty` reads `$SHELL` too), so flipping it here
+/// would race them under the default parallel test runner.
+fn shell_command_for(platform: ShellPlatform, env_shell: Option<String>) -> (String, String) {
+    match platform {
+        ShellPlatform::Windows => (
+            env_shell.unwrap_or_else(|| "cmd".to_string()),
+            "/C".to_string(),
+        ),
+        ShellPlatform::Unix => (
+            env_shell.unwrap_or_else(|| "sh".to_string()),
+            "-c".to_string(),
+        ),
+    }
+}
+
+/// Returns the platform's shell binary plus its "run this command string"
+/// flag, honouring `$SHELL` (Unix) / `%COMSPEC%` (Windows) where set —
+/// the portable seam behind `Command::new(shell).arg(flag).arg(command)`.
+///
+/// Sibling of [`default_shell`]: `default_shell()` names a shell for an
+/// *interactive* PTY session (used by [`TerminalSession::spawn`]);
+/// `shell_command()` is for launching a single command string through
+/// "the user's shell" — the case vimcode's `:!`, `:r !`, `!{motion}`
+/// filters, and plugin async shells all hardcode as `Command::new("sh")`
+/// today, with no Windows leg (quadraui#970). `default_shell()`'s own
+/// behaviour is unchanged by this function's addition.
+///
+/// Falls back to `("sh", "-c")` on Unix and `("cmd", "/C")` on Windows
+/// when the relevant environment variable isn't set. Both fallbacks are
+/// resolved via `PATH` by the process spawner (`std::process::Command`
+/// / `portable_pty::CommandBuilder`), not by an absolute path, matching
+/// `core/lsp_manager.rs`'s existing `cmd /C` vs `sh -c` split in vimcode.
+///
+/// # Example
+///
+/// ```
+/// use quadraui::terminal_engine::shell_command;
+///
+/// let (shell, flag) = shell_command();
+/// let mut cmd = std::process::Command::new(shell);
+/// cmd.arg(flag).arg("echo hello");
+/// ```
+pub fn shell_command() -> (String, String) {
+    #[cfg(target_os = "windows")]
+    {
+        shell_command_for(ShellPlatform::Windows, std::env::var("COMSPEC").ok())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        shell_command_for(ShellPlatform::Unix, std::env::var("SHELL").ok())
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2323,6 +2401,51 @@ mod tests {
     fn default_shell_is_nonempty() {
         let shell = default_shell();
         assert!(!shell.is_empty());
+    }
+
+    // ── shell_command / shell_command_for (quadraui#970) ──────────────────────
+
+    #[test]
+    fn shell_command_for_unix_honours_shell_env_var() {
+        let (shell, flag) = shell_command_for(ShellPlatform::Unix, Some("/bin/zsh".to_string()));
+        assert_eq!(shell, "/bin/zsh");
+        assert_eq!(flag, "-c");
+    }
+
+    #[test]
+    fn shell_command_for_unix_falls_back_when_shell_env_var_unset() {
+        let (shell, flag) = shell_command_for(ShellPlatform::Unix, None);
+        assert_eq!(shell, "sh");
+        assert_eq!(flag, "-c");
+    }
+
+    #[test]
+    fn shell_command_for_windows_honours_comspec_env_var() {
+        let (shell, flag) = shell_command_for(
+            ShellPlatform::Windows,
+            Some(r"C:\Windows\System32\cmd.exe".to_string()),
+        );
+        assert_eq!(shell, r"C:\Windows\System32\cmd.exe");
+        assert_eq!(flag, "/C");
+    }
+
+    #[test]
+    fn shell_command_for_windows_falls_back_when_comspec_env_var_unset() {
+        let (shell, flag) = shell_command_for(ShellPlatform::Windows, None);
+        assert_eq!(shell, "cmd");
+        assert_eq!(flag, "/C");
+    }
+
+    /// `shell_command()` itself (as opposed to the pure `shell_command_for`
+    /// helper above) picks its platform branch via `cfg(target_os =
+    /// "windows")`, so this only exercises whichever branch the current
+    /// build host compiles — the platform-parameterised tests above are
+    /// what cover both branches regardless of host OS.
+    #[test]
+    fn shell_command_returns_nonempty_pair() {
+        let (shell, flag) = shell_command();
+        assert!(!shell.is_empty());
+        assert!(!flag.is_empty());
     }
 
     #[test]
