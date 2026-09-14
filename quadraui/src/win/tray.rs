@@ -489,6 +489,15 @@ fn build_hicon_from_bgra(pixels: &[u8], width: u32, height: u32) -> Option<HICON
 /// function (and its test coverage) compiles and runs on every host,
 /// the same portability reasoning `win::run`'s local `MK_LBUTTON`/
 /// `MK_RBUTTON`/`MK_MBUTTON` constants already document.
+///
+/// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]`: the only
+/// non-test caller is `win::run`'s wndproc tray arm, which is
+/// `cfg(target_os = "windows")`. The CLAUDE.md quality gate runs
+/// `cargo check -p quadraui --features win` on Linux/macOS as a
+/// type-check of the windows-gated arms, and there this would otherwise
+/// be a `-D warnings` dead-code failure — same reasoning as
+/// `win::msg`'s module header.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn tray_click_button(win32_message: u32) -> Option<MouseButton> {
     const WM_LBUTTONUP: u32 = 0x0202;
     const WM_RBUTTONUP: u32 = 0x0205;
@@ -506,6 +515,11 @@ pub(crate) fn tray_click_button(win32_message: u32) -> Option<MouseButton> {
 /// wndproc arm so the click→event decision is unit-testable without a
 /// live `HWND`/`TrackPopupMenuEx` — the actual menu tracking
 /// ([`track_menu`]) still only runs on real Windows.
+///
+/// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]` for the
+/// same reason as [`tray_click_button`]'s: its only non-test caller is
+/// the windows-gated wndproc arm.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn plain_click_event(button: MouseButton) -> UiEvent {
     UiEvent::TrayClicked { button }
 }
