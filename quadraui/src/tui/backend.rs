@@ -404,6 +404,18 @@ impl TuiBackend {
         self.mouse_enabled
     }
 
+    /// Concrete (non-trait-object) handle on the platform services, so
+    /// [`super::run::run_with`] can call
+    /// [`super::services::TuiPlatformServices::set_dialog_surface`] —
+    /// the `&dyn PlatformServices` [`Backend::services`] returns can't
+    /// reach that inherent method (issue #965). Mirrors
+    /// `GtkPlatformServices::gtk_clipboard`'s reason for existing, minus
+    /// the `#[cfg(test)]` gate: this one is called from production, not
+    /// only tests.
+    pub(crate) fn tui_services(&self) -> &TuiPlatformServices {
+        &self.services
+    }
+
     /// Override whether this session has mouse reporting.
     /// [`super::run::run_with`] calls this with `false` when the caller
     /// opts into `no-mouse` mode (`RunConfig { mouse: false, .. }`,

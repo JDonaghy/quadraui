@@ -60,6 +60,8 @@ mod dialog_table_demo;
 mod diff_view_demo;
 #[path = "../examples/common/file_dialog_demo.rs"]
 mod file_dialog_demo;
+#[path = "../examples/common/file_picker_app.rs"]
+mod file_picker_app;
 #[path = "../examples/common/find_replace_app.rs"]
 mod find_replace_app;
 // `LEFT_ID`/`RIGHT_ID`/`STATUS_ID` are consumed below, but the demo's own
@@ -92,6 +94,8 @@ mod indicators_app;
 mod markdown_demo;
 #[path = "../examples/common/menu_bar_app.rs"]
 mod menu_bar_app;
+#[path = "../examples/common/message_dialog_app.rs"]
+mod message_dialog_app;
 #[path = "../examples/common/message_dialog_demo.rs"]
 mod message_dialog_demo;
 #[path = "../examples/common/message_list_demo.rs"]
@@ -163,6 +167,7 @@ use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
 use diff_view_demo::DiffViewApp;
 use file_dialog_demo::FileDialogDemo;
+use file_picker_app::FilePickerApp;
 use find_replace_app::FindReplaceApp;
 use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
@@ -177,6 +182,7 @@ use image_app::ImageApp;
 use indicators_app::IndicatorsApp;
 use markdown_demo::MarkdownDemo;
 use menu_bar_app::MenuBarApp;
+use message_dialog_app::MessageDialogApp;
 use message_dialog_demo::MessageDialogDemo;
 use message_list_demo::MessageListApp;
 use mini_app::MiniApp;
@@ -766,18 +772,22 @@ fn window_control_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── FileDialogDemo: TUI's documented "unsupported" contract ───────────────
+// ─── FileDialogDemo: TUI open/save now return a real path (#965) ───────────
 //
 // #427 implements real file dialogs for GTK only (extended to folder
-// dialogs by #935); `PlatformServices`'s TUI impl keeps returning `None`
-// unconditionally for all three (apps should provide an in-canvas picker
-// instead). These tests pin that documented contract so a future change
-// can't silently make the TUI path block waiting on something that will
-// never resolve headlessly. The GTK path (a real, modal,
-// nested-mainloop-pumped `gtk4::FileDialog`) can't be driven by
-// `TuiDriver` — it's covered by the `gtk_file_dialog` example's manual
-// smoke test instead (see SMOKE_TESTS in the #427 PR, and this repo's
-// #935 PR for the folder-dialog leg).
+// dialogs by #935); before #965, `PlatformServices`'s TUI impl returned
+// `None` unconditionally for all three. Since #965, `show_file_open_dialog`
+// / `show_file_save_dialog` drive a real `compose::FilePickerController`
+// through a nested draw-and-read loop (`tui::services`'s module doc) and
+// resolve to whichever path the (scripted, via
+// `TuiDriver::queue_dialog_events`) input actually picked — these tests
+// pin that positive contract. `show_folder_open_dialog` is the one method
+// #965 deliberately left untouched (see that issue's own scope note) and
+// keeps the pre-#965 unconditional-`None` contract, pinned separately
+// below. The GTK path (a real, modal, nested-mainloop-pumped
+// `gtk4::FileDialog`) can't be driven by `TuiDriver` — it's covered by the
+// `gtk_file_dialog` example's manual smoke test instead (see SMOKE_TESTS
+// in the #427 PR, and this repo's #935 PR for the folder-dialog leg).
 
 #[test]
 fn file_dialog_demo_shows_starting_hint() {
@@ -793,32 +803,103 @@ fn file_dialog_demo_shows_starting_hint() {
     );
 }
 
+/// `FileDialogDemo`'s `o` handler has no way to override
+/// `FileDialogOptions::initial_dir`, so `show_file_open_dialog` roots at
+/// `std::env::current_dir()` — this test's own process cwd, which `cargo
+/// test` sets to the package root (`quadraui/`, this crate's own
+/// `CARGO_MANIFEST_DIR`) for every integration-test binary. `build.rs`
+/// lives there and always matches the demo's `*.rs` filter, so typing
+/// "build" then Enter is a stable, layout-independent way to confirm a
+/// real file — no tempdir plumbing needed.
 #[test]
-fn file_dialog_demo_open_reports_unsupported_on_tui() {
+fn file_dialog_demo_open_confirms_a_real_path_on_tui() {
+    let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    driver.queue_dialog_events(vec![
+        UiEvent::KeyPressed {
+            key: Key::Char('b'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('u'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('i'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('l'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Char('d'),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+    ]);
+    driver.type_char('o');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Opened:") && screen.contains("build.rs"),
+        "typing a filter that narrows to build.rs then Enter must confirm that real path:\n{screen}"
+    );
+}
+
+/// With no scripted input, the nested loop's very first event
+/// (`TuiPlatformServices::next_dialog_events`'s Escape synthesis) cancels
+/// the picker — proves cancellation still reaches the app as `None`,
+/// distinct from the "unsupported" framing this test used to carry
+/// before #965 (TUI genuinely has a working picker now; `None` here
+/// means "the user backed out", not "not implemented").
+#[test]
+fn file_dialog_demo_open_cancelled_returns_none_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
     driver.type_char('o');
     let screen = driver.screen();
     assert!(
-        screen.contains("unsupported"),
-        "open dialog must report None as unsupported on TUI:\n{screen}"
+        screen.contains("Open cancelled"),
+        "an un-driven open dialog must cancel (None), not hang or silently confirm:\n{screen}"
     );
 }
 
+/// `FileDialogDemo`'s `s` handler seeds `initial_filename: "untitled.txt"`
+/// — `FilePickerController`'s save-mode query field, so confirming with
+/// an *immediate* Enter (no typing, no navigation) must save under that
+/// seeded name verbatim. This is also the regression this issue's fix
+/// pinned in `compose::file_picker`'s own unit tests: the picker's ".."
+/// row defaults to selected, and Enter used to act on it instead of the
+/// seeded filename.
 #[test]
-fn file_dialog_demo_save_reports_unsupported_on_tui() {
+fn file_dialog_demo_save_confirms_the_seeded_filename_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
+    driver.queue_dialog_events(vec![UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    }]);
     driver.type_char('s');
     let screen = driver.screen();
     assert!(
-        screen.contains("unsupported"),
-        "save dialog must report None as unsupported on TUI:\n{screen}"
+        screen.contains("Save as:") && screen.contains("untitled.txt"),
+        "immediate Enter must save under the seeded filename, not navigate or cancel:\n{screen}"
     );
 }
 
-// quadraui#935: `show_folder_open_dialog` gets the identical TUI
-// "unsupported" contract as open/save above — same reasoning, same test
-// shape, so a future change can't silently make the TUI folder path block
-// waiting on something that will never resolve headlessly either.
+// quadraui#935 / #965: `show_folder_open_dialog` is deliberately outside
+// #965's scope (see that issue's own scope note and `tui::services`'s
+// module doc) and keeps the original unconditional-`None` TUI contract —
+// same reasoning, same test shape as before, so a future change can't
+// silently make the TUI folder path block waiting on something that will
+// never resolve headlessly either.
 #[test]
 fn file_dialog_demo_folder_reports_unsupported_on_tui() {
     let mut driver = TuiDriver::new(FileDialogDemo::new(), 100, 20);
@@ -838,18 +919,22 @@ fn file_dialog_demo_escape_exits() {
     assert!(driver.exited(), "Escape should exit the demo");
 }
 
-// ─── MessageDialogDemo: TUI's documented "unsupported" contract ────────────
+// ─── MessageDialogDemo: TUI now returns a real button choice (#965) ────────
 //
-// #666 implements a real native `gtk4::AlertDialog` for GTK only;
-// `PlatformServices`'s TUI impl keeps returning `None` unconditionally (the
-// in-canvas `Dialog` primitive / `Backend::draw_dialog` stays the TUI
-// path). These tests pin that documented contract so a future change
-// can't silently make the TUI path block waiting on something that will
-// never resolve headlessly. The GTK path (a real, modal, nested-mainloop-
-// pumped `gtk4::AlertDialog`) can't be driven by `TuiDriver` — it's
-// covered by the `gtk_message_dialog` example's manual smoke test instead
-// (see `docs/TESTING.md`'s "What unit tests don't cover" and the
-// SMOKE_TESTS in the #666 PR).
+// #666 implements a real native `gtk4::AlertDialog` for GTK; before #965,
+// `PlatformServices`'s TUI impl returned `None` unconditionally (the
+// in-canvas `Dialog` primitive / `Backend::draw_dialog` was the only TUI
+// path, with no controller driving its show/block/resolve contract). Since
+// #965, `show_message_dialog` drives a real `compose::MessageDialogController`
+// through a nested draw-and-read loop (`tui::services`'s module doc) and
+// resolves to whichever button the (scripted, via `TuiDriver::queue_dialog_events`)
+// input actually chose. These tests pin that positive contract — a real
+// button id reaches the app, not `None` — so a future change can't
+// silently regress TUI back to the pre-#965 degrade. The GTK path (a real,
+// modal, nested-mainloop-pumped `gtk4::AlertDialog`) still can't be driven
+// by `TuiDriver` — it's covered by the `gtk_message_dialog` example's
+// manual smoke test instead (see `docs/TESTING.md`'s "What unit tests
+// don't cover" and the SMOKE_TESTS in the #666 PR).
 
 #[test]
 fn message_dialog_demo_shows_starting_hint() {
@@ -861,14 +946,47 @@ fn message_dialog_demo_shows_starting_hint() {
     );
 }
 
+/// Scripting `Right` (move focus off the default "Keep Editing" button)
+/// then `Enter` must resolve to the *other* button ("Discard") — proof
+/// the nested loop's button-focus state machine, not just its
+/// Escape/default fallback, reaches the app for real on TUI.
 #[test]
-fn message_dialog_demo_reports_unsupported_on_tui() {
+fn message_dialog_demo_resolves_a_real_non_default_button_on_tui() {
+    let mut driver = TuiDriver::new(MessageDialogDemo::new(), 100, 20);
+    driver.queue_dialog_events(vec![
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Right),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        },
+    ]);
+    driver.type_char('m');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Discarded"),
+        "moving focus to the second button and confirming must resolve it, not the default:\n{screen}"
+    );
+}
+
+/// With no scripted input queued, the nested loop's own dialog-open call
+/// still resolves — via the same Escape-synthesis
+/// `TuiPlatformServices::next_dialog_events` documents — to the
+/// cancel/default button ("Keep Editing" is both here), not `None`. Pins
+/// the "always something to degrade to" principle #965 exists for: even
+/// an un-driven TUI dialog call returns a real choice.
+#[test]
+fn message_dialog_demo_resolves_default_button_with_no_scripted_input() {
     let mut driver = TuiDriver::new(MessageDialogDemo::new(), 100, 20);
     driver.type_char('m');
     let screen = driver.screen();
     assert!(
-        screen.contains("unsupported"),
-        "message dialog must report None as unsupported on TUI:\n{screen}"
+        screen.contains("Kept editing"),
+        "un-driven dialog must still resolve to a real button, not None:\n{screen}"
     );
 }
 
@@ -4981,6 +5099,117 @@ fn folder_picker_confirmed_status_survives_a_path_longer_than_the_screen() {
     assert!(
         !after.contains("Open Folder picker"),
         "the picker should be dismissed after confirming:\n{after}"
+    );
+}
+
+// ─── FilePickerApp: compose::FilePickerController demo (issue #965) ────────
+//
+// Drives `FilePickerController` directly — no `PlatformServices` involved
+// — the same "app owns the controller, no backend branching" shape
+// `FolderPickerApp` above already has. See `tui_file_picker.rs`.
+
+/// Open mode: filtering down to a known file and confirming it updates
+/// the status bar with the real path — proves paint + fuzzy-filter +
+/// Enter-confirms-a-file all wire correctly through the example's own
+/// `AppLogic`, not just the controller's unit tests.
+#[test]
+fn file_picker_app_open_mode_confirms_a_filtered_file() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    std::fs::write(tmp.path().join("target.txt"), b"").expect("write file");
+
+    let mut driver = TuiDriver::new(FilePickerApp::with_root(tmp.path()), 100, 30);
+    let before = driver.screen();
+    assert!(
+        before.contains("Open File picker"),
+        "initial status should show the open-picker hint:\n{before}"
+    );
+
+    for c in "target".chars() {
+        driver.type_char(c);
+    }
+    driver.press_named(NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Opened:") && after.contains("target.txt"),
+        "typing a filter that narrows to target.txt then Enter must confirm it:\n{after}"
+    );
+}
+
+/// Save mode: reopening with `s` seeds the picker with `untitled.txt`
+/// (`FilePickerApp`'s own reopen handler) — confirming immediately must
+/// save under that name, the same "seeded name survives an immediate
+/// Enter" contract `compose::file_picker`'s own regression test pins.
+#[test]
+fn file_picker_app_save_mode_confirms_seeded_filename() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let mut driver = TuiDriver::new(FilePickerApp::with_root(tmp.path()), 100, 30);
+
+    // Dismiss the initial Open-mode picker, then reopen in Save mode.
+    driver.press_named(NamedKey::Escape);
+    driver.type_char('s');
+    let mid = driver.screen();
+    assert!(
+        mid.contains("Save File picker"),
+        "reopening with 's' should show the Save-mode hint:\n{mid}"
+    );
+
+    driver.press_named(NamedKey::Enter);
+    let after = driver.screen();
+    assert!(
+        after.contains("Saved:") && after.contains("untitled.txt"),
+        "immediate Enter in Save mode must confirm the seeded filename:\n{after}"
+    );
+}
+
+// ─── MessageDialogApp: compose::MessageDialogController demo (issue #965) ──
+//
+// Drives `MessageDialogController` directly — no `PlatformServices`
+// involved. See `tui_message_dialog_app.rs`.
+
+/// Enter with no navigation activates the default-focused button ("Save").
+#[test]
+fn message_dialog_app_enter_resolves_default_button() {
+    let mut driver = TuiDriver::new(MessageDialogApp::new(), 100, 20);
+    let before = driver.screen();
+    assert!(
+        before.contains("Save changes?"),
+        "initial status should prompt for a choice:\n{before}"
+    );
+    driver.press_named(NamedKey::Enter);
+    let after = driver.screen();
+    assert!(
+        after.contains("Resolved: save"),
+        "Enter with no navigation must resolve the default button:\n{after}"
+    );
+}
+
+/// Escape resolves to the cancel button ("Discard") even though it isn't
+/// the keyboard-focused one — `MessageDialogController`'s "there's always
+/// something to degrade to" contract.
+#[test]
+fn message_dialog_app_escape_resolves_cancel_button() {
+    let mut driver = TuiDriver::new(MessageDialogApp::new(), 100, 20);
+    driver.press_named(NamedKey::Escape);
+    let after = driver.screen();
+    assert!(
+        after.contains("Resolved: discard"),
+        "Escape must resolve the cancel button:\n{after}"
+    );
+}
+
+/// Right (move focus) then Enter resolves the *non-default* button —
+/// proves the focus-cycling state machine reaches the app, not just the
+/// Enter/Escape fast paths above.
+#[test]
+fn message_dialog_app_right_then_enter_resolves_discard() {
+    let mut driver = TuiDriver::new(MessageDialogApp::new(), 100, 20);
+    driver.press_named(NamedKey::Right);
+    driver.press_named(NamedKey::Enter);
+    let after = driver.screen();
+    assert!(
+        after.contains("Resolved: discard"),
+        "moving focus right then confirming must resolve the second button:\n{after}"
     );
 }
 

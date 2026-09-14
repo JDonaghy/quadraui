@@ -712,6 +712,26 @@ path = "examples/gtk_folder_picker.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_file_picker"
+path = "examples/tui_file_picker.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_file_picker"
+path = "examples/gtk_file_picker.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "tui_message_dialog_app"
+path = "examples/tui_message_dialog_app.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_message_dialog_app"
+path = "examples/gtk_message_dialog_app.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_chat"
 path = "examples/tui_chat.rs"
 required-features = ["tui"]

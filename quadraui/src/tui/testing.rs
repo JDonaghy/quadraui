@@ -45,6 +45,9 @@
 //! # }
 //! ```
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -141,7 +144,7 @@ pub struct CellStyle {
 /// or its style with [`Self::style_at`] / [`Self::styled_row`].
 pub struct TuiDriver<A: AppLogic> {
     core: DriverCore<TuiBackend, A>,
-    terminal: Terminal<TestBackend>,
+    terminal: Rc<RefCell<Terminal<TestBackend>>>,
 }
 
 impl<A: AppLogic> TuiDriver<A> {
@@ -150,7 +153,32 @@ impl<A: AppLogic> TuiDriver<A> {
     pub fn new(app: A, width: u16, height: u16) -> Self {
         let terminal =
             Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        let terminal = Rc::new(RefCell::new(terminal));
         let mut backend = TuiBackend::new();
+        // Wire the same `Terminal` this driver renders through as the
+        // nested dialog loop's paint target (issue #965) — see
+        // `tui::services`'s module doc, "Dialogs" section. Lets a test
+        // drive `PlatformServices::show_file_open_dialog` et al. through
+        // a real `AppLogic` via [`Self::queue_dialog_events`], the same
+        // shape `super::run::run_with` wires for the live runner.
+        let dialog_surface: Rc<RefCell<dyn crate::tui::services::DialogSurface>> = terminal.clone();
+        backend.tui_services().set_dialog_surface(dialog_surface);
+        // Default to **scripted** dialog mode with an empty queue, not
+        // "read real crossterm input": an empty
+        // `scripted_dialog_events` still synthesizes a single Escape on
+        // the nested loop's first iteration (see
+        // `TuiPlatformServices::next_dialog_events`), so a dialog opened
+        // without a prior `Self::queue_dialog_events` call resolves
+        // immediately via Escape instead of blocking on
+        // `crossterm::event::poll` against this *process's* real stdin —
+        // which under `cargo test` has no controlling terminal and would
+        // otherwise spin the nested loop forever (`poll` erroring
+        // immediately, over and over, with nothing to wait on). A test
+        // that wants real scripted input calls `queue_dialog_events`
+        // before triggering the dialog, same as always.
+        backend
+            .tui_services()
+            .queue_dialog_events(std::iter::empty());
         // Seed the viewport from the driver's terminal size BEFORE setup,
         // exactly as the live runner does (quadraui#437). Without this,
         // `app.setup()` would read the default 80×24 viewport instead of
@@ -167,10 +195,25 @@ impl<A: AppLogic> TuiDriver<A> {
         driver
     }
 
+    /// Seed the nested dialog loop's scripted input (issue #965) — see
+    /// [`crate::tui::services::TuiPlatformServices::queue_dialog_events`].
+    /// Must be called *before* the event that triggers a
+    /// `show_file_open_dialog`/`show_file_save_dialog`/
+    /// `show_message_dialog` call — the loop resolves synchronously
+    /// inside that one [`Self::dispatch`]/[`Self::press`]-family call,
+    /// with no way to be fed more input mid-call.
+    pub fn queue_dialog_events(&self, events: impl IntoIterator<Item = UiEvent>) {
+        self.core
+            .backend()
+            .tui_services()
+            .queue_dialog_events(events);
+    }
+
     /// Repaint one frame through the shared production render path.
     pub fn render(&mut self) {
         let (backend, app) = self.core.parts_mut();
-        render_frame(&mut self.terminal, backend, app).expect("TestBackend render is infallible");
+        let mut terminal = self.terminal.borrow_mut();
+        render_frame(&mut terminal, backend, app).expect("TestBackend render is infallible");
     }
 
     /// Feed one synthetic event through the **full production pipeline**:
@@ -474,7 +517,8 @@ impl<A: AppLogic> TuiDriver<A> {
     /// [`crate::tui::vt_testing::TuiVtDriver::screen`]'s vt100-observed
     /// twin reports for the identical content.
     pub fn screen(&self) -> String {
-        let buf = self.terminal.backend().buffer();
+        let terminal = self.terminal.borrow();
+        let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in area.top()..area.bottom() {
@@ -510,7 +554,8 @@ impl<A: AppLogic> TuiDriver<A> {
     /// .contains(Modifier::ITALIC)`) without adding its own `ratatui`
     /// dependency — it already depends on `quadraui` to get `TuiDriver`.
     pub fn style_at(&self, x: u16, y: u16) -> Option<CellStyle> {
-        let buf = self.terminal.backend().buffer();
+        let terminal = self.terminal.borrow();
+        let buf = terminal.backend().buffer();
         let area = buf.area;
         if x < area.left() || x >= area.right() || y < area.top() || y >= area.bottom() {
             return None;
@@ -536,7 +581,8 @@ impl<A: AppLogic> TuiDriver<A> {
     /// (its char defaults to `' '`, since a continuation cell's `symbol()`
     /// is empty).
     pub fn styled_row(&self, y: u16) -> Vec<(char, CellStyle)> {
-        let buf = self.terminal.backend().buffer();
+        let terminal = self.terminal.borrow();
+        let buf = terminal.backend().buffer();
         let area = buf.area;
         if y < area.top() || y >= area.bottom() {
             return Vec::new();
@@ -591,7 +637,11 @@ impl<A: AppLogic> TuiDriver<A> {
     /// "the editor's cursor position reached the Frame", not for asserting
     /// hide/show transitions.
     pub fn terminal_cursor_position(&mut self) -> Option<(u16, u16)> {
-        self.terminal.get_cursor_position().ok().map(|p| (p.x, p.y))
+        self.terminal
+            .borrow_mut()
+            .get_cursor_position()
+            .ok()
+            .map(|p| (p.x, p.y))
     }
 
     /// This row's cells as `(char, cell_x, cell_width)` triples, in
@@ -608,7 +658,8 @@ impl<A: AppLogic> TuiDriver<A> {
     /// in the reconstructed row, and a needle spanning them would never
     /// match (quadraui#488).
     fn row_cells(&self, y: u16) -> Vec<(char, u16, u16)> {
-        let buf = self.terminal.backend().buffer();
+        let terminal = self.terminal.borrow();
+        let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut cells = Vec::new();
         let mut x = area.left();
@@ -631,7 +682,7 @@ impl<A: AppLogic> TuiDriver<A> {
         if needle.is_empty() {
             return None;
         }
-        let area = self.terminal.backend().buffer().area;
+        let area = self.terminal.borrow().backend().buffer().area;
         for y in area.top()..area.bottom() {
             let cells = self.row_cells(y);
             if cells.len() < needle.len() {
@@ -786,7 +837,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
     }
 
     fn inventory(&self) -> FrameInventory {
-        let area = self.terminal.backend().buffer().area;
+        let area = self.terminal.borrow().backend().buffer().area;
         let mut text_runs = Vec::new();
         for y in area.top()..area.bottom() {
             let cells = self.row_cells(y);

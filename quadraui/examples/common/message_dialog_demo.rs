@@ -15,11 +15,15 @@
 //!   default-right order), and the status bar reflects the chosen button
 //!   (or "cancelled" on Escape/close). See `docs/TESTING.md`'s "What
 //!   unit tests don't cover" for the write-up of this gap.
-//! - **TUI** (`tui_message_dialog`): `PlatformServices::show_message_dialog`
-//!   is documented to always return `None` on TUI (the in-canvas
-//!   [`Dialog`] primitive / `Backend::draw_dialog` stays the TUI path) —
-//!   this demo exercises that documented contract and is covered by the
-//!   `TuiDriver` test in `tests/tui_example_driver.rs`.
+//! - **TUI** (`tui_message_dialog`): since issue #965,
+//!   `show_message_dialog` drives a real in-canvas
+//!   `compose::MessageDialogController` through a nested draw-and-read
+//!   loop (see `tui::services`'s module doc) and returns the button the
+//!   user actually chose — press `m`, then arrow/Tab and Enter, or
+//!   Escape, like `tui_message_dialog_app` does directly against the
+//!   controller. Covered by the `TuiDriver` tests in
+//!   `tests/tui_example_driver.rs`, which prove both an explicit
+//!   "Discard" choice and the Escape-resolves-to-the-cancel-button path.
 //!
 //! ```sh
 //! cargo run --example gtk_message_dialog --features gtk

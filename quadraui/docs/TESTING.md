@@ -1134,11 +1134,17 @@ toward "things that genuinely need eyes".
      confirm the status bar reports "Kept editing" / "Discarded"
      matching the click. Press `m` again and dismiss via Escape or the
      window's close box; confirm the status bar reports "Cancelled".
-  4. `cargo run --example tui_message_dialog --features tui` and press
-     `m` — confirm the status bar reports "unsupported" instead of
-     hanging (the `TuiDriver` tests in `tests/tui_example_driver.rs`
-     already pin this contract headlessly; this step is just the human
-     sanity check that the real terminal binary matches).
+  4. Since quadraui#965, TUI is **not** part of this manual-only gap
+     anymore: `show_message_dialog` drives a real in-canvas
+     `compose::MessageDialogController` through a nested draw-and-read
+     loop (see `tui::services`'s module doc), and the `TuiDriver` tests
+     in `tests/tui_example_driver.rs` cover the full round trip
+     headlessly — a real button resolves, Escape resolves the cancel
+     button, no hang. `cargo run --example tui_message_dialog --features
+     tui` and press `m` is still worth a manual sanity check (arrow/Tab
+     between buttons, Enter, Escape, confirm the status bar reports
+     "Kept editing"/"Discarded" matching the choice) but is no longer
+     the *only* coverage the way GTK's native-window gap above still is.
   5. **Windows** (quadraui#744 — `show_message_dialog` is real here,
      `native_dialogs: true`): `cargo run --example win_platform_services
      --features win` on `dell64` (see this doc's "Win-GUI: building and

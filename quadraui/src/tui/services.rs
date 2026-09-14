@@ -33,9 +33,64 @@
 //!
 //! [`docs/CLIPBOARD.md`]: https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/CLIPBOARD.md
 //!
-//! Other services (file picker, notifications, URL open) remain no-op
-//! stubs — apps that need them supply their own `PlatformServices` or
-//! call platform APIs directly.
+//! Other services (notifications, URL open) remain no-op stubs — apps
+//! that need them supply their own `PlatformServices` or call platform
+//! APIs directly.
+//!
+//! ## Dialogs (issue #965)
+//!
+//! `show_file_open_dialog`, `show_file_save_dialog`, and
+//! `show_message_dialog` used to return `None` unconditionally — a
+//! terminal has no native file picker or alert facility, and nothing in
+//! this crate drove an in-canvas replacement's show → block → return-a-
+//! choice contract. All three now drive a real in-canvas controller
+//! ([`crate::compose::FilePickerController`] /
+//! [`crate::compose::MessageDialogController`]) through a **nested
+//! draw-and-read loop**: draw one frame, block for the next input event,
+//! feed it to the controller, repeat until it resolves. This is the TUI
+//! counterpart of `GtkPlatformServices::pump_until_ready`
+//! (`crate::gtk::services`) — GTK nests `glib::MainContext::iteration`,
+//! TUI nests its own crossterm poll/read/redraw cycle, since a terminal
+//! has no separate native event loop to pump; blocking synchronously on
+//! `crossterm::event::read()` inside `&self` is the direct equivalent.
+//!
+//! [`Self::run_nested_dialog_loop`] needs somewhere to paint — a shared
+//! handle onto the live [`ratatui::Terminal`], wired once by
+//! [`super::run::run_with`] via [`Self::set_dialog_surface`] (mirroring
+//! `GtkPlatformServices::set_window`'s "`None` until wired" shape) —
+//! and something to poll for events. The latter is **not** wired through
+//! the same mechanism: production always reads real crossterm input
+//! directly (no plumbing needed — `crossterm::event::poll`/`read` are
+//! free functions reachable from anywhere in this crate), while a test
+//! seeds [`Self::scripted_dialog_events`] via
+//! [`Self::queue_dialog_events`] (also reachable through
+//! [`crate::tui::testing::TuiDriver::queue_dialog_events`] for tests
+//! outside this crate) so the whole round trip — real
+//! `FilePickerController`/`MessageDialogController` state machine, real
+//! `TuiBackend` paint — is exercised with **no** live terminal, purely
+//! against `ratatui::backend::TestBackend` (see this module's own
+//! `dialog_tests` for the four PlatformServices-level round trips this
+//! makes possible: file-open confirms a path, file-open cancels, file-
+//! save confirms a typed name, message-dialog resolves a button).
+//!
+//! The one thing this nested loop cannot do without help is share the
+//! *live* runner's `Terminal` instance — using a second, independently
+//! constructed `Terminal` for the dialog would desync ratatui's internal
+//! diff cache from the physical screen the moment control returns to the
+//! live runner (cells whose post-dialog content happens to match
+//! pre-dialog content would never be repainted, leaving stale dialog
+//! pixels on screen indefinitely). `set_dialog_surface` exists
+//! specifically to avoid that: the live runner and the nested dialog
+//! loop draw through the *same* `Rc<RefCell<Terminal<..>>>`, so the
+//! diff cache always reflects exactly what was last written, dialog
+//! frames included.
+//!
+//! `show_folder_open_dialog` is deliberately **not** touched here —
+//! issue #965 scopes to the three dialogs above; `FolderPickerController`
+//! stays an app-driven compose controller with no `PlatformServices`
+//! integration of its own (see that controller's module doc for why, and
+//! `crate::compose::file_picker`'s module doc for why the analogous file
+//! picker doesn't repeat one of its keybinding trade-offs).
 //!
 //! ## `shell.*` parity (issue #956) — better than the rest of this list
 //!
@@ -61,13 +116,66 @@
 //! [`TuiPlatformServices::cursor_screen_point`]'s own docs.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::backend::{
-    BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice, MessageDialogOptions,
-    Notification, PlatformServices, ServiceResult, SystemTheme,
+    Backend, BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice,
+    MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
-use crate::event::{Point, Rect};
+use crate::compose::{
+    FilePickerController, FilePickerEvent, FilePickerMode, MessageDialogController,
+    MessageDialogEvent,
+};
+use crate::event::{Point, Rect, UiEvent};
+use crate::tui::backend::TuiBackend;
+use crate::{Key, Modifiers, NamedKey};
+
+// ── Nested dialog loop (issue #965) ─────────────────────────────────────────────
+
+/// A paintable, sizeable surface a nested dialog loop can draw into —
+/// implemented for any `ratatui::Terminal<B>`. Exists so
+/// [`TuiPlatformServices`]'s dialog methods work identically against the
+/// live runner's real `Terminal<CrosstermBackend<Stdout>>`-wrapping
+/// backend and a test's in-memory `Terminal<TestBackend>`, without this
+/// module naming either concrete ratatui backend type. See the module
+/// doc's "Dialogs (issue #965)" section.
+pub(crate) trait DialogSurface {
+    /// Paint one frame, handing the raw `ratatui::Frame` to `paint`.
+    /// Swallows a paint error (matching `TuiClipboard`'s established
+    /// "best-effort, no propagation path" posture for `&self` methods)
+    /// — [`TuiPlatformServices::run_nested_dialog_loop`] instead treats a
+    /// `None` from [`Self::dialog_size`] as the signal to bail, since
+    /// that failure mode (no controlling terminal) is the one this crate
+    /// already has an honest-degrade story for (see
+    /// `TuiPlatformServices::displays`'s doc).
+    fn draw_dialog_frame(&mut self, paint: &mut dyn FnMut(&mut ratatui::Frame<'_>));
+    /// The surface's current cell size, or `None` if it can't be
+    /// determined.
+    fn dialog_size(&self) -> Option<ratatui::layout::Size>;
+}
+
+impl<B: ratatui::backend::Backend> DialogSurface for ratatui::Terminal<B> {
+    fn draw_dialog_frame(&mut self, paint: &mut dyn FnMut(&mut ratatui::Frame<'_>)) {
+        let _ = self.draw(|frame| paint(frame));
+    }
+
+    fn dialog_size(&self) -> Option<ratatui::layout::Size> {
+        ratatui::Terminal::size(self).ok()
+    }
+}
+
+/// Outcome of one step through [`TuiPlatformServices::run_nested_dialog_loop`].
+enum NestedDialogStep<T> {
+    /// The dialog resolved to a real value — stop looping and return it.
+    Resolved(T),
+    /// The dialog was dismissed with nothing to return — stop looping,
+    /// report `None`.
+    Cancelled,
+    /// Internal state changed (or the event was irrelevant); keep going.
+    Continue,
+}
 
 // ── OSC 52 support ────────────────────────────────────────────────────────────
 
@@ -477,12 +585,137 @@ mod tests {
 /// Default `PlatformServices` impl for the TUI backend.
 pub struct TuiPlatformServices {
     clipboard: TuiClipboard,
+    /// Shared handle onto the live paint target for the nested dialog
+    /// loop (issue #965) — see the module doc's "Dialogs" section.
+    /// `None` until [`Self::set_dialog_surface`] is called (and in unit
+    /// tests that never call it), mirroring
+    /// `GtkPlatformServices::window`'s "`None` until wired" shape:
+    /// every dialog method degrades to `None` rather than panicking.
+    dialog_surface: RefCell<Option<Rc<RefCell<dyn DialogSurface>>>>,
+    /// Scripted input for the nested dialog loop. `None` (the production
+    /// default) means "read real crossterm input"; `Some` — even an
+    /// empty queue — means "test mode, never touch the real terminal".
+    /// Set via [`Self::queue_dialog_events`].
+    scripted_dialog_events: RefCell<Option<VecDeque<UiEvent>>>,
 }
 
 impl TuiPlatformServices {
     pub fn new() -> Self {
         Self {
             clipboard: TuiClipboard::new(),
+            dialog_surface: RefCell::new(None),
+            scripted_dialog_events: RefCell::new(None),
+        }
+    }
+
+    /// Wire the shared paint target the nested dialog loop draws
+    /// through. Called once by [`super::run::run_with`] right after the
+    /// live `Terminal` is constructed, mirroring
+    /// `GtkPlatformServices::set_window`. See the module doc for why
+    /// this must be the *same* `Terminal` instance the live runner
+    /// itself draws through, not an independently constructed one.
+    pub(crate) fn set_dialog_surface(&self, surface: Rc<RefCell<dyn DialogSurface>>) {
+        *self.dialog_surface.borrow_mut() = Some(surface);
+    }
+
+    /// Seed the nested dialog loop's event source. Must be called
+    /// *before* the event that triggers the dialog-opening call is
+    /// dispatched — the loop drains this queue synchronously, with no
+    /// way to be fed more input mid-call. See the module doc's
+    /// "Dialogs" section and this module's `dialog_tests`.
+    ///
+    /// Not `#[cfg(test)]`: [`crate::tui::testing::TuiDriver::queue_dialog_events`]
+    /// forwards to this from an ordinary (non-`cfg(test)`) build of this
+    /// crate — `TuiDriver` is `pub`, used by *downstream* crates' own
+    /// `cargo test` runs, which never set `cfg(test)` on quadraui itself
+    /// (only on their own crate). A `#[cfg(test)]` gate here would make
+    /// `TuiDriver::queue_dialog_events` silently uncompilable the moment
+    /// it tried to call this.
+    pub(crate) fn queue_dialog_events(&self, events: impl IntoIterator<Item = UiEvent>) {
+        self.scripted_dialog_events
+            .borrow_mut()
+            .get_or_insert_with(VecDeque::new)
+            .extend(events);
+    }
+
+    /// Get the next batch of `UiEvent`s for a nested dialog loop —
+    /// draining [`Self::scripted_dialog_events`] in test mode, or
+    /// blocking (in short, re-checked slices — never truly forever) on
+    /// real crossterm input in production, the same poll/read shape
+    /// [`crate::tui::backend::TuiBackend::wait_events`] uses.
+    fn next_dialog_events(&self) -> Vec<UiEvent> {
+        {
+            let mut scripted = self.scripted_dialog_events.borrow_mut();
+            if let Some(queue) = scripted.as_mut() {
+                return match queue.pop_front() {
+                    Some(ev) => vec![ev],
+                    // Exhausted without the controller resolving — this
+                    // only happens on a malformed test script (missing
+                    // its own terminating key). Synthesize Escape so the
+                    // loop can never hang a test suite instead of
+                    // spinning on an empty queue forever.
+                    None => vec![UiEvent::KeyPressed {
+                        key: Key::Named(NamedKey::Escape),
+                        modifiers: Modifiers::default(),
+                        repeat: false,
+                    }],
+                };
+            }
+        }
+        loop {
+            match ratatui::crossterm::event::poll(std::time::Duration::from_millis(250)) {
+                Ok(true) => {
+                    return match ratatui::crossterm::event::read() {
+                        Ok(ev) => super::events::crossterm_to_uievents(ev),
+                        Err(_) => Vec::new(),
+                    };
+                }
+                // No input within this slice — loop back and poll again
+                // rather than blocking indefinitely in one call.
+                Ok(false) => continue,
+                Err(_) => return Vec::new(),
+            }
+        }
+    }
+
+    /// Draw-and-read nested loop shared by [`Self::show_file_open_dialog`],
+    /// [`Self::show_file_save_dialog`], and [`Self::show_message_dialog`]
+    /// — the TUI counterpart of `GtkPlatformServices::pump_until_ready`.
+    /// See the module doc's "Dialogs (issue #965)" section for the full
+    /// design.
+    ///
+    /// Returns `None` immediately if no [`Self::dialog_surface`] is
+    /// wired, or once it can no longer be sized (no controlling
+    /// terminal). `draw` paints one frame given the current viewport;
+    /// `handle_event` processes one input event against that same
+    /// viewport and reports whether the loop should keep going.
+    fn run_nested_dialog_loop<T>(
+        &self,
+        mut draw: impl FnMut(&mut dyn Backend, Rect),
+        mut handle_event: impl FnMut(&UiEvent, &dyn Backend, Rect) -> NestedDialogStep<T>,
+    ) -> Option<T> {
+        let surface = self.dialog_surface.borrow().clone()?;
+        let mut scratch = TuiBackend::new();
+        loop {
+            let size = surface.borrow().dialog_size()?;
+            let viewport = Rect::new(0.0, 0.0, size.width as f32, size.height as f32);
+            scratch.begin_frame(crate::Viewport::new(
+                size.width as f32,
+                size.height as f32,
+                1.0,
+            ));
+            surface.borrow_mut().draw_dialog_frame(&mut |frame| {
+                scratch.enter_frame_scope(frame, |b| draw(b, viewport));
+            });
+            scratch.end_frame();
+
+            for event in self.next_dialog_events() {
+                match handle_event(&event, &scratch, viewport) {
+                    NestedDialogStep::Resolved(v) => return Some(v),
+                    NestedDialogStep::Cancelled => return None,
+                    NestedDialogStep::Continue => {}
+                }
+            }
         }
     }
 }
@@ -498,12 +731,69 @@ impl PlatformServices for TuiPlatformServices {
         &self.clipboard
     }
 
-    fn show_file_open_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        None
+    /// Nested draw-and-read loop over [`crate::compose::FilePickerController`]
+    /// in [`FilePickerMode::Open`] (issue #965) — see the module doc's
+    /// "Dialogs" section. `opts.initial_dir` seeds the browsing root
+    /// (falling back to the process's current directory);
+    /// `opts.filters` restricts which files are listed.
+    /// `opts.title`/`opts.initial_filename` don't apply to an *open*
+    /// dialog and are ignored, matching
+    /// [`crate::backend::FileDialogOptions`]'s own doc ("ignored by
+    /// `show_file_open_dialog`").
+    fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        let root = opts
+            .initial_dir
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let picker = RefCell::new(FilePickerController::new(
+            FilePickerMode::Open,
+            root,
+            opts.filters,
+        ));
+        self.run_nested_dialog_loop(
+            |backend, viewport| picker.borrow().render(viewport, backend),
+            |event, _backend, viewport| {
+                let visible_rows = (viewport.height as usize)
+                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
+                match picker.borrow_mut().handle(event, visible_rows) {
+                    FilePickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
+                    FilePickerEvent::Cancelled => NestedDialogStep::Cancelled,
+                    FilePickerEvent::Consumed | FilePickerEvent::Ignored => {
+                        NestedDialogStep::Continue
+                    }
+                }
+            },
+        )
     }
 
-    fn show_file_save_dialog(&self, _opts: FileDialogOptions) -> Option<PathBuf> {
-        None
+    /// Nested draw-and-read loop over [`crate::compose::FilePickerController`]
+    /// in [`FilePickerMode::Save`] (issue #965) — see
+    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
+    /// `opts.initial_filename` seeds the destination filename (the
+    /// picker's query field — see `FilePickerController`'s module doc
+    /// for why the two are the same field in Save mode).
+    fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
+        let root = opts
+            .initial_dir
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let mut picker = FilePickerController::new(FilePickerMode::Save, root, opts.filters);
+        if let Some(name) = opts.initial_filename {
+            picker = picker.with_initial_filename(name);
+        }
+        let picker = RefCell::new(picker);
+        self.run_nested_dialog_loop(
+            |backend, viewport| picker.borrow().render(viewport, backend),
+            |event, _backend, viewport| {
+                let visible_rows = (viewport.height as usize)
+                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
+                match picker.borrow_mut().handle(event, visible_rows) {
+                    FilePickerEvent::Confirmed { path } => NestedDialogStep::Resolved(path),
+                    FilePickerEvent::Cancelled => NestedDialogStep::Cancelled,
+                    FilePickerEvent::Consumed | FilePickerEvent::Ignored => {
+                        NestedDialogStep::Continue
+                    }
+                }
+            },
+        )
     }
 
     /// No native directory chooser on TUI — unconditionally `None`, same
@@ -515,12 +805,21 @@ impl PlatformServices for TuiPlatformServices {
         None
     }
 
-    /// No native alert facility on TUI — unconditionally `None`, same as
-    /// the file-dialog methods above. The in-canvas `Dialog` primitive
-    /// (`draw_dialog`) stays the only dialog path on this backend
-    /// (quadraui#666).
-    fn show_message_dialog(&self, _opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-        None
+    /// Nested draw-and-read loop over
+    /// [`crate::compose::MessageDialogController`] (issues #666, #965) —
+    /// see the module doc's "Dialogs" section and
+    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
+    fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
+        let controller = RefCell::new(MessageDialogController::new(opts));
+        self.run_nested_dialog_loop(
+            |backend, _viewport| controller.borrow().render(backend),
+            |event, backend, _viewport| match controller.borrow_mut().handle(event, backend) {
+                MessageDialogEvent::Resolved(id) => NestedDialogStep::Resolved(id),
+                MessageDialogEvent::Consumed | MessageDialogEvent::Ignored => {
+                    NestedDialogStep::Continue
+                }
+            },
+        )
     }
 
     fn send_notification(&self, _n: Notification) {}
@@ -680,12 +979,16 @@ mod message_dialog_tests {
     use super::*;
     use crate::backend::MessageDialogOptions;
 
-    /// quadraui#666: TUI has no native alert facility, so
-    /// `show_message_dialog` unconditionally returns `None` — the
-    /// in-canvas `Dialog` primitive stays the only dialog path here,
-    /// regardless of what's in `opts`.
+    /// quadraui#965: `show_message_dialog` now drives a real nested
+    /// draw-and-read loop over `MessageDialogController` — but that loop
+    /// needs somewhere to paint (`set_dialog_surface`), which a bare
+    /// `TuiPlatformServices::new()` never wires. This pins the resulting
+    /// degrade: `None`, not a panic, mirroring
+    /// `GtkPlatformServices::show_message_dialog`'s identical "no window
+    /// wired yet" shape. See `dialog_tests` below for the real, wired
+    /// round trip this issue's acceptance bar actually asks for.
     #[test]
-    fn show_message_dialog_always_returns_none() {
+    fn show_message_dialog_returns_none_when_no_surface_wired() {
         let services = TuiPlatformServices::new();
         let opts = MessageDialogOptions {
             title: "Unsaved Changes".to_string(),
@@ -789,5 +1092,206 @@ mod message_dialog_tests {
                 );
             }
         }
+    }
+}
+
+/// Issue #965 acceptance bar: prove the nested dialog loop returns a real
+/// user choice — a selected path, a saved path, a pressed button — not
+/// merely that it doesn't panic. Every test here wires a real
+/// `ratatui::Terminal<TestBackend>` via `set_dialog_surface` and a
+/// scripted `UiEvent` sequence via `queue_dialog_events`, then calls the
+/// `PlatformServices` method exactly as an app would — the *same*
+/// `FilePickerController`/`MessageDialogController` state machine and
+/// `TuiBackend` paint path production uses, with no live terminal
+/// involved. See the module doc's "Dialogs (issue #965)" section.
+#[cfg(test)]
+mod dialog_tests {
+    use super::*;
+    use crate::backend::{MessageDialogButton, MessageDialogOptions};
+    use crate::types::WidgetId;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Wire a fresh `TuiPlatformServices` to a headless `TestBackend`
+    /// surface, so its nested dialog loop has somewhere to paint without
+    /// a live terminal.
+    fn wired_services(width: u16, height: u16) -> TuiPlatformServices {
+        let services = TuiPlatformServices::new();
+        let terminal = Terminal::new(TestBackend::new(width, height)).expect("TestBackend");
+        let surface: Rc<RefCell<dyn DialogSurface>> = Rc::new(RefCell::new(terminal));
+        services.set_dialog_surface(surface);
+        services
+    }
+
+    fn key_char(c: char) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    fn key_named(k: NamedKey) -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Named(k),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn show_file_open_dialog_confirms_a_selected_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("target.txt"), b"").expect("write file");
+        let services = wired_services(60, 20);
+        // Filter down to the one file whose name contains "targ", then
+        // confirm it — the fuzzy filter drops the unrelated ".." entry
+        // along the way (it has no "t"/"a"/"r"/"g" subsequence).
+        services.queue_dialog_events(vec![
+            key_char('t'),
+            key_char('a'),
+            key_char('r'),
+            key_char('g'),
+            key_named(NamedKey::Enter),
+        ]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let result = services.show_file_open_dialog(opts);
+        assert_eq!(result, Some(tmp.path().join("target.txt")));
+    }
+
+    #[test]
+    fn show_file_open_dialog_cancelled_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("target.txt"), b"").expect("write file");
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(vec![key_named(NamedKey::Escape)]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(services.show_file_open_dialog(opts), None);
+    }
+
+    #[test]
+    fn show_file_save_dialog_confirms_a_typed_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(vec![
+            key_char('n'),
+            key_char('e'),
+            key_char('w'),
+            key_char('.'),
+            key_char('t'),
+            key_char('x'),
+            key_char('t'),
+            key_named(NamedKey::Enter),
+        ]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            ..Default::default()
+        };
+        let result = services.show_file_save_dialog(opts);
+        assert_eq!(result, Some(tmp.path().join("new.txt")));
+    }
+
+    #[test]
+    fn show_file_save_dialog_seeds_initial_filename() {
+        // Confirming immediately (no typing) should save under
+        // `initial_filename` verbatim — proves `opts.initial_filename`
+        // actually reaches the picker's query field.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(vec![key_named(NamedKey::Enter)]);
+        let opts = FileDialogOptions {
+            initial_dir: Some(tmp.path().to_path_buf()),
+            initial_filename: Some("untitled.txt".to_string()),
+            ..Default::default()
+        };
+        let result = services.show_file_save_dialog(opts);
+        assert_eq!(result, Some(tmp.path().join("untitled.txt")));
+    }
+
+    #[test]
+    fn show_message_dialog_resolves_a_pressed_button() {
+        let services = wired_services(60, 20);
+        // Move focus to the second button, then activate it.
+        services.queue_dialog_events(vec![key_named(NamedKey::Right), key_named(NamedKey::Enter)]);
+        let opts = MessageDialogOptions {
+            title: "Unsaved Changes".to_string(),
+            body: "Do you want to save?".to_string(),
+            buttons: vec![
+                MessageDialogButton {
+                    id: WidgetId::new("save"),
+                    label: "Save".into(),
+                    is_default: true,
+                    is_cancel: false,
+                },
+                MessageDialogButton {
+                    id: WidgetId::new("cancel"),
+                    label: "Cancel".into(),
+                    is_default: false,
+                    is_cancel: true,
+                },
+            ],
+            severity: None,
+        };
+        let result = services.show_message_dialog(opts);
+        assert_eq!(result, Some(WidgetId::new("cancel")));
+    }
+
+    #[test]
+    fn show_message_dialog_escape_resolves_cancel_button() {
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(vec![key_named(NamedKey::Escape)]);
+        let opts = MessageDialogOptions {
+            title: "Heads up".to_string(),
+            body: "Something happened.".to_string(),
+            buttons: vec![
+                MessageDialogButton {
+                    id: WidgetId::new("ok"),
+                    label: "OK".into(),
+                    is_default: true,
+                    is_cancel: false,
+                },
+                MessageDialogButton {
+                    id: WidgetId::new("cancel"),
+                    label: "Cancel".into(),
+                    is_default: false,
+                    is_cancel: true,
+                },
+            ],
+            severity: None,
+        };
+        assert_eq!(
+            services.show_message_dialog(opts),
+            Some(WidgetId::new("cancel"))
+        );
+    }
+
+    #[test]
+    fn scripted_queue_exhaustion_synthesizes_escape_instead_of_hanging() {
+        // A malformed script that never resolves the dialog must not spin
+        // forever — `next_dialog_events` synthesizes Escape once the
+        // queue drains, which resolves to the cancel button here.
+        let services = wired_services(60, 20);
+        services.queue_dialog_events(Vec::<UiEvent>::new());
+        let opts = MessageDialogOptions {
+            title: "T".to_string(),
+            body: "B".to_string(),
+            buttons: vec![MessageDialogButton {
+                id: WidgetId::new("cancel"),
+                label: "Cancel".into(),
+                is_default: false,
+                is_cancel: true,
+            }],
+            severity: None,
+        };
+        assert_eq!(
+            services.show_message_dialog(opts),
+            Some(WidgetId::new("cancel"))
+        );
     }
 }

@@ -10,12 +10,19 @@
 //!   press `o` / `s` / `f`, and confirm the native dialog appears, is
 //!   parented to the demo window, and the status bar reflects the picked
 //!   path (or "cancelled" on Escape/close).
-//! - **TUI** (`tui_file_dialog`): `PlatformServices::show_file_open_dialog`
-//!   /`show_file_save_dialog`/`show_folder_open_dialog` are documented to
-//!   always return `None` on TUI (apps should provide an in-canvas picker
-//!   instead — see the separate `tui_folder_picker`/`gtk_folder_picker`
-//!   examples for that) — this demo exercises that documented contract and
-//!   is covered by the `TuiDriver` test in `tests/tui_example_driver.rs`.
+//! - **TUI** (`tui_file_dialog`): since issue #965,
+//!   `show_file_open_dialog`/`show_file_save_dialog` drive a real
+//!   in-canvas `compose::FilePickerController` through a nested
+//!   draw-and-read loop (see `tui::services`'s module doc) and return a
+//!   genuine chosen path — press `o`/`s` and type/arrow through the
+//!   picker like `tui_file_picker` does. `show_folder_open_dialog` is
+//!   the one method here **not** touched by #965 (out of that issue's
+//!   scope — see `tui::services`'s module doc) and still always returns
+//!   `None` on TUI; apps should provide an in-canvas picker instead (see
+//!   the separate `tui_folder_picker`/`gtk_folder_picker` examples). Both
+//!   the open/save real-path round trip and the folder `None` degrade
+//!   are covered by the `TuiDriver` tests in
+//!   `tests/tui_example_driver.rs`.
 //!
 //! ```sh
 //! cargo run --example gtk_file_dialog --features gtk
