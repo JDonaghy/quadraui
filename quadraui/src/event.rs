@@ -37,6 +37,7 @@
 //! | `FocusChanged` | Broadcast — names the new focus, if any |
 //! | `OpenRequested` | Broadcast (no target) |
 //! | `SystemThemeChanged` | Broadcast (no target) |
+//! | `DisplaysChanged` | Broadcast (no target) |
 //!
 //! The consequence apps rely on: **scroll wheel events dispatch to the
 //! widget under the cursor, regardless of which widget has keyboard focus.**
@@ -718,6 +719,61 @@ pub enum UiEvent {
     /// `SystemThemeChanged` compiles clean against both `develop`-tip
     /// checkouts with no consumer changes required.
     SystemThemeChanged(SystemTheme),
+
+    // ── Display topology change (issue #959) ────────────────────────────
+    /// The set of connected displays changed — a monitor was plugged in,
+    /// unplugged, or its resolution/DPI/work-area changed — while the app
+    /// was running. No payload: apps that care call
+    /// [`PlatformServices::displays`][crate::PlatformServices::displays]
+    /// again to get the fresh list, the same "event is a poke, not a
+    /// snapshot" shape [`crate::UiEvent::FocusChanged`] uses for a
+    /// pointer-sized payload instead of duplicating state that already has
+    /// a getter. `DpiChanged` stays the narrower, already-wired live
+    /// signal for "this window's own backing scale changed"; this variant
+    /// is the broader "the whole display topology moved" one it doesn't
+    /// cover (a monitor unplugged behind the window, say, with the
+    /// window's own scale unaffected).
+    ///
+    /// **No backend emits this yet.** Same "declare the gap, don't fake
+    /// it" posture as [`Self::SystemThemeChanged`]/[`Self::WindowStateChanged`]
+    /// (also zero producers today): the variant exists so app code and the
+    /// event vocabulary are ready before a backend wires the native
+    /// change notification (GTK's `gdk::Display::monitors`
+    /// `items-changed` signal on the returned `gio::ListModel`, macOS's
+    /// `NSApplicationDidChangeScreenParametersNotification`, Win's
+    /// `WM_DISPLAYCHANGE`) into it. TUI has no equivalent OS notification
+    /// — a terminal resize arrives as [`Self::WindowResized`], not a
+    /// display-topology change — so it will never emit this variant.
+    ///
+    /// Routing: broadcast, like [`Self::TextCopied`]/[`Self::FocusChanged`].
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `PlatformServices::displays`/`cursor_screen_point` methods and the
+    /// `Display` struct as well as this variant — all landed together):
+    ///
+    /// ```text
+    /// $ grep -rn 'DisplaysChanged\|PlatformServices::displays\|cursor_screen_point\|backend::Display\b' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of these yet, but
+    /// the real question for a *new enum variant* is whether either
+    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
+    /// wildcard arm) — both top-level `UiEvent` dispatches
+    /// (`vimcode`'s `tui_main/shell_app.rs:2403,2689`, `coord-tui`'s
+    /// `app/events.rs:1390`) are large multi-hundred-line matches that
+    /// already end in a wildcard `_ =>` arm, the same finding issue #952's
+    /// `SystemThemeChanged`, #957's `OpenRequested`, and #955's
+    /// `NotificationActivated` recorded for the same call sites. Adding
+    /// `DisplaysChanged` compiles clean against both `develop`-tip
+    /// checkouts with no consumer changes required.
+    DisplaysChanged,
 
     // ── Cross-primitive scroll event ──────────────────────────────────
     /// A scrollbar drag or click resolved to a new offset. Generic

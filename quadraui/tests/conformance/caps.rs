@@ -901,6 +901,13 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // returns `ServiceResult<...>` (including the no-feature build's
     // always-`Unsupported` store). Nothing for this method to report.
     ("secret_store", ServiceHonesty::Delegates("SecretStore")),
+    // `displays`/`cursor_screen_point` (quadraui#959) both return
+    // `ServiceResult<...>` directly — same reasoning as `system_theme`
+    // above: the `Result` type itself already carries the "unsupported"
+    // signal (GTK/TUI's honest `cursor_screen_point` gap included), so
+    // there is no separate `BackendCaps` flag or `_result` twin to check.
+    ("displays", ServiceHonesty::AlwaysReal),
+    ("cursor_screen_point", ServiceHonesty::AlwaysReal),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 

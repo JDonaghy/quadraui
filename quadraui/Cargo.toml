@@ -295,6 +295,11 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     # `TrayService::set_icon`'s `NSImage::initWithData`/
     # `initWithContentsOfFile`, and `NSStatusBarButton::setImage`.
     "NSImage",
+    # `PlatformServices::displays` (#959): `NSScreen::screens`/`frame`/
+    # `visibleFrame`/`backingScaleFactor`. `cursor_screen_point` needs no
+    # feature of its own beyond the "NSEvent" already enabled above —
+    # `NSEvent::mouseLocation` is a bare class method on that same class.
+    "NSScreen",
 ] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",

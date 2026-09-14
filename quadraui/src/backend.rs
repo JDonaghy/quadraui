@@ -3578,6 +3578,72 @@ pub trait PlatformServices {
         &STORE
     }
 
+    /// Enumerate every connected display — bounds, usable work area, DPI
+    /// scale, and which one is primary (issue #959,
+    /// `ELECTRON_PARITY_AUDIT.md` §1.2 G10, ranked #10). Before this
+    /// existed, quadraui exposed only [`crate::event::Viewport::scale`]
+    /// (the *current window's* scale) and
+    /// [`crate::event::UiEvent::DpiChanged`] (a live scale-change
+    /// notification) — nothing answered "how many monitors are there,
+    /// where do they sit relative to each other, and where can a window
+    /// usably be placed on each", needed to restore saved window bounds
+    /// after a monitor change, place a new window sensibly, or position a
+    /// popup near the cursor across displays. See [`Display`]'s own doc
+    /// for the field-by-field contract, including the GTK/Wayland
+    /// work-area caveat.
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, the same placeholder
+    /// reasoning [`Self::reveal_in_file_manager`]'s doc explains. Every
+    /// backend in this crate overrides it:
+    ///
+    /// - **macOS** — `NSScreen::screens()`, `frame()`/`visibleFrame()` for
+    ///   `bounds`/`work_area`, `backingScaleFactor()` for `scale`.
+    ///   `screens()[0]` is always the screen containing the menu bar —
+    ///   used as `primary` (distinct from `NSScreen::mainScreen()`, which
+    ///   tracks the *key window*'s screen, not the platform's primary
+    ///   one).
+    /// - **GTK** — `gdk::Display::monitors()` + `Monitor::geometry()` /
+    ///   `scale_factor()`. No work-area API exists in GDK4 at all
+    ///   (removed from GDK3 entirely, not just absent on Wayland) — GTK's
+    ///   `work_area` is always a copy of `bounds` on every desktop. No
+    ///   primary-monitor flag either; index `0` (enumeration order) is
+    ///   used as a best-effort proxy — see
+    ///   [`crate::gtk::services::GtkPlatformServices::displays`]'s doc.
+    /// - **Win-GUI** — `EnumDisplayMonitors` + `GetMonitorInfoW` for
+    ///   `bounds`/`work_area`/`primary` (`rcMonitor`/`rcWork`/
+    ///   `MONITORINFOF_PRIMARY`), `GetDpiForMonitor` for `scale`
+    ///   (`dpi / USER_DEFAULT_SCREEN_DPI`).
+    /// - **TUI** — a truthful degrade, not `Unsupported`: one [`Display`]
+    ///   whose `bounds`/`work_area` are both the terminal's cell grid
+    ///   (`0, 0, width, height`, the same cell units
+    ///   [`Backend::viewport`] reports), `scale: 1.0`, `primary: true` —
+    ///   see [`crate::tui::services`]'s module doc.
+    fn displays(&self) -> ServiceResult<Vec<Display>> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// The mouse cursor's current position in screen coordinates — the
+    /// same coordinate system [`Self::displays`]'s `bounds`/`work_area`
+    /// use, so a caller can directly test which [`Display`] currently
+    /// contains the cursor (e.g. positioning a popup near the cursor
+    /// across displays; issue #959).
+    ///
+    /// Default: `Err(BackendError::Unsupported)`, same placeholder
+    /// posture as [`Self::displays`]. **GTK and TUI both keep this
+    /// default, for real (not placeholder) reasons documented on each
+    /// override:** GDK4 removed the global/root-window pointer-position
+    /// query entirely (`Surface::device_position` is *surface-relative*
+    /// only, and GDK4 surfaces don't expose their own screen origin
+    /// either — a real protocol-level Wayland restriction, not a missing
+    /// binding); a terminal has no synchronous "where is the mouse right
+    /// now" query at all — only `UiEvent::MouseMoved`, delivered when the
+    /// terminal's mouse-tracking mode is on. macOS
+    /// (`NSEvent::mouseLocation()`) and Win-GUI (`GetCursorPos`) both
+    /// override with a real answer.
+    fn cursor_screen_point(&self) -> ServiceResult<Point> {
+        Err(BackendError::Unsupported)
+    }
+
     /// Platform identifier — matches the `BackendNative.backend` field.
     /// One of `"tui"`, `"gtk"`, `"win-gui"`, `"macos"`.
     fn platform_name(&self) -> &'static str;
@@ -3696,6 +3762,52 @@ impl SecretStore for KeyringSecretStore {
     fn delete(&self, _service: &str, _account: &str) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
+}
+
+/// One connected display — bounds, usable work area, DPI scale, and
+/// primary-monitor flag ([`PlatformServices::displays`], issue #959).
+///
+/// `bounds` and `work_area` share the backend's native coordinate system —
+/// the same "TUI: cells; GTK/macOS/Win: pixels" convention every other
+/// [`Rect`] in this crate already uses. Coordinates are relative to the
+/// platform's own virtual-desktop origin, not necessarily `(0, 0)` — a
+/// monitor to the left of or above the primary sits at negative `x`/`y`
+/// (macOS additionally uses AppKit's bottom-left-origin, y-up convention
+/// for both fields — the same one [`PlatformServices::cursor_screen_point`]
+/// returns coordinates in on that backend, so the two stay directly
+/// comparable there).
+///
+/// Not `Serialize`/`Deserialize`: unlike [`SystemTheme`], nothing carries
+/// a `Display` inside a [`crate::UiEvent`] payload —
+/// [`crate::UiEvent::DisplaysChanged`] is a bare change notification a
+/// caller reacts to by calling [`PlatformServices::displays`] again, not a
+/// snapshot delivery.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Display {
+    /// The monitor's full bounds, including any OS chrome (taskbar / menu
+    /// bar + Dock / panels) that overlaps it.
+    pub bounds: Rect,
+    /// The usable area inside `bounds` — excludes the taskbar (Windows),
+    /// menu bar + Dock (macOS), and panels (GTK/X11 desktop
+    /// environments that report one). **Not available on GTK** — GDK4
+    /// exposes no work-area API at all (removed from GDK3, not just
+    /// absent on Wayland specifically; see
+    /// [`crate::gtk::services::GtkPlatformServices::displays`]'s doc), so
+    /// the GTK backend always reports a copy of `bounds` here rather than
+    /// faking a value on some desktops and not others.
+    pub work_area: Rect,
+    /// This monitor's DPI/backing scale factor — the same units as
+    /// [`crate::event::Viewport::scale`] and
+    /// [`crate::event::UiEvent::DpiChanged`]'s payload.
+    pub scale: f32,
+    /// `true` for the platform's primary/main display. Exactly one
+    /// [`Display`] in [`PlatformServices::displays`]'s returned `Vec` has
+    /// this set on macOS, Win-GUI, and TUI. **GTK is a best-effort
+    /// exception** — GDK4 has no native "primary monitor" concept to
+    /// report at all, so the GTK backend marks index `0` (enumeration
+    /// order) as `primary` rather than reporting `false` on every entry;
+    /// see [`crate::gtk::services::GtkPlatformServices::displays`]'s doc.
+    pub primary: bool,
 }
 
 /// The OS-level theme preference [`PlatformServices::system_theme`]
