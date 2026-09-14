@@ -11,6 +11,25 @@
 //!   `CFBundleIdentifier` and user authorization, neither of which
 //!   suit an unbundled CLI host. The osascript route works for both
 //!   bundled and unbundled hosts.
+//!
+//!   Issue #955 extended [`Notification`] with `icon`/`actions`/`silent`/
+//!   `tag`. Only `silent` has anywhere to go on the `osascript` path —
+//!   [`Notification::is_silent`] maps to whether the `display
+//!   notification` command's `sound name` clause is present at all (see
+//!   [`Self::send_notification`]'s own doc; counterintuitively, *no*
+//!   clause means *no* sound, so `silent: false`, the default, is what
+//!   adds one). `icon`, `actions`, and `tag` are silently dropped:
+//!   `display notification` has no icon parameter (it's always
+//!   Script Editor's), no button/action parameter, and no click-through
+//!   channel to report an activation back through at all — GTK is the
+//!   only backend [`crate::UiEvent::NotificationActivated`] fires on
+//!   today (see that variant's own doc). A real fix needs
+//!   `UNUserNotificationCenter` (`objc2-user-notifications`) behind the
+//!   bundled-`.app` check this module doesn't have a way to perform
+//!   without a live macOS host to build/verify it against — tracked as
+//!   follow-up, not silently faked; `osascript` stays the fallback for
+//!   whichever host lands it, matching this issue's own "keep osascript
+//!   as the unbundled fallback" note.
 //! - **`open_url`** → `open <url>`. Equivalent to
 //!   `NSWorkspace.open(_:)` without needing AppKit initialisation.
 
@@ -158,12 +177,15 @@ impl PlatformServices for MacPlatformServices {
         Some(opts.buttons[orig].id.clone())
     }
 
+    /// See the module doc's "Notifications" section for why only
+    /// `n.is_silent()` (of #955's four new `Notification` fields) has
+    /// anywhere to go here. [`display_notification_script`] is the pure
+    /// half, split out the same way `hig_button_order`/
+    /// `system_theme_from_gtk_settings` are in their own backends' sibling
+    /// modules — so the AppleScript text itself is unit-testable without
+    /// a live mac; only the `Command::spawn` below needs one.
     fn send_notification(&self, n: Notification) {
-        let script = format!(
-            "display notification \"{body}\" with title \"{title}\"",
-            body = applescript_escape(&n.body),
-            title = applescript_escape(&n.title),
-        );
+        let script = display_notification_script(&n.title, &n.body, n.is_silent());
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
     }
 
@@ -316,6 +338,27 @@ unsafe fn url_to_path(url: Option<&NSURL>) -> Option<PathBuf> {
 /// AppleScript double-quoted string literal.
 fn applescript_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Build the `osascript -e` argument [`MacPlatformServices::send_notification`]
+/// spawns (issue #955). `display notification` needs an explicit `sound
+/// name` clause to make *any* sound — omitting it entirely (this
+/// function's pre-#955 behaviour, and what `silent: true` still
+/// produces) is silent, not the system default. So `silent: false`
+/// (the default — a caller that never calls `Notification::with_silent`
+/// gets a notification that actually makes a sound, matching ordinary
+/// desktop-notification expectations) adds `sound name ""`, which plays
+/// the system default notification sound.
+fn display_notification_script(title: &str, body: &str, silent: bool) -> String {
+    let mut script = format!(
+        "display notification \"{body}\" with title \"{title}\"",
+        body = applescript_escape(body),
+        title = applescript_escape(title),
+    );
+    if !silent {
+        script.push_str(" sound name \"\"");
+    }
+    script
 }
 
 /// Order `buttons` for `NSAlert::addButtonWithTitle:` (quadraui#936):
@@ -621,6 +664,33 @@ mod tests {
         // should produce `\\\"` (escaped slash + escaped quote),
         // not `\\\\\"` (double-escaped slash + quote).
         assert_eq!(applescript_escape("\\\""), "\\\\\\\"");
+    }
+
+    // ── display_notification_script (issue #955) ────────────────────────
+
+    #[test]
+    fn display_notification_script_not_silent_adds_default_sound_clause() {
+        let script = display_notification_script("t", "b", false);
+        assert_eq!(
+            script,
+            "display notification \"b\" with title \"t\" sound name \"\""
+        );
+    }
+
+    #[test]
+    fn display_notification_script_silent_omits_sound_clause() {
+        let script = display_notification_script("t", "b", true);
+        assert_eq!(script, "display notification \"b\" with title \"t\"");
+        assert!(!script.contains("sound"));
+    }
+
+    #[test]
+    fn display_notification_script_escapes_title_and_body() {
+        let script = display_notification_script("t\"itle", "b\\ody", true);
+        assert_eq!(
+            script,
+            "display notification \"b\\\\ody\" with title \"t\\\"itle\""
+        );
     }
 
     // ── system_theme_from_mac_appearance / unit_to_u8 (quadraui#952) ────

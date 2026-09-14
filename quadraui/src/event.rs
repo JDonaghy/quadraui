@@ -835,6 +835,73 @@ pub enum UiEvent {
         button: MouseButton,
     },
 
+    // ── System notification activation (issue #955) ─────────────────────
+    /// The user activated a system notification sent through
+    /// [`crate::backend::PlatformServices::send_notification`] — either
+    /// the notification body itself (`action: None`) or one of the
+    /// action buttons registered on it via
+    /// [`crate::backend::Notification::with_action`] (`action:
+    /// Some(id)`, the same `WidgetId` passed to that call).
+    ///
+    /// `tag` carries [`crate::backend::Notification::tag`]'s value
+    /// through unchanged, so an app that fired several tagged
+    /// notifications can tell which one this activation belongs to
+    /// without inventing its own out-of-band id scheme. `None` when the
+    /// firing `Notification` carried no tag.
+    ///
+    /// **Not every backend can produce this.** Only GTK has a native
+    /// click-through channel today — `gio::Notification`'s action/
+    /// default-action `GAction`s, wired in `gtk::services` (see that
+    /// module's doc). macOS's unbundled `osascript` fallback and Win's
+    /// `Shell_NotifyIconW` balloon fallback have no click-through
+    /// mechanism to report through and honestly never emit this variant
+    /// — see each backend's `send_notification` doc for what a real
+    /// implementation there (`UNUserNotificationCenter`, WinRT
+    /// `ToastNotificationManager`) would need. TUI (and any other
+    /// backend with `BackendCaps::notifications == false`) degrades
+    /// notifications to the in-canvas `Toast` primitive instead (see
+    /// `compose::notification::notify_or_toast`); a toast's own action
+    /// button click resolves through
+    /// [`crate::primitives::toast::ToastStackLayout::hit_test`] /
+    /// [`crate::primitives::toast::ToastHit`] from an ordinary
+    /// `MouseDown`/`MouseUp`, not through this variant.
+    ///
+    /// Routing: broadcast, like [`Self::TrayClicked`] — a notification
+    /// has no `WidgetId` of its own to route through (its *action*
+    /// does, carried in the payload instead).
+    ///
+    /// ## Downstream impact (CLAUDE.md rule 8)
+    ///
+    /// `UiEvent` is **not** `#[non_exhaustive]`, so a consumer that
+    /// exhaustively `match`es every variant with no wildcard arm would
+    /// fail to compile the moment this variant landed. Blast-radius grep,
+    /// per CLAUDE.md's mandatory rule 1 (this covers the new
+    /// `Notification` builder methods and `notify_or_toast` helper as
+    /// well as this variant):
+    ///
+    /// ```text
+    /// $ grep -rn 'NotificationActivated\|send_notification\|backend::Notification' \
+    ///     ~/src/coord-tui/src ~/src/vimcode/src
+    /// (no output — zero hits in both; neither consumer calls
+    /// PlatformServices::send_notification or constructs Notification today)
+    /// ```
+    ///
+    /// Zero hits means neither consumer references any of these yet, but
+    /// the real question for a *new enum variant* is whether either
+    /// consumer's existing `match`es over `UiEvent` are exhaustive (no
+    /// wildcard arm) — both top-level `UiEvent` dispatches
+    /// (`vimcode`'s `tui_main/shell_app.rs`, `coord-tui`'s
+    /// `app/events.rs`) are large multi-hundred-line matches that already
+    /// end in a wildcard `_ =>` arm, the same finding issue #952's
+    /// `SystemThemeChanged` and #957's `OpenRequested` recorded for the
+    /// same two call sites. Adding `NotificationActivated` compiles clean
+    /// against both `develop`-tip checkouts with no consumer changes
+    /// required.
+    NotificationActivated {
+        tag: Option<String>,
+        action: Option<WidgetId>,
+    },
+
     // ── Primitive-specific events bubble up by WidgetId ───────────────
     Tree(WidgetId, TreeEvent),
     List(WidgetId, ListViewEvent),

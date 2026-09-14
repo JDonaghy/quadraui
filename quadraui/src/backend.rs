@@ -3388,7 +3388,19 @@ pub trait PlatformServices {
     /// the TUI path.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice>;
 
-    /// Dispatch a system notification.
+    /// Dispatch a system notification (issue #955 extended the request
+    /// shape — see [`Notification`]'s doc for `icon`/`actions`/`silent`/
+    /// `tag`).
+    ///
+    /// A click on the notification (its body, or one of `n`'s declared
+    /// actions) should push [`UiEvent::NotificationActivated`] where the
+    /// backend has a native channel for it — today only GTK does (see
+    /// `gtk::services`'s module doc); macOS's unbundled `osascript`
+    /// fallback and Win's `Shell_NotifyIconW` balloon fallback have no
+    /// click-through of their own to report through, and honestly do not
+    /// emit the event rather than faking it (each backend's
+    /// `send_notification` doc explains why, and what a real
+    /// implementation there would need).
     fn send_notification(&self, n: Notification);
 
     /// Open a URL in the platform's default browser.
@@ -3731,7 +3743,34 @@ pub struct MessageDialogButton {
 /// against each button's `id` directly.
 pub type MessageDialogChoice = WidgetId;
 
-/// A system notification request.
+/// A system notification request (issue #955 extends the original
+/// title/body/urgent shape with `icon`/`actions`/`silent`/`tag`).
+///
+/// `title`, `body`, and `urgent` stay `pub` fields, unchanged since this
+/// type's original shape — so code outside this module that already
+/// holds a `Notification` (from [`Self::new`]) can still read or
+/// directly assign them (`n.urgent = true`), same as before this issue.
+/// What that does **not** do is keep an exhaustive `Notification {
+/// title, body, urgent }` literal compiling outside `backend`'s own
+/// module: Rust's field privacy is module-scoped, not just crate-scoped,
+/// so the moment the four new fields below are anything other than
+/// `pub`, a literal naming this type from any other module — in-tree or
+/// downstream — needs every field filled, and can't fill a private one
+/// itself. This crate's own two in-tree call sites
+/// (`examples/win_platform_services.rs`, `win::services`'s unit test)
+/// hit exactly that and were switched to [`Self::new`] in the same PR.
+/// The four new fields are deliberately **not** additional `pub` fields
+/// for the same reason `#[non_exhaustive]` was rejected too:
+/// [`crate::primitives::toolbar::ToolbarIcons`]'s own doc records why
+/// growing an already-`pub`-field struct either breaks every existing
+/// exhaustive struct literal outright (`E0063`) or, via
+/// `#[non_exhaustive]`, breaks it a different way (`E0639`) — both hard
+/// breaks with no deprecation shim, per `CLAUDE.md` rule 8's blast-radius
+/// concern. Reached instead through [`Self::new`] plus the chainable
+/// `with_*` builder methods below (rule 2's "a builder... instead of a
+/// new required constructor argument"), so a future field can be added
+/// the same way again without ever repeating this struct's original
+/// mistake of an all-`pub`-field literal.
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub title: String,
@@ -3739,6 +3778,151 @@ pub struct Notification {
     /// Whether the notification is high-priority (e.g. error). Backends
     /// may use this to pick a different icon or sound.
     pub urgent: bool,
+    icon: Option<ImageSource>,
+    actions: Vec<(WidgetId, String)>,
+    silent: bool,
+    tag: Option<String>,
+}
+
+impl Notification {
+    /// A plain notification with no icon, actions, tag, or silent flag —
+    /// `urgent: false`. Chain the `with_*` methods below to add any of
+    /// those.
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            urgent: false,
+            icon: None,
+            actions: Vec::new(),
+            silent: false,
+            tag: None,
+        }
+    }
+
+    /// Attach an icon. The same [`ImageSource`] shape
+    /// [`TrayService::set_icon`] takes (issue #955's design note: it
+    /// shares the icon type with the tray work, #953) — raw encoded bytes
+    /// or a filesystem path, sniffed/decoded by whichever backend can
+    /// honor it. Backends with no icon facility (TUI's toast degrade,
+    /// today's macOS `osascript` path) ignore this.
+    #[must_use]
+    pub fn with_icon(mut self, icon: ImageSource) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Register an action button, `id` first so it reads the same order
+    /// as [`UiEvent::NotificationActivated`]'s payload
+    /// (`action: Some(id)`) that firing it produces. Call multiple times
+    /// for multiple buttons; order is preserved. Backends that can't
+    /// natively attach actions to a notification (macOS's unbundled
+    /// `osascript` fallback, Win's balloon-tip fallback) drop these
+    /// silently — see each backend's `send_notification` doc.
+    #[must_use]
+    pub fn with_action(mut self, id: WidgetId, label: impl Into<String>) -> Self {
+        self.actions.push((id, label.into()));
+        self
+    }
+
+    /// Suppress the notification sound, on backends that have a sound to
+    /// suppress: Win's balloon sets `NIIF_NOSOUND` when this is `true`,
+    /// and macOS's `osascript` fallback only adds a `sound name` clause
+    /// when this is `false` (see `win::services`/`macos::services`'s
+    /// `send_notification` docs). GTK's `gio::Notification` has no sound
+    /// control of its own at all — the desktop shell decides — so this
+    /// has nothing to bind to there.
+    #[must_use]
+    pub fn with_silent(mut self, silent: bool) -> Self {
+        self.silent = silent;
+        self
+    }
+
+    /// An app-chosen tag, round-tripped unchanged through
+    /// [`UiEvent::NotificationActivated::tag`] so an app that fires
+    /// several notifications can tell which one a later activation
+    /// belongs to without inventing its own id scheme. Also the identity
+    /// [`PlatformServices::send_notification`] may use to replace an
+    /// already-visible notification with the same tag, on backends that
+    /// support that (GTK: `gio::Application::send_notification`'s `id`
+    /// parameter does this natively).
+    #[must_use]
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+
+    /// The icon set via [`Self::with_icon`], if any.
+    pub fn icon(&self) -> Option<&ImageSource> {
+        self.icon.as_ref()
+    }
+
+    /// The action buttons registered via [`Self::with_action`], in
+    /// registration order.
+    pub fn actions(&self) -> &[(WidgetId, String)] {
+        &self.actions
+    }
+
+    /// Whether [`Self::with_silent`] was set.
+    pub fn is_silent(&self) -> bool {
+        self.silent
+    }
+
+    /// The tag set via [`Self::with_tag`], if any.
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::Notification;
+    use crate::primitives::image::ImageSource;
+    use crate::types::WidgetId;
+
+    #[test]
+    fn new_has_no_icon_actions_tag_and_is_not_silent_or_urgent() {
+        let n = Notification::new("t", "b");
+        assert_eq!(n.title, "t");
+        assert_eq!(n.body, "b");
+        assert!(!n.urgent);
+        assert!(n.icon().is_none());
+        assert!(n.actions().is_empty());
+        assert!(!n.is_silent());
+        assert!(n.tag().is_none());
+    }
+
+    #[test]
+    fn with_icon_is_read_back_by_icon() {
+        let n = Notification::new("t", "b").with_icon(ImageSource::Bytes(vec![1, 2, 3]));
+        assert_eq!(n.icon(), Some(&ImageSource::Bytes(vec![1, 2, 3])));
+    }
+
+    #[test]
+    fn with_action_appends_in_registration_order() {
+        let n = Notification::new("t", "b")
+            .with_action(WidgetId::new("first"), "First")
+            .with_action(WidgetId::new("second"), "Second");
+        assert_eq!(
+            n.actions(),
+            &[
+                (WidgetId::new("first"), "First".to_string()),
+                (WidgetId::new("second"), "Second".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn with_silent_is_read_back_by_is_silent() {
+        assert!(Notification::new("t", "b").with_silent(true).is_silent());
+        assert!(!Notification::new("t", "b").with_silent(false).is_silent());
+    }
+
+    #[test]
+    fn with_tag_is_read_back_by_tag() {
+        let n = Notification::new("t", "b").with_tag("build-status");
+        assert_eq!(n.tag(), Some("build-status"));
+    }
 }
 
 #[cfg(test)]

@@ -967,6 +967,15 @@ name = "gtk_file_dialog"
 path = "examples/gtk_file_dialog.rs"
 required-features = ["gtk"]
 
+# #955 — GTK platform-services smoke test (a real `gio::Notification`
+# fired through the window's `gtk4::Application`, plus the resulting
+# `UiEvent::NotificationActivated` click-through). Same "services only,
+# report to stderr" posture as `win_platform_services`.
+[[example]]
+name = "gtk_platform_services"
+path = "examples/gtk_platform_services.rs"
+required-features = ["gtk"]
+
 [[example]]
 name = "tui_message_dialog"
 path = "examples/tui_message_dialog.rs"
