@@ -726,9 +726,16 @@ mod tests {
     /// runner with no live `NSPasteboard` session at all, rather than
     /// failing the whole crate's test run over an environment gap this
     /// test isn't trying to cover.
+    ///
+    /// Consolidating into one fn only removes the race while this fn is
+    /// the crate's *only* real-pasteboard test, which stopped being true
+    /// when `macos::testing`'s Ctrl-C copy test (#803) landed — see
+    /// [`crate::macos::lock_real_pasteboard`] for how that pair raced and
+    /// why both now take the same lock.
     #[allow(clippy::print_stderr)]
     #[test]
     fn clipboard_image_html_file_list_and_clear_round_trip() {
+        let _pasteboard = crate::macos::lock_real_pasteboard();
         let svc = MacPlatformServices::new();
         let cb = svc.clipboard();
 
