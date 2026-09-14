@@ -69,9 +69,12 @@
 //! `FilePickerController`/`MessageDialogController` state machine, real
 //! `TuiBackend` paint — is exercised with **no** live terminal, purely
 //! against `ratatui::backend::TestBackend` (see this module's own
-//! `dialog_tests` for the four PlatformServices-level round trips this
-//! makes possible: file-open confirms a path, file-open cancels, file-
-//! save confirms a typed name, message-dialog resolves a button).
+//! `dialog_tests` for the PlatformServices-level round trips this makes
+//! possible: file-open confirms a path, file-open cancels, file-save
+//! confirms a typed name, file-save seeds an initial filename,
+//! message-dialog resolves a button, message-dialog Escape resolves the
+//! cancel button, and an exhausted scripted queue still resolves rather
+//! than hanging).
 //!
 //! The one thing this nested loop cannot do without help is share the
 //! *live* runner's `Terminal` instance — using a second, independently
