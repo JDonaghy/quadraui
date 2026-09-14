@@ -895,6 +895,12 @@ pub const PLATFORM_SERVICE_CONTRACTS: &[(&str, ServiceHonesty)] = &[
     // `Result` type itself already carries the "unsupported" signal, so
     // there is no separate `BackendCaps` flag or `_result` twin to check.
     ("system_theme", ServiceHonesty::AlwaysReal),
+    // `secret_store` (quadraui#958) vends a `&dyn SecretStore` rather than
+    // answering anything itself — same shape as `clipboard` above, so the
+    // honesty story lives on the vended trait's own methods, each of which
+    // returns `ServiceResult<...>` (including the no-feature build's
+    // always-`Unsupported` store). Nothing for this method to report.
+    ("secret_store", ServiceHonesty::Delegates("SecretStore")),
     ("platform_name", ServiceHonesty::AlwaysReal),
 ];
 
