@@ -1575,14 +1575,21 @@ pub fn default_shell() -> String {
 /// platform branches from a single test binary — `shell_command()` itself
 /// picks the branch via `cfg(target_os = "windows")`, which a non-Windows
 /// CI host can only ever compile one arm of.
+/// `shell_command()` constructs exactly **one** of these two variants per
+/// build target, so in any build without `cfg(test)` the other variant is
+/// genuinely never constructed and `dead_code` fires — `Unix` on Windows,
+/// `Windows` everywhere else. That asymmetry is the entire point of the
+/// type, but CI sets `RUSTFLAGS: -D warnings` workspace-wide, so an
+/// un-allowed variant is a hard *build failure* on the host whose branch
+/// it isn't. Both arms below are therefore load-bearing: quadraui#970's
+/// first CI run was green on ubuntu and red on windows-latest (the
+/// pty-smoke step — the first Windows step that compiles this
+/// `feature = "terminal"` module *without* `cfg(test)`) because only the
+/// `Windows` arm existed. Keep them symmetric.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellPlatform {
+    #[cfg_attr(all(not(test), target_os = "windows"), allow(dead_code))]
     Unix,
-    // Only constructed by `shell_command()` when `cfg(target_os =
-    // "windows")`; on every other build target it's exercised solely by
-    // the platform-parameterised unit tests below, which is exactly what
-    // this variant is for (see `ShellPlatform`'s doc comment) — so
-    // dead_code would otherwise fire on every non-Windows CI host.
     #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
     Windows,
 }
