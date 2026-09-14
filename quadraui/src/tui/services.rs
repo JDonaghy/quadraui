@@ -33,9 +33,9 @@
 //!
 //! [`docs/CLIPBOARD.md`]: https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/CLIPBOARD.md
 //!
-//! Other services (notifications, URL open) remain no-op stubs — apps
-//! that need them supply their own `PlatformServices` or call platform
-//! APIs directly.
+//! `send_notification` remains a no-op stub — apps that need it supply
+//! their own `PlatformServices` or call platform APIs directly. `open_url`
+//! is genuinely implemented; see "URL opening (issue #969)" below.
 //!
 //! ## Dialogs (issue #965)
 //!
@@ -107,6 +107,42 @@
 //! [`TuiPlatformServices::open_path`]'s own doc). Only
 //! `reveal_in_file_manager` stays `Err(BackendError::Unsupported)`: a
 //! terminal genuinely has no file-manager window to reveal anything in.
+//!
+//! ## URL opening (issue #969)
+//!
+//! Before this issue, `open_url` was `fn open_url(&self, _url: &str) {}`
+//! and its #949 `open_url_result` twin unconditionally answered
+//! `Err(BackendError::Unsupported)` — detectable, per #949, but still not
+//! *functional*. Per this crate's *Cross-backend portability commitment*,
+//! `Unsupported` is reserved for what a terminal is physically missing (a
+//! tray icon, a dock badge); a terminal session on a desktop can launch a
+//! browser perfectly well, so that answer was never earned.
+//!
+//! [`TuiPlatformServices::open_url_result`] now tries, in order:
+//!
+//! 1. **The platform opener**, shelled out directly and detached (stdout
+//!    and stderr nulled so it can't wedge the TUI's own streams):
+//!    `xdg-open` (Linux/BSD), `open` (macOS), `cmd /c start` with
+//!    `CREATE_NO_WINDOW` (Windows) — the same three-platform split
+//!    vimcode's `open_url_in_browser` (`src/core/engine/mod.rs`) hand-rolls
+//!    today, lifted here per this issue rather than reinvented, since
+//!    vimcode#945 deletes that hand-rolled copy once this fix lands.
+//!    [`build_url_opener_command`] is factored out purely so a test can
+//!    assert on the program name and arguments a call *would* spawn
+//!    without actually launching a browser.
+//! 2. **An OSC 8 hyperlink** ([`emit_osc8_hyperlink`]), when the opener
+//!    itself fails to spawn (headless box, no desktop session, opener
+//!    binary missing) — written to both stdout and (Unix) `/dev/tty`, the
+//!    same dual-write reliability reasoning [`TuiClipboard::write_text`]'s
+//!    OSC 52 leg already uses. A capable terminal renders the URL as a
+//!    clickable link even though nothing was launched on the user's
+//!    behalf.
+//! 3. Only when *both* legs fail — the opener won't spawn **and** neither
+//!    stdout nor `/dev/tty` accepts a write — does this report
+//!    `Err(BackendError::Unsupported)`: a genuinely earned answer for a
+//!    genuinely headless environment, not an assumed one. `open_url`
+//!    itself stays the infallible wrapper `open_url_result`'s doc already
+//!    describes (D-009 seam 2): same behavior, discarded result.
 //!
 //! ## Displays (issue #959)
 //!
@@ -266,6 +302,108 @@ pub(crate) fn emit_osc52_with(text: &str, in_tmux: bool, writer: &mut dyn std::i
 /// the ambient environment.
 pub(crate) fn emit_osc52_to(text: &str, writer: &mut dyn std::io::Write) {
     emit_osc52_with(text, std::env::var_os("TMUX").is_some(), writer);
+}
+
+// ── OSC 8 support (#969) ─────────────────────────────────────────────────────
+
+/// Build the OSC 8 hyperlink escape sequence for `url`, using `url` itself
+/// as the visible link text: `ESC ]8;;<url> ESC \ <url> ESC ]8;; ESC \` —
+/// the trailing empty-URL form closes the hyperlink span so terminal
+/// output written afterwards isn't swept into the link.
+fn osc8_hyperlink_sequence(url: &str) -> String {
+    format!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\")
+}
+
+/// Write an OSC 8 hyperlink for `url` to `writer`, reporting whether the
+/// write (and flush) succeeded.
+fn emit_osc8_hyperlink_to(url: &str, writer: &mut dyn std::io::Write) -> bool {
+    let seq = osc8_hyperlink_sequence(url);
+    writer
+        .write_all(seq.as_bytes())
+        .and_then(|()| writer.flush())
+        .is_ok()
+}
+
+/// Emit an OSC 8 hyperlink for `url` to stdout and (Unix) `/dev/tty`,
+/// mirroring [`emit_osc52_to`]'s "reach the controlling terminal even when
+/// stdout is redirected" reasoning — the fallback leg of
+/// [`TuiPlatformServices::open_url_result`] (issue #969) for when no
+/// platform URL opener could be spawned. Returns `true` if *either* write
+/// succeeded, `false` only when neither stream accepted anything — the
+/// genuinely headless case that earns `Err(BackendError::Unsupported)`.
+fn emit_osc8_hyperlink(url: &str) -> bool {
+    let mut wrote = emit_osc8_hyperlink_to(url, &mut std::io::stdout());
+    #[cfg(unix)]
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        wrote |= emit_osc8_hyperlink_to(url, &mut tty);
+    }
+    wrote
+}
+
+// ── URL opener command (#969) ────────────────────────────────────────────────
+
+/// Build the command that opens `url` via the platform's URL handler,
+/// without spawning it — factored out purely so tests can assert on the
+/// program name and arguments a real call would spawn, rather than
+/// actually launching a browser. Detached: stdout/stderr are nulled so a
+/// slow or chatty opener process can't wedge the TUI's own streams.
+///
+/// Lifted from vimcode's `open_url_in_browser`
+/// (`src/core/engine/mod.rs`) — the three-platform split (`xdg-open` /
+/// `open` / `cmd /c start` with `CREATE_NO_WINDOW`) already proven there.
+#[cfg(target_os = "windows")]
+fn build_url_opener_command(url: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("cmd");
+    // Empty `""` title argument is required by `start`'s own argument
+    // parsing whenever the target itself might be quoted.
+    cmd.args(["/c", "start", "", url])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
+}
+
+/// macOS opener: `open <url>`. See the Windows `cfg` overload of this same
+/// function (above) for the shared shape and doc.
+#[cfg(target_os = "macos")]
+fn build_url_opener_command(url: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
+/// Linux/BSD opener: `xdg-open <url>`. See the Windows `cfg` overload of
+/// this same function (above) for the shared shape and doc.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn build_url_opener_command(url: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
+/// The three-step "opener, then OSC 8, then honestly `Unsupported`" logic
+/// [`TuiPlatformServices::open_url_result`] runs (issue #969), factored
+/// out with `build_opener` injected so tests can swap in a harmless
+/// stand-in command instead of the real platform opener — see this
+/// module's `open_url_tests` for why `open_url_result` itself can't
+/// safely be exercised end-to-end without either launching a real browser
+/// or racing global process state (`$PATH`) against other tests.
+fn open_url_via(
+    url: &str,
+    build_opener: impl FnOnce(&str) -> std::process::Command,
+) -> ServiceResult<()> {
+    if build_opener(url).spawn().is_ok() {
+        return Ok(());
+    }
+    if emit_osc8_hyperlink(url) {
+        return Ok(());
+    }
+    Err(BackendError::Unsupported)
 }
 
 // ── Native clipboard tool fallback (#398) ───────────────────────────────────────
@@ -585,6 +723,159 @@ mod tests {
     }
 }
 
+// ── URL opening tests (issue #969) ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod open_url_tests {
+    use super::*;
+
+    #[test]
+    fn osc8_hyperlink_sequence_wraps_url_as_its_own_link_text() {
+        assert_eq!(
+            osc8_hyperlink_sequence("https://example.com"),
+            "\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"
+        );
+    }
+
+    #[test]
+    fn emit_osc8_hyperlink_to_writes_the_sequence_and_reports_success() {
+        let mut out = Vec::new();
+        assert!(emit_osc8_hyperlink_to("https://example.com", &mut out));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            osc8_hyperlink_sequence("https://example.com")
+        );
+    }
+
+    /// A writer that always fails — stands in for "no controlling
+    /// terminal/stream reachable at all", the one case
+    /// [`emit_osc8_hyperlink_to`] should honestly report `false` for.
+    struct FailingWriter;
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("simulated write failure (#969 test)"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emit_osc8_hyperlink_to_reports_failure_when_the_writer_fails() {
+        let mut w = FailingWriter;
+        assert!(!emit_osc8_hyperlink_to("https://example.com", &mut w));
+    }
+
+    /// Per-platform opener selection, asserted on the *command that would
+    /// be spawned* — program name and arguments — never on an actual
+    /// spawn. Exactly one of these three compiles for any given target,
+    /// mirroring [`build_url_opener_command`]'s own `cfg` split, so CI
+    /// exercises whichever branch matches the host it's actually running
+    /// on rather than assuming one platform.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn build_url_opener_command_uses_macos_open() {
+        let cmd = build_url_opener_command("https://example.com/969");
+        assert_eq!(cmd.get_program(), "open");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["https://example.com/969"]
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn build_url_opener_command_uses_xdg_open() {
+        let cmd = build_url_opener_command("https://example.com/969");
+        assert_eq!(cmd.get_program(), "xdg-open");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["https://example.com/969"]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn build_url_opener_command_uses_cmd_start() {
+        let cmd = build_url_opener_command("https://example.com/969");
+        assert_eq!(cmd.get_program(), "cmd");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["/c", "start", "", "https://example.com/969"]
+        );
+    }
+
+    /// #969 acceptance bar: `open_url_result` reports `Ok(())` when an
+    /// opener is present. Exercised through [`open_url_via`] with a
+    /// harmless stand-in "opener" (a command every supported host can
+    /// spawn without doing anything) instead of the real
+    /// `build_url_opener_command` — spawning the *actual* platform opener
+    /// in a test would launch a real browser as a side effect, which is
+    /// exactly what this issue's acceptance bar says to avoid. This still
+    /// proves the production logic that matters: a successful spawn short
+    /// circuits straight to `Ok(())` without ever touching the OSC 8
+    /// fallback.
+    #[test]
+    fn open_url_via_returns_ok_when_the_opener_spawns() {
+        let result = open_url_via("https://example.com/969", |_url| {
+            #[cfg(unix)]
+            {
+                std::process::Command::new("true")
+            }
+            #[cfg(windows)]
+            {
+                let mut cmd = std::process::Command::new("cmd");
+                cmd.args(["/c", "exit", "0"]);
+                cmd
+            }
+        });
+        assert_eq!(result, Ok(()));
+    }
+
+    /// #969 acceptance bar: when the opener can't even be spawned (no
+    /// desktop session, binary missing), `open_url_via` falls back to
+    /// emitting an OSC 8 hyperlink — which succeeds here because stdout
+    /// is a writable stream even under `cargo test`, so this reports
+    /// `Ok(())` rather than `Unsupported`. Writes real OSC 8 bytes to the
+    /// test process's stdout as a side effect (harmless — the same
+    /// "doesn't assert on the actual bytes written" posture
+    /// `beep_reports_success` already accepts for its BEL byte).
+    #[test]
+    fn open_url_via_falls_back_to_osc8_when_the_opener_is_missing() {
+        let result = open_url_via("https://example.com/969", |_url| {
+            std::process::Command::new("quadraui-969-this-binary-does-not-exist")
+        });
+        assert_eq!(result, Ok(()));
+    }
+
+    /// The genuinely-earned `Unsupported`: opener spawn fails *and* the
+    /// OSC 8 write fails. Forces the second leg to fail by injecting
+    /// [`emit_osc8_hyperlink_to`]'s failure path directly rather than
+    /// `open_url_via` (which always writes to the real stdout/tty) — see
+    /// [`emit_osc8_hyperlink_to_reports_failure_when_the_writer_fails`]
+    /// above for that half, and
+    /// [`open_url_via_falls_back_to_osc8_when_the_opener_is_missing`] for
+    /// why a genuinely headless *process* (real stdout writable, no real
+    /// opener) still resolves `Ok`.
+    #[test]
+    fn unsupported_is_only_reachable_when_both_legs_fail() {
+        // Opener leg: definitely fails to spawn.
+        let opener_failed = std::process::Command::new("quadraui-969-this-binary-does-not-exist")
+            .spawn()
+            .is_err();
+        assert!(
+            opener_failed,
+            "expected a nonexistent binary to fail to spawn"
+        );
+        // OSC 8 leg: definitely fails to write.
+        let mut w = FailingWriter;
+        let osc8_failed = !emit_osc8_hyperlink_to("https://example.com/969", &mut w);
+        assert!(osc8_failed, "expected the failing writer to fail the write");
+        // Both legs failing is exactly `open_url_result`'s
+        // `Err(BackendError::Unsupported)` condition.
+    }
+}
+
 /// Default `PlatformServices` impl for the TUI backend.
 pub struct TuiPlatformServices {
     clipboard: TuiClipboard,
@@ -827,21 +1118,39 @@ impl PlatformServices for TuiPlatformServices {
 
     fn send_notification(&self, _n: Notification) {}
 
-    fn open_url(&self, _url: &str) {}
+    /// Infallible wrapper over [`Self::open_url_result`], discarding its
+    /// outcome — see that method's doc (and the module doc's "URL opening
+    /// (issue #969)" section) for what actually happens here. Kept
+    /// alongside the fallible twin per D-009 seam 2 / `PRIMITIVE_RULES.md`
+    /// rule 2 ("new function alongside the old one"): both existing
+    /// consumers, which only ever call `open_url`, keep compiling
+    /// untouched while gaining the real behavior for free.
+    fn open_url(&self, url: &str) {
+        let _ = self.open_url_result(url);
+    }
 
-    /// quadraui#949: TUI has no browser to hand a URL to, and `open_url`
-    /// above is an empty no-op body a caller has no way to distinguish
-    /// from "it worked" — this is the fix. Skips calling `open_url`
-    /// (there is nothing for it to do) and reports the gap directly
-    /// instead of falling through to the trait's default `Ok(())`.
-    fn open_url_result(&self, _url: &str) -> ServiceResult<()> {
-        Err(BackendError::Unsupported)
+    /// quadraui#969: genuinely opens `url`, rather than #949's honest but
+    /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
+    /// URL opener first ([`build_url_opener_command`] — `xdg-open` /
+    /// `open` / `cmd /c start`, lifted from vimcode's
+    /// `open_url_in_browser`); if it can't even be spawned (no desktop
+    /// session, opener binary missing), falls back to an OSC 8 hyperlink
+    /// ([`emit_osc8_hyperlink`]) so a capable terminal still makes the URL
+    /// clickable. Only reports `Err(BackendError::Unsupported)` when
+    /// *neither* leg reached anything — see the module doc for the full
+    /// three-step story.
+    fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        open_url_via(url, build_url_opener_command)
     }
 
     /// No file manager window a terminal could reveal anything in —
-    /// unconditionally `Err(BackendError::Unsupported)` (issue #956), same
-    /// as [`Self::open_url_result`]'s TUI degrade. Explicitly overridden
-    /// (rather than left to inherit
+    /// unconditionally `Err(BackendError::Unsupported)` (issue #956).
+    /// Unlike [`Self::open_url_result`] (issue #969), there is no
+    /// escape-sequence fallback that could make this one honest — an OSC
+    /// 8 hyperlink can stand in for "open a URL", but nothing plays that
+    /// role for "reveal this path in a file manager window", so
+    /// `Unsupported` here really is the final answer, not a placeholder.
+    /// Explicitly overridden (rather than left to inherit
     /// [`PlatformServices::reveal_in_file_manager`]'s identical default
     /// body) purely so a reader scanning `TuiPlatformServices` for #956
     /// coverage finds this note instead of wondering why the method is
@@ -854,12 +1163,12 @@ impl PlatformServices for TuiPlatformServices {
         Err(BackendError::Unsupported)
     }
 
-    /// `xdg-open`/`open`, shelled out directly (issue #956) — unlike
-    /// [`Self::open_url`]/[`Self::open_url_result`] above, which have no
-    /// browser to hand a URL to and stay genuine no-ops, a terminal
-    /// running inside a desktop session (the common case — most TUI apps
-    /// run in a graphical terminal emulator, not a bare VT) can still
-    /// launch the OS's default handler for a *file*. Best-effort: a
+    /// `xdg-open`/`open`, shelled out directly (issue #956) — the same
+    /// idea [`Self::open_url_result`] above uses for a URL (issue #969),
+    /// applied to a filesystem path instead: a terminal running inside a
+    /// desktop session (the common case — most TUI apps run in a
+    /// graphical terminal emulator, not a bare VT) can still launch the
+    /// OS's default handler for a *file*. Best-effort: a
     /// successful `spawn()` reports `Ok(())` even though the spawned
     /// `xdg-open`/`open` may itself fail asynchronously with no way for
     /// this call to observe it (same "launch succeeded, outcome unknown"
@@ -1014,20 +1323,17 @@ mod message_dialog_tests {
             .is_none());
     }
 
-    /// quadraui#949: before `open_url_result` existed, `open_url`'s empty
-    /// no-op body was a genuinely undetectable silent failure — a caller
-    /// had no way to tell "the browser opened" from "TUI silently
-    /// discarded this". `open_url_result` closes that gap by reporting
-    /// `Unsupported` explicitly rather than falling through to the
-    /// trait's default `Ok(())`.
-    #[test]
-    fn open_url_result_reports_unsupported_on_tui() {
-        let services = TuiPlatformServices::new();
-        assert_eq!(
-            services.open_url_result("https://example.com"),
-            Err(BackendError::Unsupported)
-        );
-    }
+    // quadraui#969: `open_url_result` is now genuinely functional — it no
+    // longer unconditionally reports `Unsupported` the way #949 left it.
+    // Deliberately **not** pinned by a test that calls the real
+    // `open_url_result` here: on a host with a real desktop opener (e.g.
+    // macOS's `open`), that would actually launch a browser as a test
+    // side effect. See `open_url_tests` below for the acceptance-bar
+    // coverage instead — it exercises the same "opener present → `Ok`",
+    // "opener absent → OSC 8 fallback" logic through
+    // `open_url_via`/`build_url_opener_command` with a harmless stand-in
+    // command, asserted on the spawned command rather than by actually
+    // opening anything.
 
     /// quadraui#956: no file manager window a terminal could reveal
     /// anything in — the one member of this issue's four TUI does not

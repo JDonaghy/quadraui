@@ -3422,12 +3422,14 @@ pub trait PlatformServices {
     /// `gio::AppInfo::launch_default_for_uri`, Win-GUI via
     /// `ShellExecuteW`, macOS via `open`) answers exactly like this method
     /// doesn't exist, at zero cost. `TuiPlatformServices` is the one
-    /// override: TUI has no browser to hand a URL to, so its `open_url`
-    /// is already an empty no-op body with no way for a caller to detect
-    /// that — quadraui#949's motivating example of a genuinely
-    /// undetectable silent no-op, made detectable by this method
-    /// returning `Err(BackendError::Unsupported)` instead of silently
-    /// calling the no-op `open_url` and reporting `Ok(())`.
+    /// override, for two reasons across two issues: quadraui#949 made the
+    /// old empty no-op `open_url` body *detectable* (a caller had no way
+    /// to tell "the browser opened" from "TUI silently discarded this");
+    /// quadraui#969 then made it *functional* — TUI shells out to the
+    /// platform's URL opener (`xdg-open`/`open`/`cmd /c start`) with an
+    /// OSC 8 hyperlink fallback, and only reports
+    /// `Err(BackendError::Unsupported)` when neither reaches anything
+    /// (see `tui::services`'s module doc, "URL opening (issue #969)").
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
         self.open_url(url);
         Ok(())
