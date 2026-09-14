@@ -4421,6 +4421,23 @@ mod clipboard_default_tests {
 /// session, a locked/sandboxed keychain) is an environment limitation,
 /// not a bug in this code, so those cases skip with an explanation
 /// rather than fail.
+///
+/// **That posture has to hold for *every* step of a round trip, not just
+/// the first one** — the lesson of this module's own CI failure. "No
+/// usable credential store" is not one binary condition a test can check
+/// up front and then assume away: a Secret Service can be *reachable*
+/// (so `set` creates a collection and succeeds) while every subsequent
+/// read is gated behind an interactive unlock prompt that a headless
+/// runner can never answer (so `get` fails ~25s later). `ci.yml`'s `gtk`
+/// job is exactly that host and nothing else in the fleet is: its
+/// `apt-get install libgtk-4-dev libpango1.0-dev libcairo2-dev` pulls
+/// `gnome-keyring` + a session bus into the runner transitively, which
+/// the otherwise-identical `tui` job never gets. So `set`-then-fail is
+/// reachable on one Linux CI leg and not the other, and a test that
+/// hard-asserts on anything after a successful `set` is asserting on the
+/// runner's apt closure. Every store call below therefore treats `Err`
+/// as a skip; only *wrong values* from a store that answered are
+/// failures.
 #[cfg(all(
     test,
     any(feature = "tui", feature = "gtk", feature = "macos", feature = "win")
@@ -4439,36 +4456,60 @@ mod secret_store_tests {
         format!("account-{}-{suffix}", std::process::id())
     }
 
-    /// Set → get → delete → get against a fresh service/account pair.
-    /// Skips (doesn't fail) when `set` itself can't reach a credential
-    /// store in this environment — see the module doc.
+    /// `Ok(v)` ⇒ the store answered, keep asserting on `v`. `Err` ⇒ this
+    /// host has no usable credential store *for this operation*, so
+    /// report why and let the caller bail out — see the module doc for
+    /// why that judgement is made per call rather than once up front.
     #[allow(clippy::print_stderr)]
+    fn answered<T>(op: &str, result: ServiceResult<T>) -> Option<T> {
+        match result {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!(
+                    "skipping: secret_store {op} failed in this environment ({e:?}) — \
+                     no reachable/unlockable keyring (no D-Bus session, or a collection \
+                     that only an interactive prompt can unlock)"
+                );
+                None
+            }
+        }
+    }
+
+    /// Set → get → delete → get against a fresh service/account pair.
+    /// Any step that the host's store can't service skips the rest — see
+    /// the module doc. A store that *answers* with the wrong secret (or
+    /// still has one after `delete`) is always a real failure.
     #[test]
     fn round_trip_set_get_delete() {
         let store = KeyringSecretStore;
         let account = unique_account("round-trip");
 
-        if let Err(e) = store.set(SERVICE, &account, "s3cr3t") {
-            eprintln!(
-                "skipping: secret_store set() failed in this environment ({e:?}) — \
-                 likely no live keyring/D-Bus session"
-            );
+        if answered("set()", store.set(SERVICE, &account, "s3cr3t")).is_none() {
             return;
         }
 
+        let Some(read_back) = answered("get()", store.get(SERVICE, &account)) else {
+            // The write landed but can't be read back here; don't leave
+            // it behind for whatever runs next against this store.
+            let _ = store.delete(SERVICE, &account);
+            return;
+        };
         assert_eq!(
-            store.get(SERVICE, &account),
-            Ok(Some("s3cr3t".to_string())),
+            read_back,
+            Some("s3cr3t".to_string()),
             "get() must return exactly what set() just wrote"
         );
 
-        store
-            .delete(SERVICE, &account)
-            .expect("delete() right after a successful set() should succeed");
+        if answered("delete()", store.delete(SERVICE, &account)).is_none() {
+            return;
+        }
 
+        let Some(after_delete) = answered("get() after delete()", store.get(SERVICE, &account))
+        else {
+            return;
+        };
         assert_eq!(
-            store.get(SERVICE, &account),
-            Ok(None),
+            after_delete, None,
             "get() after delete() must report no entry, not the deleted secret"
         );
     }
@@ -4479,29 +4520,30 @@ mod secret_store_tests {
     /// underlying store as an environment-limitation skip, same as
     /// [`round_trip_set_get_delete`], but a `Some` would mean a leaked
     /// entry from a previous run and is always a real failure.
-    #[allow(clippy::print_stderr)]
     #[test]
     fn get_on_an_entry_that_was_never_set_reports_no_entry() {
         let store = KeyringSecretStore;
         let account = unique_account("never-set");
 
-        match store.get(SERVICE, &account) {
-            Ok(None) => {}
-            Ok(Some(secret)) => panic!(
-                "fresh service/account pair should have no entry, found {secret:?} — \
-                 leftover from a previous test run?"
-            ),
-            Err(e) => eprintln!(
-                "skipping: secret_store get() failed in this environment ({e:?}) — \
-                 likely no live keyring/D-Bus session"
-            ),
-        }
+        let Some(found) = answered("get()", store.get(SERVICE, &account)) else {
+            return;
+        };
+        assert_eq!(
+            found, None,
+            "fresh service/account pair should have no entry — leftover from a previous \
+             test run?"
+        );
     }
 
     /// Deleting an entry that doesn't exist is a real, reported failure —
     /// not silently `Ok(())` — matching
     /// [`PlatformServices::move_to_trash`]'s identical stance for a
     /// nonexistent path (see [`SecretStore`]'s own doc).
+    ///
+    /// This one needs no environment skip and deliberately doesn't have
+    /// one: `Err` is the assertion, and an unreachable store produces
+    /// `Err` too, so the test is meaningful where a store exists and
+    /// vacuously true (never wrong) where one doesn't.
     #[test]
     fn delete_on_a_nonexistent_entry_is_a_reported_failure() {
         let store = KeyringSecretStore;
@@ -4510,6 +4552,27 @@ mod secret_store_tests {
         assert!(
             store.delete(SERVICE, &account).is_err(),
             "delete() on an entry that was never set must not report success"
+        );
+    }
+
+    /// [`keyring_error_to_backend`] folds every `keyring::Error` onto
+    /// [`BackendError::PlatformFailure`], keeping the crate's own
+    /// `Display` text as context — deterministic coverage that holds on
+    /// a runner with no credential store at all, where every test above
+    /// skips.
+    #[test]
+    fn keyring_errors_become_platform_failures_carrying_their_display_text() {
+        let mapped = keyring_error_to_backend(keyring::Error::NoEntry);
+        let BackendError::PlatformFailure { context } = mapped else {
+            panic!("every keyring::Error must map to PlatformFailure, got {mapped:?}");
+        };
+        assert!(
+            context.starts_with("keyring: "),
+            "context must name the failing subsystem, got {context:?}"
+        );
+        assert!(
+            context.len() > "keyring: ".len(),
+            "context must keep the keyring error's own Display text, got {context:?}"
         );
     }
 }
