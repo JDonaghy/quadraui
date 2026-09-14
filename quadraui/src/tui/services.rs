@@ -263,6 +263,34 @@ impl Clipboard for TuiClipboard {
             let _ = std::thread::spawn(move || write_clipboard_via_native_tool(&owned));
         }
     }
+
+    /// Clear the **local** desktop clipboard via the same `arboard`
+    /// handle [`Self::read_text`] already reads through (issue #954).
+    ///
+    /// Deliberately not a three-leg operation like [`Self::write_text`]:
+    /// OSC 52 has no "clear" form (only "set to this base64 payload") and
+    /// the native-tool fallback (`wl-copy`/`xclip`/`xsel`) only knows how
+    /// to *serve* new content, not command a remote/outer clipboard to go
+    /// empty. So this is honest about its reach — same "local only,
+    /// nothing over SSH" ceiling [`Self::read_text`] already has — rather
+    /// than faking a clear by writing an empty string through the other
+    /// two legs, which would leave `ClipboardFormat::Text` reporting
+    /// present-but-empty instead of genuinely absent.
+    ///
+    /// `read_image`/`write_image`/`write_html`/`read_file_list` stay at
+    /// the trait's `Unsupported` default on `TuiClipboard` — OSC 52 (the
+    /// one channel that reaches a remote/SSH session) has no image or
+    /// HTML form, so this backend's clipboard is text-only by design, not
+    /// by omission (see [`crate::backend::Clipboard::read_image`]'s doc).
+    fn clear(&self) -> ServiceResult<()> {
+        let mut inner = self.inner.borrow_mut();
+        let cb = inner.as_mut().ok_or(BackendError::PlatformFailure {
+            context: "arboard::Clipboard::new (no local clipboard available)".to_string(),
+        })?;
+        cb.clear().map_err(|e| BackendError::PlatformFailure {
+            context: format!("arboard::clear: {e}"),
+        })
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -375,6 +403,50 @@ mod tests {
         assert_eq!(xclip.1, &["-selection", "clipboard"]);
         let xsel = candidates.iter().find(|(p, _)| *p == "xsel").unwrap();
         assert_eq!(xsel.1, &["--clipboard", "--input"]);
+    }
+
+    // ── Clipboard image/html/file-list/clear degrade story (#954) ──────
+
+    /// TUI is text-only by design (OSC 52 has no image/HTML form), so
+    /// `read_image`/`write_image`/`write_html`/`read_file_list` must stay
+    /// on the trait's `Unsupported` default — this pins that degrade
+    /// story so a future change to `TuiClipboard` can't silently start
+    /// (or stop) overriding one of them.
+    #[test]
+    fn image_html_and_file_list_are_unsupported_by_design() {
+        let cb = TuiClipboard::new();
+        assert_eq!(cb.read_image(), Err(BackendError::Unsupported));
+        assert_eq!(
+            cb.write_image(&crate::backend::RgbaImage {
+                width: 1,
+                height: 1,
+                pixels: vec![0, 0, 0, 255],
+            }),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(
+            cb.write_html("<b>hi</b>", "hi"),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(cb.read_file_list(), Err(BackendError::Unsupported));
+    }
+
+    /// `clear()` real round trip through the local `arboard` leg — skips
+    /// gracefully (rather than failing) when this environment has no
+    /// local desktop clipboard at all (headless CI, pure SSH session),
+    /// since that's a real gap this test isn't trying to paper over.
+    #[allow(clippy::print_stderr)]
+    #[test]
+    fn clear_empties_the_local_clipboard() {
+        let cb = TuiClipboard::new();
+        cb.write_text("some text #954 (tui clear test)");
+        if cb.read_text().is_none() {
+            eprintln!("skipping: no local desktop clipboard in this environment");
+            return;
+        }
+        cb.clear()
+            .expect("clear should succeed once write_text/read_text already proved a local clipboard is live");
+        assert_eq!(cb.read_text(), None);
     }
 }
 

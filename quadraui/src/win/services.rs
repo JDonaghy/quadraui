@@ -97,7 +97,7 @@ use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Controls::{
     TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TASKDIALOG_BUTTON,
@@ -107,9 +107,9 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::{
-    FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog, IShellItem,
-    SHCreateItemFromParsingName, Shell_NotifyIconW, FOS_PICKFOLDERS, NIF_ICON, NIF_INFO,
-    NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
+    DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog,
+    IShellItem, SHCreateItemFromParsingName, Shell_NotifyIconW, FOS_PICKFOLDERS, HDROP, NIF_ICON,
+    NIF_INFO, NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -165,6 +165,46 @@ impl Clipboard for WinClipboard {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = text;
+            Ok(())
+        }
+    }
+
+    /// `CF_HDROP` file-path list — a Finder/Explorer copy (issue #954).
+    /// `read_image`/`write_image`/`write_html` stay at the trait's
+    /// `Unsupported` default here: unlike `CF_HDROP` (one well-known
+    /// fixed-layout struct, `DROPFILES` + a `\0`-separated `\0\0`-terminated
+    /// path list, decoded below with no format ambiguity), `CF_DIB`
+    /// (bottom-up, row-padded, BGR-order pixels, no alpha in the classic
+    /// 24bpp case) and `CF_HTML` (a registered format —
+    /// `RegisterClipboardFormatW(L"HTML Format")` — wrapping the payload
+    /// in a byte-offset text header, not a `CF_*` constant at all) are
+    /// real reverse-engineering-adjacent native formats this crate has no
+    /// way to exercise against a live clipboard from this repo's Linux
+    /// CI (`cargo check`/`cargo test --features win` type-check the
+    /// `cfg(target_os = "windows")` arms but never execute them — see
+    /// `CLAUDE.md`'s Win-GUI section) or, in this dispatch, a live
+    /// Windows host either. Landing untested byte-level clipboard parsing
+    /// that only ever *compiles* is worse than an honest `Unsupported`;
+    /// left for a follow-up dispatched to Win-GUI's real-hardware lane.
+    fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_read_file_list()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// `EmptyClipboard` — clears every format, not just text (issue #954).
+    fn clear(&self) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            win_clipboard_clear()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
             Ok(())
         }
     }
@@ -437,6 +477,78 @@ fn win_clipboard_write(text: &str) -> ServiceResult<()> {
                 context: "GlobalAlloc".to_string(),
             }),
         };
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// Read the `CF_HDROP` file-path list off the clipboard (issue #954) — a
+/// Finder/Explorer copy, on Windows a `DROPFILES` struct whose payload is
+/// enumerated with `DragQueryFileW` rather than parsed by hand (the same
+/// API a drag-and-drop `WM_DROPFILES` handler uses for the live-drag
+/// case).
+#[cfg(target_os = "windows")]
+fn win_clipboard_read_file_list() -> ServiceResult<Vec<PathBuf>> {
+    unsafe {
+        // Checked before `OpenClipboard`, same "don't hold the clipboard
+        // open just to discover it's the wrong format" posture as
+        // `win_clipboard_read`'s `CF_UNICODETEXT` check.
+        if IsClipboardFormatAvailable(CF_HDROP.0 as u32).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "IsClipboardFormatAvailable(CF_HDROP)".to_string(),
+            });
+        }
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let result = (|| {
+            let handle =
+                GetClipboardData(CF_HDROP.0 as u32).map_err(|_| BackendError::PlatformFailure {
+                    context: "GetClipboardData(CF_HDROP)".to_string(),
+                })?;
+            let hdrop = HDROP(handle.0);
+            // `0xFFFFFFFF` (no buffer) asks `DragQueryFileW` for the file
+            // count instead of a filename — the documented Win32 idiom.
+            let count = DragQueryFileW(hdrop, u32::MAX, None);
+            let mut files = Vec::with_capacity(count as usize);
+            for i in 0..count {
+                // First call with no buffer to learn the required length
+                // (excluding the NUL terminator); second call fills a
+                // buffer sized for it. Two calls, same idiom as
+                // `GetWindowTextW`/friends.
+                let needed = DragQueryFileW(hdrop, i, None);
+                if needed == 0 {
+                    continue;
+                }
+                let mut buf = vec![0u16; needed as usize + 1];
+                let copied = DragQueryFileW(hdrop, i, Some(&mut buf));
+                buf.truncate(copied as usize);
+                files.push(PathBuf::from(String::from_utf16_lossy(&buf)));
+            }
+            Ok(files)
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// `EmptyClipboard` — clears every clipboard format at once, regardless
+/// of what's on it (issue #954). Unlike `win_clipboard_write`, there is
+/// no payload to allocate/own, so this is the shortest possible
+/// open/mutate/close cycle.
+#[cfg(target_os = "windows")]
+fn win_clipboard_clear() -> ServiceResult<()> {
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return Err(BackendError::PlatformFailure {
+                context: "OpenClipboard".to_string(),
+            });
+        }
+        let result = EmptyClipboard().map_err(|_| BackendError::PlatformFailure {
+            context: "EmptyClipboard".to_string(),
+        });
         let _ = CloseClipboard();
         result
     }
@@ -959,6 +1071,17 @@ mod tests {
         let svc = WinPlatformServices::new();
         assert!(svc.clipboard().read_text().is_none());
         svc.clipboard().write_text("ignored");
+        // #954: `read_image`/`write_image`/`write_html` are the trait's
+        // own `Unsupported` default (`WinClipboard` never overrides
+        // them — see `read_file_list`'s doc for why); `read_file_list`
+        // and `clear` are overridden but degrade the same way off
+        // Windows.
+        assert_eq!(svc.clipboard().read_image(), Err(BackendError::Unsupported));
+        assert_eq!(
+            svc.clipboard().read_file_list(),
+            Err(BackendError::Unsupported)
+        );
+        assert_eq!(svc.clipboard().clear(), Ok(()));
         assert!(svc
             .show_file_open_dialog(FileDialogOptions::default())
             .is_none());
