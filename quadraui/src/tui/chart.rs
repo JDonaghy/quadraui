@@ -278,10 +278,22 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
         return;
     }
 
-    // Cell-quantised bar geometry. Slot width floors, exactly as the
-    // single-series painter always did, so single-series output is
-    // byte-identical to pre-#584.
-    let slot_w = ((pw as usize) / n).max(1);
+    // Cell-quantised bar geometry. Each slot's edges are computed
+    // independently as `di*pw/n` .. `(di+1)*pw/n` rather than a single
+    // floored `pw/n` width stepped by `di` (#975): the latter drops
+    // `pw % n` cells at the right edge (e.g. plot=108, n=28 -> slot=3,
+    // 84 cells painted, 24 left blank) because the same floored width
+    // is reused for every slot instead of letting later slots absorb
+    // the remainder. Per-slot edges tile the full plot width exactly —
+    // `slot_x1` of the last slot always equals `pw` — and this also
+    // matches the continuous (unquantised) slot centres
+    // `primitives::chart::Chart::layout` already uses for
+    // `data_point_positions`, so hit-testing drifts by at most a
+    // rounding cell instead of up to a whole slot near the right edge.
+    // A single-series chart is no longer guaranteed byte-identical to
+    // pre-#975 output when `pw` doesn't divide evenly by `n` — that
+    // divergence is the fix, not a regression.
+    let pw_cells = pw as usize;
     let plot_h = ph.saturating_sub(1) as usize;
     let stacked = chart.kind.is_stacked_bar();
     let series_count = chart.series.len().max(1);
@@ -289,11 +301,17 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
     let base_row = (py + ph).saturating_sub(2);
 
     for (di, column) in chart.bar_column_spans_all().into_iter().enumerate() {
-        let slot_x = di * slot_w;
-        if slot_x >= pw as usize {
+        let slot_x0 = di * pw_cells / n;
+        let slot_x1 = (di + 1) * pw_cells / n;
+        if slot_x0 >= pw_cells {
             break;
         }
-        let slot_cells = slot_w.min(pw as usize - slot_x);
+        let slot_cells = slot_x1 - slot_x0;
+        if slot_cells == 0 {
+            // Narrower than one cell per bucket (pw < n): nothing to
+            // paint distinctly for this column.
+            continue;
+        }
 
         for (si, bottom, top) in column {
             // Stacked segments span the whole slot; grouped series each
@@ -323,7 +341,7 @@ fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Them
                     break;
                 }
                 for c in 0..cell_w {
-                    set_cell(buf, px + (slot_x + cell_off + c) as u16, by, '█', fg, bg);
+                    set_cell(buf, px + (slot_x0 + cell_off + c) as u16, by, '█', fg, bg);
                 }
             }
         }
@@ -424,13 +442,56 @@ fn paint_axis_labels(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, them
         }
     }
 
+    // X-axis ticks (#975): one row directly below the plot, centred
+    // under each tick's screen x but clamped to stay inside the chart's
+    // own bounds — the same "clamp, don't let it spill" shape the
+    // y-axis labels already use (#647), since a tick at `frac == 1.0`
+    // sits exactly on `bounds_right` and a naive centred label there
+    // would always run past the edge. A label that still collides with
+    // the previous (already-clamped) one after that is dropped rather
+    // than painted overlapping — narrow charts read as sparser rather
+    // than garbled. `x_tick_positions` is only ever non-empty when
+    // `Chart::layout` also reserved this row's height (`chart.x_ticks`
+    // is `Some(n > 0)`), so the two stay in sync without threading the
+    // reservation flag through separately.
+    let ticks_row = (pa.y + pa.height).round() as u16;
+    let bounds_right = (layout.bounds.x + layout.bounds.width).round() as u16;
+    let mut prev_label_end: Option<u16> = None;
+    for &(sx, val) in &layout.x_tick_positions {
+        let label = crate::primitives::chart::format_tick_value(val);
+        let label_len = label.len() as u16;
+        if label.is_empty() || bounds_x + label_len > bounds_right {
+            // No room anywhere in bounds for this label.
+            continue;
+        }
+        let half = label_len / 2;
+        let center = sx.round() as u16;
+        let max_start = bounds_right - label_len;
+        let label_start = center.saturating_sub(half).clamp(bounds_x, max_start);
+        let label_end = label_start + label_len;
+        if let Some(prev_end) = prev_label_end {
+            if label_start <= prev_end {
+                continue;
+            }
+        }
+        for (i, ch) in label.chars().enumerate() {
+            set_cell(buf, label_start + i as u16, ticks_row, ch, dim, bg);
+        }
+        prev_label_end = Some(label_end + 1); // 1-cell gap before the next label
+    }
+
+    let x_label_row = if layout.x_tick_positions.is_empty() {
+        ticks_row
+    } else {
+        ticks_row + 1
+    };
+
     if let Some(label) = &chart.x_label {
-        let label_y = (pa.y + pa.height).round() as u16;
         let label_x = px + pw.saturating_sub(label.len() as u16) / 2;
         for (i, ch) in label.chars().enumerate() {
             let col = label_x + i as u16;
-            if col < (layout.bounds.x + layout.bounds.width).round() as u16 {
-                set_cell(buf, col, label_y, ch, fg, bg);
+            if col < bounds_right {
+                set_cell(buf, col, x_label_row, ch, fg, bg);
             }
         }
     }
@@ -999,14 +1060,19 @@ mod tests {
         let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         // #647: the gutter now reserves room for the widest interior
         // tick label ("-4.2", 4 chars) rather than just the endpoints
-        // ("-5"/"-1", 2 chars), shifting every column right by 1.
+        // ("-5"/"-1", 2 chars), shifting every column right by 1. That
+        // leaves a 5-cell plot for 3 buckets (#975): edge-based slots
+        // are 1/2/2 cells wide (`di*pw/n .. (di+1)*pw/n`) rather than
+        // every slot flooring to 1 and leaving the last 2 plot columns
+        // permanently blank, so the tallest bar (index 2) now spans 2
+        // columns instead of 1.
         assert_eq!(
             grid(&buf, area),
             vec![
-                "..-1...█..",
-                "-1.8...█..",
-                "-2.6..██..",
-                "-3.4..██..",
+                "..-1....██",
+                "-1.8....██",
+                "-2.6..████",
+                "-3.4..████",
                 "-4.2.─────",
             ]
         );
@@ -1346,6 +1412,279 @@ mod tests {
             braille_survives,
             "expected a braille dot to survive on tick row {tick_row}:\n{:?}",
             grid(&buf, area)
+        );
+    }
+
+    // ── Bar slots tile the full plot width (#975) ───────────────────────
+
+    /// Regression for #975: bar slots must tile the full plot width even
+    /// when it doesn't divide evenly by the bucket count. With a
+    /// 10-cell plot and 3 buckets the old `floor(10/3) = 3`-wide slot
+    /// stepped by `di * 3` only ever painted `3 * 3 = 9` columns,
+    /// leaving the last plot column permanently blank regardless of the
+    /// data. Edge-based slots (`di*pw/n .. (di+1)*pw/n`) give slot
+    /// widths 3/3/4, so the tallest bucket's bar now reaches the plot's
+    /// final column.
+    #[test]
+    fn bar_slots_tile_the_full_plot_width_with_no_blank_remainder() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Bar,
+            series: vec![Series {
+                label: "B".into(),
+                data: vec![1.0, 1.0, 3.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 3.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: None,
+            show_grid: false,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let pa = &layout.plot_area;
+        assert_eq!(
+            (pa.x, pa.width),
+            (0.0, 10.0),
+            "test fixture assumes a zero-gutter, 10-cell plot"
+        );
+
+        // The tallest (last) bucket reaches full height; its bottom-most
+        // bar row must include the plot's very last column.
+        let last_col = pa.x.round() as u16 + pa.width.round() as u16 - 1;
+        let bottom_bar_row = (pa.y + pa.height).round() as u16 - 2; // row just above the axis line
+        assert_eq!(
+            cell_char(&buf, last_col, bottom_bar_row),
+            '█',
+            "last plot column should be part of the tallest bucket's bar, not left blank:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    // ── X-axis ticks are painted (#975) ─────────────────────────────────
+
+    fn line_chart_with_x_axis(
+        data: Vec<f64>,
+        x_range: Option<(f64, f64)>,
+        x_ticks: Option<usize>,
+    ) -> Chart {
+        Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data,
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range,
+            show_legend: false,
+            y_ticks: Some(0), // zero-width gutter: plot_area == area
+            x_ticks,
+            show_grid: false,
+        }
+    }
+
+    fn row_string(buf: &Buffer, area: Rect, row: u16) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| cell_char(buf, x, row))
+            .collect()
+    }
+
+    /// Before #975, `layout.x_tick_positions` was computed but nothing
+    /// ever painted it — `x_ticks: Some(_)` was a silent no-op.
+    #[test]
+    fn x_axis_ticks_are_painted_below_the_plot() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        // 3 ticks at fracs 0, 0.5, 1 over 5 data points -> index values 0, 2, 4.
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0, 4.0, 5.0], None, Some(2));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(layout.x_tick_positions.len(), 3);
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let row = row_string(&buf, area, ticks_row);
+        assert!(
+            row.contains('0') && row.contains('2') && row.contains('4'),
+            "expected x-tick labels 0, 2, 4 on row {ticks_row}, got {row:?}"
+        );
+    }
+
+    /// #975: an explicit `x_range` drives tick *values* — previously a
+    /// dead field the layout never read, so ticks always labelled by
+    /// data index no matter what `x_range` said.
+    #[test]
+    fn x_axis_tick_values_honour_x_range() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), Some(1));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let values: Vec<f64> = layout.x_tick_positions.iter().map(|&(_, v)| v).collect();
+        assert_eq!(
+            values,
+            vec![100.0, 300.0],
+            "tick values should come from x_range (100, 300), not the data index (0, 2)"
+        );
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let row = row_string(&buf, area, ticks_row);
+        assert!(
+            row.contains("100") && row.contains("300"),
+            "expected the x_range-derived labels on row {ticks_row}, got {row:?}"
+        );
+    }
+
+    /// #975: a label that would overlap the previous one is dropped
+    /// rather than painted on top of it. An 8-cell plot with ticks at
+    /// each edge and 4-char labels leaves no room for both once the
+    /// right-edge label is clamped inside bounds.
+    #[test]
+    fn x_axis_tick_labels_drop_on_collision_at_narrow_width() {
+        let area = Rect::new(0, 0, 8, 8);
+        let mut buf = Buffer::empty(area);
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0], Some((1000.0, 2000.0)), Some(1));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(
+            layout.plot_area.width, 8.0,
+            "test fixture assumes a zero-gutter, 8-cell plot"
+        );
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let row = row_string(&buf, area, ticks_row);
+        assert!(
+            row.contains("1000"),
+            "left-edge tick should paint its label: {row:?}"
+        );
+        assert!(
+            !row.contains("2000"),
+            "right-edge tick's 4-char label has nowhere to go without overlapping the \
+             left tick's label in an 8-cell plot, and must be dropped rather than \
+             painted over it: {row:?}"
+        );
+    }
+
+    /// #975: a tick at `frac == 1.0` sits exactly on the chart's own
+    /// right edge, so a naive centred label there would always spill
+    /// past it. It must clamp inward instead — mirroring the y-axis's
+    /// existing #647 clamp — never painting outside the chart's bounds.
+    #[test]
+    fn x_axis_tick_label_clamps_to_bounds_instead_of_spilling() {
+        let origin_x = 3u16;
+        let origin_y = 2u16;
+        let area = Rect::new(origin_x, origin_y, 20, 6);
+        let mut buf = Buffer::empty(Rect::new(
+            0,
+            0,
+            origin_x + area.width + 10,
+            origin_y + area.height,
+        ));
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0], Some((1000.0, 2000.0)), Some(1));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let bounds_right = origin_x + area.width;
+
+        for x in 0..origin_x {
+            assert_eq!(
+                cell_char(&buf, x, ticks_row),
+                ' ',
+                "cell ({x},{ticks_row}) left of bounds.x={origin_x} was painted"
+            );
+        }
+        for x in bounds_right..buf.area.width {
+            assert_eq!(
+                cell_char(&buf, x, ticks_row),
+                ' ',
+                "cell ({x},{ticks_row}) right of bounds_right={bounds_right} was painted"
+            );
+        }
+        let row = row_string(
+            &buf,
+            Rect::new(origin_x, ticks_row, area.width, 1),
+            ticks_row,
+        );
+        assert!(
+            row.contains("1000") && row.contains("2000"),
+            "both labels should still be painted, just clamped inward: {row:?}"
+        );
+    }
+
+    /// #975: reserving the x-ticks row must push `x_label` down by one
+    /// more row than when there's no tick row at all — otherwise the
+    /// caption would paint into the same row as the tick values.
+    #[test]
+    fn x_label_row_shifts_down_when_x_ticks_reserve_a_row() {
+        let area = Rect::new(0, 0, 20, 8);
+        let make = |x_ticks: Option<usize>| Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data: vec![1.0, 2.0, 3.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: Some("Time".into()),
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks,
+            show_grid: false,
+        };
+        let find_label_row = |buf: &Buffer| -> u16 {
+            (area.y..area.y + area.height)
+                .find(|&y| row_string(buf, area, y).contains("Time"))
+                .unwrap_or_else(|| panic!("label 'Time' not painted anywhere in the buffer"))
+        };
+
+        let mut buf_without = Buffer::empty(area);
+        let layout_without = draw_chart(
+            &mut buf_without,
+            area,
+            &make(None),
+            &Theme::default(),
+            None,
+            None,
+        );
+        let plot_bottom_without =
+            (layout_without.plot_area.y + layout_without.plot_area.height).round() as u16;
+        assert_eq!(
+            find_label_row(&buf_without),
+            plot_bottom_without,
+            "with no x-ticks reserved, x_label sits directly below the plot"
+        );
+
+        let mut buf_with = Buffer::empty(area);
+        let layout_with = draw_chart(
+            &mut buf_with,
+            area,
+            &make(Some(2)),
+            &Theme::default(),
+            None,
+            None,
+        );
+        let plot_bottom_with =
+            (layout_with.plot_area.y + layout_with.plot_area.height).round() as u16;
+        assert_eq!(
+            find_label_row(&buf_with),
+            plot_bottom_with + 1,
+            "with an x-ticks row reserved, x_label must shift one row further down"
         );
     }
 }
