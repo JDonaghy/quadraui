@@ -105,7 +105,7 @@ pub fn draw_minimap(
             .collect();
 
         for col in 0..width_cells {
-            let ch = braille_char_for_cell(&row_lines, col, width_cells);
+            let ch = braille_char_for_cell(&row_lines, col);
             let fg = cell_color(minimap, vline.start_line_idx, col, default_fg, theme);
             set_cell(buf, area.x + col as u16, row_y, ch, fg, row_bg);
         }
@@ -117,22 +117,31 @@ pub fn draw_minimap(
 /// Pack one terminal cell's braille glyph from up to [`LINES_PER_ROW`]
 /// pre-split lines. `col` is the terminal-cell column (0-based within
 /// the minimap); each cell is 2 dots wide, so dot columns
-/// `col*2..col*2+2` map proportionally back into each line's characters.
-fn braille_char_for_cell(row_lines: &[Option<Vec<char>>], col: usize, width_cells: usize) -> char {
-    let dot_w = (width_cells * 2).max(1);
+/// `col*2..col*2+2` map to buffer columns at a **fixed** scale of
+/// [`COLS_PER_CELL`] buffer columns per cell — the same scale for every
+/// line, matching [`cell_color`]'s fixed-grid lookup below (issue #993).
+///
+/// Column position is otherwise the only signal indentation has: if the
+/// scale were normalised per-line (each line stretched to fill the full
+/// strip width, as this used to do), a short line's 4-space indent would
+/// land at a different dot column than the same 4-space indent on a long
+/// line, destroying indentation entirely. Fixed scale means a line
+/// shorter than the strip simply leaves the remaining dots clear, and a
+/// line longer than `width_cells * COLS_PER_CELL` is clipped rather than
+/// compressed — exactly what VS Code's minimap does.
+fn braille_char_for_cell(row_lines: &[Option<Vec<char>>], col: usize) -> char {
     pack_braille_cell(|dr, dc| {
         let chars = match row_lines.get(dr).and_then(|o| o.as_ref()) {
             Some(c) if !c.is_empty() => c,
             _ => return false,
         };
         let dot_col = col * 2 + dc;
-        let char_start = (dot_col * chars.len() / dot_w).min(chars.len().saturating_sub(1));
-        let char_end = (((dot_col + 1) * chars.len()).div_ceil(dot_w))
-            .max(char_start + 1)
-            .min(chars.len());
-        chars[char_start..char_end]
-            .iter()
-            .any(|c| !c.is_whitespace())
+        let cols_per_dot = (COLS_PER_CELL / 2).max(1);
+        let c0 = dot_col * cols_per_dot;
+        let c1 = c0 + cols_per_dot;
+        chars
+            .get(c0..c1.min(chars.len()))
+            .is_some_and(|s| s.iter().any(|c| !c.is_whitespace()))
     })
 }
 
@@ -349,5 +358,109 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
         let _layout = draw_minimap(&mut buf, Rect::new(0, 0, 0, 4), &mm, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    /// Returns the first terminal-cell column (out of `0..width_cells`)
+    /// whose braille glyph differs from the blank glyph U+2800, i.e. the
+    /// cell carrying `chars`' leading non-whitespace character.
+    fn first_set_cell(chars: &[char], width_cells: usize) -> Option<usize> {
+        let row_lines = [Some(chars.to_vec()), None, None, None];
+        (0..width_cells).find(|&col| braille_char_for_cell(&row_lines, col) != '\u{2800}')
+    }
+
+    /// Regression test for #993: `braille_char_for_cell` used to
+    /// normalise each line's dot mapping by **that line's own**
+    /// character count (`chars.len() / dot_w`), so a short line's
+    /// content was stretched across the *entire* strip width regardless
+    /// of how little of that width the line actually occupies. Column
+    /// position is the only signal indentation has, so three lines with
+    /// increasing indent ("x", "    x", "        x") must paint their
+    /// set dots at three distinct columns *proportional to the indent*
+    /// — not bunched together near the strip's far edge, which is what
+    /// the old per-line normalisation produced (a 1-char line placed its
+    /// dot near column 0 "by accident", but 5- and 9-char lines both got
+    /// stretched to place their trailing 'x' near the right edge of the
+    /// full strip, regardless of the actual indent).
+    #[test]
+    fn indentation_lands_at_distinct_columns_proportional_to_indent() {
+        let width_cells = 8;
+        let flush: Vec<char> = "x".chars().collect();
+        let indent_4: Vec<char> = "    x".chars().collect();
+        let indent_8: Vec<char> = "        x".chars().collect();
+
+        let c_flush = first_set_cell(&flush, width_cells).expect("flush line must set a dot");
+        let c_indent_4 =
+            first_set_cell(&indent_4, width_cells).expect("indent-4 line must set a dot");
+        let c_indent_8 =
+            first_set_cell(&indent_8, width_cells).expect("indent-8 line must set a dot");
+
+        assert!(
+            c_flush < c_indent_4 && c_indent_4 < c_indent_8,
+            "expected strictly increasing columns, got {c_flush} < {c_indent_4} < {c_indent_8}"
+        );
+        // Fixed scale: COLS_PER_CELL buffer columns per terminal cell,
+        // so doubling the indent must double the column offset exactly
+        // — this is what "proportional" pins down, not just "increasing".
+        assert_eq!(c_indent_4, c_flush + 4 / COLS_PER_CELL);
+        assert_eq!(c_indent_8, c_flush + 8 / COLS_PER_CELL);
+    }
+
+    /// A short, indented line's dot column must depend only on its own
+    /// indent — never on the length of some other line sharing the same
+    /// braille row group (issue #993's fixed-scale requirement, applied
+    /// defensively at the row-group level: `dr=0`'s short line and
+    /// `dr=1`'s 200-column line are packed into the very same terminal
+    /// cell row, so a future regression toward row-level normalisation
+    /// — e.g. scaling by the longest line in the group instead of a
+    /// fixed constant — would move `dr=0`'s dot even though nothing
+    /// about that line itself changed).
+    #[test]
+    fn a_long_neighbour_line_does_not_move_a_short_lines_dot() {
+        let width_cells = 8;
+        let indented: Vec<char> = "    x".chars().collect();
+        let very_long: Vec<char> = format!("{}y", " ".repeat(200)).chars().collect();
+
+        let alone = {
+            let row_lines = [Some(indented.clone()), None, None, None];
+            (0..width_cells).find(|&col| braille_char_for_cell(&row_lines, col) != '\u{2800}')
+        };
+        let with_long_neighbor = {
+            let row_lines = [Some(indented.clone()), Some(very_long), None, None];
+            (0..width_cells).find(|&col| braille_char_for_cell(&row_lines, col) != '\u{2800}')
+        };
+
+        assert_eq!(
+            alone, with_long_neighbor,
+            "a long neighbouring line must not shift where the short line's dot lands"
+        );
+    }
+
+    /// A line longer than the strip's visible column range must be
+    /// **clipped**, not compressed to fit — content past
+    /// `width_cells * COLS_PER_CELL` never sets a dot, no matter how far
+    /// past it extends (issue #993: this is what distinguishes a fixed
+    /// scale from the old per-line stretch, which had no notion of
+    /// "off the edge" since it always rescaled to fit exactly).
+    #[test]
+    fn a_line_past_the_visible_range_is_clipped_not_compressed() {
+        let width_cells = 4;
+        let visible_cols = width_cells * COLS_PER_CELL;
+
+        // Non-whitespace only at the last visible column: must be seen.
+        let mut at_edge = vec![' '; visible_cols];
+        at_edge[visible_cols - 1] = 'x';
+        assert!(
+            first_set_cell(&at_edge, width_cells).is_some(),
+            "a dot within the visible range must be painted"
+        );
+
+        // Non-whitespace only one column past the visible range: clipped.
+        let mut past_edge = vec![' '; visible_cols + 1];
+        past_edge[visible_cols] = 'x';
+        assert_eq!(
+            first_set_cell(&past_edge, width_cells),
+            None,
+            "content past width_cells * COLS_PER_CELL must be clipped, not compressed into view"
+        );
     }
 }
