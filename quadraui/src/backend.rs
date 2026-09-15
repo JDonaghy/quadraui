@@ -3000,8 +3000,10 @@ pub trait Backend: sealed::Sealed {
     /// Draw a [`Minimap`] (code-overview density view). GTK and Win-GUI
     /// both tile rows at a fixed pitch and paint one colour block per
     /// non-blank character column ([`crate::MinimapSizing::FixedPitch`],
-    /// #667, #738); TUI packs `U+2800`-block braille dots at a
-    /// stretch-to-fill pitch ([`crate::MinimapSizing::Fill`]). All three
+    /// #667, #738); TUI packs `U+2800`-block braille dots, also at a fixed
+    /// pitch — one cell row per minimap row (`FixedPitch(1.0)`, #992,
+    /// which fixed a `Fill`-sizing bug where a short file's stretched
+    /// pitch left blank cell rows between painted ones). All three
     /// techniques consume the exact same [`Minimap`] data — the primitive
     /// owns the sampling and colour-aggregation math (`sample_lines` /
     /// `aggregate_spans`), and, since #738, the legibility/render-mode

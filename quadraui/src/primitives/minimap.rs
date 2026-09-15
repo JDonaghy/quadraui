@@ -33,8 +33,16 @@
 //!   short enough that `bounds.height / row_count` would blow past that
 //!   ceiling instead top-aligns and only occupies `row_count * row_h` of
 //!   the strip, leaving the remainder unpainted, rather than stretching to
-//!   fill it. TUI is the only user — it is cell-native (braille rows) and
-//!   has no font to scale.
+//!   fill it. No live rasteriser uses this any more (see `FixedPitch`
+//!   below) — it survives only as the deprecated [`Minimap::layout`]
+//!   shim's default, for source compatibility with pre-#667 out-of-tree
+//!   callers. **Do not size a new rasteriser with `Fill`**: any backend
+//!   that paints one glyph/cell per row (TUI's braille rows are cell-native
+//!   with no font to scale, so there's never a reason for it to stretch
+//!   pitch) reads a stretched pitch as *gaps between painted rows*, not a
+//!   taller row — that was #992, where TUI's `Fill` usage left up to
+//!   `MAX_ROW_PITCH - 1` blank cell rows between every painted row on a
+//!   short file.
 //! - [`MinimapSizing::FixedPitch`] — rows tile top-down at exactly the
 //!   given pitch, regardless of `row_count`. When more rows exist than the
 //!   strip can hold at that pitch, [`Minimap::layout_with_sizing`] doesn't
@@ -42,10 +50,13 @@
 //!   `bounds.height / pitch` rows is shown at once, and that window's
 //!   position tracks [`Minimap::visible_row_start`] against
 //!   [`Minimap::total_buffer_lines`] (VS Code's `minimap.size:
-//!   proportional`). GTK is the only user, and this is what makes a
-//!   minimap row's on-screen size independent of the file's length: the
-//!   same buffer, painted into the same strip, always resolves to the same
-//!   `vline.bounds.height` no matter how many lines it has.
+//!   proportional`). Every backend uses this — GTK and Win-GUI at
+//!   [`crate::primitives::minimap::ROW_PITCH_PX`] (a font-scaling
+//!   pitch), TUI at exactly `1.0` cell row per row (#992) — and this is
+//!   what makes a minimap row's on-screen size independent of the file's
+//!   length: the same buffer, painted into the same strip, always
+//!   resolves to the same `vline.bounds.height` no matter how many lines
+//!   it has.
 //!
 //! Each [`VisibleMinimapLine::bounds`] carries the *resolved* row height
 //! and position, so a rasteriser reads its pitch straight off the layout
@@ -164,9 +175,7 @@ pub struct MinimapLayout {
 }
 
 /// Ceiling on a minimap row's pitch under [`MinimapSizing::Fill`], in
-/// `bounds`'s own coordinate units (terminal cell rows for TUI, the only
-/// remaining `Fill` user as of #667 — GTK moved to
-/// [`MinimapSizing::FixedPitch`]) — issue #663.
+/// `bounds`'s own coordinate units — issue #663.
 ///
 /// Without a ceiling, `Fill`'s `row_h` is `bounds.height / row_count`,
 /// which grows without bound as a file gets shorter than the strip.
@@ -176,22 +185,33 @@ pub struct MinimapLayout {
 /// [`sample_lines`]'s own never-upscale rule. Long files are unaffected:
 /// `bounds.height / row_count` is already below the ceiling once the
 /// caller's sampling has downsampled them to roughly fit the strip.
+///
+/// No rasteriser sizes with `Fill` any more (#992 moved TUI, the last
+/// user, to [`MinimapSizing::FixedPitch`]) — this constant now backs only
+/// the deprecated [`Minimap::layout`] shim's default, kept for source
+/// compatibility with pre-#667 out-of-tree callers.
 pub const MAX_ROW_PITCH: f32 = 8.0;
 
 /// How [`Minimap::layout`] sizes rows across `bounds.height` — issue #667.
 ///
-/// The two backends want opposite things: TUI's braille rows are
-/// cell-native and have no font to scale, so it always wants to fill the
-/// strip ([`Self::Fill`]). GTK's row pitch drives a Pango font size (or,
-/// below the legibility floor, a colour block), so a file-length-dependent
-/// pitch means a file-length-dependent glyph size — exactly the defect
-/// #667 removes. GTK always wants [`Self::FixedPitch`].
+/// Every backend's row pitch drives some paint cost per row — GTK's and
+/// Win-GUI's drive a Pango/DirectWrite font size (or, below the
+/// legibility floor, a colour block), and TUI's drives how many cell rows
+/// `draw_minimap` paints per row (exactly one — braille rows are
+/// cell-native, with no font to scale, but that still means a
+/// file-length-dependent pitch turns into file-length-dependent *gaps*
+/// rather than a file-length-dependent glyph size, which was #992). A
+/// file-length-dependent pitch is the defect #667 (GTK) and #992 (TUI)
+/// both remove: every backend now sizes with [`Self::FixedPitch`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MinimapSizing {
     /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`]
     /// (#663). A file shorter than the strip at that cap top-aligns
     /// rather than stretching further; there is no sliding window — every
     /// row is always visible.
+    ///
+    /// No live rasteriser uses this (see [`Self::FixedPitch`]) — kept only
+    /// for the deprecated [`Minimap::layout`] shim's pre-#667 behaviour.
     Fill,
     /// Tile rows top-down at exactly this pitch (in `bounds`'s own
     /// coordinate units), regardless of `row_count`. When the file needs

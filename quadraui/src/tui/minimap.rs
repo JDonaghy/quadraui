@@ -33,9 +33,19 @@ pub const COLS_PER_CELL: usize = 2;
 
 /// Compute the TUI cell-unit layout for a [`Minimap`] without painting.
 ///
-/// TUI keeps [`MinimapSizing::Fill`] (#667): braille rows are cell-native
-/// with no font to scale, so there's no file-length-dependent glyph size
-/// to fix here the way GTK's fixed pitch fixes GTK's.
+/// TUI uses [`MinimapSizing::FixedPitch`] at exactly `1.0` cell row per
+/// minimap row (#992). `draw_minimap` below paints exactly one cell row
+/// per [`VisibleMinimapLine`], so the layout's row pitch and the
+/// rasteriser's paint granularity must agree — under the previous
+/// [`MinimapSizing::Fill`], a short file's pitch could stretch up to
+/// [`crate::primitives::minimap::MAX_ROW_PITCH`] cell rows, but
+/// `draw_minimap` still only painted the first cell row of each band,
+/// leaving `pitch - 1` blank cell rows between every painted row — a gap
+/// that grew as the file got shorter. `FixedPitch(1.0)` pins the pitch to
+/// the rasteriser's actual per-row paint cost, so rows tile contiguously
+/// regardless of strip height, and long files fall back to the same
+/// sliding-window behaviour GTK already relies on (see the module docs
+/// on [`crate::primitives::minimap::Minimap::layout_with_sizing`]).
 pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
     minimap.layout_with_sizing(
         crate::event::Rect::new(
@@ -45,7 +55,7 @@ pub fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
             area.height as f32,
         ),
         LINES_PER_ROW,
-        MinimapSizing::Fill,
+        MinimapSizing::FixedPitch(1.0),
     )
 }
 
@@ -293,6 +303,44 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip_returns_seek_for_the_clicked_fraction_at_nonzero_origin() {
         paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Regression test for #992: under the previous [`MinimapSizing::Fill`]
+    /// sizing, a short file in a tall strip resolved to a row pitch of up
+    /// to `MAX_ROW_PITCH` cell rows, but `draw_minimap` only ever painted
+    /// the first cell row of each band — leaving `pitch - 1` blank cell
+    /// rows between every painted row, growing as the file got shorter.
+    /// TUI now uses `FixedPitch(1.0)`: exactly one cell row per minimap
+    /// row, tiled top-down with no gaps, regardless of strip height.
+    #[test]
+    fn short_file_in_a_tall_strip_paints_contiguous_rows_no_gaps() {
+        let mm = eight_by_four(); // 8 lines, 2 row groups of 4 lines each
+        let area = Rect::new(0, 0, 2, 20); // strip far taller than 2 rows
+        let mut buf = Buffer::empty(area);
+        let layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+
+        assert_eq!(layout.visible_lines.len(), 2);
+        assert_eq!(
+            layout.visible_lines[0].bounds.height, 1.0,
+            "row pitch must be exactly one cell row, not stretched toward MAX_ROW_PITCH"
+        );
+        assert_eq!(layout.visible_lines[1].bounds.height, 1.0);
+        assert_eq!(layout.visible_lines[0].bounds.y, 0.0);
+        assert_eq!(
+            layout.visible_lines[1].bounds.y, 1.0,
+            "row 1 must sit directly below row 0 with no gap"
+        );
+
+        // Both painted rows must actually carry braille glyphs (row 1 is
+        // all-whitespace, so it paints the blank-braille U+2800 glyph, not
+        // an untouched space) -- contiguous, with no blank cell row
+        // painted between them.
+        assert_ne!(cell_char(&buf, 0, 0), ' ');
+        assert_ne!(cell_char(&buf, 0, 1), ' ');
+        // The rest of the tall strip stays untouched: a short file
+        // top-aligns instead of stretching to fill it (unchanged from
+        // `Fill`'s own top-align behaviour).
+        assert_eq!(cell_char(&buf, 0, 2), ' ');
     }
 
     #[test]
