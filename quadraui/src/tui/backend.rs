@@ -52,10 +52,10 @@ use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, ColorDepth};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, CommandLine, DragState,
-    DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
-    Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame,
-    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, Color, CommandLine,
+    DragState, DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
+    PlatformServices, Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome,
+    TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding` is only referenced by `#[cfg(test)]` code below (the rest of
 // this file matches already-parsed `Accelerator`s) — gate the import the
@@ -2342,6 +2342,22 @@ impl Backend for TuiBackend {
         self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
     }
 
+    fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
+        let area = q_rect_to_ratatui(rect);
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_solid_fill called outside enter_frame_scope");
+        crate::tui::draw_solid_fill(frame.buffer_mut(), area, color);
+        // #492: chrome-only paint (no text of its own) — only "observable"
+        // via a registered zone, mirroring `draw_terminal_divider`'s
+        // identical registration above. Callers that need a *semantic*
+        // id for click routing (e.g. `AppShell`'s divider) register their
+        // own zone on top of this one; this fixed id just proves the
+        // frame isn't the no-op trait default silently dropping the call
+        // (C0 paint smoke, contract §5b).
+        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
+    }
+
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -3361,6 +3377,7 @@ mod tests {
         }
         fn draw_terminal(&mut self, _r: QRect, _t: &TerminalPrim) {}
         fn draw_terminal_divider(&mut self, _r: QRect) {}
+        fn draw_solid_fill(&mut self, _r: QRect, _c: Color) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
         fn command_line_layout(

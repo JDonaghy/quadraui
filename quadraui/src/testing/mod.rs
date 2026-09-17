@@ -954,6 +954,9 @@ impl crate::Backend for RecordingBackend {
     fn draw_terminal_divider(&mut self, _r: Rect) {
         self.record("draw_terminal_divider");
     }
+    fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
+        self.record("draw_solid_fill");
+    }
     fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {
         self.record("draw_text_display");
     }

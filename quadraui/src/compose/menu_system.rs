@@ -891,6 +891,7 @@ mod tests {
         }
         fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
         fn draw_terminal_divider(&mut self, _r: Rect) {}
+        fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
         fn command_line_layout(

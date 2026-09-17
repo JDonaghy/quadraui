@@ -762,28 +762,18 @@ impl AppShell {
         }
 
         if let Some(divider_bounds) = layout.divider_bounds {
-            let row_text = " ".repeat(divider_bounds.width.ceil() as usize);
-            let rows = (divider_bounds.height / lh).ceil() as usize;
-            for row in 0..rows {
-                let row_y = divider_bounds.y + row as f32 * lh;
-                let row_rect = Rect::new(divider_bounds.x, row_y, divider_bounds.width, lh);
-                let divider_bar = StatusBar {
-                    id: WidgetId::new("app-shell:divider"),
-                    left_segments: vec![StatusBarSegment {
-                        text: row_text.clone(),
-                        fg: Color::rgb(100, 100, 110),
-                        bg: Color::rgb(100, 100, 110),
-                        bold: false,
-                        action_id: None,
-                    }],
-                    right_segments: vec![],
-                };
-                let _ = backend.draw_status_bar_interactive(
-                    row_rect,
-                    &divider_bar,
-                    &InteractionState::new(),
-                );
-            }
+            // #996: one fill over the whole rect, not N stacked one-row
+            // `StatusBar`s. The old per-row loop was exact on a cell grid
+            // (rows abut by construction) but wrong on a pixel backend,
+            // where `draw_status_bar_interactive` fills only
+            // `current_line_height` regardless of the row rect's own
+            // height — every row painted short of its own pitch and the
+            // gaps between rows rendered as a dashed line. There is no
+            // text, no segments, and no interaction beyond the drag zone
+            // `register_chrome_zones` already registered above, so a
+            // plain solid fill is both correct on every backend and
+            // strictly cheaper than N status-bar layouts per frame.
+            backend.draw_solid_fill(divider_bounds, Color::rgb(100, 100, 110));
         }
 
         layout
@@ -1704,6 +1694,38 @@ mod tests {
         assert_eq!(s.sidebar_width(), s.min_sidebar_width);
         s.set_sidebar_width(9999.0);
         assert_eq!(s.sidebar_width(), s.max_sidebar_width);
+    }
+
+    // ── Render ───────────────────────────────────────────────────────
+
+    /// #996: the divider used to be painted as N stacked one-row
+    /// `StatusBar`s via `draw_status_bar_interactive` — exact on a cell
+    /// grid, wrong on a pixel backend that doesn't honor the row rect's
+    /// height (see `Backend::draw_solid_fill`'s doc for the full story).
+    /// `render()` must now paint the divider with exactly one
+    /// `draw_solid_fill` call over the whole `divider_bounds`, not a
+    /// loop of `draw_status_bar_interactive` calls.
+    #[test]
+    fn render_paints_the_divider_with_one_solid_fill_call() {
+        let s = shell();
+        let mut backend = RecordingBackend::new();
+
+        let layout = s.render(&mut backend, area());
+
+        assert!(
+            layout.divider_bounds.is_some(),
+            "this shell shape should have a divider"
+        );
+        assert_eq!(
+            backend
+                .calls
+                .iter()
+                .filter(|&&c| c == "draw_solid_fill")
+                .count(),
+            1,
+            "divider should be painted with exactly one draw_solid_fill call, got: {:?}",
+            backend.calls
+        );
     }
 
     // ── Resize drag ─────────────────────────────────────────────────

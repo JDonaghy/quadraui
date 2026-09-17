@@ -3353,6 +3353,17 @@ impl Backend for GtkBackend {
         self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
     }
 
+    /// #996: a pixel backend can honor `rect` exactly, unlike the old
+    /// per-row `StatusBar` hack this replaces — see
+    /// `Backend::draw_solid_fill`'s doc for why that hack produced a
+    /// dashed divider here specifically.
+    fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
+        self.surface_fill_rect(rect, color);
+        // #492: chrome-only paint (no text of its own) — see
+        // `TuiBackend::draw_solid_fill`'s identical registration for why.
+        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
+    }
+
     /// #810: shared text-display painting lives in
     /// [`crate::primitives::text_display::paint`] now — see that fn's
     /// doc for the divergence (Windows's bold-span support) resolved

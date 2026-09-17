@@ -2950,6 +2950,16 @@ impl Backend for WinBackend {
         let _ = rect;
     }
 
+    /// #996: see [`Backend::draw_solid_fill`]'s doc — a pixel backend
+    /// can honor `rect` exactly via `NativeSurface::surface_fill_rect`,
+    /// which already degrades to a no-op when no surface is attached
+    /// (see its own doc), so this can call it unconditionally — same
+    /// shape as [`Self::draw_focus_ring`] above.
+    fn draw_solid_fill(&mut self, rect: Rect, color: crate::Color) {
+        self.surface_fill_rect(rect, color);
+        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
+    }
+
     /// #30: real Direct2D/DirectWrite rasteriser via `win::text_display`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
     /// for the "surface not attached yet" fallback posture.

@@ -2307,6 +2307,14 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
     }
+    /// #996: see `Backend::draw_solid_fill`'s doc — a pixel backend can
+    /// honor `rect` exactly via `NativeSurface::surface_fill_rect`.
+    fn draw_solid_fill(&mut self, rect: Rect, color: Color) {
+        self.surface_fill_rect(rect, color);
+        // #492: chrome-only paint (no text of its own) — see
+        // `TuiBackend::draw_solid_fill`'s identical registration for why.
+        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
+    }
     /// #810: shared text-display painting lives in
     /// [`crate::primitives::text_display::paint`] now — see that fn's
     /// doc for the divergence resolved while unifying
