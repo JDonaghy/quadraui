@@ -5576,8 +5576,8 @@ fn bottom_panel_closing_both_tabs_hides_the_panel() {
 // `BottomPanelDemo::config()` also registers one `BottomBand` (`band:status`)
 // via `ShellConfig::with_bottom_bands` — separate from the tabbed panel
 // above it. These tests exercise the real `ShellApp -> ShellAdapter ->
-// AppShell::layout` path so paint (`render_content`'s `bottom_band_bounds`
-// lookup) and the runtime toggle (the demo's `s` keybinding, which drives
+// AppShell::layout` path so paint (the demo's `render_bottom_band` hook)
+// and the runtime toggle (the demo's `s` keybinding, which drives
 // `ctx.shell_mut().set_bottom_band_visible`) agree with each other.
 
 #[test]

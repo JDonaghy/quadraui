@@ -262,3 +262,49 @@ fn editor_exhaustive_struct_literal_still_compiles() {
     assert!(ed.is_active);
     assert_eq!(ed.tabstop, 4);
 }
+
+/// `AppShellLayout`'s exhaustive struct literal, transcribed from vimcode's
+/// `render.rs::bare_shell_layout()` — field-for-field, and pointedly with
+/// no `..base` (`AppShellLayout` has no `Default` impl):
+///
+/// ```text
+/// $ grep -rn "AppShellLayout {" ~/src/vimcode/src ~/src/coord-tui/src
+/// /home/john/src/vimcode/src/render.rs:22108:    quadraui::AppShellLayout {
+/// /home/john/src/vimcode/src/tui_main/shell_app.rs:1844:    quadraui::AppShellLayout {
+/// ```
+///
+/// (The second hit, `shell_app.rs:1844`, uses `..layout.clone()` and is
+/// unaffected by field-list growth either way — only `bare_shell_layout()`
+/// is exhaustive.)
+///
+/// Issue #997 first tried to grow `AppShellLayout` by a
+/// `bottom_band_bounds: Vec<(WidgetId, Rect)>` field for its N-independent-
+/// bottom-bands feature and, caught at review, found this exact literal
+/// would break with `E0063`. The fix moved bottom-band bounds off
+/// `AppShellLayout` entirely — read via [`quadraui::compose::app_shell::AppShell::bottom_band_bounds`]
+/// after `layout`/`render`, or painted via the new
+/// `ShellApp::render_bottom_band` hook (a trait method with a default
+/// no-op implementation, so existing `ShellApp` implementors are
+/// unaffected) — instead of widening this struct's field list. This test
+/// is what catches the next attempt to do it the breaking way, before it
+/// costs a merge-gate round trip.
+#[test]
+fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
+    use quadraui::{AppShellLayout, Rect};
+
+    let layout = AppShellLayout {
+        window_bounds: Rect::new(0.0, 0.0, 1400.0, 900.0),
+        title_bar_bounds: None,
+        activity_bar_bounds: Rect::default(),
+        sidebar_header_bounds: None,
+        sidebar_content_bounds: None,
+        divider_bounds: None,
+        main_content_bounds: Rect::new(0.0, 0.0, 1400.0, 900.0),
+        bottom_panel_bounds: None,
+        command_line_bounds: None,
+        status_bar_bounds: None,
+    };
+
+    assert_eq!(layout.main_content_bounds.width, 1400.0);
+    assert!(layout.bottom_panel_bounds.is_none());
+}

@@ -74,7 +74,7 @@ pub struct PanelDefinition {
 /// [`BottomPanelController`]: crate::compose::bottom_panel::BottomPanelController
 #[derive(Debug, Clone, PartialEq)]
 pub struct BottomBand {
-    /// Identifies this band in [`AppShellLayout::bottom_band_bounds`] and
+    /// Identifies this band in [`AppShell::bottom_band_bounds`] and
     /// in [`AppShell::set_bottom_band_visible`] / [`AppShell::set_bottom_band_height`].
     pub id: WidgetId,
     /// Whether this band currently occupies space. `false` removes it
@@ -122,6 +122,17 @@ pub enum AppShellEvent {
 }
 
 /// Layout bounds returned by [`AppShell::render`] and [`AppShell::layout`].
+///
+/// Bottom-band bounds (issue #997, [`BottomBand`]) are deliberately **not**
+/// a field here: `AppShellLayout` is an all-`pub`-field struct that a real
+/// downstream consumer (vimcode's `render.rs::bare_shell_layout()`) builds
+/// with an exhaustive literal — no `..base`. Rust has no way to grow such a
+/// struct's field list without breaking that call site (see
+/// `quadraui/tests/downstream_struct_literals.rs`'s module doc for the full
+/// explanation and `docs/PRIMITIVE_RULES.md` rule 8). Bottom-band bounds
+/// are exposed additively instead, the same way #833 and #968 grew
+/// `TextInput`/`Editor` without touching their field lists: call
+/// [`AppShell::bottom_band_bounds`] after `layout`/`render` to read them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppShellLayout {
     /// The full window/viewport rect this layout was computed against —
@@ -137,15 +148,6 @@ pub struct AppShellLayout {
     pub divider_bounds: Option<Rect>,
     pub main_content_bounds: Rect,
     pub bottom_panel_bounds: Option<Rect>,
-    /// Resolved bounds for every currently-`visible` [`BottomBand`]
-    /// registered via [`AppShell::with_bottom_bands`], in the same
-    /// bottom-up order the config list was given (index 0 = flush against
-    /// the bottom edge of the main content column). Bands with
-    /// `visible == false` have no entry here — they occupy no space this
-    /// frame, so there is nothing to hand back. Empty when
-    /// `with_bottom_bands` was never called, so nothing that predates
-    /// this field changes behavior (#997).
-    pub bottom_band_bounds: Vec<(WidgetId, Rect)>,
     pub command_line_bounds: Option<Rect>,
     pub status_bar_bounds: Option<Rect>,
 }
@@ -193,6 +195,20 @@ pub struct AppShell {
     /// see [`BottomBand`]'s doc for the stacking order and the
     /// backward-compat guarantee.
     bottom_bands: Vec<BottomBand>,
+    /// Resolved bounds for every currently-`visible` [`BottomBand`] from
+    /// the last [`Self::layout`]/[`Self::render`] call, in the same
+    /// bottom-up order `bottom_bands` was given (index 0 = flush against
+    /// the bottom edge of the main content column). Bands with
+    /// `visible == false` have no entry — they occupy no space that frame.
+    /// Read via [`Self::bottom_band_bounds`].
+    ///
+    /// This lives on `AppShell`, not as a field on the returned
+    /// [`AppShellLayout`], deliberately: `AppShellLayout` is an
+    /// all-`pub`-field struct a real downstream consumer builds with an
+    /// exhaustive literal (see that struct's doc), so growing its field
+    /// list is a breaking change. `RefCell` for the same reason as
+    /// `cached_activity_hits` below — `layout`/`render` take `&self`.
+    cached_bottom_band_bounds: RefCell<Vec<(WidgetId, Rect)>>,
     /// Cached hit regions from the last `render()` call. `handle()`
     /// dispatches clicks against these so paint and click agree on
     /// row positions — the structural fix for the GTK ACTIVITY_ROW_PX
@@ -249,6 +265,7 @@ impl AppShell {
             has_status_bar: false,
             bottom_panel_drag_offset: None,
             bottom_bands: Vec::new(),
+            cached_bottom_band_bounds: RefCell::new(Vec::new()),
             cached_activity_hits: RefCell::new(Vec::new()),
             cached_activity_bar_bounds: RefCell::new(None),
             activity_keyboard_focused: false,
@@ -584,10 +601,23 @@ impl AppShell {
 
     /// The currently-registered bottom bands, in bottom-up stacking order
     /// (see [`BottomBand`]). Includes bands with `visible == false` — use
-    /// [`AppShellLayout::bottom_band_bounds`] to see which ones actually
-    /// occupied space in the last computed layout.
+    /// [`Self::bottom_band_bounds`] to see which ones actually occupied
+    /// space in the last computed layout.
     pub fn bottom_bands(&self) -> &[BottomBand] {
         &self.bottom_bands
+    }
+
+    /// Resolved bounds for every currently-`visible` [`BottomBand`], from
+    /// the most recent [`Self::layout`] or [`Self::render`] call, in the
+    /// same bottom-up order `bottom_bands` was given (index 0 = flush
+    /// against the bottom edge of the main content column). Bands with
+    /// `visible == false` have no entry — they occupy no space that
+    /// frame. Empty if `layout`/`render` was never called, or if
+    /// [`Self::with_bottom_bands`] was never used.
+    ///
+    /// Not a field on [`AppShellLayout`] — see that struct's doc for why.
+    pub fn bottom_band_bounds(&self) -> Vec<(WidgetId, Rect)> {
+        self.cached_bottom_band_bounds.borrow().clone()
     }
 
     /// Look up one registered band by id.
@@ -1126,6 +1156,7 @@ impl AppShell {
             };
             let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                 carve_bottom_chrome(main_bounds);
+            *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
             return AppShellLayout {
                 window_bounds: area,
                 title_bar_bounds,
@@ -1135,7 +1166,6 @@ impl AppShell {
                 divider_bounds: None,
                 main_content_bounds: main_bounds,
                 bottom_panel_bounds,
-                bottom_band_bounds,
                 command_line_bounds,
                 status_bar_bounds,
             };
@@ -1165,6 +1195,7 @@ impl AppShell {
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
                 let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                     carve_bottom_chrome(main_bounds);
+                *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
 
                 AppShellLayout {
                     window_bounds: area,
@@ -1175,7 +1206,6 @@ impl AppShell {
                     divider_bounds: Some(div_bounds),
                     main_content_bounds: main_bounds,
                     bottom_panel_bounds,
-                    bottom_band_bounds,
                     command_line_bounds,
                     status_bar_bounds,
                 }
@@ -1196,6 +1226,7 @@ impl AppShell {
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
                 let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                     carve_bottom_chrome(main_bounds);
+                *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
 
                 AppShellLayout {
                     window_bounds: area,
@@ -1206,7 +1237,6 @@ impl AppShell {
                     divider_bounds: Some(div_bounds),
                     main_content_bounds: main_bounds,
                     bottom_panel_bounds,
-                    bottom_band_bounds,
                     command_line_bounds,
                     status_bar_bounds,
                 }
@@ -2428,14 +2458,14 @@ mod tests {
         BottomBand::new(WidgetId::new(id), height_lh)
     }
 
-    /// With no bands registered, `bottom_band_bounds` stays empty and the
+    /// With no bands registered, `bottom_band_bounds()` stays empty and the
     /// existing single-drawer layout is unaffected — the whole point of
     /// making this additive (#997).
     #[test]
     fn no_bands_by_default_layout_unchanged() {
         let s = full_chrome_shell();
         let l = s.layout(area(), 1.0);
-        assert!(l.bottom_band_bounds.is_empty());
+        assert!(s.bottom_band_bounds().is_empty());
         assert!(l.bottom_panel_bounds.is_some());
     }
 
@@ -2445,10 +2475,11 @@ mod tests {
     fn bands_stack_bottom_up_in_list_order() {
         let s = shell().with_bottom_bands(vec![band("band:wildmenu", 1.0), band("band:qf", 3.0)]);
         let l = s.layout(area(), 1.0);
-        assert_eq!(l.bottom_band_bounds.len(), 2);
+        let bands = s.bottom_band_bounds();
+        assert_eq!(bands.len(), 2);
 
-        let (id0, r0) = &l.bottom_band_bounds[0];
-        let (id1, r1) = &l.bottom_band_bounds[1];
+        let (id0, r0) = &bands[0];
+        let (id1, r1) = &bands[1];
         assert_eq!(*id0, WidgetId::new("band:wildmenu"));
         assert_eq!(*id1, WidgetId::new("band:qf"));
 
@@ -2476,8 +2507,9 @@ mod tests {
         hidden.visible = false;
         let s = shell().with_bottom_bands(vec![band("band:wildmenu", 1.0), hidden]);
         let l = s.layout(area(), 1.0);
-        assert_eq!(l.bottom_band_bounds.len(), 1);
-        assert_eq!(l.bottom_band_bounds[0].0, WidgetId::new("band:wildmenu"));
+        let bands = s.bottom_band_bounds();
+        assert_eq!(bands.len(), 1);
+        assert_eq!(bands[0].0, WidgetId::new("band:wildmenu"));
 
         // Main content only lost the visible band's height, not both.
         let baseline = shell().layout(area(), 1.0).main_content_bounds.height;
@@ -2494,8 +2526,9 @@ mod tests {
         let bp = l
             .bottom_panel_bounds
             .expect("full_chrome_shell has a panel");
-        assert_eq!(l.bottom_band_bounds.len(), 1);
-        let (_, band_rect) = &l.bottom_band_bounds[0];
+        let bands = s.bottom_band_bounds();
+        assert_eq!(bands.len(), 1);
+        let (_, band_rect) = &bands[0];
 
         // Band sits below the panel, flush with the main column's original
         // bottom edge; the panel sits directly above the band.
@@ -2513,12 +2546,14 @@ mod tests {
 
         assert!(s.set_bottom_band_visible(&id, false));
         assert!(!s.bottom_band(&id).unwrap().visible);
-        assert!(s.layout(area(), 1.0).bottom_band_bounds.is_empty());
+        s.layout(area(), 1.0);
+        assert!(s.bottom_band_bounds().is_empty());
 
         assert!(s.set_bottom_band_visible(&id, true));
         assert!(s.set_bottom_band_height(&id, 5.0));
         assert_eq!(s.bottom_band(&id).unwrap().height_lh, 5.0);
-        assert_eq!(s.layout(area(), 1.0).bottom_band_bounds[0].1.height, 5.0);
+        s.layout(area(), 1.0);
+        assert_eq!(s.bottom_band_bounds()[0].1.height, 5.0);
 
         let unknown = WidgetId::new("band:nope");
         assert!(!s.set_bottom_band_visible(&unknown, true));
@@ -2532,8 +2567,9 @@ mod tests {
     fn oversized_band_clamps_to_available_height() {
         let s = shell().with_bottom_bands(vec![band("band:huge", 9999.0)]);
         let l = s.layout(area(), 1.0);
-        assert_eq!(l.bottom_band_bounds.len(), 1);
+        let bands = s.bottom_band_bounds();
+        assert_eq!(bands.len(), 1);
         assert_eq!(l.main_content_bounds.height, 0.0);
-        assert!(l.bottom_band_bounds[0].1.height > 0.0);
+        assert!(bands[0].1.height > 0.0);
     }
 }

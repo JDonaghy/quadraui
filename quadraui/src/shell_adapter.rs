@@ -274,6 +274,13 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         } else {
             self.app.render_content(backend, &layout);
         }
+
+        // #997: independently-gated bottom bands render after main content,
+        // in bottom-up stacking order. No-op for apps that never called
+        // `ShellConfig::with_bottom_bands` (empty by default).
+        for (id, bounds) in self.shell.bottom_band_bounds() {
+            self.app.render_bottom_band(backend, &id, bounds);
+        }
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
