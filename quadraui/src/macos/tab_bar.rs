@@ -707,6 +707,30 @@ mod tests {
         make_font("Menlo", FONT_SIZE).expect("Menlo installed")
     }
 
+    /// A backend whose *editor* and *chrome* fonts are both this
+    /// module's `font()`.
+    ///
+    /// Issue #1003 moved the tab bar onto the chrome font
+    /// (`ChromePrimitive::TabBar`): `draw_tab_bar`/`draw_tab_bar_icons`
+    /// and their no-paint `tab_bar_layout*` twins now measure and paint
+    /// through `MacBackend::chrome_font`, which `MacBackend::new` seeds
+    /// with the ~11pt **system UI** font. A harness that set only the
+    /// editor font would therefore paint at a size no assertion here
+    /// knows about, while the `mac_tab_bar_layout*`/`mac_tab_icon_extras`
+    /// expectations several tests compute directly still used `font()` —
+    /// the two would disagree about every slot boundary and glyph
+    /// position. Setting both keeps every assertion in this module about
+    /// tab-bar geometry at a known `FONT_SIZE`, rather than about
+    /// whichever metrics the system UI font happens to have on the
+    /// running host. Same fix, same reason, as
+    /// `macos::status_bar`'s `backend_with_test_fonts` (#963).
+    fn backend_with_test_fonts() -> MacBackend {
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_chrome_font(font());
+        backend
+    }
+
     fn sample_bar() -> TabBar {
         TabBar {
             id: WidgetId::new("tabs"),
@@ -746,8 +770,7 @@ mod tests {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let hits = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -974,8 +997,7 @@ mod tests {
         let bar = sample_bar();
         let (_surface, painted) = paint_via_backend(&bar, None);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let backend = backend_with_test_fonts();
         let computed = backend.tab_bar_layout(QRect::new(0.0, 0.0, W as f32, H as f32), &bar);
 
         assert_eq!(painted.slot_positions, computed.slot_positions);
@@ -1065,8 +1087,7 @@ mod tests {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let hits = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -1162,8 +1183,7 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
         let (_surface, painted) = paint_icons_via_backend(&bar, &icons, None);
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
 
         // `tab_bar_layout_icons` is the no-paint twin: it must report
         // exactly what `draw_tab_bar_icons` painted (the load-bearing
@@ -1485,8 +1505,7 @@ mod tests {
             show_tab_close: true,
             compact: false,
         };
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             let _ = b.draw_tab_bar(QRect::new(SIDEBAR_W, 0.0, W as f32, H as f32), &bar, None);
@@ -1525,8 +1544,7 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
         let bar = sample_bar();
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
         let hits = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -1557,8 +1575,7 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
         let bar = sample_bar();
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
         let painted = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -1637,8 +1654,7 @@ mod tests {
         );
         let (rel_start, rel_end) = bar_relative.right_segment_bounds[0];
 
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
+        let mut backend = backend_with_test_fonts();
         backend.begin_frame(Viewport::new(canvas_w as f32, H as f32, 1.0));
         let hits = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {

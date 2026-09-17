@@ -6283,13 +6283,37 @@ mod tests {
     /// wildly different *editor* font sizes with `ui_font` left at its
     /// default — the painted extent must be identical — then change
     /// `ui_font` alone as a positive control and see the extent move.
+    ///
+    /// The one place this can't copy its GTK twin verbatim is the row
+    /// *geometry*. `GtkBackend` is **told** its metrics (`current_line_height`
+    /// / `current_char_width` are pushed in by the host), so swapping the
+    /// Pango layout's font description there changes only the glyphs.
+    /// `MacBackend` **derives** them, inside `set_editor_font` — and row
+    /// pitch (`line_height * 1.4`) plus the leaf row's own horizontal
+    /// chevron reservation (`macos::tree::draw_tree`'s
+    /// `cursor_x += line_height * 0.8`) both read that derived value, by
+    /// design: row pitch tracking the editor line height is the
+    /// deliberately-deferred half of #624/#1003 (see
+    /// `MacBackend::draw_tree`'s comment), not part of the font swap under
+    /// test. So the two cached metrics are pinned to fixed values after
+    /// each `set_editor_font`, leaving the *glyph font* as the only thing
+    /// that varies between calls. Without that pin, a `Menlo 60` editor
+    /// font alone pushes row 0's height past the surface (the rasteriser
+    /// then skips the clipped row entirely) and shifts the label's start
+    /// x by ~40px — the test would swing on row layout, never reaching
+    /// the question it was written to ask.
     #[test]
     fn draw_tree_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
         use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
 
         const W: u32 = 800;
-        const H: u32 = 40;
+        /// Tall enough for a whole `PINNED_LINE_HEIGHT * 1.4` row plus the
+        /// 60pt positive-control glyph, so nothing under test is clipped.
+        const H: u32 = 120;
+        /// Pinned row metrics — see this test's doc comment.
+        const PINNED_LINE_HEIGHT: f64 = 60.0;
+        const PINNED_CHAR_WIDTH: f64 = 8.0;
 
         fn row_text_extent(editor: (&str, f32), ui_font: Option<&str>) -> u32 {
             let surface = BitmapSurface::new(W, H);
@@ -6297,6 +6321,10 @@ mod tests {
 
             let mut b = MacBackend::new();
             Backend::set_editor_font(&mut b, editor.0, editor.1);
+            // Pin row geometry *after* the editor font installed its own
+            // derived metrics — see this test's doc comment for why.
+            b.set_current_line_height(PINNED_LINE_HEIGHT);
+            b.set_current_char_width(PINNED_CHAR_WIDTH);
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut b, f);
             }
@@ -6335,14 +6363,19 @@ mod tests {
             });
             b.end_frame();
 
-            // Rightmost non-white pixel in row 0's vertical span — a
-            // proxy for the painted label's glyph extent. Row 0 starts
-            // at y=0 and `current_line_height` is comfortably above 10px
-            // for every font under test here.
-            let y = 10u32;
+            // Rightmost non-white pixel anywhere on the surface — a
+            // proxy for the painted label's glyph extent. The whole
+            // surface is scanned rather than one chosen scanline
+            // because the label is vertically centred in its row using
+            // the *chrome* font's measured height, so an 11pt default
+            // and a 60pt `ui_font` put ink on completely different rows;
+            // a fixed probe line would measure "is there a glyph at
+            // y=N", not "how wide is the glyph". Row background and
+            // area fill are both white (see the theme above), so only
+            // glyph ink can trip this.
             (0..W)
                 .rev()
-                .find(|&x| surface.pixel(x, y) != (255, 255, 255, 255))
+                .find(|&x| (0..H).any(|y| surface.pixel(x, y) != (255, 255, 255, 255)))
                 .unwrap_or(0)
         }
 

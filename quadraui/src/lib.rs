@@ -168,6 +168,17 @@ mod a11y;
 pub mod diagnostics;
 pub mod diff;
 pub mod focus;
+// Not under `primitives/`, for the same reason `a11y` isn't (see the
+// comment above `mod a11y`): `font_role` classifies *which font* each
+// primitive paints in (issue #1003). It has no `Layout`, no `hit_test`
+// and no `Backend::draw_*` method of its own, so it is not a widget
+// primitive and must not inflate the primitive count
+// `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count` /
+// `root_readme_states_the_real_primitive_count` derive from
+// `primitives/mod.rs`'s `pub mod` list. It stays a `pub mod` (unlike
+// `a11y`) because its module doc *is* the chrome-vs-editor policy every
+// pixel backend's `draw_*` methods are written against.
+pub mod font_role;
 pub mod frame;
 pub mod interaction;
 pub mod layout;
@@ -326,6 +337,7 @@ mod text_selection;
 pub use a11y::A11yInfo;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
+pub use font_role::{ChromePrimitive, FontRole};
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,
@@ -376,7 +388,6 @@ pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
     FindReplaceHit, FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
 };
-pub use primitives::font_role::{ChromePrimitive, FontRole};
 pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,

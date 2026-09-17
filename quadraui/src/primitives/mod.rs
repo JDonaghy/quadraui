@@ -24,7 +24,6 @@ pub mod diff_view;
 pub mod drop_zone;
 pub mod editor;
 pub mod find_replace;
-pub mod font_role;
 pub mod form;
 pub mod image;
 pub mod layout_metrics;
