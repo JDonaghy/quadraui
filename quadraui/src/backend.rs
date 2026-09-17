@@ -2349,6 +2349,26 @@ pub trait Backend: sealed::Sealed {
     /// `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
     /// portability risk, not a precedent to follow.
     fn draw_terminal_divider(&mut self, rect: Rect);
+    /// Fill `rect` edge-to-edge with a solid `color` — no text, no
+    /// segments, no per-row seams. For chrome elements that are a plain
+    /// color block (e.g. `AppShell`'s sidebar/editor resize divider),
+    /// not a widget.
+    ///
+    /// Added by issue #996: the divider used to be faked as N stacked
+    /// one-row `StatusBar`s (`fg == bg`, blank text) — exact on a cell
+    /// grid, where consecutive rows abut by construction, but wrong on a
+    /// pixel backend, where `draw_status_bar_interactive` fills only
+    /// `current_line_height` regardless of the row rect's own height, so
+    /// every row painted short of its own pitch and the gaps between
+    /// rows showed as a dashed line. A single fill over the *whole*
+    /// rect is exact on every backend and strictly cheaper than N
+    /// layouts per frame — use this instead of the `StatusBar` hack for
+    /// any future solid-fill chrome.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error and fills in a real rasteriser
+    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
+    fn draw_solid_fill(&mut self, rect: Rect, color: Color);
     /// Draw a `TextDisplay` (streaming-text panel — log viewer, output
     /// pane, YAML view, etc). No hit-region data is returned;
     /// `TextDisplay` itself is non-interactive (selection / scroll

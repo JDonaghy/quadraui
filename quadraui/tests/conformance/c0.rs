@@ -531,6 +531,19 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        method: "draw_solid_fill",
+        needle: None,
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            b.draw_solid_fill(
+                Rect::new(cw * 2.0, lh * 2.0, cw * 4.0, lh * 5.0),
+                Color::rgb(100, 100, 110),
+            );
+            let _ = area;
+        },
+    },
+    Case {
         method: "draw_focus_ring",
         needle: None,
         paint: |b, area| {

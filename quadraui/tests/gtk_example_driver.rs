@@ -14,7 +14,8 @@
 #![cfg(feature = "gtk")]
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
-use quadraui::{Key, Modifiers, NamedKey, Reaction, Theme, UiEvent};
+use quadraui::testing::ConformanceDriver;
+use quadraui::{Key, Modifiers, NamedKey, Reaction, Theme, UiEvent, WidgetId};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -157,6 +158,50 @@ fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
             .any(|t| t.contains("Tab=focus bar")),
         "main content hint should be painted: {:?}",
         driver.painted_texts()
+    );
+}
+
+/// Regression test for issue #996: the sidebar/editor resize divider used
+/// to be painted as N stacked one-row `StatusBar`s, and GTK's
+/// `draw_status_bar_interactive` fills only `current_line_height`
+/// regardless of the row rect's own height — so on GTK every row painted
+/// short of its own pitch and the gaps between rows rendered as a dashed
+/// line down the divider's full height. Sample pixel colors down the
+/// divider's registered zone (real geometry, not a hardcoded coordinate)
+/// and assert they're all identical, i.e. one solid fill top to bottom.
+#[test]
+fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, SHELL_W, SHELL_H);
+
+    let divider = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == WidgetId::new("app-shell:divider"))
+        .expect("AppShell::render should register the divider's chrome zone")
+        .bounds;
+    assert!(
+        divider.height > 8.0,
+        "divider should span most of the shell height, got {divider:?}"
+    );
+
+    let x = (divider.x + divider.width / 2.0).round() as i32;
+    let top = divider.y.round() as i32 + 1;
+    let bottom = (divider.y + divider.height).round() as i32 - 1;
+
+    let mut colors = std::collections::HashSet::new();
+    let mut y = top;
+    while y < bottom {
+        colors.insert(driver.pixel(x, y));
+        y += 2;
+    }
+
+    assert_eq!(
+        colors.len(),
+        1,
+        "divider must be one solid color top to bottom (a dashed divider \
+         samples more than one color across its height); sampled: {colors:?}"
     );
 }
 
@@ -767,4 +812,108 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
         !driver.screen_contains("ratio: 50% (H)"),
         "the status bar ratio should follow the divider away from 50%",
     );
+}
+
+// ─── draw_solid_fill: the #996 root-cause mechanism ─────────────────────
+//
+// `AppShellDemo`'s own line height happens to make `Backend::line_height()`
+// and the fill height `draw_status_bar_interactive` actually uses agree, so
+// the end-to-end `appshell_demo_resize_divider_is_solid_with_no_gaps` test
+// above can't by itself demonstrate the mechanism issue #996 describes: a
+// caller that hands `draw_status_bar_interactive` a row rect taller than
+// the backend's `current_line_height` silently gets back a shorter fill,
+// with no way to notice. This probe reproduces that mechanism directly —
+// pinning why `AppShell` had to stop depending on it for its divider, and
+// proving `Backend::draw_solid_fill` (the replacement) doesn't share the
+// defect.
+
+/// Paints one rect, taller than the backend's default line height, with
+/// each of the two candidate primitives — `draw_status_bar_interactive`
+/// (the old per-row divider hack's building block) and `draw_solid_fill`
+/// (issue #996's replacement) — side by side so a single frame can assert
+/// on both.
+struct SolidFillVsStatusBarProbe;
+
+/// Height of the probe rects — comfortably taller than any backend's
+/// default `current_line_height` so a fill that silently caps at
+/// `current_line_height` is unambiguously distinguishable from one that
+/// covers the whole rect.
+const PROBE_RECT_HEIGHT: f32 = 120.0;
+const PROBE_FILL_COLOR: quadraui::Color = quadraui::Color::rgb(100, 100, 110);
+
+impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn quadraui::Backend, _area: ()) {
+        use quadraui::{InteractionState, StatusBar, StatusBarSegment, WidgetId};
+
+        let status_bar_rect = quadraui::Rect::new(0.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
+        let bar = StatusBar {
+            id: WidgetId::new("probe:status-bar-fill"),
+            left_segments: vec![StatusBarSegment {
+                text: "    ".to_string(),
+                fg: PROBE_FILL_COLOR,
+                bg: PROBE_FILL_COLOR,
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let _ =
+            backend.draw_status_bar_interactive(status_bar_rect, &bar, &InteractionState::new());
+
+        let solid_fill_rect = quadraui::Rect::new(60.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
+        backend.draw_solid_fill(solid_fill_rect, PROBE_FILL_COLOR);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn quadraui::Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+/// `draw_status_bar_interactive` fills only `current_line_height`
+/// regardless of the row rect's own height (`quadraui::gtk::backend`'s
+/// `GtkBackend::draw_status_bar_interactive` measures its fill from
+/// `self.current_line_height`, never `rect.height`) — this is exactly the
+/// mechanism issue #996 identifies as unsafe for a caller that wants a
+/// tall, single-color rect. Sampling near the bottom of a
+/// `PROBE_RECT_HEIGHT`-tall rect must land outside the fill.
+#[test]
+fn draw_status_bar_interactive_does_not_fill_a_rect_taller_than_line_height() {
+    let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
+    let near_bottom_y = (PROBE_RECT_HEIGHT - 4.0) as i32;
+
+    assert_ne!(
+        driver.pixel(20, near_bottom_y),
+        (PROBE_FILL_COLOR.r, PROBE_FILL_COLOR.g, PROBE_FILL_COLOR.b),
+        "draw_status_bar_interactive should NOT have filled all the way to \
+         the bottom of a rect taller than current_line_height — if this \
+         starts failing, GtkBackend::draw_status_bar_interactive now \
+         honors rect.height and issue #996's secondary question is \
+         resolved (update this test to match, it's no longer pinning a \
+         defect)",
+    );
+}
+
+/// `Backend::draw_solid_fill` (issue #996's replacement primitive for
+/// `AppShell`'s divider) must fill the *whole* rect it's given — no
+/// `current_line_height` ceiling, no per-row seams. Sampling top, middle,
+/// and near the bottom of the same `PROBE_RECT_HEIGHT`-tall rect must all
+/// land on the fill color.
+#[test]
+fn draw_solid_fill_fills_a_rect_taller_than_line_height_completely() {
+    let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
+    let expected = (PROBE_FILL_COLOR.r, PROBE_FILL_COLOR.g, PROBE_FILL_COLOR.b);
+
+    for y in [
+        2,
+        (PROBE_RECT_HEIGHT / 2.0) as i32,
+        (PROBE_RECT_HEIGHT - 4.0) as i32,
+    ] {
+        assert_eq!(
+            driver.pixel(80, y),
+            expected,
+            "draw_solid_fill should cover the entire rect height, including y={y}",
+        );
+    }
 }
