@@ -2063,10 +2063,22 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_activity_bar called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_activity_bar requires set_current_font");
+        // Issue #1003: this is the mandatory, non-default `Backend`
+        // method — `AppShell::render` (`compose/app_shell.rs`) and
+        // `ScreenLayout::draw`'s `Surface::ActivityBar` arm
+        // (`frame.rs`) both call this method directly, never
+        // `draw_activity_bar_with_style`, whose own trait-level default
+        // just forwards back to this one. So this is the method real
+        // hosts actually reach, and it painted its icon glyph through
+        // `current_font` (the editor font) — the exact headline symptom
+        // this issue was filed over — even after
+        // `draw_activity_bar_with_style` below was fixed to read
+        // `chrome_font`. Route through `chrome_font` here too, matching
+        // that fix and every other chrome primitive's swap (see
+        // `draw_tree`'s comment). Unlike `current_font`, `chrome_font`
+        // is never `None` (seeded at construction — see its field doc),
+        // so there is no "no font yet" fallback to preserve.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx non-null inside frame scope. `super::activity_bar`'s
         // rasteriser is bar-relative by contract (issue #552) — it always
@@ -2116,7 +2128,10 @@ impl Backend for MacBackend {
         // the other 14 — a bar whose icon size tracked the user's
         // editor-font size, not the fixed chrome size every other chrome
         // primitive uses. `ChromePrimitive::ActivityBar` — see
-        // `draw_tree`'s comment for the swap.
+        // `draw_tree`'s comment for the swap. `draw_activity_bar` above
+        // (the mandatory, non-default method real hosts call — see its
+        // comment) needed the identical fix; this one is fixed too so
+        // the two methods agree.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx non-null inside frame scope. See `draw_activity_bar`
@@ -6447,6 +6462,105 @@ mod tests {
         assert!(
             w_huge_chrome > w_small_chrome * 2.0,
             "menu bar item width must grow with set_ui_font: {w_small_chrome} vs {w_huge_chrome}"
+        );
+    }
+
+    /// Issue #1003 regression test for `draw_activity_bar` — the
+    /// mandatory, non-default `Backend` method (see its own comment for
+    /// why `draw_activity_bar_with_style`, which already had an
+    /// equivalent guard's worth of review attention, doesn't cover this
+    /// path: `AppShell::render` and `ScreenLayout::draw`'s
+    /// `Surface::ActivityBar` arm both call this method directly, never
+    /// the styled one). Same shape as
+    /// `draw_tree_uses_ui_font_not_editor_font` above: paint the same
+    /// single-row activity bar under two wildly different *editor* font
+    /// sizes with `ui_font` left at its default — the painted icon
+    /// glyph's horizontal extent must be identical — then change
+    /// `ui_font` alone as a positive control and see it grow.
+    #[test]
+    fn draw_activity_bar_uses_ui_font_not_editor_font() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 60;
+
+        fn icon_extent(editor: (&str, f32), ui_font: Option<&str>) -> u32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(1.0, 1.0, 1.0, 1.0);
+
+            let mut b = MacBackend::new();
+            Backend::set_editor_font(&mut b, editor.0, editor.1);
+            if let Some(f) = ui_font {
+                Backend::set_ui_font(&mut b, f);
+            }
+            // White `tab_bar_bg`/`background`, black `inactive_fg`, so
+            // only glyph ink trips the pixel scan below — mirrors
+            // `draw_tree_uses_ui_font_not_editor_font`'s theme override.
+            b.set_current_theme(crate::Theme {
+                tab_bar_bg: Color::rgb(255, 255, 255),
+                background: Color::rgb(255, 255, 255),
+                foreground: Color::rgb(0, 0, 0),
+                inactive_fg: Color::rgb(0, 0, 0),
+                ..crate::Theme::default()
+            });
+            b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+            let bar = crate::ActivityBar {
+                id: WidgetId::new("test:activity-bar"),
+                top_items: vec![crate::ActivityItem {
+                    id: WidgetId::new("test:activity:item"),
+                    // `nerd_fonts_enabled` defaults to `false` (see
+                    // `MacBackend::new`), so the rasteriser paints
+                    // `fallback`, not `glyph` — a multi-character
+                    // fallback makes the width swing more visible than
+                    // a single glyph would.
+                    icon: crate::types::Icon::new("x", "WWWW"),
+                    tooltip: String::new(),
+                    is_active: false,
+                    is_keyboard_selected: false,
+                }],
+                bottom_items: vec![],
+                active_accent: None,
+                selection_bg: None,
+                is_keyboard_focused: false,
+            };
+            b.enter_frame_scope(surface.context_ptr(), |backend| {
+                backend.draw_activity_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar, None);
+            });
+            b.end_frame();
+
+            // Horizontal span between the leftmost and rightmost
+            // non-white pixel anywhere on the surface — a proxy for the
+            // painted icon glyph's width.
+            let mut min_x: Option<u32> = None;
+            let mut max_x: Option<u32> = None;
+            for x in 0..W {
+                for y in 0..H {
+                    if surface.pixel(x, y) != (255, 255, 255, 255) {
+                        min_x = Some(min_x.map_or(x, |m| m.min(x)));
+                        max_x = Some(max_x.map_or(x, |m| m.max(x)));
+                    }
+                }
+            }
+            match (min_x, max_x) {
+                (Some(lo), Some(hi)) => hi - lo,
+                _ => 0,
+            }
+        }
+
+        let small_editor_extent = icon_extent(("Menlo", 8.0), None);
+        let large_editor_extent = icon_extent(("Menlo", 60.0), None);
+        assert!(
+            small_editor_extent.abs_diff(large_editor_extent) <= 1,
+            "activity bar icon glyph extent must be editor-font-size independent: \
+             small_editor={small_editor_extent}, large_editor={large_editor_extent}"
+        );
+
+        let ui_font_extent = icon_extent(("Menlo", 8.0), Some("Helvetica 60"));
+        assert!(
+            ui_font_extent > small_editor_extent + 20,
+            "changing ui_font alone must visibly widen the painted activity bar icon: \
+             default_ui_font={small_editor_extent}, ui_font_Helvetica_60={ui_font_extent}"
         );
     }
 }

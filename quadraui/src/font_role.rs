@@ -81,9 +81,16 @@ pub enum ChromePrimitive {
 }
 
 impl ChromePrimitive {
-    /// Every classified chrome primitive — walked by the backend
-    /// conformance test so a new entry added here gets checked against
-    /// every registered pixel backend instead of just documented.
+    /// Every classified chrome primitive.
+    ///
+    /// Intended to be walked by a cross-backend conformance test so a
+    /// new entry added here gets checked against every registered pixel
+    /// backend instead of just documented — but that test does not
+    /// exist yet. Milestone #11 is the natural home for it (see issue
+    /// #1003); until it lands, this array is only exercised by the
+    /// unit tests in this module (duplicate-check, name round-trip),
+    /// which do not paint anything or compare against a second font.
+    /// Don't read this doc as "already enforced."
     pub const ALL: [ChromePrimitive; 13] = [
         ChromePrimitive::Tree,
         ChromePrimitive::List,
