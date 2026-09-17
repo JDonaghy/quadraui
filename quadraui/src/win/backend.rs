@@ -989,6 +989,18 @@ impl WinBackend {
     /// No `draw_*` rasteriser consumes this yet (see `chrome_dwrite`'s
     /// field doc); exposed now so a follow-up wiring chrome text onto it
     /// doesn't also need to add the accessor.
+    ///
+    /// Issue #1003 audit (ask #4): of the 13 `ChromePrimitive`s
+    /// (`crate::primitives::font_role`) — the same 16-GTK-method /
+    /// 14-macOS-gap list #1003 was filed over — Win-GUI wires **0**. Every
+    /// `draw_tree`/`draw_menu_bar`/`draw_status_bar_interactive`/etc.
+    /// still measures and paints through `self.current_char_width`/
+    /// `dwrite` (the *editor* font) exclusively; this field is built at
+    /// attach time and then never read. Bringing Win-GUI to parity is
+    /// out of this issue's scope (it targeted the GTK-vs-macOS drift
+    /// specifically) but is the next repeat this audit was meant to
+    /// flag — see #724, which added this field for exactly that
+    /// follow-up and hasn't landed the rasteriser wiring yet.
     #[cfg(target_os = "windows")]
     pub fn chrome_dwrite(&self) -> Option<&DWrite> {
         self.chrome_dwrite.as_ref()
