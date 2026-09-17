@@ -36,6 +36,59 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
     char::from_u32(code).unwrap_or(' ')
 }
 
+/// 4x4 ordered-dither (Bayer) threshold matrix, values `0..16` — used by
+/// [`dither_threshold_met`] to turn a per-dot *coverage fraction* into a
+/// boolean (issue #1007).
+///
+/// [`super::minimap`]'s density view used to decide "is this dot set?" with
+/// a boolean OR over the dot's source-column bucket (`any(|c|
+/// !c.is_whitespace())`), which saturates every dot from the end of a
+/// line's indent onward as soon as the bucket widens past one column
+/// (#1000 widened it from one column to several, which made the
+/// saturation worse, not better — every row of real code ran to the
+/// strip's right edge with no line-length signal at all). An ordered
+/// dither spreads that "is there *any* code here" boolean across many
+/// dots' worth of threshold instead: a sparsely-covered bucket only lights
+/// up the small subset of dot positions whose threshold value happens to
+/// be low, while a fully-covered bucket lights up every position — which
+/// is what produces a raggedy, VS-Code-like right edge instead of a solid
+/// wall.
+pub(crate) const BAYER4: [[u8; 4]; 4] =
+    [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/// Threshold a dot's coverage (`covered` non-whitespace source columns out
+/// of `bucket_width` total) against [`BAYER4`], indexed by the dot's own
+/// `(row, col)` position within the whole rendered grid (not just within
+/// its cell) so that the dither pattern tiles consistently across the
+/// entire minimap strip rather than repeating identically inside every
+/// cell.
+///
+/// Pure integer arithmetic — one multiply and one compare, no floating
+/// point, no lookahead, no per-call allocation (issue #1007 acceptance
+/// criterion 4). `row & 3` / `col & 3` fold any position onto the 4x4
+/// matrix; `bucket_width == 0` always returns `false` rather than dividing
+/// by zero.
+///
+/// A fully-covered bucket (`covered == bucket_width`) always returns
+/// `true`, since `bucket_width * 16 > bucket_width * 15` (`15` is
+/// [`BAYER4`]'s largest entry) for any `bucket_width > 0` — so a solid run
+/// of non-whitespace still paints solid, and an all-whitespace bucket
+/// (`covered == 0`) always returns `false`, since `0` is never greater
+/// than a non-negative product. Dithering only has any effect strictly
+/// *between* those two extremes.
+pub(crate) fn dither_threshold_met(
+    covered: usize,
+    bucket_width: usize,
+    row: usize,
+    col: usize,
+) -> bool {
+    if bucket_width == 0 {
+        return false;
+    }
+    let threshold = BAYER4[row & 3][col & 3] as usize;
+    covered * 16 > bucket_width * threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +113,64 @@ mod tests {
         assert_eq!(pack_braille_cell(|r, c| (r, c) == (3, 0)), '\u{2840}');
         // bit 7 -> (row 3, col 1)
         assert_eq!(pack_braille_cell(|r, c| (r, c) == (3, 1)), '\u{2880}');
+    }
+
+    // ── dither_threshold_met (issue #1007) ─────────────────────────────
+
+    #[test]
+    fn zero_coverage_never_meets_the_threshold() {
+        for row in 0..4 {
+            for col in 0..4 {
+                assert!(!dither_threshold_met(0, 6, row, col));
+            }
+        }
+    }
+
+    #[test]
+    fn zero_width_bucket_never_meets_the_threshold() {
+        assert!(!dither_threshold_met(0, 0, 0, 0));
+        assert!(!dither_threshold_met(5, 0, 0, 0));
+    }
+
+    #[test]
+    fn full_coverage_always_meets_the_threshold() {
+        // A fully-covered bucket must light up at every dot position,
+        // including the matrix's own largest threshold (15) -- otherwise
+        // a solid run of non-whitespace would still leave holes.
+        for row in 0..4 {
+            for col in 0..4 {
+                assert!(
+                    dither_threshold_met(6, 6, row, col),
+                    "full coverage must always set the dot at ({row}, {col})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn partial_coverage_sets_only_some_dot_positions() {
+        // 1-of-6 covered: only the positions whose Bayer threshold is low
+        // enough should light up, and it must not be all-or-nothing across
+        // the matrix -- that's the whole point of dithering a partially
+        // covered bucket instead of booleans-OR-ing it.
+        let set_count = (0..4)
+            .flat_map(|row| (0..4).map(move |col| (row, col)))
+            .filter(|&(row, col)| dither_threshold_met(1, 6, row, col))
+            .count();
+        assert!(
+            set_count > 0 && set_count < 16,
+            "expected a strict subset of the 16 dot positions to light up, got {set_count}/16"
+        );
+    }
+
+    #[test]
+    fn threshold_is_indexed_by_absolute_position_not_just_local_position() {
+        // Position (0, 0) and (4, 4) share the same `& 3` fold, so they
+        // must resolve identically -- confirms the matrix tiles rather
+        // than being looked up some other way.
+        assert_eq!(
+            dither_threshold_met(3, 6, 0, 0),
+            dither_threshold_met(3, 6, 4, 4)
+        );
     }
 }

@@ -4,10 +4,19 @@
 //! (`4` buffer lines per row, `2` columns per cell — [`LINES_PER_ROW`] /
 //! [`COLS_PER_CELL`]), lifting the bit-packing itself from
 //! [`super::braille`] rather than a second copy (see that module's docs
-//! for why one copy matters). The dot rule: a dot is set when its
-//! column-range contains a non-whitespace character — this is what
-//! produces the recognisable "shape of the code" VS Code's minimap is
-//! going for.
+//! for why one copy matters). The dot rule: a dot's *coverage fraction* —
+//! how much of its source-column bucket is non-whitespace — is
+//! thresholded through [`super::braille::dither_threshold_met`]'s ordered
+//! dither, not a plain boolean OR (issue #1007). A boolean OR over a
+//! bucket wider than one column saturates: as soon as *any* column in the
+//! bucket is non-whitespace the dot sets, so practically every dot from
+//! the end of a line's indent onward lights up and every row runs to the
+//! strip's right edge, destroying the one signal — line length — that
+//! makes a minimap read as a thumbnail of the code rather than a solid
+//! bar. Dithering spreads that decision across many dots' worth of
+//! threshold instead, so a sparsely-covered bucket only lights a few dot
+//! positions and a densely-covered one lights (almost) all of them —
+//! producing the ragged, length-tracking right edge VS Code's minimap has.
 //!
 //! Colour is one foreground per *cell*, read from
 //! [`crate::Minimap::syntax_spans`] — already aggregated to this exact
@@ -21,7 +30,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::braille::pack_braille_cell;
+use super::braille::{dither_threshold_met, pack_braille_cell};
 use super::{ratatui_color, set_cell};
 use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapSizing};
 use crate::theme::Theme;
@@ -212,6 +221,18 @@ fn cols_per_dot(cols_per_cell: usize) -> usize {
 /// shorter than the strip simply leaves the remaining dots clear, and a
 /// line longer than `width_cells * 2 * cols_per_dot(cols_per_cell)` is
 /// clipped rather than compressed — exactly what VS Code's minimap does.
+///
+/// The dot rule itself is a **coverage fraction**, not a boolean OR (issue
+/// #1007): `covered` counts the non-whitespace characters inside the
+/// dot's own `[c0, c1)` bucket — a plain per-dot scan, the same order of
+/// work the old `.any()` scan already paid, no new allocation — and
+/// [`dither_threshold_met`] thresholds that count against an ordered
+/// dither matrix keyed on the dot's own absolute position. At the
+/// (default) `cols_per_dot == 1` scale this is a no-op — a bucket of width
+/// one has no fractional coverage to dither, so the result is identical to
+/// the old `covered > 0` check — the behaviour change only appears once a
+/// host widens `cols_per_cell` (issue #1000) far enough that a bucket can
+/// be partially covered.
 fn braille_char_for_cell(
     row_lines: &[Option<Vec<char>>],
     col: usize,
@@ -225,10 +246,12 @@ fn braille_char_for_cell(
         };
         let dot_col = col * 2 + dc;
         let c0 = dot_col * cols_per_dot;
-        let c1 = c0 + cols_per_dot;
-        chars
-            .get(c0..c1.min(chars.len()))
-            .is_some_and(|s| s.iter().any(|c| !c.is_whitespace()))
+        if c0 >= chars.len() {
+            return false;
+        }
+        let c1 = (c0 + cols_per_dot).min(chars.len());
+        let covered = chars[c0..c1].iter().filter(|c| !c.is_whitespace()).count();
+        dither_threshold_met(covered, cols_per_dot, dr, dot_col)
     })
 }
 
@@ -727,10 +750,19 @@ mod tests {
     /// [`cols_per_dot`] helper, rounding `11` up to `6` and giving both a
     /// shared effective cell width of `2 * 6 = 12`: cell 4 covers exactly
     /// `[48, 60)`. This asserts that shared boundary directly — a source
-    /// column just inside the range (`55`) must set both a dot and its
-    /// span's colour in cell 4, and a source column just outside it
+    /// range fully inside it (`[48, 60)` itself) must set both a dot and
+    /// its span's colour in cell 4, and a source column just outside it
     /// (`47`) must set neither, proving the two lookups can't drift apart
     /// for an odd `cols_per_cell`.
+    ///
+    /// The "inside" case fills the *entire* `[48, 60)` bucket rather than
+    /// a single character (issue #1007: a lone non-whitespace character in
+    /// a multi-column bucket is no longer guaranteed to set its dot — that
+    /// coverage is now dithered — but full coverage of a bucket always
+    /// does, since [`super::braille::dither_threshold_met`]'s threshold
+    /// tops out below full scale). This keeps the test's actual target —
+    /// dot and colour ranges must agree — deterministic regardless of
+    /// which of #1007's two dot positions the dither happens to land on.
     #[test]
     fn odd_cols_per_cell_keeps_dot_and_colour_ranges_aligned() {
         let width_cells = 8;
@@ -741,7 +773,7 @@ mod tests {
         // must both be present.
         {
             let mut chars = vec![' '; 60];
-            chars[55] = 'x';
+            chars[48..60].fill('x');
             let text: String = chars.into_iter().collect();
             let mut mm = minimap_from(vec![&text], 8);
             mm.syntax_spans.push(MinimapSpan {
@@ -756,7 +788,7 @@ mod tests {
             assert_ne!(
                 cell_char(&buf, 4, 0),
                 '\u{2800}',
-                "column 55 is inside cell 4's [48, 60) range and must set a dot"
+                "a fully-covered [48, 60) bucket must set a dot in cell 4"
             );
             assert_eq!(
                 buf[(4u16, 0u16)].fg,
@@ -794,5 +826,164 @@ mod tests {
                 "column 47's span is outside cell 4's [48, 60) colour range and must not be found"
             );
         }
+    }
+
+    // ── issue #1007: density dithering fixes right-edge saturation ─────
+
+    /// Draws `lines` into a `width_cells`-wide, `rows`-tall strip at
+    /// `cols_per_cell` scale (down-sampling first if there are more than
+    /// `rows * LINES_PER_ROW` lines, exactly as a real host would via
+    /// [`crate::primitives::minimap::sample_lines`]) and returns, for each
+    /// painted row, the index of the last terminal-cell column whose
+    /// braille glyph is not blank (`U+2800`) — `None` for a row with no
+    /// content at all.
+    fn last_set_cell_per_row(
+        lines: &[&str],
+        width_cells: usize,
+        rows: usize,
+        cols_per_cell: usize,
+    ) -> Vec<Option<usize>> {
+        use crate::primitives::minimap::sample_lines;
+
+        let sampled = sample_lines(lines, rows * LINES_PER_ROW);
+        let total = lines.len();
+        let mm = minimap_from_sampled(sampled, total);
+
+        let area = Rect::new(0, 0, width_cells as u16, rows as u16);
+        let mut buf = Buffer::empty(area);
+        draw_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), cols_per_cell);
+
+        (0..rows as u16)
+            .map(|y| {
+                (0..width_cells as u16)
+                    .rev()
+                    .find(|&x| cell_char(&buf, x, y) != '\u{2800}')
+                    .map(|x| x as usize)
+            })
+            .collect()
+    }
+
+    fn minimap_from_sampled(
+        sampled: Vec<crate::primitives::minimap::MinimapLine>,
+        total_buffer_lines: usize,
+    ) -> Minimap {
+        Minimap {
+            id: WidgetId::new("mm"),
+            lines: sampled,
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 0,
+            total_buffer_lines,
+        }
+    }
+
+    /// Core #1007 deliverable, acceptance criterion 1: on a real (>= 500
+    /// line) source file, at a VS-Code-proportioned 12-cell x 33-row TUI
+    /// strip, at most 20% of painted rows may run all the way to the
+    /// strip's right edge. This is the exact reproduction the issue's
+    /// measurement script produced "33/33 (100%)" for under the old
+    /// boolean-OR dot rule (`draw_minimap`'s default `COLS_PER_CELL`
+    /// alone can't fix this — the strip only covers 24 source columns
+    /// then, which is `#1000`'s half); this test drives the same
+    /// widened-scale + dithered-dots combination the issue's "variant C"
+    /// measured directly: `cols_per_cell: 10` (5 source columns per dot,
+    /// `ceil(COLUMN_CAPACITY / (12 cells * 2 dots))` — see
+    /// [`crate::primitives::minimap::COLUMN_CAPACITY`]) is exactly the
+    /// scale a host widens to via `draw_minimap_with_scale` (issue #1000)
+    /// once it also wants #1007's dithered dot rule to stop saturating at
+    /// that scale.
+    #[test]
+    fn real_source_file_minimap_right_edge_tracks_line_length_not_saturated() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/compose/tab_group.rs"
+        ));
+        let lines: Vec<&str> = source.lines().collect();
+        assert!(
+            lines.len() >= 500,
+            "fixture must be a real, checked-in source file of at least 500 lines, got {}",
+            lines.len()
+        );
+
+        let width_cells = 12;
+        let rows = 33;
+        let cols_per_cell = 10; // 5 source columns per dot (issue #1007 "variant C")
+
+        let last_cols = last_set_cell_per_row(&lines, width_cells, rows, cols_per_cell);
+
+        let painted: Vec<usize> = last_cols.into_iter().flatten().collect();
+        assert!(
+            !painted.is_empty(),
+            "expected at least some painted rows from a real source file"
+        );
+        let right_edge_rows = painted.iter().filter(|&&c| c == width_cells - 1).count();
+        let fraction = right_edge_rows as f64 / painted.len() as f64;
+        assert!(
+            fraction <= 0.20,
+            "{right_edge_rows}/{} painted rows ({:.1}%) run to the strip's right edge, \
+             expected at most 20% -- the whole point of #1007 is that most rows should \
+             NOT saturate to the full strip width",
+            painted.len(),
+            fraction * 100.0
+        );
+    }
+
+    /// Acceptance criterion 2: a file of uniform-length lines and a file
+    /// of mixed-length lines must produce *visibly different* right-edge
+    /// profiles -- the whole reason #1007 exists is that line length
+    /// should be a visible signal in the minimap's silhouette, not
+    /// something every row erases by saturating to the same column.
+    #[test]
+    fn last_set_cell_varies_across_rows_for_mixed_lengths_but_not_for_uniform_ones() {
+        let width_cells = 12;
+        let rows = 16;
+        let cols_per_cell = 10;
+
+        // Every line identical in shape and length: the right edge must
+        // land on the very same column for every painted row.
+        let uniform_lines: Vec<String> = (0..rows * LINES_PER_ROW)
+            .map(|_| "    let value = compute_something(a, b, c);".to_string())
+            .collect();
+        let uniform_refs: Vec<&str> = uniform_lines.iter().map(String::as_str).collect();
+        let uniform_last_cols =
+            last_set_cell_per_row(&uniform_refs, width_cells, rows, cols_per_cell);
+        let uniform_painted: Vec<usize> = uniform_last_cols.into_iter().flatten().collect();
+        assert!(
+            uniform_painted.len() > 1,
+            "expected multiple painted rows from the uniform fixture"
+        );
+        assert!(
+            uniform_painted.iter().all(|&c| c == uniform_painted[0]),
+            "uniform-length lines must produce a uniform right edge, got {uniform_painted:?}"
+        );
+
+        // Alternating short/long lines, one strip *row's* worth (4 lines)
+        // at a time -- since a row's braille cell ORs across all
+        // LINES_PER_ROW lines it packs, alternating line-by-line would
+        // give every row group the exact same short+long mix and thus the
+        // exact same (non-varying) right edge; alternating a whole row
+        // group at a time is what actually exercises "does length vary
+        // *between rows*".
+        let mixed_lines: Vec<String> = (0..rows)
+            .flat_map(|r| {
+                let line = if r % 2 == 0 {
+                    "x;".to_string()
+                } else {
+                    "                    let very_long_line_of_code_here = 12345;".to_string()
+                };
+                std::iter::repeat(line).take(LINES_PER_ROW)
+            })
+            .collect();
+        let mixed_refs: Vec<&str> = mixed_lines.iter().map(String::as_str).collect();
+        let mixed_last_cols = last_set_cell_per_row(&mixed_refs, width_cells, rows, cols_per_cell);
+        let mixed_painted: Vec<usize> = mixed_last_cols.into_iter().flatten().collect();
+        assert!(
+            mixed_painted.len() > 1,
+            "expected multiple painted rows from the mixed fixture"
+        );
+        assert!(
+            mixed_painted.iter().any(|&c| c != mixed_painted[0]),
+            "mixed-length lines must produce a varying right edge, got {mixed_painted:?}"
+        );
     }
 }
