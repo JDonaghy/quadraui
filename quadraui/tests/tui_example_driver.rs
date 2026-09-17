@@ -5571,6 +5571,75 @@ fn bottom_panel_closing_both_tabs_hides_the_panel() {
     );
 }
 
+// ─── BottomPanelDemo: independently-gated bottom band (#997) ──────────────
+//
+// `BottomPanelDemo::config()` also registers one `BottomBand` (`band:status`)
+// via `ShellConfig::with_bottom_bands` — separate from the tabbed panel
+// above it. These tests exercise the real `ShellApp -> ShellAdapter ->
+// AppShell::layout` path so paint (`render_content`'s `bottom_band_bounds`
+// lookup) and the runtime toggle (the demo's `s` keybinding, which drives
+// `ctx.shell_mut().set_bottom_band_visible`) agree with each other.
+
+#[test]
+fn bottom_band_is_visible_by_default_and_docks_below_the_tabbed_panel() {
+    let config = BottomPanelDemo::config();
+    let driver = driver_with_shell(BottomPanelDemo::new(), config, 100, 30);
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("STATUS: everything ok"),
+        "status band should paint on the first frame:\n{screen}"
+    );
+    // The band's row sits below the tab strip's row.
+    let tab_row = screen
+        .lines()
+        .position(|l| l.contains("TERMINAL"))
+        .expect("tab strip row");
+    let band_row = screen
+        .lines()
+        .position(|l| l.contains("STATUS: everything ok"))
+        .expect("status band row");
+    assert!(
+        band_row > tab_row,
+        "status band (row {band_row}) must be below the tab strip (row {tab_row}):\n{screen}"
+    );
+}
+
+#[test]
+fn bottom_band_s_key_toggles_visibility_independent_of_the_tabbed_panel() {
+    let config = BottomPanelDemo::config();
+    let mut driver = driver_with_shell(BottomPanelDemo::new(), config, 100, 30);
+
+    assert!(driver.screen().contains("STATUS: everything ok"));
+
+    let reaction = driver.type_char('s');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "toggling the band should redraw"
+    );
+    let after_hide = driver.screen();
+    assert!(
+        !after_hide.contains("STATUS: everything ok"),
+        "band should disappear once hidden:\n{after_hide}"
+    );
+    // The tabbed panel above is untouched by the band's own toggle — this
+    // is the "independent presence" gating #997 asks for, not a shared
+    // height knob.
+    assert!(
+        after_hide.contains("TERMINAL") && after_hide.contains("PROBLEMS"),
+        "tabbed panel must be unaffected by the band's own visibility toggle:\n{after_hide}"
+    );
+
+    let reaction2 = driver.type_char('s');
+    assert_eq!(reaction2, Reaction::Redraw, "toggling back should redraw");
+    let after_show = driver.screen();
+    assert!(
+        after_show.contains("STATUS: everything ok"),
+        "band should reappear once shown again:\n{after_show}"
+    );
+}
+
 // ─── FrameDemo: TabBar + ListView + StatusBar surfaces (#309) ──────────────
 
 #[test]
