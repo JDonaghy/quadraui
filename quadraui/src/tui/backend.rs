@@ -158,7 +158,9 @@ pub struct TuiBackend {
     /// so app logic receives activity-bar keys through a typed channel.
     focused_activity_bar: Option<WidgetId>,
     /// Screen-space `(x, y)` for `Frame::set_cursor_position`, cached from
-    /// the most recent [`Backend::draw_editor`] call this frame (quadraui#466).
+    /// the most recent [`Backend::draw_editor`] call **that reported a
+    /// `Some` position** this frame (quadraui#466, tightened by
+    /// quadraui#1002).
     ///
     /// `draw_editor` only has access to the ratatui buffer, not the `Frame`
     /// itself (see [`Self::current_frame_mut`]'s note on why trait methods
@@ -171,7 +173,13 @@ pub struct TuiBackend {
     ///
     /// Cleared at the start of every frame by [`Self::begin_frame`] (same
     /// lifecycle as `text_regions`) so a frame that doesn't paint an editor
-    /// doesn't inherit a stale cursor position from the previous one.
+    /// doesn't inherit a stale cursor position from the previous one. Within
+    /// a frame, the `draw_editor` call site only overwrites this on a
+    /// `Some` result (quadraui#1002) — a frame can call `draw_editor` once
+    /// per window (e.g. a split), and only the active window ever reports
+    /// `Some`; an inactive window's later, cursor-less call must not
+    /// clobber an active window's `Some` recorded earlier in the same
+    /// frame regardless of paint order.
     last_cursor_position: Option<(u16, u16)>,
     /// `(bar rect, resolved layout)` from the most recent `draw_tab_bar`
     /// call, per tab-bar `WidgetId`. Cleared at the start of every frame
@@ -2531,7 +2539,21 @@ impl Backend for TuiBackend {
         // the buffer, not the `Frame`, so it can't call
         // `Frame::set_cursor_position` itself. See
         // `last_cursor_position`'s field doc for the full handoff.
-        self.last_cursor_position = tui_result.cursor_position;
+        //
+        // Only overwrite on `Some` (quadraui#1002): a frame can call
+        // `draw_editor` once per window (e.g. a split), and only the active
+        // window's editor ever reports a `Some` cursor position — inactive
+        // windows correctly report `None` (see `RenderedWindow.cursor`'s
+        // `is_active` gating on the consumer side). Whichever call happened
+        // to run last used to win unconditionally, so an inactive window's
+        // `None` could clobber the active window's `Some` recorded earlier
+        // in the same frame, hiding the caret whenever paint order didn't
+        // happen to place the active window last. `begin_frame` (quadraui#466)
+        // already resets this to `None` at frame-start, so within a frame we
+        // only ever want to move from `None` to `Some`, never back.
+        if tui_result.cursor_position.is_some() {
+            self.last_cursor_position = tui_result.cursor_position;
+        }
         #[allow(deprecated)] // issue #504: populate the deprecated cell-tuple
         // field too, until vimcode's `render_impl.rs` call site migrates to
         // `cursor_position_native` — see `EditorPaintResult::cursor_position`'s
@@ -5600,6 +5622,94 @@ mod tests {
             crate::EditorHit::VScrollbar,
             "a click at the painted scrollbar track's origin must resolve via editor_layout's \
              own hit_test as VScrollbar"
+        );
+    }
+
+    /// quadraui#1002: an inactive window's `None` cursor must not clobber
+    /// an active window's `Some` position recorded earlier in the same
+    /// frame. A split has one `draw_editor` call per window; only the
+    /// active window's `Editor.cursor` is `Some` (the consumer only ever
+    /// sets `RenderedWindow.cursor` for the active window), so the
+    /// inactive window's call correctly reports `None` — but before this
+    /// fix `last_cursor_position` was overwritten unconditionally on every
+    /// call, so whichever window painted *last* decided the whole frame's
+    /// caret, not whichever window was actually active. This reproduces
+    /// vimcode#1039's "active window, wrong paint order ⇒ no caret" shape
+    /// by painting the active window first and the inactive window
+    /// second.
+    #[test]
+    fn draw_editor_none_does_not_clobber_earlier_some_cursor_in_same_frame() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let rect = QRect::new(0.0, 0.0, 20.0, 5.0);
+        let active_editor = crate::Editor {
+            id: WidgetId::new("active"),
+            rect,
+            lines: (0..5).map(blank_editor_line).collect(),
+            cursor: Some(crate::EditorCursor {
+                pos: crate::EditorCursorPos {
+                    view_line: 0,
+                    col: 0,
+                },
+                shape: crate::EditorCursorShape::Bar,
+            }),
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 5,
+            max_col: 4,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '!',
+        };
+        let mut inactive_editor = active_editor.clone();
+        inactive_editor.id = WidgetId::new("inactive");
+        inactive_editor.cursor = None;
+        inactive_editor.is_active = false;
+
+        let mut backend = TuiBackend::new();
+        backend.begin_frame(Viewport::new(20.0, 5.0, 1.0));
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    // Active window paints first and reports `Some` —
+                    // mirrors vimcode's pre-workaround fixed paint order
+                    // (left, then right), which broke whenever the left
+                    // (active) window wasn't the one painted last.
+                    let active_result = b.draw_editor(rect, &active_editor);
+                    assert_eq!(
+                        active_result.cursor_position_native,
+                        Some(crate::event::Point::new(0.0, 0.0))
+                    );
+
+                    // Inactive window paints second and correctly reports
+                    // `None` — this must not clobber the cache.
+                    let inactive_result = b.draw_editor(rect, &inactive_editor);
+                    assert_eq!(inactive_result.cursor_position_native, None);
+                });
+            })
+            .expect("draw");
+
+        assert_eq!(
+            backend.take_last_cursor_position(),
+            Some((0, 0)),
+            "an inactive window's None cursor_position must not clobber the active \
+             window's Some position recorded earlier in the same frame (quadraui#1002)"
         );
     }
 
