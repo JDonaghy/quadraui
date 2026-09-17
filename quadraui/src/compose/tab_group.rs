@@ -107,6 +107,22 @@
 //! The controller calls `backend.draw_drop_overlay` automatically inside
 //! [`render`](TabGroupController::render) whenever a drag is active.
 //!
+//! # Host-owned tab/pane model (#998)
+//!
+//! Everything above assumes `TabGroupController` owns the panes — it holds
+//! `Vec<Pane>` and mutates it directly. A host that already owns its own
+//! tab/pane model (e.g. an editor engine keyed by its own group/tab IDs)
+//! does **not** need to mirror that model into a second `Vec<Pane>` just to
+//! get drag-and-drop and drop-zone computation: call [`resolve_tab_drop`]
+//! directly. It takes only borrowed geometry ([`DropGroupRect`], built
+//! fresh from the host's own layout) and a [`TabDragSource`] identifying
+//! the dragged tab by index, and returns a [`TabDropInstruction`] —
+//! `Reorder` / `MoveToPane` / `SplitToNewPane`, each expressed purely as
+//! pane/tab indices and a [`SplitDirection`] — for the host to translate
+//! into its own mutation. `TabGroupController::handle_tab_drop` is itself
+//! built on top of `resolve_tab_drop`, so the two adoption paths can never
+//! silently drift apart.
+//!
 //! # Layout model
 //!
 //! Panes are arranged in a recursive binary split tree ([`GroupLayout`]).
@@ -635,6 +651,195 @@ pub struct PaneDragRect {
     /// represented by a `(0.0, 0.0)` sentinel so that indices here stay
     /// aligned with the controller's internal tab vec.
     pub tab_slots: Vec<(f32, f32)>,
+}
+
+// ── Host-owned-model adoption (#998) ────────────────────────────────────────────
+
+/// Identifies the tab being dragged, from the host's *own* pane/tab model.
+///
+/// Input to [`resolve_tab_drop`]. Unlike [`TabGroupController::handle_tab_drop`],
+/// which resolves the dragged tab's current position by searching its own
+/// owned `Vec<Pane>`, `resolve_tab_drop` takes the position as given — the
+/// host already knows it, because the host owns the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabDragSource {
+    /// Index of the pane the drag started in, in the host's own pane order.
+    pub pane_idx: usize,
+    /// Index of the tab within that pane, in the host's own tab order.
+    pub tab_idx: usize,
+}
+
+/// A position-based drop instruction (#998): the result of resolving a tab
+/// drag-and-drop gesture against pane geometry, expressed purely as indices
+/// and a split direction — never as a mutation applied to an owned model.
+///
+/// Returned by [`resolve_tab_drop`]. The host translates each variant into
+/// its own mutation (e.g. `Engine::editor_groups[pane_idx].tabs.remove(...)`)
+/// instead of `TabGroupController` performing the mutation on a `Vec<Pane>`
+/// it would otherwise have to own.
+///
+/// Mirrors the shape of [`TabGroupEvent`]'s cross-group-drag variants
+/// (`TabReordered`, `TabMovedToPane`, `TabSplitToNewPane`, `PaneCollapsed`)
+/// deliberately — those were already index/id-based, not
+/// `Pane`-object-based; `resolve_tab_drop` just makes it possible to compute
+/// them without a `TabGroupController` owning the panes at all.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TabDropInstruction {
+    /// The drop was a no-op: outside every pane, dropped back onto the
+    /// source tab's own position, or (for `Split`) the only tab of the
+    /// only pane dropped on its own edge.
+    NoOp,
+    /// Reorder the tab within its own pane.
+    Reorder {
+        pane_idx: usize,
+        /// Position before the move.
+        from_idx: usize,
+        /// Position after the move.
+        to_idx: usize,
+    },
+    /// Move the tab into a different pane (merge).
+    MoveToPane {
+        from_pane_idx: usize,
+        /// Position the tab held in the source pane before the move.
+        from_idx: usize,
+        to_pane_idx: usize,
+        /// Position in the target pane's tab list where the tab should land.
+        insert_idx: usize,
+        /// `true` when removing the tab leaves the source pane with zero
+        /// tabs — the host should collapse it (or not; `resolve_tab_drop`
+        /// never decides that, since collapsing means renumbering the
+        /// host's own pane indices, which only the host can do correctly).
+        source_now_empty: bool,
+    },
+    /// Split the target pane, creating a new pane adjacent to it that holds
+    /// the dragged tab.
+    SplitToNewPane {
+        from_pane_idx: usize,
+        /// Position the tab held in the source pane before the move.
+        from_idx: usize,
+        /// The pane whose edge was targeted.
+        target_pane_idx: usize,
+        /// Which edge the tab was dropped onto.
+        edge: DropEdge,
+        /// `Left`/`Right` edges split horizontally; `Top`/`Bottom` split
+        /// vertically — pre-resolved here so the host doesn't have to
+        /// duplicate this mapping.
+        split_direction: SplitDirection,
+        /// Same meaning as [`TabDropInstruction::MoveToPane::source_now_empty`].
+        source_now_empty: bool,
+    },
+}
+
+/// Resolve a tab drag-and-drop gesture into a [`TabDropInstruction`], using
+/// only caller-supplied geometry and drag-source identity — no
+/// `TabGroupController`, no owned `Vec<Pane>` (#998).
+///
+/// This is the adoption path for a host that already owns its tab/pane
+/// model (e.g. vimcode's `Engine::editor_groups`, keyed by `GroupId`):
+/// build `groups` from your own layout each frame (or drag), and translate
+/// the returned instruction into your own mutations directly, without
+/// mirroring that model into a second `Vec<Pane>` just to drive drag/drop.
+///
+/// # Arguments
+///
+/// * `source` — which pane/tab is being dragged, per the host's own model.
+/// * `pane_tab_counts` — tab count of *every* pane, indexed the same way as
+///   `groups` (i.e. `pane_tab_counts[i]` is the tab count of the pane
+///   described by `groups[i]`). Used to detect an empty-after-removal
+///   source pane and to clamp reorder/insert indices — deliberately **not**
+///   derived from `groups[i].tab_slots.len()`, since tabs scrolled off a
+///   tab strip are omitted from `tab_slots` and would undercount.
+/// * `cursor_x`, `cursor_y`, `groups`, `tab_bar_height` — forwarded to
+///   [`drop_zone_hit_test`]; see that function's docs.
+///
+/// [`TabGroupController::handle_tab_drop`] is itself implemented in terms of
+/// this function — it is the reference implementation, not a parallel
+/// reimplementation that could drift.
+pub fn resolve_tab_drop(
+    source: TabDragSource,
+    pane_tab_counts: &[usize],
+    cursor_x: f32,
+    cursor_y: f32,
+    groups: &[DropGroupRect],
+    tab_bar_height: f32,
+) -> TabDropInstruction {
+    let DropZoneHit::Zone(zone) = drop_zone_hit_test(cursor_x, cursor_y, groups, tab_bar_height)
+    else {
+        return TabDropInstruction::NoOp;
+    };
+
+    let from = source.pane_idx;
+    let to = zone.group_idx;
+    let cur_idx = source.tab_idx;
+    let from_count = pane_tab_counts.get(from).copied().unwrap_or(0);
+
+    // Extracted up-front so the merge arm doesn't need to re-match on
+    // `zone.kind` after the outer match has consumed it.
+    let reorder_insert_idx = if let DropZoneKind::TabReorder(idx) = zone.kind {
+        Some(idx)
+    } else {
+        None
+    };
+
+    match zone.kind {
+        // ── Reorder within same pane ────────────────────────────────
+        DropZoneKind::TabReorder(insert_idx) if to == from => {
+            // Drop at the same position: no-op.
+            if cur_idx == insert_idx || cur_idx + 1 == insert_idx {
+                return TabDropInstruction::NoOp;
+            }
+            // After removal, indices > cur_idx shift down by 1.
+            let adj = if insert_idx > cur_idx {
+                insert_idx - 1
+            } else {
+                insert_idx
+            };
+            let adj = adj.min(from_count.saturating_sub(1));
+            TabDropInstruction::Reorder {
+                pane_idx: from,
+                from_idx: cur_idx,
+                to_idx: adj,
+            }
+        }
+
+        // ── No-op: dropped on own content area ──────────────────────
+        DropZoneKind::Center if to == from => TabDropInstruction::NoOp,
+
+        // ── Merge: move tab to another pane ─────────────────────────
+        DropZoneKind::Center | DropZoneKind::TabReorder(_) => {
+            let to_count = pane_tab_counts.get(to).copied().unwrap_or(0);
+            let insert_idx = reorder_insert_idx
+                .map(|idx| idx.min(to_count))
+                .unwrap_or(to_count);
+            TabDropInstruction::MoveToPane {
+                from_pane_idx: from,
+                from_idx: cur_idx,
+                to_pane_idx: to,
+                insert_idx,
+                source_now_empty: from_count <= 1,
+            }
+        }
+
+        // ── Split: create a new adjacent pane ───────────────────────
+        DropZoneKind::Split(edge) => {
+            // Guard: splitting the only tab of the only pane is a no-op.
+            if from_count == 1 && pane_tab_counts.len() == 1 {
+                return TabDropInstruction::NoOp;
+            }
+            let split_direction = match edge {
+                DropEdge::Left | DropEdge::Right => SplitDirection::Horizontal,
+                DropEdge::Top | DropEdge::Bottom => SplitDirection::Vertical,
+            };
+            TabDropInstruction::SplitToNewPane {
+                from_pane_idx: from,
+                from_idx: cur_idx,
+                target_pane_idx: to,
+                edge,
+                split_direction,
+                source_now_empty: from_count <= 1,
+            }
+        }
+    }
 }
 
 // ── Controller ────────────────────────────────────────────────────────────────
@@ -1498,157 +1703,132 @@ impl TabGroupController {
     ///   **vertical** split.
     ///
     /// Clears drag state regardless of outcome.
+    ///
+    /// Implemented in terms of [`resolve_tab_drop`] — this method is the
+    /// reference translation of a [`TabDropInstruction`] into mutations on
+    /// the controller's own owned `Vec<Pane>`. A host with its own model
+    /// (#998) calls `resolve_tab_drop` directly and writes an equivalent
+    /// translation against its own data instead.
     pub fn handle_tab_drop(&mut self, x: f32, y: f32) -> Vec<TabGroupEvent> {
         let Some(drag) = self.dragging_tab.take() else {
             return Vec::new();
         };
         let groups = self.drop_group_rects();
         let tab_bar_h = self.strip_height();
-        let DropZoneHit::Zone(zone) = drop_zone_hit_test(x, y, &groups, tab_bar_h) else {
+
+        let from = drag.source_pane_idx;
+        let Some(cur_idx) = self.panes[from]
+            .tabs
+            .iter()
+            .position(|t| t.id == drag.tab_id)
+        else {
             return Vec::new();
         };
 
-        let from = drag.source_pane_idx;
-        let to = zone.group_idx;
-
-        // Extract the reorder insertion index up-front so the merge arm doesn't
-        // have to re-match on `zone.kind` after the outer match has consumed it.
-        let reorder_insert_idx = if let DropZoneKind::TabReorder(idx) = zone.kind {
-            Some(idx)
-        } else {
-            None
+        let pane_tab_counts: Vec<usize> = self.panes.iter().map(|p| p.tabs.len()).collect();
+        let source = TabDragSource {
+            pane_idx: from,
+            tab_idx: cur_idx,
         };
+        let instruction = resolve_tab_drop(source, &pane_tab_counts, x, y, &groups, tab_bar_h);
 
-        match zone.kind {
+        match instruction {
+            TabDropInstruction::NoOp => Vec::new(),
+
             // ── Reorder within same pane ────────────────────────────
-            DropZoneKind::TabReorder(insert_idx) if to == from => {
-                let Some(cur_idx) = self.panes[from]
-                    .tabs
-                    .iter()
-                    .position(|t| t.id == drag.tab_id)
-                else {
-                    return Vec::new();
-                };
-                // Drop at the same position: no-op.
-                if cur_idx == insert_idx || cur_idx + 1 == insert_idx {
-                    return Vec::new();
-                }
-                let moved_tab = self.panes[from].tabs.remove(cur_idx);
-                // After removal, indices > cur_idx shift down by 1.
-                let adj = if insert_idx > cur_idx {
-                    insert_idx - 1
-                } else {
-                    insert_idx
-                };
-                let adj = adj.min(self.panes[from].tabs.len());
-                self.panes[from].tabs.insert(adj, moved_tab);
+            TabDropInstruction::Reorder {
+                pane_idx,
+                from_idx,
+                to_idx,
+            } => {
+                let moved_tab = self.panes[pane_idx].tabs.remove(from_idx);
+                self.panes[pane_idx].tabs.insert(to_idx, moved_tab);
                 vec![TabGroupEvent::TabReordered {
-                    pane_idx: from,
+                    pane_idx,
                     tab_id: drag.tab_id,
-                    from_idx: cur_idx,
-                    to_idx: adj,
+                    from_idx,
+                    to_idx,
                 }]
             }
 
-            // ── No-op: dropped on own content area ──────────────────
-            DropZoneKind::Center if to == from => Vec::new(),
-
             // ── Merge: move tab to another pane ─────────────────────
-            DropZoneKind::Center | DropZoneKind::TabReorder(_) => {
-                // Locate and remove tab from source pane.
-                let Some(cur_idx) = self.panes[from]
-                    .tabs
-                    .iter()
-                    .position(|t| t.id == drag.tab_id)
-                else {
-                    return Vec::new();
-                };
-                let moved_tab = self.panes[from].tabs.remove(cur_idx);
+            TabDropInstruction::MoveToPane {
+                from_pane_idx,
+                from_idx,
+                to_pane_idx,
+                insert_idx,
+                source_now_empty,
+            } => {
+                let moved_tab = self.panes[from_pane_idx].tabs.remove(from_idx);
                 // Fix active tab in source pane.
-                if self.panes[from].active_tab_id == drag.tab_id {
-                    let fallback = if cur_idx > 0 { cur_idx - 1 } else { 0 };
-                    self.panes[from].active_tab_id = self.panes[from]
+                if self.panes[from_pane_idx].active_tab_id == drag.tab_id {
+                    let fallback = if from_idx > 0 { from_idx - 1 } else { 0 };
+                    self.panes[from_pane_idx].active_tab_id = self.panes[from_pane_idx]
                         .tabs
                         .get(fallback)
                         .map(|t| t.id.clone())
                         .unwrap_or_default();
                 }
                 let tab_id = moved_tab.id.clone();
-                let source_empty = self.panes[from].tabs.is_empty();
-
-                // Determine insertion position in the target pane's tab list.
-                let raw_insert = reorder_insert_idx
-                    .map(|idx| idx.min(self.panes[to].tabs.len()))
-                    .unwrap_or_else(|| self.panes[to].tabs.len());
-                self.panes[to].tabs.insert(raw_insert, moved_tab);
-                self.panes[to].active_tab_id = tab_id.clone();
+                self.panes[to_pane_idx].tabs.insert(insert_idx, moved_tab);
+                self.panes[to_pane_idx].active_tab_id = tab_id.clone();
 
                 // Collapse source pane if empty; adjust the reported target index.
-                let final_to = if source_empty {
-                    self.collapse_pane(from);
-                    // collapse_pane removes index `from`; all indices > from shift down.
-                    if from < to {
-                        to - 1
+                let final_to = if source_now_empty {
+                    self.collapse_pane(from_pane_idx);
+                    // collapse_pane removes index `from_pane_idx`; all indices
+                    // above it shift down.
+                    if from_pane_idx < to_pane_idx {
+                        to_pane_idx - 1
                     } else {
-                        to
+                        to_pane_idx
                     }
                 } else {
-                    to
+                    to_pane_idx
                 };
 
                 let mut events = vec![TabGroupEvent::TabMovedToPane {
-                    from_pane_idx: from,
+                    from_pane_idx,
                     to_pane_idx: final_to,
                     tab_id,
-                    insert_idx: raw_insert,
+                    insert_idx,
                 }];
-                if source_empty {
-                    events.push(TabGroupEvent::PaneCollapsed { pane_idx: from });
+                if source_now_empty {
+                    events.push(TabGroupEvent::PaneCollapsed {
+                        pane_idx: from_pane_idx,
+                    });
                 }
                 events
             }
 
             // ── Split: create a new adjacent pane ───────────────────
-            DropZoneKind::Split(edge) => {
-                // Guard: splitting the only tab of the only pane is a no-op.
-                if self.panes[from].tabs.len() == 1 && self.panes.len() == 1 {
-                    return Vec::new();
-                }
-
-                // Remove tab from source pane.
-                let Some(cur_idx) = self.panes[from]
-                    .tabs
-                    .iter()
-                    .position(|t| t.id == drag.tab_id)
-                else {
-                    return Vec::new();
-                };
-                let moved_tab = self.panes[from].tabs.remove(cur_idx);
-                if self.panes[from].active_tab_id == drag.tab_id {
-                    let fallback = if cur_idx > 0 { cur_idx - 1 } else { 0 };
-                    self.panes[from].active_tab_id = self.panes[from]
+            TabDropInstruction::SplitToNewPane {
+                from_pane_idx,
+                from_idx,
+                target_pane_idx,
+                edge,
+                split_direction,
+                source_now_empty,
+            } => {
+                let moved_tab = self.panes[from_pane_idx].tabs.remove(from_idx);
+                if self.panes[from_pane_idx].active_tab_id == drag.tab_id {
+                    let fallback = if from_idx > 0 { from_idx - 1 } else { 0 };
+                    self.panes[from_pane_idx].active_tab_id = self.panes[from_pane_idx]
                         .tabs
                         .get(fallback)
                         .map(|t| t.id.clone())
                         .unwrap_or_default();
                 }
                 let tab_id = moved_tab.id.clone();
-                let source_empty = self.panes[from].tabs.is_empty();
-                let original_target = zone.group_idx;
+                let original_target = target_pane_idx;
 
-                // Split direction is determined by the drop edge.
-                // Left/Right → horizontal split; Top/Bottom → vertical split.
-                let split_dir = match edge {
-                    DropEdge::Left | DropEdge::Right => SplitDirection::Horizontal,
-                    DropEdge::Top | DropEdge::Bottom => SplitDirection::Vertical,
-                };
                 let insert_before = matches!(edge, DropEdge::Left | DropEdge::Top);
 
                 // Adjust target index if source collapses first.
-                let mut adjusted_to = to;
-                if source_empty {
-                    self.collapse_pane(from);
-                    if from < adjusted_to {
+                let mut adjusted_to = target_pane_idx;
+                if source_now_empty {
+                    self.collapse_pane(from_pane_idx);
+                    if from_pane_idx < adjusted_to {
                         adjusted_to -= 1;
                     }
                 }
@@ -1678,13 +1858,14 @@ impl TabGroupController {
                     self.layout = self.layout.clone().insert_before_leaf(
                         adjusted_to + 1,
                         actual_pos,
-                        split_dir,
+                        split_direction,
                     );
                 } else {
-                    self.layout =
-                        self.layout
-                            .clone()
-                            .insert_after_leaf(adjusted_to, actual_pos, split_dir);
+                    self.layout = self.layout.clone().insert_after_leaf(
+                        adjusted_to,
+                        actual_pos,
+                        split_direction,
+                    );
                 }
 
                 let new_n = self.panes.len();
@@ -1694,14 +1875,16 @@ impl TabGroupController {
                 self.last_dividers = vec![];
 
                 let mut events = vec![TabGroupEvent::TabSplitToNewPane {
-                    from_pane_idx: from,
+                    from_pane_idx,
                     tab_id,
                     target_pane_idx: original_target,
                     edge,
                     new_pane_idx: actual_pos,
                 }];
-                if source_empty {
-                    events.push(TabGroupEvent::PaneCollapsed { pane_idx: from });
+                if source_now_empty {
+                    events.push(TabGroupEvent::PaneCollapsed {
+                        pane_idx: from_pane_idx,
+                    });
                 }
                 events
             }
@@ -3159,6 +3342,207 @@ mod tests {
         assert_ne!(
             second_new_id, first_new_id,
             "second split pane must have a unique id (got {second_new_id:?})"
+        );
+    }
+
+    // ── resolve_tab_drop: host-owned-model adoption path (#998) ────────────────
+    //
+    // These tests call `resolve_tab_drop` directly with hand-built
+    // `DropGroupRect`s and a `TabDragSource` — no `TabGroupController`
+    // anywhere. This is the shape a host with its own tab/pane model (e.g.
+    // vimcode's `Engine::editor_groups`) uses: build `groups` from its own
+    // layout, call `resolve_tab_drop`, translate the result into its own
+    // mutations directly. Geometry mirrors `two_pane_drag_rects()` above so
+    // the numbers are directly comparable to the `TabGroupController`-owned
+    // tests.
+
+    fn two_group_rects() -> Vec<DropGroupRect> {
+        vec![
+            DropGroupRect {
+                bounds: Rect::new(0.0, 0.0, 80.0, 11.0),
+                tab_slots: vec![(0.0, 8.0), (8.0, 16.0)],
+            },
+            DropGroupRect {
+                bounds: Rect::new(80.0, 0.0, 80.0, 11.0),
+                tab_slots: vec![(80.0, 88.0)],
+            },
+        ]
+    }
+
+    #[test]
+    fn resolve_tab_drop_reorders_within_same_pane() {
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1, // "t1"
+        };
+        let instr = resolve_tab_drop(source, &counts, 3.0, 0.5, &groups, 1.0);
+        assert_eq!(
+            instr,
+            TabDropInstruction::Reorder {
+                pane_idx: 0,
+                from_idx: 1,
+                to_idx: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_tab_drop_same_position_is_noop() {
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1,
+        };
+        let instr = resolve_tab_drop(source, &counts, 14.0, 0.5, &groups, 1.0);
+        assert_eq!(instr, TabDropInstruction::NoOp);
+    }
+
+    #[test]
+    fn resolve_tab_drop_same_pane_center_is_noop() {
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1,
+        };
+        let instr = resolve_tab_drop(source, &counts, 40.0, 5.0, &groups, 1.0);
+        assert_eq!(instr, TabDropInstruction::NoOp);
+    }
+
+    #[test]
+    fn resolve_tab_drop_moves_tab_to_another_pane_center() {
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1,
+        };
+        let instr = resolve_tab_drop(source, &counts, 120.0, 5.0, &groups, 1.0);
+        assert_eq!(
+            instr,
+            TabDropInstruction::MoveToPane {
+                from_pane_idx: 0,
+                from_idx: 1,
+                to_pane_idx: 1,
+                insert_idx: 1,
+                source_now_empty: false,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_tab_drop_reports_source_now_empty_when_last_tab_moves() {
+        let groups = two_group_rects();
+        // Source pane down to its last tab, as the host's own model would
+        // report once earlier tabs are already gone.
+        let counts = [1usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 0,
+        };
+        let instr = resolve_tab_drop(source, &counts, 120.0, 5.0, &groups, 1.0);
+        assert_eq!(
+            instr,
+            TabDropInstruction::MoveToPane {
+                from_pane_idx: 0,
+                from_idx: 0,
+                to_pane_idx: 1,
+                insert_idx: 1,
+                source_now_empty: true,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_tab_drop_splits_right_edge() {
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1,
+        };
+        let instr = resolve_tab_drop(source, &counts, 150.0, 5.0, &groups, 1.0);
+        assert_eq!(
+            instr,
+            TabDropInstruction::SplitToNewPane {
+                from_pane_idx: 0,
+                from_idx: 1,
+                target_pane_idx: 1,
+                edge: DropEdge::Right,
+                split_direction: SplitDirection::Horizontal,
+                source_now_empty: false,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_tab_drop_only_tab_only_pane_split_is_noop() {
+        let groups = vec![DropGroupRect {
+            bounds: Rect::new(0.0, 0.0, 80.0, 11.0),
+            tab_slots: vec![(0.0, 8.0)],
+        }];
+        let counts = [1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 0,
+        };
+        let instr = resolve_tab_drop(source, &counts, 1.0, 5.0, &groups, 1.0);
+        assert_eq!(instr, TabDropInstruction::NoOp);
+    }
+
+    #[test]
+    fn resolve_tab_drop_outside_all_groups_is_noop() {
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1,
+        };
+        let instr = resolve_tab_drop(source, &counts, 999.0, 999.0, &groups, 1.0);
+        assert_eq!(instr, TabDropInstruction::NoOp);
+    }
+
+    #[test]
+    fn resolve_tab_drop_agrees_with_controller_handle_tab_drop() {
+        // Cross-check: `TabGroupController::handle_tab_drop` (the owned
+        // model path) and `resolve_tab_drop` (the host-owned-model path)
+        // must reach equivalent conclusions from equivalent inputs, since
+        // the former is implemented in terms of the latter (#998).
+        let mut ctrl = make_two_pane();
+        ctrl.handle_tab_drag_start(9.0, 0.5); // drag t1 from pane 0
+        let events = ctrl.handle_tab_drop(150.0, 5.0); // split right edge of pane 1
+
+        let groups = two_group_rects();
+        let counts = [2usize, 1usize];
+        let source = TabDragSource {
+            pane_idx: 0,
+            tab_idx: 1,
+        };
+        let instr = resolve_tab_drop(source, &counts, 150.0, 5.0, &groups, 1.0);
+
+        assert_eq!(
+            instr,
+            TabDropInstruction::SplitToNewPane {
+                from_pane_idx: 0,
+                from_idx: 1,
+                target_pane_idx: 1,
+                edge: DropEdge::Right,
+                split_direction: SplitDirection::Horizontal,
+                source_now_empty: false,
+            }
+        );
+        assert_eq!(
+            events,
+            vec![TabGroupEvent::TabSplitToNewPane {
+                from_pane_idx: 0,
+                tab_id: "t1".into(),
+                target_pane_idx: 1,
+                edge: DropEdge::Right,
+                new_pane_idx: 2,
+            }]
         );
     }
 }

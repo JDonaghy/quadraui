@@ -97,7 +97,8 @@ pub use sidebar_system::{
 };
 pub use status_bar_interaction::{StatusBarAction, StatusBarInteraction};
 pub use tab_group::{
-    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
+    resolve_tab_drop, GroupLayout, Pane, PaneDragRect, PaneTab, TabDragSource, TabDropInstruction,
+    TabGroupController, TabGroupEvent, TabGroupLayout,
 };
 pub use toolbar_hover_tracker::ToolbarHoverTracker;
 pub use tree_controller::{TreeController, TreeControllerEvent};
