@@ -45,6 +45,13 @@ pub const LINES_PER_ROW: usize = 4;
 /// [`crate::MinimapGrid::cols_per_cell`] — the two must agree, since
 /// [`crate::aggregate_spans`] and this rasteriser are only ever combined
 /// by convention, not by a shared type.
+///
+/// An **odd** `cols_per_cell` is rounded up to the nearest even effective
+/// width internally (see [`cols_per_dot`]) so that the dot rasteriser and
+/// the colour lookup always agree on exactly which source columns a cell
+/// covers — passing an odd value still works, it just covers one extra
+/// source column per cell rather than silently desyncing dots from
+/// colour.
 pub const COLS_PER_CELL: usize = 2;
 
 /// Compute the TUI cell-unit layout for a [`Minimap`] without painting.
@@ -164,11 +171,34 @@ pub fn draw_minimap_with_scale(
     layout
 }
 
+/// Source columns folded into a single **dot** column, derived from a
+/// requested `cols_per_cell` so that [`braille_char_for_cell`]'s dot
+/// ranges and [`cell_color`]'s colour range can never disagree.
+///
+/// Both functions used to derive their column width from `cols_per_cell`
+/// independently — `braille_char_for_cell` via `(cols_per_cell /
+/// 2).max(1)` (truncating division) and `cell_color` via `cols_per_cell`
+/// directly — which coincide only when `cols_per_cell` is even. For an
+/// odd value the two ranges drift apart, growing linearly with `col`:
+/// at `cols_per_cell = 11`, `col = 4`, dots used to cover source columns
+/// `[40, 50)` while `cell_color` looked up `[44, 55)`. A span landing in
+/// only one of the two mismatched ranges either tinted a cell with no
+/// real dot behind it (reintroducing the #993 symptom this rasteriser
+/// exists to prevent) or painted a dot with no colour.
+///
+/// Routing both call sites through this one function — rounding *up*
+/// (`div_ceil`) rather than down, so the degenerate `cols_per_cell <= 1`
+/// case still gets a non-empty width — makes the effective per-cell
+/// width exactly `2 * cols_per_dot` everywhere, for any input.
+fn cols_per_dot(cols_per_cell: usize) -> usize {
+    cols_per_cell.max(1).div_ceil(2).max(1)
+}
+
 /// Pack one terminal cell's braille glyph from up to [`LINES_PER_ROW`]
 /// pre-split lines. `col` is the terminal-cell column (0-based within
 /// the minimap); each cell is 2 dots wide, so dot columns
 /// `col*2..col*2+2` map to buffer columns at a **fixed** scale of
-/// `cols_per_cell` buffer columns per cell — the same scale for every
+/// [`cols_per_dot`] buffer columns per dot — the same scale for every
 /// line, matching [`cell_color`]'s fixed-grid lookup below (issue #993),
 /// and the same scale for every dot column of every cell, so widening it
 /// (issue #1000) widens the represented range without disturbing the
@@ -180,20 +210,20 @@ pub fn draw_minimap_with_scale(
 /// land at a different dot column than the same 4-space indent on a long
 /// line, destroying indentation entirely. Fixed scale means a line
 /// shorter than the strip simply leaves the remaining dots clear, and a
-/// line longer than `width_cells * cols_per_cell` is clipped rather than
-/// compressed — exactly what VS Code's minimap does.
+/// line longer than `width_cells * 2 * cols_per_dot(cols_per_cell)` is
+/// clipped rather than compressed — exactly what VS Code's minimap does.
 fn braille_char_for_cell(
     row_lines: &[Option<Vec<char>>],
     col: usize,
     cols_per_cell: usize,
 ) -> char {
+    let cols_per_dot = cols_per_dot(cols_per_cell);
     pack_braille_cell(|dr, dc| {
         let chars = match row_lines.get(dr).and_then(|o| o.as_ref()) {
             Some(c) if !c.is_empty() => c,
             _ => return false,
         };
         let dot_col = col * 2 + dc;
-        let cols_per_dot = (cols_per_cell / 2).max(1);
         let c0 = dot_col * cols_per_dot;
         let c1 = c0 + cols_per_dot;
         chars
@@ -205,10 +235,15 @@ fn braille_char_for_cell(
 /// Resolve this cell's foreground: the aggregated [`crate::MinimapSpan`]
 /// covering `(start_line_idx, col)` if one exists, else the theme
 /// default. `minimap.syntax_spans` is expected to already be aggregated
-/// at TUI's `4`-line x `cols_per_cell`-column cell granularity (via
-/// [`crate::aggregate_spans`], with a matching
+/// at TUI's `4`-line x (`2 * `[`cols_per_dot`]`(cols_per_cell)`)-column
+/// cell granularity (via [`crate::aggregate_spans`], with a matching
 /// [`crate::MinimapGrid::cols_per_cell`]) — this does a plain containment
 /// scan, no re-aggregation.
+///
+/// The column range is derived from [`cols_per_dot`] — the same helper
+/// [`braille_char_for_cell`] uses — rather than from `cols_per_cell`
+/// directly, so the two can never disagree (issue #1000 review fix; see
+/// [`cols_per_dot`]'s doc for the drift this closes).
 fn cell_color(
     minimap: &Minimap,
     start_line_idx: usize,
@@ -217,8 +252,9 @@ fn cell_color(
     theme: &Theme,
     cols_per_cell: usize,
 ) -> ratatui::style::Color {
-    let col_lo = col * cols_per_cell;
-    let col_hi = col_lo + cols_per_cell;
+    let cell_width = 2 * cols_per_dot(cols_per_cell);
+    let col_lo = col * cell_width;
+    let col_hi = col_lo + cell_width;
     minimap
         .syntax_spans
         .iter()
@@ -674,5 +710,89 @@ mod tests {
             via_zero, via_one,
             "cols_per_cell: 0 must behave like 1, not empty-match"
         );
+    }
+
+    /// Regression test for the review fix on issue #1000: before this
+    /// fix, `braille_char_for_cell` derived its dot range as
+    /// `(cols_per_cell / 2).max(1)` columns per dot (truncating division)
+    /// while `cell_color` derived its colour range as `cols_per_cell`
+    /// columns directly — these only coincide when `cols_per_cell` is
+    /// **even**. At the odd value used here (`11`), the two used to
+    /// diverge: dots for terminal cell 4 covered source columns `[40,
+    /// 50)` while `cell_color` looked up `[44, 55)`. A span landing in
+    /// only one of the two mismatched ranges either painted colour with
+    /// no real dot behind it, or a dot with no colour.
+    ///
+    /// Both functions now derive their width from the same
+    /// [`cols_per_dot`] helper, rounding `11` up to `6` and giving both a
+    /// shared effective cell width of `2 * 6 = 12`: cell 4 covers exactly
+    /// `[48, 60)`. This asserts that shared boundary directly — a source
+    /// column just inside the range (`55`) must set both a dot and its
+    /// span's colour in cell 4, and a source column just outside it
+    /// (`47`) must set neither, proving the two lookups can't drift apart
+    /// for an odd `cols_per_cell`.
+    #[test]
+    fn odd_cols_per_cell_keeps_dot_and_colour_ranges_aligned() {
+        let width_cells = 8;
+        let area = Rect::new(0, 0, width_cells as u16, 1);
+        let red = Color::rgb(255, 0, 0);
+
+        // Inside the shared [48, 60) range for cell 4: dot and colour
+        // must both be present.
+        {
+            let mut chars = vec![' '; 60];
+            chars[55] = 'x';
+            let text: String = chars.into_iter().collect();
+            let mut mm = minimap_from(vec![&text], 8);
+            mm.syntax_spans.push(MinimapSpan {
+                line_idx: 0,
+                start_col: 55,
+                end_col: 56,
+                color: red,
+            });
+
+            let mut buf = Buffer::empty(area);
+            draw_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), 11);
+            assert_ne!(
+                cell_char(&buf, 4, 0),
+                '\u{2800}',
+                "column 55 is inside cell 4's [48, 60) range and must set a dot"
+            );
+            assert_eq!(
+                buf[(4u16, 0u16)].fg,
+                ratatui_color(red),
+                "column 55's span is inside cell 4's [48, 60) colour range and must be found"
+            );
+        }
+
+        // Just outside the shared range (column 47, one before 48): dot
+        // and colour must both be absent -- if the two ranges had drifted
+        // apart (as they did pre-fix), one of these would fire while the
+        // other didn't.
+        {
+            let mut chars = vec![' '; 60];
+            chars[47] = 'x';
+            let text: String = chars.into_iter().collect();
+            let mut mm = minimap_from(vec![&text], 8);
+            mm.syntax_spans.push(MinimapSpan {
+                line_idx: 0,
+                start_col: 47,
+                end_col: 48,
+                color: red,
+            });
+
+            let mut buf = Buffer::empty(area);
+            draw_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), 11);
+            assert_eq!(
+                cell_char(&buf, 4, 0),
+                '\u{2800}',
+                "column 47 is outside cell 4's [48, 60) range and must not set a dot"
+            );
+            assert_eq!(
+                buf[(4u16, 0u16)].fg,
+                ratatui_color(Theme::default().foreground),
+                "column 47's span is outside cell 4's [48, 60) colour range and must not be found"
+            );
+        }
     }
 }
