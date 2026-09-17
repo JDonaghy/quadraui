@@ -376,6 +376,7 @@ pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
     FindReplaceHit, FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
 };
+pub use primitives::font_role::{ChromePrimitive, FontRole};
 pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,

@@ -621,12 +621,26 @@ impl MacBackend {
 
     /// Install the chrome (UI) font and refresh `chrome_line_height` /
     /// `chrome_char_width` from its metrics — the chrome twin of
-    /// [`Self::set_current_font`] (issue #963). Unlike that method, this
-    /// never consults [`Self::nerd_font_fallback_family`]: nerd-font
-    /// glyphs are an icon concern for `draw_tree`/`draw_activity_bar`,
-    /// which read `current_font`, not `chrome_font` — there is no chrome
-    /// call site yet that would need a fallback cascade applied here.
+    /// [`Self::set_current_font`] (issue #963).
+    ///
+    /// Issue #1003: unlike the #963-era doc this replaces, `chrome_font`
+    /// now *does* consult [`Self::nerd_font_fallback_family`] — the same
+    /// `font_with_fallback` cascade [`Self::set_current_font`] applies.
+    /// Bringing `draw_tree`/`draw_tab_bar_icons`/`draw_activity_bar_with_style`/
+    /// `draw_toolbar_interactive`/`draw_sidebar_panel_interactive` to
+    /// chrome-font parity with GTK (#1003) means their icon glyphs now
+    /// paint through `chrome_font`, not `current_font` — without this,
+    /// a host that calls `set_nerd_font_fallback` would see icon glyphs
+    /// render correctly in the editor but as tofu in every chrome
+    /// primitive, since `chrome_font` would never have received the
+    /// fallback cascade. Mirrors `GtkBackend::chrome_font_description`,
+    /// which has applied `with_nerd_font_fallback` at every #624 call
+    /// site since #929.
     pub fn set_chrome_font(&mut self, font: CTFont) {
+        let font = match &self.nerd_font_fallback_family {
+            Some(family) => super::text::font_with_fallback(&font, family),
+            None => font,
+        };
         let metrics = super::text::font_metrics(&font);
         self.chrome_line_height = metrics.line_height;
         self.chrome_char_width = metrics.char_width;
@@ -1073,11 +1087,16 @@ impl Backend for MacBackend {
     /// re-apply it immediately via [`super::text::font_with_fallback`]
     /// (issue #929) — see that method's doc for why the two setters can
     /// land in either order without either effect being lost.
+    ///
+    /// Issue #1003: also re-applies to `chrome_font` (`set_chrome_font`'s
+    /// doc explains why chrome icon glyphs need the same cascade as
+    /// editor ones now).
     fn set_nerd_font_fallback(&mut self, family: &str) {
         self.nerd_font_fallback_family = Some(family.to_string());
         if let Some(font) = self.current_font.take() {
             self.current_font = Some(super::text::font_with_fallback(&font, family));
         }
+        self.chrome_font = super::text::font_with_fallback(&self.chrome_font, family);
     }
 
     /// Maps onto the existing [`Self::set_current_font`] machinery
@@ -1561,10 +1580,19 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tree called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_tree requires set_current_font");
+        // Issue #1003: row labels/badges/chevrons are chrome
+        // (`ChromePrimitive::Tree`), not editor content — paint through
+        // `chrome_font`, matching `GtkBackend::draw_tree`'s #624 swap.
+        // Unlike `current_font`, `chrome_font` is never `None` (seeded at
+        // construction — see its field doc), so there is no "no font yet"
+        // fallback branch to keep. `line_height` deliberately stays
+        // `current_line_height` (the editor pitch) — mirroring
+        // `GtkBackend::draw_tree`, which passes its own
+        // `self.current_line_height` unchanged; row pitch tracking
+        // `chrome_font`'s metrics is the pre-existing, deliberately
+        // deferred half of #624's gap (see `GtkBackend::draw_context_menu`'s
+        // comment), not something this fix introduces or closes.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -1589,10 +1617,11 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_list called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_list requires set_current_font");
+        // Issue #1003: the list is chrome (`ChromePrimitive::List`) — see
+        // `draw_tree`'s comment just above for why this reads
+        // `chrome_font` instead of `current_font` while `line_height`
+        // deliberately stays the editor pitch.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -1694,6 +1723,9 @@ impl Backend for MacBackend {
         )
     }
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
+        // No font-role change here (issue #1003): `mac_list_layout` takes
+        // no font at all, only pitch — same `current_line_height`/
+        // `current_char_width` `GtkBackend::list_layout` uses.
         super::list::mac_list_layout(
             list,
             rect.x as f64,
@@ -1903,10 +1935,12 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tab_bar called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_tab_bar requires set_current_font");
+        // Issue #1003: tab labels are chrome (`ChromePrimitive::TabBar`)
+        // — see `draw_tree`'s comment. This one root method covers
+        // `draw_tab_bar`/`draw_tab_bar_with_chrome` too: both delegate
+        // here with an empty icon sidecar (`Backend::draw_tab_bar_with_chrome`'s
+        // default body forwards to `draw_tab_bar`, which forwards here).
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope.
@@ -1977,10 +2011,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tab_bar_layout called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_tab_bar_layout requires set_current_font");
+        // Issue #1003: `TabBarLayout`-returning twin of
+        // `draw_tab_bar_icons` — see that method's comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: `ctx` is non-null inside the frame scope. Same X-only
@@ -2077,10 +2110,14 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_activity_bar_with_style called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_activity_bar_with_style requires set_current_font");
+        // Issue #1003: despite this method's name appearing in the
+        // original audit's "already correct" column, it painted its icon
+        // glyph through `current_font` (the editor font) exactly like
+        // the other 14 — a bar whose icon size tracked the user's
+        // editor-font size, not the fixed chrome size every other chrome
+        // primitive uses. `ChromePrimitive::ActivityBar` — see
+        // `draw_tree`'s comment for the swap.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx non-null inside frame scope. See `draw_activity_bar`
         // above for why the CTM translate is what makes this bar-relative
@@ -2144,25 +2181,23 @@ impl Backend for MacBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarHits {
-        match self.current_font.as_ref() {
-            Some(font) => {
-                let mut hits =
-                    super::tab_bar::mac_tab_bar_layout_icons(font, rect.width as f64, bar, icons);
-                // Bar-relative → target-surface-absolute (issue #934),
-                // the same shift `Self::draw_tab_bar_icons` applies to its
-                // own returned hits after painting, so a caller that
-                // measures here and paints there sees one agreed geometry.
-                crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-                hits
-            }
-            None => TabBarHits {
-                slot_positions: vec![(0.0, 0.0); bar.tabs.len()],
-                close_bounds: vec![None; bar.tabs.len()],
-                right_segment_bounds: vec![(0.0, 0.0); bar.right_segments.len()],
-                available_cols: 0,
-                correct_scroll_offset: bar.scroll_offset,
-            },
-        }
+        // Issue #1003: no-paint twin of `draw_tab_bar_icons` — must
+        // agree with what that method painted, so it measures against
+        // `chrome_font` too. The old `current_font.is_none()` fallback
+        // is gone: `chrome_font` is never `None` (seeded at
+        // construction — see its field doc).
+        let mut hits = super::tab_bar::mac_tab_bar_layout_icons(
+            &self.chrome_font,
+            rect.width as f64,
+            bar,
+            icons,
+        );
+        // Bar-relative → target-surface-absolute (issue #934), the same
+        // shift `Self::draw_tab_bar_icons` applies to its own returned
+        // hits after painting, so a caller that measures here and paints
+        // there sees one agreed geometry.
+        crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
+        hits
     }
 
     /// Issue #919's `TabBarLayout`-returning counterpart to
@@ -2186,25 +2221,15 @@ impl Backend for MacBackend {
         bar: &TabBar,
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarLayout {
-        match self.current_font.as_ref() {
-            Some(font) => super::tab_bar::mac_tab_bar_native_layout_icons(
-                font,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                icons,
-            ),
-            None => TabBarLayout {
-                bar_width: rect.width,
-                bar_height: rect.height,
-                visible_tabs: Vec::new(),
-                visible_segments: Vec::new(),
-                scroll_left: None,
-                scroll_right: None,
-                hit_regions: Vec::new(),
-                resolved_scroll_offset: bar.scroll_offset,
-            },
-        }
+        // Issue #1003: no-paint twin of `draw_tab_bar_icons_layout` —
+        // see `tab_bar_layout_icons`'s comment just above.
+        super::tab_bar::mac_tab_bar_native_layout_icons(
+            &self.chrome_font,
+            rect.width as f64,
+            rect.height as f64,
+            bar,
+            icons,
+        )
     }
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
@@ -2392,10 +2417,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_context_menu called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_context_menu requires set_current_font");
+        // Issue #1003: the context menu is chrome
+        // (`ChromePrimitive::ContextMenu`) — see `draw_tree`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::context_menu::draw_context_menu(ctx, font, menu, layout, &theme) }
@@ -2408,10 +2432,10 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_dialog called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_dialog requires set_current_font");
+        // Issue #1003: the dialog chrome (title, buttons) is
+        // `ChromePrimitive::Dialog` — see `draw_tree`'s comment for the
+        // font swap and why `line_height` stays the editor pitch.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -2423,10 +2447,14 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_multi_section_view called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_multi_section_view requires set_current_font");
+        // Issue #1003: section headers and Tree/List body rows are
+        // sidebar chrome (`ChromePrimitive::MultiSectionView`), not
+        // editor content — mirrors `GtkBackend::draw_multi_section_view`'s
+        // #416 font swap, which likewise only swaps the *font* here and
+        // leaves `line_height`/`char_width` (below) reading the editor
+        // values, since embedded `SectionBody::Chart`/editor-adjacent
+        // content still measures against those.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
@@ -2455,6 +2483,10 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
+        // No font-role change here (issue #1003) — see `list_layout`'s
+        // comment above; `mac_tree_layout` only takes pitch, and
+        // `GtkBackend::tree_layout` passes its own editor
+        // `current_line_height` too.
         super::tree::mac_tree_layout(tree, rect, self.current_line_height)
     }
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
@@ -2511,10 +2543,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_rich_text_popup called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_rich_text_popup requires set_current_font");
+        // Issue #1003: the rich-text popup is chrome
+        // (`ChromePrimitive::RichTextPopup`) — see `draw_tree`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }
@@ -2560,10 +2591,10 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_menu_bar called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_menu_bar requires set_current_font");
+        // Issue #1003: the menu bar is chrome (`ChromePrimitive::MenuBar`)
+        // — see `draw_tree`'s comment for why this reads `chrome_font`
+        // instead of `current_font`.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx non-null inside frame scope.
         unsafe {
@@ -2580,10 +2611,9 @@ impl Backend for MacBackend {
         }
     }
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::menu_bar_layout requires set_current_font");
+        // Issue #1003: no-paint twin of `draw_menu_bar` — must agree
+        // with what that method painted.
+        let font = &self.chrome_font;
         super::menu_bar::mac_menu_bar_layout(
             font,
             rect.x as f64,
@@ -2798,10 +2828,13 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_command_center called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_command_center requires set_current_font");
+        // Issue #1003: the command centre's back/forward arrows and
+        // search label are chrome (`ChromePrimitive::CommandCenter`) —
+        // see `draw_tree`'s comment for the font swap and why
+        // `line_height` (used only for vertical centring) stays the
+        // editor pitch, matching `GtkBackend::draw_command_center`'s
+        // #637 comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx non-null inside frame scope.
@@ -2820,10 +2853,9 @@ impl Backend for MacBackend {
         }
     }
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::command_center_layout requires set_current_font");
+        // Issue #1003: no-paint twin of `draw_command_center` — must
+        // agree with what that method painted.
+        let font = &self.chrome_font;
         super::command_center::mac_command_center_layout(
             cc,
             font,
@@ -2874,10 +2906,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_toolbar called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_toolbar requires set_current_font");
+        // Issue #1003: action labels and icon glyphs are chrome
+        // (`ChromePrimitive::Toolbar`) — see `draw_tree`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -2901,43 +2932,21 @@ impl Backend for MacBackend {
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
-        // Layout-only path: prefer the live font when present, else
-        // synthesise widths from `char_width` to keep the contract
-        // honest without forcing apps to pre-set a font.
-        if let Some(font) = self.current_font.as_ref() {
-            super::toolbar::mac_toolbar_layout(
-                bar,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-            )
-        } else {
-            let cw = self.current_char_width as f32;
-            bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
-                let chars = match btn {
-                    crate::primitives::toolbar::ToolbarButton::Action {
-                        label,
-                        icon,
-                        key_hint,
-                        ..
-                    } => {
-                        let icon_w = icon.as_ref().map(|s| s.chars().count() + 1).unwrap_or(0);
-                        let hint_w = key_hint
-                            .as_ref()
-                            .map(|s| s.chars().count() + 3)
-                            .unwrap_or(0);
-                        icon_w + label.chars().count() + hint_w
-                    }
-                    crate::primitives::toolbar::ToolbarButton::Separator => 2,
-                    crate::primitives::toolbar::ToolbarButton::Label { text, .. } => {
-                        text.chars().count()
-                    }
-                };
-                crate::primitives::toolbar::ToolbarItemMeasure::new(chars as f32 * cw)
-            })
-        }
+        // Issue #1003: no-paint twin of `draw_toolbar_interactive` — must
+        // agree with what that method painted, so it measures against
+        // `chrome_font` too. The old `current_font.is_none()` fallback
+        // (a `char_width`-only estimate) is gone: `chrome_font` is never
+        // `None` (seeded at construction — see its field doc), so the
+        // "no font installed yet" case this was guarding against cannot
+        // happen for chrome.
+        super::toolbar::mac_toolbar_layout(
+            bar,
+            &self.chrome_font,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
 
     fn draw_sidebar_panel_interactive(
@@ -2952,15 +2961,21 @@ impl Backend for MacBackend {
             !self.current_cg().is_null(),
             "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
         );
-        debug_assert!(
-            self.current_font.is_some(),
-            "MacBackend::draw_sidebar_panel requires set_current_font",
-        );
+        // Issue #1003: `SidebarPanel` composes a `Toolbar` header — its
+        // icon glyphs are chrome (`ChromePrimitive::SidebarPanel`), not
+        // editor content — so this paints through `ChromeSurface`
+        // (routes text through `chrome_font`) rather than `self`
+        // directly, the same switch `draw_status_bar_interactive` makes
+        // (#963) and `GtkBackend::draw_sidebar_panel_interactive` makes
+        // via its own font-swap (#416/#862). `line_height` stays the
+        // editor pitch, matching `GtkBackend`'s own unchanged
+        // `current_line_height` there.
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
+        let mut surface = ChromeSurface { backend: self };
         crate::primitives::sidebar_panel::native_surface_paint::paint(
             panel,
-            self,
+            &mut surface,
             &theme,
             rect,
             line_height,
@@ -3002,31 +3017,23 @@ impl Backend for MacBackend {
         rect: Rect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        if let Some(font) = self.current_font.as_ref() {
-            super::sidebar_panel::mac_sidebar_panel_layout(
-                panel,
-                font,
-                self.current_line_height,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-            )
-        } else {
-            // No font yet (called before first draw) — produce the
-            // layout using the toolbar_layout fallback path. Hosts
-            // that need accurate measurement must call this from
-            // inside a frame scope (or after `set_current_font`).
-            let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-            panel.layout(
-                bounds,
-                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(
-                    self.current_line_height as f32,
-                    self.current_char_width as f32,
-                ),
-                |_btn| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
-            )
-        }
+        // Issue #1003: no-paint twin of `draw_sidebar_panel_interactive`
+        // — must agree with what that method painted, so its header
+        // toolbar measures against `chrome_font` too. The old
+        // `current_font.is_none()` fallback is gone: `chrome_font` is
+        // never `None` (seeded at construction — see its field doc), so
+        // the "no font installed yet" case it guarded against cannot
+        // happen for chrome. `line_height` stays the editor pitch,
+        // matching `draw_sidebar_panel_interactive` above.
+        super::sidebar_panel::mac_sidebar_panel_layout(
+            panel,
+            &self.chrome_font,
+            self.current_line_height,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+        )
     }
 
     /// Override of the trait's no-op default (`Backend::draw_board`),
@@ -6263,5 +6270,150 @@ mod tests {
             assert!((p.bounds.x - c.bounds.x).abs() < 0.001);
             assert!((p.bounds.width - c.bounds.width).abs() < 0.001);
         }
+    }
+
+    /// Issue #1003 acceptance test: paint a `TreeView` through the real
+    /// `Backend::draw_tree` path and prove its painted row-label extent
+    /// tracks `set_ui_font`, not `set_editor_font` — the headline symptom
+    /// this issue was filed over (a file tree rendered in the editor's
+    /// monospace font instead of the system UI font every other native
+    /// app uses). Same shape as
+    /// `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
+    /// (`gtk/backend.rs`): paint the same single-row tree under two
+    /// wildly different *editor* font sizes with `ui_font` left at its
+    /// default — the painted extent must be identical — then change
+    /// `ui_font` alone as a positive control and see the extent move.
+    #[test]
+    fn draw_tree_uses_ui_font_not_editor_font() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
+
+        const W: u32 = 800;
+        const H: u32 = 40;
+
+        fn row_text_extent(editor: (&str, f32), ui_font: Option<&str>) -> u32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(1.0, 1.0, 1.0, 1.0);
+
+            let mut b = MacBackend::new();
+            Backend::set_editor_font(&mut b, editor.0, editor.1);
+            if let Some(f) = ui_font {
+                Backend::set_ui_font(&mut b, f);
+            }
+            // White `tab_bar_bg`/`background` so `draw_tree`'s own
+            // row-background fill doesn't itself read as "non-white" and
+            // saturate the rightmost-painted-pixel scan below — mirrors
+            // `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`.
+            b.set_current_theme(crate::Theme {
+                tab_bar_bg: Color::rgb(255, 255, 255),
+                background: Color::rgb(255, 255, 255),
+                foreground: Color::rgb(0, 0, 0),
+                ..crate::Theme::default()
+            });
+            b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+            let tree = TreeView {
+                id: WidgetId::new("test:tree"),
+                rows: vec![crate::primitives::tree::TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("m".to_string()),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Decoration::Normal,
+                    edit: None,
+                }],
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: TreeStyle::default(),
+                has_focus: false,
+            };
+            b.enter_frame_scope(surface.context_ptr(), |backend| {
+                backend.draw_tree(Rect::new(0.0, 0.0, W as f32, H as f32), &tree);
+            });
+            b.end_frame();
+
+            // Rightmost non-white pixel in row 0's vertical span — a
+            // proxy for the painted label's glyph extent. Row 0 starts
+            // at y=0 and `current_line_height` is comfortably above 10px
+            // for every font under test here.
+            let y = 10u32;
+            (0..W)
+                .rev()
+                .find(|&x| surface.pixel(x, y) != (255, 255, 255, 255))
+                .unwrap_or(0)
+        }
+
+        let small_editor_extent = row_text_extent(("Menlo", 8.0), None);
+        let large_editor_extent = row_text_extent(("Menlo", 60.0), None);
+        assert!(
+            small_editor_extent.abs_diff(large_editor_extent) <= 1,
+            "tree row glyph extent must be editor-font-size independent: \
+             small_editor={small_editor_extent}, large_editor={large_editor_extent}"
+        );
+
+        let ui_font_extent = row_text_extent(("Menlo", 8.0), Some("Helvetica 60"));
+        assert!(
+            ui_font_extent > small_editor_extent + 20,
+            "changing ui_font alone must visibly widen the painted row label: \
+             default_ui_font={small_editor_extent}, ui_font_Helvetica_60={ui_font_extent}"
+        );
+    }
+
+    /// Issue #1003: `menu_bar_layout`/`draw_menu_bar` twin of
+    /// `draw_tree_uses_ui_font_not_editor_font` above, using the returned
+    /// `MenuBarLayout`'s measured item width instead of a pixel scan —
+    /// `draw_menu_bar` hands back real geometry, so there is no need to
+    /// rasterise and re-measure.
+    #[test]
+    fn draw_menu_bar_uses_ui_font_not_editor_font() {
+        use super::super::headless::BitmapSurface;
+
+        const W: u32 = 800;
+        const H: u32 = 30;
+
+        fn item_width(editor: (&str, f32), ui_font: &str) -> f32 {
+            let surface = BitmapSurface::new(W, H);
+            let mut b = MacBackend::new();
+            Backend::set_editor_font(&mut b, editor.0, editor.1);
+            Backend::set_ui_font(&mut b, ui_font);
+            b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+            let bar = MenuBar {
+                id: WidgetId::new("test:menu-bar"),
+                items: vec![crate::MenuBarItem {
+                    id: WidgetId::new("test:menu-bar:file"),
+                    label: "&File".to_string(),
+                    disabled: false,
+                    submenu: None,
+                }],
+                open_item: None,
+                focused_item: None,
+            };
+            let width = std::cell::RefCell::new(0.0f32);
+            b.enter_frame_scope(surface.context_ptr(), |backend| {
+                let layout = backend.draw_menu_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
+                *width.borrow_mut() = layout.visible_items[0].bounds.width;
+            });
+            b.end_frame();
+            width.into_inner()
+        }
+
+        let w_small_editor = item_width(("Menlo", 10.0), "Helvetica 11");
+        let w_huge_editor = item_width(("Menlo", 80.0), "Helvetica 11");
+        assert!(
+            (w_small_editor - w_huge_editor).abs() < 0.5,
+            "menu bar item width must be unaffected by set_editor_font: \
+             {w_small_editor} vs {w_huge_editor}"
+        );
+
+        let w_small_chrome = item_width(("Menlo", 14.0), "Helvetica 8");
+        let w_huge_chrome = item_width(("Menlo", 14.0), "Helvetica 60");
+        assert!(
+            w_huge_chrome > w_small_chrome * 2.0,
+            "menu bar item width must grow with set_ui_font: {w_small_chrome} vs {w_huge_chrome}"
+        );
     }
 }
