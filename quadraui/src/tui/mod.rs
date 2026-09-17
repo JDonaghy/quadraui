@@ -97,7 +97,9 @@ pub use image::draw_image;
 pub use list::{draw_list, tui_list_layout};
 pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 pub use message_list::draw_message_list;
-pub use minimap::{draw_minimap, tui_minimap_layout};
+pub use minimap::{
+    draw_minimap, draw_minimap_with_scale, tui_minimap_layout, COLS_PER_CELL, LINES_PER_ROW,
+};
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 pub use palette::{draw_palette, tui_palette_layout};
 pub use panel::{draw_panel, tui_panel_layout};
