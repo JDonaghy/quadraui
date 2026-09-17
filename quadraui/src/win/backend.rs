@@ -991,7 +991,7 @@ impl WinBackend {
     /// doesn't also need to add the accessor.
     ///
     /// Issue #1003 audit (ask #4): of the 13 `ChromePrimitive`s
-    /// (`crate::primitives::font_role`) — the same 16-GTK-method /
+    /// (`crate::font_role`) — the same 16-GTK-method /
     /// 14-macOS-gap list #1003 was filed over — Win-GUI wires **0**. Every
     /// `draw_tree`/`draw_menu_bar`/`draw_status_bar_interactive`/etc.
     /// still measures and paints through `self.current_char_width`/

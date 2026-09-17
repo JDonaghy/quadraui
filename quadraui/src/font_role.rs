@@ -25,6 +25,18 @@
 //! TUI is deliberately absent from this picture — a terminal cell grid
 //! has one font by definition, so `FontRole` has nothing to say there
 //! (`quadraui::tui` has no `ui_font` concept at all, and correctly so).
+//!
+//! ## Why this module is not under `primitives/`
+//!
+//! It classifies primitives; it isn't one. There is no `FontRole`
+//! widget struct, no `*Layout`, no `hit_test`, no `Backend::draw_*`
+//! entry point — the same test `crate::A11yInfo` (#835) is held to. Its
+//! module would otherwise be counted as a 41st widget primitive by
+//! `readme_truth.rs`'s `lib_doc_states_the_real_primitive_count` /
+//! `root_readme_states_the_real_primitive_count`, which derive the
+//! crate's advertised primitive count from `primitives/mod.rs`'s
+//! `pub mod` list — making both docs claim a primitive that ships no
+//! widget. Keep new cross-cutting policy modules at the crate root.
 
 /// Which font a primitive paints in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
