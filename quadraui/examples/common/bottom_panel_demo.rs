@@ -218,27 +218,28 @@ impl ShellApp for BottomPanelDemo {
                 &InteractionState::new(),
             );
         }
+    }
 
-        // #997: the independently-gated status band, when visible.
-        let status_band = layout
-            .bottom_band_bounds
-            .iter()
-            .find(|(id, _)| *id == status_band_id())
-            .map(|(_, rect)| *rect);
-        if let Some(band) = status_band {
-            let bar = StatusBar {
-                id: WidgetId::new("bp-demo:status-band"),
-                left_segments: vec![StatusBarSegment {
-                    text: " STATUS: everything ok (press s to toggle) ".into(),
-                    fg: Color::rgb(230, 230, 230),
-                    bg: Color::rgb(40, 60, 40),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            backend.draw_status_bar_interactive(band, &bar, &InteractionState::new());
+    // #997: the independently-gated status band, when visible. A separate
+    // `ShellApp` hook (not read off `layout` in `render_content` above) —
+    // see `render_bottom_band`'s doc for why bottom-band bounds aren't a
+    // field on `AppShellLayout`.
+    fn render_bottom_band(&self, backend: &mut dyn Backend, id: &WidgetId, bounds: Rect) {
+        if *id != status_band_id() {
+            return;
         }
+        let bar = StatusBar {
+            id: WidgetId::new("bp-demo:status-band"),
+            left_segments: vec![StatusBarSegment {
+                text: " STATUS: everything ok (press s to toggle) ".into(),
+                fg: Color::rgb(230, 230, 230),
+                bg: Color::rgb(40, 60, 40),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        backend.draw_status_bar_interactive(bounds, &bar, &InteractionState::new());
     }
 
     fn handle(

@@ -516,12 +516,16 @@ impl<'a> ShellContext<'a> {
     /// Resolved bounds for one currently-visible [`BottomBand`]
     /// (issue #997), or `None` if `id` names no registered band or the
     /// band is not visible in the last computed layout.
+    ///
+    /// Reads [`AppShell::bottom_band_bounds`] rather than a field on
+    /// [`AppShellLayout`] — see that struct's doc for why bottom-band
+    /// bounds live there instead of on the layout snapshot.
     pub fn bottom_band_bounds(&self, id: &WidgetId) -> Option<Rect> {
-        self.layout
-            .bottom_band_bounds
-            .iter()
+        self.shell()
+            .bottom_band_bounds()
+            .into_iter()
             .find(|(band_id, _)| band_id == id)
-            .map(|(_, rect)| *rect)
+            .map(|(_, rect)| rect)
     }
 
     /// Check if a mouse position lands inside one currently-visible
@@ -634,6 +638,23 @@ pub trait ShellApp {
     /// already drawn its chrome (activity bar, sidebar header, divider);
     /// the consumer draws sidebar panel content + main content here.
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout);
+
+    /// Render one currently-visible [`crate::compose::app_shell::BottomBand`]
+    /// (issue #997). Called once per visible band, after `render_content`,
+    /// in the same bottom-up stacking order the band list was given.
+    ///
+    /// This is a separate hook rather than a field on [`AppShellLayout`]
+    /// deliberately: `AppShellLayout` is an all-`pub`-field struct a real
+    /// downstream consumer builds with an exhaustive struct literal (see
+    /// that struct's doc and `quadraui/tests/downstream_struct_literals.rs`),
+    /// so growing its field list breaks that call site. A new trait method
+    /// with a default (no-op) implementation is additive instead — see
+    /// `docs/PRIMITIVE_RULES.md` rule 8.
+    ///
+    /// Default: no-op — apps that never call
+    /// [`crate::compose::app_shell::AppShell::with_bottom_bands`] /
+    /// [`ShellConfig::bottom_bands`] are unaffected.
+    fn render_bottom_band(&self, _backend: &mut dyn Backend, _id: &WidgetId, _bounds: Rect) {}
 
     /// Handle events the shell didn't consume. The [`ShellContext`]
     /// provides the active panel ID and layout bounds so the consumer
