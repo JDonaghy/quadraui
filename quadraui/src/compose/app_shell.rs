@@ -49,6 +49,57 @@ pub struct PanelDefinition {
     pub title: String,
 }
 
+/// One independently-gated horizontal band stacked in the bottom chrome
+/// of the main content column (issue #997).
+///
+/// [`AppShell`] already models a single resizable bottom drawer
+/// ([`AppShell::with_bottom_panel`] / [`BottomPanelController`]) — the
+/// terminal-panel case. Some consumers (vimcode) stack several more bands
+/// below the editor content area at once: a terminal toolbar, a debug
+/// toolbar, a quickfix list, a wildmenu, a separated status row — each
+/// gated on its own boolean/state, not just a single shared height. A
+/// `BottomBand` models one such rung: present only when `visible` is
+/// `true`, sized independently via `height_lh`.
+///
+/// [`AppShell::with_bottom_bands`] takes an ordered `Vec<BottomBand>`.
+/// Bands are stacked **bottom-up**: `bottom_bands[0]` sits flush against
+/// the bottom edge of the main content column, `bottom_bands[1]` sits
+/// directly above it, and so on. The legacy single [`AppShell::with_bottom_panel`]
+/// drawer (if configured) docks *above* every `BottomBand`, closest to
+/// remaining main content — i.e. it behaves as if it were one more,
+/// implicit band stacked on top of the list. This keeps every existing
+/// `with_bottom_panel` consumer's layout byte-for-byte unchanged when
+/// `bottom_bands` is empty (the default).
+///
+/// [`BottomPanelController`]: crate::compose::bottom_panel::BottomPanelController
+#[derive(Debug, Clone, PartialEq)]
+pub struct BottomBand {
+    /// Identifies this band in [`AppShellLayout::bottom_band_bounds`] and
+    /// in [`AppShell::set_bottom_band_visible`] / [`AppShell::set_bottom_band_height`].
+    pub id: WidgetId,
+    /// Whether this band currently occupies space. `false` removes it
+    /// from the stack entirely for this frame (the bands above and below
+    /// close the gap) — this is the "independent presence" gating vimcode
+    /// needs (a quickfix list that only exists while quickfix is open),
+    /// not just a height of zero.
+    pub visible: bool,
+    /// Band height in line-height multiples (matching every other
+    /// `*_height_lh` field on [`AppShell`]) — portable across TUI (cells)
+    /// and GUI (pixels) backends.
+    pub height_lh: f32,
+}
+
+impl BottomBand {
+    /// Construct a visible band with the given id and height.
+    pub fn new(id: WidgetId, height_lh: f32) -> Self {
+        Self {
+            id,
+            visible: true,
+            height_lh,
+        }
+    }
+}
+
 /// Which side of the viewport the activity bar + sidebar sit on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShellPosition {
@@ -86,6 +137,15 @@ pub struct AppShellLayout {
     pub divider_bounds: Option<Rect>,
     pub main_content_bounds: Rect,
     pub bottom_panel_bounds: Option<Rect>,
+    /// Resolved bounds for every currently-`visible` [`BottomBand`]
+    /// registered via [`AppShell::with_bottom_bands`], in the same
+    /// bottom-up order the config list was given (index 0 = flush against
+    /// the bottom edge of the main content column). Bands with
+    /// `visible == false` have no entry here — they occupy no space this
+    /// frame, so there is nothing to hand back. Empty when
+    /// `with_bottom_bands` was never called, so nothing that predates
+    /// this field changes behavior (#997).
+    pub bottom_band_bounds: Vec<(WidgetId, Rect)>,
     pub command_line_bounds: Option<Rect>,
     pub status_bar_bounds: Option<Rect>,
 }
@@ -128,6 +188,11 @@ pub struct AppShell {
     has_command_line: bool,
     has_status_bar: bool,
     bottom_panel_drag_offset: Option<f32>,
+    /// Independently-gated bottom bands (issue #997), stacked bottom-up
+    /// below the legacy single bottom-panel drawer. Empty by default —
+    /// see [`BottomBand`]'s doc for the stacking order and the
+    /// backward-compat guarantee.
+    bottom_bands: Vec<BottomBand>,
     /// Cached hit regions from the last `render()` call. `handle()`
     /// dispatches clicks against these so paint and click agree on
     /// row positions — the structural fix for the GTK ACTIVITY_ROW_PX
@@ -183,6 +248,7 @@ impl AppShell {
             has_command_line: false,
             has_status_bar: false,
             bottom_panel_drag_offset: None,
+            bottom_bands: Vec::new(),
             cached_activity_hits: RefCell::new(Vec::new()),
             cached_activity_bar_bounds: RefCell::new(None),
             activity_keyboard_focused: false,
@@ -297,6 +363,17 @@ impl AppShell {
     pub fn with_bottom_panel_limits(mut self, min: f32, max: f32) -> Self {
         self.min_bottom_panel_height_lh = min;
         self.max_bottom_panel_height_lh = max;
+        self
+    }
+
+    /// Register the ordered list of independently-gated bottom bands
+    /// (issue #997). See [`BottomBand`] for the stacking order and how
+    /// this interacts with [`Self::with_bottom_panel`].
+    ///
+    /// Replaces any previously-registered list. `Vec::new()` (the
+    /// default) fully restores the pre-#997 single-drawer layout.
+    pub fn with_bottom_bands(mut self, bands: Vec<BottomBand>) -> Self {
+        self.bottom_bands = bands;
         self
     }
 
@@ -501,6 +578,50 @@ impl AppShell {
             self.min_bottom_panel_height_lh,
             self.max_bottom_panel_height_lh,
         );
+    }
+
+    // ── Bottom bands (#997) ──────────────────────────────────────────
+
+    /// The currently-registered bottom bands, in bottom-up stacking order
+    /// (see [`BottomBand`]). Includes bands with `visible == false` — use
+    /// [`AppShellLayout::bottom_band_bounds`] to see which ones actually
+    /// occupied space in the last computed layout.
+    pub fn bottom_bands(&self) -> &[BottomBand] {
+        &self.bottom_bands
+    }
+
+    /// Look up one registered band by id.
+    pub fn bottom_band(&self, id: &WidgetId) -> Option<&BottomBand> {
+        self.bottom_bands.iter().find(|b| &b.id == id)
+    }
+
+    /// Flip one band's presence at runtime (e.g. a quickfix list that
+    /// opens/closes independently of every other bottom band). Returns
+    /// `false` if no band with `id` was registered via
+    /// [`Self::with_bottom_bands`].
+    pub fn set_bottom_band_visible(&mut self, id: &WidgetId, visible: bool) -> bool {
+        match self.bottom_bands.iter_mut().find(|b| &b.id == id) {
+            Some(b) => {
+                b.visible = visible;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Resize one band at runtime. Returns `false` if no band with `id`
+    /// was registered via [`Self::with_bottom_bands`]. Unlike the legacy
+    /// single bottom panel, bands have no configurable min/max — callers
+    /// own their own clamping (the toolbars/lists vimcode stacks here
+    /// generally have a fixed content-driven height, not a user drag).
+    pub fn set_bottom_band_height(&mut self, id: &WidgetId, height_lh: f32) -> bool {
+        match self.bottom_bands.iter_mut().find(|b| &b.id == id) {
+            Some(b) => {
+                b.height_lh = height_lh.max(0.0);
+                true
+            }
+            None => false,
+        }
     }
 
     // ── Dynamic panel registration ──────────────────────────────────
@@ -948,17 +1069,38 @@ impl AppShell {
 
         let band_h = band_h.max(0.0);
 
-        // Split a main-column rect into (content_above, bottom_panel).
-        let carve_bottom_panel = |main: Rect| -> (Rect, Option<Rect>) {
-            match bottom_panel_h {
-                Some(h) => {
-                    let h = h.min(main.height);
-                    let above = Rect::new(main.x, main.y, main.width, (main.height - h).max(0.0));
-                    let panel = Rect::new(main.x, main.y + main.height - h, main.width, h);
-                    (above, Some(panel))
+        // Split a main-column rect into (content_above, bottom_panel + N
+        // bottom_bands). Bottom bands (#997) are carved first, stacked
+        // bottom-up flush against `main`'s bottom edge in list order (index
+        // 0 lowest); the legacy single bottom-panel drawer is then carved
+        // from what remains, so it always sits directly above every band —
+        // i.e. it behaves as one more, implicit band on top of the list.
+        // With `bottom_bands` empty (the default) this reduces to exactly
+        // the pre-#997 single-drawer carve.
+        let carve_bottom_chrome = |main: Rect| -> (Rect, Vec<(WidgetId, Rect)>, Option<Rect>) {
+            let mut remaining = main;
+            let mut band_bounds = Vec::new();
+            for band in &self.bottom_bands {
+                if !band.visible {
+                    continue;
                 }
-                None => (main, None),
+                let h = (band.height_lh * lh).round().clamp(0.0, remaining.height);
+                let above_h = (remaining.height - h).max(0.0);
+                let rect = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
+                remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
+                band_bounds.push((band.id.clone(), rect));
             }
+            let bottom_panel_bounds = match bottom_panel_h {
+                Some(h) => {
+                    let h = h.min(remaining.height);
+                    let above_h = (remaining.height - h).max(0.0);
+                    let panel = Rect::new(remaining.x, remaining.y + above_h, remaining.width, h);
+                    remaining = Rect::new(remaining.x, remaining.y, remaining.width, above_h);
+                    Some(panel)
+                }
+                None => None,
+            };
+            (remaining, band_bounds, bottom_panel_bounds)
         };
 
         // ── Horizontal carve: activity bar + sidebar + divider + main ──
@@ -982,7 +1124,8 @@ impl AppShell {
                     )
                 }
             };
-            let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
+            let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
+                carve_bottom_chrome(main_bounds);
             return AppShellLayout {
                 window_bounds: area,
                 title_bar_bounds,
@@ -992,6 +1135,7 @@ impl AppShell {
                 divider_bounds: None,
                 main_content_bounds: main_bounds,
                 bottom_panel_bounds,
+                bottom_band_bounds,
                 command_line_bounds,
                 status_bar_bounds,
             };
@@ -1019,7 +1163,8 @@ impl AppShell {
                 let main_x = div_x + divider_w;
                 let main_w = (area.x + area.width - main_x).max(0.0);
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
-                let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
+                let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
+                    carve_bottom_chrome(main_bounds);
 
                 AppShellLayout {
                     window_bounds: area,
@@ -1030,6 +1175,7 @@ impl AppShell {
                     divider_bounds: Some(div_bounds),
                     main_content_bounds: main_bounds,
                     bottom_panel_bounds,
+                    bottom_band_bounds,
                     command_line_bounds,
                     status_bar_bounds,
                 }
@@ -1048,7 +1194,8 @@ impl AppShell {
                 let main_x = area.x;
                 let main_w = (div_x - area.x).max(0.0);
                 let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
-                let (main_bounds, bottom_panel_bounds) = carve_bottom_panel(main_bounds);
+                let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
+                    carve_bottom_chrome(main_bounds);
 
                 AppShellLayout {
                     window_bounds: area,
@@ -1059,6 +1206,7 @@ impl AppShell {
                     divider_bounds: Some(div_bounds),
                     main_content_bounds: main_bounds,
                     bottom_panel_bounds,
+                    bottom_band_bounds,
                     command_line_bounds,
                     status_bar_bounds,
                 }
@@ -2272,5 +2420,120 @@ mod tests {
             "hiding the title bar should hand its row back to content: \
              hidden={hidden_main_h}, visible={visible_main_h}"
         );
+    }
+
+    // ── Bottom bands (#997) ──────────────────────────────────────────
+
+    fn band(id: &str, height_lh: f32) -> BottomBand {
+        BottomBand::new(WidgetId::new(id), height_lh)
+    }
+
+    /// With no bands registered, `bottom_band_bounds` stays empty and the
+    /// existing single-drawer layout is unaffected — the whole point of
+    /// making this additive (#997).
+    #[test]
+    fn no_bands_by_default_layout_unchanged() {
+        let s = full_chrome_shell();
+        let l = s.layout(area(), 1.0);
+        assert!(l.bottom_band_bounds.is_empty());
+        assert!(l.bottom_panel_bounds.is_some());
+    }
+
+    /// Two visible bands stack bottom-up: band 0 flush against the main
+    /// column's bottom edge, band 1 directly above it.
+    #[test]
+    fn bands_stack_bottom_up_in_list_order() {
+        let s = shell().with_bottom_bands(vec![band("band:wildmenu", 1.0), band("band:qf", 3.0)]);
+        let l = s.layout(area(), 1.0);
+        assert_eq!(l.bottom_band_bounds.len(), 2);
+
+        let (id0, r0) = &l.bottom_band_bounds[0];
+        let (id1, r1) = &l.bottom_band_bounds[1];
+        assert_eq!(*id0, WidgetId::new("band:wildmenu"));
+        assert_eq!(*id1, WidgetId::new("band:qf"));
+
+        // band 0 (wildmenu) sits flush against the shell's bottom edge —
+        // `shell()` reserves no status bar / command line, so that edge is
+        // the viewport's own bottom edge.
+        let main = l.main_content_bounds;
+        assert!((r0.y + r0.height - (area().y + area().height)).abs() < 0.01);
+        assert_eq!(r0.height, 1.0);
+        assert_eq!(r1.height, 3.0);
+        // band 1 sits directly above band 0, with no gap or overlap.
+        assert!((r1.y + r1.height - r0.y).abs() < 0.01);
+        // Both share the main column's x/width, not the full viewport.
+        assert_eq!(r0.x, main.x);
+        assert_eq!(r0.width, main.width);
+        assert_eq!(r1.x, main.x);
+        assert_eq!(r1.width, main.width);
+    }
+
+    /// A band with `visible: false` occupies no space — presence gating,
+    /// not just a height of zero. The remaining bands close the gap.
+    #[test]
+    fn invisible_band_is_absent_from_layout_and_closes_the_gap() {
+        let mut hidden = band("band:qf", 3.0);
+        hidden.visible = false;
+        let s = shell().with_bottom_bands(vec![band("band:wildmenu", 1.0), hidden]);
+        let l = s.layout(area(), 1.0);
+        assert_eq!(l.bottom_band_bounds.len(), 1);
+        assert_eq!(l.bottom_band_bounds[0].0, WidgetId::new("band:wildmenu"));
+
+        // Main content only lost the visible band's height, not both.
+        let baseline = shell().layout(area(), 1.0).main_content_bounds.height;
+        assert_eq!(l.main_content_bounds.height, baseline - 1.0);
+    }
+
+    /// The legacy single bottom-panel drawer docks directly above every
+    /// bottom band — i.e. it behaves as one more, implicit band stacked
+    /// on top of the list, not underneath or interleaved with it.
+    #[test]
+    fn legacy_bottom_panel_docks_above_all_bands() {
+        let s = full_chrome_shell().with_bottom_bands(vec![band("band:status", 1.0)]);
+        let l = s.layout(area(), 1.0);
+        let bp = l
+            .bottom_panel_bounds
+            .expect("full_chrome_shell has a panel");
+        assert_eq!(l.bottom_band_bounds.len(), 1);
+        let (_, band_rect) = &l.bottom_band_bounds[0];
+
+        // Band sits below the panel, flush with the main column's original
+        // bottom edge; the panel sits directly above the band.
+        assert!((bp.y + bp.height - band_rect.y).abs() < 0.01);
+    }
+
+    /// `set_bottom_band_visible`/`set_bottom_band_height` mutate the named
+    /// band and report `false` for an unknown id, mirroring
+    /// `close_tab`/`activate_tab`'s "not found" contract in
+    /// `BottomPanelController`.
+    #[test]
+    fn set_bottom_band_visible_and_height_mutate_by_id() {
+        let mut s = shell().with_bottom_bands(vec![band("band:qf", 3.0)]);
+        let id = WidgetId::new("band:qf");
+
+        assert!(s.set_bottom_band_visible(&id, false));
+        assert!(!s.bottom_band(&id).unwrap().visible);
+        assert!(s.layout(area(), 1.0).bottom_band_bounds.is_empty());
+
+        assert!(s.set_bottom_band_visible(&id, true));
+        assert!(s.set_bottom_band_height(&id, 5.0));
+        assert_eq!(s.bottom_band(&id).unwrap().height_lh, 5.0);
+        assert_eq!(s.layout(area(), 1.0).bottom_band_bounds[0].1.height, 5.0);
+
+        let unknown = WidgetId::new("band:nope");
+        assert!(!s.set_bottom_band_visible(&unknown, true));
+        assert!(!s.set_bottom_band_height(&unknown, 2.0));
+    }
+
+    /// A band taller than the available main-content height clamps to
+    /// fill it rather than producing a negative-height remainder — same
+    /// defensive clamp the legacy single-drawer carve already applies.
+    #[test]
+    fn oversized_band_clamps_to_available_height() {
+        let s = shell().with_bottom_bands(vec![band("band:huge", 9999.0)]);
+        let l = s.layout(area(), 1.0);
+        assert_eq!(l.bottom_band_bounds.len(), 1);
+        assert_eq!(l.main_content_bounds.height, 0.0);
+        assert!(l.bottom_band_bounds[0].1.height > 0.0);
     }
 }

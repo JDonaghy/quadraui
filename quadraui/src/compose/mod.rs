@@ -72,7 +72,9 @@ pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 pub mod workspace;
 
-pub use app_shell::{AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition};
+pub use app_shell::{
+    AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellPosition,
+};
 pub use bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
     BottomPanelTab,

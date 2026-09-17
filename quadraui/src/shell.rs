@@ -9,7 +9,7 @@
 use std::cell::{Cell, Ref, RefCell, RefMut};
 
 use crate::compose::app_shell::{
-    AppShell, AppShellEvent, AppShellLayout, PanelDefinition, ShellPosition,
+    AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellPosition,
 };
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
@@ -82,6 +82,19 @@ pub struct ShellConfig {
     /// region — no need to also call [`Self::with_bottom_panel`] unless you
     /// want to tune the height via the old API as well.
     pub bottom_panel: Option<BottomPanelConfig>,
+    /// Independently-gated bottom bands stacked below the editor content
+    /// area, generalizing the single `bottom_panel`/`bottom_panel`-drawer
+    /// model to **N** rungs (issue #997) — e.g. a terminal toolbar, a
+    /// debug toolbar, a quickfix list, a wildmenu, a separated status row,
+    /// each present/sized independently of the others. Empty by default,
+    /// so nothing that predates this field changes behavior. See
+    /// [`BottomBand`] for the stacking order and how this interacts with
+    /// [`Self::bottom_panel`] / [`Self::with_bottom_panel`]. Set via
+    /// [`Self::with_bottom_bands`]; toggle presence/height at runtime via
+    /// `ctx.shell_mut().set_bottom_band_visible(...)` /
+    /// `set_bottom_band_height(...)` ([`AppShell`]'s own methods, reached
+    /// through [`ShellContext::shell_mut`]).
+    pub bottom_bands: Vec<BottomBand>,
     /// Editor font override: `(family, size_pt)`. `None` (the default)
     /// leaves each backend's built-in default in place (GTK:
     /// `"Monospace 11"`; TUI: fixed-cell, no font concept — the value is
@@ -151,6 +164,7 @@ impl ShellConfig {
             has_command_line: false,
             has_status_bar: false,
             bottom_panel: None,
+            bottom_bands: Vec::new(),
             editor_font: None,
             app_id: "org.quadraui.app".to_string(),
             icon_name: None,
@@ -239,6 +253,17 @@ impl ShellConfig {
     /// instead when you only need a bare unstyled region below main content.
     pub fn with_bottom_panel_config(mut self, config: BottomPanelConfig) -> Self {
         self.bottom_panel = Some(config);
+        self
+    }
+
+    /// Register the ordered list of independently-gated bottom bands
+    /// (issue #997) — see [`Self::bottom_bands`] / [`BottomBand`].
+    ///
+    /// Replaces any previously-registered list. Combine freely with
+    /// [`Self::with_bottom_panel`] / [`Self::with_bottom_panel_config`]:
+    /// the legacy drawer always docks directly above these bands.
+    pub fn with_bottom_bands(mut self, bands: Vec<BottomBand>) -> Self {
+        self.bottom_bands = bands;
         self
     }
 
@@ -486,6 +511,23 @@ impl<'a> ShellContext<'a> {
     /// Bottom panel bounds.
     pub fn bottom_panel_bounds(&self) -> Option<Rect> {
         self.layout.bottom_panel_bounds
+    }
+
+    /// Resolved bounds for one currently-visible [`BottomBand`]
+    /// (issue #997), or `None` if `id` names no registered band or the
+    /// band is not visible in the last computed layout.
+    pub fn bottom_band_bounds(&self, id: &WidgetId) -> Option<Rect> {
+        self.layout
+            .bottom_band_bounds
+            .iter()
+            .find(|(band_id, _)| band_id == id)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Check if a mouse position lands inside one currently-visible
+    /// [`BottomBand`] (issue #997).
+    pub fn in_bottom_band(&self, id: &WidgetId, x: f32, y: f32) -> bool {
+        rect_contains_opt(self.bottom_band_bounds(id), x, y)
     }
 
     /// Title bar bounds.
@@ -831,6 +873,49 @@ mod tests {
                 (WidgetId::new("panel:settings"), Icon::new("\u{f013}", "S")),
             ]
         );
+    }
+
+    /// #997: a fresh `ShellConfig` registers no bottom bands — nothing
+    /// that predates this field changes behavior.
+    #[test]
+    fn shell_config_bottom_bands_defaults_to_empty() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert!(config.bottom_bands.is_empty());
+    }
+
+    /// #997: `with_bottom_bands` stores the ordered list verbatim for
+    /// `build_shell_adapter` to replay onto the `AppShell`.
+    #[test]
+    fn shell_config_with_bottom_bands_stores_the_list() {
+        let bands = vec![
+            BottomBand::new(WidgetId::new("band:qf"), 3.0),
+            BottomBand::new(WidgetId::new("band:wildmenu"), 1.0),
+        ];
+        let config = ShellConfig::new("test", Vec::new()).with_bottom_bands(bands.clone());
+        assert_eq!(config.bottom_bands, bands);
+    }
+
+    /// #997: `ShellContext::bottom_band_bounds`/`in_bottom_band` resolve
+    /// against a band registered on the underlying `AppShell`, mirroring
+    /// the existing `bottom_panel_bounds`/`in_bottom_panel` accessors.
+    #[test]
+    fn shell_context_resolves_bottom_band_bounds_and_hit_test() {
+        let band_id = WidgetId::new("band:qf");
+        let mut shell = AppShell::new(Vec::new(), 20.0)
+            .with_bottom_bands(vec![BottomBand::new(band_id.clone(), 2.0)]);
+        let layout = shell.layout(Rect::new(0.0, 0.0, 100.0, 40.0), 1.0);
+        let c = ctx(&layout, &mut shell);
+
+        let bounds = c
+            .bottom_band_bounds(&band_id)
+            .expect("registered band has bounds");
+        assert_eq!(bounds.height, 2.0);
+        assert!(c.in_bottom_band(&band_id, bounds.x + 1.0, bounds.y + 0.5));
+        assert!(!c.in_bottom_band(&band_id, bounds.x + 1.0, bounds.y - 1.0));
+
+        let unknown = WidgetId::new("band:nope");
+        assert!(c.bottom_band_bounds(&unknown).is_none());
+        assert!(!c.in_bottom_band(&unknown, 0.0, 0.0));
     }
 
     #[test]

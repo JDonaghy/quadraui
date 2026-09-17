@@ -1,4 +1,5 @@
-//! Demo: AppShell with a bottom panel tab strip.
+//! Demo: AppShell with a bottom panel tab strip plus an independently-gated
+//! bottom band (issue #997).
 //!
 //! Demonstrates `ShellConfig.with_bottom_panel_config()`:
 //! - Two tabs ("TERMINAL" and "PROBLEMS") with a `BackendWidget` each.
@@ -7,9 +8,15 @@
 //! - Click `^` to maximise/restore.
 //! - Drag the resize grip (top edge of the panel) to change its height.
 //!
+//! Also demonstrates `ShellConfig.with_bottom_bands()` (#997): a one-line
+//! "STATUS" band docked directly below the tabbed panel, independent of it
+//! — closing/maximising the tabbed panel above does not affect the band,
+//! and the band's own presence is gated separately:
+//! - Press `s` to toggle the status band's visibility.
+//!
 //! `q` / Esc quits.
 
-use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, BottomBand, PanelDefinition};
 use quadraui::compose::bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
 };
@@ -17,6 +24,11 @@ use quadraui::{
     Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
     ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
+
+/// Id of the demo's one `BottomBand` (issue #997).
+pub fn status_band_id() -> WidgetId {
+    WidgetId::new("band:status")
+}
 
 // ── Content widgets ───────────────────────────────────────────────────────────
 
@@ -148,6 +160,11 @@ impl BottomPanelDemo {
             maximised: false,
             height_fraction: 0.3,
         })
+        // #997: an independently-gated band, separate from the tabbed
+        // panel above — closing/maximising the panel doesn't touch this,
+        // and its own visibility toggles independently (see `handle`'s
+        // `s` binding below).
+        .with_bottom_bands(vec![BottomBand::new(status_band_id(), 1.0)])
     }
 }
 
@@ -201,19 +218,54 @@ impl ShellApp for BottomPanelDemo {
                 &InteractionState::new(),
             );
         }
+
+        // #997: the independently-gated status band, when visible.
+        let status_band = layout
+            .bottom_band_bounds
+            .iter()
+            .find(|(id, _)| *id == status_band_id())
+            .map(|(_, rect)| *rect);
+        if let Some(band) = status_band {
+            let bar = StatusBar {
+                id: WidgetId::new("bp-demo:status-band"),
+                left_segments: vec![StatusBarSegment {
+                    text: " STATUS: everything ok (press s to toggle) ".into(),
+                    fg: Color::rgb(230, 230, 230),
+                    bg: Color::rgb(40, 60, 40),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            backend.draw_status_bar_interactive(band, &bar, &InteractionState::new());
+        }
     }
 
     fn handle(
         &mut self,
         event: UiEvent,
         _backend: &mut dyn Backend,
-        _ctx: &ShellContext,
+        ctx: &ShellContext,
     ) -> Reaction {
         match &event {
             UiEvent::KeyPressed {
                 key: Key::Char('q') | Key::Named(NamedKey::Escape),
                 ..
             } => Reaction::Exit,
+            UiEvent::KeyPressed {
+                key: Key::Char('s'),
+                ..
+            } => {
+                let id = status_band_id();
+                let currently_visible = ctx
+                    .shell()
+                    .bottom_band(&id)
+                    .map(|b| b.visible)
+                    .unwrap_or(false);
+                ctx.shell_mut()
+                    .set_bottom_band_visible(&id, !currently_visible);
+                Reaction::Redraw
+            }
             _ => Reaction::Continue,
         }
     }

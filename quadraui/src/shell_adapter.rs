@@ -141,7 +141,8 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         .with_min_width(config.min_sidebar_width)
         .with_max_width(config.max_sidebar_width)
         .with_activity_bar_width(config.activity_bar_width)
-        .with_position(config.position);
+        .with_position(config.position)
+        .with_bottom_bands(config.bottom_bands);
 
     // #914: replay every `ShellConfig::with_panel_icon` override onto the
     // built `AppShell`. Before this loop existed, `ShellConfig.panel_icons`
@@ -611,6 +612,25 @@ mod tests {
             Icon::new("\u{f013}", "\u{25a0}"),
             "bottom-item override must reach the built AppShell too (#683 parity)"
         );
+    }
+
+    /// #997: `ShellConfig::bottom_bands` reaches the built `AppShell` —
+    /// before this call was added to `build_shell_adapter`, a
+    /// `ShellApp`-based consumer had no path to the new N-band layout at
+    /// all (only a direct `AppShell::with_bottom_bands` chain, i.e.
+    /// quadraui's own tests/examples).
+    #[test]
+    fn build_shell_adapter_replays_bottom_bands() {
+        use crate::compose::app_shell::BottomBand;
+
+        let band_id = WidgetId::new("band:qf");
+        let config = ShellConfig::new("t", Vec::new())
+            .with_bottom_bands(vec![BottomBand::new(band_id.clone(), 3.0)]);
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        assert_eq!(adapter.shell.bottom_bands().len(), 1);
+        assert_eq!(adapter.shell.bottom_bands()[0].id, band_id);
+        assert_eq!(adapter.shell.bottom_bands()[0].height_lh, 3.0);
     }
 
     #[test]
