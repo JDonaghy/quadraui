@@ -871,6 +871,50 @@ impl GtkBackend {
         &self.current_theme
     }
 
+    /// Issue #1016: push the app's chosen theme into GTK's own
+    /// `gtk-application-prefer-dark-theme` setting, so native GTK chrome
+    /// that this crate doesn't rasterise itself (the file dialog, as of
+    /// this writing — see the issue's "Small surface" note) follows the
+    /// app's colours instead of the desktop default. This is the *push*
+    /// direction; [`crate::gtk::services`]'s `system_theme` (#952) is the
+    /// complementary *read* direction (OS → app), and landing one does
+    /// not cover the other.
+    ///
+    /// Two vimcode call sites (`App::new`, and its colourscheme-change
+    /// handler) used to reach for `gtk4::Settings` directly to do exactly
+    /// this by hand; this method is what lets them delete that and rely
+    /// on `Backend::set_theme` instead.
+    ///
+    /// Uses the parented window's own display when one is attached,
+    /// falling back to [`gtk4::gdk::Display::default`] otherwise — the
+    /// same fallback chain [`Self::window_drag_threshold_px`] and
+    /// `GtkPlatformServices::beep`/`system_theme` use. No-op when neither
+    /// exists (headless CI, no display connection): there is no
+    /// `gtk4::Settings` to push into, and `set_theme`'s cached
+    /// `current_theme` (which every rasteriser reads) is already updated
+    /// by [`Self::set_current_theme`] regardless.
+    fn push_native_theme_preference(&self, theme: crate::Theme) {
+        // `gtk4::Settings::default()`/`for_display` both assert
+        // `gtk4::init()` already ran (they panic, not `None`, when it
+        // hasn't — see `assert_initialized_main_thread!` in gtk4-rs).
+        // `GtkBackend` itself is constructible (and `Backend::set_theme`
+        // callable) without a live GTK runtime — every paint/click unit
+        // test in this module does exactly that — so this guard is load-
+        // bearing, not defensive dead code.
+        if !gtk4::is_initialized_main_thread() {
+            return;
+        }
+        let settings = match self.window.as_ref() {
+            Some(w) => Some(gtk4::Settings::for_display(
+                &gtk4::prelude::WidgetExt::display(w),
+            )),
+            None => gtk4::Settings::default(),
+        };
+        if let Some(settings) = settings {
+            settings.set_gtk_application_prefer_dark_theme(theme_prefers_dark(theme));
+        }
+    }
+
     /// Return the `WidgetId` of the `ActivityBar` that declared
     /// `is_keyboard_focused = true` during the most recent render pass,
     /// or `None` if no bar is focused. Called by the GTK runner's key
@@ -1574,6 +1618,20 @@ fn pointer_shape_cursor_name(shape: PointerShape) -> &'static str {
     }
 }
 
+/// Whether `theme` reads as a dark theme, for
+/// [`GtkBackend::push_native_theme_preference`] (#1016). `crate::Theme`
+/// has no `is_light`/`is_dark` of its own (see that struct's doc on why
+/// new fields are avoided), so this derives it from `background`'s
+/// perceptual luminance — the same ITU-R BT.601 luma formula and 50%
+/// threshold `win::services::system_theme_from_ui_colors` uses for the
+/// read direction, so both backends agree on where the light/dark line
+/// falls for the same colour.
+fn theme_prefers_dark(theme: crate::Theme) -> bool {
+    let bg = theme.background;
+    let luma = (bg.r as u32 * 299 + bg.g as u32 * 587 + bg.b as u32 * 114) / 1000;
+    luma < 128
+}
+
 impl crate::backend::sealed::Sealed for GtkBackend {}
 
 impl Backend for GtkBackend {
@@ -1638,6 +1696,7 @@ impl Backend for GtkBackend {
 
     fn set_theme(&mut self, theme: crate::Theme) {
         self.set_current_theme(theme);
+        self.push_native_theme_preference(theme);
     }
 
     fn set_nerd_fonts(&mut self, enabled: bool) {
@@ -8772,5 +8831,41 @@ mod tests {
                 theme.scrollbar_track.b
             ),
         );
+    }
+
+    // ── theme_prefers_dark (#1016) ───────────────────────────────────────
+    //
+    // Pure luma mapping, unit-tested without a live GTK display —
+    // mirrors `gtk::services::system_theme_from_gtk_settings_reports_*`'s
+    // posture for the read-direction counterpart (#952). The actual
+    // `gtk4::Settings::set_gtk_application_prefer_dark_theme` push in
+    // `push_native_theme_preference` needs a live display connection and
+    // isn't covered by an automated test here — see this issue's
+    // SMOKE_TESTS.
+
+    #[test]
+    fn theme_prefers_dark_reports_dark_for_a_black_background() {
+        let theme = crate::Theme {
+            background: crate::types::Color::rgb(0, 0, 0),
+            ..crate::Theme::default()
+        };
+        assert!(theme_prefers_dark(theme));
+    }
+
+    #[test]
+    fn theme_prefers_dark_reports_light_for_a_white_background() {
+        let theme = crate::Theme {
+            background: crate::types::Color::rgb(255, 255, 255),
+            ..crate::Theme::default()
+        };
+        assert!(!theme_prefers_dark(theme));
+    }
+
+    #[test]
+    fn theme_prefers_dark_matches_the_default_dark_theme() {
+        // `Theme::default()` is documented as "a coherent dark palette"
+        // (its own doc comment) — this pins that the derived dark/light
+        // read agrees with that claim.
+        assert!(theme_prefers_dark(crate::Theme::default()));
     }
 }
