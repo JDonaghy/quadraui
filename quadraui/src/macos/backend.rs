@@ -1277,22 +1277,38 @@ impl Backend for MacBackend {
         self.parsed_accelerators.retain(|(_, eid)| eid != id);
     }
 
+    /// Issue #930: this used to `.expect()` the `MainThreadMarker`, which
+    /// panics whenever called off the main thread. Every *real* call site
+    /// (`macos::shell_runner`) is already on the main thread, so that
+    /// never fired in production — but Rust's test runner hands every
+    /// `#[test]` fn its own spawned thread, so any harness driving
+    /// `ShellApp::setup` through a call to this method panicked, taking
+    /// down a `setup()` that has nothing else to do with menus. The five
+    /// sibling helpers in [`super::menu_bar_install`] already degrade
+    /// gracefully (`let Some(mtm) = MainThreadMarker::new() else { ... }`)
+    /// instead of panicking; this matches that shape — a silent no-op
+    /// off the main thread, same posture as `request_frame_in`'s
+    /// "no callback yet" no-op above.
     fn install_menu_bar(&mut self, bar: &crate::primitives::menu_bar::MenuBar) {
-        let mtm = objc2_foundation::MainThreadMarker::new()
-            .expect("MacBackend::install_menu_bar must be called from the main thread");
+        let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+            return;
+        };
         // Replacing wholesale — the previous target drops when this
         // assignment runs, after the new menu is installed.
         let target = super::menu_bar_install::install_menu_bar(mtm, bar, self.events.clone());
         self.menu_target = Some(target);
     }
 
+    /// See [`Self::install_menu_bar`]'s doc (#930) — same off-main-thread
+    /// degradation, same rationale.
     fn show_context_menu(
         &mut self,
         menu: &crate::primitives::context_menu::ContextMenu,
         anchor: crate::event::Point,
     ) {
-        let mtm = objc2_foundation::MainThreadMarker::new()
-            .expect("MacBackend::show_context_menu must be called from the main thread");
+        let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+            return;
+        };
         // Blocks on AppKit's modal pop-up loop until the user picks
         // an item or dismisses; pushes `ContextMenuItemActivated` /
         // `ContextMenuDismissed` onto the events queue.
@@ -3883,6 +3899,63 @@ mod tests {
             crate::event::Rect::new(0.0, 0.0, 10.0, 5.0),
         );
         assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// Regression test for #930: `install_menu_bar` used to
+    /// `.expect()` a `MainThreadMarker`, which panics on any thread
+    /// other than the real OS main thread. `MacBackend` itself is
+    /// `!Send` (it carries `Rc<RefCell<_>>` state), so this builds the
+    /// backend *inside* the spawned thread rather than moving one in —
+    /// what matters is that `install_menu_bar` runs somewhere that is
+    /// provably not the main thread, which every `std::thread::spawn`
+    /// worker satisfies.
+    ///
+    /// Before the fix this `.join()` would return `Err` (the spawned
+    /// thread panicked). After the fix it degrades exactly like its
+    /// sibling helpers in `menu_bar_install.rs`: a silent no-op, no
+    /// `menu_target` retained.
+    #[test]
+    fn install_menu_bar_off_main_thread_does_not_panic() {
+        let bar = crate::primitives::menu_bar::MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![],
+            open_item: None,
+            focused_item: None,
+        };
+        let handle = std::thread::spawn(move || {
+            let mut backend = MacBackend::new();
+            backend.install_menu_bar(&bar);
+            backend.menu_target.is_none()
+        });
+        let no_target_installed = handle
+            .join()
+            .expect("install_menu_bar must return, not panic, off the main thread (#930)");
+        assert!(
+            no_target_installed,
+            "off the main thread there is no MainThreadMarker, so install_menu_bar must be a \
+             no-op that leaves menu_target unset"
+        );
+    }
+
+    /// Same shape as `install_menu_bar_off_main_thread_does_not_panic`
+    /// above, for `show_context_menu` (#930 calls this out as the
+    /// sibling that needed the identical fix).
+    #[test]
+    fn show_context_menu_off_main_thread_does_not_panic() {
+        let menu = crate::primitives::context_menu::ContextMenu {
+            id: WidgetId::new("ctx"),
+            items: vec![],
+            selected_idx: 0,
+            bg: None,
+            placement: Default::default(),
+        };
+        let handle = std::thread::spawn(move || {
+            let mut backend = MacBackend::new();
+            backend.show_context_menu(&menu, Point::new(0.0, 0.0));
+        });
+        handle
+            .join()
+            .expect("show_context_menu must return, not panic, off the main thread (#930)");
     }
 
     /// quadraui#699: the stash-then-reuse pattern this issue exists to
