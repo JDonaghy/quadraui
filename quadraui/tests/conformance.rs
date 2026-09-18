@@ -1077,8 +1077,9 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
         ),
         (
             "window_control",
-            "every `WindowControl` method (issue #950) acts on a real OS toplevel — title, \
-             size, position, fullscreen, minimize/restore/hide/show/focus — the same \
+            "every `WindowControl` method (issue #950; `is_maximized`/`set_decorated` added by \
+             #1022) acts on a real OS toplevel — title, size, position, fullscreen, \
+             maximized-state, decoration, minimize/restore/hide/show/focus — the same \
              `GtkDriver`-renders-to-an-offscreen-`ImageSurface`-with-no-window-to-drive gap \
              `window_chrome` above already names, and nothing paints, so `FrameInventory` has \
              no observable to assert on even where a window did exist",

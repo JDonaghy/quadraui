@@ -248,6 +248,18 @@ pub trait WindowControl {
         Err(BackendError::Unsupported)
     }
 
+    /// Whether the window is currently maximized/zoomed.
+    ///
+    /// Issue #1022: [`Backend::toggle_window_maximize`] flips the state
+    /// but only reports whether the flip succeeded — it cannot tell a
+    /// caller which state the window landed in, so a maximize/restore
+    /// glyph (vimcode's use case) has nothing to render from. This method
+    /// is the missing getter, read-only and side-effect-free, so it can
+    /// be polled from a paint path without racing the toggle itself.
+    fn is_maximized(&self) -> ServiceResult<bool> {
+        Err(BackendError::Unsupported)
+    }
+
     /// Pin (`true`) or unpin (`false`) the window above all others.
     ///
     /// **Not available on GTK4/Wayland** — Wayland's window-stacking
@@ -257,6 +269,17 @@ pub trait WindowControl {
     /// nothing, so a caller can tell "not pinned because it's
     /// unsupported here" from "not pinned because nobody asked".
     fn set_always_on_top(&mut self, _on_top: bool) -> ServiceResult<()> {
+        Err(BackendError::Unsupported)
+    }
+
+    /// Show (`true`) or hide (`false`) the window's native chrome
+    /// (titlebar + border) without changing its content area.
+    ///
+    /// Issue #1022: backs vimcode's client-side-decoration path (its
+    /// #552) — a host that paints its own titlebar first turns the
+    /// native one off with this, rather than living with two titlebars
+    /// stacked on top of each other.
+    fn set_decorated(&mut self, _decorated: bool) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 

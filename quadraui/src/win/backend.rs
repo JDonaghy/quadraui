@@ -418,11 +418,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowLongPtrW, GetWindowRect, LoadCursorW, PostMessageW, SetCursor,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE,
-    IDC_SIZEWE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
-    SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_OVERLAPPEDWINDOW,
+    GetClientRect, GetWindowLongPtrW, GetWindowRect, IsZoomed, LoadCursorW, PostMessageW,
+    SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+    ShowWindow, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS,
+    IDC_SIZENWSE, IDC_SIZEWE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_CAPTION, WS_OVERLAPPEDWINDOW,
 };
 
 #[cfg(target_os = "windows")]
@@ -4510,6 +4510,20 @@ impl WindowControl for WinBackend {
         }
     }
 
+    /// `IsZoomed` (issue #1022) — Win32's own maximize-state query, the
+    /// same notion `ShowWindow(SW_MAXIMIZE)`/[`Self::restore`] flip.
+    fn is_maximized(&self) -> ServiceResult<bool> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            Ok(unsafe { IsZoomed(hwnd) }.as_bool())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err(BackendError::Unsupported)
+        }
+    }
+
     /// `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST)` — the one always-on-top
     /// mechanism among the four in-tree backends that actually works
     /// (contrast [`crate::gtk::backend::GtkBackend`]'s `Unsupported` on
@@ -4537,6 +4551,48 @@ impl WindowControl for WinBackend {
         #[cfg(not(target_os = "windows"))]
         {
             let _ = on_top;
+            Err(BackendError::Unsupported)
+        }
+    }
+
+    /// Toggles the `WS_CAPTION` style bit (issue #1022) — backs
+    /// vimcode's client-side-decoration path (its #552). `WS_CAPTION`
+    /// carries both the titlebar and (implicitly, per Win32's style-bit
+    /// dependencies) the thin sizing border that comes with it, so
+    /// clearing it removes the whole native non-client frame a host
+    /// painting its own titlebar wants gone.
+    /// `SWP_FRAMECHANGED` forces Windows to recompute the non-client
+    /// area from the new style — same requirement `set_fullscreen`'s own
+    /// `SetWindowPos` calls already document.
+    fn set_decorated(&mut self, decorated: bool) -> ServiceResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+            let new_style = if decorated {
+                style | (WS_CAPTION.0 as isize)
+            } else {
+                style & !(WS_CAPTION.0 as isize)
+            };
+            unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, new_style) };
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                )
+            }
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("SetWindowPos: {e}"),
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = decorated;
             Err(BackendError::Unsupported)
         }
     }
@@ -4997,6 +5053,30 @@ mod tests {
         h1.borrow_mut()
             .push(WidgetId::new("test:popup"), Rect::new(0.0, 0.0, 10.0, 5.0));
         assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// #1022: `is_maximized`/`set_decorated` guard on the (target-gated)
+    /// `hwnd` field the same way every other `WindowControl` method here
+    /// does. `WinBackend::new()` never sets `hwnd`, on Windows or off, so
+    /// both must report `Unsupported` rather than panic — no
+    /// `target_os = "windows"` gate needed, same reasoning as
+    /// `win_backend_modal_stack_handle_shares_state` above.
+    #[test]
+    fn win_backend_is_maximized_err_without_window() {
+        let b = WinBackend::new();
+        assert!(matches!(
+            WindowControl::is_maximized(&b),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn win_backend_set_decorated_err_without_window() {
+        let mut b = WinBackend::new();
+        assert!(matches!(
+            WindowControl::set_decorated(&mut b, false),
+            Err(BackendError::Unsupported)
+        ));
     }
 
     /// #790: pins the Windows column of the shared `hscrollbar_track` fix
