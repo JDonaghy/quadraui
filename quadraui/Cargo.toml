@@ -73,9 +73,23 @@ tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring"]
 # deliberately kept minimal.
 # `dep:trash` (issue #956) / `dep:keyring` (issue #958): see `tui`'s own
 # comments above — same crates, same reasons.
+# `dep:fontconfig-sys` (issue #1013): `GtkBackend::register_font_from_memory`
+# needs `FcConfigAppFontAddFile`/`FcConfigGetFonts`/`FcPatternGetString` —
+# none of which `pango`/`pangocairo` expose, since Fontconfig is a
+# separate library Pango merely happens to be built against on every
+# platform GTK4 ships for. `yeslogic-fontconfig-sys` is the raw-bindings
+# crate the higher-level `fontconfig` crate itself wraps; going straight
+# to the sys crate skips a wrapper that doesn't expose `AddFile` anyway,
+# and its `build.rs` (a plain `pkg_config::find_library("fontconfig")`)
+# is what actually gets `-lfontconfig` plus the right `-L` search path
+# onto the link line — a hand-rolled `#[link(name = "fontconfig")]`
+# would work by luck on a host where fontconfig lives in a default
+# linker search path and silently fail to link everywhere else (e.g. a
+# Homebrew-on-macOS `libdir` that isn't one).
 gtk = [
     "dep:gtk4",
     "dep:pangocairo",
+    "dep:fontconfig-sys",
     "dep:arboard",
     "arboard/image-data",
     "dep:trash",
@@ -148,6 +162,10 @@ gtk4 = { version = "0.11", features = ["v4_10"], optional = true }
 # 0.22), which fails to compile the moment gtk4 and pangocairo types
 # meet (e.g. handing a `gtk4`-sourced cairo context to pangocairo).
 pangocairo = { version = "0.22", optional = true }
+# Optional — pulled in by the `gtk` feature. Raw Fontconfig bindings; see
+# that feature's own comment above for why this is the sys crate rather
+# than the higher-level `fontconfig` wrapper (or a hand-rolled `#[link]`).
+fontconfig-sys = { package = "yeslogic-fontconfig-sys", version = "6.0", optional = true }
 # Optional — pulled in by the `tui` feature.
 ratatui = { version = "0.30", optional = true }
 # Unconditional (not feature-gated): `StyledText::visible_width` in the
@@ -200,6 +218,15 @@ trash = { version = "5", optional = true }
 # session, not a live desktop" reasoning as `trash`'s own comment above,
 # which is why this pulls in on TUI too instead of degrading.
 keyring = { version = "4", optional = true }
+
+[build-dependencies]
+# `build.rs`'s `pangoft2` probe (issue #1013, `gtk` feature only) — same
+# crate `yeslogic-fontconfig-sys`'s own build script uses to find
+# `fontconfig`. Unconditional dependency (build scripts can't be
+# optional/feature-gated themselves); `build.rs` only invokes it when
+# `CARGO_FEATURE_GTK` is set, so a non-`gtk` build never shells out to
+# `pkg-config` at all.
+pkg-config = "0.3"
 
 # macOS-only optional deps. Gated on `target_os = "macos"` so the `macos`
 # feature is a no-op on other platforms — keeps cross-platform CI green.

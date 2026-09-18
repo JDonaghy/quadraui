@@ -25,6 +25,7 @@ use gtk4::pango;
 use crate::types::Color;
 
 mod activity_bar;
+mod app_font;
 pub mod backend;
 mod board;
 mod chart;
