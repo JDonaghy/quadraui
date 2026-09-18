@@ -1809,6 +1809,18 @@ impl Backend for GtkBackend {
         crate::gtk::set_current_nerd_font_fallback_family(family);
     }
 
+    /// Registers `bytes` as a Fontconfig application font — see
+    /// `crate::gtk::app_font::register_font_from_memory`'s module doc for
+    /// why this needs a process-private temp file (Fontconfig has no
+    /// in-memory registration entry point) and why that is still nothing
+    /// like a system-wide font install (issue #1013). GTK previously
+    /// took the trait's no-op default here while declaring
+    /// `app_font_registration: true` regardless — a lying capability
+    /// this method closes.
+    fn register_font_from_memory(&mut self, bytes: &[u8]) -> Option<Vec<String>> {
+        super::app_font::register_font_from_memory(bytes)
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain the queue without blocking. Stage 4 wires up the
         // signal-callback producers; until then this is always empty.
@@ -1999,6 +2011,12 @@ impl Backend for GtkBackend {
             folder_dialogs: true,
             native_dialogs: true,
             notifications: true,
+            // `app_font_registration` (#929, honoured for real in #1013):
+            // `register_font_from_memory` is overridden above (via
+            // `crate::gtk::app_font`, `FcConfigAppFontAddFile` +
+            // `pango_fc_font_map_config_changed`) and `set_nerd_font_fallback`
+            // is overridden below — both halves of the capability, not
+            // just the fallback half GTK used to lean on alone.
             app_font_registration: true,
             // `generic_font_families` (issue #1023): `set_editor_font`/
             // `set_ui_font` are both overridden below and now resolve
@@ -5054,6 +5072,38 @@ mod tests {
     #[test]
     fn paint_overlays_compiles_against_gtk_backend() {
         let _: fn(&mut GtkBackend, &Palette, &ListView) = paint_overlays::<GtkBackend>;
+    }
+
+    // ── issue #1013: register_font_from_memory / app_font_registration ──
+
+    /// `GtkBackend` used to declare `app_font_registration: true` while
+    /// `register_font_from_memory` was still the trait's no-op default —
+    /// exactly the "declared true, defaulted method" lie this issue
+    /// exists to close. Pins the declaration now that both
+    /// `register_font_from_memory` and `set_nerd_font_fallback` are
+    /// overridden above.
+    #[test]
+    fn gtk_backend_declares_app_font_registration_capability() {
+        let b = GtkBackend::new();
+        assert!(
+            b.backend_caps().app_font_registration,
+            "#1013: GtkBackend must declare app_font_registration now that \
+             register_font_from_memory/set_nerd_font_fallback are both overridden"
+        );
+    }
+
+    /// Garbage bytes are not a font Fontconfig's FreeType backend can
+    /// parse — `register_font_from_memory` must report that as `None`,
+    /// not a fabricated family, matching `MacBackend`/`WinBackend`'s own
+    /// rejection tests for the same input shape.
+    #[test]
+    fn gtk_backend_register_font_from_memory_rejects_bytes_that_are_not_a_font() {
+        let mut b = GtkBackend::new();
+        let garbage = [0u8; 64];
+        assert!(
+            b.register_font_from_memory(&garbage).is_none(),
+            "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
     }
 
     #[test]

@@ -570,14 +570,26 @@ pub struct BackendCaps {
     /// notification rather than silently discarding it. Not mechanically
     /// checkable, same as [`Self::file_dialogs`].
     pub notifications: bool,
-    /// At least one of [`Backend::register_font_from_memory`] /
-    /// [`Backend::set_nerd_font_fallback`] is overridden — this backend
-    /// can resolve Nerd-Font (or other PUA-codepoint) glyphs to a real
-    /// fallback family instead of painting tofu (issue #929). `Any`
-    /// rather than `All`: a backend may reasonably wire only the
+    /// Both [`Backend::register_font_from_memory`] and
+    /// [`Backend::set_nerd_font_fallback`] are overridden — this backend
+    /// can register an app-supplied font's raw bytes *and* resolve
+    /// Nerd-Font (or other PUA-codepoint) glyphs to a real fallback
+    /// family, instead of painting tofu (issue #929).
+    ///
+    /// Was `Any` rather than `All` until issue #1013: the original
+    /// reasoning was that a backend may reasonably wire only the
     /// fallback half (GTK, which already has a system-installed Nerd
-    /// Font to point at and no need to register app-supplied bytes) or
-    /// only the registration half.
+    /// Font to point at) or only the registration half. In practice that
+    /// let `tests/conformance/caps.rs`'s honesty check pass GTK
+    /// vacuously off `set_nerd_font_fallback` alone while
+    /// `register_font_from_memory` silently kept the trait's no-op
+    /// default — a real bug (a consumer bundling its own icon font got a
+    /// silent no-op on GTK) that the `Any` proof was mechanically unable
+    /// to catch. Every backend that declares this today
+    /// (`MacBackend`/`WinBackend`, and `GtkBackend` since #1013's
+    /// `crate::gtk::app_font`) overrides both, so `All` is both the
+    /// accurate contract and the one that would have caught #1013 in CI
+    /// instead of a consumer.
     pub app_font_registration: bool,
     /// [`Backend::window`] is overridden and returns `Some` at least
     /// sometimes — this backend has a real [`WindowControl`] surface
@@ -1026,14 +1038,20 @@ pub trait Backend: sealed::Sealed {
     /// copy into `CGDataProvider::from_buffer`. The caller's buffer is
     /// never the one the platform ends up holding a live reference to.
     ///
-    /// Default: no-op, returns `None`. GTK can accept this default —
-    /// fontconfig already resolves a system-installed Nerd Font via
-    /// [`Self::set_nerd_fonts`]'s cascade, so there is nothing for GTK to
-    /// register at the backend level (an app still wants its own
-    /// `fc-cache`-based installer for a *system*-wide install, which is
-    /// out of scope for a process-local API like this one). TUI takes
-    /// this default for the same reason [`Self::set_editor_font`] does:
-    /// a fixed-cell backend has no font concept at all.
+    /// Default: no-op, returns `None`. TUI takes this default for the
+    /// same reason [`Self::set_editor_font`] does: a fixed-cell backend
+    /// has no font concept at all. GTK used to take this default as well
+    /// — reasoning that Fontconfig already resolves a system-installed
+    /// Nerd Font via [`Self::set_nerd_fonts`]'s cascade, so there was
+    /// nothing to register at the backend level — but that left an app
+    /// bundling its *own* icon font (rather than relying on one already
+    /// being installed system-wide) with no in-process path on GTK, and
+    /// [`BackendCaps::app_font_registration`] declaring `true` regardless
+    /// (issue #1013: a lying capability, and the direct reason vimcode
+    /// kept a system-wide `~/.local/share/fonts` + `fc-cache` installer
+    /// for GTK specifically). GTK now overrides this via
+    /// `FcConfigAppFontAddFile` — see `crate::gtk::app_font`'s module
+    /// doc.
     fn register_font_from_memory(&mut self, _bytes: &[u8]) -> Option<Vec<String>> {
         None
     }

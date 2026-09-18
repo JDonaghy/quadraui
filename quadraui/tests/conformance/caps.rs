@@ -175,9 +175,18 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
             "`PlatformServices::send_notification` likewise has no default to diverge from",
         ),
     },
+    // Was `Proof::Any` until issue #1013: `GtkBackend` declared this cap
+    // `true` while overriding only `set_nerd_font_fallback`, leaving
+    // `register_font_from_memory` on the trait's no-op default — an
+    // `Any` proof is satisfied by either method alone, so this exact
+    // "declared true, one of the two methods still defaulted" shape
+    // passed this check vacuously. `All` is the accurate contract today
+    // — every backend that declares this (`MacBackend`/`WinBackend`, and
+    // `GtkBackend` since #1013) overrides both methods — and is the one
+    // that would have caught #1013 here instead of in a consumer.
     CapContract {
         cap: "app_font_registration",
-        proof: Proof::Any(&["register_font_from_memory", "set_nerd_font_fallback"]),
+        proof: Proof::All(&["register_font_from_memory", "set_nerd_font_fallback"]),
     },
     CapContract {
         cap: "window_control",
