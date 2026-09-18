@@ -492,6 +492,11 @@ path = "examples/tui_clipboard.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_command_line_selection"
+path = "examples/tui_command_line_selection.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "msv_multi_tree"
 path = "examples/msv_multi_tree.rs"
 required-features = ["tui"]
@@ -509,6 +514,11 @@ required-features = ["gtk"]
 [[example]]
 name = "gtk_app"
 path = "examples/gtk_app.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "gtk_command_line_selection"
+path = "examples/gtk_command_line_selection.rs"
 required-features = ["gtk"]
 
 [[example]]

@@ -897,6 +897,13 @@ mod tests {
         fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
+        fn draw_command_line_selection(
+            &mut self,
+            _r: Rect,
+            _c: &crate::CommandLine,
+            _s: Option<(usize, usize)>,
+        ) {
+        }
         fn command_line_layout(
             &self,
             _r: Rect,

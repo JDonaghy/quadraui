@@ -305,6 +305,20 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        method: "draw_command_line_selection",
+        needle: Some("c0cmdsel"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let cmd = CommandLine {
+                id: id("command-line-selection"),
+                text: ":c0cmdsel".to_string(),
+                cursor_offset: None,
+                right_align: false,
+            };
+            b.draw_command_line_selection(Rect::new(0.0, 0.0, area.width, lh), &cmd, Some((0, 4)));
+        },
+    },
+    Case {
         method: "draw_message_list",
         needle: Some("c0msg"),
         paint: |b, area| {

@@ -3023,6 +3023,21 @@ impl Backend for WinBackend {
         let _ = (rect, cmd);
     }
 
+    /// No visual highlight yet — issue #1001 scoped the paint work to
+    /// GTK/Cairo and TUI/ratatui; `win::command_line` has no
+    /// selection-aware paint path of its own yet. Delegates to the plain
+    /// paint (same "surface not attached yet" degrade-to-no-op posture as
+    /// `draw_command_line` above) so callers get correct (if
+    /// unhighlighted) text instead of a missing trait impl.
+    fn draw_command_line_selection(
+        &mut self,
+        rect: Rect,
+        cmd: &crate::primitives::command_line::CommandLine,
+        _selection: Option<(usize, usize)>,
+    ) {
+        self.draw_command_line(rect, cmd);
+    }
+
     /// #725: pure measurement — only needs `current_char_width`, not a
     /// live render target or `self.dwrite` (mirrors
     /// `Self::text_display_layout`'s doc for why this only needs the

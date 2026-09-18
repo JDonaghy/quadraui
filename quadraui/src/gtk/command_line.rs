@@ -1,4 +1,9 @@
 //! GTK rasteriser for [`crate::primitives::command_line::CommandLine`].
+//!
+//! [`draw_command_line_selection`] (issue #1001) paints
+//! [`CommandLineLayout::selection_bounds`]'s rect as a highlight behind
+//! the text; [`draw_command_line`] is unchanged and delegates to it with
+//! `selection: None`.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -41,6 +46,47 @@ pub fn draw_command_line(
     line_height: f64,
     char_width: f32,
 ) -> CommandLineLayout {
+    draw_command_line_selection(
+        cr,
+        layout,
+        cmd,
+        theme,
+        x,
+        y,
+        width,
+        line_height,
+        char_width,
+        None,
+    )
+}
+
+/// Paint `cmd` exactly like [`draw_command_line`], additionally painting
+/// a selection highlight behind the text for `selection` (issue #1001).
+///
+/// A sibling function, not a new parameter on `draw_command_line` — that
+/// keeps `draw_command_line`'s signature stable for any existing caller
+/// (`CommandLine` itself gained no new field, for the same reason; see
+/// `crate::primitives::command_line`'s module doc and
+/// `crate::primitives::text_input`'s "Why the editing state is a
+/// wrapper" section for the precedent this follows).
+///
+/// The highlight is painted **before** the text (`draw_visual_selection`'s
+/// ordering in `gtk::editor` — "drawn before text so text is on top"),
+/// using `theme.selection` / `theme.selection_alpha`, the same colours
+/// `gtk::editor` and `gtk::data_table` paint their selection rects with.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_command_line_selection(
+    cr: &Context,
+    layout: &pango::Layout,
+    cmd: &CommandLine,
+    theme: &Theme,
+    x: f64,
+    y: f64,
+    width: f64,
+    line_height: f64,
+    char_width: f32,
+    selection: Option<(usize, usize)>,
+) -> CommandLineLayout {
     let cmd_layout = gtk_command_line_layout(cmd, x, y, width, line_height, char_width);
     let bg = cairo_rgb(theme.command_line_bg);
     let fg = cairo_rgb(theme.command_line_fg);
@@ -48,6 +94,15 @@ pub fn draw_command_line(
     cr.set_source_rgb(bg.0, bg.1, bg.2);
     cr.rectangle(x, y, width, line_height);
     cr.fill().ok();
+
+    if let Some(sel) = selection {
+        if let Some(r) = cmd_layout.selection_bounds(sel) {
+            let (sr, sg, sb) = cairo_rgb(theme.selection);
+            cr.set_source_rgba(sr, sg, sb, theme.selection_alpha as f64);
+            cr.rectangle(r.x as f64, r.y as f64, r.width as f64, r.height as f64);
+            cr.fill().ok();
+        }
+    }
 
     if cmd.text.is_empty() {
         return cmd_layout;
@@ -246,5 +301,128 @@ mod tests {
         // A click left of the bar clamps to the first column's byte offset.
         assert_eq!(layout.hit_test(0.0), 0);
         assert_eq!(layout.hit_test(x as f32), 0);
+    }
+
+    /// `draw_command_line_selection` actually paints the highlight rect
+    /// `CommandLineLayout::selection_bounds` computes (issue #1001) — the
+    /// gap this issue closes: the geometry existed but nothing painted
+    /// it. Selects a *space* character deliberately, so the probed pixel
+    /// carries no glyph ink and the highlight colour (alpha 1.0, so an
+    /// exact replace over the white background) can be asserted exactly
+    /// instead of guessing around antialiased text edges.
+    #[test]
+    fn gtk_command_line_selection_paints_highlight_behind_text() {
+        const W: i32 = 400;
+        const H: i32 = 40;
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        let font = pango::FontDescription::from_string("Monospace 12");
+        let theme = Theme {
+            command_line_bg: Color::rgb(255, 255, 255),
+            command_line_fg: Color::rgb(0, 0, 0),
+            selection: Color::rgb(0, 0, 255),
+            selection_alpha: 1.0,
+            ..Theme::default()
+        };
+        // Two leading spaces then a letter: selecting byte 0..1 highlights
+        // a space (no ink), and byte 1..2 (the second space) stays an
+        // unselected but equally ink-free control pixel.
+        let cmd = CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: "  x".into(),
+            cursor_offset: None,
+            right_align: false,
+        };
+        let (x, y, width, line_height) = (40.0, 12.0, 200.0, 20.0_f64);
+
+        let (char_width, cmd_layout) = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+
+            let measure_layout = pangocairo::functions::create_layout(&cr);
+            measure_layout.set_font_description(Some(&font));
+            measure_layout.set_text("  x");
+            let char_width = measure_layout.index_to_pos(0).width() as f32 / pango::SCALE as f32;
+            assert!(
+                char_width > 1.0,
+                "monospace char_width should be several px"
+            );
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            pango_layout.set_font_description(Some(&font));
+            let cmd_layout = draw_command_line_selection(
+                &cr,
+                &pango_layout,
+                &cmd,
+                &theme,
+                x,
+                y,
+                width,
+                line_height,
+                char_width,
+                Some((0, 1)),
+            );
+            (char_width, cmd_layout)
+        };
+
+        // Sanity: the layout agrees the highlight should cover column 0
+        // only.
+        let sel_rect = cmd_layout
+            .selection_bounds((0, 1))
+            .expect("non-empty selection should produce a rect");
+        assert_eq!(
+            (sel_rect.x as f64, sel_rect.width as f64),
+            (x, char_width as f64)
+        );
+
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let row = (y + line_height / 2.0) as i32;
+
+        // Selected column (first space): exact highlight colour, alpha
+        // 1.0 over white is an opaque replace.
+        let sel_x = x as i32 + (char_width / 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, sel_x, row),
+            (0, 0, 255),
+            "selected space column should paint the highlight colour"
+        );
+
+        // Unselected column (second space): still plain background.
+        let unsel_x = (x + char_width as f64) as i32 + (char_width / 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, unsel_x, row),
+            (255, 255, 255),
+            "unselected column should not paint the highlight"
+        );
+
+        // `draw_command_line` (no selection) must remain unaffected —
+        // same pixel stays plain background when selection is `None`.
+        let mut surface2 = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface2).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            pango_layout.set_font_description(Some(&font));
+            draw_command_line(
+                &cr,
+                &pango_layout,
+                &cmd,
+                &theme,
+                x,
+                y,
+                width,
+                line_height,
+                char_width,
+            );
+        }
+        let stride2 = surface2.stride() as usize;
+        let data2 = surface2.data().expect("surface data");
+        assert_eq!(
+            pixel(&data2, stride2, sel_x, row),
+            (255, 255, 255),
+            "draw_command_line (no selection arg) must not paint a highlight"
+        );
     }
 }
