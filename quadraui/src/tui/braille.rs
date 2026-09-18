@@ -36,9 +36,12 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
     char::from_u32(code).unwrap_or(' ')
 }
 
-/// 4x4 ordered-dither (Bayer) threshold matrix, values `0..16` — used by
-/// [`dither_threshold_met`] to turn a per-dot *coverage fraction* into a
-/// boolean (issue #1007).
+/// Threshold a dot's coverage (`covered` non-whitespace source columns out
+/// of `bucket_width` total) against a 4x4 ordered-dither (Bayer) matrix,
+/// indexed by the dot's own `(row, col)` position within the whole
+/// rendered grid (not just within its cell) so that the dither pattern
+/// tiles consistently across the entire minimap strip rather than
+/// repeating identically inside every cell (issue #1007).
 ///
 /// [`super::minimap`]'s density view used to decide "is this dot set?" with
 /// a boolean OR over the dot's source-column bucket (`any(|c|
@@ -53,41 +56,25 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
 /// be low, while a fully-covered bucket lights up every position — which
 /// is what produces a raggedy, VS-Code-like right edge instead of a solid
 /// wall.
-pub(crate) const BAYER4: [[u8; 4]; 4] =
-    [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
-
-/// Threshold a dot's coverage (`covered` non-whitespace source columns out
-/// of `bucket_width` total) against [`BAYER4`], indexed by the dot's own
-/// `(row, col)` position within the whole rendered grid (not just within
-/// its cell) so that the dither pattern tiles consistently across the
-/// entire minimap strip rather than repeating identically inside every
-/// cell.
 ///
 /// Pure integer arithmetic — one multiply and one compare, no floating
 /// point, no lookahead, no per-call allocation (issue #1007 acceptance
-/// criterion 4). `row & 3` / `col & 3` fold any position onto the 4x4
-/// matrix; `bucket_width == 0` always returns `false` rather than dividing
-/// by zero.
-///
-/// A fully-covered bucket (`covered == bucket_width`) always returns
-/// `true`, since `bucket_width * 16 > bucket_width * 15` (`15` is
-/// [`BAYER4`]'s largest entry) for any `bucket_width > 0` — so a solid run
-/// of non-whitespace still paints solid, and an all-whitespace bucket
-/// (`covered == 0`) always returns `false`, since `0` is never greater
-/// than a non-negative product. Dithering only has any effect strictly
+/// criterion 4). A fully-covered bucket (`covered == bucket_width`)
+/// always returns `true` and an all-whitespace bucket (`covered == 0`)
+/// always returns `false` — dithering only has any effect strictly
 /// *between* those two extremes.
-pub(crate) fn dither_threshold_met(
-    covered: usize,
-    bucket_width: usize,
-    row: usize,
-    col: usize,
-) -> bool {
-    if bucket_width == 0 {
-        return false;
-    }
-    let threshold = BAYER4[row & 3][col & 3] as usize;
-    covered * 16 > bucket_width * threshold
-}
+///
+/// Re-exported from [`crate::primitives::minimap`] rather than defined
+/// here (issue #1012 pt. 2): that module's `sample_blocks` uses the exact
+/// same matrix and threshold formula to make an analogous decision one
+/// granularity coarser — whether a *block*'s per-column coverage (several
+/// real buffer lines folded into one output row) reads back non-blank.
+/// Before #1012 those were two independently-tuned copies — this one
+/// here, another grown separately in vimcode's own tree (vimcode#1085) —
+/// that nobody had reasoned about composing; a single shared definition
+/// makes both compositions provably the same dither policy applied
+/// twice, not two that happen to agree today.
+pub(crate) use crate::primitives::minimap::dither_threshold_met;
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,7 @@
 //!
 //! A static ~300-line "buffer" rendered as a code-overview minimap, plus a
 //! status bar showing the current scroll position. Demonstrates
-//! `sample_lines` (row down-sampling) and `aggregate_spans` (colour
+//! `sample_blocks` (row down-sampling) and `aggregate_spans` (colour
 //! down-sampling) feeding one `Minimap` descriptor that both backends
 //! paint with zero backend-specific app code — GTK via fixed-pitch
 //! per-column colour blocks, TUI via braille (#382, #667).
@@ -22,7 +22,7 @@
 //! - q / Esc       quit
 
 use quadraui::{
-    aggregate_spans, sample_lines, AppLogic, Backend, Color, InteractionState, Key, Minimap,
+    aggregate_spans, sample_blocks, AppLogic, Backend, Color, InteractionState, Key, Minimap,
     MinimapGrid, MinimapHit, MinimapSpan, MouseButton, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, UiEvent, WidgetId,
 };
@@ -64,23 +64,24 @@ impl MinimapApp {
         }
     }
 
-    fn buffer_refs(&self) -> Vec<&str> {
-        self.buffer.iter().map(String::as_str).collect()
-    }
-
     /// Build the `Minimap` descriptor for the current scroll position.
     ///
     /// Unlike the pre-#667 model, this doesn't try to pre-compute "just
     /// enough rows to fill the strip" from the viewport's pixel height —
     /// that was only ever needed because `Fill` sizing had no sliding
     /// window, so a mismatch meant either wasted rows or an over-squeezed
-    /// pitch. `sample_lines` here is called with a target at least as
+    /// pitch. `sample_blocks` here is called with a target at least as
     /// large as the buffer, so it's the identity (never upscales): GTK's
     /// `FixedPitch` layout and TUI's `Fill` layout each decide for
-    /// themselves how much of `lines` actually gets painted.
+    /// themselves how much of `lines` actually gets painted. Passing a
+    /// closure over `self.buffer` rather than a pre-collected `Vec<&str>`
+    /// (the pre-#1012 shape) is the whole point of `sample_blocks`' line
+    /// accessor — this app happens to already hold every line in memory,
+    /// but a host backed by something more expensive to fully
+    /// materialise (a rope, say) would not have to.
     fn minimap(&self) -> Minimap {
-        let refs = self.buffer_refs();
-        let lines = sample_lines(&refs, self.buffer.len());
+        let buffer = &self.buffer;
+        let lines = sample_blocks(buffer.len(), buffer.len(), |i| buffer[i].clone());
 
         // A couple of illustrative syntax spans — "fn" in one colour,
         // comments in another — aggregated down to whatever cell size

@@ -3025,7 +3025,7 @@ pub trait Backend: sealed::Sealed {
     /// which fixed a `Fill`-sizing bug where a short file's stretched
     /// pitch left blank cell rows between painted ones). All three
     /// techniques consume the exact same [`Minimap`] data — the primitive
-    /// owns the sampling and colour-aggregation math (`sample_lines` /
+    /// owns the sampling and colour-aggregation math (`sample_blocks` /
     /// `aggregate_spans`), and, since #738, the legibility/render-mode
     /// threshold and span-lookup helpers too (`crate::primitives::minimap`),
     /// so no backend re-derives any of it (#382, #667, #738).

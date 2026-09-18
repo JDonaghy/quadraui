@@ -402,8 +402,8 @@ pub use primitives::menu_bar::{
 };
 pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
 pub use primitives::minimap::{
-    aggregate_spans, reserved_width, sample_lines, Minimap, MinimapGrid, MinimapHit, MinimapLayout,
-    MinimapLine, MinimapSizing, MinimapSpan, VisibleMinimapLine,
+    aggregate_spans, reserved_width, sample_blocks, Minimap, MinimapGrid, MinimapHit,
+    MinimapLayout, MinimapLine, MinimapSizing, MinimapSpan, VisibleMinimapLine,
 };
 // #822: `SyntaxSpan` was merged into `MinimapSpan` (byte-identical
 // four-field structs). `SyntaxSpan` survives as a `#[deprecated]` `pub
@@ -417,6 +417,11 @@ pub use primitives::minimap::{
 // for why that split is deliberate.
 #[allow(deprecated)]
 pub use primitives::minimap::SyntaxSpan;
+// #1012: `sample_lines` is a point sampler kept only as a deprecated shim
+// over `sample_blocks` (real block aggregation) — same
+// `#[allow(deprecated)]`-on-a-re-export reasoning as `SyntaxSpan` above.
+#[allow(deprecated)]
+pub use primitives::minimap::sample_lines;
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
     HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit,

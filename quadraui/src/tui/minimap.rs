@@ -833,7 +833,7 @@ mod tests {
     /// Draws `lines` into a `width_cells`-wide, `rows`-tall strip at
     /// `cols_per_cell` scale (down-sampling first if there are more than
     /// `rows * LINES_PER_ROW` lines, exactly as a real host would via
-    /// [`crate::primitives::minimap::sample_lines`]) and returns, for each
+    /// [`crate::primitives::minimap::sample_blocks`]) and returns, for each
     /// painted row, the index of the last terminal-cell column whose
     /// braille glyph is not blank (`U+2800`) — `None` for a row with no
     /// content at all.
@@ -843,9 +843,9 @@ mod tests {
         rows: usize,
         cols_per_cell: usize,
     ) -> Vec<Option<usize>> {
-        use crate::primitives::minimap::sample_lines;
+        use crate::primitives::minimap::sample_blocks;
 
-        let sampled = sample_lines(lines, rows * LINES_PER_ROW);
+        let sampled = sample_blocks(lines.len(), rows * LINES_PER_ROW, |i| lines[i].to_string());
         let total = lines.len();
         let mm = minimap_from_sampled(sampled, total);
 
