@@ -2411,6 +2411,31 @@ pub trait Backend: sealed::Sealed {
     /// insert cursor at `cursor_offset`.
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine);
 
+    /// Draw a [`CommandLine`] bar exactly like [`Self::draw_command_line`],
+    /// additionally painting a selection highlight behind the text for
+    /// `selection` (a `(start, end)` byte-offset pair into `cmd.text`,
+    /// either order — same contract as
+    /// [`crate::primitives::command_line::CommandLineLayout::selection_bounds`],
+    /// which supplies the rect this paints). `None` (or an empty/
+    /// zero-width range) paints identically to `draw_command_line`.
+    ///
+    /// This is a **new method, not a new `CommandLine` field or a changed
+    /// `draw_command_line` signature** (issue #1001) — `CommandLine` is an
+    /// all-`pub`-field, exhaustively-constructed-by-consumers primitive
+    /// (see `crate::primitives::text_input`'s module doc for why that
+    /// makes a field addition breaking under `PRIMITIVE_RULES.md` rule 8),
+    /// so the selection a host is tracking is threaded through as an
+    /// argument instead — the same non-breaking shape `TextInput`/
+    /// `TextEditor` (#833) established. `Backend` itself is in-tree-only
+    /// (`CLAUDE.md`'s *Downstream consumers* section), so adding a method
+    /// here costs no downstream consumer anything.
+    fn draw_command_line_selection(
+        &mut self,
+        rect: Rect,
+        cmd: &CommandLine,
+        selection: Option<(usize, usize)>,
+    );
+
     /// Compute the click/selection layout `draw_command_line` paints from
     /// (issue #705). Hosts call this to hit-test a click to a **byte
     /// offset** in `cmd.text` (`CommandLineLayout::hit_test`) and to turn a

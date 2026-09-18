@@ -50,6 +50,8 @@ mod chart_app;
 mod chat_demo;
 #[path = "../examples/common/clipboard_demo.rs"]
 mod clipboard_demo;
+#[path = "../examples/common/command_line_selection_demo.rs"]
+mod command_line_selection_demo;
 #[path = "../examples/common/data_table_app.rs"]
 mod data_table_app;
 #[path = "../examples/common/demo.rs"]
@@ -162,6 +164,7 @@ use bottom_panel_demo::BottomPanelDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
+use command_line_selection_demo::CommandLineSelectionDemo;
 use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
@@ -6924,6 +6927,77 @@ fn text_display_wrap_demo_wraps_the_long_line_instead_of_truncating_it() {
 #[test]
 fn text_display_wrap_demo_pressing_q_exits() {
     let mut driver = TuiDriver::new(TextDisplayWrapDemo::new(), 40, 20);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should make the app exit");
+}
+
+/// #1001 acceptance: `Backend::draw_command_line_selection` actually
+/// paints a highlight through the real example app, not just in the
+/// rasteriser's own unit tests. Before #1001 there was no way for an
+/// `AppLogic` to get a `CommandLine` selection highlight painted at all —
+/// `CommandLineLayout::selection_bounds` computed the rect but nothing
+/// consumed it. `find` locates the painted word (never a hard-coded
+/// coordinate, per this repo's driver-test convention) and `style_at`
+/// reads back its actual cell background before and after toggling.
+#[test]
+fn command_line_selection_demo_toggles_the_highlight_on_the_painted_word() {
+    let mut driver = TuiDriver::new(CommandLineSelectionDemo::new(), 60, 10);
+
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains(":select-me"),
+        "the demo command line should paint its text:\n{screen}"
+    );
+    assert!(
+        driver.screen_contains("selection OFF"),
+        "the demo should start with the selection off:\n{screen}"
+    );
+
+    let (x, y) = driver
+        .find("select-me")
+        .unwrap_or_else(|| panic!("'select-me' must be visible:\n{screen}"));
+    let bg_before = driver
+        .style_at(x as u16, y as u16)
+        .expect("'select-me' cell should be inside the screen")
+        .bg;
+
+    driver.type_char('s');
+    assert!(
+        driver.screen_contains("selection ON"),
+        "'s' should toggle the hint to ON:\n{}",
+        driver.screen()
+    );
+
+    let bg_after = driver
+        .style_at(x as u16, y as u16)
+        .expect("'select-me' cell should be inside the screen")
+        .bg;
+    assert_ne!(
+        bg_before, bg_after,
+        "toggling selection on should repaint the word's cell background \
+         with the selection highlight colour"
+    );
+
+    driver.type_char('s');
+    assert!(
+        driver.screen_contains("selection OFF"),
+        "'s' should toggle back to OFF:\n{}",
+        driver.screen()
+    );
+    let bg_restored = driver
+        .style_at(x as u16, y as u16)
+        .expect("'select-me' cell should be inside the screen")
+        .bg;
+    assert_eq!(
+        bg_restored, bg_before,
+        "toggling selection back off should restore the plain background"
+    );
+}
+
+#[test]
+fn command_line_selection_demo_pressing_q_exits() {
+    let mut driver = TuiDriver::new(CommandLineSelectionDemo::new(), 60, 10);
     assert!(!driver.exited());
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the app exit");

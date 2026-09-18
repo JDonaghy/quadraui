@@ -970,6 +970,14 @@ impl crate::Backend for RecordingBackend {
     fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {
         self.record("draw_command_line");
     }
+    fn draw_command_line_selection(
+        &mut self,
+        _r: Rect,
+        _c: &crate::CommandLine,
+        _s: Option<(usize, usize)>,
+    ) {
+        self.record("draw_command_line_selection");
+    }
     fn command_line_layout(
         &self,
         _r: Rect,

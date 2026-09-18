@@ -3508,6 +3508,29 @@ impl Backend for GtkBackend {
         );
     }
 
+    fn draw_command_line_selection(
+        &mut self,
+        rect: QRect,
+        cmd: &CommandLine,
+        selection: Option<(usize, usize)>,
+    ) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_command_line_selection called outside enter_frame_scope");
+        crate::gtk::command_line::draw_command_line_selection(
+            cr,
+            layout,
+            cmd,
+            &self.current_theme,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            self.current_line_height,
+            self.current_char_width as f32,
+            selection,
+        );
+    }
+
     fn command_line_layout(
         &self,
         rect: QRect,

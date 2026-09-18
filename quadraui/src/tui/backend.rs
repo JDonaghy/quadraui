@@ -2384,6 +2384,26 @@ impl Backend for TuiBackend {
         crate::tui::command_line::draw_command_line(frame.buffer_mut(), area, cmd, &theme);
     }
 
+    fn draw_command_line_selection(
+        &mut self,
+        rect: QRect,
+        cmd: &CommandLine,
+        selection: Option<(usize, usize)>,
+    ) {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let frame = self
+            .current_frame_mut()
+            .expect("TuiBackend::draw_command_line_selection called outside enter_frame_scope");
+        crate::tui::command_line::draw_command_line_selection(
+            frame.buffer_mut(),
+            area,
+            cmd,
+            &theme,
+            selection,
+        );
+    }
+
     fn command_line_layout(
         &self,
         rect: QRect,
@@ -3388,6 +3408,13 @@ mod tests {
         fn draw_solid_fill(&mut self, _r: QRect, _c: Color) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
+        fn draw_command_line_selection(
+            &mut self,
+            _r: QRect,
+            _c: &CommandLine,
+            _s: Option<(usize, usize)>,
+        ) {
+        }
         fn command_line_layout(
             &self,
             _r: QRect,

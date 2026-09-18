@@ -2380,6 +2380,20 @@ impl Backend for MacBackend {
             );
         }
     }
+    /// No visual highlight yet — issue #1001 scoped the paint work to
+    /// GTK/Cairo and TUI/ratatui (`macos::command_line::draw_command_line`
+    /// has no selection-aware paint path of its own). Delegates to the
+    /// plain paint so callers get correct (if unhighlighted) text instead
+    /// of a missing trait impl; tracked as a follow-up for the macOS
+    /// rasteriser alongside its other selection-highlight primitives.
+    fn draw_command_line_selection(
+        &mut self,
+        rect: Rect,
+        cmd: &CommandLine,
+        _selection: Option<(usize, usize)>,
+    ) {
+        self.draw_command_line(rect, cmd);
+    }
     fn command_line_layout(
         &self,
         rect: Rect,

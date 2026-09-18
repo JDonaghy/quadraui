@@ -1,4 +1,9 @@
 //! TUI rasteriser for [`crate::primitives::command_line::CommandLine`].
+//!
+//! [`draw_command_line_selection`] (issue #1001) paints
+//! [`CommandLineLayout::selection_bounds`]'s rect as a per-cell
+//! background highlight; [`draw_command_line`] is unchanged and
+//! delegates to it with `selection: None`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -32,12 +37,47 @@ pub fn draw_command_line(
     cmd: &CommandLine,
     theme: &Theme,
 ) -> CommandLineLayout {
+    draw_command_line_selection(buf, area, cmd, theme, None)
+}
+
+/// Paint `cmd` exactly like [`draw_command_line`], additionally
+/// highlighting the cell columns [`CommandLineLayout::selection_bounds`]
+/// resolves for `selection` with `theme.selection` as the cell
+/// background (issue #1001).
+///
+/// A sibling function, not a new parameter on `draw_command_line` — see
+/// this module's and `crate::primitives::command_line`'s doc comments
+/// for why `CommandLine` gained no new field for this.
+pub fn draw_command_line_selection(
+    buf: &mut Buffer,
+    area: Rect,
+    cmd: &CommandLine,
+    theme: &Theme,
+    selection: Option<(usize, usize)>,
+) -> CommandLineLayout {
     let layout = tui_command_line_layout(cmd, area);
     let fg = ratatui_color(theme.command_line_fg);
     let bg = ratatui_color(theme.command_line_bg);
+    let sel_bg = ratatui_color(theme.selection);
+
+    // Absolute (area-relative-origin) column range covered by the
+    // selection, if any — `char_width` is `1.0` here (one cell per
+    // character), so `CommandLineLayout::selection_bounds`'s rect `x`/
+    // `width` are already whole cell columns.
+    let sel_cols = selection.and_then(|sel| {
+        layout.selection_bounds(sel).map(|r| {
+            let start = r.x.round() as u16;
+            let end = (r.x + r.width).round() as u16;
+            (start, end)
+        })
+    });
+    let bg_for = |x: u16| match sel_cols {
+        Some((start, end)) if x >= start && x < end => sel_bg,
+        _ => bg,
+    };
 
     for x in area.x..area.x + area.width {
-        set_cell(buf, x, area.y, ' ', fg, bg);
+        set_cell(buf, x, area.y, ' ', fg, bg_for(x));
     }
 
     if cmd.text.is_empty() {
@@ -52,7 +92,7 @@ pub fn draw_command_line(
                 if x >= area.x + area.width {
                     break;
                 }
-                set_cell(buf, x, area.y, ch, fg, bg);
+                set_cell(buf, x, area.y, ch, fg, bg_for(x));
             }
         }
     } else {
@@ -60,7 +100,7 @@ pub fn draw_command_line(
             if x >= area.x + area.width {
                 break;
             }
-            set_cell(buf, x, area.y, ch, fg, bg);
+            set_cell(buf, x, area.y, ch, fg, bg_for(x));
         }
     }
 
@@ -153,5 +193,63 @@ mod tests {
         assert_eq!(layout.hit_test(0.0), 0);
         // Column 0 starts at x == area.x == 5.
         assert_eq!(layout.hit_test(5.0), 0);
+    }
+
+    /// `draw_command_line_selection` highlights exactly the selected
+    /// cells with `theme.selection` as background, leaves the rest at
+    /// `theme.command_line_bg`, and `draw_command_line` (no selection
+    /// argument) stays unaffected (issue #1001).
+    #[test]
+    fn tui_command_line_selection_highlights_only_selected_cells() {
+        let area = Rect::new(5, 3, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let cmd = CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: ":wq!".into(),
+            cursor_offset: None,
+            right_align: false,
+        };
+
+        // Select ":w" -> byte offsets 0..2 -> columns 0,1 -> cells x=5,6.
+        let layout = draw_command_line_selection(&mut buf, area, &cmd, &theme, Some((0, 2)));
+        assert_eq!(cell_char(&buf, 5, 3), ':');
+        assert_eq!(cell_char(&buf, 6, 3), 'w');
+
+        let sel_bg = ratatui_color(theme.selection);
+        let plain_bg = ratatui_color(theme.command_line_bg);
+        assert_eq!(
+            buf[(5, 3)].bg,
+            sel_bg,
+            "selected column 0 should carry the selection bg"
+        );
+        assert_eq!(
+            buf[(6, 3)].bg,
+            sel_bg,
+            "selected column 1 should carry the selection bg"
+        );
+        assert_eq!(
+            buf[(7, 3)].bg,
+            plain_bg,
+            "unselected column 2 ('q') should keep the plain command-line bg"
+        );
+        assert_eq!(
+            buf[(8, 3)].bg,
+            plain_bg,
+            "unselected column 3 ('!') should keep the plain command-line bg"
+        );
+
+        // Sanity: the returned layout's own geometry agrees.
+        let r = layout.selection_bounds((0, 2)).unwrap();
+        assert_eq!((r.x, r.width), (5.0, 2.0));
+
+        // `draw_command_line` (no selection) must remain unaffected.
+        let mut buf2 = Buffer::empty(area);
+        draw_command_line(&mut buf2, area, &cmd, &theme);
+        assert_eq!(
+            buf2[(5, 3)].bg,
+            plain_bg,
+            "draw_command_line (no selection arg) must not highlight anything"
+        );
     }
 }
