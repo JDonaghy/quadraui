@@ -3451,6 +3451,14 @@ impl WindowControl for MacBackend {
         Ok(())
     }
 
+    /// `NSWindow::isZoomed` (issue #1022) — AppKit's own maximize-state
+    /// query, the same notion [`Backend::toggle_window_maximize`]'s
+    /// `zoom:` call flips.
+    fn is_maximized(&self) -> ServiceResult<bool> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        Ok(window.isZoomed())
+    }
+
     /// `NSWindow::setLevel(NSFloatingWindowLevel)` — the one always-on-top
     /// mechanism among the four in-tree backends with no platform-level
     /// gap (contrast [`crate::gtk::backend::GtkBackend`]'s `Unsupported`
@@ -3462,6 +3470,23 @@ impl WindowControl for MacBackend {
         } else {
             NSNormalWindowLevel
         });
+        Ok(())
+    }
+
+    /// Toggles `NSWindowStyleMask::Titled` (issue #1022) — backs
+    /// vimcode's client-side-decoration path (its #552). AppKit ties the
+    /// titlebar, not a separate flag, to this style bit: removing it also
+    /// removes the traffic-light buttons and title text, matching what a
+    /// host that paints its own titlebar wants.
+    fn set_decorated(&mut self, decorated: bool) -> ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        let mut style = window.styleMask();
+        if decorated {
+            style.insert(NSWindowStyleMask::Titled);
+        } else {
+            style.remove(NSWindowStyleMask::Titled);
+        }
+        window.setStyleMask(style);
         Ok(())
     }
 
@@ -4543,6 +4568,28 @@ mod tests {
     fn toggle_window_maximize_false_without_window() {
         let mut b = MacBackend::new();
         assert!(!Backend::toggle_window_maximize(&mut b));
+    }
+
+    /// #1022: `is_maximized`/`set_decorated` guard on `self.window` the
+    /// same way every other `WindowControl` method here does — no real
+    /// `NSWindow` exists in a headless unit test, so both must report
+    /// `Unsupported` rather than panic.
+    #[test]
+    fn is_maximized_err_without_window() {
+        let b = MacBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::is_maximized(&b),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn set_decorated_err_without_window() {
+        let mut b = MacBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::set_decorated(&mut b, false),
+            Err(BackendError::Unsupported)
+        ));
     }
 
     #[test]

@@ -4772,11 +4772,26 @@ impl crate::backend::WindowControl for GtkBackend {
         Ok(())
     }
 
+    /// `gtk4::Window::is_maximized` (issue #1022).
+    fn is_maximized(&self) -> crate::backend::ServiceResult<bool> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        Ok(window.is_maximized())
+    }
+
     /// **Not available on GTK4/Wayland** — see this trait method's own
     /// doc comment (`WindowControl::set_always_on_top`) for the
     /// X11-only-via-`gdk_x11` background quadraui#950 documents.
     fn set_always_on_top(&mut self, _on_top: bool) -> crate::backend::ServiceResult<()> {
         Err(BackendError::Unsupported)
+    }
+
+    /// `gtk4::Window::set_decorated` (issue #1022) — backs vimcode's
+    /// client-side-decoration path (its #552): turning this off lets the
+    /// app paint its own titlebar without GTK's native one underneath it.
+    fn set_decorated(&mut self, decorated: bool) -> crate::backend::ServiceResult<()> {
+        let window = self.window.as_ref().ok_or(BackendError::Unsupported)?;
+        window.set_decorated(decorated);
+        Ok(())
     }
 
     fn minimize(&mut self) -> crate::backend::ServiceResult<()> {
@@ -5415,6 +5430,28 @@ mod tests {
     fn gtk_backend_toggle_window_maximize_false_without_window() {
         let mut backend = GtkBackend::new();
         assert!(!Backend::toggle_window_maximize(&mut backend));
+    }
+
+    /// #1022: `is_maximized`/`set_decorated` guard on `self.window` the
+    /// same way every other `WindowControl` method here does — no real
+    /// `gtk4::Window` exists in a headless unit test, so both must report
+    /// `Unsupported` rather than panic.
+    #[test]
+    fn gtk_backend_is_maximized_err_without_window() {
+        let backend = GtkBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::is_maximized(&backend),
+            Err(BackendError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn gtk_backend_set_decorated_err_without_window() {
+        let mut backend = GtkBackend::new();
+        assert!(matches!(
+            crate::backend::WindowControl::set_decorated(&mut backend, false),
+            Err(BackendError::Unsupported)
+        ));
     }
 
     /// #406: with no window set (every unit test), `begin_window_resize`
