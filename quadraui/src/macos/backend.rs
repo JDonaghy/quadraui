@@ -39,6 +39,7 @@ use std::time::Duration;
 
 use core_graphics::base::CGFloat;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use core_graphics::image::CGImage;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 use dispatch2::{DispatchQueue, DispatchTime, MainThreadBound};
@@ -160,6 +161,13 @@ pub struct MacBackend {
     /// struct doesn't need a lifetime parameter.
     current_cg_ptr: Cell<*const ()>,
     current_theme: Theme,
+    /// Decoded-`CGImage` cache for [`Backend::draw_image`] (issue #1014)
+    /// — see [`crate::image_cache`]'s module doc and
+    /// [`super::image::draw_image`]'s "Decode cache" section for why
+    /// this backend keys on source only (a `CGImage` decode is reused at
+    /// every paint size, unlike GTK's already-scaled `Pixbuf`). Survives
+    /// across frames, mirroring `GtkBackend::image_cache`.
+    image_cache: crate::image_cache::ImageCache<CGImage>,
     /// Set once via [`Self::set_current_font`] during app setup.
     /// `draw_*` methods recover this for text rendering +
     /// measurement. Wrapped in `Option` so apps that don't paint
@@ -561,6 +569,7 @@ impl MacBackend {
             services: MacPlatformServices::new(),
             current_cg_ptr: Cell::new(std::ptr::null()),
             current_theme: Theme::default(),
+            image_cache: crate::image_cache::ImageCache::default(),
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -3314,7 +3323,13 @@ impl Backend for MacBackend {
     /// (TUI at least paints `image.fallback_text`); #962 closes the gap
     /// with a real Core Graphics/ImageIO decode-and-paint
     /// (`super::image::draw_image`), the same shape and size of
-    /// backend-specific work #739 did for Win-GUI.
+    /// backend-specific work #739 did for Win-GUI. #1014 adds the decode
+    /// cache — via `super::image::draw_image_cached`, the crate-internal
+    /// sibling of the public `super::image::draw_image`, since this
+    /// trait method's own signature (and thus its ability to call
+    /// whichever free function it likes) isn't part of the downstream
+    /// contract the way that public function's signature is (see
+    /// `super::image`'s module docs).
     fn draw_image(
         &mut self,
         rect: Rect,
@@ -3322,16 +3337,17 @@ impl Backend for MacBackend {
     ) -> crate::backend::ImagePaintResult {
         self.register_zone(image.id.clone(), rect);
         let ctx = self.current_cg();
+        let scale = self.viewport.scale;
         // Unlike `draw_minimap`, `draw_image` can legitimately return
         // `Unsupported` (a decode failure, or a zero-size `rect`) without
         // ever touching `ctx` — so the null-context guard lives inside
-        // `super::image::draw_image` itself, right before the CoreGraphics
-        // calls that actually need it, rather than an unconditional
-        // upfront `debug_assert!` here.
+        // `super::image::draw_image_cached` itself, right before the
+        // CoreGraphics calls that actually need it, rather than an
+        // unconditional upfront `debug_assert!` here.
         //
-        // SAFETY: `super::image::draw_image` only dereferences `ctx` after
-        // confirming it's non-null.
-        unsafe { super::image::draw_image(ctx, rect, image) }
+        // SAFETY: `super::image::draw_image_cached` only dereferences
+        // `ctx` after confirming it's non-null.
+        unsafe { super::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale) }
     }
 }
 

@@ -205,6 +205,26 @@ pub mod undo;
 #[cfg_attr(docsrs, doc(cfg(feature = "terminal")))]
 pub mod terminal_engine;
 
+// Small LRU cache for decoded image rasterisations, shared by every pixel
+// backend's `Backend::draw_image` that actually uses it (#1014).
+// Crate-internal — only backend modules need it. `gtk` needs no
+// `target_os` gate (gdk_pixbuf runs anywhere); `macos` mirrors `mod
+// macos`'s own `all(feature = "macos", target_os = "macos")` gate below,
+// since `macos::image` (the only user) is itself gated the same way.
+// `win` deliberately does NOT wire this cache in yet — see
+// `win::image`'s "No decode cache here yet (#1014)" module doc for why
+// (an `ID2D1Bitmap` is bound to the render target that created it, so
+// caching one across `WinBackend::ensure_surface`'s device-lost recovery
+// needs its own invalidation logic this change doesn't add) — so `win`
+// stays off this gate: turning it on with no real user would leave the
+// module provably dead code under `cargo check --features win` on
+// Linux (`win::image` itself is `target_os = "windows"`-gated, so that
+// check never reaches a call site) and fail that leg's `-D warnings`.
+// `tui` needs it not at all — it paints `Image::fallback_text` instead,
+// see `tui::image`'s module doc.
+#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+pub(crate) mod image_cache;
+
 // ── Per-backend rasterisers (#223) ──────────────────────────────────────────
 // Public `draw_*` rasterisers, gated behind feature flags so apps that only
 // consume the data layer don't pull in ratatui / gtk4. Lifted out of vimcode

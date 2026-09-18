@@ -28,16 +28,32 @@
 //! every other clipping rasteriser in `macos::` uses — rather than
 //! hand-rolling a third clip helper.
 //!
-//! `draw_image` also counter-flips the CTM locally around the
-//! `CGContextDrawImage` call, for the same reason
-//! [`super::text::draw_text_impl`] counter-flips the text matrix before
-//! `CTLineDraw`: this whole backend paints through a permanently flipped,
-//! top-left-origin, y-down context (`QuadraView`'s translate +
-//! `CGContextScaleCTM(1, -1)`, documented on
-//! `headless::BitmapSurface::new`), and `CGContextDrawImage` has no
-//! matrix-setter equivalent to compensate for that the way text does —
-//! the caller has to re-flip the CTM locally around the draw itself. See
-//! the comment on the call site for the exact idiom.
+//! # Decode cache (#1014)
+//!
+//! [`draw_image`] is `pub` inside a `pub mod` — reachable externally as
+//! `quadraui::macos::image::draw_image` — so #1014 cannot change its
+//! signature without risking a break for whatever external code already
+//! calls it directly (see `CLAUDE.md`'s *Downstream consumers* section:
+//! nothing pins a version of this crate, so a breaking change here is
+//! live in a consumer's build the moment it merges). `draw_image` itself
+//! therefore stays exactly as it always has — uncached, one decode per
+//! call — and the caching lives in a sibling, crate-internal
+//! [`draw_image_cached`] that [`MacBackend::draw_image`] (the `Backend`
+//! trait method, which downstream never implements itself — see
+//! `CLAUDE.md`) calls instead. Both share the same post-decode
+//! clip/counter-flip/draw tail, [`paint_cg_image`].
+//!
+//! Unlike GTK's `gdk_pixbuf::Pixbuf::scale_simple` (which produces an
+//! already-scaled bitmap sized for one particular target rect),
+//! `CGContextDrawImage` stretches a `CGImage` into whatever destination
+//! rect it's given at draw time — so, unlike
+//! [`crate::gtk::image::draw_image_cached`]'s cache, the decoded
+//! `CGImage` here is genuinely reusable across every target size a
+//! source is ever painted at, not just repeats of the same size.
+//! [`draw_image_cached`] caches the raw decode keyed on source only
+//! (width/height pinned to `0` in the [`crate::image_cache::ImageCache`]
+//! key — see the call site). See [`paint_cg_image`]'s doc for the
+//! counter-flip both entry points share.
 //!
 //! # Why raw FFI for `CGImageSource`
 //!
@@ -69,6 +85,7 @@ use foreign_types::ForeignType;
 use super::backend::{ns_pop_clip, ns_push_clip};
 use crate::backend::ImagePaintResult;
 use crate::event::Rect;
+use crate::image_cache::ImageCache;
 use crate::primitives::image::{Image, ImageSource};
 
 /// Opaque ImageIO type — see the module doc's "Why raw FFI" section.
@@ -110,16 +127,74 @@ fn decode_image(source: &ImageSource) -> Option<CGImage> {
     Some(unsafe { CGImage::from_ptr(image_ref) })
 }
 
-/// Paint `image` within `rect` (points, target-relative). See the module
-/// docs.
+/// Shared clip/counter-flip/draw tail for [`draw_image`] and
+/// [`draw_image_cached`] — both decode `image.source` their own way
+/// (fresh vs. cached) and then hand the resulting `cg_image` here to
+/// actually paint it. Counter-flips the CTM locally around
+/// `CGContextDrawImage`, for the same reason
+/// [`super::text::draw_text_impl`] counter-flips the text matrix before
+/// `CTLineDraw`: this whole backend paints through a permanently
+/// flipped, top-left-origin, y-down context (`QuadraView`'s translate +
+/// `CGContextScaleCTM(1, -1)`, documented on
+/// `headless::BitmapSurface::new`), and `CGContextDrawImage` has no
+/// matrix-setter equivalent to compensate for that the way text does —
+/// the caller has to re-flip the CTM locally around the draw itself.
+/// Reuses [`super::backend::ns_push_clip`]/[`super::backend::ns_pop_clip`]
+/// — the same save/clip/restore pair every other clipping rasteriser in
+/// `macos::` uses — rather than hand-rolling a third clip helper.
+///
+/// # Safety
+/// `ctx` must be a valid, live `CGContextRef` for the duration of the
+/// call.
+unsafe fn paint_cg_image(
+    ctx: CGContextRef,
+    rect: Rect,
+    image: &Image,
+    cg_image: &CGImage,
+) -> ImagePaintResult {
+    debug_assert!(
+        !ctx.is_null(),
+        "macos::image: about to paint a decoded image with a null CGContextRef",
+    );
+
+    let dest = image.layout(rect).bounds;
+
+    // SAFETY: `ctx` is valid per this function's own contract; `cg_image`
+    // is a live, owned `CGImage` for the duration of this call.
+    ns_push_clip(ctx, rect);
+
+    // Undo the permanent y-flip locally: move the origin to the bottom
+    // of `dest` (in the current, already-once-flipped space) and scale y
+    // by -1, then draw into a zero-origin rect of the same size —
+    // `ns_pop_clip`'s `CGContextRestoreGState` below restores the CTM
+    // along with the clip, so this doesn't need its own save/restore
+    // pair. See this function's doc for why the flip is needed at all.
+    CGContextTranslateCTM(ctx, dest.x as f64, (dest.y + dest.height) as f64);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    let local_rect = CGRect::new(
+        &CGPoint::new(0.0, 0.0),
+        &CGSize::new(dest.width as f64, dest.height as f64),
+    );
+    CGContextDrawImage(ctx, local_rect, cg_image.as_ptr());
+
+    ns_pop_clip(ctx);
+
+    ImagePaintResult::Painted
+}
+
+/// Paint `image` within `rect` (points, target-relative), decoding
+/// `image.source` fresh on every call — see the module docs' "Decode
+/// cache" section for why this public entry point deliberately does
+/// *not* cache, and [`draw_image_cached`] for the crate-internal one
+/// that does.
 ///
 /// Decoding happens before `ctx` is ever touched, so a decode failure or
 /// a zero-size `rect` returns [`ImagePaintResult::Unsupported`] without
 /// requiring a live context — `ctx` only needs to be valid when this
 /// function is actually about to paint (checked with a `debug_assert!`
-/// right before the CoreGraphics calls that dereference it), unlike
-/// [`super::minimap::draw_minimap`], which touches `ctx` unconditionally
-/// and so asserts on it up front.
+/// inside [`paint_cg_image`], right before the CoreGraphics calls that
+/// dereference it), unlike [`super::minimap::draw_minimap`], which
+/// touches `ctx` unconditionally and so asserts on it up front.
 ///
 /// # Safety
 /// If a decodable `image.source` and non-zero `rect` cause this function
@@ -132,45 +207,40 @@ pub unsafe fn draw_image(ctx: CGContextRef, rect: Rect, image: &Image) -> ImageP
     let Some(cg_image) = decode_image(&image.source) else {
         return ImagePaintResult::Unsupported;
     };
+    paint_cg_image(ctx, rect, image, &cg_image)
+}
 
-    debug_assert!(
-        !ctx.is_null(),
-        "macos::image::draw_image about to paint a decoded image with a null CGContextRef",
-    );
-
-    let dest = image.layout(rect).bounds;
-
-    // SAFETY: `ctx` is valid per this function's own contract; `cg_image`
-    // is a live, owned `CGImage` for the duration of this call.
-    ns_push_clip(ctx, rect);
-
-    // Counter-flip around the draw, the same idiom
-    // `macos::text::draw_text_impl` uses for `CTLineDraw` and for the
-    // identical reason: `CGContextDrawImage` maps a `CGImage`'s row 0
-    // (the visual top of the decoded raster) to the *bottom* of the
-    // destination rect whenever the current user space is flipped —
-    // i.e. exactly the "isFlipped == YES" case `QuadraView` sets up via
-    // the permanent translate + `CGContextScaleCTM(1, -1)` documented on
-    // `headless::BitmapSurface::new` (top-left-origin, y-down, to match
-    // this whole backend's coordinate convention). Left uncorrected,
-    // every macOS-painted image would come out upside down relative to
-    // GTK/Win-GUI's output for the same source. Undo it locally: move
-    // the origin to the bottom of `dest` (in the current, already-once-
-    // flipped space) and scale y by -1, then draw into a zero-origin
-    // rect of the same size — `ns_pop_clip`'s `CGContextRestoreGState`
-    // below restores the CTM along with the clip, so this doesn't need
-    // its own save/restore pair.
-    CGContextTranslateCTM(ctx, dest.x as f64, (dest.y + dest.height) as f64);
-    CGContextScaleCTM(ctx, 1.0, -1.0);
-    let local_rect = CGRect::new(
-        &CGPoint::new(0.0, 0.0),
-        &CGSize::new(dest.width as f64, dest.height as f64),
-    );
-    CGContextDrawImage(ctx, local_rect, cg_image.as_ptr());
-
-    ns_pop_clip(ctx);
-
-    ImagePaintResult::Painted
+/// Paint `image` within `rect` (points, target-relative), decoding
+/// through `cache` (#1014) — see the module docs. `scale` is folded into
+/// the cache key alongside the (pinned-to-`0`) size for consistency with
+/// every other backend's [`ImageCache`] key, even though this backend's
+/// decode doesn't actually depend on either. Crate-internal:
+/// [`MacBackend::draw_image`] is the only caller, so this can take
+/// whatever shape is convenient without worrying about breaking an
+/// external caller the way changing [`draw_image`]'s signature would.
+///
+/// # Safety
+/// Same contract as [`draw_image`].
+pub(crate) unsafe fn draw_image_cached(
+    ctx: CGContextRef,
+    rect: Rect,
+    image: &Image,
+    cache: &mut ImageCache<CGImage>,
+    scale: f32,
+) -> ImagePaintResult {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return ImagePaintResult::Unsupported;
+    }
+    let source = &image.source;
+    // Width/height pinned to `0`, not the target rect's real size: this
+    // decode is reused verbatim at every paint size (see the module
+    // docs' "Decode cache" section) — the [`ImageCache`] key still needs
+    // *some* size to stay shape-compatible with every other backend's
+    // call, so a constant stands in for "doesn't vary."
+    let Some(cg_image) = cache.get_or_decode(source, 0, 0, scale, || decode_image(source)) else {
+        return ImagePaintResult::Unsupported;
+    };
+    paint_cg_image(ctx, rect, image, cg_image)
 }
 
 // ImageIO has no binding in the `core-graphics`/`core-foundation` crates
@@ -347,6 +417,10 @@ mod tests {
         }
     }
 
+    fn cache() -> ImageCache<CGImage> {
+        ImageCache::with_capacity(4)
+    }
+
     /// The impl this replaces reported `Unsupported` unconditionally
     /// (quadraui#802) — macOS was the only backend that painted nothing
     /// at all for `draw_image`. #962's positive replacement: a decodable
@@ -413,6 +487,124 @@ mod tests {
         let result =
             unsafe { draw_image(surface.context_ptr(), Rect::new(0.0, 0.0, 0.0, 0.0), &img) };
         assert_eq!(result, ImagePaintResult::Unsupported);
+    }
+
+    #[test]
+    fn draw_image_cached_from_bytes_paints_real_pixels() {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+
+        let img = image(ImageSource::Bytes(tiny_png_bytes()), ImageFit::Fill);
+        let rect = Rect::new(20.0, 20.0, 60.0, 60.0);
+
+        // SAFETY: `surface.context_ptr()` is valid for the surface's
+        // lifetime, which outlives this call.
+        let result =
+            unsafe { draw_image_cached(surface.context_ptr(), rect, &img, &mut cache(), 1.0) };
+
+        assert_eq!(result, ImagePaintResult::Painted);
+        let (r, g, b, _) = surface.pixel(50, 50);
+        assert_eq!((r, g, b), (255, 0, 0), "decoded PNG should be red");
+    }
+
+    #[test]
+    fn draw_image_cached_from_missing_path_reports_unsupported() {
+        let surface = BitmapSurface::new(W, H);
+        let img = image(
+            ImageSource::Path("/nonexistent/does-not-exist.png".into()),
+            ImageFit::Contain,
+        );
+        // SAFETY: surface context valid for this call.
+        let result = unsafe {
+            draw_image_cached(
+                surface.context_ptr(),
+                Rect::new(0.0, 0.0, 40.0, 40.0),
+                &img,
+                &mut cache(),
+                1.0,
+            )
+        };
+        assert_eq!(result, ImagePaintResult::Unsupported);
+    }
+
+    #[test]
+    fn draw_image_cached_zero_size_rect_reports_unsupported_without_decoding() {
+        let surface = BitmapSurface::new(W, H);
+        let img = image(ImageSource::Bytes(tiny_png_bytes()), ImageFit::Contain);
+        // SAFETY: surface context valid for this call.
+        let result = unsafe {
+            draw_image_cached(
+                surface.context_ptr(),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                &img,
+                &mut cache(),
+                1.0,
+            )
+        };
+        assert_eq!(result, ImagePaintResult::Unsupported);
+    }
+
+    /// A cache hit must skip re-decoding entirely (issue #1014) — this
+    /// backend keys on source alone (see the module docs' "Decode cache"
+    /// section), so painting the *same* source at two different target
+    /// sizes should still hit the cache the second time. Proven the same
+    /// way `gtk::image`'s equivalent test is: corrupt the on-disk source
+    /// between calls and confirm the second paint still succeeds.
+    #[test]
+    fn cached_decode_survives_source_becoming_unreadable_on_disk() {
+        let path = std::env::temp_dir().join(format!(
+            "quadraui_macos_image_cache_test_{}_{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::write(&path, tiny_png_bytes()).expect("write tiny png fixture");
+
+        let surface = BitmapSurface::new(W, H);
+        let mut shared_cache = cache();
+        let img = image(ImageSource::Path(path.clone()), ImageFit::Contain);
+
+        // SAFETY: surface context valid for this call.
+        let first = unsafe {
+            draw_image_cached(
+                surface.context_ptr(),
+                Rect::new(0.0, 0.0, 40.0, 40.0),
+                &img,
+                &mut shared_cache,
+                1.0,
+            )
+        };
+        assert_eq!(
+            first,
+            ImagePaintResult::Painted,
+            "first decode should succeed"
+        );
+
+        // Corrupt the file in place — a fresh decode from this point on
+        // would fail.
+        std::fs::write(&path, b"not a png").expect("corrupt fixture on disk");
+
+        // Different target size too — this backend's cache key ignores
+        // size (see the module docs), so this must still hit the cache.
+        // SAFETY: surface context valid for this call.
+        let second = unsafe {
+            draw_image_cached(
+                surface.context_ptr(),
+                Rect::new(0.0, 0.0, 80.0, 80.0),
+                &img,
+                &mut shared_cache,
+                1.0,
+            )
+        };
+        assert_eq!(
+            second,
+            ImagePaintResult::Painted,
+            "second draw must hit the cache rather than re-decoding the now-corrupt file"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// `ImageFit::Cover` can extend past `rect` on one axis — painting
