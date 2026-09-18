@@ -215,6 +215,12 @@ pub struct GtkBackend {
     /// call so font-metrics setup doesn't repeat per primitive.
     current_layout_ptr: Cell<*const ()>,
     current_theme: crate::Theme,
+    /// Decoded/scaled-`Pixbuf` cache for [`Backend::draw_image`] (issue
+    /// #1014) — see [`crate::image_cache`]'s module doc. Keyed on
+    /// `(image.source, target size, dpi_scale)`; survives across frames
+    /// (unlike `zones`), since the whole point is skipping a re-decode on
+    /// a later paint of the same source.
+    image_cache: crate::image_cache::ImageCache<gtk4::gdk_pixbuf::Pixbuf>,
     /// Per-frame Pango line height in DIPs. Set by the App in its
     /// draw closure (from font metrics) before any trait `draw_*`
     /// invocation. Every primitive that uses text metrics passes
@@ -546,6 +552,7 @@ impl GtkBackend {
             current_cr_ptr: Cell::new(std::ptr::null()),
             current_layout_ptr: Cell::new(std::ptr::null()),
             current_theme: crate::Theme::default(),
+            image_cache: crate::image_cache::ImageCache::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
             // Arbitrary but plausible seed (mirrors `current_char_width`
@@ -4677,17 +4684,29 @@ impl Backend for GtkBackend {
         rect: QRect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        let (cr, _pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_image called outside enter_frame_scope");
-        let result = crate::gtk::draw_image(
-            cr,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            image,
+        let cr_ptr = self.current_cr_ptr.get();
+        assert!(
+            !cr_ptr.is_null(),
+            "GtkBackend::draw_image called outside enter_frame_scope"
         );
+        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real,
+        // live `&Context` and won't return until the scope ends — the
+        // same invariant `current_frame_refs` relies on. Read the raw
+        // pointer directly here (rather than through
+        // `current_frame_refs`, which borrows all of `self` immutably
+        // for the lifetime of its return value) so `cr` doesn't collide
+        // with the `&mut self.image_cache` borrow this method also needs
+        // (issue #1014's decode cache).
+        let cr = unsafe { &*(cr_ptr as *const Context) };
+        let dpi_scale = self.dpi_scale;
+        // `super::image::draw_image_cached`, not the re-exported public
+        // `crate::gtk::draw_image` (issue #1014's decode cache lives in a
+        // crate-internal sibling function — see `gtk::image`'s module
+        // docs for why the public one couldn't just grow a cache
+        // parameter without breaking whatever external code already
+        // calls it directly).
+        let result =
+            super::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale);
         self.register_zone(image.id.clone(), rect);
         result
     }

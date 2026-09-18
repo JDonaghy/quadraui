@@ -15,9 +15,9 @@
 //! deliberately **not**:
 //! - an image-viewer widget (no zoom, pan, or multi-image gallery state),
 //! - animation (no GIF/APNG frame stepping),
-//! - a caching or asset-management layer (callers own the bytes/path
-//!   they hand in; the backend decodes once per paint call, same as
-//!   every other rasteriser in this crate).
+//! - an asset-management layer (callers still own the bytes/path they
+//!   hand in — `Image` carries no asset registry, cache eviction policy,
+//!   or lifetime tied to anything but the value itself).
 //!
 //! If a future need grows past this list, that is a new primitive or a
 //! deliberate scope expansion — not a quiet addition here.
@@ -27,24 +27,42 @@
 //! [`Image`] only carries a source (bytes or a path) plus layout
 //! metadata; it never decodes pixels itself. Each backend's
 //! `Backend::draw_image` decodes through its native stack — GTK via
-//! `gdk_pixbuf`, macOS via `NSImage` — so the primitive stays free of
-//! image-format dependencies. See that trait method's doc comment for
-//! the per-backend contract, including why TUI is a legitimate
-//! `Unsupported` rather than a silent no-op (#507).
+//! `gdk_pixbuf`, macOS via `NSImage`/ImageIO, Win via WIC — so the
+//! primitive stays free of image-format dependencies. See that trait
+//! method's doc comment for the per-backend contract, including why TUI
+//! is a legitimate `Unsupported` rather than a silent no-op (#507).
+//!
+//! Decoding is also where the per-backend **decode cache** lives (issue
+//! #1014): `draw_image` used to decode `image.source` from scratch on
+//! every single paint call, which measured at +16.5ms/frame on GTK for a
+//! large vector source (vimcode's 1024² app-icon SVG) — expensive enough
+//! that consumers were pre-rasterising icons themselves with toolkit
+//! types in host code just to avoid it. Each backend now keys a small
+//! fixed-capacity LRU (`crate::image_cache::ImageCache`) on a hash of
+//! `image.source` plus the resolved paint size/DPI scale, so repeated
+//! paints of the same source at the same size reuse the decoded bitmap
+//! instead of re-decoding. This is a paint-time optimization, not a new
+//! public surface on `Image` itself — the scope guard above still holds.
 
 use crate::event::Rect;
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Where the image's encoded bytes come from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Hash` (issue #1014): backends key their decode cache on a hash of
+/// this value plus the resolved paint size/scale — see
+/// `crate::image_cache::ImageCache`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ImageSource {
     /// Raw encoded image bytes (PNG/JPEG/SVG/...) — the backend's
     /// decoder sniffs the format from content, so no separate MIME hint
     /// is carried here.
     Bytes(Vec<u8>),
     /// Filesystem path to an image file, decoded lazily by the backend
-    /// on each paint (see the module docs — no caching layer here).
+    /// the first time it's needed at a given paint size/scale and cached
+    /// after that (see the module docs' "Decoding is a backend concern"
+    /// section, issue #1014).
     Path(std::path::PathBuf),
 }
 

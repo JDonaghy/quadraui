@@ -19,6 +19,25 @@
 //! pair `super::panel`/`super::sidebar_panel` use for their own
 //! overflow-prone content).
 //!
+//! # No decode cache here yet (#1014)
+//!
+//! GTK (`gdk_pixbuf::Pixbuf`, [`crate::gtk::image`]) and macOS
+//! (`CGImage`, [`crate::macos::image`]) both cache their decoded/scaled
+//! bitmap across paints via [`crate::image_cache::ImageCache`] — this
+//! module deliberately does not yet, and the reason is specific to this
+//! backend, not an oversight: an [`ID2D1Bitmap`] is bound to the
+//! [`ID2D1RenderTarget`] `CreateBitmapFromWicBitmap` built it from, and
+//! `WinBackend::ensure_surface`'s device-lost recovery (`D2DERR_RECREATE_TARGET`,
+//! see `win::backend`'s module docs) can replace that target out from
+//! under a live app. A cache keyed the way GTK's/macOS's are would hand
+//! back a bitmap bound to a target that no longer exists post-recovery —
+//! silently wrong (or a D2D error) rather than a decode-cost regression.
+//! Wiring this in correctly needs the cache to be invalidated in lockstep
+//! with `ensure_surface`'s rebuild, which needs verifying against a real
+//! Direct2D device-loss cycle (see `CLAUDE.md`'s "Win-GUI: building and
+//! testing for real" section) — out of scope for a change authored and
+//! only type-checked on Linux. Tracked as 1014's Win follow-up.
+//!
 //! # Why WIC instead of `ID2D1RenderTarget::CreateBitmap` from raw pixels
 //!
 //! `CreateBitmap` takes already-decoded pixel bytes at a known stride —
