@@ -1622,6 +1622,36 @@ pub trait Backend: sealed::Sealed {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// The advance, in this backend's native units, of the font
+    /// [`Self::draw_list`] actually paints `ListView` row text with.
+    ///
+    /// This is **not** always the same number [`Self::char_width`]
+    /// returns. `char_width` reports the *editor* font's advance, but
+    /// `draw_list` paints chrome (list rows are UI content, not editor
+    /// content — quadraui#416/#624), and on a pixel backend "chrome
+    /// font" can be a proportional face (GTK's default `ui_font` is
+    /// `"Sans 11"`, macOS's is the CoreText system UI font) with a
+    /// different — usually narrower — average glyph advance than the
+    /// monospace editor face `char_width` measures. A consumer that
+    /// divides a list's pixel width by [`Self::char_width`] to decide
+    /// how many characters of row text fit under-fills the row by
+    /// whatever ratio separates the two fonts (quadraui#912).
+    ///
+    /// Call this instead of [`Self::char_width`] when budgeting text for
+    /// a `ListView` row. It is still only an *average* advance — a
+    /// proportional font has no single width that wraps text exactly
+    /// the way a monospace grid does — but it is the right font's
+    /// average, which `char_width` is not.
+    ///
+    /// TUI returns the same `1.0` as `char_width` (one cell either way).
+    /// Win-GUI currently returns the same value as `char_width` too:
+    /// `draw_list` there still paints with the editor `DWrite` format,
+    /// not `chrome_dwrite` (see `WinBackend::chrome_dwrite`'s doc) — the
+    /// two will need to diverge together the day that rasteriser moves
+    /// to chrome text, so this method is required (no default) on every
+    /// backend rather than assumed equal to `char_width`.
+    fn list_char_width(&self) -> f32;
+
     /// [`Self::char_width`] and [`Self::line_height`] bundled into one
     /// [`Metrics`] value, for apps that need both instead of calling each
     /// method separately (quadraui#817).

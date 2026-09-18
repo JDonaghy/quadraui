@@ -814,6 +814,13 @@ impl crate::Backend for RecordingBackend {
     fn char_width(&self) -> f32 {
         self.char_width
     }
+    fn list_char_width(&self) -> f32 {
+        // `RecordingBackend` only records call shape, not real font
+        // metrics (see `char_width`/`line_height` above) — no separate
+        // chrome-font notion to model, so this just aliases `char_width`
+        // like TUI's real backend does (quadraui#912).
+        self.char_width
+    }
     fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {
         self.record("draw_tree");
     }

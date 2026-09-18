@@ -224,6 +224,16 @@ pub struct GtkBackend {
     /// App alongside `current_line_height`. Required by primitives
     /// that map cells to pixels (e.g. `draw_terminal`).
     current_char_width: f64,
+    /// Per-frame Pango advance for `ui_font` (the chrome twin of
+    /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
+    /// `draw_list` paints row text in `ui_font`, not the editor font
+    /// `current_char_width` measures (#416/#624), so a consumer sizing
+    /// list content from `current_char_width` under-fills the row
+    /// whenever the two fonts' advances differ (#912). Refreshed once
+    /// per frame by `gtk::run::render_frame` via
+    /// [`Self::refresh_chrome_char_width`], the same way
+    /// `current_char_width` is refreshed from the editor font.
+    current_chrome_char_width: f64,
     /// Pango context for text measurement outside the draw callback.
     /// Set once via [`Self::set_pango_context`] during init; used by
     /// `form_layout()` and other `_layout()` methods that need exact
@@ -538,6 +548,13 @@ impl GtkBackend {
             current_theme: crate::Theme::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            // Arbitrary but plausible seed (mirrors `current_char_width`
+            // above) — a real value is only established once
+            // `refresh_chrome_char_width` runs inside a live frame; a
+            // `GtkBackend` built directly by a test and never entered
+            // into a frame scope just gets this placeholder back from
+            // `list_char_width()`, same posture as `current_char_width`.
+            current_chrome_char_width: 8.0,
             pango_ctx: None,
             nerd_fonts_enabled: false,
             ui_font: "Sans 11".to_string(),
@@ -938,6 +955,34 @@ impl GtkBackend {
     #[allow(dead_code)]
     pub fn set_current_char_width(&mut self, char_width: f64) {
         self.current_char_width = char_width;
+    }
+
+    /// Re-measure and cache `ui_font`'s real Pango advance into
+    /// `current_chrome_char_width`, backing [`Backend::list_char_width`]
+    /// — the chrome twin of [`Self::set_current_char_width`] (#912).
+    ///
+    /// Takes a live `layout` (the same shared per-frame layout every
+    /// `draw_*` method borrows via `current_frame_refs`) because Pango
+    /// text measurement needs a `pango::Context`-backed layout to read
+    /// real hinted advances from, not just a font description. Saves and
+    /// restores `layout`'s font description around the measurement, the
+    /// same save/swap/restore shape [`Backend::draw_list`]'s own
+    /// [`crate::gtk::GtkBackend`] impl uses to paint in `ui_font` without
+    /// leaving it stuck on the shared layout afterward — so calling this
+    /// mid-frame never disturbs whatever the caller had `layout` set to.
+    ///
+    /// Called once per frame by `gtk::run::render_frame`, right alongside
+    /// [`Self::set_current_char_width`], so `list_char_width()` can never
+    /// go stale after a runtime [`Backend::set_ui_font`] call the way a
+    /// value cached only at `set_ui_font` time would (GTK's `ui_font` is
+    /// a plain string, not a live `pango::FontDescription` with metrics
+    /// attached, so there is no cheaper place to resolve this from).
+    pub(crate) fn refresh_chrome_char_width(&mut self, layout: &pango::Layout) {
+        let saved = layout.font_description();
+        let chrome_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        layout.set_font_description(Some(&chrome_desc));
+        self.current_chrome_char_width = measure_char_width_px(layout);
+        layout.set_font_description(saved.as_ref());
     }
 
     /// Store the widget's Pango context for text measurement outside
@@ -2029,6 +2074,16 @@ impl Backend for GtkBackend {
 
     fn char_width(&self) -> f32 {
         self.current_char_width as f32
+    }
+
+    /// `current_chrome_char_width`, not `current_char_width` —
+    /// [`Self::draw_list`] paints row text with `ui_font` (#416/#624),
+    /// and `current_chrome_char_width` is that font's real Pango
+    /// advance, refreshed every frame by [`Self::refresh_chrome_char_width`]
+    /// the same way `current_char_width` is refreshed from the editor
+    /// font. See the field's doc for why the two can disagree (#912).
+    fn list_char_width(&self) -> f32 {
+        self.current_chrome_char_width as f32
     }
 
     /// GTK's `ScrolledWindow` overlay scrollbar draws on top of the
@@ -6829,6 +6884,128 @@ mod tests {
             ui_font_extent > small_editor_extent + 20,
             "changing ui_font alone must visibly widen the painted row label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
+        );
+    }
+
+    /// #912 acceptance: a consumer that budgets `ListView` row text from
+    /// [`Backend::char_width`] under-fills the row, because `draw_list`
+    /// (the test just above) paints in `ui_font`, not the editor font
+    /// `char_width` measures. [`Backend::list_char_width`] exists so a
+    /// consumer has a metric that actually agrees with what got painted
+    /// — this ties the two together mechanically, through the real
+    /// per-frame `gtk::run::render_frame` path (not a hand-rolled
+    /// `enter_frame_scope`, so `GtkBackend::refresh_chrome_char_width`
+    /// actually runs), so they can never silently diverge again.
+    ///
+    /// Renders a real English-prose row label (proportional fonts don't
+    /// wrap a synthetic `"MMMM…"` run the same way they wrap prose — the
+    /// issue's own measured numbers are for prose, not a fixed glyph)
+    /// with the editor font forced to a size wildly different from the
+    /// `"Sans 11"` chrome default, then compares the label's actual
+    /// painted width (from the `#489` per-glyph-run recorder, i.e. what
+    /// `GtkDriver::find_bounds` would also see) against both
+    /// `list_char_width() * chars` and `char_width() * chars`.
+    #[test]
+    fn list_char_width_matches_what_draw_list_actually_paints() {
+        use crate::runner::{AppLogic, Reaction};
+
+        const ROW_TEXT: &str = "the quick brown fox jumps over";
+
+        struct Fixture;
+        impl AppLogic for Fixture {
+            type AreaId = ();
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let vp = backend.viewport();
+                let list = ListView {
+                    id: WidgetId::new("test:912:list-char-width"),
+                    title: None,
+                    items: vec![crate::primitives::list::ListItem {
+                        text: crate::types::StyledText::plain(ROW_TEXT.to_string()),
+                        icon: None,
+                        detail: None,
+                        decoration: crate::types::Decoration::Normal,
+                    }],
+                    selected_idx: 0,
+                    scroll_offset: 0,
+                    has_focus: false,
+                    bordered: false,
+                    h_scroll: 0,
+                    max_content_width: None,
+                    show_v_scrollbar: false,
+                };
+                let rect = QRect::new(0.0, 0.0, vp.width, vp.height);
+                backend.draw_list(rect, &list);
+            }
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        const W: i32 = 800;
+        const H: i32 = 60;
+        let surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_painted_text_recording(true);
+        // Force the editor font to a wildly different size than the
+        // ("Sans 11") chrome default — a bare "Monospace 11" vs. "Sans
+        // 11" pairing isn't guaranteed to differ on every host (a
+        // minimal fontconfig setup can resolve both generic aliases to
+        // the same fallback face), which would make both assertions
+        // below vacuously true. A 40pt/11pt size gap is guaranteed to
+        // produce different advances regardless of which family either
+        // alias resolves to, while `draw_list`'s painted width — which
+        // paints in `ui_font`, not the editor font (#416) — must stay
+        // exactly where it was.
+        Backend::set_editor_font(&mut backend, "Monospace", 40.0);
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        crate::gtk::run::render_frame(&mut backend, &Fixture, &cr, W, H);
+
+        let bounds = backend
+            .painted_text_for_test()
+            .iter()
+            .find(|p| p.text == ROW_TEXT)
+            .unwrap_or_else(|| {
+                panic!("expected {ROW_TEXT:?} to have been recorded as painted text")
+            })
+            .bounds;
+
+        let list_cw = Backend::list_char_width(&backend);
+        let editor_cw = Backend::char_width(&backend);
+        let chars = ROW_TEXT.chars().count() as f32;
+
+        // Fixture assumption: the (forced-huge) editor font and the
+        // ("Sans 11") chrome font must actually have visibly different
+        // advances, or neither assertion below proves anything (they'd
+        // both look "right" by accident).
+        assert!(
+            (editor_cw - list_cw).abs() > 0.5,
+            "test fixture assumption broken: the editor font (forced to \
+             \"Monospace 40\" above) and chrome font (\"Sans 11\") must \
+             have visibly different advances for this test to prove \
+             anything — editor_cw={editor_cw}, list_cw={list_cw}"
+        );
+
+        // The actual #912 conformance check: `list_char_width()` — the
+        // font `draw_list` really painted with — must predict the row's
+        // painted width at least as well as the *editor* font's
+        // `char_width()` does. This is what regresses if `draw_list`'s
+        // font ever changes without `list_char_width()` following it (or
+        // vice versa): the naive `char_width()` budget would silently
+        // start winning again.
+        let list_predicted = list_cw * chars;
+        let editor_predicted = editor_cw * chars;
+        let list_err = (bounds.width - list_predicted).abs();
+        let editor_err = (bounds.width - editor_predicted).abs();
+        assert!(
+            list_err < editor_err,
+            "list_char_width() must predict draw_list's painted row width \
+             better than char_width() does (quadraui#912) for {ROW_TEXT:?}: \
+             painted_width={}, list_char_width()*{chars}={list_predicted} \
+             (err={list_err}), char_width()*{chars}={editor_predicted} \
+             (err={editor_err})",
+            bounds.width,
         );
     }
 

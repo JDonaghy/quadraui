@@ -2318,6 +2318,19 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
+    /// Same value as [`Self::char_width`] today: [`Self::draw_list`]
+    /// (`super::list::draw_list`) still paints row text with `self.dwrite`
+    /// (the editor `IDWriteTextFormat`), not `self.chrome_dwrite` — see
+    /// `chrome_dwrite`'s doc for why that rasteriser wiring is tracked
+    /// separately (#724). The two must be updated together the day
+    /// `draw_list` moves to chrome text (issue #912): this method exists
+    /// now, ahead of that move, so a consumer that already calls
+    /// `list_char_width()` to budget `ListView` row text doesn't have to
+    /// change call sites when Windows catches up to GTK/macOS.
+    fn list_char_width(&self) -> f32 {
+        self.current_char_width
+    }
+
     /// Store the editor font family + size for the next
     /// [`Self::attach_surface`]/[`Self::ensure_surface`] call to build an
     /// `IDWriteTextFormat` from (#21). Mirrors `GtkBackend::set_editor_font`

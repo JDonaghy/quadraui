@@ -1625,6 +1625,14 @@ pub(crate) fn render_frame<A: AppLogic>(
     // static app-level chrome-font preference (`Backend::set_ui_font`,
     // #624) that `setup()` sets once. Stomping it back to the struct's
     // default here would silently undo that call on the very next frame.
+    //
+    // `ui_font`'s *advance*, unlike the string itself, does need
+    // re-deriving every frame the same way `current_char_width` is: it
+    // backs `Backend::list_char_width()` (#912), and a runtime
+    // `set_ui_font` call must take effect on the very next repaint the
+    // same way a runtime `set_editor_font` call already does for
+    // `char_width()`.
+    backend.refresh_chrome_char_width(&layout);
 
     // Clear the whole surface with the backend's current theme bg before
     // the app's `render` runs. Without this, GTK's default light-theme

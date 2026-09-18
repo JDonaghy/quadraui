@@ -1510,6 +1510,14 @@ impl Backend for TuiBackend {
         1.0
     }
 
+    /// One terminal cell, same as [`Self::char_width`] — `draw_list`
+    /// paints every row on the same fixed character grid `char_width`
+    /// measures, so there is no #912 mismatch on TUI: a column is a
+    /// column regardless of which primitive it belongs to.
+    fn list_char_width(&self) -> f32 {
+        1.0
+    }
+
     /// TUI's terminal scrollbar gutter is one character cell, not GTK's
     /// 8px default — matching `src/tui/terminal.rs`'s
     /// `sb_cols: … .unwrap_or(1)` (issue #506 review fix).
@@ -3476,6 +3484,9 @@ mod tests {
             1.0
         }
         fn line_height(&self) -> f32 {
+            1.0
+        }
+        fn list_char_width(&self) -> f32 {
             1.0
         }
 

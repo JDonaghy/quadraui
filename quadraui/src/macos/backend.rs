@@ -1572,6 +1572,17 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
+    /// `chrome_char_width`, not `current_char_width` — [`Self::draw_list`]
+    /// paints row text with `chrome_font` (issue #1003), and
+    /// `chrome_char_width` is that font's real advance, kept in sync by
+    /// [`Self::set_chrome_font`] whenever [`Backend::set_ui_font`]
+    /// changes it. This is exactly the metric-mismatch hazard `chrome_font`
+    /// / `current_font`'s separate cached widths exist to avoid (#912) —
+    /// see `chrome_font`'s field doc.
+    fn list_char_width(&self) -> f32 {
+        self.chrome_char_width as f32
+    }
+
     // ── Drawing ────────────────────────────────────────────────────
 
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
