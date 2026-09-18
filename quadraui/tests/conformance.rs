@@ -1120,6 +1120,16 @@ fn every_capability_is_required_by_some_scenario_or_named_as_unused() {
              assertion this suite's vocabulary can gate on",
         ),
         (
+            "generic_font_families",
+            "declared by GTK, macOS and Win-GUI (issue #1023) — GTK has a `ConformanceDriver` \
+             but the same gap `app_font_registration` above already names blocks it here too: \
+             telling \"resolved the generic token to the right native font\" apart from \
+             \"resolved it to something, or fell back to the same default it always used\" \
+             needs per-glyph font-resolution inspection `FrameInventory` doesn't do (it records \
+             painted text runs, not which family resolved each character). macOS/Win-GUI have \
+             no `ConformanceDriver` at all (#493), same as `app_font_registration`",
+        ),
+        (
             "tray",
             "only macOS declares it (issue #953), and macOS has no `ConformanceDriver` yet \
              (#493) — same gap `native_menu` above already names. Even with one, a tray icon \
