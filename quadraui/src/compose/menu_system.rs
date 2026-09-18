@@ -791,6 +791,9 @@ mod tests {
         fn char_width(&self) -> f32 {
             1.0
         }
+        fn list_char_width(&self) -> f32 {
+            1.0
+        }
         fn menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
             bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
         }
