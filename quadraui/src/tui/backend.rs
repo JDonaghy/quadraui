@@ -2614,6 +2614,33 @@ impl Backend for TuiBackend {
         }
     }
 
+    /// Steers the terminal emulator's hardware caret via DECSCUSR
+    /// (crossterm's `SetCursorStyle`) — see [`Backend::set_caret_shape`]'s
+    /// doc for why TUI is the one backend that overrides this (issue
+    /// #1015). Always the non-blinking ("Steady*") variant of the
+    /// requested shape: [`crate::primitives::editor::CursorShape`] carries
+    /// no blink flag of its own, so picking a fixed, deterministic style
+    /// per shape is the honest mapping rather than guessing a blink
+    /// preference this primitive doesn't model.
+    ///
+    /// Best-effort, matching [`crate::backend::WindowControl::set_title`]'s
+    /// `TuiBackend` impl: both write straight to `std::io::stdout()` with
+    /// no `self.live`-style guard (this backend has no such flag — see
+    /// its struct doc), because a write failure here has no distinct
+    /// recovery a caller could act on differently from "the escape
+    /// sequence didn't land." Errors are swallowed rather than
+    /// propagated, matching this trait method's `()` return.
+    fn set_caret_shape(&mut self, shape: crate::EditorCursorShape) {
+        use ratatui::crossterm::cursor::SetCursorStyle;
+        use ratatui::crossterm::execute;
+        let style = match shape {
+            crate::EditorCursorShape::Block => SetCursorStyle::SteadyBlock,
+            crate::EditorCursorShape::Bar => SetCursorStyle::SteadyBar,
+            crate::EditorCursorShape::Underline => SetCursorStyle::SteadyUnderScore,
+        };
+        let _ = execute!(std::io::stdout(), style);
+    }
+
     fn draw_message_list(
         &mut self,
         rect: QRect,

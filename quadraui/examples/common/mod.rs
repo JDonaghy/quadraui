@@ -34,6 +34,10 @@
 //!   Tab/Shift+Tab order is derived from `ScreenLayout::tab_stops` and
 //!   cycled by the runner-owned `FocusManager` (#830), with the backend
 //!   painting the focus ring. Used by `tui_focus_ring` / `gtk_focus_ring`.
+//! - [`CaretShapeDemo`] (in [`caret_shape_demo`]) — cycles an `Editor`'s
+//!   caret through `EditorCursorShape`'s three modes, calling
+//!   `Backend::set_caret_shape` (#1015) on each change. Used by
+//!   `tui_caret_shape` / `gtk_caret_shape`.
 //! - [`key_map`] — **not** an `AppLogic`, unlike everything else in this
 //!   list. `KeyMap`/`KeyContext` were demoted here from
 //!   `quadraui::compose` by #825 (zero adopters); this module is a
@@ -55,6 +59,7 @@ pub mod ai_transcript;
 pub mod appshell_demo;
 pub mod board_app;
 pub mod bottom_panel_demo;
+pub mod caret_shape_demo;
 pub mod chart_app;
 pub mod chat_demo;
 pub mod clipboard_demo;
@@ -121,6 +126,7 @@ pub use activity_nav::ActivityNavApp;
 pub use activity_style_demo::ActivityStyleDemo;
 pub use ai_transcript::AiTranscript;
 pub use board_app::BoardApp;
+pub use caret_shape_demo::CaretShapeDemo;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
 pub use clipboard_demo::ClipboardDemo;

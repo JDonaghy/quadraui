@@ -38,6 +38,8 @@ mod ai_transcript;
 mod appshell_demo;
 #[path = "../examples/common/bottom_panel_demo.rs"]
 mod bottom_panel_demo;
+#[path = "../examples/common/caret_shape_demo.rs"]
+mod caret_shape_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
 // (see `examples/common/chart_app.rs`) — `examples/common/mod.rs` blankets
 // its whole tree with `#![allow(dead_code)]` when the example binaries
@@ -161,6 +163,7 @@ use activity_style_demo::ActivityStyleDemo;
 use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
 use bottom_panel_demo::BottomPanelDemo;
+use caret_shape_demo::CaretShapeDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
@@ -770,6 +773,81 @@ fn window_control_demo_always_on_top_reports_unsupported_on_tui() {
 #[test]
 fn window_control_demo_escape_exits() {
     let mut driver = TuiDriver::new(WindowControlDemo::new(), 100, 20);
+    assert!(!driver.exited());
+    driver.press_named(NamedKey::Escape);
+    assert!(driver.exited(), "Escape should exit the demo");
+}
+
+// ─── CaretShapeDemo: `Backend::set_caret_shape` (#1015) ────────────────────
+//
+// The DECSCUSR write itself lands on real `std::io::stdout()`, so there is
+// nothing in `TestBackend`'s frame buffer to assert the escape sequence
+// against (same shape as `WindowControlDemo`'s un-assertable window-state
+// changes). What's driver-testable is the call being *issued* once per
+// mode change — the status bar's call counter proves that without needing
+// to observe the bytes.
+
+#[test]
+fn caret_shape_demo_shows_starting_hint() {
+    let driver = TuiDriver::new(CaretShapeDemo::new(), 100, 20);
+    assert!(
+        driver.screen_contains("i=insert r=replace n=normal"),
+        "status bar should hint at the key bindings:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("mode: Normal"),
+        "demo should start in Normal (Block) mode:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn caret_shape_demo_i_switches_to_insert_and_calls_set_caret_shape() {
+    let mut driver = TuiDriver::new(CaretShapeDemo::new(), 100, 20);
+    driver.type_char('i');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("mode: Insert"),
+        "'i' should switch to Insert mode:\n{screen}"
+    );
+    assert!(
+        screen.contains("set_caret_shape calls: 1"),
+        "switching mode should call Backend::set_caret_shape exactly once:\n{screen}"
+    );
+}
+
+#[test]
+fn caret_shape_demo_r_switches_to_replace_pending() {
+    let mut driver = TuiDriver::new(CaretShapeDemo::new(), 100, 20);
+    driver.type_char('r');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("mode: Replace-pending"),
+        "'r' should switch to Replace-pending (Underline) mode:\n{screen}"
+    );
+    assert!(
+        screen.contains("set_caret_shape calls: 1"),
+        "switching mode should call Backend::set_caret_shape exactly once:\n{screen}"
+    );
+}
+
+#[test]
+fn caret_shape_demo_repeated_key_does_not_call_set_caret_shape_again() {
+    let mut driver = TuiDriver::new(CaretShapeDemo::new(), 100, 20);
+    driver.type_char('i');
+    driver.type_char('i');
+    let screen = driver.screen();
+    assert!(
+        screen.contains("set_caret_shape calls: 1"),
+        "re-pressing 'i' while already in Insert mode should not re-issue \
+         the terminal write:\n{screen}"
+    );
+}
+
+#[test]
+fn caret_shape_demo_escape_exits() {
+    let mut driver = TuiDriver::new(CaretShapeDemo::new(), 100, 20);
     assert!(!driver.exited());
     driver.press_named(NamedKey::Escape);
     assert!(driver.exited(), "Escape should exit the demo");

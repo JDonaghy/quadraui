@@ -85,7 +85,7 @@ use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
-use crate::primitives::editor::{Editor, EditorLayout};
+use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
@@ -2722,6 +2722,35 @@ pub trait Backend: sealed::Sealed {
     ) -> usize {
         layout.col_at_x(editor, view_row, x)
     }
+
+    /// Drive the terminal/OS **hardware** caret to match an
+    /// [`Editor`]'s [`EditorCursorShape`] (issue #1015) — block for
+    /// Normal/Visual, bar for Insert, underline for a pending
+    /// replace-char command. This is a distinct surface from the
+    /// caret [`Self::draw_editor`] *paints* into the frame buffer:
+    /// GTK/Win/macOS already paint their own caret there and have no
+    /// separate hardware cursor to steer, so the default here is a
+    /// genuine, permanent no-op for them — not a gap to fill in
+    /// later, the same "structurally absent, not merely
+    /// unimplemented" reasoning [`Backend::tray`] uses for TUI.
+    ///
+    /// **TUI is the one backend that overrides this**, emitting
+    /// DECSCUSR (`ESC [ n SP q`) via crossterm's `SetCursorStyle` to
+    /// steer the terminal emulator's own cursor glyph. Before this
+    /// method existed, that write had to happen in consumer code
+    /// (vimcode's `shell_app.rs`, straight through crossterm) — a
+    /// rule-6 violation this method closes off: only quadraui writes
+    /// escape sequences.
+    ///
+    /// Not [`Self::draw_editor`]'s job to call this itself: painting
+    /// happens every frame regardless of whether the shape changed,
+    /// while retitling the hardware caret is a comparatively heavy
+    /// terminal write hosts should only issue on an actual shape
+    /// change. Callers own that debouncing (see
+    /// `crate::tui::testing` for why driver tests never exercise the
+    /// write path at all — there is no real terminal under
+    /// `TestBackend`).
+    fn set_caret_shape(&mut self, _shape: EditorCursorShape) {}
 
     /// Draw a [`MessageList`] (chat-style streaming row history).
     /// The backend pulls panel background from its current theme;
