@@ -9,10 +9,20 @@
 //! | GTK | font scaling — real glyphs at a scaled-down absolute Pango size | 1 buffer line per row |
 //! | TUI | braille — `U+2800`-block dot cells | 4 buffer lines per row, 2 columns per cell |
 //!
-//! Both algorithms that make this possible — [`sample_lines`] (row
+//! Both algorithms that make this possible — [`sample_blocks`] (row
 //! down-sampling) and [`aggregate_spans`] (colour down-sampling) — live
 //! here, not in either backend, so the two rasterisers never re-derive
 //! or re-reduce data the primitive already resolved.
+//!
+//! [`sample_blocks`] (issue #1012) partitions the buffer into
+//! [`block_bounds`] blocks and aggregates *every* line in each block's
+//! read budget ([`BLOCK_LINE_SAMPLE_CAP`]) into one output row via a
+//! per-column coverage [`dither_threshold_met`] — not [`sample_lines`]'s
+//! older point-sample, which kept exactly one line per block and
+//! discarded the rest outright (at a 647-line file through a ~33-row
+//! strip, 80% of the buffer). [`sample_lines`] is now a deprecated shim
+//! over [`sample_blocks`], the same way [`Minimap::layout`] is a shim
+//! over [`Minimap::layout_with_sizing`].
 //!
 //! # Coordinate model
 //!
@@ -86,7 +96,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Minimap {
     pub id: WidgetId,
-    /// Pre-aggregated lines (app does the sampling, e.g. via [`sample_lines`]).
+    /// Pre-aggregated lines (app does the sampling, e.g. via [`sample_blocks`]).
     pub lines: Vec<MinimapLine>,
     /// Syntax colour spans, already aggregated to a dominant colour per
     /// *cell* by [`aggregate_spans`] — one backend-sized cell, not one
@@ -182,7 +192,7 @@ pub struct MinimapLayout {
 /// `MAX_ROW_PITCH` keeps a `Fill`-sized minimap always minimap-sized.
 /// Below the ceiling, `row_count * row_h` rows top-align inside `bounds`
 /// and the remainder of the strip stays unpainted — mirroring
-/// [`sample_lines`]'s own never-upscale rule. Long files are unaffected:
+/// [`sample_blocks`]'s own never-upscale rule. Long files are unaffected:
 /// `bounds.height / row_count` is already below the ceiling once the
 /// caller's sampling has downsampled them to roughly fit the strip.
 ///
@@ -501,32 +511,222 @@ impl Minimap {
     }
 }
 
-/// Compress `buffer_lines` into at most `target_rows` [`MinimapLine`]s
-/// with a configurable stride. Never upscales: when `buffer_lines.len()
-/// <= target_rows`, every line is kept as-is (one [`MinimapLine`] per
-/// buffer line) rather than manufacturing extra rows. `target_rows == 0`
-/// or an empty buffer returns an empty `Vec` (no divide-by-zero).
+/// Compress `buffer_lines` into at most `target_rows` [`MinimapLine`]s.
+///
+/// Deprecated (issue #1012): this signature forces a caller to
+/// pre-resolve every buffer line into `buffer_lines` before sampling can
+/// even begin, and — before #1012 — picked exactly one line per
+/// [`block_bounds`] block and discarded the other `stride - 1` outright,
+/// no matter what they contained (at a 647-line file through a ~33-row
+/// strip, 80% of the buffer was invisible to the minimap). This shim now
+/// forwards to [`sample_blocks`], so an existing caller that already has
+/// the whole buffer materialised still gets the real down-sampling fix
+/// for free — `buffer_lines[i].to_string()` as the accessor costs nothing
+/// extra a materialised slice wasn't already paying. A caller that can
+/// avoid materialising the whole buffer up front (e.g. one backed by a
+/// rope) should call [`sample_blocks`] directly instead, and pull only
+/// the lines its own accessor is asked for.
+#[deprecated(
+    since = "0.0.1",
+    note = "point-sampler over a pre-materialised slice; use `sample_blocks` (line accessor, real block aggregation) instead (#1012)"
+)]
 pub fn sample_lines(buffer_lines: &[&str], target_rows: usize) -> Vec<MinimapLine> {
-    if buffer_lines.is_empty() || target_rows == 0 {
+    sample_blocks(buffer_lines.len(), target_rows, |i| {
+        buffer_lines[i].to_string()
+    })
+}
+
+/// Ceiling on how many real buffer lines [`sample_blocks`] reads for one
+/// output block's [`block_sample_indices`], regardless of how large the
+/// block itself is (issue #1012).
+///
+/// A block's size grows with `total_lines / target_rows`, so reading
+/// every line in every block would cost `O(total_lines)` per call again —
+/// exactly the point-sampler's own complexity, just with more work spent
+/// per sample rather than none. Capping the read at a small constant,
+/// evenly spread across the block, keeps the cost
+/// `O(target_rows * BLOCK_LINE_SAMPLE_CAP)` — independent of
+/// `total_lines` — while still reading *every* line in any block small
+/// enough to fit under the cap. `8` is the value vimcode's own
+/// `MINIMAP_BLOCK_LINE_SAMPLE_CAP` (vimcode#1085) picked before this
+/// budget moved here; #1012's point is that it's the primitive's own
+/// decision now, not a constant each consumer reinvents.
+pub const BLOCK_LINE_SAMPLE_CAP: usize = 8;
+
+/// Partition `0..total_lines` into `target_rows.min(total_lines)`
+/// contiguous, non-overlapping blocks — one per output [`MinimapLine`]
+/// [`sample_blocks`] produces (issue #1012).
+///
+/// Returns `bounds` such that block `r` covers `bounds[r]..bounds[r + 1]`;
+/// `bounds.len()` is always the block count plus one. Never upscales: one
+/// line per block when `total_lines <= target_rows`, otherwise stride
+/// `total_lines as f64 / target_rows as f64` between block starts —
+/// exactly [`sample_lines`]'s own pre-#1012 stride formula, so a block's
+/// *boundary* lands exactly where the old point-sampler's single pick
+/// used to, but [`sample_blocks`] now reads (a capped sample of) every
+/// line inside it rather than just that one boundary line.
+pub fn block_bounds(total_lines: usize, target_rows: usize) -> Vec<usize> {
+    if total_lines == 0 || target_rows == 0 {
+        return vec![0];
+    }
+    if total_lines <= target_rows {
+        return (0..=total_lines).collect();
+    }
+    let stride = total_lines as f64 / target_rows as f64;
+    let mut bounds = Vec::with_capacity(target_rows + 1);
+    for r in 0..target_rows {
+        bounds.push(((r as f64 * stride) as usize).min(total_lines));
+    }
+    bounds.push(total_lines);
+    bounds
+}
+
+/// Buffer line indices [`sample_blocks`] will actually read for one block
+/// spanning `[start, end)` — every line when the block fits under `cap`,
+/// otherwise `cap` lines evenly spaced across the block (issue #1012).
+pub fn block_sample_indices(start: usize, end: usize, cap: usize) -> Vec<usize> {
+    let len = end.saturating_sub(start);
+    if len == 0 {
         return Vec::new();
     }
-    if buffer_lines.len() <= target_rows {
-        return buffer_lines
-            .iter()
-            .enumerate()
-            .map(|(i, &text)| MinimapLine {
-                text: text.to_string(),
-                line_idx: i,
-            })
-            .collect();
+    let cap = cap.max(1);
+    if len <= cap {
+        return (start..end).collect();
     }
-    let stride = buffer_lines.len() as f64 / target_rows as f64;
-    (0..target_rows)
+    let step = len as f64 / cap as f64;
+    (0..cap)
+        .map(|i| (start + (i as f64 * step) as usize).min(end - 1))
+        .collect()
+}
+
+/// 4x4 ordered-dither (Bayer) threshold matrix, values `0..16`, shared by
+/// every coverage-to-boolean decision this crate makes across a minimap
+/// strip (issue #1012 pt. 2). [`sample_blocks`] uses it (via
+/// [`dither_threshold_met`]) to decide whether a *block*'s column reads
+/// back non-blank; [`crate::tui::braille::dither_threshold_met`] (issue
+/// #1007) re-exports this exact matrix to make the same decision one
+/// granularity finer, per *dot*. A single shared matrix means the two
+/// compositions are provably the same dither policy applied twice, not
+/// two independently-tuned ones that happen to agree today — before
+/// #1012 they were exactly that: this matrix lived only in
+/// `tui::braille`, and vimcode#1085 had already grown its own copy for
+/// the block-level decision.
+pub const BAYER4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/// Threshold `covered` of `total` sampled units (a block's sampled lines,
+/// a dot's source columns, ...) against [`BAYER4`], indexed by the
+/// caller's own absolute `(row, col)` position so the dither pattern
+/// tiles across a whole strip rather than repeating identically inside
+/// every block/cell. Pure integer arithmetic — one multiply, one
+/// compare, no allocation.
+///
+/// `total == 0` always returns `false` (nothing sampled, nothing to
+/// threshold). A fully-covered bucket (`covered == total`) always
+/// returns `true`, since `total * 16 > total * 15` (`15` is [`BAYER4`]'s
+/// largest entry) for any `total > 0` — a solid run still paints solid —
+/// and `covered == 0` always returns `false`, since `0` is never greater
+/// than a non-negative product. Dithering only has any effect strictly
+/// *between* those two extremes.
+pub fn dither_threshold_met(covered: usize, total: usize, row: usize, col: usize) -> bool {
+    if total == 0 {
+        return false;
+    }
+    let threshold = BAYER4[row & 3][col & 3] as usize;
+    covered * 16 > total * threshold
+}
+
+/// Down-sample real buffer lines `0..total_lines` into at most
+/// `target_rows` [`MinimapLine`]s — the primitive-owned row down-sampler
+/// (issue #1012) that [`sample_lines`] used to only promise, not deliver.
+///
+/// `line_at` is a **line accessor**, not a materialised slice: this
+/// function calls it only for the lines its own read budget
+/// ([`BLOCK_LINE_SAMPLE_CAP`]) says it needs — at most
+/// `BLOCK_LINE_SAMPLE_CAP` times per output row, evenly spread across
+/// that row's [`block_bounds`] block via [`block_sample_indices`] — so a
+/// host backed by a rope, a gap buffer, or anything else expensive to
+/// fully materialise never has to resolve the whole buffer just to build
+/// a minimap. That is the seam [`sample_lines`]'s `&[&str]` shape could
+/// not offer: it forced the host to pre-resolve every line before
+/// sampling could even begin.
+///
+/// A block whose read budget is exactly one line (true for every block
+/// once `total_lines <= target_rows` — the never-upscale case) returns
+/// that line's own text verbatim, truncated to [`COLUMN_CAPACITY`]
+/// columns, same as [`sample_lines`] always did. Otherwise every sampled
+/// line in the block votes on every column: a column reads back non-blank
+/// (`'x'`) when its per-column coverage fraction — how many of the
+/// block's sampled lines are non-whitespace there — clears
+/// [`dither_threshold_met`]'s ordered-dither threshold, and blank (`' '`)
+/// otherwise. A hard majority cutoff would erase a rare long line's tail
+/// (surrounded by short ones, its reach past their length is well under
+/// 50% of the block); dithering instead gives that low-but-nonzero
+/// coverage fraction a proportionally small, evenly spread chance of
+/// registering — enough for the tail to still show as a sparse trace
+/// rather than nothing, while a densely-covered column still reads
+/// solid. Every live [`MinimapRenderMode::ColumnBlocks`] paint walk (and
+/// TUI's own dot-level fold on top of it, issue #1007) only asks "is this
+/// column blank", so this synthesised text carries exactly the signal
+/// those rasterisers consume — real per-block density instead of one
+/// line's worth of gaps.
+///
+/// `MinimapLine::line_idx` is each block's own **start** line — the
+/// buffer-line bridge `Minimap`'s scroll-thumb and `FixedPitch` slide
+/// window both need stays meaningful even though a block folds several
+/// real lines together.
+pub fn sample_blocks<F: FnMut(usize) -> String>(
+    total_lines: usize,
+    target_rows: usize,
+    mut line_at: F,
+) -> Vec<MinimapLine> {
+    if total_lines == 0 || target_rows == 0 {
+        return Vec::new();
+    }
+    let bounds = block_bounds(total_lines, target_rows);
+    (0..bounds.len() - 1)
         .map(|r| {
-            let idx = ((r as f64 * stride) as usize).min(buffer_lines.len() - 1);
+            let indices = block_sample_indices(bounds[r], bounds[r + 1], BLOCK_LINE_SAMPLE_CAP);
             MinimapLine {
-                text: buffer_lines[idx].to_string(),
-                line_idx: idx,
+                text: aggregate_block_text(&indices, r, &mut line_at),
+                line_idx: bounds[r],
+            }
+        })
+        .collect()
+}
+
+/// One output row's text for [`sample_blocks`] — see that function's doc
+/// for the verbatim-vs-dithered split.
+fn aggregate_block_text<F: FnMut(usize) -> String>(
+    indices: &[usize],
+    block_row: usize,
+    line_at: &mut F,
+) -> String {
+    if indices.is_empty() {
+        return String::new();
+    }
+    if let [only] = indices {
+        return truncate_to_columns(&line_at(*only), COLUMN_CAPACITY).to_string();
+    }
+    let char_rows: Vec<Vec<char>> = indices
+        .iter()
+        .map(|&i| {
+            truncate_to_columns(&line_at(i), COLUMN_CAPACITY)
+                .chars()
+                .collect()
+        })
+        .collect();
+    let max_len = char_rows.iter().map(Vec::len).max().unwrap_or(0);
+    let total = char_rows.len();
+    (0..max_len)
+        .map(|c| {
+            let covered = char_rows
+                .iter()
+                .filter(|row| row.get(c).is_some_and(|ch| !ch.is_whitespace()))
+                .count();
+            if dither_threshold_met(covered, total, block_row, c) {
+                'x'
+            } else {
+                ' '
             }
         })
         .collect()
@@ -997,28 +1197,36 @@ mod tests {
         assert_eq!(layout.hit_test(25.0, 15.0), MinimapHit::None);
     }
 
-    // ── sample_lines ─────────────────────────────────────────────────
+    // ── sample_lines (deprecated shim, #1012) ───────────────────────────
 
     #[test]
+    #[allow(deprecated)] // exercising the deprecated shim itself (#1012)
     fn sample_lines_empty_buffer_is_empty() {
         assert!(sample_lines(&[], 5).is_empty());
     }
 
     #[test]
+    #[allow(deprecated)]
     fn sample_lines_zero_target_rows_is_empty_no_div_by_zero() {
         assert!(sample_lines(&["a", "b", "c"], 0).is_empty());
     }
 
     #[test]
+    #[allow(deprecated)]
     fn sample_lines_never_upscales_small_files() {
-        // 2 buffer lines, target 10 rows: keep exactly 2, not 10.
+        // 2 buffer lines, target 10 rows: keep exactly 2, not 10, and
+        // (since neither block needs aggregating) the real text survives
+        // verbatim.
         let out = sample_lines(&["a", "b"], 10);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].line_idx, 0);
         assert_eq!(out[1].line_idx, 1);
+        assert_eq!(out[0].text, "a");
+        assert_eq!(out[1].text, "b");
     }
 
     #[test]
+    #[allow(deprecated)]
     fn sample_lines_downsamples_large_files_to_target_rows() {
         let owned: Vec<String> = (0..100).map(|i| format!("l{i}")).collect();
         let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -1027,6 +1235,176 @@ mod tests {
         assert_eq!(out[0].line_idx, 0);
         // Monotonically increasing source line indices.
         assert!(out.windows(2).all(|w| w[0].line_idx < w[1].line_idx));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn sample_lines_forwards_to_sample_blocks_byte_for_byte() {
+        // The whole point of the shim: an existing `&[&str]` caller must
+        // see exactly what `sample_blocks` would produce for the same
+        // buffer, not some separately-maintained behaviour.
+        let owned: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let shim = sample_lines(&borrowed, 7);
+        let direct = sample_blocks(borrowed.len(), 7, |i| borrowed[i].to_string());
+        assert_eq!(shim, direct);
+    }
+
+    // ── block_bounds / block_sample_indices (#1012) ─────────────────────
+
+    #[test]
+    fn block_bounds_never_upscales() {
+        assert_eq!(block_bounds(3, 10), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn block_bounds_downsamples_with_the_stride_formula() {
+        assert_eq!(
+            block_bounds(100, 10),
+            vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        );
+    }
+
+    #[test]
+    fn block_bounds_degenerate_inputs_do_not_panic() {
+        assert_eq!(block_bounds(0, 10), vec![0]);
+        assert_eq!(block_bounds(10, 0), vec![0]);
+    }
+
+    #[test]
+    fn block_sample_indices_reads_every_line_under_the_cap() {
+        assert_eq!(block_sample_indices(10, 15, 8), vec![10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn block_sample_indices_spreads_evenly_when_capped() {
+        let idx = block_sample_indices(0, 1000, 8);
+        assert_eq!(idx.len(), 8);
+        assert!(idx.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(idx[0], 0);
+        assert!(*idx.last().unwrap() < 1000);
+    }
+
+    #[test]
+    fn block_sample_indices_empty_span_is_empty() {
+        assert!(block_sample_indices(5, 5, 8).is_empty());
+    }
+
+    // ── dither_threshold_met (owned here since #1012; TUI's per-dot use
+    //    in `tui::braille` re-exports this exact function/matrix) ───────
+
+    #[test]
+    fn dither_threshold_met_zero_total_never_fires() {
+        assert!(!dither_threshold_met(0, 0, 0, 0));
+    }
+
+    #[test]
+    fn dither_threshold_met_full_coverage_always_fires() {
+        for row in 0..4 {
+            for col in 0..4 {
+                assert!(dither_threshold_met(6, 6, row, col));
+            }
+        }
+    }
+
+    #[test]
+    fn dither_threshold_met_zero_coverage_never_fires() {
+        for row in 0..4 {
+            for col in 0..4 {
+                assert!(!dither_threshold_met(0, 6, row, col));
+            }
+        }
+    }
+
+    // ── sample_blocks (#1012) ────────────────────────────────────────
+
+    #[test]
+    fn sample_blocks_empty_or_zero_target_is_empty() {
+        assert!(sample_blocks(0, 5, |_| String::new()).is_empty());
+        assert!(sample_blocks(5, 0, |_| String::new()).is_empty());
+    }
+
+    #[test]
+    fn sample_blocks_never_upscales_and_keeps_real_text_verbatim() {
+        let lines = ["fn main() {", "    body();", "}"];
+        let out = sample_blocks(lines.len(), 10, |i| lines[i].to_string());
+        assert_eq!(out.len(), 3);
+        for (i, line) in out.iter().enumerate() {
+            assert_eq!(line.line_idx, i);
+            assert_eq!(
+                line.text, lines[i],
+                "single-line block must not be dithered"
+            );
+        }
+    }
+
+    #[test]
+    fn sample_blocks_no_line_in_a_block_is_ever_fully_discarded() {
+        // The #1012 defect, reproduced directly: the old point sampler
+        // for a single 1000-line block (target_rows=1) always picked
+        // buffer line `0` (stride * r == 0 for r == 0) and discarded the
+        // other 999 outright -- if line 0 happened to be blank, the
+        // whole block painted as empty no matter what the other 999
+        // lines contained. Line 0 here *is* blank; every other line
+        // `block_sample_indices` samples (125, 250, ..., 875) carries an
+        // `x` at a column that's a multiple of 4, which BAYER4's own
+        // diagonal always dithers "on" for any nonzero coverage (row 0,
+        // `col & 3 == 0` -> threshold 0) -- so the aggregated block must
+        // show real content the old point sampler would have missed
+        // entirely.
+        let total = 1000;
+        let lines: Vec<String> = (0..total)
+            .map(|i| match i {
+                0 => String::new(),
+                125 => " ".repeat(4) + "x",
+                250 => " ".repeat(8) + "x",
+                375 => " ".repeat(12) + "x",
+                500 => " ".repeat(16) + "x",
+                625 => " ".repeat(20) + "x",
+                750 => " ".repeat(24) + "x",
+                875 => " ".repeat(28) + "x",
+                _ => String::new(),
+            })
+            .collect();
+        let out = sample_blocks(total, 1, |i| lines[i].clone());
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].text.contains('x'),
+            "aggregated block text must retain real content from non-boundary lines, not just \
+             the single line a point sampler would have picked"
+        );
+    }
+
+    #[test]
+    fn sample_blocks_respects_the_read_cap_per_block() {
+        // A single huge block (target_rows=1) must call the accessor at
+        // most BLOCK_LINE_SAMPLE_CAP times, not once per real line --
+        // the whole point of capping the read (#1012's perf concern,
+        // vimcode#1096).
+        use std::cell::Cell;
+        let calls = Cell::new(0usize);
+        let total = 10_000;
+        let out = sample_blocks(total, 1, |i| {
+            calls.set(calls.get() + 1);
+            format!("line{i}")
+        });
+        assert_eq!(out.len(), 1);
+        assert!(
+            calls.get() <= BLOCK_LINE_SAMPLE_CAP,
+            "expected at most {BLOCK_LINE_SAMPLE_CAP} accessor calls, got {}",
+            calls.get()
+        );
+    }
+
+    #[test]
+    fn sample_blocks_line_idx_is_each_blocks_start_line() {
+        let total = 100;
+        let out = sample_blocks(total, 10, |i| format!("l{i}"));
+        assert_eq!(out.len(), 10);
+        let expected_bounds = block_bounds(total, 10);
+        for (row, line) in out.iter().enumerate() {
+            assert_eq!(line.line_idx, expected_bounds[row]);
+        }
     }
 
     // ── aggregate_spans ────────────────────────────────────────────
