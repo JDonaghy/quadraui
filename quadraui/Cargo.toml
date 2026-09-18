@@ -1343,3 +1343,17 @@ required-features = ["tui"]
 name = "gtk_text_display_wrap"
 path = "examples/gtk_text_display_wrap.rs"
 required-features = ["gtk"]
+
+# Caret-shape demo (issue #1015) — `Backend::set_caret_shape`. Both entries
+# are mandatory (see #905's note above): without an explicit `[[example]]`,
+# `gtk_caret_shape.rs` gets autodiscovered with no `required-features` and
+# fails `cargo test --features tui` on `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_caret_shape"
+path = "examples/tui_caret_shape.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_caret_shape"
+path = "examples/gtk_caret_shape.rs"
+required-features = ["gtk"]

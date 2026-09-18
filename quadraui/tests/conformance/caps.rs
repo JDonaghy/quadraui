@@ -744,6 +744,33 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "pure fn of char_width()/line_height() — see the block comment above (#506); nothing \
          backend-specific to add (#817)",
     ),
+    // ── issue #1015: `set_caret_shape` drives the terminal/OS *hardware*
+    // caret to match an Editor's shape. TUI is the one backend with a
+    // hardware caret distinct from the one it paints (DECSCUSR), which is
+    // why it's the one override — see `Backend::set_caret_shape`'s own
+    // doc. GTK/macOS/Win-GUI all paint their own caret glyph as part of
+    // `draw_editor` and have no separate hardware cursor to steer, so the
+    // trait's no-op default is the honest, permanent answer for them, not
+    // unfinished work — the same "structurally absent" shape
+    // `Backend::tray`'s TUI doc uses.
+    (
+        "gtk",
+        "set_caret_shape",
+        "GtkBackend paints its own caret in draw_editor; there is no separate hardware caret to \
+         steer (#1015)",
+    ),
+    (
+        "macos",
+        "set_caret_shape",
+        "MacBackend paints its own caret in draw_editor; there is no separate hardware caret to \
+         steer (#1015)",
+    ),
+    (
+        "win",
+        "set_caret_shape",
+        "WinBackend paints its own caret in draw_editor; there is no separate hardware caret to \
+         steer (#1015)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
