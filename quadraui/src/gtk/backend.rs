@@ -57,10 +57,10 @@ use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    CommandLine, DragState, FieldKind, Form, KeyBinding, ListView, MenuBar, ModalStack, Palette,
-    ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, StatusBar,
-    TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView,
-    UiEvent, UserPayload, Viewport,
+    CommandLine, DragState, FieldKind, Form, GenericFamily, KeyBinding, ListView, MenuBar,
+    ModalStack, Palette, ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge,
+    Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim,
+    TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -771,7 +771,7 @@ impl GtkBackend {
     /// `.to_string()`. Callers holding only `&mut dyn Backend` use the
     /// trait method instead; both write the same field (#624).
     pub fn set_ui_font(&mut self, ui_font: impl Into<String>) {
-        self.ui_font = ui_font.into();
+        self.ui_font = resolve_generic_families_gtk(&ui_font.into());
     }
 
     /// Current editor font as a Pango description string (`"<family>
@@ -1677,6 +1677,45 @@ fn theme_prefers_dark(theme: crate::Theme) -> bool {
     luma < 128
 }
 
+/// Rewrite any `system-ui` generic family token in `desc` (a bare family
+/// name, or a Pango-style `"family[,family...] [size]"` description —
+/// [`Backend::set_editor_font`]/[`Backend::set_ui_font`]'s shapes) to
+/// `"Sans"`, leaving everything else untouched (issue #1023).
+///
+/// GTK is nearly a no-op backend for generic family resolution: Pango
+/// resolves `monospace`/`sans-serif` (fontconfig's own generic alias
+/// spellings) and Pango's convenience aliases `Monospace`/`Sans` for the
+/// same two requests correctly already, with no translation needed here
+/// — that is what the issue's mapping table means by "fontconfig aliases
+/// (already generic)". `system-ui` is the one CSS token fontconfig has
+/// no alias for, so it maps onto `"Sans"`, the concrete family
+/// fontconfig's `sans-serif` alias already resolves to (Linux desktop
+/// environments have no second, more-chrome-specific default the way
+/// CSS's `system-ui`/`sans-serif` distinction implies).
+///
+/// Trailing-size detection mirrors `macos`/`win`'s `parse_ui_font_desc`
+/// (a whitespace-separated numeric last token), and the family portion
+/// is split on commas so a `system-ui` entry anywhere in a fallback list
+/// — not just a bare, single-family request — gets rewritten.
+fn resolve_generic_families_gtk(desc: &str) -> String {
+    let trimmed = desc.trim();
+    let (family_part, rest) = match trimmed.rfind(' ') {
+        Some(idx) if trimmed[idx + 1..].trim().parse::<f64>().is_ok() => trimmed.split_at(idx),
+        _ => (trimmed, ""),
+    };
+    let resolved: Vec<String> = family_part
+        .split(',')
+        .map(|f| {
+            let f = f.trim();
+            match GenericFamily::parse(f) {
+                Some(GenericFamily::SystemUi) => "Sans".to_string(),
+                _ => f.to_string(),
+            }
+        })
+        .collect();
+    format!("{}{}", resolved.join(","), rest)
+}
+
 impl crate::backend::sealed::Sealed for GtkBackend {}
 
 impl Backend for GtkBackend {
@@ -1753,12 +1792,12 @@ impl Backend for GtkBackend {
     }
 
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
-        self.editor_font_family = family.to_string();
+        self.editor_font_family = resolve_generic_families_gtk(family);
         self.editor_font_size_pt = size_pt;
     }
 
     fn set_ui_font(&mut self, font_desc: &str) {
-        self.ui_font = font_desc.to_string();
+        self.ui_font = resolve_generic_families_gtk(font_desc);
     }
 
     /// Overrides [`crate::gtk::NERD_FONT_FALLBACK_FAMILY`] for every
@@ -1961,6 +2000,13 @@ impl Backend for GtkBackend {
             native_dialogs: true,
             notifications: true,
             app_font_registration: true,
+            // `generic_font_families` (issue #1023): `set_editor_font`/
+            // `set_ui_font` are both overridden below and now resolve
+            // CSS/Pango generic tokens (`monospace`/`sans-serif`/
+            // `system-ui`) via `resolve_generic_families_gtk` before
+            // storing them — fontconfig already resolves the first two
+            // natively, and `system-ui` is rewritten onto `Sans`.
+            generic_font_families: true,
             // `window` (issue #950) is overridden below and returns
             // `Some` once `set_window` has stashed a real
             // `gtk4::ApplicationWindow` — see `impl WindowControl for
@@ -6351,6 +6397,54 @@ mod tests {
         Backend::set_editor_font(&mut backend, "Fira Code", 13.0);
         assert_eq!(backend.ui_font, "Cantarell 12");
         assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
+    }
+
+    /// Issue #1023: `monospace`/`sans-serif` (and Pango's own
+    /// `Monospace`/`Sans` aliases) already resolve correctly via
+    /// fontconfig — GTK stores them unchanged, matching the issue's
+    /// mapping table ("fontconfig aliases — already generic").
+    #[test]
+    fn gtk_backend_passes_through_tokens_fontconfig_already_understands() {
+        let mut backend = GtkBackend::new();
+        Backend::set_editor_font(&mut backend, "monospace", 14.0);
+        assert_eq!(backend.editor_font_pango_string(), "monospace 14");
+
+        Backend::set_ui_font(&mut backend, "sans-serif 11");
+        assert_eq!(backend.ui_font, "sans-serif 11");
+
+        Backend::set_ui_font(&mut backend, "Monospace 11");
+        assert_eq!(backend.ui_font, "Monospace 11");
+
+        backend.set_ui_font("Sans 11");
+        assert_eq!(backend.ui_font, "Sans 11");
+    }
+
+    /// Issue #1023: `system-ui` has no fontconfig alias, so GTK rewrites
+    /// it to `"Sans"` — the concrete family fontconfig's own
+    /// `sans-serif` alias already resolves to — both via the trait
+    /// methods and the ergonomic inherent `set_ui_font` sibling.
+    #[test]
+    fn gtk_backend_resolves_system_ui_to_sans() {
+        let mut backend = GtkBackend::new();
+        Backend::set_editor_font(&mut backend, "system-ui", 12.0);
+        assert_eq!(backend.editor_font_pango_string(), "Sans 12");
+
+        Backend::set_ui_font(&mut backend, "system-ui 11");
+        assert_eq!(backend.ui_font, "Sans 11");
+
+        backend.set_ui_font("system-ui 13");
+        assert_eq!(backend.ui_font, "Sans 13");
+    }
+
+    /// Issue #1023: `system-ui` embedded later in a Pango-style
+    /// comma-separated fallback list is rewritten in place — Pango
+    /// already resolves the rest of the list itself, this backend only
+    /// needs to translate the one token fontconfig has no alias for.
+    #[test]
+    fn gtk_backend_resolves_system_ui_within_a_comma_list() {
+        let mut backend = GtkBackend::new();
+        Backend::set_ui_font(&mut backend, "Cantarell, system-ui, Sans 12");
+        assert_eq!(backend.ui_font, "Cantarell,Sans,Sans 12");
     }
 
     /// #971: a GTK consumer that paints its editor content itself

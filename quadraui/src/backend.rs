@@ -575,6 +575,16 @@ pub struct BackendCaps {
     /// permanently — see [`Backend::tray`]'s doc for why that is a
     /// structural fact, not a gap to close.
     pub tray: bool,
+    /// [`Backend::set_editor_font`] and [`Backend::set_ui_font`] are both
+    /// overridden — this backend resolves CSS/Pango generic family
+    /// tokens (`monospace`, `sans-serif`, `system-ui`; see
+    /// [`crate::GenericFamily`]) to a real native font instead of
+    /// silently discarding whatever `family`/`font_desc` string a caller
+    /// handed it (issue #1023). `false` on TUI permanently — a terminal
+    /// cell grid has no font concept to resolve a family token into, the
+    /// same structural reason both methods take the trait's no-op
+    /// default there (see each method's own doc).
+    pub generic_font_families: bool,
     /// This render target's actual colour fidelity — see [`ColorDepth`].
     /// Not part of the bool-capability vocabulary below ([`Self::names`] /
     /// [`Self::has`] / [`Self::vocabulary`] / `ALL_NAMES`): those model
@@ -641,6 +651,7 @@ impl BackendCaps {
             app_font_registration: false,
             window_control: false,
             tray: false,
+            generic_font_families: false,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: false,
         }
@@ -704,6 +715,7 @@ impl BackendCaps {
         ("app_font_registration", |c| c.app_font_registration),
         ("window_control", |c| c.window_control),
         ("tray", |c| c.tray),
+        ("generic_font_families", |c| c.generic_font_families),
     ];
 }
 
@@ -4393,6 +4405,7 @@ mod backend_caps_tests {
         ("app_font_registration", |c| c.app_font_registration = true),
         ("window_control", |c| c.window_control = true),
         ("tray", |c| c.tray = true),
+        ("generic_font_families", |c| c.generic_font_families = true),
     ];
 
     #[test]
@@ -4428,6 +4441,7 @@ mod backend_caps_tests {
             app_font_registration: _,
             window_control: _,
             tray: _,
+            generic_font_families: _,
             color_depth: _,
             kitty_keyboard: _,
         } = BackendCaps::empty();

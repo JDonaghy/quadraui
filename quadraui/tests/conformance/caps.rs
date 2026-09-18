@@ -187,6 +187,10 @@ pub const CAP_CONTRACTS: &[CapContract] = &[
         cap: "tray",
         proof: Proof::All(&["tray"]),
     },
+    CapContract {
+        cap: "generic_font_families",
+        proof: Proof::All(&["set_editor_font", "set_ui_font"]),
+    },
 ];
 
 // ─── Every backend in the tree, compiled here or not ────────────────────
@@ -316,13 +320,15 @@ const BACKEND_TRAIT_SRC: &str = include_str!("../../src/backend.rs");
 ///
 /// quadraui#492's Problem section counts 13 such methods and calls them
 /// the bug: a new backend compiles while silently discarding whatever
-/// they carry. `CAP_CONTRACTS` covers the nine that a `BackendCaps`
-/// field gates and `c0::CASES` covers the defaulted `draw_*` ones, which
-/// leaves a remainder — `set_theme`, `set_nerd_fonts`, `set_editor_font`,
-/// `scales_text_rows`, `editor_col_at_x`, `register_zone` — that nothing
-/// else in this suite looks at. Those are the issue's *headline* example
-/// ("discarding the theme — the Win stub takes this default today") and
-/// its `editor_col_at_x` example, so they get a table of their own.
+/// they carry. `CAP_CONTRACTS` covers the ones a `BackendCaps` field
+/// gates (`set_editor_font`/`set_ui_font` included, since #1023's
+/// `generic_font_families` entry) and `c0::CASES` covers the defaulted
+/// `draw_*` ones, which leaves a remainder — `set_theme`,
+/// `set_nerd_fonts`, `scales_text_rows`, `editor_col_at_x`,
+/// `register_zone` — that nothing else in this suite looks at. Those are
+/// the issue's *headline* example ("discarding the theme — the Win stub
+/// takes this default today") and its `editor_col_at_x` example, so they
+/// get a table of their own.
 ///
 /// Derived from source rather than listed, so a new defaulted method
 /// enters the report the moment it is added to the trait.
@@ -396,19 +402,12 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          this channel",
     ),
     // ── TUI: a fixed-cell backend, so the font-shaped methods have no
-    // meaning rather than being unfinished.
-    (
-        "tui",
-        "set_editor_font",
-        "fixed-cell backend — every glyph already occupies exactly one terminal cell, so there \
-         is no font to override (the trait's own doc says so)",
-    ),
-    (
-        "tui",
-        "set_ui_font",
-        "same fixed-cell reason as `set_editor_font` — chrome glyphs are terminal cells too, so \
-         there is no chrome font description to honour (#624)",
-    ),
+    // meaning rather than being unfinished. `set_editor_font`/`set_ui_font`
+    // are no longer here (#1023): both are now covered by
+    // `CAP_CONTRACTS`'s `generic_font_families` entry instead — TUI's
+    // `false` there (neither method is overridden) *is* the honest
+    // "fixed-cell backend, no font to override" answer, so this table no
+    // longer needs a separate excuse for the same fact.
     (
         "tui",
         "scales_text_rows",

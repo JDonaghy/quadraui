@@ -118,6 +118,25 @@ pub fn system_ui_font(size_pt: f64) -> CTFont {
     font::new_ui_font_for_language(font::kCTFontSystemFontType, size_pt, None)
 }
 
+/// Build the CoreText system *fixed-pitch* font
+/// (`kCTFontUserFixedPitchFontType`) at `size_pt` — the CoreText analogue
+/// of GTK/fontconfig's `Monospace` alias and Win-GUI's `Consolas`
+/// default, and the resolution target for
+/// [`crate::GenericFamily::Monospace`] on this backend (issue #1023).
+/// Distinct from [`system_ui_font`], which resolves
+/// [`crate::GenericFamily::SansSerif`]/[`crate::GenericFamily::SystemUi`]
+/// instead — the two generic requests must land on different native
+/// faces here the same way [`super::backend::MacBackend::set_editor_font`]
+/// and [`crate::Backend::set_ui_font`] already keep the editor and chrome
+/// fonts independent.
+///
+/// Like [`system_ui_font`], this can't fail to resolve a family — Core
+/// Text always has *a* fixed-pitch system font — so it returns a
+/// `CTFont` directly rather than `Option`.
+pub fn system_monospace_font(size_pt: f64) -> CTFont {
+    font::new_ui_font_for_language(font::kCTFontUserFixedPitchFontType, size_pt, None)
+}
+
 // ── Nerd-Font fallback (issue #929) ─────────────────────────────────────
 //
 // macOS has no equivalent of GTK/Pango's implicit per-character font

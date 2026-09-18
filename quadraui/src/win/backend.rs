@@ -77,6 +77,8 @@ use crate::backend::{
 };
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Point, Rect, UiEvent, Viewport};
+#[cfg(target_os = "windows")]
+use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -449,24 +451,57 @@ const DEFAULT_UI_FONT_SIZE_PT: f32 = 11.0;
 /// documented shape, e.g. `"Segoe UI 11"`) into a DirectWrite-ready
 /// `(family, size_pt)` pair. Win-GUI has no Pango parser to reuse the way
 /// `gtk::chrome_font_description` reuses `pango::FontDescription::from_string`,
-/// so this only understands the one convention that doc names: a
-/// trailing whitespace-separated numeric token is the point size, and
-/// everything before it is the family. Falls back to
-/// `(DEFAULT_UI_FONT_FAMILY, DEFAULT_UI_FONT_SIZE_PT)` wholesale — rather
-/// than guessing at a partial split — if `desc` doesn't parse that way,
-/// same "don't fail, degrade" posture `super::text`'s font-metrics lookup
-/// takes when a requested family isn't installed.
+/// so this only understands the conventions this doc names: a trailing
+/// whitespace-separated numeric token is the point size (defaulting to
+/// [`DEFAULT_UI_FONT_SIZE_PT`] when `desc` carries none — a bare
+/// comma-separated fallback list with no size at all is a real shape,
+/// not a parse failure), and everything before it is a Pango-style
+/// comma-separated family fallback list (issue #1023): trimmed and
+/// split on `,`, taking the first entry.
+///
+/// Unlike macOS's `parse_ui_font_desc` (which can ask Core Text whether
+/// a concrete family is actually installed via `make_font_exact`),
+/// Win-GUI has no installed-family check to try each candidate against
+/// — see this function's pre-#1023 doc history — so "take the first
+/// resolvable family" degrades to "take the first candidate": a CSS/Pango
+/// generic token ([`GenericFamily::parse`]) resolves immediately to its
+/// DirectWrite default ([`DEFAULT_EDITOR_FONT_FAMILY`]/
+/// [`DEFAULT_UI_FONT_FAMILY`]); a concrete name is trusted as-is, the
+/// same "don't fail, degrade" posture `super::text`'s font-metrics
+/// lookup already takes downstream when a requested family isn't
+/// installed. Falls back to `(DEFAULT_UI_FONT_FAMILY,
+/// DEFAULT_UI_FONT_SIZE_PT)` wholesale only when `desc` has no usable
+/// family at all (empty, or entirely commas/whitespace).
 #[cfg(target_os = "windows")]
 fn parse_ui_font_desc(desc: &str) -> (String, f32) {
     let desc = desc.trim();
-    if let Some(idx) = desc.rfind(' ') {
-        let (family, size_str) = desc.split_at(idx);
-        let family = family.trim();
-        if let (false, Ok(size)) = (family.is_empty(), size_str.trim().parse::<f32>()) {
-            return (family.to_string(), size);
+    let (family_part, size_pt) = match desc.rfind(' ') {
+        Some(idx) if desc[idx + 1..].trim().parse::<f32>().is_ok() => {
+            let (family, size_str) = desc.split_at(idx);
+            (
+                family.trim(),
+                size_str
+                    .trim()
+                    .parse::<f32>()
+                    .expect("just matched by the guard above"),
+            )
         }
+        _ => (desc, DEFAULT_UI_FONT_SIZE_PT),
+    };
+    let first = family_part
+        .split(',')
+        .map(str::trim)
+        .find(|f| !f.is_empty());
+    match first {
+        None => (DEFAULT_UI_FONT_FAMILY.to_string(), DEFAULT_UI_FONT_SIZE_PT),
+        Some(candidate) => match GenericFamily::parse(candidate) {
+            Some(GenericFamily::Monospace) => (DEFAULT_EDITOR_FONT_FAMILY.to_string(), size_pt),
+            Some(GenericFamily::SansSerif | GenericFamily::SystemUi) => {
+                (DEFAULT_UI_FONT_FAMILY.to_string(), size_pt)
+            }
+            None => (candidate.to_string(), size_pt),
+        },
     }
-    (DEFAULT_UI_FONT_FAMILY.to_string(), DEFAULT_UI_FONT_SIZE_PT)
 }
 
 /// A live Direct2D render target: either a window-bound
@@ -2282,6 +2317,13 @@ impl Backend for WinBackend {
                 // / `build_nerd_font_fallback`) rather than the trait's
                 // no-op default.
                 app_font_registration: true,
+                // `generic_font_families` (issue #1023): `set_editor_font`/
+                // `set_ui_font` are both overridden above and now resolve
+                // CSS/Pango generic tokens to their DirectWrite defaults
+                // (`DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY`)
+                // via `parse_ui_font_desc`/`GenericFamily::parse` instead
+                // of treating them as an unresolvable literal family name.
+                generic_font_families: true,
                 // `window` (issue #950) is overridden below and returns
                 // `Some` once `attach_surface` has stashed a real
                 // `HWND` — see `impl WindowControl for WinBackend`'s doc
@@ -2344,7 +2386,21 @@ impl Backend for WinBackend {
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
         #[cfg(target_os = "windows")]
         {
-            self.editor_font_family = family.to_string();
+            // Issue #1023: a CSS/Pango generic token resolves to its
+            // DirectWrite default immediately — `monospace` has no
+            // installed-family lookup to run, only `DEFAULT_EDITOR_FONT_FAMILY`
+            // to substitute in. `sans-serif`/`system-ui` aren't monospace
+            // (this method's doc requires that), but there's no error
+            // channel to reject the mismatch through, so they resolve
+            // honestly to the chrome default rather than being treated as
+            // an unknown literal family name.
+            self.editor_font_family = match GenericFamily::parse(family) {
+                Some(GenericFamily::Monospace) => DEFAULT_EDITOR_FONT_FAMILY.to_string(),
+                Some(GenericFamily::SansSerif | GenericFamily::SystemUi) => {
+                    DEFAULT_UI_FONT_FAMILY.to_string()
+                }
+                None => family.to_string(),
+            };
             self.editor_font_size_pt = size_pt;
         }
         #[cfg(not(target_os = "windows"))]
@@ -4861,6 +4917,67 @@ impl NativeSurface for WinBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #1023: `parse_ui_font_desc` splits a Pango-style
+    /// comma-separated fallback list and takes the first candidate —
+    /// generic or concrete — instead of treating the whole list as one
+    /// unmatchable literal family name the way a single `rfind(' ')`
+    /// split used to.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_ui_font_desc_splits_a_comma_separated_fallback_list() {
+        assert_eq!(
+            parse_ui_font_desc("Segoe UI, Tahoma, Sans 12"),
+            ("Segoe UI".to_string(), 12.0)
+        );
+        // No trailing size at all — the real-world shape this issue was
+        // filed over (vimcode's `UI_FONT_FAMILY` constants carry no
+        // size, only a comma-separated family list).
+        assert_eq!(
+            parse_ui_font_desc("Segoe UI, Tahoma, Sans"),
+            ("Segoe UI".to_string(), DEFAULT_UI_FONT_SIZE_PT)
+        );
+    }
+
+    /// Issue #1023: a CSS/Pango generic token resolves to its
+    /// DirectWrite default (`DEFAULT_EDITOR_FONT_FAMILY`/
+    /// `DEFAULT_UI_FONT_FAMILY`) rather than being treated as a literal,
+    /// unmatchable family name — including when it's the first entry of
+    /// a comma-separated list.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parse_ui_font_desc_resolves_generic_tokens() {
+        assert_eq!(
+            parse_ui_font_desc("monospace 13"),
+            (DEFAULT_EDITOR_FONT_FAMILY.to_string(), 13.0)
+        );
+        assert_eq!(
+            parse_ui_font_desc("sans-serif 13"),
+            (DEFAULT_UI_FONT_FAMILY.to_string(), 13.0)
+        );
+        assert_eq!(
+            parse_ui_font_desc("system-ui 13"),
+            (DEFAULT_UI_FONT_FAMILY.to_string(), 13.0)
+        );
+        // Pango's own alias spellings resolve the same way.
+        assert_eq!(
+            parse_ui_font_desc("Monospace, Sans 13"),
+            (DEFAULT_EDITOR_FONT_FAMILY.to_string(), 13.0)
+        );
+    }
+
+    /// `set_editor_font("monospace", …)` resolves through the same
+    /// `GenericFamily` path as `parse_ui_font_desc` (issue #1023) —
+    /// `editor_font_family` must land on `DEFAULT_EDITOR_FONT_FAMILY`,
+    /// not the literal string `"monospace"`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_editor_font_resolves_the_monospace_generic_token() {
+        let mut b = WinBackend::new();
+        Backend::set_editor_font(&mut b, "monospace", 14.0);
+        assert_eq!(b.editor_font_family, DEFAULT_EDITOR_FONT_FAMILY);
+        assert_eq!(b.editor_font_size_pt, 14.0);
+    }
 
     /// quadraui#699: `WinBackend::modal_stack_handle` must hand back a
     /// handle that shares state with the backend's own modal stack —

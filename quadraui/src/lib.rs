@@ -179,7 +179,13 @@ pub mod focus;
 // `a11y`) because its module doc *is* the chrome-vs-editor policy every
 // pixel backend's `draw_*` methods are written against.
 pub mod font_role;
+// Not under `primitives/`, same reasoning as `font_role` above:
+// `GenericFamily` (issue #1023) classifies a font *request*, not a
+// widget — no `Layout`, no `hit_test`, no `Backend::draw_*` method of
+// its own — so it must not inflate the primitive count `readme_truth.rs`
+// derives from `primitives/mod.rs`'s `pub mod` list.
 pub mod frame;
+pub mod generic_font;
 pub mod interaction;
 pub mod layout;
 pub mod prelude;
@@ -338,6 +344,7 @@ pub use a11y::A11yInfo;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
 pub use font_role::{ChromePrimitive, FontRole};
+pub use generic_font::GenericFamily;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,

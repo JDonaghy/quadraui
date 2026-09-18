@@ -933,6 +933,7 @@ mod tests {
             app_font_registration: true,
             window_control: true,
             tray: true,
+            generic_font_families: true,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: true,
         };

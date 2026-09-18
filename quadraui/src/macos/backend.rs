@@ -57,6 +57,7 @@ use crate::backend::{
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
+use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
@@ -337,31 +338,98 @@ const MAC_DOUBLE_CLICK_RADIUS: f32 = 4.0;
 /// Win-GUI's `DEFAULT_UI_FONT_SIZE_PT` default (issue #963).
 const DEFAULT_UI_FONT_SIZE_PT: f64 = 11.0;
 
+/// What [`parse_ui_font_desc`] resolved a font description's family
+/// portion to.
+enum ParsedFamily {
+    /// A CSS/Pango generic token (issue #1023) — always resolvable, since
+    /// it names a native system role rather than an installed family; see
+    /// [`GenericFamily`].
+    Generic(GenericFamily),
+    /// A concrete family name that [`super::text::make_font_exact`]
+    /// confirmed is actually installed, or — if nothing in `desc`'s
+    /// comma-separated family list resolved — the first candidate,
+    /// unchecked, for the caller to make its own final degrade decision
+    /// against (matching this function's pre-#1023 contract for a single
+    /// unresolvable family).
+    Named(String),
+}
+
 /// Parse a Pango-style font description (`Backend::set_ui_font`'s
 /// documented shape, e.g. `"Sans 13"`) into a Core-Text-ready
 /// `(family, size_pt)` pair — the same convention
 /// `win::backend::parse_ui_font_desc` implements for the identical trait
 /// contract (issue #963 ports Win-GUI's #724 shape onto macOS). A
-/// trailing whitespace-separated numeric token is the point size;
-/// everything before it is the family.
+/// trailing whitespace-separated numeric token is the point size,
+/// defaulting to [`DEFAULT_UI_FONT_SIZE_PT`] when `desc` carries none —
+/// a bare comma-separated fallback list (`"SF Pro Text, Helvetica Neue,
+/// Sans"`, no size at all) is a real shape `Backend::set_ui_font`
+/// callers use, not a parse failure.
 ///
-/// Returns `None` — rather than guessing at a partial split — if `desc`
-/// doesn't parse that way. Unlike Win-GUI (which has no installed-family
-/// check and falls back to a hardcoded default family string
-/// unconditionally), macOS can ask Core Text directly whether a family
-/// exists ([`super::text::make_font`]), so the "family isn't installed"
-/// case is handled by the caller ([`MacBackend::set_ui_font`]) instead of
-/// baked into this parser.
-fn parse_ui_font_desc(desc: &str) -> Option<(String, f64)> {
+/// `desc`'s family portion is a Pango-style comma-separated fallback
+/// list (issue #1023): everything before the size is split on `,`, each
+/// candidate trimmed, and tried in order — a CSS/Pango generic token
+/// ([`GenericFamily::parse`]) always resolves; a concrete name resolves
+/// if [`super::text::make_font_exact`] confirms Core Text has it
+/// installed. The first candidate that resolves either way wins, the
+/// same semantics Pango/fontconfig give a comma family list. Before this
+/// fix, `rfind(' ')` alone treated the whole list as one (unmatchable)
+/// literal family name.
+///
+/// Because trying each candidate is now this function's job (it is the
+/// only place that has the whole ordered list to retry against), it
+/// calls [`super::text::make_font_exact`] itself rather than leaving
+/// every installed-family check to the caller the way the pre-#1023
+/// version did. The caller ([`MacBackend::set_ui_font`]) still owns the
+/// *final* degrade decision — what to do when not one candidate in the
+/// list resolved — via [`ParsedFamily::Named`]'s unchecked-fallback
+/// case.
+///
+/// Returns `None` only when `desc` is empty/whitespace-only, or its
+/// family portion is empty (e.g. `desc` is just a bare size).
+fn parse_ui_font_desc(desc: &str) -> Option<(ParsedFamily, f64)> {
     let desc = desc.trim();
-    let idx = desc.rfind(' ')?;
-    let (family, size_str) = desc.split_at(idx);
-    let family = family.trim();
-    if family.is_empty() {
+    if desc.is_empty() {
         return None;
     }
-    let size_pt: f64 = size_str.trim().parse().ok()?;
-    Some((family.to_string(), size_pt))
+    let (family_part, size_pt) = match desc.rfind(' ') {
+        Some(idx) if desc[idx + 1..].trim().parse::<f64>().is_ok() => {
+            let (family, size_str) = desc.split_at(idx);
+            (
+                family.trim(),
+                size_str
+                    .trim()
+                    .parse::<f64>()
+                    .expect("just matched by the guard above"),
+            )
+        }
+        _ => (desc, DEFAULT_UI_FONT_SIZE_PT),
+    };
+    if family_part.is_empty() {
+        return None;
+    }
+
+    for candidate in family_part.split(',') {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Some(generic) = GenericFamily::parse(candidate) {
+            return Some((ParsedFamily::Generic(generic), size_pt));
+        }
+        if super::text::make_font_exact(candidate, size_pt).is_some() {
+            return Some((ParsedFamily::Named(candidate.to_string()), size_pt));
+        }
+    }
+
+    // Nothing in the list resolved — hand the caller the first candidate
+    // unchecked, same as this function always did for a single
+    // unresolvable family, so `set_ui_font` still makes the final
+    // "degrade to the system font" call itself.
+    let first = family_part
+        .split(',')
+        .map(str::trim)
+        .find(|c| !c.is_empty())?;
+    Some((ParsedFamily::Named(first.to_string()), size_pt))
 }
 
 /// Translate a parsed universal [`KeyBinding`] to macOS's native Cmd
@@ -1114,7 +1182,25 @@ impl Backend for MacBackend {
     /// Helvetica as the *editor* font here rather than keeping the
     /// caller's previous monospace face.
     fn set_editor_font(&mut self, family: &str, size_pt: f32) {
-        if let Some(font) = super::text::make_font_exact(family, size_pt as f64) {
+        // Issue #1023: a CSS/Pango generic token (`"monospace"`, …)
+        // always resolves to a native system font rather than going
+        // through the installed-family check below — there is no
+        // "family" to look up, only a system role to build directly.
+        let font = match GenericFamily::parse(family) {
+            Some(GenericFamily::Monospace) => {
+                Some(super::text::system_monospace_font(size_pt as f64))
+            }
+            // `sans-serif`/`system-ui` aren't monospace — `set_editor_font`'s
+            // doc asks for a monospace family — but there is no error
+            // channel to reject the mismatch through, so resolve them
+            // honestly (the system UI font) rather than silently treating
+            // them as an unknown concrete name.
+            Some(GenericFamily::SansSerif | GenericFamily::SystemUi) => {
+                Some(super::text::system_ui_font(size_pt as f64))
+            }
+            None => super::text::make_font_exact(family, size_pt as f64),
+        };
+        if let Some(font) = font {
             self.set_current_font(font);
         }
     }
@@ -1139,8 +1225,17 @@ impl Backend for MacBackend {
     /// reach the system-UI-font fallback this doc promises.
     fn set_ui_font(&mut self, font_desc: &str) {
         let font = match parse_ui_font_desc(font_desc) {
-            Some((family, size_pt)) => super::text::make_font_exact(&family, size_pt)
-                .unwrap_or_else(|| super::text::system_ui_font(size_pt)),
+            Some((ParsedFamily::Generic(GenericFamily::Monospace), size_pt)) => {
+                super::text::system_monospace_font(size_pt)
+            }
+            Some((
+                ParsedFamily::Generic(GenericFamily::SansSerif | GenericFamily::SystemUi),
+                size_pt,
+            )) => super::text::system_ui_font(size_pt),
+            Some((ParsedFamily::Named(family), size_pt)) => {
+                super::text::make_font_exact(&family, size_pt)
+                    .unwrap_or_else(|| super::text::system_ui_font(size_pt))
+            }
             None => super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT),
         };
         self.set_chrome_font(font);
@@ -1411,6 +1506,11 @@ impl Backend for MacBackend {
     ///   real `CTFontManagerRegisterGraphicsFont` /
     ///   `CTFontCreateCopyWithAttributes` calls in `super::text` rather
     ///   than the trait's no-op default.
+    /// - `generic_font_families` (#1023): `set_editor_font`/`set_ui_font`
+    ///   are both overridden above and resolve CSS/Pango generic family
+    ///   tokens to a real CoreText font (`super::text::system_monospace_font`/
+    ///   `system_ui_font`) instead of discarding an unresolvable literal
+    ///   family name.
     /// - Everything else — `ime` — is **not** declared: no macOS IME
     ///   integration exists yet.
     fn backend_caps(&self) -> crate::backend::BackendCaps {
@@ -1427,6 +1527,12 @@ impl Backend for MacBackend {
             text_selection: true,
             app_font_registration: true,
             native_dialogs: true,
+            // `generic_font_families` (issue #1023): `set_editor_font`/
+            // `set_ui_font` are both overridden above and now resolve
+            // CSS/Pango generic tokens to a real CoreText font
+            // (`super::text::system_monospace_font`/`system_ui_font`)
+            // instead of an unresolvable literal family name.
+            generic_font_families: true,
             // `window` (issue #950) is overridden below and returns
             // `Some` once `set_window` has stashed a real `NSWindow` —
             // see `impl WindowControl for MacBackend`'s doc for the
@@ -6263,6 +6369,125 @@ mod tests {
         assert_eq!(
             b.current_line_height, line_height_before,
             "a rejected set_editor_font must not move the cached line height",
+        );
+    }
+
+    /// Issue #1023: `set_editor_font("monospace", …)` resolves to the
+    /// CoreText fixed-pitch system font, not a literal (and unresolvable)
+    /// family named `"monospace"`.
+    #[test]
+    fn set_editor_font_resolves_the_monospace_generic_token() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        Backend::set_editor_font(&mut b, "monospace", 14.0);
+        let expected = super::super::text::system_monospace_font(14.0);
+        assert_eq!(
+            b.current_font
+                .as_ref()
+                .expect("set_current_font ran")
+                .family_name(),
+            expected.family_name(),
+            "\"monospace\" must resolve to the CoreText fixed-pitch system font"
+        );
+    }
+
+    /// Issue #1023: `set_ui_font` resolves all three CSS generic tokens
+    /// (plus Pango's `Sans`/`Monospace` aliases) to their native CoreText
+    /// counterparts, at the requested size.
+    #[test]
+    fn set_ui_font_resolves_generic_tokens() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+
+        Backend::set_ui_font(&mut b, "monospace 13");
+        let expected_mono = super::super::text::system_monospace_font(13.0);
+        assert_eq!(b.chrome_font.family_name(), expected_mono.family_name());
+        assert_eq!(b.chrome_font.pt_size(), 13.0);
+
+        Backend::set_ui_font(&mut b, "sans-serif 15");
+        let expected_ui = super::super::text::system_ui_font(15.0);
+        assert_eq!(b.chrome_font.family_name(), expected_ui.family_name());
+        assert_eq!(b.chrome_font.pt_size(), 15.0);
+
+        Backend::set_ui_font(&mut b, "system-ui 17");
+        assert_eq!(b.chrome_font.family_name(), expected_ui.family_name());
+        assert_eq!(b.chrome_font.pt_size(), 17.0);
+
+        // Pango's own alias spellings for the first two resolve the same
+        // way — GTK already treats them as synonyms via fontconfig, and
+        // this backend now agrees.
+        Backend::set_ui_font(&mut b, "Monospace 19");
+        assert_eq!(
+            b.chrome_font.family_name(),
+            super::super::text::system_monospace_font(19.0).family_name()
+        );
+        Backend::set_ui_font(&mut b, "Sans 21");
+        assert_eq!(
+            b.chrome_font.family_name(),
+            super::super::text::system_ui_font(21.0).family_name()
+        );
+    }
+
+    /// Issue #1023: `parse_ui_font_desc` splits a Pango-style
+    /// comma-separated fallback list and resolves to the first family
+    /// that's actually installed — `"Definitely Not A Real Font Family
+    /// One, Definitely Not A Real Font Family Two, Menlo"` must land on
+    /// `Menlo`, not fail the whole description the way a single
+    /// `rfind(' ')` split used to (it would see `"...Family Two, Menlo"`
+    /// as everything-before-a-nonexistent-size and reject the lot).
+    #[test]
+    fn set_ui_font_resolves_the_first_installed_family_in_a_comma_list() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        Backend::set_ui_font(
+            &mut b,
+            "Definitely Not A Real Font Family One, Definitely Not A Real Font Family Two, \
+             Menlo 16",
+        );
+        assert_eq!(b.chrome_font.family_name(), "Menlo");
+        assert_eq!(b.chrome_font.pt_size(), 16.0);
+    }
+
+    /// Same as the sized case above, but with no trailing size at all —
+    /// the real-world shape this issue was filed over (vimcode's
+    /// `UI_FONT_FAMILY` constants carry no size, only a comma-separated
+    /// family list). Must still resolve to the first installed family,
+    /// at the chrome default size.
+    #[test]
+    fn set_ui_font_resolves_a_comma_list_with_no_trailing_size() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        Backend::set_ui_font(
+            &mut b,
+            "Definitely Not A Real Font Family One, Definitely Not A Real Font Family Two, Menlo",
+        );
+        assert_eq!(b.chrome_font.family_name(), "Menlo");
+        assert_eq!(b.chrome_font.pt_size(), DEFAULT_UI_FONT_SIZE_PT);
+    }
+
+    /// A generic token appearing later in a comma list (Pango's own
+    /// "…, Sans" convention for "fall back to the platform default") is
+    /// still an always-resolvable stop, exactly like a concrete
+    /// installed family — the fallback chain from this issue's own
+    /// motivating example (`"SF Pro Text, Helvetica Neue, Lucida Grande,
+    /// Sans"`).
+    #[test]
+    fn set_ui_font_resolves_a_generic_token_later_in_a_comma_list() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        Backend::set_ui_font(
+            &mut b,
+            "Definitely Not A Real Font Family One, Definitely Not A Real Font Family Two, \
+             sans-serif",
+        );
+        assert_eq!(
+            b.chrome_font.family_name(),
+            super::super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT).family_name()
         );
     }
 
