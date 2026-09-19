@@ -79,14 +79,52 @@ impl MinimapApp {
     /// accessor — this app happens to already hold every line in memory,
     /// but a host backed by something more expensive to fully
     /// materialise (a rope, say) would not have to.
-    fn minimap(&self) -> Minimap {
+    ///
+    /// `backend` is only used to read back the horizontal cell scale
+    /// TUI's rasteriser will actually paint dots at
+    /// (`backend.minimap_layout(..).cols_per_cell`, issue #1032) — GTK's
+    /// own scale is always `1` (its strip is wide enough in pixels that
+    /// no folding is needed), so this same call works unmodified on
+    /// either backend. Reading it back instead of hardcoding a constant
+    /// is what keeps `MinimapGrid::cols_per_cell` below in lockstep with
+    /// whatever `draw_minimap` paints: before #1032, TUI's scale was a
+    /// fixed compile-time constant a host could safely copy; once it
+    /// became buffer-width-adaptive, a copied constant would silently
+    /// desync colour from dot content the moment a file's lines got wide
+    /// enough to trigger the adaptive widening.
+    fn minimap(&self, backend: &dyn Backend) -> Minimap {
         let buffer = &self.buffer;
         let lines = sample_blocks(buffer.len(), buffer.len(), |i| buffer[i].clone());
+
+        let visible_row_start = lines
+            .iter()
+            .position(|l| l.line_idx >= self.scroll_offset)
+            .unwrap_or(0);
+        let visible_row_end = lines
+            .iter()
+            .position(|l| l.line_idx >= self.scroll_offset + VIEWPORT_ROWS)
+            .unwrap_or(lines.len());
+
+        // `syntax_spans` starts empty: layout only reads `lines`, so a
+        // partial `Minimap` (no spans yet) is enough to ask the backend
+        // what scale it will paint at.
+        let mut minimap = Minimap {
+            id: WidgetId::new("minimap"),
+            lines,
+            syntax_spans: Vec::new(),
+            visible_row_start,
+            visible_row_count: visible_row_end.saturating_sub(visible_row_start).max(1),
+            total_buffer_lines: self.buffer.len(),
+        };
+
+        let minimap_rect = self.minimap_rect(backend);
+        let cols_per_cell = backend.minimap_layout(minimap_rect, &minimap).cols_per_cell;
 
         // A couple of illustrative syntax spans — "fn" in one colour,
         // comments in another — aggregated down to whatever cell size
         // this backend actually paints.
-        let raw_spans: Vec<MinimapSpan> = lines
+        let raw_spans: Vec<MinimapSpan> = minimap
+            .lines
             .iter()
             .enumerate()
             .filter_map(|(idx, l)| {
@@ -111,30 +149,14 @@ impl MinimapApp {
             })
             .collect();
         let grid = MinimapGrid {
-            rows: lines.len().div_ceil(LINES_PER_ROW).max(1),
+            rows: minimap.lines.len().div_ceil(LINES_PER_ROW).max(1),
             cols: 200,
             lines_per_row: LINES_PER_ROW,
-            cols_per_cell: 2,
+            cols_per_cell,
         };
-        let syntax_spans = aggregate_spans(&raw_spans, grid);
+        minimap.syntax_spans = aggregate_spans(&raw_spans, grid);
 
-        let visible_row_start = lines
-            .iter()
-            .position(|l| l.line_idx >= self.scroll_offset)
-            .unwrap_or(0);
-        let visible_row_end = lines
-            .iter()
-            .position(|l| l.line_idx >= self.scroll_offset + VIEWPORT_ROWS)
-            .unwrap_or(lines.len());
-
-        Minimap {
-            id: WidgetId::new("minimap"),
-            lines,
-            syntax_spans,
-            visible_row_start,
-            visible_row_count: visible_row_end.saturating_sub(visible_row_start).max(1),
-            total_buffer_lines: self.buffer.len(),
-        }
+        minimap
     }
 
     /// The minimap's rect, in the same units [`Self::render`] and
@@ -193,7 +215,7 @@ impl AppLogic for MinimapApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let minimap_rect = self.minimap_rect(backend);
-        let minimap = self.minimap();
+        let minimap = self.minimap(backend);
         let _ = backend.draw_minimap(minimap_rect, &minimap);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -235,7 +257,7 @@ impl AppLogic for MinimapApp {
                 ..
             } => {
                 let minimap_rect = self.minimap_rect(backend);
-                let minimap = self.minimap();
+                let minimap = self.minimap(backend);
                 let layout = backend.minimap_layout(minimap_rect, &minimap);
                 if let MinimapHit::Seek { fraction } = layout.hit_test(position.x, position.y) {
                     self.seek(fraction);
