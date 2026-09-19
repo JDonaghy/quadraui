@@ -174,7 +174,7 @@ pub struct VisibleMinimapLine {
 }
 
 /// Fully-resolved minimap layout. Both rasterisers consume this verbatim.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MinimapLayout {
     pub bounds: Rect,
     pub visible_lines: Vec<VisibleMinimapLine>,
@@ -182,6 +182,43 @@ pub struct MinimapLayout {
     /// coordinates as `bounds`.
     pub viewport_highlight: Rect,
     pub scrollbar: Option<Scrollbar>,
+    /// Buffer columns folded into one output cell along the horizontal
+    /// axis — the actual scale the rasteriser that produced this layout
+    /// used (or will use, for a no-paint `*_layout` call), not a
+    /// caller-side guess at it.
+    ///
+    /// `1` (the [`Default`] impl below, and what [`Minimap::layout_with_sizing`]
+    /// itself always sets) means one buffer column per output cell — GTK's
+    /// and Win-GUI's own [`MinimapGrid::cols_per_cell`], since their strips
+    /// are wide enough in pixels that [`COLUMN_CAPACITY`] columns fit
+    /// without folding. TUI's braille rasteriser overrides this to a wider,
+    /// buffer-width-adaptive value (`tui::minimap::resolve_cols_per_cell`,
+    /// issue #1032) after calling `layout_with_sizing`, since its strip is
+    /// cell-narrow enough that a fixed 1:1 scale only ever showed the
+    /// buffer's first `width_cells * 2` columns.
+    ///
+    /// A host that colour-aggregates its own [`Minimap::syntax_spans`] via
+    /// [`aggregate_spans`] must build its [`MinimapGrid::cols_per_cell`]
+    /// from **this** field — read back from a `minimap_layout`/`draw_minimap`
+    /// call against the same [`Minimap::lines`] — rather than hardcoding a
+    /// constant. Before #1032 this was the only way TUI's scale could be
+    /// known: it was a compile-time constant a host could copy, but once
+    /// the scale became buffer-width-adaptive a copied constant silently
+    /// drifts from what the rasteriser actually paints, desyncing colour
+    /// from dot content (the #1000 review concern this field closes).
+    pub cols_per_cell: usize,
+}
+
+impl Default for MinimapLayout {
+    fn default() -> Self {
+        Self {
+            bounds: Rect::default(),
+            visible_lines: Vec::new(),
+            viewport_highlight: Rect::default(),
+            scrollbar: None,
+            cols_per_cell: 1,
+        }
+    }
 }
 
 /// Ceiling on a minimap row's pitch under [`MinimapSizing::Fill`], in
@@ -360,6 +397,7 @@ impl Minimap {
                 visible_lines: Vec::new(),
                 viewport_highlight: Rect::new(bounds.x, bounds.y, 0.0, 0.0),
                 scrollbar: None,
+                cols_per_cell: 1,
             };
         }
 
@@ -432,6 +470,7 @@ impl Minimap {
             visible_lines,
             viewport_highlight,
             scrollbar,
+            cols_per_cell: 1,
         }
     }
 
@@ -1170,6 +1209,7 @@ mod tests {
             visible_lines: Vec::new(),
             viewport_highlight: Rect::default(),
             scrollbar: None,
+            ..Default::default()
         };
         assert_eq!(
             layout.hit_test(5.0, 0.0),
@@ -1192,6 +1232,7 @@ mod tests {
             visible_lines: Vec::new(),
             viewport_highlight: Rect::default(),
             scrollbar: None,
+            ..Default::default()
         };
         assert_eq!(layout.hit_test(0.0, 0.0), MinimapHit::None);
         assert_eq!(layout.hit_test(25.0, 15.0), MinimapHit::None);
