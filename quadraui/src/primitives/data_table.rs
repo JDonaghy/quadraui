@@ -430,37 +430,79 @@ impl DataTableLayout {
             .position(|c| cx >= c.x && cx < c.x + c.width)
     }
 
-    /// Compute the `column_overrides` for a divider drag (#521 defect 1).
+    /// Compute the `column_overrides` for a divider drag (#521 defect 1,
+    /// #1031).
     ///
     /// `col` is the column to the LEFT of the dragged divider, as
     /// returned by [`DataTableHit::HeaderDivider`]. `pointer_x` is the
     /// drag pointer's current position in **viewport space** — the same
     /// space [`Self::hit_test`] took to produce `col`, so a caller keeps
     /// forwarding the raw pointer `x` and this converts once, internally
-    /// (#550). `min_width` clamps both halves of the dragged pair.
+    /// (#550). `min_width` is the floor both the dragged column and the
+    /// last column are clamped to.
     ///
-    /// A divider is the boundary between column `col` and `col + 1`, so
-    /// a drag must only ever move width between *those two* columns,
-    /// combined width held constant, and leave every other column's
-    /// resolved geometry untouched — including the dragged column's own
-    /// left edge, which is fixed by the columns before it.
+    /// **The rightmost column absorbs the slack (#1031).** Widening `col`
+    /// shrinks the *last* column (`self.columns.len() - 1`), not `col +
+    /// 1` — every column strictly between `col` and the last one keeps
+    /// its currently-resolved width bit-for-bit (only its `x` origin
+    /// shifts, which is unavoidable). This is a deliberate change from
+    /// the #521 "pair" invariant (`col` and `col + 1` only): giving an
+    /// early column more room no longer eats the column immediately
+    /// after it, it eats the one the grid already treats as flexible —
+    /// the rightmost. When `col + 1` *is* the last column this reduces to
+    /// the old pair behaviour exactly (see below).
+    ///
+    /// **Once the last column bottoms out at `min_width`, the table is
+    /// allowed to overflow** instead of refusing the drag: the dragged
+    /// column keeps growing, total content width grows past the
+    /// viewport, and [`DataTable::layout`] derives `content_width` from
+    /// the resolved columns and flips `h_scrolling` on its own — nothing
+    /// special is needed here. Dragging back the other way reclaims that
+    /// overflow into the last column first and shrinks the total back
+    /// down to fit, before the dragged column itself narrows.
+    ///
+    /// No cascade to the second-from-last column, or any other column
+    /// beyond the last, is ever recruited. A cascade (shrink the neighbour
+    /// to its floor, then start eating the one past it) was considered
+    /// and rejected: it is lossy in one direction — dragging back does not
+    /// return the columns it pushed into to their original widths, because
+    /// which column absorbed what now depends on drag history, which is
+    /// exactly the #521 defect ("moving the left column makes the problem
+    /// disappear") in a new shape. The rule here is instead a pure
+    /// function of the pointer position (`target`/`last_width` below),
+    /// which makes it reversible by construction: drag out past the
+    /// overflow point and back to the same pointer position and every
+    /// column — including the last one and `h_scrolling` — returns to
+    /// exactly its starting value, with no transfer history to unwind.
+    ///
+    /// A `Fixed`-declared last column still absorbs: `drag_divider`
+    /// already pins every column as a numeric override regardless of its
+    /// declared [`ColumnWidth`] (see the freeze loop below), so this
+    /// falls out of the existing model rather than being a new special
+    /// case. If a `Fixed` last column should instead skip straight to
+    /// overflowing without absorbing anything, that is a follow-up, not a
+    /// silent variation of this rule.
+    ///
+    /// "Rightmost" means the last column in the table (`self.columns.len()
+    /// - 1`), not the last one currently visible — unchanged by
+    /// `min_total_width` or an already-h-scrolling table.
     ///
     /// `overrides` is the `column_overrides` in effect *before* this
     /// call (typically the in-progress drag's current state, or the
     /// table's existing overrides at drag start). Any column that does
     /// not already have an override is frozen here at its *currently
-    /// resolved* width before the pair is adjusted — this must happen
-    /// unconditionally, not just for `Flex` columns, because leaving an
-    /// unrelated `Flex` column unresolved would let pass 2's
-    /// redistribution reshuffle it the moment the pair's weights are
-    /// pulled out of `total_flex` (the exact "moving the left column
-    /// makes the problem disappear" mechanism reported in #521: whichever
-    /// columns are still unpinned divide up whatever space the pinned
-    /// ones didn't claim, so the split among *them* changes even though
-    /// the user never touched them). Freezing every column up front makes
-    /// the result independent of drag history: whatever the table's
-    /// current resolved widths are, that's what gets pinned, regardless
-    /// of which dividers produced them.
+    /// resolved* width before `col` and the last column are adjusted —
+    /// this must happen unconditionally, not just for `Flex` columns,
+    /// because leaving an unrelated `Flex` column unresolved would let
+    /// pass 2's redistribution reshuffle it the moment the touched
+    /// columns' weights are pulled out of `total_flex` (the exact "moving
+    /// the left column makes the problem disappear" mechanism reported in
+    /// #521: whichever columns are still unpinned divide up whatever
+    /// space the pinned ones didn't claim, so the split among *them*
+    /// changes even though the user never touched them). Freezing every
+    /// column up front makes the result independent of drag history:
+    /// whatever the table's current resolved widths are, that's what gets
+    /// pinned, regardless of which dividers produced them.
     pub fn drag_divider(
         &self,
         overrides: &[Option<f32>],
@@ -481,14 +523,21 @@ impl DataTableLayout {
                 next[i] = Some(rc.width);
             }
         }
-        let pair_total = self.columns[col].width + self.columns[col + 1].width;
+        let last = self.columns.len() - 1;
         let min_width = min_width.max(0.0);
-        let lo = min_width.min(pair_total);
-        let hi = (pair_total - min_width).max(lo);
+        // Pure function of the pointer position: `target` is where `col`
+        // wants to land (floored at `min_width`, otherwise unbounded —
+        // that's what lets the table overflow instead of refusing the
+        // drag), and `last_width` is whatever's left of the pair after
+        // that, floored at `min_width` so the last column stops shrinking
+        // rather than going negative. No accumulated transfer, so this is
+        // exactly reversible by construction (see doc comment above).
+        let pair = self.columns[col].width + self.columns[last].width;
         let col_x = self.columns[col].x;
-        let new_left = (self.content_x(pointer_x) - col_x).clamp(lo, hi);
-        next[col] = Some(new_left);
-        next[col + 1] = Some(pair_total - new_left);
+        let target = (self.content_x(pointer_x) - col_x).max(min_width);
+        let last_width = (pair - target).max(min_width);
+        next[col] = Some(target);
+        next[last] = Some(last_width);
         next
     }
 }
@@ -590,9 +639,25 @@ where
 
     // Pass 1: resolve Fixed and Content columns, accumulate flex weight.
     // Column overrides replace the original strategy with Fixed(w).
+    //
+    // Overrides are honored at face value — NOT clamped to `remaining`
+    // (#1031). Fixed/Content columns below are still clamped: they come
+    // from the table's own declared shape, which is expected to fit the
+    // budget it was resolved against. An override, by contrast, is a
+    // deliberate divider-drag request (`DataTableLayout::drag_divider`)
+    // that may legitimately ask for more than `viewport_width` has to
+    // give — that's exactly how #1031's "rightmost column absorbs the
+    // slack, then the table overflows and h-scrolls" falls out: once
+    // every column's override sum exceeds `viewport_width`, `remaining`
+    // goes negative (harmless — it only gates pass 2's flex distribution
+    // below) and the resolved `x + width` of the last column comes out
+    // bigger than `viewport_width`, which `DataTable::layout` already
+    // reads as `content_width` and compares against `visible_col_area` to
+    // flip `h_scrolling`. Clamping here would silently truncate that
+    // overflow away instead of letting it scroll.
     for (i, col) in columns.iter().enumerate() {
         if let Some(Some(ow)) = overrides.get(i) {
-            let w = ow.min(remaining).max(0.0);
+            let w = ow.max(0.0);
             widths.push(w);
             remaining -= w;
             continue;
@@ -666,8 +731,10 @@ where
     // `viewport_width` and the table visibly stops filling its area.
     // One-directional (only ever *grows* the last column to reach
     // `viewport_width`, never shrinks it): when columns legitimately
-    // exceed the viewport (e.g. `min_total_width`), `x + width` here is
-    // already `>= viewport_width` and this is a no-op, so h-scroll is
+    // exceed the viewport (e.g. `min_total_width`, or an overridden
+    // column whose requested width pass 1 above now honors uncapped,
+    // #1031), `x + width` here is already `>= viewport_width` and this
+    // is a no-op, so h-scroll is
     // untouched.
     if let Some(last) = resolved.last_mut() {
         let shortfall = viewport_width - (last.x + last.width);
@@ -893,8 +960,16 @@ mod tests {
         );
     }
 
-    // ── #521 defect 1: pair-resize (a divider drag moves only the two
-    //    columns it separates) ────────────────────────────────────────
+    // ── #521 defect 1 / #1031: a divider drag never displaces a column
+    //    it doesn't border. Originally a strict pair-resize (`col` and
+    //    `col + 1` only); #1031 changed *which* column is `col`'s
+    //    dance partner to the last column in the table instead, with an
+    //    overflow fallback once the last column bottoms out — the tests
+    //    immediately below (through
+    //    `drag_divider_stops_at_minimum_without_displacing_other_columns`)
+    //    exercise the divider immediately before the last column, where
+    //    the two models coincide (`col + 1 == last`) as long as the last
+    //    column has room; #1031's own tests follow after those. ─────────
 
     /// Builds the same column shape the shipped sample app uses to
     /// reproduce #521: 3 `Flex` columns (weights 3.0, 1.5, 0.5) then one
@@ -916,8 +991,11 @@ mod tests {
         let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
 
         // Grab the divider between col 2 ("Age") and col 3 ("Restarts")
-        // and drag it right by 20 units.
-        let pointer_x = baseline.columns[2].x + baseline.columns[2].width + 20.0;
+        // and drag it right by 5 units — comfortably within col 3's room
+        // above its 4.0 floor (col 3 starts at 10.0), so this stays in
+        // the col+1==last "behaves exactly as today" regime rather than
+        // #1031's overflow case (covered separately below).
+        let pointer_x = baseline.columns[2].x + baseline.columns[2].width + 5.0;
         let overrides = baseline.drag_divider(&[], 2, pointer_x, 4.0);
 
         let mut dragged = table.clone();
@@ -993,6 +1071,76 @@ mod tests {
         );
     }
 
+    /// #1031's version of the #521 "independent of drag history" property:
+    /// since every divider now shares the *same* last-column dance
+    /// partner, dragging divider X, then a different divider Y, then X
+    /// again (re-settling X back to its own target after Y disturbed the
+    /// shared last column) must land on exactly the same final layout as
+    /// simply dragging Y then X once each, in that order — the redundant
+    /// re-drag of X is a no-op past what a clean two-step sequence already
+    /// gets you. Each drag targets a fixed *resolved width*, re-deriving
+    /// its pointer_x from wherever that divider's current `x` happens to
+    /// be (since dragging X shifts every column after it, including
+    /// wherever Y currently sits) — exactly how a real screen-relative
+    /// drag behaves.
+    #[test]
+    fn drag_divider_redundant_replay_matches_the_equivalent_clean_order() {
+        let table = make_sample_shaped_table();
+        let fresh = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // Comfortably inside col 3's 6.0 units of room even combined, so
+        // neither drag below ever hits the floor and this stays a clean
+        // linear-regime comparison.
+        let target_x_width = fresh.columns[0].width + 1.0;
+        let target_y_width = fresh.columns[1].width + 1.0;
+
+        // drag_to: drag divider `col` (against the layout `on`'s current
+        // state) until its resolved width becomes `target_width`.
+        fn drag_to(
+            on: &DataTableLayout,
+            overrides: &[Option<f32>],
+            col: usize,
+            target_width: f32,
+        ) -> Vec<Option<f32>> {
+            let pointer_x = on.columns[col].x + target_width;
+            on.drag_divider(overrides, col, pointer_x, 4.0)
+        }
+
+        // Sequence 1: X, then Y, then X again (the redundant replay).
+        let mut seq1 = table.clone();
+        let ov = drag_to(&fresh, &[], 0, target_x_width);
+        seq1.column_overrides = ov;
+        let after_x = seq1.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let ov = drag_to(&after_x, &seq1.column_overrides, 1, target_y_width);
+        seq1.column_overrides = ov;
+        let after_y = seq1.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let ov = drag_to(&after_y, &seq1.column_overrides, 0, target_x_width);
+        seq1.column_overrides = ov;
+        let seq1_final = seq1.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // Sequence 2: Y, then X — the equivalent clean order, no replay.
+        let mut seq2 = table.clone();
+        let ov = drag_to(&fresh, &[], 1, target_y_width);
+        seq2.column_overrides = ov;
+        let after_y2 = seq2.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let ov = drag_to(&after_y2, &seq2.column_overrides, 0, target_x_width);
+        seq2.column_overrides = ov;
+        let seq2_final = seq2.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        for i in 0..seq1_final.columns.len() {
+            assert!(
+                (seq1_final.columns[i].width - seq2_final.columns[i].width).abs() < 0.01,
+                "column {i} must match between [X, Y, X-again] and [Y, X]: \
+                 seq1={}, seq2={}",
+                seq1_final.columns[i].width,
+                seq2_final.columns[i].width
+            );
+        }
+    }
+
     #[test]
     fn drag_divider_stops_at_minimum_without_displacing_other_columns() {
         let table = make_sample_shaped_table();
@@ -1016,6 +1164,219 @@ mod tests {
         assert_eq!(baseline.columns[1], after.columns[1]);
         let pair_total = baseline.columns[2].width + baseline.columns[3].width;
         assert!((after.columns[3].width - (pair_total - 4.0)).abs() < 0.01);
+    }
+
+    // ── #1031: the rightmost column absorbs the slack, then the table
+    //    overflows instead of refusing the drag ─────────────────────────
+
+    #[test]
+    fn drag_divider_widen_takes_slack_from_the_last_column_not_the_neighbour() {
+        // Drag the *first* divider (col 0 | col 1) — its right-hand
+        // neighbour (col 1) has plenty of room, so a pair-resize model
+        // would have eaten it. #1031 says the give instead comes from
+        // the *last* column (col 3), leaving col 1 and col 2 — every
+        // column strictly between the dragged one and the last — bit-
+        // for-bit unchanged in width (their `x` shifts, which is fine).
+        let table = make_sample_shaped_table();
+        let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        // col 3 starts at 10.0 with a 4.0 floor: 6.0 units of room.
+        // Widen by 4.0 — comfortably inside that room, no overflow.
+        let pointer_x = baseline.columns[0].x + baseline.columns[0].width + 4.0;
+        let overrides = baseline.drag_divider(&[], 0, pointer_x, 4.0);
+
+        let mut dragged = table.clone();
+        dragged.column_overrides = overrides;
+        let after = dragged.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        assert!(
+            (after.columns[0].width - (baseline.columns[0].width + 4.0)).abs() < 0.01,
+            "col 0 should widen by exactly 4.0, got {}",
+            after.columns[0].width
+        );
+        assert!(
+            (after.columns[3].width - (baseline.columns[3].width - 4.0)).abs() < 0.01,
+            "col 3 (the last column) should absorb the 4.0, got {}",
+            after.columns[3].width
+        );
+        assert!(
+            (after.columns[1].width - baseline.columns[1].width).abs() < 0.01,
+            "col 1 sits strictly between the dragged column and the last one — untouched"
+        );
+        assert!(
+            (after.columns[2].width - baseline.columns[2].width).abs() < 0.01,
+            "col 2 sits strictly between the dragged column and the last one — untouched"
+        );
+        let baseline_total: f32 = baseline.columns.iter().map(|c| c.width).sum();
+        let after_total: f32 = after.columns.iter().map(|c| c.width).sum();
+        assert!(
+            (baseline_total - after_total).abs() < 0.01,
+            "total content width must stay constant while the last column has room: \
+             before={baseline_total}, after={after_total}"
+        );
+        assert!(
+            after.h_scrollbar_height == 0.0 && after.content_width <= after.viewport_width + 0.5,
+            "no overflow yet — the last column still had room"
+        );
+    }
+
+    #[test]
+    fn drag_divider_shrink_returns_slack_to_the_last_column_not_the_neighbour() {
+        // The mirror of the widen case above: shrinking col 0 gives its
+        // freed width straight to col 3, not col 1.
+        let table = make_sample_shaped_table();
+        let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let pointer_x = baseline.columns[0].x + baseline.columns[0].width - 4.0;
+        let overrides = baseline.drag_divider(&[], 0, pointer_x, 4.0);
+
+        let mut dragged = table.clone();
+        dragged.column_overrides = overrides;
+        let after = dragged.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        assert!(
+            (after.columns[0].width - (baseline.columns[0].width - 4.0)).abs() < 0.01,
+            "col 0 should narrow by exactly 4.0, got {}",
+            after.columns[0].width
+        );
+        assert!(
+            (after.columns[3].width - (baseline.columns[3].width + 4.0)).abs() < 0.01,
+            "col 3 (the last column) should grow by the freed 4.0, got {}",
+            after.columns[3].width
+        );
+        assert!(
+            (after.columns[1].width - baseline.columns[1].width).abs() < 0.01,
+            "col 1 sits strictly between the dragged column and the last one — untouched"
+        );
+        assert!(
+            (after.columns[2].width - baseline.columns[2].width).abs() < 0.01,
+            "col 2 sits strictly between the dragged column and the last one — untouched"
+        );
+        let baseline_total: f32 = baseline.columns.iter().map(|c| c.width).sum();
+        let after_total: f32 = after.columns.iter().map(|c| c.width).sum();
+        assert!(
+            (baseline_total - after_total).abs() < 0.01,
+            "total content width must stay constant: before={baseline_total}, after={after_total}"
+        );
+    }
+
+    #[test]
+    fn drag_divider_overflows_once_the_last_column_bottoms_out() {
+        // col 3 only has 6.0 units of room (10.0 down to the 4.0 floor).
+        // Ask col 0 to widen by 20.0 — far past that — and the table must
+        // overflow rather than refuse the drag: col 3 stops at its floor,
+        // the excess (20.0 - 6.0 = 14.0) shows up as *extra* content
+        // width, and `h_scrolling` flips on. The second-from-last column
+        // (col 2) must not be recruited to make up any more of the
+        // difference — only col 3 ever absorbs.
+        let table = make_sample_shaped_table();
+        let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        let pointer_x = baseline.columns[0].x + baseline.columns[0].width + 20.0;
+        let overrides = baseline.drag_divider(&[], 0, pointer_x, 4.0);
+
+        let mut dragged = table.clone();
+        dragged.column_overrides = overrides;
+        let after = dragged.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        assert!(
+            (after.columns[0].width - (baseline.columns[0].width + 20.0)).abs() < 0.01,
+            "col 0 gets everything it asked for — it's the table that overflows, not the drag \
+             that's refused: got {}",
+            after.columns[0].width
+        );
+        assert!(
+            (after.columns[3].width - 4.0).abs() < 0.01,
+            "col 3 (the last column) stops dead at its 4.0 floor, got {}",
+            after.columns[3].width
+        );
+        assert!(
+            (after.columns[1].width - baseline.columns[1].width).abs() < 0.01,
+            "col 1 must still be untouched even while the table overflows"
+        );
+        assert!(
+            (after.columns[2].width - baseline.columns[2].width).abs() < 0.01,
+            "col 2 (second-from-last) must NOT be recruited to absorb the overflow — only the \
+             last column ever does"
+        );
+        let baseline_total: f32 = baseline.columns.iter().map(|c| c.width).sum();
+        let after_total: f32 = after.columns.iter().map(|c| c.width).sum();
+        assert!(
+            (after_total - (baseline_total + 14.0)).abs() < 0.01,
+            "content width should grow by exactly the 14.0 excess: before={baseline_total}, \
+             after={after_total}"
+        );
+        assert!(
+            after.content_width > after.viewport_width,
+            "content_width must exceed the viewport once overflowed: content_width={}, \
+             viewport_width={}",
+            after.content_width,
+            after.viewport_width
+        );
+        assert!(
+            after.h_scrollbar_height > 0.0,
+            "the horizontal scrollbar must appear once the table overflows"
+        );
+    }
+
+    #[test]
+    fn drag_divider_overflow_is_reversible_back_to_the_original_pointer_position() {
+        // Drag out past the point col 3 bottoms out, then drag back to
+        // the *exact* pointer position the gesture started from: every
+        // column — including col 3 and `h_scrolling` — must land back on
+        // its original value, with no residue from having overflowed in
+        // between.
+        //
+        // Both calls are made against `baseline` (the layout from
+        // *before* this divider's drag began), not a layout re-derived
+        // from the first call's own overflowed output — matching the
+        // pattern `data_table_app.rs`'s `resize_base` uses for a real,
+        // continuous mouse drag. `drag_divider`'s `pair` is read off
+        // `self.columns[col]`/`self.columns[last]`, so re-deriving `self`
+        // from a state that already reflects this divider's own overflow
+        // would feed the *already-floored* last-column width back in as
+        // if it were the true pre-drag pair, permanently losing how far
+        // past the floor the drag actually went — see `drag_divider`'s
+        // doc comment.
+        let table = make_sample_shaped_table();
+        let baseline = table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        let original_pointer_x = baseline.columns[0].x + baseline.columns[0].width;
+
+        let overflow_pointer_x = original_pointer_x + 20.0;
+        let out_overrides = baseline.drag_divider(&[], 0, overflow_pointer_x, 4.0);
+        // Sanity: this step really did overflow.
+        let mut out_table = table.clone();
+        out_table.column_overrides = out_overrides.clone();
+        let out_layout = out_table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+        assert!(
+            out_layout.h_scrollbar_height > 0.0,
+            "test precondition: the outward drag must overflow"
+        );
+
+        let back_overrides = baseline.drag_divider(&out_overrides, 0, original_pointer_x, 4.0);
+        let mut back_table = table.clone();
+        back_table.column_overrides = back_overrides;
+        let back_layout =
+            back_table.layout(100.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(0.0));
+
+        for i in 0..baseline.columns.len() {
+            assert!(
+                (back_layout.columns[i].width - baseline.columns[i].width).abs() < 0.01,
+                "column {i} must return to its baseline width: baseline={}, after round-trip={}",
+                baseline.columns[i].width,
+                back_layout.columns[i].width
+            );
+        }
+        assert_eq!(
+            back_layout.h_scrollbar_height, 0.0,
+            "h_scrolling must turn back off once the drag returns to its starting position"
+        );
+        assert!(
+            (back_layout.content_width - baseline.content_width).abs() < 0.01,
+            "content_width must return to its baseline value: baseline={}, after round-trip={}",
+            baseline.content_width,
+            back_layout.content_width
+        );
     }
 
     // ── #521 defect 2: a fully-overridden table must still fill its
@@ -1475,7 +1836,17 @@ mod tests {
             "the same physical divider position must resize identically at any h_scroll"
         );
         assert_eq!(dragged[1], Some(40.0), "c1 grows from 30 to 70 - 30 = 40");
-        assert_eq!(dragged[2], Some(20.0), "the pair's 60 total is conserved");
+        assert_eq!(
+            dragged[2],
+            Some(30.0),
+            "c2 sits strictly between the dragged column and the last column, so #1031's \
+             last-absorbs rule leaves it untouched (col 1's divider does not border it)"
+        );
+        assert_eq!(
+            dragged[3],
+            Some(20.0),
+            "c3 (the last column) absorbs the slack instead of c2: 30 - (40 - 30) = 20"
+        );
     }
 
     #[test]
