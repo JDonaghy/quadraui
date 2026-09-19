@@ -3567,16 +3567,26 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
     let before = driver.app().resolved_column_widths(driver.backend())[2];
 
     // Age's natural resolved width (Flex(0.5) among a small total weight)
-    // is well under the app's own 20-unit resize floor, so the deltas
-    // below are chosen generously enough that both the widen *and* the
-    // narrow target land clear of that floor — otherwise both drags
-    // would clamp to the same 20 and the direction assertion would be
-    // vacuous rather than a real test of #516 defect 3.
+    // is well under the app's own 4.0 resize floor, so the deltas below
+    // are chosen generously enough that both the widen *and* the narrow
+    // target land clear of that floor — otherwise both drags would clamp
+    // to the same 4.0 and the direction assertion would be vacuous
+    // rather than a real test of #516 defect 3.
+    //
+    // Kept small (not the ~40/80-unit drags this test used pre-#1031):
+    // `Restarts` (last) only has 6.0 units of room above its own 4.0
+    // floor (it starts at `Fixed(10.0)`) before the table overflows into
+    // h-scroll (#1031) — and once Age's own width balloons past what
+    // fits the 100-wide viewport, the *second* drag below can no longer
+    // grab the divider at all, since its down-click lands outside
+    // `viewport_width` and `hit_test` reports `Empty` there. Staying
+    // inside that 6.0-unit budget keeps the divider on-screen and
+    // reachable for both drags.
     let layout = driver.app().table_layout(driver.backend());
     let age = layout.columns[2];
     let divider_x = age.x + age.width;
     let divider_y = 0.5;
-    driver.drag(divider_x, divider_y, divider_x + 40.0, divider_y);
+    driver.drag(divider_x, divider_y, divider_x + 3.0, divider_y);
 
     let widened = driver.app().resolved_column_widths(driver.backend())[2];
     assert!(
@@ -3585,19 +3595,20 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
          before={before}, after={widened}"
     );
 
-    // Because `Restarts` (the last column) is `Fixed`, this divider's x
-    // (Age's right edge = Restarts' left edge) doesn't move when Age's
-    // width changes — it's invariant. A second `mouse_down` at that
-    // exact same point would fold into a synthetic `DoubleClick`
-    // (`DoubleClickDetector`, `DOUBLE_CLICK_RADIUS` = 1.5) instead of a
-    // fresh resize-drag start, so nudge the down-click 2 units off
-    // (still within `DIVIDER_GRAB_PX` = 3.0's hit-test tolerance) —
-    // the resize amount itself comes from the *move* target below, not
-    // the down position, so this doesn't affect what's being measured.
+    // Age's right edge (= Restarts' left edge) moved with the widen
+    // above, so this divider's x must be re-read from the *current*
+    // layout, not the `divider_x` captured before the first drag. A
+    // second `mouse_down` at the exact same point the first drag ended
+    // would fold into a synthetic `DoubleClick` (`DoubleClickDetector`,
+    // `DOUBLE_CLICK_RADIUS` = 1.5) instead of a fresh resize-drag start,
+    // so nudge the down-click 2 units off (still within
+    // `DIVIDER_GRAB_PX` = 3.0's hit-test tolerance) — the resize amount
+    // itself comes from the *move* target below, not the down position,
+    // so this doesn't affect what's being measured.
     let layout2 = driver.app().table_layout(driver.backend());
     let age2 = layout2.columns[2];
     let divider_x2 = age2.x + age2.width;
-    driver.drag(divider_x2 + 2.0, divider_y, divider_x2 - 20.0, divider_y);
+    driver.drag(divider_x2 + 2.0, divider_y, divider_x2 - 5.0, divider_y);
 
     let narrowed = driver.app().resolved_column_widths(driver.backend())[2];
     assert!(

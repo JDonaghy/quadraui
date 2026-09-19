@@ -31,6 +31,24 @@ pub struct DataTableApp {
     sort_col: Option<usize>,
     sort_asc: bool,
     resize_col: Option<usize>,
+    /// The table layout as it was at the *start* of the in-progress
+    /// divider drag (captured on `HeaderDivider` mouse-down), held fixed
+    /// for every `MouseMoved` in that same drag rather than re-fetched
+    /// from `table_layout` each move (#1031). `DataTableLayout::drag_divider`
+    /// computes the last column's new width as `pair - target` where
+    /// `pair` comes from `self.columns[col].width + self.columns[last]
+    /// .width` — that's only the *true* pre-drag pair the first time it's
+    /// called. Re-deriving `self` from the drag's own prior output (this
+    /// gesture's evolving `column_overrides`) would feed back in the
+    /// *already-dragged* value once the last column has bottomed out and
+    /// overflowed, permanently losing how far past the floor it went —
+    /// the divider would then fail to retrace its steps on the way back.
+    /// Anchoring `self` to the gesture's start avoids that: `col`'s own
+    /// `x` and both `col` and the last column's pre-drag widths never
+    /// change mid-gesture (only `col` and the last column move), so the
+    /// snapshot stays valid for the whole drag and every intermediate
+    /// column is still frozen via `column_overrides` exactly as before.
+    resize_base: Option<DataTableLayout>,
     /// Per-column width overrides from divider drags, layered on top of
     /// `columns`' declared strategy (#516 defect 3) — mirrors how a real
     /// consumer app drives `DataTable`. Kept
@@ -60,6 +78,7 @@ impl DataTableApp {
             sort_col: Some(0),
             sort_asc: true,
             resize_col: None,
+            resize_base: None,
             column_overrides: Vec::new(),
             sb_drag: None,
             h_sb_drag: None,
@@ -504,13 +523,17 @@ impl AppLogic for DataTableApp {
                         Reaction::Redraw
                     }
                     DataTableHit::HeaderDivider { col } => {
-                        // Just remember which divider is being dragged;
-                        // `MouseMoved` below does the actual pair-resize
-                        // math against the *current* layout each move
-                        // (#521 defect 1) rather than snapshotting once
-                        // here, so a drag that never moves still leaves
-                        // `column_overrides` untouched.
+                        // Remember which divider is being dragged *and*
+                        // snapshot the layout as it stands right now
+                        // (#1031) — `MouseMoved` below reuses this same
+                        // snapshot for every move in the drag instead of
+                        // re-fetching `table_layout` each time, which
+                        // `resize_base`'s doc comment explains is required
+                        // for the last-absorbs rule to stay reversible
+                        // once it's overflowed. A drag that never moves
+                        // still leaves `column_overrides` untouched.
                         self.resize_col = Some(col);
+                        self.resize_base = Some(layout.clone());
                         Reaction::Continue
                     }
                     DataTableHit::Row { idx } => {
@@ -540,24 +563,36 @@ impl AppLogic for DataTableApp {
                     return Reaction::Redraw;
                 }
                 if let Some(col) = self.resize_col {
-                    let layout = self.table_layout(backend);
-                    // Pair-resize (#521 defect 1): a divider drag moves
-                    // width between `col` and `col + 1` only, combined
-                    // width held constant, every other column frozen at
-                    // its currently-resolved width. Layered on top of
-                    // `columns` via `column_overrides` — the real API
-                    // surface a consumer drags through — rather than
+                    // Last-absorbs resize (#1031, formerly #521 defect 1's
+                    // pair-resize): a divider drag takes its slack from
+                    // the *last* column (`Restarts`), not `col + 1`, and
+                    // every column strictly between the two is frozen at
+                    // its currently-resolved width. Once `Restarts` bottoms
+                    // out at the floor below, the table overflows and
+                    // `DataTableLayout` grows its own horizontal
+                    // scrollbar instead of refusing the drag. Layered on
+                    // top of `columns` via `column_overrides` — the real
+                    // API surface a consumer drags through — rather than
                     // rewriting the columns' declared strategies directly.
                     // A small absolute floor (not the old single-column
                     // `.max(20.0)`): this table's own `Restarts` column
                     // is declared `Fixed(10.0)` — the same literal value
                     // in both cell (TUI) and pixel (GTK) units — so a
-                    // pair-conserving floor bigger than that would make
-                    // the divider immediately before it refuse to widen
-                    // at all, contradicting the #516 regression that the
-                    // same divider must resize in the drag's direction.
-                    self.column_overrides =
-                        layout.drag_divider(&self.column_overrides, col, position.x, 4.0);
+                    // floor bigger than that would make the divider
+                    // immediately before it refuse to widen at all,
+                    // contradicting the #516 regression that the same
+                    // divider must resize in the drag's direction.
+                    //
+                    // Uses `resize_base` (captured at mouse-down), not a
+                    // freshly re-fetched `table_layout` — see its doc
+                    // comment for why re-deriving the layout from this
+                    // same drag's own prior output would corrupt the
+                    // rightmost column's floor bookkeeping once
+                    // overflowed (#1031).
+                    if let Some(base) = &self.resize_base {
+                        self.column_overrides =
+                            base.drag_divider(&self.column_overrides, col, position.x, 4.0);
+                    }
                     return Reaction::Redraw;
                 }
                 let layout = self.table_layout(backend);
@@ -573,6 +608,7 @@ impl AppLogic for DataTableApp {
                 Reaction::Continue
             }
             UiEvent::MouseUp { .. } => {
+                self.resize_base = None;
                 let had_drag = self.resize_col.take().is_some()
                     || self.sb_drag.take().is_some()
                     || self.h_sb_drag.take().is_some();

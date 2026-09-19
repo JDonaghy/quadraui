@@ -618,8 +618,19 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
     // viewport exactly — #521 defect 2's literal symptom was the
     // rightmost column's right edge detaching from the frame's right
     // edge once every `Flex` column had been overridden by a drag.
-    let tui_flush = run_multi_drag_fill_script::<TuiDriver<DataTableApp>>(10.0);
-    let gtk_flush = run_multi_drag_fill_script::<GtkDriver<DataTableApp>>(20.0);
+    //
+    // dx=5.0 on both backends (not dx=10.0/20.0 scaled to each
+    // viewport, as before #1031): every divider drag now shares the
+    // *same* last column (`Restarts`, `Fixed(10.0)` — a literal pixel/
+    // cell value identical on both backends, not scaled to the
+    // viewport) as its absorbing partner, so this script's net demand on
+    // that one shared 10.0-wide, 4.0-floored column (6.0 units of room)
+    // is what has to stay non-overflowing here, not the per-backend
+    // viewport size. This is deliberately a "no accidental overflow"
+    // regression guard, distinct from the dedicated overflow-parity case
+    // below.
+    let tui_flush = run_multi_drag_fill_script::<TuiDriver<DataTableApp>>(5.0);
+    let gtk_flush = run_multi_drag_fill_script::<GtkDriver<DataTableApp>>(5.0);
 
     assert!(
         tui_flush,
@@ -628,6 +639,45 @@ fn data_table_rightmost_column_stays_flush_after_multiple_drags_parity_tui_and_g
     assert!(
         gtk_flush,
         "GTK: table must still fill its viewport after multiple divider drags"
+    );
+}
+
+// ─── #1031: rightmost column absorbs the slack, then the table overflows ──
+
+/// Drags the Name|Status divider (col 0) far enough right to drive
+/// `Restarts` (the last column, `Fixed(10.0)`, floored at 4.0 — 6.0 units
+/// of room) past its floor, and returns whether the table ended up
+/// h-scrolling. The h-scrollbar appearing on overflow is shared
+/// `primitives::data_table` logic (`resolve_columns` + `DataTable::layout`),
+/// so it must be a cross-backend parity assertion, not TUI-only.
+fn run_overflow_script<D: DataTableResizeDriver + DataTableDriverCtor>(dx: f32) -> bool {
+    let mut d = D::new_default();
+    d.drag_divider_at(0, dx);
+    let layout = d.table_layout();
+    layout.h_scrollbar_height > 0.0
+        && layout.content_width > layout.viewport_width - layout.scrollbar_width
+}
+
+#[test]
+fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
+    // 20.0 is well past the 6.0 units of room `Restarts` has on either
+    // backend (see the flush test above for why that floor is identical
+    // in both coordinate spaces) — the drag must not be refused, and the
+    // resulting overflow/h-scroll must show up identically on both.
+    let tui_overflowed = run_overflow_script::<TuiDriver<DataTableApp>>(20.0);
+    let gtk_overflowed = run_overflow_script::<GtkDriver<DataTableApp>>(20.0);
+
+    assert!(
+        tui_overflowed,
+        "TUI: widening a column past the last column's floor must overflow into h-scroll"
+    );
+    assert!(
+        gtk_overflowed,
+        "GTK: widening a column past the last column's floor must overflow into h-scroll"
+    );
+    assert_eq!(
+        tui_overflowed, gtk_overflowed,
+        "both backends should agree that the drag overflowed"
     );
 }
 
