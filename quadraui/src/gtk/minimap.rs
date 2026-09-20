@@ -279,9 +279,12 @@ pub(crate) fn draw_minimap_cached(
     )
 }
 
-/// Number of ASCII code points [`render_char_sample_sheet`] shapes —
-/// see [`crate::primitives::minimap::ATLAS_CHAR_COUNT`].
+/// Advance width (px) of one cell in [`render_char_sample_sheet`]'s
+/// sample sheet — see [`crate::primitives::minimap::ATLAS_CHAR_COUNT`]
+/// for the number of cells the sheet holds.
 const CHAR_SAMPLE_CELL_W: f64 = 10.0;
+/// Height (px) of one cell in [`render_char_sample_sheet`]'s sample
+/// sheet (and of the sheet itself).
 const CHAR_SAMPLE_CELL_H: f64 = 16.0;
 
 /// Build a [`MinimapCharAtlas`] for `family` at `tile_w x tile_h`,
@@ -334,7 +337,18 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
         let ch = char::from_u32(code)?;
         pango_layout.set_text(&ch.to_string());
         cr.move_to(i as f64 * CHAR_SAMPLE_CELL_W, 0.0);
-        super::painted_text::show_layout(&cr, &pango_layout);
+        // Deliberately the plain, non-recording `show_layout` — this
+        // paints into a private, throwaway sample sheet surface, never
+        // the real widget. `super::painted_text::show_layout` records
+        // to a **thread-local** sink (`crate::testing::text_run_sink_active`),
+        // not one scoped to this `Context`, so calling the recording
+        // wrapper here would append these 95 sample glyphs' bounds (from
+        // this function's own private surface) to `GtkBackend::painted_text`
+        // whenever a `GtkDriver`-based test happens to take an atlas
+        // cache miss during its frame — polluting `GtkDriver::find`/
+        // `screen_contains` with meaningless bounds. See quadraui#1035
+        // review.
+        pangocairo::functions::show_layout(&cr, &pango_layout);
     }
     surface.flush();
 
@@ -740,6 +754,29 @@ mod tests {
             code_pixels, comment_pixels,
             "Characters-mode (atlas) rows for different same-length, all-non-blank \
              content must paint different pixels"
+        );
+    }
+
+    #[test]
+    fn render_char_sample_sheet_does_not_pollute_the_text_run_sink() {
+        // Regression guard for the #1035 review finding: the sample
+        // sheet `render_char_sample_sheet` shapes each ASCII glyph into
+        // is a private, throwaway surface (never real screen content),
+        // but `crate::testing`'s text-run sink is a **thread-local**, not
+        // scoped to any particular `Context` -- so if this function ever
+        // goes back to painting through the recording-aware
+        // `painted_text::show_layout` instead of the plain
+        // `pangocairo::functions::show_layout`, every atlas cache miss
+        // during a `GtkDriver`-based test (guaranteed on a fresh
+        // backend's first paint) would silently append all 95 sample
+        // glyphs' bogus bounds to the shared sink that backs
+        // `GtkDriver::find`/`screen_contains`.
+        let previous = crate::testing::install_text_run_sink();
+        let _ = render_char_sample_sheet("sans-serif");
+        let recorded = crate::testing::take_text_run_sink(previous);
+        assert!(
+            recorded.is_empty(),
+            "render_char_sample_sheet must never record into the text-run sink, got {recorded:?}"
         );
     }
 

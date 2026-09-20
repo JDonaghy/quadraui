@@ -1173,6 +1173,7 @@ fn normalise_max_to_255(raw: &[f32]) -> Vec<u8> {
 /// than an LRU set: an app doesn't switch its editor font or display
 /// scale mid-frame, so only one `(family, scale)` is ever live for a
 /// given backend instance at a time in practice.
+#[derive(Debug, Clone)]
 pub struct MinimapAtlasCache {
     key: Option<(String, u32)>,
     atlas: Option<MinimapCharAtlas>,
