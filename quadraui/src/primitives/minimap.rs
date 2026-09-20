@@ -923,6 +923,303 @@ pub fn minimap_font_px(line_px: f64) -> f64 {
     line_px.clamp(1.0, 64.0)
 }
 
+// ── Character glyph atlas (#1035) ─────────────────────────────────────
+//
+// `MinimapRenderMode::Characters` was unreachable: `ROW_PITCH_PX` (2.0)
+// never clears `LEGIBILITY_FLOOR_PX` (4.0), so every GUI rasteriser's
+// `render_mode` call always resolved to `ColumnBlocks`, and the floor is
+// *correct* about what it measures — a text shaper asked for a ~2px
+// absolute font produces mush, not glyphs. What it gets wrong is the
+// premise that shaping is the only way to put a recognisable glyph shape
+// into a 2px-pitch row. VS Code's `MinimapCharRenderer` doesn't shape at
+// the target size at all: it shapes once, *large*, into a sample sheet,
+// then area-downsamples each cell to a tiny alpha tile and blits that —
+// no shaping, no layout, on the paint path at all. `MinimapCharAtlas` is
+// that facility, lifted here (not duplicated per backend) for the same
+// reason `render_mode`/`minimap_font_px`/`ROW_PITCH_PX` were by #738: one
+// shared interpretation instead of three independently-tuned ones.
+//
+// The pipeline a backend runs, once per `(font family, scale)` via
+// [`MinimapAtlasCache`] rather than per frame:
+// 1. Render [`ATLAS_CHAR_COUNT`] ASCII cells, large, into one sample
+//    sheet (a backend-native paint call — Cairo/Pango, DirectWrite,
+//    Core Text — outside this module's reach).
+// 2. [`MinimapCharAtlas::from_alpha_sheet`] box-filter-downsamples each
+//    cell to a `tile_w x tile_h` alpha tile (pure, portable, tested
+//    below with no live surface).
+// 3. [`MinimapCharAtlas::tile`] hands a backend its per-character alpha
+//    tile at paint time; the backend blits it (alpha-blend, tinted by
+//    the span colour) — still no shaping.
+
+/// First and last ASCII code point [`MinimapCharAtlas`] samples — the
+/// printable range `0x20` (space) through `0x7E` (`~`), inclusive:
+/// [`ATLAS_CHAR_COUNT`] characters. VS Code's own `createSampleData`
+/// describes this range as "96 chars"; the inclusive count is actually
+/// 95 (`0x7E - 0x20 + 1`), so [`ATLAS_CHAR_COUNT`] is derived from the
+/// bounds rather than hardcoded, to avoid carrying that off-by-one here.
+pub const ATLAS_FIRST_CHAR: u32 = 0x20;
+pub const ATLAS_LAST_CHAR: u32 = 0x7E;
+/// Number of sampled ASCII code points — see [`ATLAS_FIRST_CHAR`].
+pub const ATLAS_CHAR_COUNT: usize = (ATLAS_LAST_CHAR - ATLAS_FIRST_CHAR + 1) as usize;
+
+/// An owned, backend-agnostic alpha atlas: one downsampled glyph tile per
+/// ASCII code point in `ATLAS_FIRST_CHAR..=ATLAS_LAST_CHAR`, built once
+/// from a backend-rendered sample sheet by [`Self::from_alpha_sheet`].
+/// See the section docs above for the pipeline this is one step of.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MinimapCharAtlas {
+    tile_w: usize,
+    tile_h: usize,
+    /// `ATLAS_CHAR_COUNT * tile_w * tile_h` normalised alpha bytes, one
+    /// `tile_w * tile_h` tile per code point, in `ATLAS_FIRST_CHAR..=
+    /// ATLAS_LAST_CHAR` order.
+    data: Vec<u8>,
+    /// Returned by [`Self::tile`] for any code point outside the sampled
+    /// range — VS Code falls back to a filled block for non-Latin text
+    /// rather than painting nothing; matched here.
+    fallback: Vec<u8>,
+}
+
+impl MinimapCharAtlas {
+    /// Tile width/height in device pixels — whatever [`Self::from_alpha_sheet`]
+    /// (or [`Self::filled`]) was built with.
+    pub fn tile_w(&self) -> usize {
+        self.tile_w
+    }
+    pub fn tile_h(&self) -> usize {
+        self.tile_h
+    }
+
+    /// A fully-solid atlas: every tile, including the fallback, reads
+    /// back all-`255`. This is the safe degraded result a backend falls
+    /// back to when its sample-sheet render fails (e.g. surface
+    /// allocation) instead of threading `Option<MinimapCharAtlas>`
+    /// through every paint call site — blitting a filled block per
+    /// non-blank character is exactly [`MinimapRenderMode::ColumnBlocks`]'s
+    /// own look, so the degradation is visually inert, not a visible
+    /// regression.
+    pub fn filled(tile_w: usize, tile_h: usize) -> Self {
+        let tile_w = tile_w.max(1);
+        let tile_h = tile_h.max(1);
+        let tile_len = tile_w * tile_h;
+        Self {
+            tile_w,
+            tile_h,
+            data: vec![255u8; tile_len * ATLAS_CHAR_COUNT],
+            fallback: vec![255u8; tile_len],
+        }
+    }
+
+    /// Build an atlas from a backend-rendered sample sheet.
+    ///
+    /// `alpha` is a tightly-packed, row-major coverage buffer (`0`
+    /// transparent … `255` opaque), `sheet_w * sheet_h` bytes, holding
+    /// [`ATLAS_CHAR_COUNT`] glyph cells side by side in `ATLAS_FIRST_CHAR..=
+    /// ATLAS_LAST_CHAR` order — each `cell_w` pixels wide, `sheet_h`
+    /// pixels tall (mirroring VS Code's `createSampleData`: 96 cells, a
+    /// 10px advance, 16px tall, bold 16px font — this function doesn't
+    /// care what size the backend actually shaped at, only that every
+    /// cell shares one `cell_w`/`sheet_h`).
+    ///
+    /// Each cell is box-filter downsampled — fractional-edge area
+    /// weighting, matching VS Code's `_downsampleChar` — to `tile_w x
+    /// tile_h`. The whole sheet is then rescaled so its brightest sampled
+    /// pixel reads back `255` (`_downsample`'s `255 / max` contrast
+    /// normalisation) — without this step a lightly-anti-aliased glyph
+    /// never reaches full opacity and the whole minimap reads as
+    /// washed-out grey; this is most of why the result reads as text at
+    /// all rather than a faint smear (see the section docs above).
+    ///
+    /// Returns [`Self::filled`] — a safe, visually-inert fallback —
+    /// rather than panicking, if `alpha`'s length doesn't match `sheet_w
+    /// * sheet_h` or the sheet isn't wide enough to hold
+    /// [`ATLAS_CHAR_COUNT`] full `cell_w`-wide cells.
+    pub fn from_alpha_sheet(
+        alpha: &[u8],
+        sheet_w: usize,
+        sheet_h: usize,
+        cell_w: usize,
+        tile_w: usize,
+        tile_h: usize,
+    ) -> Self {
+        let tile_w = tile_w.max(1);
+        let tile_h = tile_h.max(1);
+        if cell_w == 0
+            || sheet_h == 0
+            || alpha.len() != sheet_w * sheet_h
+            || sheet_w < cell_w * ATLAS_CHAR_COUNT
+        {
+            return Self::filled(tile_w, tile_h);
+        }
+
+        let tile_len = tile_w * tile_h;
+        let mut raw = vec![0f32; tile_len * ATLAS_CHAR_COUNT];
+        for i in 0..ATLAS_CHAR_COUNT {
+            let cell_x0 = i * cell_w;
+            let cell =
+                box_downsample_cell(alpha, sheet_w, sheet_h, cell_x0, cell_w, tile_w, tile_h);
+            raw[i * tile_len..(i + 1) * tile_len].copy_from_slice(&cell);
+        }
+
+        Self {
+            tile_w,
+            tile_h,
+            data: normalise_max_to_255(&raw),
+            fallback: vec![255u8; tile_len],
+        }
+    }
+
+    /// The `tile_w() * tile_h()` alpha tile for `ch` — the sampled ASCII
+    /// tile when `ch` is in `ATLAS_FIRST_CHAR..=ATLAS_LAST_CHAR`,
+    /// otherwise the filled-block fallback (see the struct docs).
+    pub fn tile(&self, ch: char) -> &[u8] {
+        match ascii_tile_index(ch) {
+            Some(i) => {
+                let tile_len = self.tile_w * self.tile_h;
+                &self.data[i * tile_len..(i + 1) * tile_len]
+            }
+            None => &self.fallback,
+        }
+    }
+}
+
+fn ascii_tile_index(ch: char) -> Option<usize> {
+    let c = ch as u32;
+    if (ATLAS_FIRST_CHAR..=ATLAS_LAST_CHAR).contains(&c) {
+        Some((c - ATLAS_FIRST_CHAR) as usize)
+    } else {
+        None
+    }
+}
+
+/// Box-filter-downsample one `cell_w x sheet_h` cell — starting at
+/// column `cell_x0` of the `sheet_w`-wide `alpha` buffer — to `tile_w x
+/// tile_h`, using fractional-edge area weighting. See
+/// [`MinimapCharAtlas::from_alpha_sheet`].
+fn box_downsample_cell(
+    alpha: &[u8],
+    sheet_w: usize,
+    sheet_h: usize,
+    cell_x0: usize,
+    cell_w: usize,
+    tile_w: usize,
+    tile_h: usize,
+) -> Vec<f32> {
+    let scale_x = cell_w as f64 / tile_w as f64;
+    let scale_y = sheet_h as f64 / tile_h as f64;
+    let mut out = vec![0f32; tile_w * tile_h];
+    for ty in 0..tile_h {
+        let y0 = ty as f64 * scale_y;
+        let y1 = (((ty + 1) as f64) * scale_y).min(sheet_h as f64);
+        let iy0 = y0.floor() as usize;
+        let iy1 = (y1.ceil() as usize).min(sheet_h);
+        for tx in 0..tile_w {
+            let x0 = tx as f64 * scale_x;
+            let x1 = (((tx + 1) as f64) * scale_x).min(cell_w as f64);
+            let ix0 = x0.floor() as usize;
+            let ix1 = (x1.ceil() as usize).min(cell_w);
+
+            let mut sum = 0f64;
+            for sy in iy0..iy1 {
+                let wy = overlap(sy as f64, sy as f64 + 1.0, y0, y1);
+                if wy <= 0.0 {
+                    continue;
+                }
+                for local_sx in ix0..ix1 {
+                    let wx = overlap(local_sx as f64, local_sx as f64 + 1.0, x0, x1);
+                    if wx <= 0.0 {
+                        continue;
+                    }
+                    let sx = cell_x0 + local_sx;
+                    if sx >= sheet_w {
+                        continue;
+                    }
+                    sum += alpha[sy * sheet_w + sx] as f64 * wx * wy;
+                }
+            }
+            let area = scale_x * scale_y;
+            out[ty * tile_w + tx] = if area > 0.0 { (sum / area) as f32 } else { 0.0 };
+        }
+    }
+    out
+}
+
+/// Overlap length of intervals `[a0, a1)` and `[b0, b1)`, never negative.
+fn overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
+    (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+/// Rescale `raw` so its maximum value reads back `255`, rounding and
+/// clamping each element to `u8` — VS Code `_downsample`'s `255 / max`
+/// contrast normalisation (see [`MinimapCharAtlas::from_alpha_sheet`]).
+/// An all-zero `raw` (a totally blank sample sheet) stays all-zero
+/// rather than dividing by zero.
+fn normalise_max_to_255(raw: &[f32]) -> Vec<u8> {
+    let max = raw.iter().cloned().fold(0f32, f32::max);
+    if max <= 0.0 {
+        return vec![0u8; raw.len()];
+    }
+    let scale = 255.0 / max;
+    raw.iter()
+        .map(|&v| (v * scale).round().clamp(0.0, 255.0) as u8)
+        .collect()
+}
+
+/// Small single-entry cache mapping `(font family, scale)` to a built
+/// [`MinimapCharAtlas`], so a font-scaling GUI backend builds its atlas
+/// once per family/scale pair instead of re-shaping-and-downsampling on
+/// every paint (#1035's "no per-frame shaping" requirement). Unlike
+/// [`crate::image_cache::ImageCache`] this holds a single entry rather
+/// than an LRU set: an app doesn't switch its editor font or display
+/// scale mid-frame, so only one `(family, scale)` is ever live for a
+/// given backend instance at a time in practice.
+pub struct MinimapAtlasCache {
+    key: Option<(String, u32)>,
+    atlas: Option<MinimapCharAtlas>,
+}
+
+impl MinimapAtlasCache {
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            atlas: None,
+        }
+    }
+
+    /// Look up the cached atlas for `(family, scale)`. On a miss (first
+    /// call ever, or `family`/`scale` changed since the last call), runs
+    /// `build` and caches its result before returning it.
+    pub fn get_or_build(
+        &mut self,
+        family: &str,
+        scale: f32,
+        build: impl FnOnce() -> MinimapCharAtlas,
+    ) -> &MinimapCharAtlas {
+        // `f32` isn't `Hash`/`Eq`; a few decimal digits of scale
+        // precision is plenty (real scale factors are values like `1.0`,
+        // `1.25`, `1.5`, `2.0`) — same convention as `image_cache`'s own
+        // `scale_millis`.
+        let scale_key = (scale.max(0.0) * 1000.0).round() as u32;
+        let hit = self
+            .key
+            .as_ref()
+            .is_some_and(|(f, s)| f == family && *s == scale_key);
+        if !hit {
+            self.atlas = Some(build());
+            self.key = Some((family.to_string(), scale_key));
+        }
+        self.atlas
+            .as_ref()
+            .expect("populated unconditionally above")
+    }
+}
+
+impl Default for MinimapAtlasCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Truncate `text` to at most `n` characters, on a char boundary. Never
 /// allocates — returns a borrowed slice. Shared by every backend's
 /// `ColumnBlocks`/`Characters` row paint so a pathologically long line
@@ -1804,5 +2101,236 @@ mod tests {
                 "row {line_idx} spans must match a full linear scan"
             );
         }
+    }
+
+    // ── MinimapCharAtlas (#1035) ────────────────────────────────────────
+
+    /// Build a sample sheet of `ATLAS_CHAR_COUNT` cells, each `cell_w *
+    /// sheet_h`, where every cell is blank (`0`) except the one for
+    /// `target`, which is `pattern` (left-aligned, zero-padded to
+    /// `cell_w * sheet_h`).
+    fn sheet_with_one_cell(target: char, cell_w: usize, sheet_h: usize, pattern: &[u8]) -> Vec<u8> {
+        let sheet_w = cell_w * ATLAS_CHAR_COUNT;
+        let mut sheet = vec![0u8; sheet_w * sheet_h];
+        let idx = ascii_tile_index(target).expect("target must be in the sampled ASCII range");
+        let cell_x0 = idx * cell_w;
+        for (i, &v) in pattern.iter().enumerate().take(cell_w * sheet_h) {
+            let row = i / cell_w;
+            let col = i % cell_w;
+            sheet[row * sheet_w + cell_x0 + col] = v;
+        }
+        sheet
+    }
+
+    #[test]
+    fn atlas_blank_cell_downsamples_to_all_zero() {
+        // A space glyph has no ink anywhere in its cell -- box-filtering
+        // an all-zero region must stay all-zero, and normalisation (a
+        // pure rescale) must not turn zero into anything else.
+        let cell_w = 10;
+        let sheet_h = 16;
+        // Give some other cell real ink so `max > 0` and normalisation
+        // actually runs (a fully blank sheet is covered by
+        // `atlas_all_blank_sheet_stays_all_zero`, below).
+        let sheet = sheet_with_one_cell('!', cell_w, sheet_h, &vec![200u8; cell_w * sheet_h]);
+        let atlas = MinimapCharAtlas::from_alpha_sheet(
+            &sheet,
+            cell_w * ATLAS_CHAR_COUNT,
+            sheet_h,
+            cell_w,
+            2,
+            4,
+        );
+        assert!(
+            atlas.tile(' ').iter().all(|&b| b == 0),
+            "a blank glyph cell must downsample to an all-zero tile"
+        );
+    }
+
+    #[test]
+    fn atlas_all_blank_sheet_stays_all_zero() {
+        let cell_w = 10;
+        let sheet_h = 16;
+        let sheet = vec![0u8; cell_w * ATLAS_CHAR_COUNT * sheet_h];
+        let atlas = MinimapCharAtlas::from_alpha_sheet(
+            &sheet,
+            cell_w * ATLAS_CHAR_COUNT,
+            sheet_h,
+            cell_w,
+            2,
+            4,
+        );
+        assert!(atlas.tile('a').iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn atlas_normalisation_drives_the_brightest_tile_to_255() {
+        // Every sampled cell reads back the same partial coverage (100,
+        // well under 255) -- without the `255 / max` rescale the whole
+        // atlas would stay a washed-out ~100 and never read as legible
+        // text (see the section docs on `from_alpha_sheet`).
+        let cell_w = 10;
+        let sheet_h = 16;
+        let sheet = sheet_with_one_cell('x', cell_w, sheet_h, &vec![100u8; cell_w * sheet_h]);
+        let atlas = MinimapCharAtlas::from_alpha_sheet(
+            &sheet,
+            cell_w * ATLAS_CHAR_COUNT,
+            sheet_h,
+            cell_w,
+            2,
+            4,
+        );
+        assert!(
+            atlas.tile('x').iter().any(|&b| b == 255),
+            "the brightest sampled tile must be rescaled to full opacity, got {:?}",
+            atlas.tile('x')
+        );
+    }
+
+    #[test]
+    fn atlas_tile_count_and_stride_are_exact() {
+        let cell_w = 10;
+        let sheet_h = 16;
+        let (tile_w, tile_h) = (2, 4);
+        // Distinct, non-overlapping content per character (a uniform
+        // value equal to that character's own ASCII code) so a stride
+        // bug -- reading into a neighbouring tile -- shows up as a wrong
+        // *value*, not just a wrong length.
+        let sheet_w = cell_w * ATLAS_CHAR_COUNT;
+        let mut sheet = vec![0u8; sheet_w * sheet_h];
+        for i in 0..ATLAS_CHAR_COUNT {
+            let v = ((i + 1) % 256) as u8;
+            for row in 0..sheet_h {
+                for col in 0..cell_w {
+                    sheet[row * sheet_w + i * cell_w + col] = v;
+                }
+            }
+        }
+        let atlas =
+            MinimapCharAtlas::from_alpha_sheet(&sheet, sheet_w, sheet_h, cell_w, tile_w, tile_h);
+
+        for ch in ATLAS_FIRST_CHAR..=ATLAS_LAST_CHAR {
+            let c = char::from_u32(ch).unwrap();
+            let tile = atlas.tile(c);
+            assert_eq!(
+                tile.len(),
+                tile_w * tile_h,
+                "tile for {c:?} must be exactly tile_w * tile_h bytes"
+            );
+        }
+        // Two distinct, uniformly-filled cells must not have bled into
+        // each other: a solid-value cell downsamples to a uniform tile,
+        // and different characters used different fill values above, so
+        // their tiles must differ (unless the ASCII code happened to
+        // wrap to the same value mod 256, which `(i+1)%256` avoids for
+        // this 95-character range).
+        assert_ne!(
+            atlas.tile(' '),
+            atlas.tile('!'),
+            "adjacent cells must not alias each other's tile data"
+        );
+    }
+
+    #[test]
+    fn atlas_fractional_edge_box_filter_matches_hand_computed_values() {
+        // cell_w=3 -> tile_w=2 downsample, scale_x=1.5: tile 0 covers
+        // source pixel 0 fully (weight 1.0) and pixel 1 half (weight
+        // 0.5); tile 1 covers pixel 1 half (weight 0.5) and pixel 2
+        // fully (weight 1.0). sheet_h=1 -> tile_h=1 is a 1:1 no-op on
+        // the vertical axis. Source (coverage, so `0..=255`) row
+        // `[50, 90, 255]`:
+        //   tile0 = (50*1.0 + 90*0.5) / 1.5 = 95 / 1.5 = 63.33333...
+        //   tile1 = (90*0.5 + 255*1.0) / 1.5 = 300 / 1.5 = 200.0
+        // Every other sampled cell is blank (0), so 200.0 is the whole
+        // atlas's maximum -- normalisation rescales by 255 / 200.0 = 1.275:
+        //   tile1' = 200.0 * 1.275 = 255 (exact, the max itself)
+        //   tile0' = 63.33333 * 1.275 = 80.75 -> rounds to 81
+        // Deliberately not a value ending in .5 in the *scaled* input
+        // (a float-imprecision trap for `round()`), so this pins the box
+        // filter's fractional weighting and the normalisation rescale
+        // together against a value with clear rounding margin either
+        // side.
+        let cell_w = 3;
+        let sheet_h = 1;
+        let sheet = sheet_with_one_cell('Q', cell_w, sheet_h, &[50, 90, 255]);
+        let atlas = MinimapCharAtlas::from_alpha_sheet(
+            &sheet,
+            cell_w * ATLAS_CHAR_COUNT,
+            sheet_h,
+            cell_w,
+            2,
+            1,
+        );
+        assert_eq!(atlas.tile('Q'), &[81, 255]);
+    }
+
+    #[test]
+    fn atlas_malformed_sheet_falls_back_to_filled() {
+        // A sheet too narrow to hold ATLAS_CHAR_COUNT cells must not
+        // panic -- it degrades to the safe filled-block fallback.
+        let atlas = MinimapCharAtlas::from_alpha_sheet(&[0u8; 4], 4, 1, 10, 2, 4);
+        assert_eq!(atlas.tile(' '), &[255, 255, 255, 255, 255, 255, 255, 255]);
+        assert_eq!(atlas.tile('~'), &[255, 255, 255, 255, 255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn atlas_tile_falls_back_to_filled_block_outside_ascii_range() {
+        let cell_w = 10;
+        let sheet_h = 16;
+        let sheet = sheet_with_one_cell('x', cell_w, sheet_h, &vec![10u8; cell_w * sheet_h]);
+        let atlas = MinimapCharAtlas::from_alpha_sheet(
+            &sheet,
+            cell_w * ATLAS_CHAR_COUNT,
+            sheet_h,
+            cell_w,
+            2,
+            4,
+        );
+        assert_eq!(atlas.tile('字'), &[255; 8]);
+    }
+
+    // ── MinimapAtlasCache (#1035) ───────────────────────────────────────
+
+    #[test]
+    fn atlas_cache_builds_once_for_repeated_same_key_lookups() {
+        let mut cache = MinimapAtlasCache::new();
+        let calls = std::cell::Cell::new(0);
+        for _ in 0..5 {
+            cache.get_or_build("Monospace", 1.0, || {
+                calls.set(calls.get() + 1);
+                MinimapCharAtlas::filled(1, 2)
+            });
+        }
+        assert_eq!(
+            calls.get(),
+            1,
+            "the build closure must run once across N paints at the same (family, scale) -- no per-frame shaping"
+        );
+    }
+
+    #[test]
+    fn atlas_cache_rebuilds_when_family_changes() {
+        let mut cache = MinimapAtlasCache::new();
+        let calls = std::cell::Cell::new(0);
+        let build = |calls: &std::cell::Cell<i32>| {
+            calls.set(calls.get() + 1);
+            MinimapCharAtlas::filled(1, 2)
+        };
+        cache.get_or_build("Monospace", 1.0, || build(&calls));
+        cache.get_or_build("Fira Code", 1.0, || build(&calls));
+        assert_eq!(calls.get(), 2, "a different font family must rebuild");
+    }
+
+    #[test]
+    fn atlas_cache_rebuilds_when_scale_changes() {
+        let mut cache = MinimapAtlasCache::new();
+        let calls = std::cell::Cell::new(0);
+        let build = |calls: &std::cell::Cell<i32>| {
+            calls.set(calls.get() + 1);
+            MinimapCharAtlas::filled(1, 2)
+        };
+        cache.get_or_build("Monospace", 1.0, || build(&calls));
+        cache.get_or_build("Monospace", 2.0, || build(&calls));
+        assert_eq!(calls.get(), 2, "a different scale must rebuild");
     }
 }

@@ -41,16 +41,36 @@
 //! macOS rasteriser) consume the exact same decision logic instead of
 //! growing an independent interpretation of either threshold — this
 //! module only imports them.
+//!
+//! # Glyph atlas (#1035)
+//!
+//! `render_mode`/`LEGIBILITY_FLOOR_PX` say a *shaped* font at
+//! `ROW_PITCH_PX` is unreadable — true, and still what [`draw_minimap`]
+//! (this module's public, uncached entry point, kept for source
+//! compatibility) does: it stays on `render_mode`'s pitch gate, so it
+//! still always lands in [`MinimapRenderMode::ColumnBlocks`], exactly as
+//! before #1035. [`draw_minimap_cached`] — what [`crate::gtk::backend::GtkBackend::draw_minimap`]
+//! actually calls — takes a different path: it never shapes at the
+//! target pitch at all. It builds a [`MinimapCharAtlas`] once per
+//! `(font family, scale)` (cached in a [`MinimapAtlasCache`] owned by
+//! `GtkBackend`, matching #1014's `image_cache` pattern) by shaping each
+//! ASCII character once, *large*, via [`render_char_sample_sheet`], then
+//! box-filter-downsampling every cell to a device-pixel tile — the
+//! technique [`crate::primitives::minimap`]'s "Character glyph atlas"
+//! section docs describe. Painting a row then blits pre-downsampled
+//! alpha tiles ([`paint_row_atlas`]/`blit_alpha_tile`) instead of asking
+//! Pango to shape a 2px font — no per-frame shaping, and legible glyph
+//! *shapes* at a pitch the shaper alone could never produce.
 
-use gtk4::cairo::Context;
+use gtk4::cairo::{Context, Format, ImageSurface};
 use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
 use crate::event::Rect as QRect;
 use crate::primitives::minimap::{
-    color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
-    MinimapRenderMode, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine, COLUMN_CAPACITY,
-    ROW_PITCH_PX,
+    color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapAtlasCache,
+    MinimapCharAtlas, MinimapLayout, MinimapRenderMode, MinimapSizing, MinimapSpan, SpanCursor,
+    VisibleMinimapLine, ATLAS_FIRST_CHAR, ATLAS_LAST_CHAR, COLUMN_CAPACITY, ROW_PITCH_PX,
 };
 use crate::theme::Theme;
 
@@ -67,18 +87,27 @@ pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> 
     )
 }
 
-/// Draw a [`Minimap`] onto `cr`. Returns the layout for host click
-/// dispatch (`layout.hit_test(x, y)` -> [`crate::MinimapHit`]).
+/// Shared skeleton for [`draw_minimap`]/[`draw_minimap_cached`]: computes
+/// the layout, paints the background and viewport highlight, clips to
+/// the strip, then calls `paint_row` once per visible row via one
+/// [`SpanCursor`] merge-walk (#667 pt. 4). Returns early (no clip, no
+/// callback invocations) when the layout has nothing to paint.
+///
+/// `paint_row` gets each row's own pitch (`vline.bounds.height`, post-cap
+/// — see [`draw_minimap`]'s old comment on why this beats recomputing `h
+/// / visible_lines.len()`), even though every row shares one pitch under
+/// [`MinimapSizing::FixedPitch`], so a caller never has to special-case
+/// "read it off the first row instead".
 #[allow(clippy::too_many_arguments)]
-pub fn draw_minimap(
+fn paint_minimap_rows(
     cr: &Context,
-    pango_layout: &pango::Layout,
     x: f64,
     y: f64,
     w: f64,
     h: f64,
     minimap: &Minimap,
     theme: &Theme,
+    mut paint_row: impl FnMut(&Context, &VisibleMinimapLine, f64, &str, &[MinimapSpan]),
 ) -> MinimapLayout {
     let layout = gtk_minimap_layout(minimap, x, y, w, h);
 
@@ -97,19 +126,6 @@ pub fn draw_minimap(
         cr.rectangle(hl.x as f64, hl.y as f64, hl.width as f64, hl.height as f64);
         cr.fill().ok();
     }
-
-    // Row pitch already lives on the layout, post-cap (`Minimap::layout`,
-    // #663) -- read it back rather than recomputing `h /
-    // visible_lines.len()`, which would silently undo the cap and let a
-    // short file's font balloon again. All rows share one pitch, so the
-    // first is representative.
-    let row_px = layout
-        .visible_lines
-        .first()
-        .map(|v| v.bounds.height as f64)
-        .unwrap_or(0.0);
-    let mode = render_mode(row_px);
-    let saved_font = pango_layout.font_description();
 
     // Clip all row painting to the strip: a legible pitch can still shape
     // a line longer than `w`, and below-floor colour blocks are already
@@ -130,33 +146,293 @@ pub fn draw_minimap(
             continue;
         };
         let row_spans = spans.row_spans(vline.start_line_idx);
-        match mode {
+        paint_row(cr, vline, vline.bounds.height as f64, &line.text, row_spans);
+    }
+
+    cr.restore().ok();
+
+    layout
+}
+
+/// Draw a [`Minimap`] onto `cr`. Returns the layout for host click
+/// dispatch (`layout.hit_test(x, y)` -> [`crate::MinimapHit`]).
+///
+/// This is the pre-#1035 shim, kept exactly as it always behaved (still
+/// gated on [`render_mode`]'s legibility floor, so it still always lands
+/// in [`MinimapRenderMode::ColumnBlocks`] at the default `ROW_PITCH_PX`)
+/// — for source compatibility with any caller reaching this free
+/// function directly rather than through [`crate::backend::Backend::draw_minimap`],
+/// mirroring `gtk::image::draw_image`'s relationship to
+/// `draw_image_cached` (#1014). [`crate::gtk::backend::GtkBackend::draw_minimap`]
+/// — the path every real app takes — calls [`draw_minimap_cached`]
+/// instead, which is where #1035's glyph atlas actually lives. See the
+/// module docs' "Glyph atlas" section.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_minimap(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    minimap: &Minimap,
+    theme: &Theme,
+) -> MinimapLayout {
+    let saved_font = pango_layout.font_description();
+
+    let layout = paint_minimap_rows(
+        cr,
+        x,
+        y,
+        w,
+        h,
+        minimap,
+        theme,
+        |cr, vline, row_px, text, row_spans| match render_mode(row_px) {
             MinimapRenderMode::Characters => paint_row_glyphs(
                 cr,
                 pango_layout,
                 saved_font.as_ref(),
                 vline,
                 row_px,
-                &line.text,
+                text,
                 row_spans,
                 theme,
             ),
-            MinimapRenderMode::ColumnBlocks => {
-                paint_row_blocks(cr, vline, &line.text, row_spans, theme)
-            }
-        }
-    }
+            MinimapRenderMode::ColumnBlocks => paint_row_blocks(cr, vline, text, row_spans, theme),
+        },
+    );
 
     pango_layout.set_attributes(None);
     pango_layout.set_font_description(saved_font.as_ref());
-    // Reset the ellipsize/width state `paint_row_glyphs` set below so it
+    // Reset the ellipsize/width state `paint_row_glyphs` sets so it
     // can't leak onto whatever the shared layout paints next.
     pango_layout.set_width(-1);
     pango_layout.set_ellipsize(pango::EllipsizeMode::None);
 
-    cr.restore().ok();
-
     layout
+}
+
+/// Draw a [`Minimap`] using a cached [`MinimapCharAtlas`] for real
+/// character shapes (#1035), instead of [`draw_minimap`]'s legibility-gated
+/// font scaling. `atlas_cache` should be a field the caller keeps alive
+/// across frames — [`crate::gtk::backend::GtkBackend`] owns one, the same
+/// way it owns `image_cache` for #1014. `dpi_scale` sizes each glyph tile
+/// to real device pixels (issue's "Scale / HiDPI" section): a `2` DIP
+/// row pitch at `dpi_scale` 2.0 gets `4` real device pixels of glyph
+/// detail, not `2`.
+///
+/// Never shapes at the target pitch: the atlas build (large, once per
+/// `(font family, scale)`) happens inside `atlas_cache.get_or_build`
+/// only on a cache miss; every paint after that just blits pre-downsampled
+/// alpha tiles. Falls back to [`paint_row_blocks`] only if the atlas
+/// itself degrades to [`MinimapCharAtlas::filled`] returning a zero-sized
+/// tile (never happens in practice — `filled` always clamps to at least
+/// `1x1` — kept as a defensive no-op-safe branch rather than an
+/// `unwrap`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_minimap_cached(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    minimap: &Minimap,
+    theme: &Theme,
+    atlas_cache: &mut MinimapAtlasCache,
+    dpi_scale: f64,
+) -> MinimapLayout {
+    let family = pango_layout
+        .font_description()
+        .and_then(|f| f.family())
+        .map(|g| g.to_string())
+        .unwrap_or_else(|| "Monospace".to_string());
+    let scale = dpi_scale.max(1.0);
+    // One column is 1 DIP wide (see `paint_row_blocks`'s own "1px-wide
+    // block per column"), one row is `ROW_PITCH_PX` DIPs tall -- convert
+    // both to real device pixels via `scale` (issue's HiDPI note: `m =
+    // round(scale * 2)` in VS Code's own terms, keeping the *logical*
+    // pitch unchanged while the atlas gets real device-pixel detail).
+    let tile_w = (scale).round().max(1.0) as usize;
+    let tile_h = (ROW_PITCH_PX * scale).round().max(1.0) as usize;
+
+    let atlas = atlas_cache.get_or_build(&family, scale as f32, || {
+        build_char_atlas(&family, tile_w, tile_h)
+    });
+
+    paint_minimap_rows(
+        cr,
+        x,
+        y,
+        w,
+        h,
+        minimap,
+        theme,
+        |cr, vline, _row_px, text, row_spans| {
+            if atlas.tile_w() == 0 || atlas.tile_h() == 0 {
+                paint_row_blocks(cr, vline, text, row_spans, theme);
+            } else {
+                paint_row_atlas(cr, atlas, scale, vline, text, row_spans, theme);
+            }
+        },
+    )
+}
+
+/// Number of ASCII code points [`render_char_sample_sheet`] shapes —
+/// see [`crate::primitives::minimap::ATLAS_CHAR_COUNT`].
+const CHAR_SAMPLE_CELL_W: f64 = 10.0;
+const CHAR_SAMPLE_CELL_H: f64 = 16.0;
+
+/// Build a [`MinimapCharAtlas`] for `family` at `tile_w x tile_h`,
+/// falling back to [`MinimapCharAtlas::filled`] (a safe, visually-inert
+/// degraded result — see that constructor's docs) if the sample-sheet
+/// render itself fails (e.g. surface allocation).
+fn build_char_atlas(family: &str, tile_w: usize, tile_h: usize) -> MinimapCharAtlas {
+    match render_char_sample_sheet(family) {
+        Some(alpha) => MinimapCharAtlas::from_alpha_sheet(
+            &alpha,
+            (CHAR_SAMPLE_CELL_W as usize) * (crate::primitives::minimap::ATLAS_CHAR_COUNT),
+            CHAR_SAMPLE_CELL_H as usize,
+            CHAR_SAMPLE_CELL_W as usize,
+            tile_w,
+            tile_h,
+        ),
+        None => MinimapCharAtlas::filled(tile_w, tile_h),
+    }
+}
+
+/// Shape every sampled ASCII character (see
+/// [`crate::primitives::minimap::ATLAS_FIRST_CHAR`]/`ATLAS_LAST_CHAR`)
+/// once, at `CHAR_SAMPLE_CELL_H` px bold, into one sample sheet —
+/// mirrors VS Code's `MinimapCharRenderer.createSampleData` (96 cells,
+/// 10px advance, 16px tall, bold 16px font). Returns a tightly-packed,
+/// row-major *coverage* buffer (`sheet_w * CHAR_SAMPLE_CELL_H` bytes,
+/// `0` transparent .. `255` opaque): text is painted solid white onto a
+/// fully transparent background, so the surface's own alpha channel
+/// *is* anti-aliasing coverage directly — no premultiplied-colour
+/// division needed the way a canvas `getImageData` readback (VS Code's
+/// own situation) would.
+fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
+    let char_count = crate::primitives::minimap::ATLAS_CHAR_COUNT;
+    let cell_w = CHAR_SAMPLE_CELL_W as i32;
+    let sheet_h = CHAR_SAMPLE_CELL_H as i32;
+    let sheet_w = cell_w * char_count as i32;
+
+    let surface = ImageSurface::create(Format::ARgb32, sheet_w, sheet_h).ok()?;
+    let cr = Context::new(&surface).ok()?;
+    let pango_layout = pangocairo::functions::create_layout(&cr);
+
+    let mut font = pango::FontDescription::new();
+    font.set_family(family);
+    font.set_weight(pango::Weight::Bold);
+    font.set_absolute_size(CHAR_SAMPLE_CELL_H * 0.85 * pango::SCALE as f64);
+    pango_layout.set_font_description(Some(&font));
+
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    for (i, code) in (ATLAS_FIRST_CHAR..=ATLAS_LAST_CHAR).enumerate() {
+        let ch = char::from_u32(code)?;
+        pango_layout.set_text(&ch.to_string());
+        cr.move_to(i as f64 * CHAR_SAMPLE_CELL_W, 0.0);
+        super::painted_text::show_layout(&cr, &pango_layout);
+    }
+    surface.flush();
+
+    let stride = surface.stride() as usize;
+    let mut surface = surface;
+    let data = surface.data().ok()?;
+    let (sheet_w, sheet_h) = (sheet_w as usize, sheet_h as usize);
+    let mut alpha = vec![0u8; sheet_w * sheet_h];
+    for row in 0..sheet_h {
+        for col in 0..sheet_w {
+            // Cairo's native `ARgb32` byte order is [B, G, R, A]
+            // (little-endian) -- see `gtk::minimap::tests::pixel`'s own
+            // comment for the same layout read from the colour side.
+            alpha[row * sheet_w + col] = data[row * stride + col * 4 + 3];
+        }
+    }
+    Some(alpha)
+}
+
+/// Paint one row using `atlas`'s pre-downsampled alpha tiles: blit a
+/// tile per non-blank character, tinted by whichever span covers it — no
+/// shaping, matching [`paint_row_blocks`]'s own column-capacity bound
+/// (#667 pt. 3) and whitespace skip, but painting real glyph shapes
+/// instead of solid blocks.
+#[allow(clippy::too_many_arguments)]
+fn paint_row_atlas(
+    cr: &Context,
+    atlas: &MinimapCharAtlas,
+    dpi_scale: f64,
+    vline: &VisibleMinimapLine,
+    text: &str,
+    row_spans: &[MinimapSpan],
+    theme: &Theme,
+) {
+    for (col, ch) in text.chars().enumerate().take(COLUMN_CAPACITY) {
+        if ch.is_whitespace() {
+            continue;
+        }
+        let color = color_at_column(row_spans, col, theme.foreground);
+        blit_alpha_tile(
+            cr,
+            atlas.tile(ch),
+            atlas.tile_w(),
+            atlas.tile_h(),
+            vline.bounds.x as f64 + col as f64,
+            vline.bounds.y as f64,
+            dpi_scale,
+            color,
+        );
+    }
+}
+
+/// Blit one `tile_w x tile_h` alpha tile (device pixels) at logical
+/// position `(x, y)`, tinted by `color`. Builds a small `A8` surface
+/// from `tile` and paints `color` through it via `mask_surface` — a pure
+/// alpha blend, not a shaped glyph run. The `cr.scale(1.0 / dpi_scale,
+/// ..)` maps the tile's device-pixel resolution back down to logical
+/// units, so a `tile_w x tile_h` device-pixel tile always occupies
+/// exactly one column x [`ROW_PITCH_PX`] logical units on screen,
+/// regardless of `dpi_scale`.
+#[allow(clippy::too_many_arguments)]
+fn blit_alpha_tile(
+    cr: &Context,
+    tile: &[u8],
+    tile_w: usize,
+    tile_h: usize,
+    x: f64,
+    y: f64,
+    dpi_scale: f64,
+    color: crate::types::Color,
+) {
+    if tile_w == 0 || tile_h == 0 {
+        return;
+    }
+    let Ok(mut surface) = ImageSurface::create(Format::A8, tile_w as i32, tile_h as i32) else {
+        return;
+    };
+    {
+        let stride = surface.stride() as usize;
+        let Ok(mut data) = surface.data() else {
+            return;
+        };
+        for row in 0..tile_h {
+            let src = &tile[row * tile_w..(row + 1) * tile_w];
+            let dst_off = row * stride;
+            data[dst_off..dst_off + tile_w].copy_from_slice(src);
+        }
+    }
+    surface.flush();
+
+    let (r, g, b) = cairo_rgb(color);
+    cr.save().ok();
+    cr.translate(x, y);
+    let inv_scale = 1.0 / dpi_scale.max(f64::MIN_POSITIVE);
+    cr.scale(inv_scale, inv_scale);
+    cr.set_source_rgb(r, g, b);
+    cr.mask_surface(&surface, 0.0, 0.0).ok();
+    cr.restore().ok();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -410,6 +686,121 @@ mod tests {
             COLUMN_CAPACITY,
             "must shape no more than COLUMN_CAPACITY characters even for a 10,000-char line"
         );
+    }
+
+    // ── glyph atlas (#1035) ─────────────────────────────────────────────
+
+    /// Paint `mm` through [`draw_minimap_cached`] into a fresh surface and
+    /// return the raw pixel bytes -- used to compare two paints for
+    /// pixel-level identity/difference.
+    fn paint_cached_pixels(mm: &Minimap, w: i32, h: i32) -> Vec<u8> {
+        let mut surface = ImageSurface::create(Format::ARgb32, w, h).expect("create surface");
+        {
+            let cr = CairoContext::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut cache = MinimapAtlasCache::new();
+            draw_minimap_cached(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                w as f64,
+                h as f64,
+                mm,
+                &Theme::default(),
+                &mut cache,
+                1.0,
+            );
+        }
+        surface.flush();
+        let pixels = surface.data().expect("surface data").to_vec();
+        pixels
+    }
+
+    #[test]
+    fn atlas_mode_differentiates_content_column_blocks_would_make_identical() {
+        // #1035's own acceptance bar: two rows of equal length, both
+        // entirely non-blank, must paint *different* alpha patterns
+        // under real character shapes -- `ColumnBlocks` would paint an
+        // identical run of solid columns for both (every column non-blank
+        // either way), which is exactly the information this issue is
+        // about not throwing away.
+        let code_line = "fn main() {";
+        let comment_line = "///////////";
+        assert_eq!(
+            code_line.chars().count(),
+            comment_line.chars().count(),
+            "both lines must be the same length for this to be a fair comparison"
+        );
+
+        let code_pixels = paint_cached_pixels(&minimap_from(vec![code_line], 1), 40, 4);
+        let comment_pixels = paint_cached_pixels(&minimap_from(vec![comment_line], 1), 40, 4);
+
+        assert_ne!(
+            code_pixels, comment_pixels,
+            "Characters-mode (atlas) rows for different same-length, all-non-blank \
+             content must paint different pixels"
+        );
+    }
+
+    #[test]
+    fn atlas_mode_paints_something_for_a_non_blank_line() {
+        // A baseline sanity check alongside the differentiation test
+        // above: a non-blank line must actually paint ink, not silently
+        // no-op into an all-background surface (which would make the
+        // "differentiates content" test above meaningless if both inputs
+        // painted nothing).
+        let bg = ImageSurface::create(Format::ARgb32, 40, 4)
+            .and_then(|mut s| {
+                let cr = CairoContext::new(&s)?;
+                cr.set_source_rgb(0.0, 0.0, 0.0);
+                cr.paint()?;
+                drop(cr); // release the surface borrow before `s.data()`
+                s.flush();
+                Ok(s.data().expect("surface data").to_vec())
+            })
+            .expect("blank surface");
+
+        let painted = paint_cached_pixels(&minimap_from(vec!["fn main() {"], 1), 40, 4);
+        assert_ne!(
+            painted, bg,
+            "a non-blank line must paint something other than a uniform background"
+        );
+    }
+
+    #[test]
+    fn atlas_mode_falls_back_to_column_blocks_visuals_when_atlas_is_degenerate() {
+        // `draw_minimap_cached`'s defensive branch for a zero-sized atlas
+        // (never hit via the real `build_char_atlas` path, since
+        // `MinimapCharAtlas::filled`/`from_alpha_sheet` both clamp
+        // tile_w/tile_h to at least 1 -- see `draw_minimap_cached`'s own
+        // doc) still needs to paint *something* sane rather than nothing.
+        // Exercise `paint_row_blocks` directly (the same function the
+        // fallback branch calls) to confirm that half of the contract
+        // independently of atlas construction.
+        let mm = minimap_from(vec!["    x  y"], 1);
+        let theme = Theme {
+            background: Color::rgb(10, 10, 10),
+            foreground: Color::rgb(200, 200, 200),
+            ..Theme::default()
+        };
+        let mut surface = ImageSurface::create(Format::ARgb32, 20, 4).expect("create surface");
+        let layout = {
+            let cr = CairoContext::new(&surface).expect("Context::new");
+            let vline = layout_first_vline(&mm, 20.0, 4.0);
+            let row_spans: &[MinimapSpan] = &[];
+            paint_row_blocks(&cr, &vline, &mm.lines[0].text, row_spans, &theme);
+            vline
+        };
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let fg = (theme.foreground.r, theme.foreground.g, theme.foreground.b);
+        assert_eq!(pixel(&data, stride, layout.bounds.x as i32 + 4, 0), fg);
+    }
+
+    fn layout_first_vline(mm: &Minimap, w: f64, h: f64) -> VisibleMinimapLine {
+        gtk_minimap_layout(mm, 0.0, 0.0, w, h).visible_lines[0]
     }
 
     // ── per-column colour blocks (#667 pt. 2) ─────────────────────────
