@@ -221,6 +221,13 @@ pub struct GtkBackend {
     /// (unlike `zones`), since the whole point is skipping a re-decode on
     /// a later paint of the same source.
     image_cache: crate::image_cache::ImageCache<gtk4::gdk_pixbuf::Pixbuf>,
+    /// Cached glyph atlas for [`Backend::draw_minimap`]'s real-character
+    /// rendering (issue #1035) — see [`crate::primitives::minimap::MinimapAtlasCache`]'s
+    /// module doc. Keyed on `(editor font family, dpi_scale)`; survives
+    /// across frames, same lifecycle as `image_cache` above and for the
+    /// same reason: the whole point is never re-shaping-and-downsampling
+    /// the atlas on a later paint at the same family/scale.
+    minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
     /// Per-frame Pango line height in DIPs. Set by the App in its
     /// draw closure (from font metrics) before any trait `draw_*`
     /// invocation. Every primitive that uses text metrics passes
@@ -553,6 +560,7 @@ impl GtkBackend {
             current_layout_ptr: Cell::new(std::ptr::null()),
             current_theme: crate::Theme::default(),
             image_cache: crate::image_cache::ImageCache::default(),
+            minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
             // Arbitrary but plausible seed (mirrors `current_char_width`
@@ -4659,10 +4667,34 @@ impl Backend for GtkBackend {
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::backend::MinimapPaintResult {
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_minimap called outside enter_frame_scope");
-        let layout = crate::gtk::draw_minimap(
+        let dpi_scale = self.dpi_scale as f64;
+        // `super::minimap::draw_minimap_cached`, not the re-exported
+        // public `crate::gtk::draw_minimap` -- issue #1035's glyph atlas
+        // cache lives in a crate-internal sibling function, the same
+        // split `draw_image`/`draw_image_cached` established for #1014
+        // (see that field's doc for why the public one couldn't just
+        // grow a cache parameter without breaking whatever external code
+        // already calls it directly).
+        //
+        // Read the raw pointers directly (rather than through
+        // `current_frame_refs`, which borrows all of `self` immutably
+        // for the lifetime of its return value) so `cr`/`pango_layout`
+        // don't collide with the `&mut self.minimap_atlas_cache` borrow
+        // this method also needs -- same reasoning as `draw_image`'s own
+        // `cr_ptr` read (#1014).
+        let cr_ptr = self.current_cr_ptr.get();
+        let layout_ptr = self.current_layout_ptr.get();
+        assert!(
+            !cr_ptr.is_null() && !layout_ptr.is_null(),
+            "GtkBackend::draw_minimap called outside enter_frame_scope"
+        );
+        // SAFETY: `enter_frame_scope` set both pointers from real, live
+        // `&Context`/`&pango::Layout` borrows and won't return until the
+        // scope ends -- the same invariant `current_frame_refs` relies
+        // on.
+        let cr = unsafe { &*(cr_ptr as *const Context) };
+        let pango_layout = unsafe { &*(layout_ptr as *const pango::Layout) };
+        let layout = crate::gtk::minimap::draw_minimap_cached(
             cr,
             pango_layout,
             rect.x as f64,
@@ -4671,6 +4703,8 @@ impl Backend for GtkBackend {
             rect.height as f64,
             minimap,
             &theme,
+            &mut self.minimap_atlas_cache,
+            dpi_scale,
         );
         self.register_zone(minimap.id.clone(), rect);
         crate::backend::MinimapPaintResult {
