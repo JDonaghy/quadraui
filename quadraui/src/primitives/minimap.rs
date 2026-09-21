@@ -24,6 +24,22 @@
 //! over [`sample_blocks`], the same way [`Minimap::layout`] is a shim
 //! over [`Minimap::layout_with_sizing`].
 //!
+//! [`sample_blocks`] alone always compresses `total_lines` down to (at
+//! most) `target_rows` output rows — the right behaviour for a rasteriser
+//! that shows the *whole* buffer squeezed into the strip, but it means
+//! `Minimap::lines.len()` never exceeds the display's own row budget, so
+//! [`Minimap::layout_with_sizing`]'s `FixedPitch` slide never has more
+//! rows than fit and its window never moves (issue #1044). A host that
+//! instead wants a VS-Code-proportional **window** onto the buffer — a
+//! fixed scale that slides as the editor scrolls, rather than the whole
+//! file always squeezed in — calls [`sample_window`] (built from
+//! [`window_start_line`] plus `sample_blocks`) instead of pre-slicing the
+//! buffer itself: [`window_start_line`] is the same fraction-of-buffer
+//! slide arithmetic `layout_with_sizing`'s own post-sample slide uses,
+//! run one step earlier, over real buffer lines instead of already-sampled
+//! rows, so the window's position is the primitive's decision rather than
+//! logic every host duplicates by hand.
+//!
 //! # Coordinate model
 //!
 //! [`Minimap::lines`] is the *fine-grained* list the app chose to show —
@@ -484,14 +500,17 @@ impl Minimap {
     /// ends of the file are reachable: the window sits at the top when the
     /// editor viewport is at the top, and at the bottom when it's at the
     /// bottom.
+    ///
+    /// This is the **post-sample** slide: it only ever sees `row_count ==
+    /// self.lines.len() / lines_per_row`, i.e. whatever
+    /// [`sample_blocks`]/[`sample_window`] already handed it. A host that
+    /// compresses `self.lines` down to (at most) the display's own row
+    /// budget before constructing this [`Minimap`] — every real caller
+    /// does, via `sample_blocks`'s own `target_rows` — always satisfies
+    /// `row_count <= rows_shown` here, so this branch never engages for
+    /// them; see [`window_start_line`]'s doc for the pre-sample slide that
+    /// closes that gap (issue #1044).
     fn slide_window_start_row(&self, row_count: usize, rows_shown: usize) -> usize {
-        if rows_shown == 0 || row_count <= rows_shown {
-            return 0;
-        }
-        let max_start = row_count - rows_shown;
-        if self.total_buffer_lines <= 1 {
-            return 0;
-        }
         // `visible_row_start` is caller-supplied and expected to stay in
         // `0..self.lines.len()`; if it's ever out of range, treat that as
         // "the viewport is past the end of the file" rather than "at the
@@ -502,9 +521,12 @@ impl Minimap {
             .get(self.visible_row_start)
             .map(|l| l.line_idx)
             .unwrap_or_else(|| self.total_buffer_lines.saturating_sub(1));
-        let denom = (self.total_buffer_lines - 1) as f32;
-        let fraction = (start_buffer_line as f32 / denom).clamp(0.0, 1.0);
-        ((fraction * max_start as f32).round() as usize).min(max_start)
+        slide_start(
+            row_count,
+            rows_shown,
+            start_buffer_line,
+            self.total_buffer_lines,
+        )
     }
 
     /// Scroll-thumb geometry for the editor's viewport within the whole
@@ -731,6 +753,118 @@ pub fn sample_blocks<F: FnMut(usize) -> String>(
             }
         })
         .collect()
+}
+
+/// Slide-window fraction math shared by [`Minimap`]'s own post-sample
+/// `FixedPitch` slide (`slide_window_start_row`) and [`window_start_line`]'s
+/// pre-sample equivalent (issue #1044): given `total` items and a
+/// `window`-sized slice of them the caller can actually show/read at once,
+/// pick where that slice should start so it tracks `position` (out of
+/// `total_at_position` possible positions) — both ends of the range are
+/// always reachable (`position == 0` puts the window at the start;
+/// `position == total_at_position - 1` puts the window's last item at the
+/// very end).
+fn slide_start(total: usize, window: usize, position: usize, total_at_position: usize) -> usize {
+    if window == 0 || total <= window {
+        return 0;
+    }
+    let max_start = total - window;
+    if total_at_position <= 1 {
+        return 0;
+    }
+    let denom = (total_at_position - 1) as f32;
+    let fraction = (position.min(total_at_position - 1) as f32 / denom).clamp(0.0, 1.0);
+    ((fraction * max_start as f32).round() as usize).min(max_start)
+}
+
+/// Where a fixed-scale minimap **window** onto real buffer lines should
+/// start, so a host wanting VS Code's `minimap.size: "proportional"`
+/// behaviour — a window that slides as the editor scrolls, reaching both
+/// ends of the file — doesn't have to duplicate this fraction-of-buffer
+/// arithmetic itself (issue #1044).
+///
+/// [`Minimap`]'s own `FixedPitch` slide (`slide_window_start_row`) only
+/// ever sees `Minimap::lines` *after* [`sample_blocks`] has compressed it
+/// down to (at most) the display's own row budget — every real caller
+/// sizes `sample_blocks`'s `target_rows` to fit the strip, so
+/// `row_count <= rows_shown` always holds by the time
+/// [`Minimap::layout_with_sizing`] runs, and that slide branch never
+/// engages. This function runs the same math one step earlier — over real
+/// buffer lines, before sampling — so the window itself can be smaller
+/// than the buffer and still slide; [`sample_window`] is the composition
+/// of this with [`sample_blocks`] a host would normally reach for instead
+/// of calling this directly.
+///
+/// `total_lines` — the whole buffer's line count.
+/// `window_lines` — how many buffer lines the window should span, clamped
+/// to `total_lines`.
+/// `visible_row_start` — the editor's own current viewport top, in real
+/// buffer-line units (not the sampled `Minimap::lines` index space
+/// `Minimap::visible_row_start` uses post-sampling).
+/// `total_buffer_lines` — normally the same value as `total_lines`; kept
+/// as a separate parameter so a caller whose viewport tracks a different
+/// (e.g. pre-folded) line count than the raw buffer can still anchor the
+/// slide correctly, matching `slide_window_start_row`'s own two-parameter
+/// shape (`self.lines` vs `self.total_buffer_lines`).
+///
+/// Returns the window's first real buffer line. `0` whenever the window
+/// already covers the whole buffer (`window_lines >= total_lines`) —
+/// nothing to slide.
+pub fn window_start_line(
+    total_lines: usize,
+    window_lines: usize,
+    visible_row_start: usize,
+    total_buffer_lines: usize,
+) -> usize {
+    let window_lines = window_lines.min(total_lines);
+    slide_start(
+        total_lines,
+        window_lines,
+        visible_row_start,
+        total_buffer_lines,
+    )
+}
+
+/// Down-sample a **window** of `total_lines` real buffer lines into at
+/// most `target_rows` [`MinimapLine`]s, sliding the window as
+/// `visible_row_start` advances through the buffer — the composition of
+/// [`window_start_line`] and [`sample_blocks`] issue #1044 asks for, so a
+/// host no longer duplicates the window-then-sample arithmetic itself
+/// (`vimcode`'s pre-#1044 `build_minimap_data` did exactly this by hand,
+/// which is what left `slide_window_start_row` permanently defeated —
+/// see [`window_start_line`]'s doc).
+///
+/// `window_lines` is how many real buffer lines the window spans *before*
+/// `sample_blocks` compresses them down to `target_rows` — a host picks
+/// this to trade off compression: `window_lines == target_rows` is the
+/// crispest, uncompressed 1:1 scale; a larger `window_lines` folds more
+/// real lines into each output row (`sample_blocks`'s own block
+/// aggregation).
+///
+/// `line_at` is called with **real buffer line indices**, same accessor
+/// contract as [`sample_blocks`] — this function applies the window's own
+/// start-line shift internally, so a caller's accessor never needs to
+/// know the window slid at all. Each returned [`MinimapLine::line_idx`]
+/// is likewise a real buffer line number, with no caller-side shift
+/// needed (unlike calling `sample_blocks` directly against a pre-sliced
+/// window).
+pub fn sample_window<F: FnMut(usize) -> String>(
+    total_lines: usize,
+    window_lines: usize,
+    target_rows: usize,
+    visible_row_start: usize,
+    mut line_at: F,
+) -> Vec<MinimapLine> {
+    if total_lines == 0 || target_rows == 0 {
+        return Vec::new();
+    }
+    let window_lines = window_lines.clamp(1, total_lines);
+    let start = window_start_line(total_lines, window_lines, visible_row_start, total_lines);
+    let mut lines = sample_blocks(window_lines, target_rows, |i| line_at(start + i));
+    for line in &mut lines {
+        line.line_idx += start;
+    }
+    lines
 }
 
 /// One output row's text for [`sample_blocks`] — see that function's doc
@@ -1744,6 +1878,96 @@ mod tests {
         for (row, line) in out.iter().enumerate() {
             assert_eq!(line.line_idx, expected_bounds[row]);
         }
+    }
+
+    // ── window_start_line / sample_window (#1044) ──────────────────
+
+    #[test]
+    fn window_start_line_whole_buffer_fits_needs_no_slide() {
+        // window_lines >= total_lines: nothing to slide, regardless of
+        // visible_row_start.
+        assert_eq!(window_start_line(100, 100, 50, 100), 0);
+        assert_eq!(window_start_line(100, 200, 99, 100), 0);
+    }
+
+    #[test]
+    fn window_start_line_slides_monotonically_and_reaches_both_ends() {
+        let total = 1000;
+        let window = 100;
+        let mut starts = Vec::new();
+        for visible_row_start in [0, 100, 300, 500, 700, 900, 999] {
+            starts.push(window_start_line(total, window, visible_row_start, total));
+        }
+        assert!(
+            starts.windows(2).all(|w| w[0] <= w[1]),
+            "window start must advance monotonically: {starts:?}"
+        );
+        assert_eq!(starts[0], 0, "scrolled to the top, window starts at 0");
+        assert_eq!(
+            *starts.last().unwrap(),
+            total - window,
+            "scrolled to the bottom, the window's last line must reach the file's end"
+        );
+    }
+
+    #[test]
+    fn window_start_line_zero_or_one_line_buffer_does_not_panic() {
+        assert_eq!(window_start_line(0, 10, 0, 0), 0);
+        assert_eq!(window_start_line(1, 10, 0, 1), 0);
+    }
+
+    #[test]
+    fn sample_window_reads_only_the_windows_own_lines() {
+        let total = 1000;
+        let expected_start = window_start_line(total, 100, 900, total);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let out = sample_window(total, 100, 10, 900, |i| {
+            calls.borrow_mut().push(i);
+            format!("l{i}")
+        });
+        assert_eq!(out.len(), 10);
+        let seen = calls.borrow();
+        // Every read must land inside the slid window, never before it
+        // and never past the buffer's end.
+        assert!(seen
+            .iter()
+            .all(|&i| i >= expected_start && i < expected_start + 100));
+    }
+
+    #[test]
+    fn sample_window_line_idx_is_a_real_buffer_line_no_caller_shift_needed() {
+        let total = 1000;
+        let out = sample_window(total, 100, 10, 900, |i| format!("l{i}"));
+        let expected_start = window_start_line(total, 100, 900, total);
+        assert_eq!(out.first().unwrap().line_idx, expected_start);
+        // Sliding to the very bottom of the file must let the last
+        // sampled row's line_idx approach the buffer's own last line —
+        // the same "both ends reachable" property `window_start_line`
+        // itself guarantees.
+        assert!(out.last().unwrap().line_idx < total);
+    }
+
+    #[test]
+    fn sample_window_uncompressed_scale_matches_sample_blocks_over_the_window() {
+        // window_lines == target_rows: the crispest, uncompressed 1:1
+        // scale -- every output row is exactly one real buffer line, so
+        // this must match calling sample_blocks directly over the same
+        // (already-windowed) slice, shifted back to real line numbers.
+        let total = 1000;
+        let start = window_start_line(total, 50, 700, total);
+        let direct = sample_blocks(50, 50, |i| format!("l{}", i + start));
+        let via_window = sample_window(total, 50, 50, 700, |i| format!("l{i}"));
+        assert_eq!(direct.len(), via_window.len());
+        for (d, w) in direct.iter().zip(via_window.iter()) {
+            assert_eq!(d.text, w.text);
+            assert_eq!(d.line_idx + start, w.line_idx);
+        }
+    }
+
+    #[test]
+    fn sample_window_empty_inputs_are_empty() {
+        assert!(sample_window(0, 10, 10, 0, |i| format!("l{i}")).is_empty());
+        assert!(sample_window(100, 10, 0, 0, |i| format!("l{i}")).is_empty());
     }
 
     // ── aggregate_spans ────────────────────────────────────────────
