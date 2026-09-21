@@ -66,8 +66,8 @@ use std::cell::RefCell;
 use std::io;
 use std::rc::Rc;
 
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Rect as RtRect, Size};
+use ratatui::backend::{Backend as RatatuiBackend, ClearType, CrosstermBackend};
+use ratatui::layout::{Position as RtPosition, Rect as RtRect, Size};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::backend::Backend;
@@ -156,7 +156,21 @@ impl<A: AppLogic> TuiVtDriver<A> {
     /// Repaint one frame through the shared production render path,
     /// flushing through `CrosstermBackend` into the `vt100` sink rather than
     /// `TestBackend`'s in-memory buffer.
+    ///
+    /// Consumes any pending [`crate::Backend::request_full_repaint`]
+    /// request (issue #1037) the same way the live runner's
+    /// `tui::run::run_inner` frame loop and `TuiDriver::render` do — so a
+    /// `request_full_repaint()` call under this driver forces the same
+    /// "next frame repaints every cell unconditionally" ANSI byte stream a
+    /// real terminal session would receive, rather than being silently
+    /// swallowed. See [`Self::force_full_repaint`] for why this does *not*
+    /// call `ratatui::Terminal::clear()` the way the other two consumers
+    /// do, and what it does instead.
     pub fn render(&mut self) {
+        let full_repaint = self.backend.take_full_repaint_requested();
+        if full_repaint {
+            self.force_full_repaint();
+        }
         paint_frame(
             &mut self.terminal,
             &mut self.backend,
@@ -164,6 +178,66 @@ impl<A: AppLogic> TuiVtDriver<A> {
             Size::new(self.cols, self.rows),
         )
         .expect("CrosstermBackend render into an in-memory vt100 sink is infallible");
+    }
+
+    /// Reproduce `ratatui::Terminal::clear()`'s two effects by hand,
+    /// without calling it — issue #1037's review follow-up.
+    ///
+    /// `Terminal::clear()` is unsafe to call on this driver's real
+    /// `CrosstermBackend`: it unconditionally calls
+    /// `Backend::get_cursor_position` first (to restore the cursor
+    /// afterward), and for a `Viewport::Fixed` terminal — what this driver
+    /// always uses, see [`Self::new`] — its clear path also calls
+    /// `Backend::size()` to decide whether the fixed area is full-width and
+    /// bottom-aligned. `CrosstermBackend`'s implementations of both send a
+    /// real query to the OS terminal (`crossterm::cursor::position()` /
+    /// `crossterm::terminal::size()`, both reading `/dev/tty` directly —
+    /// same category of call the module doc's "Why no real OS pty" section
+    /// already flags for `CrosstermBackend::size()`), unrelated to whatever
+    /// `Write` sink the backend wraps. Under `cargo test` there is no
+    /// controlling terminal, so both fail immediately (confirmed: calling
+    /// `terminal.clear()` here errors `ENXIO "No such device or address"`
+    /// from `get_cursor_position`) rather than silently succeeding against
+    /// a fake value — there's no test double to substitute, since the
+    /// query bypasses the sink entirely.
+    ///
+    /// So this reproduces `Terminal::clear()`'s two observable effects
+    /// directly, using only backend calls that *write* bytes and never
+    /// query anything:
+    ///
+    /// 1. Physically wipe the vt100-observed screen with a direct
+    ///    `MoveTo(0, 0)` + `Clear(All)` ANSI write — what a real terminal
+    ///    receiving `Terminal::clear()`'s bytes would show.
+    /// 2. Reset ratatui's own diff cache, so the next [`Self::render`]
+    ///    re-sends every non-blank cell unconditionally instead of
+    ///    skipping cells it believes are unchanged (exactly what
+    ///    `Terminal::clear()`'s internal back-buffer reset achieves, but
+    ///    there's no public API to reset just that half of a `Terminal`
+    ///    without also triggering the query above). We rebuild the
+    ///    `Terminal` wrapping a *fresh* `CrosstermBackend` over the same
+    ///    `vt100::Parser` (same `Rc`, so the byte stream stays continuous)
+    ///    instead — a brand-new `Terminal` starts with blank internal
+    ///    buffers, so its first post-rebuild diff treats every non-blank
+    ///    cell as new. Cells the app's content itself leaves blank are
+    ///    already handled by step 1's physical clear, so skipping them in
+    ///    the diff is harmless — they're already correct.
+    fn force_full_repaint(&mut self) {
+        let sink = VtSink(Rc::clone(&self.parser));
+        let crossterm_backend = CrosstermBackend::new(sink);
+        let mut terminal = Terminal::with_options(
+            crossterm_backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(RtRect::new(0, 0, self.cols, self.rows)),
+            },
+        )
+        .expect("CrosstermBackend + Viewport::Fixed never queries a real terminal");
+
+        RatatuiBackend::set_cursor_position(terminal.backend_mut(), RtPosition::new(0, 0))
+            .expect("MoveTo write into an in-memory vt100 sink is infallible");
+        RatatuiBackend::clear_region(terminal.backend_mut(), ClearType::All)
+            .expect("Clear(All) write into an in-memory vt100 sink is infallible");
+
+        self.terminal = terminal;
     }
 
     /// Feed one synthetic event through the full production pipeline — see
@@ -591,5 +665,63 @@ mod tests {
         assert!(!driver.exited());
         driver.type_char('q');
         assert!(driver.exited());
+    }
+
+    /// Issue #1037 (review follow-up): `TuiVtDriver::render` must consume a
+    /// pending [`crate::Backend::request_full_repaint`] request the same
+    /// way `TuiDriver::render` and the live runner's `run_inner` frame loop
+    /// do — `Terminal::clear()` before the next `paint_frame` — mirroring
+    /// `tui::testing::tests::render_actually_clears_stale_content_outside_the_diff_cache`
+    /// one layer down, over the real ANSI byte stream this driver exists to
+    /// observe.
+    ///
+    /// `OneLineApp::render` only ever paints row 0, so row 1 stays outside
+    /// ratatui's own diffed content for the life of the driver. We
+    /// simulate the exact kind of external drift `request_full_repaint`'s
+    /// doc names — a PTY writing straight into the shared terminal,
+    /// bypassing `CrosstermBackend`'s diff tracking entirely — by feeding
+    /// an out-of-band ANSI move+print straight into the `vt100::Parser`,
+    /// underneath `paint_frame`. A plain redraw leaves it in place (the
+    /// diff believes row 1 is unchanged, so it never re-sends anything for
+    /// it — the vimcode#58 symptom). Only a `Terminal::clear()` call —
+    /// which for a real `CrosstermBackend` means an actual ANSI
+    /// clear-screen sequence hits the byte stream, not just an in-process
+    /// flag — wipes it, proving the hook is wired end-to-end rather than
+    /// silently swallowed at this layer.
+    #[test]
+    fn render_actually_clears_stale_content_outside_the_diff_cache() {
+        let mut driver = TuiVtDriver::new(OneLineApp { text: "hi" }, 10, 3);
+
+        // Simulate a PTY (or any other process) writing directly into the
+        // shared terminal, out of band from anything `paint_frame` ever
+        // sent: move to row 2 (1-indexed in ANSI), col 1, print "X".
+        driver.parser.borrow_mut().process(b"\x1b[2;1HX");
+        assert!(
+            driver.screen_contains("X"),
+            "sanity: the injected stale glyph must be visible before either render"
+        );
+
+        // A plain redraw with nothing pending: `OneLineApp` never paints
+        // row 1, so ratatui's diff still believes it's unchanged and
+        // sends nothing for it — the stale glyph survives.
+        driver.render();
+        assert!(
+            driver.screen_contains("X"),
+            "a redraw with no full-repaint request pending must not touch \
+             cells the diff cache believes are unchanged"
+        );
+
+        // Requesting a full repaint must force `Terminal::clear()` before
+        // the next `paint_frame` — a real clear-screen ANSI sequence over
+        // the byte stream this driver observes — wiping the stale glyph
+        // even though the app's own content never wrote to that cell.
+        driver.backend.request_full_repaint();
+        driver.render();
+        assert!(
+            !driver.screen_contains("X"),
+            "render() must actually call Terminal::clear() when a full \
+             repaint was requested, not just consume the flag — the stale \
+             glyph should be gone once the real terminal receives a clear"
+        );
     }
 }

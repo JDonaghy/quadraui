@@ -1319,15 +1319,16 @@ pub trait Backend: sealed::Sealed {
     /// sequence the terminal applies before ratatui's own resize
     /// handling catches up, or a dismissed popup can each leave stale
     /// glyphs in cells ratatui's diff believes are already correct and
-    /// therefore skips. `TuiBackend`'s implementation clears
-    /// `ratatui::Terminal`'s diff cache before the next
-    /// `terminal.draw(...)` call, exactly what `Terminal::clear()` gives
-    /// a raw (non-runner) ratatui app — see `tui::run::run_inner`'s frame
-    /// loop for where that next-frame consumption happens, and
-    /// `crate::tui::testing::TuiDriver::render` for the identical
-    /// consumption on the headless test path (so a driver test can
-    /// assert this was requested without a real terminal to observe the
-    /// clear on).
+    /// therefore skips. `TuiBackend::request_full_repaint` itself only
+    /// latches a flag (read back via `take_full_repaint_requested`); the
+    /// actual `ratatui::Terminal::clear()` call — exactly what
+    /// `Terminal::clear()` gives a raw (non-runner) ratatui app — lives in
+    /// each render-path caller that consumes that flag before its next
+    /// `terminal.draw(...)`: `tui::run::run_inner`'s frame loop for the
+    /// live runner, `crate::tui::testing::TuiDriver::render` for the
+    /// headless `TestBackend` driver, and `crate::tui::vt_testing::TuiVtDriver::render`
+    /// for the headless vt100 driver (so a driver test can assert this
+    /// was requested without a real terminal to observe the clear on).
     ///
     /// Default: no-op. GTK's `DrawingArea` repaints in full every frame
     /// via Cairo — there is no incremental diff to desync in the first
