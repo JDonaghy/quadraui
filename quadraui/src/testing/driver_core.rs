@@ -49,13 +49,13 @@
 #[cfg(any(
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
-    all(feature = "win", target_os = "windows")
+    feature = "win"
 ))]
 use crate::runner::Reaction;
 #[cfg(any(
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
-    all(feature = "win", target_os = "windows")
+    feature = "win"
 ))]
 use crate::runtime::EventOutcome;
 
@@ -108,11 +108,7 @@ impl<B, A> DriverCore<B, A> {
     /// [`Self::parts_mut`] instead), so it's the one driver that doesn't
     /// call this — gated so a `macos`-only build (no `tui`/`gtk`/`win`)
     /// doesn't trip `dead_code`.
-    #[cfg(any(
-        feature = "tui",
-        feature = "gtk",
-        all(feature = "win", target_os = "windows")
-    ))]
+    #[cfg(any(feature = "tui", feature = "gtk", feature = "win"))]
     pub(crate) fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
@@ -154,12 +150,13 @@ impl<B, A> DriverCore<B, A> {
 // doc), so under a `tui`-only build (no `gtk`/`macos`/`win`) this method
 // would have zero callers and trip `dead_code` under this crate's
 // workflow-wide `-D warnings`. Same cfg predicate as the driver structs
-// themselves compile under (`macos`/`win` additionally need their
-// `target_os` — see each module's own `mod testing;` gate).
+// themselves compile under (`macos` additionally needs its own
+// `target_os` — see that module's own `mod testing;` gate; `win`'s
+// doesn't, since issue #1038 — see `win::testing`'s module doc).
 #[cfg(any(
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
-    all(feature = "win", target_os = "windows")
+    feature = "win"
 ))]
 impl<B, A> DriverCore<B, A> {
     /// Apply one [`EventOutcome`] the way every production
@@ -201,14 +198,13 @@ impl<B, A> DriverCore<B, A> {
 // one of `MacBackend`/`WinBackend` is actually in the build: with
 // neither feature on (e.g. this crate's `tui`/`gtk` CI legs), nothing
 // implements `TextRunSource` and nothing calls the methods below, which
-// trips `dead_code` under this crate's workflow-wide `-D warnings`. Mirrors
-// the same two-backend cfg predicate the paint-time text-run sink at the
-// top of `testing/mod.rs` uses, minus TUI/GTK (neither is ever a
-// `TextRunSource`, so their features don't belong in this predicate).
-#[cfg(any(
-    all(feature = "macos", target_os = "macos"),
-    all(feature = "win", target_os = "windows")
-))]
+// trips `dead_code` under this crate's workflow-wide `-D warnings`.
+// `win` needs no `target_os` qualifier here (unlike `macos`, and unlike
+// `record_text_run`/`text_run_sink_active`'s predicate at the top of
+// `testing/mod.rs`): `WinBackend::text_runs()` — the method
+// `TextRunSource for WinBackend` wraps — has been unconditional since
+// issue #1038, same posture as `win::testing` itself.
+#[cfg(any(all(feature = "macos", target_os = "macos"), feature = "win"))]
 mod text_run_query {
     use super::DriverCore;
     use crate::testing::TextRun;
@@ -239,7 +235,7 @@ mod text_run_query {
         }
     }
 
-    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[cfg(feature = "win")]
     impl TextRunSource for crate::win::backend::WinBackend {
         fn text_runs(&self) -> &[TextRun] {
             // Resolves to the inherent `WinBackend::text_runs`, not this

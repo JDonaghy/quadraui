@@ -1416,21 +1416,21 @@ impl WinBackend {
     /// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`/
     /// `screen_has`. Off by default — see [`Self::text_runs`].
     ///
-    /// `target_os`-gated (unlike the `painted_text_recording` field it
-    /// writes): its only caller, [`super::testing::WinDriver::new`], lives
-    /// in `win::testing`, which is itself windows-only (see that module's
-    /// doc) — so on every other host this method has no caller and would
-    /// otherwise be flagged `dead_code` under this crate's `-D warnings`.
-    #[cfg(target_os = "windows")]
+    /// Not `target_os`-gated, unlike most of this file: the
+    /// `painted_text_recording` field it writes has no WinAPI dependency,
+    /// and — since issue #1038 — its caller, [`super::testing::WinDriver::new`],
+    /// exists on every host too (`win::testing` is gated on `feature =
+    /// "win"` alone, same posture as this file — see that module's doc),
+    /// so this method must compile and run everywhere `WinDriver` does,
+    /// not just on Windows.
     pub(crate) fn set_painted_text_recording(&mut self, enabled: bool) {
         self.painted_text_recording = enabled;
     }
 
     /// Text runs recorded during the last [`Self::begin_frame`]/
     /// [`Self::end_frame`] bracket, when [`Self::set_painted_text_recording`]
-    /// is on. `target_os`-gated for the same reason that method is — see
-    /// its doc.
-    #[cfg(target_os = "windows")]
+    /// is on. Not `target_os`-gated, for the same reason that method
+    /// isn't — see its doc.
     pub(crate) fn text_runs(&self) -> &[crate::testing::TextRun] {
         &self.text_runs
     }

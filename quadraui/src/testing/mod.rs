@@ -51,16 +51,18 @@
 //! driver — `TuiDriver` (`feature = "tui"`), `GtkDriver`
 //! (`feature = "gtk"`), `MacDriver`
 //! (`all(feature = "macos", target_os = "macos")`), or `WinDriver`
-//! (`all(feature = "win", target_os = "windows")`) — is actually being
-//! compiled. Without this, `cargo check -p quadraui --features win` on a
-//! non-Windows host (`win::testing` is itself `target_os = "windows"`-gated,
-//! so nothing reaches `DriverCore` there either) would trip `dead_code`
-//! under this crate's workflow-wide `-D warnings`.
+//! (`feature = "win"` alone, since issue #1038 — `win::testing` compiles
+//! everywhere `win::backend`/`win::run` do, with its real Direct2D/GDI
+//! calls individually `cfg(target_os = "windows")`-gated internally, so
+//! `DriverCore<WinBackend, _>` is reached on a non-Windows host too) — is
+//! actually being compiled. Without this, `cargo check -p quadraui
+//! --features win` on a non-Windows host would trip `dead_code` under
+//! this crate's workflow-wide `-D warnings`.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
-    all(feature = "win", target_os = "windows")
+    feature = "win"
 ))]
 pub(crate) mod driver_core;
 
