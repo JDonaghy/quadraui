@@ -297,18 +297,26 @@ impl TreeView {
     /// Unlike `ListView`, `TreeView` rows can have mixed heights on pixel
     /// backends (`Decoration::Header` rows paint shorter than others —
     /// see [`crate::primitives::layout_metrics::tree_layout`]). This
-    /// method still sizes the thumb against a uniform `row_height`, the
-    /// same approximation `ListView::vscrollbar` already makes: a
+    /// method still sizes the thumb against a uniform `row_height`: a
     /// pixel-exact extent would require summing every row's real
     /// measured height every frame just to position a thumb, and the
     /// thumb only needs to be proportional, not a promise of pixel-exact
-    /// travel.
+    /// travel. Unlike `ListView` (whose items really do paint at exactly
+    /// `line_height`, with no multiplier), a `TreeView`'s non-header rows
+    /// paint at `line_height * 1.4` (or [`crate::types::TreeStyle::row_height`]
+    /// when the host set one) — so callers must pass that pitch, not raw
+    /// `line_height`, or the computed "does this overflow" answer and the
+    /// thumb geometry won't match what [`crate::primitives::layout_metrics::tree_layout`]
+    /// (and therefore `draw_tree`) actually paints (#1043).
     ///
     /// # Arguments
     ///
     /// - `area` — the tree surface rect, in surface-native units (TUI
     ///   cells, GTK / macOS / Windows pixels).
-    /// - `row_height` — height of one row: `1.0` on TUI, `line_height` on
+    /// - `row_height` — height of one (non-header) row: `1.0` on TUI
+    ///   (which always uses 1 cell/row, ignoring `TreeStyle::row_height`
+    ///   — see `tui_tree_layout`'s doc), or
+    ///   [`crate::primitives::layout_metrics::tree_row_pitch`]'s result on
     ///   pixel backends. The scrollbar occupies the rightmost column of
     ///   `area`, and `row_height` also serves as both the column width
     ///   and the minimum thumb length (same convention as

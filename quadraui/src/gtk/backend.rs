@@ -3821,10 +3821,16 @@ impl Backend for GtkBackend {
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
         // GTK tree vertical-scrollbar rasteriser not yet implemented (#1043).
-        // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is one line_height tall, same approximation
-        // `GtkBackend::list_vscrollbar` already makes for `ListView`.
-        tree.vscrollbar(rect, self.line_height())
+        // Delegate to the primitive's geometry method, but using the same
+        // per-row pitch `Self::tree_layout` (via `layout_metrics::tree_layout`)
+        // actually paints — not the raw `line_height`. Unlike `ListView`
+        // (whose items really are `line_height` tall, see
+        // `GtkBackend::list_vscrollbar`), `TreeView` rows pitch at
+        // `line_height * 1.4` (or `TreeStyle::row_height`); see
+        // `layout_metrics::tree_row_pitch`'s doc.
+        let row_h =
+            crate::primitives::layout_metrics::tree_row_pitch(tree, self.current_line_height);
+        tree.vscrollbar(rect, row_h as f32)
     }
 
     /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
@@ -7058,6 +7064,71 @@ mod tests {
             "changing ui_font alone must visibly widen the painted row label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
         );
+    }
+
+    /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
+    /// integration tests.
+    fn flat_tree(n_rows: usize) -> TreeView {
+        TreeView {
+            id: WidgetId::new("test:tree:vscrollbar"),
+            rows: (0..n_rows)
+                .map(|i| crate::primitives::tree::TreeRow {
+                    path: vec![i as u16],
+                    indent: 0,
+                    icon: None,
+                    text: crate::types::StyledText::plain(format!("row{i}")),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: crate::types::Decoration::Normal,
+                    edit: None,
+                })
+                .collect(),
+            selection_mode: crate::types::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: crate::types::TreeStyle::default(),
+            has_focus: false,
+        }
+    }
+
+    /// #1043 regression: `tree_vscrollbar` used to pass the raw
+    /// `line_height` (16px default) as `TreeView::vscrollbar`'s
+    /// `row_height`, not the `line_height * 1.4` pitch `tree_layout`
+    /// actually paints for non-header rows. With `current_line_height`
+    /// left at its 16px default, 15 rows painted at the real 22.4px→22px
+    /// pitch only fit 13 into a 300px-tall viewport (300/22 = 13), so an
+    /// overflow scrollbar must appear — the old raw-`line_height` math
+    /// (300/16 = 18) would have wrongly reported "everything fits".
+    #[test]
+    fn gtk_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
+        let backend = GtkBackend::new();
+        let tree = flat_tree(15);
+        let rect = QRect::new(0.0, 0.0, 20.0, 300.0);
+
+        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
+
+        let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
+        assert_eq!(
+            sb.track.width, expected_row_h,
+            "track width (and row pitch) must match tree_layout's non-header \
+             item_height, not the raw line_height"
+        );
+    }
+
+    /// #1043 / #623: a host-set `TreeStyle::row_height` must be honored
+    /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
+    /// it — not silently ignored in favor of `line_height`.
+    #[test]
+    fn gtk_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
+        let backend = GtkBackend::new();
+        let mut tree = flat_tree(15);
+        tree.style.row_height = Some(50);
+        let rect = QRect::new(0.0, 0.0, 20.0, 300.0);
+
+        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
+            .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
+        assert_eq!(sb.track.width, 50.0);
     }
 
     /// #416: `draw_list` previously painted item labels and icon glyphs

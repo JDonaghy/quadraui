@@ -60,12 +60,7 @@ pub trait TextMeasure {
 /// [`TreeViewLayout::hit_test`].
 pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
-    let item_height = tree
-        .style
-        .row_height
-        .map(|h| h as f64)
-        .unwrap_or(line_height * 1.4)
-        .round();
+    let item_height = tree_row_pitch(tree, line_height);
     let indent_px = (line_height * 0.9).round();
     let show_chevrons = tree.style.show_chevrons;
     tree.layout(area.width, area.height, |i| {
@@ -89,6 +84,32 @@ pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLa
             chevron_end_x,
         }
     })
+}
+
+/// The non-header row pitch [`tree_layout`] uses for the bulk of a
+/// tree's rows: [`crate::types::TreeStyle::row_height`] when the host
+/// set one, else `(line_height * 1.4).round()` (#623).
+///
+/// [`TreeView::vscrollbar`] takes a single, uniform `row_height` — it
+/// has no way to reproduce `tree_layout`'s header-vs-leaf/branch split
+/// (headers pitch at `line_height * 1.2`) — so this is the pitch every
+/// pixel backend's `tree_vscrollbar` should pass it. Before #1043's fix
+/// round, `gtk`/`macos`/`win`'s `tree_vscrollbar` passed the raw
+/// `line_height` instead, which is ~40% short of what `tree_layout`
+/// actually paints for non-header rows (and silently ignored
+/// `TreeStyle::row_height` entirely) — making "does this tree
+/// overflow its viewport" and the resulting thumb size/position wrong
+/// against what `draw_tree` paints. Using the leaf/branch pitch here
+/// still isn't exact for trees with header rows mixed in (the uniform
+/// `vscrollbar` model can't be), but it matches what `tree_layout`
+/// paints for the overwhelming majority of rows in any real tree,
+/// which raw `line_height` never did.
+pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
+    tree.style
+        .row_height
+        .map(|h| h as f64)
+        .unwrap_or(line_height * 1.4)
+        .round()
 }
 
 // ── List ─────────────────────────────────────────────────────────────
@@ -742,5 +763,38 @@ mod tests {
             "200px content width > 198px visible width once border-inset \
              narrows it: overflow, reservation kicks in"
         );
+    }
+
+    // ── #1043 tree_row_pitch ─────────────────────────────────────────
+
+    fn bare_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![],
+            selection_mode: crate::types::SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: crate::types::TreeStyle::default(),
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    fn tree_row_pitch_matches_tree_layout_non_header_pitch_by_default() {
+        // Must stay identical to the `item_height` `tree_layout` computes
+        // for non-header rows — that's the whole point of sharing this fn.
+        let tree = bare_tree();
+        assert_eq!(tree_row_pitch(&tree, 16.0), (16.0_f64 * 1.4).round());
+    }
+
+    #[test]
+    fn tree_row_pitch_honors_tree_style_row_height_override() {
+        // #623: a host-set `TreeStyle::row_height` must win over the
+        // `line_height`-derived default, exactly like `tree_layout` does.
+        let mut tree = bare_tree();
+        tree.style.row_height = Some(42);
+        assert_eq!(tree_row_pitch(&tree, 16.0), 42.0);
+        // And it must NOT vary with `line_height` once set.
+        assert_eq!(tree_row_pitch(&tree, 100.0), 42.0);
     }
 }
