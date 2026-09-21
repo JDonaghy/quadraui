@@ -30,30 +30,88 @@
 //! every Windows host has (including headless CI runners) — it does not
 //! require a physically attached monitor.
 //!
-//! This module only exists on `target_os = "windows"` — see `super`'s
-//! `mod testing;` declaration and `backend.rs`'s module docs for why the
-//! rest of this repo's `--features win` compile gate stays meaningful
-//! without a Windows host. It is `pub` (like [`crate::tui::testing`] and
-//! [`crate::gtk::testing`]) rather than `pub(crate)`, both to match those
-//! siblings' convention and so a plain `cargo build`/`clippy --features
-//! win` (which compiles this module as part of the library regardless of
-//! whether any `#[cfg(test)]` block currently calls it) never flags it as
-//! dead code.
+//! # `feature = "win"` alone — not `target_os = "windows"` (issue #1038)
+//!
+//! This module used to exist only on `target_os = "windows"`. That meant
+//! no `cargo check`/`cargo test --no-run --features win` on a Linux host
+//! could ever *see* [`WinDriver`], let alone type-check code that builds
+//! one — blocking `vimcode`'s adoption of
+//! `quadraui::testing::ConformanceDriver` (`JDonaghy/vimcode#928`'s
+//! acceptance criterion #2) from ever being verified off a real Windows
+//! box.
+//!
+//! Instead, every real Direct2D/GDI call in here is individually
+//! `cfg(target_os = "windows")`-gated with a non-functional fallback
+//! everywhere else — the same "compiles-everywhere, only *works* on
+//! Windows" posture `backend.rs`/`run.rs`/`shell_runner.rs` already use
+//! (see `super`'s module docs and `Cargo.toml`'s `win` feature comment).
+//! Concretely: [`HeadlessSurface::new`] always returns `Err` off Windows
+//! (there is no non-Windows Direct2D to construct one from), so
+//! [`WinDriver::new`]'s `.expect(..)` panics if it is ever actually
+//! *run* off Windows — but nothing does that: every call site that
+//! constructs a `WinDriver` (this module's own `#[cfg(test)]` block,
+//! `tests/win_example_driver.rs`, `tests/conformance.rs`'s `WinFactory`)
+//! is itself gated to `target_os = "windows"`, since a headless Direct2D
+//! surface is the whole point of the exercise. Off Windows this module
+//! buys exactly one thing — type-checking — and that is exactly what
+//! issue #1038 asked for.
+//!
+//! `pub` (like [`crate::tui::testing`] and [`crate::gtk::testing`])
+//! rather than `pub(crate)`, both to match those siblings' convention and
+//! so a plain `cargo build`/`clippy --features win` (which compiles this
+//! module as part of the library regardless of whether any
+//! `#[cfg(test)]` block currently calls it) never flags it as dead code.
 
+#[cfg(target_os = "windows")]
 use windows::core::Result as WinResult;
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::RECT;
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, D2D1_FACTORY_TYPE_SINGLE_THREADED,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
 };
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
 };
+
+/// [`windows::core::Result`] on Windows. Off Windows the `windows` crate
+/// isn't even a dependency (`Cargo.toml` restricts it to
+/// `[target.'cfg(target_os = "windows")'.dependencies]`), so this is a
+/// minimal unit-error stand-in there instead — see the module doc for
+/// why every [`HeadlessSurface`] method that returns this only needs to
+/// *type-check* off Windows, never to succeed.
+#[cfg(not(target_os = "windows"))]
+pub type WinResult<T> = Result<T, HeadlessSurfaceUnavailable>;
+
+/// The error every fallible [`HeadlessSurface`]/[`WinDriver`] method
+/// returns off Windows — see the module doc's "`feature = "win"` alone"
+/// section. There is no non-Windows Direct2D to construct a real surface
+/// from, so this is what `Err` carries instead of ever being `Ok`.
+#[cfg(not(target_os = "windows"))]
+#[derive(Debug)]
+pub struct HeadlessSurfaceUnavailable;
+
+#[cfg(not(target_os = "windows"))]
+impl std::fmt::Display for HeadlessSurfaceUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "HeadlessSurface: Direct2D is only available on target_os = \"windows\""
+        )
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl std::error::Error for HeadlessSurfaceUnavailable {}
 
 use crate::event::{Rect, Viewport};
 use crate::runner::{AppLogic, Reaction};
@@ -89,13 +147,18 @@ use super::run::{
 /// existed.
 pub struct HeadlessSurface {
     /// Kept alive only because `ID2D1DCRenderTarget` was created from it.
+    #[cfg(target_os = "windows")]
     #[allow(dead_code)]
     factory: ID2D1Factory,
+    #[cfg(target_os = "windows")]
     target: ID2D1DCRenderTarget,
+    #[cfg(target_os = "windows")]
     hdc: HDC,
+    #[cfg(target_os = "windows")]
     bitmap: HBITMAP,
     /// Raw pointer into the `CreateDIBSection` pixel buffer — valid for
     /// as long as `bitmap` lives, i.e. for the lifetime of `self`.
+    #[cfg(target_os = "windows")]
     bits: *mut u8,
     width: u32,
     height: u32,
@@ -104,82 +167,99 @@ pub struct HeadlessSurface {
 impl HeadlessSurface {
     /// Create a `width` x `height` (device pixels, clamped to at least
     /// `1x1`) headless render target.
+    ///
+    /// Off Windows this always returns `Err` — there is no Direct2D to
+    /// build a real one from (`windows` isn't even a dependency there,
+    /// see the module doc's "`feature = "win"` alone" section) — so a
+    /// caller that unconditionally `.expect()`s this (e.g.
+    /// [`WinDriver::new`]) will panic if actually run off Windows. Every
+    /// in-tree call site that does that is itself gated to
+    /// `target_os = "windows"`, so this never fires in practice; it
+    /// exists purely so the *signature* type-checks everywhere.
     pub fn new(width: u32, height: u32) -> WinResult<Self> {
-        let width = width.max(1);
-        let height = height.max(1);
+        #[cfg(target_os = "windows")]
+        {
+            let width = width.max(1);
+            let height = height.max(1);
 
-        let factory: ID2D1Factory =
-            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
+            let factory: ID2D1Factory =
+                unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
 
-        // `D2D1_ALPHA_MODE_IGNORE`: DC render targets only support
-        // `IGNORE` or `PREMULTIPLIED` (MSDN), and nothing here composites
-        // partial transparency, so `IGNORE` avoids any premultiply step
-        // between `fill_rect`'s solid colour and the DIB's stored bytes.
-        let render_props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_IGNORE,
-            },
-            ..Default::default()
-        };
-        let target = unsafe { factory.CreateDCRenderTarget(&render_props)? };
-
-        // Negative `biHeight` = top-down DIB, so `pixel_at`'s row math
-        // matches on-screen row order (row 0 = top) with no vertical
-        // flip — GDI only allows this for uncompressed (`BI_RGB`) DIBs,
-        // which is what we're creating.
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width as i32,
-                biHeight: -(height as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
+            // `D2D1_ALPHA_MODE_IGNORE`: DC render targets only support
+            // `IGNORE` or `PREMULTIPLIED` (MSDN), and nothing here composites
+            // partial transparency, so `IGNORE` avoids any premultiply step
+            // between `fill_rect`'s solid colour and the DIB's stored bytes.
+            let render_props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        };
+            };
+            let target = unsafe { factory.CreateDCRenderTarget(&render_props)? };
 
-        let hdc = unsafe { CreateCompatibleDC(None) };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let bitmap = match unsafe {
-            CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-        } {
-            Ok(bitmap) => bitmap,
-            Err(err) => {
+            // Negative `biHeight` = top-down DIB, so `pixel_at`'s row math
+            // matches on-screen row order (row 0 = top) with no vertical
+            // flip — GDI only allows this for uncompressed (`BI_RGB`) DIBs,
+            // which is what we're creating.
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let hdc = unsafe { CreateCompatibleDC(None) };
+            let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+            let bitmap = match unsafe {
+                CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+            } {
+                Ok(bitmap) => bitmap,
+                Err(err) => {
+                    unsafe {
+                        let _ = DeleteDC(hdc);
+                    }
+                    return Err(err);
+                }
+            };
+            unsafe { SelectObject(hdc, bitmap.into()) };
+
+            let rect = RECT {
+                left: 0,
+                top: 0,
+                right: width as i32,
+                bottom: height as i32,
+            };
+            if let Err(err) = unsafe { target.BindDC(hdc, &rect) } {
                 unsafe {
+                    let _ = DeleteObject(bitmap.into());
                     let _ = DeleteDC(hdc);
                 }
                 return Err(err);
             }
-        };
-        unsafe { SelectObject(hdc, bitmap.into()) };
 
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: width as i32,
-            bottom: height as i32,
-        };
-        if let Err(err) = unsafe { target.BindDC(hdc, &rect) } {
-            unsafe {
-                let _ = DeleteObject(bitmap.into());
-                let _ = DeleteDC(hdc);
-            }
-            return Err(err);
+            Ok(Self {
+                factory,
+                target,
+                hdc,
+                bitmap,
+                bits: bits as *mut u8,
+                width,
+                height,
+            })
         }
-
-        Ok(Self {
-            factory,
-            target,
-            hdc,
-            bitmap,
-            bits: bits as *mut u8,
-            width,
-            height,
-        })
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (width, height);
+            Err(HeadlessSurfaceUnavailable)
+        }
     }
 
     /// `(width, height)` device pixels this surface was created with.
@@ -189,7 +269,11 @@ impl HeadlessSurface {
 
     /// The live render target — same `ID2D1RenderTarget` surface every
     /// other backend method in this module (and, eventually, a future
-    /// rasteriser test) paints against directly.
+    /// rasteriser test) paints against directly. Windows-only: the
+    /// return type itself (`ID2D1DCRenderTarget`) has no non-Windows
+    /// stand-in, unlike this module's other methods — see the module
+    /// doc.
+    #[cfg(target_os = "windows")]
     pub fn target(&self) -> &ID2D1DCRenderTarget {
         &self.target
     }
@@ -198,6 +282,9 @@ impl HeadlessSurface {
     /// as [`super::backend::WinBackend::begin_frame`]/`end_frame`. Returns
     /// the `EndDraw` result — `Err` on device loss or an invalid drawing
     /// call, matching every other fallible call in this module.
+    /// Windows-only, same reasoning as [`Self::target`] above: the
+    /// closure parameter's type has no non-Windows stand-in.
+    #[cfg(target_os = "windows")]
     pub fn paint(&self, paint: impl FnOnce(&ID2D1DCRenderTarget)) -> WinResult<()> {
         unsafe { self.target.BeginDraw() };
         paint(&self.target);
@@ -207,19 +294,28 @@ impl HeadlessSurface {
     /// Fill `rect` (DIPs, target-relative) with a solid `color` — the
     /// smoke-test primitive this module's acceptance criterion asks for.
     pub fn fill_rect(&self, rect: Rect, color: Color) -> WinResult<()> {
-        self.paint(|target| {
-            let brush = match unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None) } {
-                Ok(brush) => brush,
-                Err(_) => return,
-            };
-            let rect_f = D2D_RECT_F {
-                left: rect.x,
-                top: rect.y,
-                right: rect.x + rect.width,
-                bottom: rect.y + rect.height,
-            };
-            unsafe { target.FillRectangle(&rect_f, &brush) };
-        })
+        #[cfg(target_os = "windows")]
+        {
+            self.paint(|target| {
+                let brush =
+                    match unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None) } {
+                        Ok(brush) => brush,
+                        Err(_) => return,
+                    };
+                let rect_f = D2D_RECT_F {
+                    left: rect.x,
+                    top: rect.y,
+                    right: rect.x + rect.width,
+                    bottom: rect.y + rect.height,
+                };
+                unsafe { target.FillRectangle(&rect_f, &brush) };
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (rect, color);
+            Err(HeadlessSurfaceUnavailable)
+        }
     }
 
     /// Read back the colour of the pixel at device-pixel coordinate
@@ -227,26 +323,40 @@ impl HeadlessSurface {
     /// `D2D1_ALPHA_MODE_IGNORE` (required for DC render targets), so the
     /// DIB's alpha byte never carries meaningful coverage data.
     ///
+    /// Off Windows this can't reach a real DIB at all (see the module
+    /// doc), so it always reports opaque black rather than panicking —
+    /// nothing off Windows calls this on a real assertion path today, but
+    /// unlike `.expect()`ing a constructor, an infallible reader has no
+    /// natural `Err` to return instead.
+    ///
     /// # Panics
     ///
-    /// If `x >= width` or `y >= height` for the size this surface was
-    /// created with.
+    /// On Windows, if `x >= width` or `y >= height` for the size this
+    /// surface was created with.
     pub fn pixel_at(&self, x: u32, y: u32) -> Color {
-        assert!(
-            x < self.width && y < self.height,
-            "pixel_at({x}, {y}) out of bounds for a {}x{} surface",
-            self.width,
-            self.height
-        );
-        // BGRA in memory (DXGI_FORMAT_B8G8R8A8_UNORM), 4 bytes/pixel,
-        // top-down rows (see the negative `biHeight` above).
-        let offset = (y as isize * self.width as isize + x as isize) * 4;
-        unsafe {
-            let px = self.bits.offset(offset);
-            let b = *px;
-            let g = *px.add(1);
-            let r = *px.add(2);
-            Color::rgb(r, g, b)
+        #[cfg(target_os = "windows")]
+        {
+            assert!(
+                x < self.width && y < self.height,
+                "pixel_at({x}, {y}) out of bounds for a {}x{} surface",
+                self.width,
+                self.height
+            );
+            // BGRA in memory (DXGI_FORMAT_B8G8R8A8_UNORM), 4 bytes/pixel,
+            // top-down rows (see the negative `biHeight` above).
+            let offset = (y as isize * self.width as isize + x as isize) * 4;
+            unsafe {
+                let px = self.bits.offset(offset);
+                let b = *px;
+                let g = *px.add(1);
+                let r = *px.add(2);
+                Color::rgb(r, g, b)
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (x, y);
+            Color::rgb(0, 0, 0)
         }
     }
 }
@@ -256,7 +366,10 @@ impl Drop for HeadlessSurface {
         // `target`/`factory` release themselves via `windows-rs`'s
         // `Drop`/`Release` machinery; the raw GDI handles below don't and
         // must be torn down explicitly, mirroring the cleanup already
-        // done on `Self::new`'s error paths.
+        // done on `Self::new`'s error paths. Off Windows `Self::new`
+        // never returns `Ok`, so there is nothing to release — see the
+        // module doc.
+        #[cfg(target_os = "windows")]
         unsafe {
             let _ = DeleteObject(self.bitmap.into());
             let _ = DeleteDC(self.hdc);
@@ -264,6 +377,7 @@ impl Drop for HeadlessSurface {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
     D2D1_COLOR_F {
         r: color.r as f32 / 255.0,
@@ -368,6 +482,11 @@ impl<A: AppLogic> WinDriver<A> {
     /// test environment rather than a condition tests should recover
     /// from — same posture `HeadlessSurface`'s own doctest/unit tests
     /// take with `.expect(..)`.
+    ///
+    /// Off Windows, [`HeadlessSurface::new`] always errs (see its doc),
+    /// so this **always** panics if actually called there — see this
+    /// module's doc for why every real call site is itself gated to
+    /// `target_os = "windows"`, making that unreachable in practice.
     pub fn new(app: A, width: u32, height: u32) -> Self {
         let surface = HeadlessSurface::new(width, height)
             .expect("WinDriver::new: create offscreen Direct2D DC render target");
@@ -378,6 +497,12 @@ impl<A: AppLogic> WinDriver<A> {
         // production, mirrors `GtkBackend::set_painted_text_recording` /
         // `MacBackend::set_painted_text_recording` (quadraui#721).
         backend.set_painted_text_recording(true);
+        // `attach_headless` (like `HeadlessSurface::target`) takes/returns
+        // Windows-only types and so is itself whole-function
+        // `target_os = "windows"`-gated in `backend.rs` — off Windows
+        // there is nothing to attach to (`surface` above is already a
+        // `HeadlessSurfaceUnavailable` panic by this point in practice).
+        #[cfg(target_os = "windows")]
         backend
             .attach_headless(surface.target().clone(), width, height)
             .expect("WinDriver::new: attach headless surface to WinBackend");
@@ -401,8 +526,13 @@ impl<A: AppLogic> WinDriver<A> {
     /// lost / `D2DERR_RECREATE_TARGET`) stayed `None` forever in a
     /// headless driver, since nothing else in this type's call path ever
     /// recreated it — the exact gap that made the render-target recovery
-    /// path unreachable from a test.
+    /// path unreachable from a test. `ensure_surface` is itself
+    /// Windows-only (same reasoning as `attach_headless` in [`Self::new`]),
+    /// so it's skipped off Windows — [`render_frame`] below still
+    /// type-checks and runs there, painting nothing, same as it would on
+    /// a `WinBackend` with no surface attached at all.
     pub fn render(&mut self) {
+        #[cfg(target_os = "windows")]
         let _ = self.core.backend_mut().ensure_surface();
         let viewport = Viewport::new(self.width as f32, self.height as f32, 1.0);
         let (backend, app) = self.core.parts_mut();
@@ -431,6 +561,7 @@ impl<A: AppLogic> WinDriver<A> {
     fn apply_outcome(&mut self, outcome: EventOutcome) -> Reaction {
         let viewport = Viewport::new(self.width as f32, self.height as f32, 1.0);
         self.core.apply_outcome(outcome, |backend, app| {
+            #[cfg(target_os = "windows")]
             let _ = backend.ensure_surface();
             render_frame(backend, app, viewport);
         })
@@ -729,8 +860,20 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
 
 #[cfg(test)]
 mod tests {
+    // Every test in this module (and `StatusBarApp` below) exercises a
+    // real `HeadlessSurface`/`WinBackend` paint, which is a guaranteed
+    // panic off Windows (`HeadlessSurface::new` always errs there — see
+    // the module doc's "`feature = "win"` alone" section). Each one is
+    // individually `#[cfg(target_os = "windows")]`-gated rather than
+    // gating this whole `mod tests`, mirroring `backend.rs`'s
+    // `mod tests` precedent — a future pure-Rust-logic test belongs in
+    // this same module, ungated. That leaves this import with no user at
+    // all off Windows (every name it brings in is only referenced from
+    // `target_os = "windows"`-gated items below), hence the `allow`.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_imports))]
     use super::*;
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn fills_a_solid_rect_and_reads_the_pixel_back() {
         let surface = HeadlessSurface::new(64, 64).expect("create headless surface");
@@ -742,6 +885,7 @@ mod tests {
         assert_eq!((center.r, center.g, center.b), (200, 40, 40));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn a_rect_that_does_not_cover_the_whole_surface_leaves_the_rest_cleared() {
         let surface = HeadlessSurface::new(32, 32).expect("create headless surface");
@@ -771,9 +915,12 @@ mod tests {
     /// non-empty, after a real `WinBackend::draw_status_bar` paint
     /// (`super::status_bar::draw_status_bar`, which paints through
     /// [`super::text::DWrite::draw_text_styled`] — the choke point this
-    /// module's recording hooks into).
+    /// module's recording hooks into). `target_os`-gated: its only use
+    /// site, below, is too (see this module's `mod tests` doc).
+    #[cfg(target_os = "windows")]
     struct StatusBarApp;
 
+    #[cfg(target_os = "windows")]
     impl AppLogic for StatusBarApp {
         type AreaId = ();
 
@@ -804,6 +951,7 @@ mod tests {
     /// `windows-latest` run is what `ci.yml`'s "Test (win feature, real
     /// Windows)" step covers — see `HeadlessSurface`'s module doc for why
     /// this needs no live `HWND`/GPU/display to be a faithful stand-in).
+    #[cfg(target_os = "windows")]
     #[test]
     fn find_locates_a_status_bar_segment_after_paint() {
         let driver = WinDriver::new(StatusBarApp, 200, 20);
@@ -854,6 +1002,7 @@ mod tests {
     /// to reattach through and stayed a permanent no-op — the recovered
     /// frame below painted nothing (`pixel_at` stayed the frame-1 clear
     /// colour) instead of the frame-1 divider colour.
+    #[cfg(target_os = "windows")]
     #[test]
     fn end_frame_recovers_the_next_frame_after_a_forced_end_draw_failure() {
         use windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U;
@@ -992,6 +1141,7 @@ mod tests {
     /// test can drive. This is the closest reachable seam; see
     /// `render_frame`'s "Panic safety" doc for why catching one level
     /// below the C boundary is still a correct fix.
+    #[cfg(target_os = "windows")]
     #[test]
     fn render_frame_survives_a_panicking_app_render_and_the_next_frame_still_paints() {
         const W: u32 = 32;

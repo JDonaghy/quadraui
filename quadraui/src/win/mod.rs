@@ -182,9 +182,16 @@ mod terminal;
 /// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
 /// a primitive and read pixels back with no `HWND`, display, or GPU.
 /// `pub` (like [`crate::tui::testing`] / [`crate::gtk::testing`]) rather
-/// than `pub(crate)` — see its module docs for why. Windows-only in full,
-/// same reasoning as `text` below.
-#[cfg(target_os = "windows")]
+/// than `pub(crate)` — see its module docs for why.
+///
+/// `feature = "win"` alone (issue #1038) — **not** `target_os = "windows"`
+/// — mirrors `backend`/`run`/`shell_runner` above: every real Direct2D/GDI
+/// call inside is individually `cfg(target_os = "windows")`-gated with a
+/// non-functional fallback everywhere else, so `WinDriver`/
+/// `driver_with_shell`/`ConformanceDriver for WinDriver` type-check on an
+/// ordinary Linux host — see this module's own doc for why that matters
+/// to `vimcode`'s `quadraui::testing::ConformanceDriver` adoption
+/// (`JDonaghy/vimcode#928`).
 pub mod testing;
 /// DirectWrite text infrastructure — factory + text-format creation,
 /// font-metrics measurement, and Direct2D text painting (#21). Windows-only

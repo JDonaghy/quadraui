@@ -209,14 +209,18 @@ impl runner::DriverFactory for MacFactory {
     }
 }
 
-// Win-GUI: `feature = "win"` alone compiles `quadraui::win` (its real
-// WinAPI calls internally `cfg(target_os = "windows")`-gate to a `todo!()`
-// fallback elsewhere — see `Cargo.toml`'s `win` feature comment), but
-// `win::testing` — and therefore `WinDriver` — only exists on
-// `target_os = "windows"` itself (real Direct2D/GDI calls with no
-// meaningful non-Windows fallback), so this registration is inert on every
-// leg but `ci.yml`'s `windows-latest` one, where `Test (win feature, real
-// Windows)` runs `cargo test -p quadraui --features win` on a real host.
+// Win-GUI: `feature = "win"` alone compiles `quadraui::win`, `win::testing`
+// included (issue #1038) — every real WinAPI/Direct2D call inside
+// individually `cfg(target_os = "windows")`-gates to a non-functional
+// fallback elsewhere, so `WinDriver::new_fixture` type-checks here on
+// Linux too. This registration is still gated to
+// `target_os = "windows"` (not just `feature = "win"`) because it is
+// this *test* — not the type-check — that needs a real Direct2D surface
+// to produce anything but an immediate panic (`HeadlessSurface::new`
+// always errs off Windows — see that type's doc), so it stays inert on
+// every leg but `ci.yml`'s `windows-latest` one, where `Test (win
+// feature, real Windows)` runs `cargo test -p quadraui --features win`
+// on a real host.
 //
 // It registers **burn-down, not blocking** (see `runner::Gating`): that
 // Windows leg is blocking since #674, and `WinBackend` has no
