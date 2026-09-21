@@ -210,9 +210,21 @@ impl<A: AppLogic> TuiDriver<A> {
     }
 
     /// Repaint one frame through the shared production render path.
+    ///
+    /// Consumes any pending [`crate::Backend::request_full_repaint`]
+    /// request (issue #1037) the same way the live runner's
+    /// `tui::run::run_inner` frame loop does — `Terminal::clear()` before
+    /// this frame's `render_frame` call — so a driver test can exercise
+    /// the same "next frame paints as if blank" behaviour a real terminal
+    /// session gets, with no real terminal to observe the clear on
+    /// directly.
     pub fn render(&mut self) {
+        let full_repaint = self.core.backend_mut().take_full_repaint_requested();
         let (backend, app) = self.core.parts_mut();
         let mut terminal = self.terminal.borrow_mut();
+        if full_repaint {
+            terminal.clear().expect("TestBackend clear is infallible");
+        }
         render_frame(&mut terminal, backend, app).expect("TestBackend render is infallible");
     }
 
@@ -923,6 +935,47 @@ mod tests {
         fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
             Reaction::Continue
         }
+    }
+
+    /// App that requests a full repaint (issue #1037) whenever it handles
+    /// a key press, and otherwise does nothing.
+    struct FullRepaintRequester;
+
+    impl AppLogic for FullRepaintRequester {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            if matches!(event, UiEvent::KeyPressed { .. }) {
+                backend.request_full_repaint();
+                return Reaction::Redraw;
+            }
+            Reaction::Continue
+        }
+    }
+
+    /// Issue #1037: `TuiDriver::dispatch` routes through [`TuiDriver::render`]
+    /// on a `Redraw` reaction, exactly like the live runner's frame loop —
+    /// so a `Backend::request_full_repaint` call made from `handle` must be
+    /// consumed by that same `render` call, not left pending. Verified
+    /// indirectly: if `render` had consumed it, a direct
+    /// `take_full_repaint_requested` call made *after* the dispatch
+    /// returns `false` (already cleared); if `render` never consulted it
+    /// at all, that same call would still see the original `true` and
+    /// this assertion would fail.
+    #[test]
+    fn dispatch_consumes_a_pending_full_repaint_request_via_render() {
+        let mut driver = TuiDriver::new(FullRepaintRequester, 20, 5);
+
+        let reaction = driver.press(Key::Named(NamedKey::Enter));
+        assert_eq!(reaction, Reaction::Redraw);
+
+        assert!(
+            !driver.core.backend_mut().take_full_repaint_requested(),
+            "TuiDriver::render must consume the pending full-repaint \
+             request during the redraw `dispatch` already triggered"
+        );
     }
 
     /// `setup()` must observe the driver's real terminal dimensions, not

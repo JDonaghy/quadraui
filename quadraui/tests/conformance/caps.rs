@@ -410,6 +410,36 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "no concrete BackendError producer yet — Cocoa/CoreGraphics failures aren't wired to \
          this channel",
     ),
+    // ── GTK, macOS, Win: `request_full_repaint` (issue #1037) exists to
+    // discard an incremental-diff cache that can desync from the physical
+    // display — TUI's problem, because `ratatui::Terminal` tracks a
+    // `Buffer` it diffs against the real terminal's actual contents,
+    // which a PTY write / resize race / popup dismissal can silently
+    // invalidate. None of these three backends has an equivalent cache:
+    // each repaints its entire surface from scratch on every single
+    // frame (GTK's `DrawingArea` via Cairo, macOS's `drawRect:` via Core
+    // Graphics, Win's `BeginDraw`/`EndDraw` via Direct2D) — there is
+    // nothing for a stale-diff bug to hide in, so the no-op default
+    // answers exactly like the method doesn't exist, per
+    // `Backend::request_full_repaint`'s own doc.
+    (
+        "gtk",
+        "request_full_repaint",
+        "Cairo repaints the DrawingArea in full every frame — no incremental diff cache to \
+         desync, so the no-op default is correct, not unfinished work (quadraui#1037)",
+    ),
+    (
+        "macos",
+        "request_full_repaint",
+        "Core Graphics repaints the whole view from `drawRect:` every frame — no incremental \
+         diff cache to desync, so the no-op default is correct (quadraui#1037)",
+    ),
+    (
+        "win",
+        "request_full_repaint",
+        "Direct2D repaints the whole render target between `BeginDraw`/`EndDraw` every frame — \
+         no incremental diff cache to desync, so the no-op default is correct (quadraui#1037)",
+    ),
     // ── TUI: a fixed-cell backend, so the font-shaped methods have no
     // meaning rather than being unfinished. `set_editor_font`/`set_ui_font`
     // are no longer here (#1023): both are now covered by
