@@ -134,10 +134,23 @@ pub fn crossterm_mouse_to_uievent(event: MouseEvent) -> Option<UiEvent> {
 /// puts a click 8-20x too far right/down on a typical terminal) — callers
 /// must gate `cell_size` on [`super::backend::TuiBackend::sgr_pixel_mouse`]
 /// being `true`, never guess.
+///
+/// A degenerate `cell_size` (`width`/`height` `<= 0.0` — a value this
+/// crate's own runner never produces, since its live pixel-size query
+/// already refuses to report one, but this function is `pub` and reachable
+/// directly) falls back to the identity cell size rather than dividing by
+/// zero and handing the caller an `inf`/`NaN` coordinate — mirroring
+/// [`crate::primitives::terminal::TerminalLayout::hit_test`]'s own
+/// zero-guard on the same [`TerminalCellSize`] type.
 pub fn crossterm_mouse_to_uievent_scaled(
     event: MouseEvent,
     cell_size: TerminalCellSize,
 ) -> Option<UiEvent> {
+    let cell_size = if cell_size.width <= 0.0 || cell_size.height <= 0.0 {
+        UNSCALED_CELL
+    } else {
+        cell_size
+    };
     let x = event.column as f32 / cell_size.width;
     let y = event.row as f32 / cell_size.height;
     let modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
@@ -678,6 +691,31 @@ mod tests {
             "pixel-mode division must yield several distinct positions across one cell's \
              worth of pixel travel, got {pixel_mode_xs:?}"
         );
+    }
+
+    /// A degenerate `cell_size` (zero or negative width/height — never
+    /// produced by this crate's own runner, but reachable through this
+    /// `pub` function directly) must fall back to the identity cell size
+    /// instead of dividing by zero and handing the caller an `inf`/`NaN`
+    /// coordinate (quadraui#1048 review).
+    #[test]
+    fn degenerate_cell_size_falls_back_to_identity_instead_of_producing_nan() {
+        let raw = mouse(MouseEventKind::Down(CtMouseButton::Left), 37, 21);
+        for degenerate in [
+            TerminalCellSize::new(0.0, 0.0),
+            TerminalCellSize::new(-1.0, 1.0),
+            TerminalCellSize::new(1.0, -1.0),
+        ] {
+            let ev = crossterm_mouse_to_uievent_scaled(raw, degenerate).unwrap();
+            match ev {
+                UiEvent::MouseDown { position, .. } => {
+                    assert!(position.x.is_finite() && position.y.is_finite());
+                    assert_eq!(position.x, 37.0);
+                    assert_eq!(position.y, 21.0);
+                }
+                other => panic!("unexpected variant: {:?}", other),
+            }
+        }
     }
 
     #[test]

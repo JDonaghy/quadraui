@@ -163,8 +163,15 @@ impl TerminalCell {
 // them.
 
 /// Cell dimensions supplied by the backend. TUI passes `(1.0, 1.0)`
-/// (char-cell units); native backends pass the font's advance width
-/// and line height.
+/// (char-cell units) for this embedded [`Terminal`] primitive's own layout;
+/// native backends pass the font's advance width and line height.
+///
+/// Reused for a second, distinct purpose (quadraui#1048): outside this
+/// primitive, [`crate::tui::backend::TuiBackend::cell_pixel_size`] carries
+/// the *real* pixel size of a terminal cell — genuinely non-identity on TUI
+/// — so SGR-Pixels mouse reports (`?1016h`) can be divided back into
+/// fractional cell coordinates. Don't assume `(1.0, 1.0)` from this doc
+/// alone when reading code that touches that field.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalCellSize {
     pub width: f32,

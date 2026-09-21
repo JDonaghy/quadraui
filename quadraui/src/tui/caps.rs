@@ -253,26 +253,20 @@ pub fn detect_sgr_pixel_mouse() -> bool {
 /// The pure decision behind [`detect_sgr_pixel_mouse`], parameterised over
 /// an environment lookup for the same reason as [`detect_color_depth_from`].
 ///
-/// The multiplexer check runs *first* and short-circuits to `false`
-/// regardless of any other signal — including a positive one, so
-/// `TERM_PROGRAM=WezTerm` behind `$TMUX` still answers `false`. Without that
-/// ordering, a terminal identity signal the outer terminal sets
-/// unconditionally (the same reasoning [`detect_kitty_keyboard_from`]'s doc
-/// gives for `KITTY_WINDOW_ID` surviving a rewritten `TERM`) would be
-/// wrongly inferred *through* a multiplexer that does not forward the mode
-/// at all.
+/// The multiplexer check ([`sgr_pixel_mouse_blocked_by_multiplexer_from`])
+/// runs *first* and short-circuits to `false` regardless of any other
+/// signal — including a positive one, so `TERM_PROGRAM=WezTerm` behind
+/// `$TMUX` still answers `false`. Without that ordering, a terminal identity
+/// signal the outer terminal sets unconditionally (the same reasoning
+/// [`detect_kitty_keyboard_from`]'s doc gives for `KITTY_WINDOW_ID`
+/// surviving a rewritten `TERM`) would be wrongly inferred *through* a
+/// multiplexer that does not forward the mode at all.
 pub(crate) fn detect_sgr_pixel_mouse_from(getenv: impl Fn(&str) -> Option<String>) -> bool {
-    if getenv("TMUX").is_some() {
+    if sgr_pixel_mouse_blocked_by_multiplexer_from(&getenv) {
         return false;
     }
-    if let Some(term) = getenv("TERM") {
-        let term = term.to_ascii_lowercase();
-        if term.starts_with("screen") || term.starts_with("tmux") {
-            return false;
-        }
-    }
-    if let Some(term) = getenv("TERM") {
-        let term = term.to_ascii_lowercase();
+    let term = getenv("TERM").map(|t| t.to_ascii_lowercase());
+    if let Some(term) = &term {
         if term.starts_with("foot") || term.starts_with("contour") {
             return true;
         }
@@ -284,6 +278,40 @@ pub(crate) fn detect_sgr_pixel_mouse_from(getenv: impl Fn(&str) -> Option<String
         return true;
     }
     false
+}
+
+/// Whether the environment identifies a multiplexer session known not to
+/// forward SGR-Pixels mouse reports at all: `$TMUX` set, or `TERM` starting
+/// with `screen`/`tmux`. Extracted out of [`detect_sgr_pixel_mouse_from`] so
+/// [`super::run::run_with`] can skip [`probe_sgr_pixel_mouse`]'s live
+/// DECRQM round trip entirely in this case (quadraui#1048 review) — a
+/// multiplexer that doesn't forward the mode will never answer the query
+/// usefully, so the up-to-2s wait for a reply that never comes only stacks
+/// startup latency on top of the kitty-keyboard probe's own up-to-2s wait,
+/// and (per the module doc's `query_sgr_pixel_decrqm` note) leaves that same
+/// window open for a real keystroke to be read and discarded as a candidate
+/// probe reply. This check alone is *not* a positive detector — see
+/// [`detect_sgr_pixel_mouse_from`] for the terminals it still runs the live
+/// probe against.
+pub(crate) fn sgr_pixel_mouse_blocked_by_multiplexer_from(
+    getenv: impl Fn(&str) -> Option<String>,
+) -> bool {
+    if getenv("TMUX").is_some() {
+        return true;
+    }
+    if let Some(term) = getenv("TERM") {
+        let term = term.to_ascii_lowercase();
+        if term.starts_with("screen") || term.starts_with("tmux") {
+            return true;
+        }
+    }
+    false
+}
+
+/// The real-environment-backed wrapper around
+/// [`sgr_pixel_mouse_blocked_by_multiplexer_from`] — see that function's doc.
+pub(crate) fn sgr_pixel_mouse_blocked_by_multiplexer() -> bool {
+    sgr_pixel_mouse_blocked_by_multiplexer_from(|key| std::env::var(key).ok())
 }
 
 /// Parse a DECRQM report reply (`CSI ? Pd ; Ps $ y`) for mode 1016, in
@@ -672,6 +700,45 @@ mod tests {
             ("TERM_PROGRAM", "WezTerm"),
             ("TMUX", "/tmp/tmux-1000/default,1234,0"),
         ])));
+    }
+
+    // ── SGR-Pixels probe gating (quadraui#1048 review) ──────────────────
+
+    #[test]
+    fn tmux_env_var_blocks_the_live_probe() {
+        assert!(sgr_pixel_mouse_blocked_by_multiplexer_from(env(&[(
+            "TMUX",
+            "/tmp/tmux-1000/default,1234,0"
+        )])));
+    }
+
+    #[test]
+    fn screen_term_blocks_the_live_probe() {
+        assert!(sgr_pixel_mouse_blocked_by_multiplexer_from(env(&[(
+            "TERM",
+            "screen-256color"
+        )])));
+    }
+
+    #[test]
+    fn tmux_term_blocks_the_live_probe() {
+        assert!(sgr_pixel_mouse_blocked_by_multiplexer_from(env(&[(
+            "TERM",
+            "tmux-256color"
+        )])));
+    }
+
+    /// A terminal with none of the multiplexer signals must not have the
+    /// live probe blocked, even one this crate's heuristic doesn't
+    /// otherwise recognise — the probe, not the heuristic, is what answers
+    /// for unrecognised-but-genuinely-supporting terminals.
+    #[test]
+    fn unrecognised_terminal_does_not_block_the_live_probe() {
+        assert!(!sgr_pixel_mouse_blocked_by_multiplexer_from(env(&[(
+            "TERM",
+            "xterm-256color"
+        )])));
+        assert!(!sgr_pixel_mouse_blocked_by_multiplexer_from(env(&[])));
     }
 
     // ── DECRQM reply parsing (quadraui#1048) ────────────────────────────
