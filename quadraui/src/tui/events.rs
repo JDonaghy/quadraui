@@ -35,13 +35,27 @@
 //!   trait-side dispatch fills that in via the modal stack and per-
 //!   primitive layout hit_test.
 
-use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, UiEvent};
+use crate::{ButtonMask, Key, Modifiers, MouseButton, NamedKey, TerminalCellSize, UiEvent};
 use ratatui::crossterm::event::{
     Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton as CtMouseButton,
     MouseEvent, MouseEventKind,
 };
 
-/// Translate one crossterm event to zero or more quadraui events.
+/// The identity cell size — dividing by this leaves `event.column`/`.row`
+/// unchanged, so [`crossterm_mouse_to_uievent`] and [`crossterm_to_uievents`]
+/// delegating to their `_scaled` sibling with this value is exactly
+/// today's cell-quantised behaviour (quadraui#1048).
+const UNSCALED_CELL: TerminalCellSize = TerminalCellSize {
+    width: 1.0,
+    height: 1.0,
+};
+
+/// Translate one crossterm event to zero or more quadraui events, treating
+/// `event.column`/`.row` (mouse events only) as whole terminal cells — the
+/// behaviour every caller got before quadraui#1048. See
+/// [`crossterm_to_uievents_scaled`] for the SGR-Pixels-aware sibling that
+/// [`super::backend::TuiBackend::poll_events`]/`wait_events` actually call
+/// once a terminal has negotiated pixel-resolution mouse reporting.
 ///
 /// Single events translate one-to-one (Vec of length 1); some
 /// crossterm events have no quadraui equivalent and translate to
@@ -49,9 +63,19 @@ use ratatui::crossterm::event::{
 /// instead of `Option` keeps the door open for future
 /// composite events without a breaking change.
 pub fn crossterm_to_uievents(event: CtEvent) -> Vec<UiEvent> {
+    crossterm_to_uievents_scaled(event, UNSCALED_CELL)
+}
+
+/// Like [`crossterm_to_uievents`], but a mouse event's `column`/`row` are
+/// divided by `cell_size` before becoming a [`UiEvent`] `Point` — see
+/// [`crossterm_mouse_to_uievent_scaled`]'s doc for why this matters and
+/// when `cell_size` is anything other than [`UNSCALED_CELL`].
+pub fn crossterm_to_uievents_scaled(event: CtEvent, cell_size: TerminalCellSize) -> Vec<UiEvent> {
     match event {
         CtEvent::Key(k) => crossterm_key_to_uievent(k).into_iter().collect(),
-        CtEvent::Mouse(m) => crossterm_mouse_to_uievent(m).into_iter().collect(),
+        CtEvent::Mouse(m) => crossterm_mouse_to_uievent_scaled(m, cell_size)
+            .into_iter()
+            .collect(),
         CtEvent::Resize(w, h) => vec![crate::event::window_resized(w as f32, h as f32, 1.0)],
         CtEvent::Paste(text) => vec![UiEvent::ClipboardPaste(text)],
         CtEvent::FocusGained => vec![UiEvent::WindowFocused(true)],
@@ -76,10 +100,46 @@ pub fn crossterm_key_to_uievent(event: KeyEvent) -> Option<UiEvent> {
     })
 }
 
-/// Translate one crossterm mouse event.
+/// Translate one crossterm mouse event, treating `column`/`row` as whole
+/// terminal cells. Equivalent to
+/// `crossterm_mouse_to_uievent_scaled(event, UNSCALED_CELL)` — see that
+/// function's doc for the SGR-Pixels-aware (quadraui#1048) behaviour this
+/// leaves on the table.
 pub fn crossterm_mouse_to_uievent(event: MouseEvent) -> Option<UiEvent> {
-    let x = event.column as f32;
-    let y = event.row as f32;
+    crossterm_mouse_to_uievent_scaled(event, UNSCALED_CELL)
+}
+
+/// Translate one crossterm mouse event, dividing `column`/`row` by
+/// `cell_size` before they become a [`UiEvent`] `Point` (quadraui#1048).
+///
+/// `event.column`/`.row` are always plain integers — crossterm has no
+/// separate "pixel" mouse-event shape. What they *mean* depends entirely on
+/// which mouse-tracking mode the terminal is actually reporting in:
+///
+/// - In ordinary SGR mode (`?1006h`, what [`super::run::run`] always
+///   enables), they are cell indices, and `cell_size` should be
+///   [`UNSCALED_CELL`] (dividing by 1 is a no-op) — that's what
+///   [`crossterm_mouse_to_uievent`] does.
+/// - In SGR-Pixels mode (`?1016h`, negotiated by
+///   [`super::caps::probe_sgr_pixel_mouse`] and enabled by
+///   [`super::run::run`] only when that probe *and* a live pixel cell size
+///   both succeed — see that module's doc), they are pixel offsets, and
+///   `cell_size` must be the real [`TerminalCellSize`]
+///   [`super::backend::TuiBackend::cell_pixel_size`] reports, so this
+///   division recovers a fractional cell coordinate — exactly the sub-cell
+///   resolution this issue exists to deliver.
+///
+/// Passing the wrong `cell_size` for the mode the terminal is actually in
+/// is worse than not calling this at all (a pixel coordinate divided by 1
+/// puts a click 8-20x too far right/down on a typical terminal) — callers
+/// must gate `cell_size` on [`super::backend::TuiBackend::sgr_pixel_mouse`]
+/// being `true`, never guess.
+pub fn crossterm_mouse_to_uievent_scaled(
+    event: MouseEvent,
+    cell_size: TerminalCellSize,
+) -> Option<UiEvent> {
+    let x = event.column as f32 / cell_size.width;
+    let y = event.row as f32 / cell_size.height;
     let modifiers = crossterm_modifiers_to_quadraui(event.modifiers);
     match event.kind {
         MouseEventKind::Down(b) => Some(crate::event::mouse_down(
@@ -527,6 +587,97 @@ mod tests {
             UiEvent::Scroll { delta, .. } => assert_eq!(delta.y, -1.0),
             other => panic!("unexpected variant: {:?}", other),
         }
+    }
+
+    // ── SGR-Pixels sub-cell scaling (quadraui#1048) ─────────────────────────
+
+    /// Cell-mode regression: `crossterm_mouse_to_uievent` (the unscaled
+    /// entry point every pre-#1048 caller still uses) must be byte-identical
+    /// to dividing by `UNSCALED_CELL` — i.e. to today's behaviour, whole
+    /// cell indices straight through with no fractional component.
+    #[test]
+    fn unscaled_mouse_translation_is_byte_identical_to_scaled_with_unit_cell() {
+        let raw = mouse(MouseEventKind::Down(CtMouseButton::Left), 37, 21);
+        let unscaled = crossterm_mouse_to_uievent(raw);
+        let scaled = crossterm_mouse_to_uievent_scaled(raw, UNSCALED_CELL);
+        assert_eq!(unscaled, scaled);
+        match unscaled.unwrap() {
+            UiEvent::MouseDown { position, .. } => {
+                assert_eq!(position.x, 37.0);
+                assert_eq!(position.y, 21.0);
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    /// A real SGR-Pixels-mode terminal reports `column`/`row` in pixels;
+    /// dividing by a non-unit `cell_size` recovers a fractional cell
+    /// coordinate instead of quantising to the nearest whole cell.
+    #[test]
+    fn pixel_mode_scaling_produces_fractional_coordinates() {
+        let cell = TerminalCellSize::new(10.0, 20.0);
+        // Pixel column 25 / cell-width 10 = 2.5 cells; pixel row 13 /
+        // cell-height 20 = 0.65 cells.
+        let raw = mouse(MouseEventKind::Moved, 25, 13);
+        let ev = crossterm_mouse_to_uievent_scaled(raw, cell).unwrap();
+        match ev {
+            UiEvent::MouseMoved { position, .. } => {
+                assert_eq!(position.x, 2.5);
+                assert!((position.y - 0.65).abs() < f32::EPSILON);
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+
+    /// The whole point of pixel mode: a drag whose raw pixel columns all
+    /// quantise to the *same* terminal cell in cell-mode (so a cell-mode
+    /// caller would see one repeated position) resolves to several
+    /// distinct fractional positions once divided by the real cell size —
+    /// the sub-cell resolution a scrollbar/minimap drag needs
+    /// (quadraui#1048, vimcode#1271).
+    #[test]
+    fn pixel_mode_resolves_finer_than_a_single_cell() {
+        let cell = TerminalCellSize::new(10.0, 20.0);
+        // Four consecutive drag samples a pixel-mode terminal reports while
+        // the pointer crosses exactly one cell's worth (10px) of horizontal
+        // travel.
+        let raw_columns = [10u16, 13, 16, 19];
+
+        let pixel_mode_xs: Vec<f32> = raw_columns
+            .iter()
+            .map(|&col| {
+                let ev =
+                    crossterm_mouse_to_uievent_scaled(mouse(MouseEventKind::Moved, col, 0), cell)
+                        .unwrap();
+                match ev {
+                    UiEvent::MouseMoved { position, .. } => position.x,
+                    other => panic!("unexpected variant: {:?}", other),
+                }
+            })
+            .collect();
+
+        // What a cell-mode (non-pixel) terminal would have reported for the
+        // identical physical pointer travel: it only ever emits a whole
+        // cell index, so every one of these four samples floors to the same
+        // cell (10..=19 all floor-divide to cell 1 at a 10px cell width).
+        // Flooring the pixel-mode result reproduces that coarser reporting
+        // cadence without inventing a second, real cell-mode data source.
+        let mut cell_quantised: Vec<i32> = pixel_mode_xs.iter().map(|x| x.floor() as i32).collect();
+        cell_quantised.dedup();
+        assert_eq!(
+            cell_quantised.len(),
+            1,
+            "cell-quantised reporting of this same travel must collapse to one position, \
+             got {pixel_mode_xs:?}"
+        );
+
+        let mut distinct_pixel_mode: Vec<f32> = pixel_mode_xs.clone();
+        distinct_pixel_mode.dedup_by(|a, b| (*a - *b).abs() < f32::EPSILON);
+        assert!(
+            distinct_pixel_mode.len() > 1,
+            "pixel-mode division must yield several distinct positions across one cell's \
+             worth of pixel travel, got {pixel_mode_xs:?}"
+        );
     }
 
     #[test]

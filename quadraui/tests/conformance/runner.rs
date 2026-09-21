@@ -913,10 +913,11 @@ mod tests {
         // Written out exhaustively (no `..empty()`) so a new capability
         // field is a compile error here rather than quietly weakening
         // "maximally capable" to "capable of the fields that existed when
-        // this was written". `color_depth` and `kitty_keyboard` are not
-        // part of the bool vocabulary `names()`/`vocabulary()` draw from
-        // (see their doc comments on `BackendCaps`) — `TrueColor`/`true`
-        // here are just "some valid value", not a capability declaration.
+        // this was written". `color_depth`, `kitty_keyboard`, and
+        // `sgr_pixel_mouse` are not part of the bool vocabulary
+        // `names()`/`vocabulary()` draw from (see their doc comments on
+        // `BackendCaps`) — `TrueColor`/`true` here are just "some valid
+        // value", not a capability declaration.
         let every_cap = BackendCaps {
             mouse: true,
             scroll: true,
@@ -936,6 +937,7 @@ mod tests {
             generic_font_families: true,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: true,
+            sgr_pixel_mouse: true,
         };
         assert_eq!(
             every_cap.names(),

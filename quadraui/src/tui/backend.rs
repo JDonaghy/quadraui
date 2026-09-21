@@ -55,7 +55,8 @@ use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, Color, CommandLine,
     DragState, DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
     PlatformServices, Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome,
-    TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    TabFrame, Terminal as TerminalPrim, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport,
+    WidgetId,
 };
 // `KeyBinding` is only referenced by `#[cfg(test)]` code below (the rest of
 // this file matches already-parsed `Accelerator`s) — gate the import the
@@ -233,6 +234,32 @@ pub struct TuiBackend {
     /// folded into the bool-capability vocabulary. Read via
     /// [`Self::mouse_enabled`].
     mouse_enabled: bool,
+    /// Whether SGR-Pixels mouse mode (`?1016h`) is actually active for this
+    /// session (quadraui#1048) — seeded from
+    /// [`super::caps::detect_sgr_pixel_mouse`]'s cheap environment
+    /// heuristic at construction time, then overwritten by
+    /// [`super::run::run_with`] via [`Self::set_sgr_pixel_mouse`] once it
+    /// has [`super::caps::probe_sgr_pixel_mouse`]'s live, authoritative
+    /// answer *and* a usable [`Self::cell_pixel_size`] — see that method's
+    /// doc for why both are required, not just the probe. Exposed to apps
+    /// via [`crate::backend::BackendCaps::sgr_pixel_mouse`]; same
+    /// runtime-detected-terminal-property exemption from the bool
+    /// capability vocabulary as [`Self::kitty_keyboard`] (see that field's
+    /// doc).
+    sgr_pixel_mouse: bool,
+    /// The pixel size of one terminal cell, used to divide a SGR-Pixels
+    /// mouse report's raw pixel `column`/`row` back into a fractional cell
+    /// coordinate (quadraui#1048) — see
+    /// [`super::events::crossterm_mouse_to_uievent_scaled`]. Defaults to
+    /// `TerminalCellSize::new(1.0, 1.0)`, the identity divisor that keeps
+    /// every coordinate byte-identical to cell-mode's whole-cell values
+    /// when [`Self::sgr_pixel_mouse`] is `false` (the overwhelmingly common
+    /// case — most terminals don't advertise mode 1016 at all).
+    /// [`super::run::run_with`] overwrites this once at startup (from a
+    /// real `window_size()` query) and again on every `Event::Resize`, since
+    /// a font-size change alters the cell's pixel dimensions without
+    /// changing the grid's row/column count.
+    cell_pixel_size: TerminalCellSize,
     /// Single owner of keyboard focus (issue #830) — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
@@ -307,6 +334,8 @@ impl TuiBackend {
             color_depth: super::caps::detect_color_depth(),
             kitty_keyboard: super::caps::detect_kitty_keyboard(),
             mouse_enabled: true,
+            sgr_pixel_mouse: super::caps::detect_sgr_pixel_mouse(),
+            cell_pixel_size: TerminalCellSize::new(1.0, 1.0),
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
@@ -457,6 +486,42 @@ impl TuiBackend {
     /// without a real terminal.
     pub fn set_mouse_enabled(&mut self, enabled: bool) {
         self.mouse_enabled = enabled;
+    }
+
+    /// Whether SGR-Pixels mouse mode is actually active this session — see
+    /// [`crate::backend::BackendCaps::sgr_pixel_mouse`] and
+    /// [`Self::set_sgr_pixel_mouse`].
+    pub fn sgr_pixel_mouse(&self) -> bool {
+        self.sgr_pixel_mouse
+    }
+
+    /// Override the SGR-Pixels-mouse-mode flag. [`super::run::run_with`]
+    /// calls this once at startup with the combined answer of
+    /// [`super::caps::probe_sgr_pixel_mouse`] *and* a successfully-resolved
+    /// [`Self::cell_pixel_size`] — a live-supporting terminal whose pixel
+    /// cell size can't be determined must still land on `false` here (see
+    /// that run site's doc for why). Also the hook a test uses to pin the
+    /// value without a real terminal.
+    pub fn set_sgr_pixel_mouse(&mut self, enabled: bool) {
+        self.sgr_pixel_mouse = enabled;
+    }
+
+    /// The pixel size of one terminal cell — see [`Self::set_cell_pixel_size`].
+    /// Only meaningful (as an actual pixel measurement, not the identity
+    /// divisor) when [`Self::sgr_pixel_mouse`] is `true`.
+    pub fn cell_pixel_size(&self) -> TerminalCellSize {
+        self.cell_pixel_size
+    }
+
+    /// Override the cell pixel size used to scale SGR-Pixels mouse reports
+    /// back into fractional cell coordinates (quadraui#1048). [`super::run::run_with`]
+    /// calls this from a real `window_size()` query at startup and again on
+    /// every settled `Event::Resize` (a font-size change alters pixel
+    /// dimensions without changing the grid's row/column count). Also the
+    /// hook a test uses to exercise pixel-mode scaling without a real
+    /// terminal.
+    pub fn set_cell_pixel_size(&mut self, size: TerminalCellSize) {
+        self.cell_pixel_size = size;
     }
 
     /// Enter the frame-scope: stash the `&mut Frame<'_>` pointer for
@@ -1046,7 +1111,12 @@ fn q_rect_to_ratatui(r: QRect) -> Rect {
 /// the run is left untouched as ordinary keystrokes.
 ///
 /// See [`recover_leaked_sgr_mouse_fragments`] for why this exists at all.
-fn try_reassemble_sgr_mouse(events: &[UiEvent]) -> Option<(usize, UiEvent)> {
+/// `cell_size` is forwarded verbatim to [`decode_sgr_mouse_report`] — see
+/// that function's doc (quadraui#1048).
+fn try_reassemble_sgr_mouse(
+    events: &[UiEvent],
+    cell_size: TerminalCellSize,
+) -> Option<(usize, UiEvent)> {
     let UiEvent::KeyPressed {
         key: crate::Key::Char('<'),
         repeat: false,
@@ -1092,13 +1162,19 @@ fn try_reassemble_sgr_mouse(events: &[UiEvent]) -> Option<(usize, UiEvent)> {
         return None;
     }
 
-    let event = decode_sgr_mouse_report(cb, x, y, terminator == 'm')?;
+    let event = decode_sgr_mouse_report(cb, x, y, terminator == 'm', cell_size)?;
     Some((consumed, event))
 }
 
 /// Decode one already-parsed `Cb ; Cx ; Cy` SGR mouse triple into a
 /// [`UiEvent`], via the same crossterm plumbing a well-formed escape
-/// sequence would have used ([`super::events::crossterm_mouse_to_uievent`]).
+/// sequence would have used
+/// ([`super::events::crossterm_mouse_to_uievent_scaled`]). `cell_size`
+/// should be [`Self::cell_pixel_size`](TuiBackend::cell_pixel_size) when
+/// this recovery path fires on a session with SGR-Pixels mode active
+/// (quadraui#1048), or the identity `TerminalCellSize::new(1.0, 1.0)`
+/// otherwise — this recovery path decodes raw `Cx`/`Cy` exactly as
+/// received, whichever unit the terminal is actually reporting in.
 ///
 /// The `Cb` bit layout replicated here (button number in bits 0–1 and
 /// 6–7, drag flag in bit 5, modifiers in bits 2–4) is xterm's public SGR
@@ -1106,7 +1182,13 @@ fn try_reassemble_sgr_mouse(events: &[UiEvent]) -> Option<(usize, UiEvent)> {
 /// <http://www.xfree86.org/current/ctlseqs.html#Mouse%20Tracking> — so
 /// this mirrors crossterm's own (private) `parse_cb` deliberately rather
 /// than reusing it.
-fn decode_sgr_mouse_report(cb: u16, x: u16, y: u16, is_release: bool) -> Option<UiEvent> {
+fn decode_sgr_mouse_report(
+    cb: u16,
+    x: u16,
+    y: u16,
+    is_release: bool,
+    cell_size: TerminalCellSize,
+) -> Option<UiEvent> {
     use ratatui::crossterm::event::{
         KeyModifiers, MouseButton as CtMouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
     };
@@ -1151,12 +1233,15 @@ fn decode_sgr_mouse_report(cb: u16, x: u16, y: u16, is_release: bool) -> Option<
         kind
     };
 
-    super::events::crossterm_mouse_to_uievent(CtMouseEvent {
-        kind,
-        column: x.saturating_sub(1),
-        row: y.saturating_sub(1),
-        modifiers,
-    })
+    super::events::crossterm_mouse_to_uievent_scaled(
+        CtMouseEvent {
+            kind,
+            column: x.saturating_sub(1),
+            row: y.saturating_sub(1),
+            modifiers,
+        },
+        cell_size,
+    )
 }
 
 /// Recover an SGR mouse escape sequence that leaked into individual
@@ -1189,7 +1274,15 @@ fn decode_sgr_mouse_report(cb: u16, x: u16, y: u16, is_release: bool) -> Option<
 /// [`coalesce_mouse_moved`] and [`TuiBackend::apply_dispatch`] ever see
 /// it, so a recovered event flows through the exact same pipeline a
 /// cleanly decoded one would.
-fn recover_leaked_sgr_mouse_fragments(events: Vec<UiEvent>) -> Vec<UiEvent> {
+///
+/// `cell_size` is forwarded to [`try_reassemble_sgr_mouse`]/
+/// [`decode_sgr_mouse_report`] (quadraui#1048) — pass
+/// [`TuiBackend::cell_pixel_size`] so a leaked SGR-Pixels report recovers to
+/// the same fractional coordinate a cleanly decoded one would have.
+fn recover_leaked_sgr_mouse_fragments(
+    events: Vec<UiEvent>,
+    cell_size: TerminalCellSize,
+) -> Vec<UiEvent> {
     let mut out = Vec::with_capacity(events.len());
     let mut i = 0;
     while i < events.len() {
@@ -1202,7 +1295,8 @@ fn recover_leaked_sgr_mouse_fragments(events: Vec<UiEvent>) -> Vec<UiEvent> {
             }
         );
         if opens_escape {
-            if let Some((consumed, mouse_event)) = try_reassemble_sgr_mouse(&events[i..]) {
+            if let Some((consumed, mouse_event)) = try_reassemble_sgr_mouse(&events[i..], cell_size)
+            {
                 out.push(mouse_event);
                 i += consumed;
                 continue;
@@ -1328,14 +1422,20 @@ impl Backend for TuiBackend {
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain every queued crossterm event; never blocks. Each
         // native event translates to zero, one, or more `UiEvent`s
-        // via [`super::events::crossterm_to_uievents`], then runs
-        // through the dispatch layer (text-region hit-test, drag state)
-        // and [`Self::apply_accelerators`].  Consecutive `MouseMoved`
-        // events are coalesced to the final position before dispatch.
+        // via [`super::events::crossterm_to_uievents_scaled`] (dividing a
+        // mouse report's raw `column`/`row` by `self.cell_pixel_size` —
+        // the identity divisor unless SGR-Pixels mode is active,
+        // quadraui#1048), then runs through the dispatch layer
+        // (text-region hit-test, drag state) and
+        // [`Self::apply_accelerators`].  Consecutive `MouseMoved` events
+        // are coalesced to the final position before dispatch.
         let mut raw = Vec::new();
         while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
             match ratatui::crossterm::event::read() {
-                Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
+                Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
+                    ev,
+                    self.cell_pixel_size,
+                )),
                 Err(_) => break,
             }
         }
@@ -1343,7 +1443,7 @@ impl Backend for TuiBackend {
         // any SGR mouse report that crossterm's own reader split around
         // its leading `ESC`, before it reaches coalescing/dispatch as
         // stray printable characters.
-        let raw = recover_leaked_sgr_mouse_fragments(raw);
+        let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
         let coalesced = coalesce_mouse_moved(raw);
         let mut out = self.apply_dispatch(coalesced);
         self.apply_accelerators(&mut out);
@@ -1367,7 +1467,10 @@ impl Backend for TuiBackend {
         if let Ok(true) = ratatui::crossterm::event::poll(timeout) {
             let mut raw = Vec::new();
             match ratatui::crossterm::event::read() {
-                Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
+                Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
+                    ev,
+                    self.cell_pixel_size,
+                )),
                 Err(_) => {
                     // Issue #831: even a crossterm read error shouldn't
                     // drop a background wake that arrived in the same
@@ -1380,12 +1483,15 @@ impl Backend for TuiBackend {
             // Drain the rest of the queue without blocking.
             while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
                 match ratatui::crossterm::event::read() {
-                    Ok(ev) => raw.extend(super::events::crossterm_to_uievents(ev)),
+                    Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
+                        ev,
+                        self.cell_pixel_size,
+                    )),
                     Err(_) => break,
                 }
             }
             // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
-            let raw = recover_leaked_sgr_mouse_fragments(raw);
+            let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
             let coalesced = coalesce_mouse_moved(raw);
             let mut out = self.apply_dispatch(coalesced);
             self.apply_accelerators(&mut out);
@@ -1532,6 +1638,7 @@ impl Backend for TuiBackend {
             window_control: true,
             color_depth: self.color_depth,
             kitty_keyboard: self.kitty_keyboard,
+            sgr_pixel_mouse: self.sgr_pixel_mouse,
             ..crate::backend::BackendCaps::empty()
         }
     }
@@ -4967,6 +5074,14 @@ mod tests {
 
     // ── recover_leaked_sgr_mouse_fragments tests (#293) ─────────────────────
 
+    /// The identity cell size — every pre-#1048 `recover_leaked_sgr_mouse_fragments`
+    /// test below passes this so its cell-mode assertions stay
+    /// byte-identical to before that parameter existed.
+    const UNSCALED_TEST_CELL: TerminalCellSize = TerminalCellSize {
+        width: 1.0,
+        height: 1.0,
+    };
+
     /// Builds a run of `KeyPressed(Char(_))` events, one per `char` in `s`
     /// — the shape crossterm's reader produces when it decodes a leaked
     /// escape-sequence tail byte-by-byte as ordinary text.
@@ -4987,7 +5102,7 @@ mod tests {
     fn recovers_leaked_pure_motion_report() {
         use crate::ButtonMask;
         let raw = char_run("[<35;10;5M");
-        let out = recover_leaked_sgr_mouse_fragments(raw);
+        let out = recover_leaked_sgr_mouse_fragments(raw, UNSCALED_TEST_CELL);
         assert_eq!(
             out.len(),
             1,
@@ -5004,6 +5119,30 @@ mod tests {
         );
     }
 
+    /// quadraui#1048: a non-identity `cell_size` threads all the way
+    /// through `recover_leaked_sgr_mouse_fragments` →
+    /// `try_reassemble_sgr_mouse` → `decode_sgr_mouse_report` →
+    /// `crossterm_mouse_to_uievent_scaled`, recovering the same fractional
+    /// coordinate a cleanly decoded SGR-Pixels report would have produced —
+    /// not just the cell-mode identity path every other test in this
+    /// section exercises.
+    #[test]
+    fn recovers_leaked_pure_motion_report_scaled_to_pixel_cell_size() {
+        let raw = char_run("[<35;10;5M");
+        let cell = TerminalCellSize::new(10.0, 20.0);
+        let out = recover_leaked_sgr_mouse_fragments(raw, cell);
+        assert!(
+            matches!(
+                &out[..],
+                [UiEvent::MouseMoved { position, .. }]
+                    if (position.x - 0.9).abs() < f32::EPSILON
+                        && (position.y - 0.2).abs() < f32::EPSILON
+            ),
+            "expected MouseMoved(0.9, 0.2) after dividing pixel report (9,4) by cell (10,20), \
+             got {out:?}"
+        );
+    }
+
     /// The leading `Escape` this race dispatches standalone is preserved
     /// verbatim, immediately followed by the recovered mouse event — the
     /// exact batch shape `wait_events`/`poll_events` hands to
@@ -5016,7 +5155,7 @@ mod tests {
             repeat: false,
         }];
         raw.extend(char_run("[<35;10;5M"));
-        let out = recover_leaked_sgr_mouse_fragments(raw);
+        let out = recover_leaked_sgr_mouse_fragments(raw, UNSCALED_TEST_CELL);
         assert_eq!(out.len(), 2, "expected [Escape, MouseMoved]: {out:?}");
         assert!(matches!(
             &out[0],
@@ -5034,7 +5173,7 @@ mod tests {
     #[test]
     fn recovers_leaked_click_down_and_up() {
         use crate::MouseButton;
-        let down = recover_leaked_sgr_mouse_fragments(char_run("[<0;3;4M"));
+        let down = recover_leaked_sgr_mouse_fragments(char_run("[<0;3;4M"), UNSCALED_TEST_CELL);
         assert!(
             matches!(
                 &down[..],
@@ -5044,7 +5183,7 @@ mod tests {
             "expected a single MouseDown(2,3): {down:?}"
         );
 
-        let up = recover_leaked_sgr_mouse_fragments(char_run("[<0;3;4m"));
+        let up = recover_leaked_sgr_mouse_fragments(char_run("[<0;3;4m"), UNSCALED_TEST_CELL);
         assert!(
             matches!(
                 &up[..],
@@ -5060,7 +5199,7 @@ mod tests {
     /// `crossterm_mouse_to_uievent`'s `Drag` handling.
     #[test]
     fn recovers_leaked_drag_report() {
-        let out = recover_leaked_sgr_mouse_fragments(char_run("[<32;7;8M"));
+        let out = recover_leaked_sgr_mouse_fragments(char_run("[<32;7;8M"), UNSCALED_TEST_CELL);
         assert!(
             matches!(
                 &out[..],
@@ -5078,14 +5217,14 @@ mod tests {
     #[test]
     fn leaves_non_matching_bracket_runs_untouched() {
         let raw = char_run("[<12;34");
-        let out = recover_leaked_sgr_mouse_fragments(raw.clone());
+        let out = recover_leaked_sgr_mouse_fragments(raw.clone(), UNSCALED_TEST_CELL);
         assert_eq!(
             out, raw,
             "an incomplete/unterminated run must pass through verbatim"
         );
 
         let raw = char_run("[hello");
-        let out = recover_leaked_sgr_mouse_fragments(raw.clone());
+        let out = recover_leaked_sgr_mouse_fragments(raw.clone(), UNSCALED_TEST_CELL);
         assert_eq!(
             out, raw,
             "'[' not followed by '<' must pass through verbatim"
@@ -5110,7 +5249,7 @@ mod tests {
         });
         raw.extend(char_run("[<35;11;6M"));
 
-        let out = recover_leaked_sgr_mouse_fragments(raw);
+        let out = recover_leaked_sgr_mouse_fragments(raw, UNSCALED_TEST_CELL);
         assert_eq!(
             out.len(),
             4,
@@ -5888,6 +6027,72 @@ mod tests {
         backend.set_mouse_enabled(false);
         backend.set_mouse_enabled(true);
         assert!(backend.mouse_enabled());
+    }
+
+    // ── SGR-Pixels mouse mode (quadraui#1048) ────────────────────────────
+
+    /// `cell_pixel_size` defaults to the identity divisor — a backend
+    /// nobody has called `set_cell_pixel_size` on must leave every mouse
+    /// coordinate byte-identical to pre-#1048 cell-mode behaviour, since
+    /// `sgr_pixel_mouse` also defaults to whatever the environment
+    /// heuristic says (`false` in a `cargo test` process with no relevant
+    /// env vars set).
+    #[test]
+    fn cell_pixel_size_defaults_to_identity() {
+        let backend = TuiBackend::new();
+        assert_eq!(backend.cell_pixel_size(), TerminalCellSize::new(1.0, 1.0));
+    }
+
+    /// `set_sgr_pixel_mouse`/`set_cell_pixel_size` round-trip through their
+    /// accessors and surface via `backend_caps().sgr_pixel_mouse` — the
+    /// same session-level-toggle shape `set_mouse_enabled` already has,
+    /// except this one *does* affect `backend_caps()` (see that field's
+    /// doc: a runtime-detected terminal property, not a static
+    /// per-backend-type fact).
+    #[test]
+    fn set_sgr_pixel_mouse_and_cell_size_round_trip() {
+        let mut backend = TuiBackend::new();
+        assert!(!backend.backend_caps().sgr_pixel_mouse);
+
+        backend.set_sgr_pixel_mouse(true);
+        backend.set_cell_pixel_size(TerminalCellSize::new(9.0, 18.0));
+        assert!(backend.sgr_pixel_mouse());
+        assert!(backend.backend_caps().sgr_pixel_mouse);
+        assert_eq!(backend.cell_pixel_size(), TerminalCellSize::new(9.0, 18.0));
+
+        backend.set_sgr_pixel_mouse(false);
+        assert!(!backend.backend_caps().sgr_pixel_mouse);
+    }
+
+    /// A `TuiBackend` configured for SGR-Pixels mode divides a live mouse
+    /// report's raw pixel `column`/`row` by the configured cell size —
+    /// this is the same code path `poll_events`/`wait_events` drive with
+    /// `self.cell_pixel_size`, exercised here directly since those two
+    /// need a real crossterm event source `cargo test` doesn't have.
+    #[test]
+    fn cell_pixel_size_scales_a_live_mouse_report() {
+        use ratatui::crossterm::event::{MouseButton as CtMouseButton, MouseEvent, MouseEventKind};
+
+        let mut backend = TuiBackend::new();
+        backend.set_sgr_pixel_mouse(true);
+        backend.set_cell_pixel_size(TerminalCellSize::new(8.0, 16.0));
+
+        let raw = MouseEvent {
+            kind: MouseEventKind::Down(CtMouseButton::Left),
+            column: 40,
+            row: 24,
+            modifiers: ratatui::crossterm::event::KeyModifiers::empty(),
+        };
+        let ev =
+            super::super::events::crossterm_mouse_to_uievent_scaled(raw, backend.cell_pixel_size())
+                .unwrap();
+        match ev {
+            UiEvent::MouseDown { position, .. } => {
+                assert_eq!(position.x, 5.0); // 40 / 8
+                assert_eq!(position.y, 1.5); // 24 / 16
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
     }
 
     // ── request_frame_in (quadraui#832) ─────────────────────────────────

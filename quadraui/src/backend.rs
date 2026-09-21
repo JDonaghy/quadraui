@@ -659,6 +659,29 @@ pub struct BackendCaps {
     /// `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade table for which real
     /// terminals land on which side.
     pub kitty_keyboard: bool,
+    /// Whether SGR-Pixels mouse mode (`?1016h` — pixel-resolution mouse
+    /// coordinates instead of whole-cell ones) is actually active on this
+    /// backend right now (quadraui#1048).
+    ///
+    /// Not part of the bool-capability vocabulary below, for the same
+    /// reason as [`Self::kitty_keyboard`]: a runtime-detected (or
+    /// test-overridden) property of the *terminal* a TUI session happens to
+    /// be running in, not a static "does this backend implement method X"
+    /// fact `tests/conformance/caps.rs` can check by asking whether a
+    /// method was overridden. `false` on every non-TUI backend (GTK,
+    /// Win-GUI, macOS): none of them speak a terminal mouse-tracking
+    /// protocol at all. On TUI it is `true` only when both
+    /// `crate::tui::caps::probe_sgr_pixel_mouse`'s live DECRQM round trip
+    /// answered yes *and* the terminal's real per-cell pixel size could be
+    /// determined — see `crate::tui::backend::TuiBackend::set_sgr_pixel_mouse`
+    /// for where the live answer lands here, and
+    /// `crate::tui::backend::TuiBackend::cell_pixel_size` for the divisor a
+    /// gesture that wants pixel-accurate dragging (a scrollbar or minimap
+    /// thumb) needs alongside this flag — the coordinate itself is already
+    /// scaled by the time it reaches [`crate::UiEvent::MouseMoved`]/etc.,
+    /// but a caller computing its own drag delta in *pixels* rather than
+    /// *cells* still needs the cell size to convert back.
+    pub sgr_pixel_mouse: bool,
 }
 
 /// A capability name paired with the accessor that reads it off a
@@ -689,6 +712,7 @@ impl BackendCaps {
             generic_font_families: false,
             color_depth: ColorDepth::TrueColor,
             kitty_keyboard: false,
+            sgr_pixel_mouse: false,
         }
     }
 
@@ -4556,14 +4580,15 @@ mod backend_caps_tests {
         // invisible to `names()`/`has()`/`vocabulary()` — and so to every
         // scenario `requires` gate and to the C0 honesty check.
         //
-        // `color_depth` and `kitty_keyboard` are the deliberate exceptions:
-        // neither is a bool *capability* in the "does this backend
-        // implement optional surface X" sense (see each field's doc
-        // comment on `BackendCaps`) — both are runtime-detected properties
-        // of the terminal a TUI session happens to be running in. They are
-        // named here — forcing a future field addition to make a conscious
-        // choice about which bucket it belongs in — but intentionally left
-        // out of `SETTERS`/`want`/`ALL_NAMES`.
+        // `color_depth`, `kitty_keyboard`, and `sgr_pixel_mouse` are the
+        // deliberate exceptions: none is a bool *capability* in the "does
+        // this backend implement optional surface X" sense (see each
+        // field's doc comment on `BackendCaps`) — all three are
+        // runtime-detected properties of the terminal a TUI session
+        // happens to be running in. They are named here — forcing a future
+        // field addition to make a conscious choice about which bucket it
+        // belongs in — but intentionally left out of
+        // `SETTERS`/`want`/`ALL_NAMES`.
         let BackendCaps {
             mouse: _,
             scroll: _,
@@ -4583,6 +4608,7 @@ mod backend_caps_tests {
             generic_font_families: _,
             color_depth: _,
             kitty_keyboard: _,
+            sgr_pixel_mouse: _,
         } = BackendCaps::empty();
 
         let want: Vec<&str> = SETTERS.iter().map(|(n, _)| *n).collect();
