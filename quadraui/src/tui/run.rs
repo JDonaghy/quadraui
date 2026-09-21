@@ -190,7 +190,18 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     // resulting coordinates back into cells. See `tui::caps`'s module doc
     // for why this probe (unlike the kitty-keyboard one) never falls back
     // to a heuristic guess on an ambiguous/absent answer.
-    let probed_cell_pixel_size = if config.mouse && super::caps::probe_sgr_pixel_mouse() {
+    // Skip the live DECRQM round trip entirely on a multiplexer already
+    // known not to forward mode 1016 (tmux, `TERM=screen*`/`tmux*`) —
+    // quadraui#1048 review: the cheap heuristic already has a hard-`false`
+    // answer for these, so paying the probe's up-to-2s wait (stacked on top
+    // of the kitty-keyboard probe's own) buys nothing but startup latency
+    // and a second window where a real keystroke could be read and
+    // discarded as a candidate probe reply. See
+    // `caps::sgr_pixel_mouse_blocked_by_multiplexer`'s doc.
+    let probed_cell_pixel_size = if config.mouse
+        && !super::caps::sgr_pixel_mouse_blocked_by_multiplexer()
+        && super::caps::probe_sgr_pixel_mouse()
+    {
         query_cell_pixel_size()
     } else {
         None
@@ -377,6 +388,17 @@ fn run_inner<A: AppLogic>(
                     match query_cell_pixel_size() {
                         Some(size) => backend.set_cell_pixel_size(size),
                         None => {
+                            // The terminal stopped reporting a usable pixel
+                            // size mid-session. It is still in `?1016h` mode
+                            // and will keep emitting *pixel*-scale reports —
+                            // resetting only our own state without also
+                            // sending `?1016l` would leave us dividing raw
+                            // pixel offsets by the identity divisor, putting
+                            // every subsequent click/drag in the wrong place
+                            // (quadraui#1048 review). Turn the mode off at
+                            // the terminal itself, mirroring the teardown
+                            // path above.
+                            let _ = disable_sgr_pixel_mouse(terminal.borrow_mut().backend_mut());
                             backend.set_sgr_pixel_mouse(false);
                             backend.set_cell_pixel_size(crate::TerminalCellSize::new(1.0, 1.0));
                         }
