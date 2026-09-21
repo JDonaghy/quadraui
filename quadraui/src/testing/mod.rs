@@ -1106,6 +1106,9 @@ impl crate::Backend for RecordingBackend {
             }
         })
     }
+    fn tree_vscrollbar(&self, rect: Rect, tree: &crate::TreeView) -> Option<crate::Scrollbar> {
+        tree.vscrollbar(rect, self.line_height())
+    }
     fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
         unimplemented!("RecordingBackend has no Form layout algorithm")
     }

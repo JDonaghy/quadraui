@@ -3819,6 +3819,14 @@ impl Backend for GtkBackend {
         crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
     }
 
+    fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
+        // GTK tree vertical-scrollbar rasteriser not yet implemented (#1043).
+        // Delegate to the primitive's geometry method using pixel units:
+        // each "row" is one line_height tall, same approximation
+        // `GtkBackend::list_vscrollbar` already makes for `ListView`.
+        tree.vscrollbar(rect, self.line_height())
+    }
+
     /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
     /// (#499) — the shared per-field-kind measurer `macos::form::mac_form_layout`
     /// and `win::form::win_form_layout` already use. Migrated off the

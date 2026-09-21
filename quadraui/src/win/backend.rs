@@ -3386,6 +3386,17 @@ impl Backend for WinBackend {
         crate::primitives::layout_metrics::tree_layout(tree, rect, self.current_line_height as f64)
     }
 
+    /// #1043: `vscrollbar` deals purely in row counts/row-height, so
+    /// (like [`Self::list_vscrollbar`]) the primitive's own geometry
+    /// method is unit-correct for every backend — see
+    /// [`TreeView::vscrollbar`]. Cross-platform, no Direct2D/DirectWrite
+    /// call needed, so this compiles (and is exercised by
+    /// `cargo check --features win`) on every host, not just
+    /// `target_os = "windows"`.
+    fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
+        tree.vscrollbar(rect, self.current_line_height)
+    }
+
     /// #26: pure measurement — only needs `self.dwrite`, not a live
     /// render target. See [`Self::status_bar_layout`]'s doc.
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {

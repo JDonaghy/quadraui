@@ -2680,6 +2680,23 @@ pub trait Backend: sealed::Sealed {
     /// frame is load-bearing).
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
 
+    /// Vertical scrollbar geometry for `tree` rendered into `rect`, or
+    /// `None` when the tree is empty or all rows fit. Each backend
+    /// supplies its native row height; the resolved track + thumb are the
+    /// same values a rasteriser would paint, so consumers hit-test the
+    /// returned thumb to implement drag without re-deriving geometry.
+    ///
+    /// #1043: `Backend::draw_tree` paints no scrollbar affordance of its
+    /// own — an overflowing tree scrolls (mouse wheel, keyboard) but gave
+    /// no visual indication there was more content, and there was no
+    /// host-facing way to ask for one short of hand-rolling a scrollbar
+    /// per backend. This mirrors [`Backend::list_hscrollbar`] /
+    /// [`Backend::list_vscrollbar`]'s already-established shape: a
+    /// layout-level scroll extent the host passes to the existing
+    /// [`Scrollbar`] primitive and paints itself via
+    /// [`Backend::draw_scrollbar`] — see [`TreeView::vscrollbar`].
+    fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<Scrollbar>;
+
     /// Compute the form layout the rasteriser would produce for `form`
     /// in `rect`, using the backend's native metrics. Hosts call this
     /// to drive hit-testing — especially for `ToggleGroup` and

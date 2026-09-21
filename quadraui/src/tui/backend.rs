@@ -2597,6 +2597,20 @@ impl Backend for TuiBackend {
         crate::tui::tui_tree_layout(tree, area)
     }
 
+    fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
+        // TUI rows are uniform 1-cell tall (see `tui_tree_layout`'s doc).
+        let area = q_rect_to_ratatui(rect);
+        tree.vscrollbar(
+            crate::event::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            1.0,
+        )
+    }
+
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_form_layout(form, area)
@@ -3609,6 +3623,10 @@ mod tests {
             t.layout(r.width, r.height, |_| {
                 crate::primitives::tree::TreeRowMeasure::new(1.0)
             })
+        }
+
+        fn tree_vscrollbar(&self, r: QRect, t: &TreeView) -> Option<crate::Scrollbar> {
+            t.vscrollbar(r, 1.0)
         }
 
         fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {

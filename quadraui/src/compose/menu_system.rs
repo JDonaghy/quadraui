@@ -1029,6 +1029,9 @@ mod tests {
                 }
             })
         }
+        fn tree_vscrollbar(&self, _r: Rect, _t: &crate::TreeView) -> Option<crate::Scrollbar> {
+            None
+        }
         fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
             unimplemented!()
         }
