@@ -978,6 +978,75 @@ mod tests {
         );
     }
 
+    /// Issue #1037 (non-blocking review follow-up): prove `render` doesn't
+    /// just *consume* the pending flag (see the test above) but actually
+    /// forces `ratatui::Terminal::clear()`'s effect — the next frame
+    /// repaints every cell unconditionally, even one the app's own
+    /// (unchanged) content never touches.
+    ///
+    /// `FullRepaintRequester::render` never paints anything, so once the
+    /// first frame lands the widget-side content stays blank forever —
+    /// ratatui's diff cache always agrees "nothing changed" and would
+    /// normally skip re-sending every cell. We simulate the exact kind of
+    /// external drift `request_full_repaint`'s doc names (a PTY writing
+    /// straight into the shared terminal, bypassing ratatui's own
+    /// `Buffer` tracking) by calling `ratatui::backend::Backend::draw`
+    /// directly on the `TestBackend`, underneath `Terminal`'s diff — a
+    /// stale glyph ratatui's cache has no idea appeared.
+    ///
+    /// Without a pending full-repaint request, a plain redraw leaves that
+    /// stale glyph in place (diff sees no change at that cell, so it's
+    /// never told to repaint it) — matching vimcode#58's symptom. With
+    /// `request_full_repaint()` set first, `render` must clear it, proving
+    /// `Terminal::clear()` actually ran rather than the flag merely being
+    /// read and discarded.
+    #[test]
+    fn render_actually_clears_stale_content_outside_the_diff_cache() {
+        use ratatui::backend::Backend as RatatuiBackend;
+        use ratatui::buffer::Cell;
+
+        let mut driver = TuiDriver::new(FullRepaintRequester, 10, 3);
+
+        // Inject a "stale" glyph directly into the physical backend,
+        // underneath `Terminal`'s own previous-buffer diff tracking —
+        // ratatui has no record that this cell ever changed.
+        let mut stale = Cell::default();
+        stale.set_symbol("X");
+        RatatuiBackend::draw(
+            driver.terminal.borrow_mut().backend_mut(),
+            std::iter::once((0u16, 0u16, &stale)),
+        )
+        .expect("TestBackend draw is infallible");
+        assert!(
+            driver.screen_contains("X"),
+            "sanity: the injected stale glyph must be visible before either render"
+        );
+
+        // A plain redraw with nothing pending: ratatui's diff still
+        // believes this cell is unchanged (blank), so the stale glyph
+        // survives — the vimcode#58 symptom this hook exists to fix.
+        driver.render();
+        assert!(
+            driver.screen_contains("X"),
+            "a redraw with no full-repaint request pending must not touch \
+             cells the diff cache believes are unchanged"
+        );
+
+        // Now request a full repaint and redraw again: `render` must
+        // consume the request by calling `Terminal::clear()` before
+        // painting, which resets the diff cache so every cell —
+        // including the stale one the app's own content never wrote to
+        // this frame — repaints unconditionally back to blank.
+        driver.core.backend_mut().request_full_repaint();
+        driver.render();
+        assert!(
+            !driver.screen_contains("X"),
+            "render() must actually call Terminal::clear() when a full \
+             repaint was requested, not just consume the flag — the stale \
+             glyph should be gone once every cell repaints unconditionally"
+        );
+    }
+
     /// `setup()` must observe the driver's real terminal dimensions, not
     /// the default 80×24 viewport. Regression guard for the #437 TUI
     /// initial-layout bug (pane under-filled until first interaction).
