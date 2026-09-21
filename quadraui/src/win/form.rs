@@ -258,18 +258,26 @@ const SETTINGS_CURSOR_W: f32 = 1.5;
 /// GTK/macOS twins use.
 const SETTINGS_SEARCH_PREFIX: &str = " /  ";
 
-/// Draw settings-panel chrome: a 2-row strip with a header row and a
-/// search input row, designed to sit immediately above a [`Form`] body.
+/// Draw settings-panel chrome: a header row and, when `rect.height`
+/// leaves room for it, a search input row beneath it, designed to sit
+/// immediately above a [`Form`] body.
 ///
 /// Port of [`crate::gtk::form::draw_settings_chrome`] (and
-/// [`crate::macos::form::draw_settings_chrome`]) — same two-row layout,
+/// [`crate::macos::form::draw_settings_chrome`]) — same row layout,
 /// same `" /  "` prefix, same placeholder rule (shown only when the
 /// query is empty *and* the row is inactive), same accent caret when
-/// active.
+/// active, and the same height-aware search-row gate (issue #1041
+/// review): the header row always paints at one `line_height`; the
+/// search row paints only when `rect.height >= line_height * 1.5`, so a
+/// caller reserving a single row (e.g.
+/// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
+/// gets a header-only strip instead of an unrequested second row
+/// painted past its own rect. Before this fix `rect.height` wasn't
+/// consulted at all — total chrome height was always `2 * line_height`
+/// regardless of what the caller reserved.
 ///
 /// Chrome only: the form body and any scrollbar layered below are
-/// painted separately by the caller. `rect.height` is not consulted —
-/// total chrome height is always `2 * line_height`, matching both twins.
+/// painted separately by the caller.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_settings_chrome(
     target: &ID2D1RenderTarget,
@@ -302,51 +310,55 @@ pub fn draw_settings_chrome(
         theme.header_fg,
     );
 
-    // Row 1: search input.
-    let search_y = rect.y + line_height;
-    let row_bg = if active {
-        theme.selected_bg
-    } else {
-        theme.tab_bar_bg
-    };
-    let _ = fill_rect(
-        target,
-        Rect::new(rect.x, search_y, rect.width, line_height),
-        row_bg,
-    );
-
-    let (prefix_w, prefix_h) = dwrite
-        .measure_text(SETTINGS_SEARCH_PREFIX)
-        .unwrap_or((0.0, 0.0));
-    let prefix_y = search_y + (line_height - prefix_h) / 2.0;
-    let _ = dwrite.draw_text(
-        target,
-        SETTINGS_SEARCH_PREFIX,
-        Rect::new(rect.x + 2.0, prefix_y, prefix_w, prefix_h),
-        theme.muted_fg,
-    );
-
-    let q_x = rect.x + 2.0 + prefix_w;
-    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
-    let (text, color) = if show_placeholder {
-        (placeholder, theme.muted_fg)
-    } else if query.is_empty() {
-        (query, theme.muted_fg)
-    } else {
-        (query, theme.foreground)
-    };
-    let (text_w, text_h) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
-    let text_y = search_y + (line_height - text_h) / 2.0;
-    let _ = dwrite.draw_text(target, text, Rect::new(q_x, text_y, text_w, text_h), color);
-
-    if active {
-        let (query_w, _) = dwrite.measure_text(query).unwrap_or((0.0, 0.0));
-        let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
+    // Row 1: search input — only when `rect.height` leaves room for it
+    // (see this fn's doc). Skipped for a header-only strip instead of
+    // overpainting whatever the caller placed directly beneath it.
+    if rect.height >= line_height * 1.5 {
+        let search_y = rect.y + line_height;
+        let row_bg = if active {
+            theme.selected_bg
+        } else {
+            theme.tab_bar_bg
+        };
         let _ = fill_rect(
             target,
-            Rect::new(cur_x, search_y + 2.0, SETTINGS_CURSOR_W, line_height - 4.0),
-            theme.accent_fg,
+            Rect::new(rect.x, search_y, rect.width, line_height),
+            row_bg,
         );
+
+        let (prefix_w, prefix_h) = dwrite
+            .measure_text(SETTINGS_SEARCH_PREFIX)
+            .unwrap_or((0.0, 0.0));
+        let prefix_y = search_y + (line_height - prefix_h) / 2.0;
+        let _ = dwrite.draw_text(
+            target,
+            SETTINGS_SEARCH_PREFIX,
+            Rect::new(rect.x + 2.0, prefix_y, prefix_w, prefix_h),
+            theme.muted_fg,
+        );
+
+        let q_x = rect.x + 2.0 + prefix_w;
+        let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+        let (text, color) = if show_placeholder {
+            (placeholder, theme.muted_fg)
+        } else if query.is_empty() {
+            (query, theme.muted_fg)
+        } else {
+            (query, theme.foreground)
+        };
+        let (text_w, text_h) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
+        let text_y = search_y + (line_height - text_h) / 2.0;
+        let _ = dwrite.draw_text(target, text, Rect::new(q_x, text_y, text_w, text_h), color);
+
+        if active {
+            let (query_w, _) = dwrite.measure_text(query).unwrap_or((0.0, 0.0));
+            let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
+            let _ = fill_rect(
+                target,
+                Rect::new(cur_x, search_y + 2.0, SETTINGS_CURSOR_W, line_height - 4.0),
+                theme.accent_fg,
+            );
+        }
     }
 }
 
@@ -354,7 +366,7 @@ pub fn draw_settings_chrome(
 mod tests {
     use super::*;
     use crate::primitives::form::{FieldKind, FormHit, ToggleGroupItem};
-    use crate::types::StyledText;
+    use crate::types::{Color, StyledText};
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 300.0;
@@ -602,6 +614,59 @@ mod tests {
                 theme.selected_bg.b
             ),
             "active search row paints selected_bg"
+        );
+    }
+
+    /// Issue #1041 review: a `rect.height` of exactly one `line_height`
+    /// (the shape
+    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
+    /// reserves) must not paint the search row — before this fix
+    /// `rect.height` wasn't consulted at all and a second row always
+    /// painted regardless of what the caller reserved, overpainting
+    /// whatever sat directly beneath a header-only chrome strip.
+    #[test]
+    fn settings_chrome_one_row_height_paints_no_search_row() {
+        let surface = HeadlessSurface::new(200, 60).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let line_height = 18.0_f32;
+        // Sentinel distinct from every colour this fn itself paints
+        // (header_bg/tab_bar_bg/selected_bg), so a search-row pixel
+        // reading the sentinel unambiguously means "nothing painted
+        // here".
+        let sentinel = Color::rgb(1, 2, 3);
+        surface
+            .fill_rect(Rect::new(0.0, 0.0, 200.0, 60.0), sentinel)
+            .expect("fill sentinel");
+
+        let one_row = Rect::new(0.0, 0.0, 200.0, line_height);
+        surface
+            .paint(|target| {
+                draw_settings_chrome(
+                    target,
+                    &dwrite,
+                    one_row,
+                    line_height,
+                    "HEADER",
+                    "",
+                    "placeholder",
+                    false,
+                );
+            })
+            .expect("paint settings chrome");
+
+        let theme = Theme::default();
+        let header_px = surface.pixel_at(150, 2);
+        assert_eq!(
+            (header_px.r, header_px.g, header_px.b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "the header row must still paint even when the search row doesn't"
+        );
+
+        let search_px = surface.pixel_at(150, line_height as u32 + 2);
+        assert_eq!(
+            (search_px.r, search_px.g, search_px.b),
+            (sentinel.r, sentinel.g, sentinel.b),
+            "a 1-row-tall chrome rect must not paint a search row past its own height"
         );
     }
 }

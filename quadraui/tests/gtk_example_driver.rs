@@ -50,6 +50,10 @@ use workspace_demo::WorkspaceDemo;
 mod split_app;
 use split_app::SplitApp;
 
+#[path = "../examples/common/sidebar_panel_body_demo.rs"]
+mod sidebar_panel_body_demo;
+use sidebar_panel_body_demo::SidebarPanelBodyDemo;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -916,4 +920,73 @@ fn draw_solid_fill_fills_a_rect_taller_than_line_height_completely() {
             "draw_solid_fill should cover the entire rect height, including y={y}",
         );
     }
+}
+
+// ─── SidebarPanelBody (issue #1041) ─────────────────────────────────────
+
+const SIDEBAR_PANEL_BODY_W: i32 = 300;
+const SIDEBAR_PANEL_BODY_H: i32 = 240;
+
+/// GTK-side smoke test for the `gtk_sidebar_panel_body` example
+/// (issue #1041's review non-blocking concern: only `tui_example_driver.rs`
+/// exercised the new example pair). Confirms the composer's chrome header
+/// paints on the GTK backend at all — the default mode is
+/// `HeaderAndSearch`, so both the header label and the search
+/// placeholder should be visible.
+#[test]
+fn sidebar_panel_body_gtk_initial_paint_shows_header_and_search() {
+    let driver = GtkDriver::new(
+        SidebarPanelBodyDemo::new(),
+        SIDEBAR_PANEL_BODY_W,
+        SIDEBAR_PANEL_BODY_H,
+    );
+    assert!(
+        driver.screen_contains("ITEMS"),
+        "header label should be painted"
+    );
+    assert!(
+        driver.screen_contains("Filter items"),
+        "search placeholder should be painted in HeaderAndSearch mode"
+    );
+    assert!(
+        driver.screen_contains("item0"),
+        "tree body should paint its rows"
+    );
+}
+
+/// Cycling to `Header`-only chrome (no search row) must still paint the
+/// header label — and must no longer show the search placeholder text,
+/// which only ever appears in `HeaderAndSearch` mode. This is the GTK
+/// twin of `tui_example_driver.rs`'s
+/// `sidebar_panel_body_header_only_mode_has_no_search_row` (issue #1041
+/// review): together with the direct `draw_settings_chrome` unit tests in
+/// `src/gtk/form.rs`, this exercises the same `Header` mode through the
+/// full composed example on the backend the review's blocking finding
+/// was filed against.
+#[test]
+fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placeholder() {
+    let mut driver = GtkDriver::new(
+        SidebarPanelBodyDemo::new(),
+        SIDEBAR_PANEL_BODY_W,
+        SIDEBAR_PANEL_BODY_H,
+    );
+    driver.type_char('c'); // HeaderAndSearch → None
+    driver.type_char('c'); // None → Header
+
+    assert!(
+        driver.screen_contains("chrome=header"),
+        "status bar should confirm Header-only mode"
+    );
+    assert!(
+        driver.screen_contains("ITEMS"),
+        "header row should still be visible"
+    );
+    assert!(
+        !driver.screen_contains("Filter items"),
+        "search row/placeholder must not appear in header-only mode"
+    );
+    assert!(
+        driver.screen_contains("item0"),
+        "tree body should still paint its rows beneath the header-only chrome"
+    );
 }
