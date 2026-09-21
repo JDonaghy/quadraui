@@ -326,6 +326,21 @@ pub(crate) fn sgr_pixel_mouse_blocked_by_multiplexer() -> bool {
 /// `probe_sgr_pixel_mouse`'s unit tests actually exercise; the real
 /// file-descriptor read around it has no meaningful way to fake a terminal
 /// reply in a `cargo test` process.
+///
+/// The `allow(dead_code)` is **not** a "compiles on my machine" escape
+/// hatch: the only production caller is the `#[cfg(unix)]`
+/// [`query_sgr_pixel_decrqm`], and the `#[cfg(not(unix))]` arm answers
+/// `None` without ever reading a reply — so on Windows (a *blocking*
+/// `tui + win` CI leg, and `RUSTFLAGS: -D warnings` workflow-wide) this
+/// function has no non-test caller and `-D dead-code` rejects the build.
+/// Deliberately `allow`-ed rather than `#[cfg(any(unix, test))]`-ed out:
+/// the parser is pure byte-shuffling with nothing platform-specific in it,
+/// and keeping it compiled *and unit-tested* on every target is what
+/// proves that — cfg-ing it away would silently drop its whole test block
+/// from the Windows leg, which is the leg most likely to regress it if a
+/// non-unix DECRQM read is ever added (see [`query_sgr_pixel_decrqm`]'s
+/// non-unix doc for what that would take).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn parse_decrqm_reply(buf: &[u8]) -> Option<u8> {
     let text = std::str::from_utf8(buf).ok()?;
     let body = text.strip_prefix("\x1b[?")?.strip_suffix("$y")?;
