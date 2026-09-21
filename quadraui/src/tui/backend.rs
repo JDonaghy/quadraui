@@ -269,6 +269,13 @@ pub struct TuiBackend {
     /// read it back through [`Self::frame_requests`] /
     /// [`Self::pending_frame_delay`].
     frame_scheduler: crate::runtime::FrameScheduler,
+    /// Pending [`Backend::request_full_repaint`] request (issue #1037) —
+    /// set by that method, consumed once by [`Self::take_full_repaint_requested`]
+    /// right before the next frame paints. See that method's doc for the
+    /// two call sites that consume it: the live runner's
+    /// `tui::run::run_inner` frame loop, and
+    /// [`crate::tui::testing::TuiDriver::render`] on the headless path.
+    full_repaint_requested: bool,
 }
 
 impl TuiBackend {
@@ -303,6 +310,7 @@ impl TuiBackend {
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
+            full_repaint_requested: false,
         }
     }
 
@@ -327,6 +335,23 @@ impl TuiBackend {
     /// [`crate::runtime::FrameScheduler::clear_if_due`].
     pub(crate) fn clear_frame_deadline_if_due(&mut self) {
         self.frame_scheduler.clear_if_due();
+    }
+
+    /// Consume the pending [`Backend::request_full_repaint`] request
+    /// (issue #1037), if any — returns `true` and clears it, or `false`
+    /// if nothing was requested since the last call.
+    ///
+    /// Call once per loop iteration, right before painting the next
+    /// frame: a `true` result means the caller should clear its
+    /// `ratatui::Terminal`'s diff cache (`Terminal::clear()`) before that
+    /// frame's `terminal.draw(...)` call, exactly what a raw ratatui
+    /// app's own `Terminal::clear()` gives it. See
+    /// `tui::run::run_inner`'s frame loop and
+    /// [`crate::tui::testing::TuiDriver::render`] for the two consumers —
+    /// both must call this, not read `full_repaint_requested` directly,
+    /// so the request is never double-applied.
+    pub(crate) fn take_full_repaint_requested(&mut self) -> bool {
+        std::mem::take(&mut self.full_repaint_requested)
     }
 
     /// How many times [`Backend::request_frame_in`] has been called on
@@ -1402,6 +1427,15 @@ impl Backend for TuiBackend {
         // consult this at all — a test that wants to observe a
         // `RedrawAfter` chain calls `AppLogic::tick` directly instead.
         self.frame_scheduler.request(delay);
+    }
+
+    /// Sets [`Self::full_repaint_requested`], consumed by
+    /// [`Self::take_full_repaint_requested`] right before the next frame
+    /// paints — see [`crate::Backend::request_full_repaint`]'s doc for
+    /// the full contract and why TUI is the one backend that needs this
+    /// (issue #1037).
+    fn request_full_repaint(&mut self) {
+        self.full_repaint_requested = true;
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
@@ -5895,6 +5929,30 @@ mod tests {
         assert_eq!(
             backend.frame_poll_timeout(Duration::from_millis(250)),
             Duration::from_millis(250)
+        );
+    }
+
+    /// Issue #1037: `take_full_repaint_requested` answers `false` until
+    /// `Backend::request_full_repaint` has been called, `true` exactly
+    /// once after, then `false` again — a caller that consumes it twice
+    /// (e.g. a bug re-checking after already clearing the terminal) must
+    /// not see a stale `true`.
+    #[test]
+    fn take_full_repaint_requested_is_consumed_exactly_once() {
+        let mut backend = TuiBackend::new();
+        assert!(
+            !backend.take_full_repaint_requested(),
+            "nothing requested yet"
+        );
+
+        Backend::request_full_repaint(&mut backend);
+        assert!(
+            backend.take_full_repaint_requested(),
+            "a pending request must be observed"
+        );
+        assert!(
+            !backend.take_full_repaint_requested(),
+            "the request must be cleared after the first consumption"
         );
     }
 }

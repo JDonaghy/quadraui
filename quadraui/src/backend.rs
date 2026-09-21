@@ -1304,6 +1304,44 @@ pub trait Backend: sealed::Sealed {
     /// request; no caller asks for anything close to that today.
     fn request_frame_in(&self, delay: Duration);
 
+    /// Ask the backend to paint the *next* frame as if the physical
+    /// display were blank, discarding whatever incremental-diff cache it
+    /// keeps against the real screen — issue #1037.
+    ///
+    /// This exists for exactly one situation: the backend's own idea of
+    /// "what's on screen" has drifted from what's actually there, through
+    /// no fault of the app's rendered state (which is already correct —
+    /// a plain [`Reaction::Redraw`][crate::runner::Reaction::Redraw] would
+    /// change nothing, because the diff against the *stale* cache still
+    /// concludes those cells don't need repainting). On TUI, that drift
+    /// is `ratatui::Terminal`'s `Buffer` vs. the real terminal: a PTY
+    /// pane writing directly to the shared terminal, a resize escape
+    /// sequence the terminal applies before ratatui's own resize
+    /// handling catches up, or a dismissed popup can each leave stale
+    /// glyphs in cells ratatui's diff believes are already correct and
+    /// therefore skips. `TuiBackend`'s implementation clears
+    /// `ratatui::Terminal`'s diff cache before the next
+    /// `terminal.draw(...)` call, exactly what `Terminal::clear()` gives
+    /// a raw (non-runner) ratatui app — see `tui::run::run_inner`'s frame
+    /// loop for where that next-frame consumption happens, and
+    /// `crate::tui::testing::TuiDriver::render` for the identical
+    /// consumption on the headless test path (so a driver test can
+    /// assert this was requested without a real terminal to observe the
+    /// clear on).
+    ///
+    /// Default: no-op. GTK's `DrawingArea` repaints in full every frame
+    /// via Cairo — there is no incremental diff to desync in the first
+    /// place, so `GtkBackend` doesn't override this. A future diff-based
+    /// renderer (a terminal-multiplexer-aware Win-GUI console mode, say)
+    /// gets the same hook for free by overriding this method instead of
+    /// needing a new one.
+    ///
+    /// Idempotent and cheap to call more than once before the next frame
+    /// — a second call while one is already pending changes nothing, the
+    /// same "may act as if called once" contract
+    /// [`Self::request_frame_in`] documents for overlapping requests.
+    fn request_full_repaint(&mut self) {}
+
     /// Register an accelerator. The backend stores it and emits
     /// [`UiEvent::Accelerator`] when the native key event matches.
     fn register_accelerator(&mut self, acc: &Accelerator);

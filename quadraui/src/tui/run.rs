@@ -283,8 +283,23 @@ fn run_inner<A: AppLogic>(
     let mut resize_debouncer = ResizeDebouncer::new();
     let mut resize_deadline: Option<Instant> = None;
     loop {
+        // Issue #1037: a pending `Backend::request_full_repaint` forces a
+        // redraw even if nothing else asked for one this iteration — an
+        // app might call it on its own outside any `Reaction::Redraw`
+        // path. `take_full_repaint_requested` both answers "was one
+        // pending" and clears it, so the `Terminal::clear()` below fires
+        // exactly once per request, not on every subsequent redraw.
+        let full_repaint = backend.take_full_repaint_requested();
+        needs_redraw |= full_repaint;
         if needs_redraw {
             let mut guard = terminal.borrow_mut();
+            if full_repaint {
+                // Resets ratatui's diff cache so this frame repaints
+                // every cell unconditionally — see
+                // `Backend::request_full_repaint`'s doc for why TUI is
+                // the one backend that needs this.
+                guard.clear()?;
+            }
             render_frame(&mut guard, backend, app)?;
             drop(guard);
             needs_redraw = false;
