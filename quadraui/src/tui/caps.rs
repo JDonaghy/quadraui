@@ -84,6 +84,63 @@
 //!    [`crate::tui::backend::TuiBackend::set_kitty_keyboard`], where
 //!    [`crate::backend::BackendCaps::kitty_keyboard`] exposes it to the
 //!    app before it relies on any gesture that needs it.
+//!
+//! ## SGR-Pixels mouse mode (quadraui#1048)
+//!
+//! Ordinary SGR mouse mode (`?1006h`, always enabled by [`super::run::run`])
+//! only reports motion when the pointer crosses a *cell* boundary — every
+//! coordinate quadraui hands an app is a whole terminal cell, which is fine
+//! for clicks but too coarse for an absolute drag over a track shorter than
+//! its content (a scrollbar or minimap thumb; see vimcode#1271). Mode 1016
+//! ("SGR-Pixels") reports the identical `CSI < Cb ; Cx ; Cy M/m` wire
+//! format with `Cx`/`Cy` in *pixels* instead of cells, so crossterm parses
+//! it unmodified — the finer values just arrive in
+//! `MouseEvent.column`/`.row`, and dividing by the real cell size recovers
+//! a fractional cell coordinate.
+//!
+//! Same two-layer split as colour depth and kitty keyboard, but with one
+//! deliberate asymmetry from the kitty-keyboard probe: **a swallowed or
+//! negative DECRQM round trip here must resolve to `false`, not fall back
+//! to the environment heuristic.** Misdetecting pixel mode is far worse
+//! than not having it — a pixel coordinate read as a cell index puts every
+//! click in the wrong place, whereas a swallowed kitty-keyboard query only
+//! costs an ambiguous key.
+//!
+//! 1. [`detect_sgr_pixel_mouse`] — pure, instant, environment-only
+//!    heuristic, positive only for terminals this crate can identify with
+//!    high confidence: `TERM=foot*`/`contour*`, `KITTY_WINDOW_ID`,
+//!    `TERM_PROGRAM=WezTerm`. `TERM=screen*`/`tmux*` or `$TMUX` set is a
+//!    hard `false` regardless of any other signal — a multiplexer that
+//!    does not forward the mode must never be inferred from the outer
+//!    terminal's identity (tmux 3.7c's own binary contains zero references
+//!    to `1016`: it implements neither the mode nor a passthrough for it).
+//! 2. [`probe_sgr_pixel_mouse`] — the live, authoritative answer: a DECRQM
+//!    query (`CSI ? 1016 $ p`), whose reply (`CSI ? 1016 ; Ps $ y`) reports
+//!    `Ps` ∈ {0 not recognised, 1 set, 2 reset, 3 permanently set, 4
+//!    permanently reset}. Only `Ps` ∈ {1, 3} answers `true`; a timeout, a
+//!    truncated/unparseable reply, or `Ps` ∈ {0, 2, 4} all answer `false`.
+//!    Unlike [`probe_kitty_keyboard`] (which routes its query through
+//!    crossterm's own internal event reader, whose filters already know how
+//!    to recognise and discard that specific reply), crossterm has no
+//!    concept of an arbitrary DECRQM response — reading it that way would
+//!    itself leak the raw `CSI ... $ y` bytes into the app as stray
+//!    `KeyPressed` events. So this probe reads its reply directly off the
+//!    file descriptor (`#[cfg(unix)]`, via a real `poll(2)` with a hard
+//!    deadline so a terminal that never answers — tmux — can be abandoned
+//!    cleanly without leaving a reader that could later steal the user's
+//!    first genuine keystroke; see [`super::run::run`]'s call site for why
+//!    this must run *before* the event loop starts). No non-unix
+//!    implementation exists yet — see this module's `query_sgr_pixel_decrqm`
+//!    for why a spawned-thread-based read would be a correctness bug, not
+//!    just a missing feature, on a host with no cancellable fd-level poll;
+//!    non-unix hosts get the honest `false` a timeout would have produced
+//!    anyway. `super::run::run` calls this once at startup and stores the
+//!    result — together with the resolved [`crate::TerminalCellSize`] a
+//!    live `window_size()` query provides — on
+//!    [`crate::tui::backend::TuiBackend`] via
+//!    [`crate::tui::backend::TuiBackend::set_sgr_pixel_mouse`] /
+//!    [`crate::tui::backend::TuiBackend::set_cell_pixel_size`], surfaced to
+//!    an app via [`crate::backend::BackendCaps::sgr_pixel_mouse`].
 
 use crate::backend::{ColorDepth, SystemTheme};
 
@@ -184,6 +241,164 @@ pub(crate) fn detect_kitty_keyboard_from(getenv: impl Fn(&str) -> Option<String>
 pub(crate) fn probe_kitty_keyboard() -> bool {
     ratatui::crossterm::terminal::supports_keyboard_enhancement()
         .unwrap_or_else(|_| detect_kitty_keyboard())
+}
+
+/// Environment-only SGR-Pixels-mouse-mode heuristic — see the module doc's
+/// "SGR-Pixels mouse mode" section for why this exists alongside
+/// [`probe_sgr_pixel_mouse`] rather than instead of it.
+pub fn detect_sgr_pixel_mouse() -> bool {
+    detect_sgr_pixel_mouse_from(|key| std::env::var(key).ok())
+}
+
+/// The pure decision behind [`detect_sgr_pixel_mouse`], parameterised over
+/// an environment lookup for the same reason as [`detect_color_depth_from`].
+///
+/// The multiplexer check runs *first* and short-circuits to `false`
+/// regardless of any other signal — including a positive one, so
+/// `TERM_PROGRAM=WezTerm` behind `$TMUX` still answers `false`. Without that
+/// ordering, a terminal identity signal the outer terminal sets
+/// unconditionally (the same reasoning [`detect_kitty_keyboard_from`]'s doc
+/// gives for `KITTY_WINDOW_ID` surviving a rewritten `TERM`) would be
+/// wrongly inferred *through* a multiplexer that does not forward the mode
+/// at all.
+pub(crate) fn detect_sgr_pixel_mouse_from(getenv: impl Fn(&str) -> Option<String>) -> bool {
+    if getenv("TMUX").is_some() {
+        return false;
+    }
+    if let Some(term) = getenv("TERM") {
+        let term = term.to_ascii_lowercase();
+        if term.starts_with("screen") || term.starts_with("tmux") {
+            return false;
+        }
+    }
+    if let Some(term) = getenv("TERM") {
+        let term = term.to_ascii_lowercase();
+        if term.starts_with("foot") || term.starts_with("contour") {
+            return true;
+        }
+    }
+    if getenv("KITTY_WINDOW_ID").is_some() {
+        return true;
+    }
+    if getenv("TERM_PROGRAM").as_deref() == Some("WezTerm") {
+        return true;
+    }
+    false
+}
+
+/// Parse a DECRQM report reply (`CSI ? Pd ; Ps $ y`) for mode 1016, in
+/// response to the `CSI ? 1016 $ p` query [`probe_sgr_pixel_mouse`] sends —
+/// see <https://vt100.net/docs/vt510-rm/DECRPM.html>. Returns the `Ps`
+/// digit (0–4) on a well-formed reply for *any* mode number (the caller
+/// already knows which mode it queried), or `None` for anything else: a
+/// truncated reply, extra `;`-delimited fields, a non-numeric `Ps`, or
+/// bytes that aren't valid UTF-8 at all.
+///
+/// Pure and allocation-light on purpose — this is the piece
+/// `probe_sgr_pixel_mouse`'s unit tests actually exercise; the real
+/// file-descriptor read around it has no meaningful way to fake a terminal
+/// reply in a `cargo test` process.
+pub(crate) fn parse_decrqm_reply(buf: &[u8]) -> Option<u8> {
+    let text = std::str::from_utf8(buf).ok()?;
+    let body = text.strip_prefix("\x1b[?")?.strip_suffix("$y")?;
+    let mut parts = body.split(';');
+    parts.next()?; // the mode number itself (1016) — unchecked, see doc.
+    let ps = parts.next()?;
+    if parts.next().is_some() {
+        return None; // more fields than DECRPM's `Pd ; Ps` shape has.
+    }
+    ps.trim().parse::<u8>().ok()
+}
+
+/// Whether a DECRQM `Ps` value (see [`parse_decrqm_reply`]) means the mode
+/// is actually active: `1` (set) or `3` (permanently set). `0`
+/// (not recognised), `2` (reset), `4` (permanently reset), and `None` (no
+/// reply parsed at all — a timeout, or a truncated/malformed one) all mean
+/// `false` — see the module doc's "asymmetry from the kitty-keyboard probe"
+/// paragraph for why this never falls back to a heuristic guess.
+pub(crate) fn decrqm_reply_supports_mode(ps: Option<u8>) -> bool {
+    matches!(ps, Some(1) | Some(3))
+}
+
+/// The live, authoritative SGR-Pixels-mouse-mode answer — see the module
+/// doc's "SGR-Pixels mouse mode" section. Real terminal I/O (writes the
+/// DECRQM query, blocks up to 2s for a reply): call this once at startup,
+/// before the event loop starts, not from a hot path or a test that
+/// doesn't want that latency.
+pub(crate) fn probe_sgr_pixel_mouse() -> bool {
+    decrqm_reply_supports_mode(query_sgr_pixel_decrqm())
+}
+
+/// Write the `CSI ? 1016 $ p` DECRQM query and read its reply directly off
+/// stdin, bypassing crossterm's event reader entirely (see the module doc
+/// for why routing this through crossterm would leak the reply as stray
+/// `KeyPressed` events). Returns the parsed `Ps` digit, or `None` on any
+/// failure to write, poll, read, or parse — including a timeout.
+#[cfg(unix)]
+fn query_sgr_pixel_decrqm() -> Option<u8> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::AsRawFd;
+    use std::time::{Duration, Instant};
+
+    let mut stdout = std::io::stdout();
+    stdout.write_all(b"\x1b[?1016$p").ok()?;
+    stdout.flush().ok()?;
+
+    let stdin = std::io::stdin();
+    let fd = stdin.as_raw_fd();
+    let mut handle = stdin.lock();
+    let deadline = Instant::now() + Duration::from_millis(2000);
+    let mut collected = Vec::with_capacity(16);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            // Give up: no leftover reader is left running (this function
+            // returns, full stop), so a byte that arrives after this point
+            // — the user's first real keystroke on a terminal that never
+            // answers, e.g. tmux — reaches the real event loop untouched.
+            return None;
+        }
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        // SAFETY: `pollfd` is a single valid `libc::pollfd` on the stack;
+        // `poll(2)` only reads/writes through the pointer+length (1) it's
+        // given, for the duration of this call.
+        let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if ready <= 0 {
+            // 0 = timed out; negative = an error (e.g. `EINTR`). Neither is
+            // worth a retry loop for a one-shot startup probe on stdin.
+            return None;
+        }
+        let mut byte = [0u8; 1];
+        match handle.read(&mut byte) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {
+                collected.push(byte[0]);
+                if byte[0] == b'y' || collected.len() >= 32 {
+                    break;
+                }
+            }
+        }
+    }
+    parse_decrqm_reply(&collected)
+}
+
+/// Non-unix hosts have no safe, cancellable way (through `std` alone) to
+/// abandon a raw stdin read after a timeout without leaving a reader that
+/// could later steal a real keystroke — see the unix arm's doc for exactly
+/// what that failure mode looks like. Rather than risk it, this probe
+/// simply never answers `true` off this platform; `window_size()` already
+/// returns `Unsupported` on Windows (crossterm's own doc), which
+/// independently keeps SGR-Pixels mode off there regardless — see
+/// [`super::run::run_with`].
+#[cfg(not(unix))]
+fn query_sgr_pixel_decrqm() -> Option<u8> {
+    None
 }
 
 /// System dark/light detection (quadraui#952) — the TUI half of
@@ -388,6 +603,121 @@ mod tests {
     #[test]
     fn alacritty_term_is_not_guessed() {
         assert!(!detect_kitty_keyboard_from(env(&[("TERM", "alacritty")])));
+    }
+
+    // ── SGR-Pixels mouse mode (quadraui#1048) ───────────────────────────
+
+    #[test]
+    fn kitty_window_id_is_detected_for_sgr_pixel_mouse() {
+        assert!(detect_sgr_pixel_mouse_from(env(&[(
+            "KITTY_WINDOW_ID",
+            "1"
+        )])));
+    }
+
+    #[test]
+    fn foot_term_is_detected_for_sgr_pixel_mouse() {
+        assert!(detect_sgr_pixel_mouse_from(env(&[("TERM", "foot")])));
+        assert!(detect_sgr_pixel_mouse_from(env(&[("TERM", "foot-extra")])));
+    }
+
+    #[test]
+    fn wezterm_term_program_is_detected_for_sgr_pixel_mouse() {
+        assert!(detect_sgr_pixel_mouse_from(env(&[(
+            "TERM_PROGRAM",
+            "WezTerm"
+        )])));
+    }
+
+    #[test]
+    fn contour_term_is_detected_for_sgr_pixel_mouse() {
+        assert!(detect_sgr_pixel_mouse_from(env(&[("TERM", "contour")])));
+    }
+
+    #[test]
+    fn tmux_env_var_hard_disables_sgr_pixel_mouse() {
+        assert!(!detect_sgr_pixel_mouse_from(env(&[(
+            "TMUX",
+            "/tmp/tmux-1000/default,1234,0"
+        )])));
+    }
+
+    #[test]
+    fn screen_term_is_not_detected() {
+        assert!(!detect_sgr_pixel_mouse_from(env(&[(
+            "TERM",
+            "screen-256color"
+        )])));
+    }
+
+    #[test]
+    fn tmux_term_is_not_detected() {
+        assert!(!detect_sgr_pixel_mouse_from(env(&[(
+            "TERM",
+            "tmux-256color"
+        )])));
+    }
+
+    #[test]
+    fn unset_term_is_not_detected_for_sgr_pixel_mouse() {
+        assert!(!detect_sgr_pixel_mouse_from(env(&[])));
+    }
+
+    /// The acceptance-criteria case: a real WezTerm session running inside
+    /// tmux must not be inferred through the multiplexer — `$TMUX` wins
+    /// even though `TERM_PROGRAM` alone would otherwise say `true`.
+    #[test]
+    fn wezterm_term_program_under_tmux_is_not_detected() {
+        assert!(!detect_sgr_pixel_mouse_from(env(&[
+            ("TERM_PROGRAM", "WezTerm"),
+            ("TMUX", "/tmp/tmux-1000/default,1234,0"),
+        ])));
+    }
+
+    // ── DECRQM reply parsing (quadraui#1048) ────────────────────────────
+
+    #[test]
+    fn decrqm_reply_parses_each_ps_value() {
+        for ps in 0u8..=4 {
+            let reply = format!("\x1b[?1016;{ps}$y");
+            assert_eq!(
+                parse_decrqm_reply(reply.as_bytes()),
+                Some(ps),
+                "failed to parse Ps={ps}"
+            );
+        }
+    }
+
+    #[test]
+    fn decrqm_reply_truncated_before_terminator_fails_to_parse() {
+        assert_eq!(parse_decrqm_reply(b"\x1b[?1016;1"), None);
+        assert_eq!(parse_decrqm_reply(b""), None);
+        assert_eq!(parse_decrqm_reply(b"\x1b[?1016$y"), None); // no Ps field at all
+        assert_eq!(parse_decrqm_reply(b"\x1b[?1016;abc$y"), None); // non-numeric Ps
+    }
+
+    #[test]
+    fn decrqm_ps_1_and_3_report_the_mode_supported() {
+        assert!(decrqm_reply_supports_mode(Some(1)));
+        assert!(decrqm_reply_supports_mode(Some(3)));
+    }
+
+    #[test]
+    fn decrqm_ps_0_2_4_report_the_mode_unsupported() {
+        for ps in [0u8, 2, 4] {
+            assert!(
+                !decrqm_reply_supports_mode(Some(ps)),
+                "Ps={ps} must resolve to unsupported"
+            );
+        }
+    }
+
+    /// A timeout (no reply parsed at all — represented as `None`, the same
+    /// value a truncated/unparseable reply produces) must resolve to
+    /// `false`, never fall back to a heuristic guess.
+    #[test]
+    fn decrqm_timeout_reports_the_mode_unsupported() {
+        assert!(!decrqm_reply_supports_mode(None));
     }
 
     // ── System theme detection (quadraui#952) ───────────────────────────

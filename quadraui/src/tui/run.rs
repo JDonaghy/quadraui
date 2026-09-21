@@ -180,6 +180,27 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     // `run()` and the runner won't double-push.
     let kbd_enhanced = push_keyboard_enhancement(&mut stdout);
 
+    // SGR-Pixels mouse mode (quadraui#1048) — only attempted when mouse
+    // capture itself is on. Requires *both* the live DECRQM probe saying
+    // the terminal supports mode 1016 *and* a real, non-zero pixel cell
+    // size — a terminal that would happily report pixel coordinates but
+    // whose `window_size()` can't tell us how big a cell actually is (or
+    // doesn't fill `ws_xpixel`/`ws_ypixel` at all) must never have `?1016h`
+    // sent to it, since there would be no correct way to divide the
+    // resulting coordinates back into cells. See `tui::caps`'s module doc
+    // for why this probe (unlike the kitty-keyboard one) never falls back
+    // to a heuristic guess on an ambiguous/absent answer.
+    let probed_cell_pixel_size = if config.mouse && super::caps::probe_sgr_pixel_mouse() {
+        query_cell_pixel_size()
+    } else {
+        None
+    };
+    let sgr_pixel_mouse = probed_cell_pixel_size.is_some();
+    let cell_pixel_size = probed_cell_pixel_size.unwrap_or(crate::TerminalCellSize::new(1.0, 1.0));
+    if sgr_pixel_mouse {
+        let _ = enable_sgr_pixel_mouse(&mut stdout);
+    }
+
     let mut backend = TuiBackend::new();
     // Overwrite `TuiBackend::new()`'s environment-only guess with the live
     // answer: whether the enhancement flags were actually pushed just now
@@ -194,6 +215,13 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     // arrive this session, instead of finding out by a mouse gesture
     // silently never firing.
     backend.set_mouse_enabled(config.mouse);
+    // Record the SGR-Pixels negotiation outcome (quadraui#1048) — see
+    // `crate::backend::BackendCaps::sgr_pixel_mouse`'s doc. `cell_pixel_size`
+    // stays the identity `(1.0, 1.0)` whenever `sgr_pixel_mouse` is `false`,
+    // so `TuiBackend::poll_events`/`wait_events` dividing by it is always a
+    // no-op in that (overwhelmingly common) case.
+    backend.set_sgr_pixel_mouse(sgr_pixel_mouse);
+    backend.set_cell_pixel_size(cell_pixel_size);
     let crossterm_backend = CrosstermBackend::new(stdout);
     // Quantise every frame's SGR to what this terminal actually supports
     // (quadraui#826) — `backend.color_depth()` was detected from
@@ -221,6 +249,13 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     let mut terminal = terminal.borrow_mut();
     if kbd_enhanced {
         let _ = pop_keyboard_enhancement(terminal.backend_mut());
+    }
+    if sgr_pixel_mouse {
+        // `?1016l` ahead of `DisableMouseCapture`, mirroring the enable
+        // order (quadraui#1048) — this inner `catch_unwind` block runs on
+        // every exit path (including a panic), so a session that turned
+        // pixel mode on always turns it back off.
+        let _ = disable_sgr_pixel_mouse(terminal.backend_mut());
     }
     let _ = disable_raw_mode();
     if config.mouse {
@@ -329,6 +364,24 @@ fn run_inner<A: AppLogic>(
             // Painting stays live because `render_frame` re-reads the real
             // terminal size every frame.
             if let UiEvent::WindowResized { viewport } = event {
+                // quadraui#1048: a font-size change resizes the terminal in
+                // *pixels* without necessarily changing its row/column
+                // count, silently invalidating the cached
+                // `TuiBackend::cell_pixel_size` divisor SGR-Pixels mouse
+                // scaling depends on — re-query on every resize, not just
+                // at startup. A terminal that stops reporting a usable
+                // pixel size mid-session (e.g. a `window_size()` that starts
+                // returning 0) degrades cleanly back to cell-mode-shaped
+                // (identity) division rather than keeping a stale divisor.
+                if backend.sgr_pixel_mouse() {
+                    match query_cell_pixel_size() {
+                        Some(size) => backend.set_cell_pixel_size(size),
+                        None => {
+                            backend.set_sgr_pixel_mouse(false);
+                            backend.set_cell_pixel_size(crate::TerminalCellSize::new(1.0, 1.0));
+                        }
+                    }
+                }
                 resize_debouncer.note(viewport);
                 resize_deadline = Some(Instant::now() + RESIZE_SETTLE);
                 needs_redraw = true;
@@ -556,6 +609,47 @@ fn push_keyboard_enhancement(stdout: &mut io::Stdout) -> bool {
 fn pop_keyboard_enhancement(backend: &mut LiveBackend) -> io::Result<()> {
     use ratatui::crossterm::event::PopKeyboardEnhancementFlags;
     execute!(backend, PopKeyboardEnhancementFlags)
+}
+
+/// Resolve this terminal's real per-cell pixel size from a live
+/// `window_size()` query (quadraui#1048), or `None` when it can't be
+/// determined: the query itself fails (always the case on Windows —
+/// crossterm's own doc says pixel size "is not implemented for the Windows
+/// API"), or it succeeds but reports a `0` for any of `rows`/`columns`/
+/// `width`/`height` — a real terminal that simply doesn't fill
+/// `ws_xpixel`/`ws_ypixel` (documented as "unused" by
+/// <https://man7.org/linux/man-pages/man4/tty_ioctl.4.html> on unix). Either
+/// way, SGR-Pixels mode must not be enabled without a real, non-zero
+/// divisor to scale its coordinates back into cells — see
+/// [`run_with`]'s call site.
+fn query_cell_pixel_size() -> Option<crate::TerminalCellSize> {
+    let ws = ratatui::crossterm::terminal::window_size().ok()?;
+    if ws.rows == 0 || ws.columns == 0 || ws.width == 0 || ws.height == 0 {
+        return None;
+    }
+    Some(crate::TerminalCellSize::new(
+        ws.width as f32 / ws.columns as f32,
+        ws.height as f32 / ws.rows as f32,
+    ))
+}
+
+/// Enable SGR-Pixels mouse mode (`CSI ? 1016 h`, quadraui#1048). Crossterm
+/// has no typed `Command` for mode 1016 (only 1006, via
+/// `EnableMouseCapture`), so this writes the raw DEC private-mode sequence
+/// directly — the same escape-sequence shape [`ratatui::crossterm::event::EnableMouseCapture`]
+/// itself would use for a mode crossterm did model.
+fn enable_sgr_pixel_mouse(w: &mut impl io::Write) -> io::Result<()> {
+    w.write_all(b"\x1b[?1016h")?;
+    w.flush()
+}
+
+/// Disable SGR-Pixels mouse mode (`CSI ? 1016 l`) — the teardown-time
+/// inverse of [`enable_sgr_pixel_mouse`]. Called ahead of
+/// `DisableMouseCapture` in [`run_with`]'s teardown, mirroring the enable
+/// order.
+fn disable_sgr_pixel_mouse(w: &mut impl io::Write) -> io::Result<()> {
+    w.write_all(b"\x1b[?1016l")?;
+    w.flush()
 }
 
 // ── Selection pipeline tests ──────────────────────────────────────────────────

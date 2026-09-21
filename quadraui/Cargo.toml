@@ -61,7 +61,9 @@ terminal = ["dep:portable-pty", "dep:vt100"]
 # `keyring` crate backs every backend's default, TUI included (this is
 # the one Electron-parity capability that needs no window, no display
 # server, and no desktop session).
-tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring"]
+# `dep:libc` (quadraui#1048): unix-only, see the `[target.'cfg(unix)'.dependencies]`
+# table below for why — a no-op reference on every other target.
+tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring", "dep:libc"]
 
 # Public GTK rasterisers in `quadraui::gtk`. Pulls in gtk4 + pangocairo.
 # `arboard/image-data` (issue #954): `GtkClipboard::read_image`/
@@ -227,6 +229,22 @@ keyring = { version = "4", optional = true }
 # `CARGO_FEATURE_GTK` is set, so a non-`gtk` build never shells out to
 # `pkg-config` at all.
 pkg-config = "0.3"
+
+# Unix-only optional dep (quadraui#1048): `tui::caps::probe_sgr_pixel_mouse`'s
+# DECRQM reply read needs a raw, cancellable `poll(2)` on stdin — crossterm's
+# own `event::poll`/`read` don't recognise the `CSI ? 1016 ; Ps $ y` reply as
+# any known `Event`, so routing it through them risks leaking the raw bytes
+# into the app as stray key events (see that function's doc). `libc` is
+# already resolved transitively (crossterm itself depends on it on unix), so
+# this adds no new version to the dependency graph — only a direct name for
+# `tui::caps` to call `poll`/`pollfd`/`POLLIN` through. Gated on `cfg(unix)`,
+# mirroring the macOS/Windows target tables below, so `dep:libc` in the `tui`
+# feature is simply inert on a target where this table doesn't apply (e.g.
+# Windows, whose `query_sgr_pixel_decrqm` has its own `#[cfg(not(unix))]`
+# fallback — see that function's doc for why a std-only spawned-thread read
+# would be a correctness bug there, not just a missing feature).
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
 
 # macOS-only optional deps. Gated on `target_os = "macos"` so the `macos`
 # feature is a no-op on other platforms — keeps cross-platform CI green.

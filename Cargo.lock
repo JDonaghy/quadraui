@@ -2829,6 +2829,7 @@ dependencies = [
  "foreign-types",
  "gtk4",
  "keyring",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
