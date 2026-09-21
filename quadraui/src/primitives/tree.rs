@@ -29,6 +29,7 @@
 //! the viewport row count.
 
 use crate::event::Rect;
+use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,
 };
@@ -278,6 +279,67 @@ impl TreeView {
             resolved_scroll_offset,
         }
     }
+
+    /// Vertical scrollbar geometry for this tree rendered into `area`, or
+    /// `None` when the tree is empty or all rows fit in the viewport
+    /// (#1043 — before this method, an overflowing tree had no
+    /// host-facing way to ask for a scroll affordance short of
+    /// hand-rolling one per backend, and [`crate::Backend::draw_tree`]
+    /// painted none at all).
+    ///
+    /// This is the single source of truth shared by any rasteriser that
+    /// paints a tree scrollbar and consumers that hit-test the resolved
+    /// `track`/`thumb_start`/`thumb_len` to implement thumb dragging —
+    /// mirrors [`ListView::vscrollbar`](crate::primitives::list::ListView::vscrollbar).
+    /// Reach it backend-agnostically via
+    /// [`crate::Backend::tree_vscrollbar`].
+    ///
+    /// Unlike `ListView`, `TreeView` rows can have mixed heights on pixel
+    /// backends (`Decoration::Header` rows paint shorter than others —
+    /// see [`crate::primitives::layout_metrics::tree_layout`]). This
+    /// method still sizes the thumb against a uniform `row_height`, the
+    /// same approximation `ListView::vscrollbar` already makes: a
+    /// pixel-exact extent would require summing every row's real
+    /// measured height every frame just to position a thumb, and the
+    /// thumb only needs to be proportional, not a promise of pixel-exact
+    /// travel.
+    ///
+    /// # Arguments
+    ///
+    /// - `area` — the tree surface rect, in surface-native units (TUI
+    ///   cells, GTK / macOS / Windows pixels).
+    /// - `row_height` — height of one row: `1.0` on TUI, `line_height` on
+    ///   pixel backends. The scrollbar occupies the rightmost column of
+    ///   `area`, and `row_height` also serves as both the column width
+    ///   and the minimum thumb length (same convention as
+    ///   `ListView::vscrollbar`).
+    pub fn vscrollbar(&self, area: Rect, row_height: f32) -> Option<Scrollbar> {
+        if row_height <= 0.0 {
+            return None;
+        }
+        let total = self.rows.len() as f32;
+        if total == 0.0 {
+            return None;
+        }
+        let visible = (area.height / row_height).floor();
+        if total <= visible {
+            return None;
+        }
+        let track = Rect::new(
+            area.x + area.width - row_height,
+            area.y,
+            row_height,
+            area.height,
+        );
+        Some(Scrollbar::vertical(
+            self.id.clone(),
+            track,
+            self.scroll_offset as f32,
+            total,
+            visible,
+            row_height,
+        ))
+    }
 }
 
 /// Events a `TreeView` emits back to the app.
@@ -517,5 +579,91 @@ mod tests {
         assert_eq!(layout.resolved_scroll_offset, 2);
         assert_eq!(layout.visible_rows.len(), 1);
         assert_eq!(layout.visible_rows[0].row_idx, 2);
+    }
+
+    // ── #1043 TreeView::vscrollbar ──────────────────────────────────────
+
+    mod vscrollbar_tests {
+        use super::*;
+
+        /// Build a tree with `n_rows` leaf rows, scrolled to `scroll_offset`.
+        fn vtree(n_rows: usize, scroll_offset: usize) -> TreeView {
+            make_tree(
+                (0..n_rows)
+                    .map(|i| make_tree_row(&[i as u16], 0, &format!("row{i}")))
+                    .collect(),
+                scroll_offset,
+            )
+        }
+
+        #[test]
+        fn none_when_tree_is_empty() {
+            let t = vtree(0, 0);
+            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+        }
+
+        #[test]
+        fn none_when_rows_fit_in_viewport() {
+            // 5 rows, 10-row viewport — all fit, no scrollbar.
+            let t = vtree(5, 0);
+            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+        }
+
+        #[test]
+        fn none_when_rows_exactly_fill_viewport() {
+            // 10 rows, 10-row viewport — total == visible, no scrollbar.
+            let t = vtree(10, 0);
+            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0).is_none());
+        }
+
+        #[test]
+        fn none_when_row_height_is_zero_or_negative() {
+            let t = vtree(50, 0);
+            assert!(t.vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 0.0).is_none());
+            assert!(t
+                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), -1.0)
+                .is_none());
+        }
+
+        #[test]
+        fn track_spans_rightmost_column() {
+            let t = vtree(20, 0);
+            let sb = t
+                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+                .expect("overflow should yield a scrollbar");
+            // Rightmost column (x=19), full height, 1 unit wide.
+            assert_eq!(sb.track.x, 19.0);
+            assert_eq!(sb.track.y, 0.0);
+            assert_eq!(sb.track.width, 1.0);
+            assert_eq!(sb.track.height, 10.0);
+            // Thumb starts at the top when scroll_offset == 0.
+            assert_eq!(sb.thumb_start, 0.0);
+            assert!(sb.thumb_len > 0.0 && sb.thumb_len < sb.track.height);
+        }
+
+        #[test]
+        fn thumb_advances_with_scroll_offset() {
+            let t = vtree(20, 10);
+            let sb = t
+                .vscrollbar(Rect::new(0.0, 0.0, 20.0, 10.0), 1.0)
+                .expect("overflow should yield a scrollbar");
+            assert!(
+                sb.thumb_start > 0.0,
+                "thumb should have travelled from the top once scrolled"
+            );
+        }
+
+        #[test]
+        fn pixel_units_row_height_is_track_width_and_min_thumb() {
+            // GTK-style: row_height = 18.5px. Track column width and
+            // minimum thumb length both derive from it, same convention
+            // as `ListView::vscrollbar`.
+            let t = vtree(50, 0);
+            let sb = t
+                .vscrollbar(Rect::new(0.0, 0.0, 300.0, 200.0), 18.5)
+                .expect("overflow should yield a scrollbar");
+            assert_eq!(sb.track.width, 18.5);
+            assert!(sb.thumb_len >= 18.5);
+        }
     }
 }
