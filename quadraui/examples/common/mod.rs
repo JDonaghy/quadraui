@@ -26,6 +26,11 @@
 //! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree
 //!   section exercising `SidebarSystem::reveal` (#595), used by
 //!   `tui_sidebar_reveal` / `gtk_sidebar_reveal`.
+//! - [`SidebarPanelBodyDemo`] (in [`sidebar_panel_body_demo`]) —
+//!   `quadraui::compose::sidebar_panel_body::SidebarPanelBody` (#1041)
+//!   composing a background fill + cyclable header/search chrome + a
+//!   raw `TreeView` body + a hand-built scrollbar. Used by
+//!   `tui_sidebar_panel_body` / `gtk_sidebar_panel_body`.
 //! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
 //!   (#596) mounted inside an `AppShell` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
@@ -105,6 +110,7 @@ pub mod selection_app;
 pub mod shell_app;
 pub mod shell_menu_demo;
 pub mod sidebar_panel_app;
+pub mod sidebar_panel_body_demo;
 pub mod sidebar_reveal_demo;
 pub mod sidebar_search;
 pub mod split_app;
@@ -170,6 +176,7 @@ pub use selection_app::SelectionDemo;
 pub use shell_app::ShellApp;
 pub use shell_menu_demo::ShellMenuDemo;
 pub use sidebar_panel_app::SidebarPanelApp;
+pub use sidebar_panel_body_demo::SidebarPanelBodyDemo;
 pub use sidebar_reveal_demo::SidebarRevealDemo;
 pub use sidebar_search::SidebarSearchApp;
 pub use split_app::SplitApp;

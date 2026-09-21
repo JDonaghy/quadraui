@@ -126,6 +126,8 @@ mod selection_app;
 mod shell_menu_demo;
 #[path = "../examples/common/sidebar_panel_app.rs"]
 mod sidebar_panel_app;
+#[path = "../examples/common/sidebar_panel_body_demo.rs"]
+mod sidebar_panel_body_demo;
 #[path = "../examples/common/sidebar_reveal_demo.rs"]
 mod sidebar_reveal_demo;
 #[path = "../examples/common/split_app.rs"]
@@ -202,6 +204,7 @@ use search_panel::SearchPanelApp;
 use selection_app::SelectionDemo;
 use shell_menu_demo::ShellMenuDemo;
 use sidebar_panel_app::SidebarPanelApp;
+use sidebar_panel_body_demo::SidebarPanelBodyDemo;
 use sidebar_reveal_demo::SidebarRevealDemo;
 use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
@@ -5473,6 +5476,146 @@ fn sidebar_reveal_expands_a_collapsed_section_then_scrolls() {
     assert!(
         after.contains("item29"),
         "reveal must expand the collapsed section before scrolling item29 into view:\n{after}"
+    );
+}
+
+// ─── SidebarPanelBodyDemo: `SidebarPanelBody` composer (#1041) ─────────────
+
+/// Default chrome mode is `HeaderAndSearch`: the header text and the
+/// (empty-query) search placeholder must both be visible, painted by
+/// one `draw_settings_chrome` call the composer's `render` issued —
+/// exactly the "header + search" combination the audit's Settings and
+/// Extensions rungs needed and previously hand-rolled per backend.
+#[test]
+fn sidebar_panel_body_starts_with_header_and_search_chrome() {
+    let driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("ITEMS"),
+        "header row should be visible:\n{screen}"
+    );
+    assert!(
+        screen.contains("Filter items"),
+        "search row should show the placeholder while empty/unfocused:\n{screen}"
+    );
+    assert!(
+        screen.contains("chrome=header+search"),
+        "status bar should confirm the starting chrome mode:\n{screen}"
+    );
+}
+
+/// `c` cycles the chrome mode; the composer's `layout()` must actually
+/// reserve/free the chrome rows it claims to — proven by the first body
+/// row (`item0`) moving up one row once the header disappears, not just
+/// by the header text itself vanishing.
+#[test]
+fn sidebar_panel_body_cycle_removes_chrome_and_shifts_body_up() {
+    let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
+    let before_row = driver
+        .find("item0")
+        .unwrap_or_else(|| panic!("item0 should be visible:\n{}", driver.screen()));
+
+    driver.type_char('c'); // HeaderAndSearch → None (see ChromeMode::next)
+
+    let after = driver.screen();
+    assert!(
+        !after.contains("ITEMS"),
+        "header row should be gone once chrome is None:\n{after}"
+    );
+    assert!(
+        after.contains("chrome=none"),
+        "status bar should confirm the new chrome mode:\n{after}"
+    );
+    let after_row = driver
+        .find("item0")
+        .unwrap_or_else(|| panic!("item0 should still be visible:\n{after}"));
+    assert!(
+        after_row.1 < before_row.1,
+        "removing the 2-row header+search chrome should move item0 up \
+         (before y={}, after y={}):\n{after}",
+        before_row.1,
+        after_row.1
+    );
+}
+
+/// `c` twice lands on `Header`-only chrome: the title row stays, but the
+/// search row (and its placeholder) must not — proving the composer
+/// treats the two variants independently rather than always painting
+/// both rows [`crate::Backend::draw_settings_chrome`] can produce.
+#[test]
+fn sidebar_panel_body_header_only_mode_has_no_search_row() {
+    let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
+    driver.type_char('c'); // HeaderAndSearch → None
+    driver.type_char('c'); // None → Header
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("chrome=header"),
+        "status bar should confirm Header-only mode:\n{screen}"
+    );
+    assert!(
+        screen.contains("ITEMS"),
+        "header row should still be visible:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Filter items"),
+        "search row/placeholder must not appear in header-only mode:\n{screen}"
+    );
+}
+
+/// `/` focuses the search row (header+search mode only) and typed
+/// characters filter the body's rows — proving the body widget the
+/// composer painted is reading the same query the chrome row displays,
+/// not two independent copies of it.
+#[test]
+fn sidebar_panel_body_search_query_filters_body_rows() {
+    let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
+    assert!(
+        driver.screen_contains("item0"),
+        "item0 should be visible unfiltered:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('/'); // focus the search row
+    for ch in "item1".chars() {
+        driver.type_char(ch);
+    }
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("item1"),
+        "item1 matches the \"item1\" query and should render (also proves \
+         the query itself shows in the search row):\n{screen}"
+    );
+    assert!(
+        !screen.contains("item0"),
+        "item0 does not contain \"item1\" and should be filtered out:\n{screen}"
+    );
+}
+
+/// `↓` moves the panel's scroll offset — the composer reserved a
+/// scrollbar gutter (`scrollbar_gutter: Some(..)`), and the demo paints
+/// a real `Scrollbar` into `layout.scrollbar_rect`; scrolling far enough
+/// must bring the last row into view, proving the gutter geometry the
+/// composer returned is what the demo actually used to build the
+/// scrollbar's track.
+#[test]
+fn sidebar_panel_body_scroll_reaches_last_row() {
+    let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
+    let before = driver.screen();
+    assert!(
+        !before.contains("item39"),
+        "item39 (last of 40 rows) should start off-screen:\n{before}"
+    );
+
+    for _ in 0..39 {
+        driver.press_named(NamedKey::Down);
+    }
+
+    let after = driver.screen();
+    assert!(
+        after.contains("item39"),
+        "scrolling to the end should bring item39 into view:\n{after}"
     );
 }
 
