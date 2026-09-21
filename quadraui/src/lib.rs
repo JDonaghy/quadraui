@@ -594,10 +594,11 @@ pub use compose::{
     FolderPickerEvent, FormController, FormControllerEvent, GroupLayout, HelpAction, HelpNote,
     HelpOverlayController, HelpOverlayEvent, HelpRegistry, MenuDef, MenuEvent, MenuSystem,
     MessageDialogController, MessageDialogEvent, NavigationMode, Pane, PaneDragRect, PaneTab,
-    PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarSectionDef, SidebarSystem,
-    StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
-    ToolbarHoverTracker, TreeController, TreeControllerEvent, ViewHelp, WorkspaceController,
-    WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
+    PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
+    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem, StatusBarAction,
+    StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToolbarHoverTracker,
+    TreeController, TreeControllerEvent, ViewHelp, WorkspaceController, WorkspaceDoc,
+    WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

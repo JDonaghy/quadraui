@@ -33,6 +33,9 @@
 //! - [`notify_or_toast`] — send a [`crate::backend::Notification`]
 //!   natively where the backend supports it, degrade to the in-canvas
 //!   `Toast` primitive where it doesn't (issue #955).
+//! - [`SidebarPanelBody`] — background fill + optional header/search
+//!   chrome + body widget + scrollbar-gutter reservation for a sidebar
+//!   panel, composed from existing `Backend` methods (issue #1041).
 //!
 //! # Adopt-or-demote pass (#825, before the `v0.1.0` tag)
 //!
@@ -65,6 +68,7 @@ pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
 pub mod notification;
+pub mod sidebar_panel_body;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
 pub mod tab_group;
@@ -94,6 +98,7 @@ pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMa
 pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
 pub use message_dialog::{MessageDialogController, MessageDialogEvent};
 pub use notification::notify_or_toast;
+pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
 };

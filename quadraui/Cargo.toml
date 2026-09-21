@@ -1003,6 +1003,21 @@ name = "gtk_sidebar_panel"
 path = "examples/gtk_sidebar_panel.rs"
 required-features = ["gtk"]
 
+# #1041 — `SidebarPanelBody` sidebar-panel body composer. Both entries
+# are mandatory, not cosmetic: without an explicit `[[example]]`, cargo's
+# autodiscovery picks the file up with NO `required-features`, so
+# `gtk_sidebar_panel_body.rs` gets compiled by `cargo test --features tui`
+# and fails on `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_sidebar_panel_body"
+path = "examples/tui_sidebar_panel_body.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_sidebar_panel_body"
+path = "examples/gtk_sidebar_panel_body.rs"
+required-features = ["gtk"]
+
 [[example]]
 name = "tui_text_input"
 path = "examples/tui_text_input.rs"
