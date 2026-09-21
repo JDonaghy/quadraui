@@ -71,6 +71,16 @@ pub fn draw_editor(
 ) -> EditorPaintResult {
     let mut result = EditorPaintResult::default();
 
+    // Bounds-check overlay writes against the buffer's *actual* allocated
+    // extent, not the caller-supplied `area`. The two are normally
+    // identical, but can diverge across a resize (see module docs / #1040):
+    // the host computes `area` from a layout pass against one terminal
+    // size, and by the time this paint runs `buf` may already have been
+    // reallocated for a smaller size. Indexing against a stale, larger
+    // `area` panics with "index outside of buffer"; indexing against
+    // `buf.area` is always safe.
+    let buf_area = buf.area;
+
     let window_bg = qc(if editor.show_active_bg {
         theme.editor_active_background
     } else {
@@ -218,7 +228,7 @@ pub fn draw_editor(
                     break;
                 }
                 let cx = text_area_x + vis_col;
-                if cx < area.x + area.width && screen_y < area.y + area.height {
+                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
                     let cell = &mut buf[(cx, screen_y)];
                     if cell.symbol() == " " {
                         let is_active = editor.active_indent_col == Some(guide_col);
@@ -242,7 +252,7 @@ pub fn draw_editor(
                     break;
                 }
                 let cx = text_area_x + vis_col;
-                if cx < area.x + area.width && screen_y < area.y + area.height {
+                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
                     let cell = &mut buf[(cx, screen_y)];
                     cell.set_bg(cc_bg);
                 }
@@ -282,7 +292,7 @@ pub fn draw_editor(
                     break;
                 }
                 let cx = text_area_x + vis_col;
-                if cx < area.x + area.width && screen_y < area.y + area.height {
+                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
                     let cell = &mut buf[(cx, screen_y)];
                     cell.set_fg(diag_fg);
                     cell.modifier |= Modifier::UNDERLINED;
@@ -305,7 +315,7 @@ pub fn draw_editor(
                     break;
                 }
                 let cx = text_area_x + vis_col;
-                if cx < area.x + area.width && screen_y < area.y + area.height {
+                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
                     let cell = &mut buf[(cx, screen_y)];
                     cell.set_fg(spell_fg);
                     cell.modifier |= Modifier::UNDERLINED;
@@ -327,7 +337,7 @@ pub fn draw_editor(
                     continue;
                 }
                 let cx = text_area_x + vis_col;
-                if cx < area.x + area.width && screen_y < area.y + area.height {
+                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
                     let cell = &mut buf[(cx, screen_y)];
                     cell.set_bg(bracket_bg);
                 }
@@ -725,5 +735,114 @@ fn render_selection(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::editor::{DiagnosticMark, SpellMark};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect as RtRect;
+
+    /// Minimal one-line [`EditorLine`] carrying every one of the five
+    /// decoration-overlay categories fixed by #1040, at the given columns.
+    /// All columns land past `raw_text`'s own length — none of the five
+    /// paint sites require character content under them to attempt the
+    /// `buf[(cx, screen_y)]` index that panics pre-fix.
+    fn decorated_line(line_idx: usize, col: usize) -> EditorLine {
+        EditorLine {
+            raw_text: "x".repeat(col + 2),
+            gutter_text: String::new(),
+            spans: vec![],
+            line_idx,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: vec![DiagnosticMark {
+                start_col: col,
+                end_col: col + 1,
+                severity: DiagnosticSeverity::Error,
+                message: String::new(),
+            }],
+            spell_errors: vec![SpellMark {
+                start_col: col,
+                end_col: col + 1,
+            }],
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: false,
+            segment_col_offset: 0,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: vec![col],
+            colorcolumns: vec![col],
+        }
+    }
+
+    fn test_editor(lines: Vec<EditorLine>, bracket_match_positions: Vec<(usize, usize)>) -> Editor {
+        Editor {
+            id: crate::types::WidgetId::new("editor"),
+            rect: crate::event::Rect::new(0.0, 0.0, 20.0, 5.0),
+            lines,
+            cursor: None,
+            extra_cursors: vec![],
+            selection: None,
+            extra_selections: vec![],
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 2,
+            max_col: 20,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: Default::default(),
+            code_action_lines: Default::default(),
+            bracket_match_positions,
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        }
+    }
+
+    /// #1040 regression: `draw_editor` must bounds-check every overlay
+    /// write against `buf.area` (the buffer's real, already-resized
+    /// extent), not the caller-supplied `area` — a resize between when a
+    /// host computes its layout rects and when `ratatui::Terminal::draw`
+    /// actually reallocates its buffer can leave `area` describing a
+    /// larger region than `buf` actually has. Reproduces that gap
+    /// directly: `area` is wider and taller than `buf`, and every one of
+    /// the five previously-inconsistent overlay categories (indent
+    /// guides, color columns, diagnostics, spell errors, bracket match)
+    /// targets a cell that's inside `area` but outside `buf.area` — both
+    /// horizontally (row 0, column 15, `buf` width 10) and vertically
+    /// (row 1, column 2, `buf` height 1). Pre-fix this panicked with
+    /// ratatui's "index outside of buffer"; post-fix it must silently
+    /// skip the off-buffer writes and return normally.
+    #[test]
+    fn draw_editor_does_not_panic_when_area_outlives_buf() {
+        let lines = vec![
+            decorated_line(0, 15), // triggers the *horizontal* guard
+            decorated_line(1, 2),  // triggers the *vertical* guard
+        ];
+        let editor = test_editor(lines, vec![(0, 15), (1, 2)]);
+        let theme = Theme::default();
+
+        // `buf` is the real, already-shrunk buffer (10x1); `area` is the
+        // stale, larger layout rect (20x5) a host computed before the
+        // resize — exactly #1040's TOCTOU shape.
+        let mut buf = Buffer::empty(RtRect::new(0, 0, 10, 1));
+        let area = RtRect::new(0, 0, 20, 5);
+
+        // Must not panic.
+        let _ = draw_editor(&mut buf, area, &editor, &theme);
     }
 }

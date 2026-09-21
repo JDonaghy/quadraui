@@ -67,7 +67,7 @@ use std::io;
 use std::rc::Rc;
 
 use ratatui::backend::{Backend as RatatuiBackend, ClearType, CrosstermBackend};
-use ratatui::layout::{Position as RtPosition, Rect as RtRect, Size};
+use ratatui::layout::{Position as RtPosition, Rect as RtRect};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::backend::Backend;
@@ -171,13 +171,8 @@ impl<A: AppLogic> TuiVtDriver<A> {
         if full_repaint {
             self.force_full_repaint();
         }
-        paint_frame(
-            &mut self.terminal,
-            &mut self.backend,
-            &self.app,
-            Size::new(self.cols, self.rows),
-        )
-        .expect("CrosstermBackend render into an in-memory vt100 sink is infallible");
+        paint_frame(&mut self.terminal, &mut self.backend, &self.app)
+            .expect("CrosstermBackend render into an in-memory vt100 sink is infallible");
     }
 
     /// Reproduce `ratatui::Terminal::clear()`'s two effects by hand,

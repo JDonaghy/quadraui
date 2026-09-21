@@ -367,46 +367,49 @@ fn run_inner<A: AppLogic>(
     }
 }
 
-/// Render one frame into a `size`-sized surface.
+/// Render one frame.
 ///
-/// Seeds the viewport from the given `size` (rather than querying the
-/// backend), runs `app.render` inside the backend's frame scope, overlays
-/// the active text-selection highlight, applies any editor cursor position
-/// painted this frame, and finalises the frame. Generic over the ratatui
-/// backend `B` so every caller — the live runner (`CrosstermBackend`
-/// wrapping real stdout), the headless `TestBackend` driver, and the
-/// headless *vt100* driver (`CrosstermBackend` wrapping an in-memory ANSI
-/// sink, quadraui#555) — share one paint path.
+/// Runs `app.render` inside the backend's frame scope, overlays the active
+/// text-selection highlight, applies any editor cursor position painted
+/// this frame, and finalises the frame. Generic over the ratatui backend
+/// `B` so every caller — the live runner (`CrosstermBackend` wrapping real
+/// stdout), the headless `TestBackend` driver, and the headless *vt100*
+/// driver (`CrosstermBackend` wrapping an in-memory ANSI sink,
+/// quadraui#555) — share one paint path.
 ///
-/// Split out of [`render_frame`] (which still queries `terminal.size()` for
-/// the live runner and `TestBackend`) because `CrosstermBackend::size()`
-/// queries the process's real controlling terminal (`/dev/tty` on Unix) via
-/// `crossterm::terminal::size()` — a query that has nothing to do with
-/// whatever `Write` sink the backend was constructed with, and fails (or
-/// silently returns the wrong dimensions) under `cargo test`, which has no
-/// controlling terminal wired to the vt100 driver's sink. A caller that
-/// already knows its own fixed size (every `ConformanceDriver` does — it's
-/// exactly the `LogicalViewport` it was built with) calls this directly and
-/// never triggers that query at all.
+/// Used to take an explicit `size: ratatui::layout::Size` parameter so a
+/// caller who already knew its own fixed size (every `ConformanceDriver`
+/// does — it's exactly the `LogicalViewport` it was built with) could avoid
+/// `render_frame`'s `terminal.size()` query, which fails (or silently
+/// returns the wrong dimensions) under `cargo test` — `CrosstermBackend`'s
+/// `size()` queries the process's real controlling terminal (`/dev/tty` on
+/// Unix) regardless of what `Write` sink the backend was actually
+/// constructed with, and `cargo test` has no controlling terminal wired to
+/// the vt100 driver's sink. #1040 removed that parameter: the viewport fed
+/// to `begin_frame` is now derived from `frame.area()` *inside* the
+/// `terminal.draw` closure below, which needs no size query at all — it
+/// reads whatever `Terminal::draw`'s internal `autoresize()` just resized
+/// the buffer to. That's also strictly more correct than a size passed in
+/// by the caller: see the comment above `frame.area()`'s use below for why
+/// a stale caller-supplied size could diverge from the buffer's real
+/// extent and panic.
 pub(crate) fn paint_frame<A, B>(
     terminal: &mut Terminal<B>,
     backend: &mut TuiBackend,
     app: &A,
-    size: ratatui::layout::Size,
 ) -> io::Result<()>
 where
     A: AppLogic,
     B: ratatui::backend::Backend,
 {
-    backend.begin_frame(crate::Viewport::new(
-        size.width as f32,
-        size.height as f32,
-        1.0,
-    ));
     // Issue #830: resolve the currently-focused widget's rect (if any)
     // from this frame's tab stops *before* entering the frame scope —
     // `AppLogic::tab_stops` is `&self`-only and cheap for an app that
-    // already has this on hand from building its `ScreenLayout`.
+    // already has this on hand from building its `ScreenLayout`. This
+    // read is independent of `begin_frame`'s per-frame state (focus
+    // tracking isn't touched by it), so it's safe to keep it ahead of
+    // the `terminal.draw` call even though `begin_frame` itself moved
+    // inside that closure below (#1040).
     let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
         app.tab_stops(A::AreaId::default())
             .into_iter()
@@ -415,6 +418,26 @@ where
     });
     terminal
         .draw(|frame| {
+            // #1040: derive the layout-sizing viewport from the *actual*
+            // frame area `Terminal::draw`'s internal `autoresize()` just
+            // computed for this call — not from a size queried before this
+            // closure ran (the pre-#1040 shape: `render_frame` queried
+            // `terminal.size()`, then `paint_frame` fed that stale value
+            // to `begin_frame` before ever calling `terminal.draw`).
+            // Between such a pre-closure query and `terminal.draw` running,
+            // the real terminal can shrink; `autoresize()` reallocates
+            // `frame.buffer_mut()` for the new, smaller size right before
+            // this closure runs, so `frame.area()` is always in sync with
+            // the buffer `app.render` is about to paint into. Sizing the
+            // layout pass from a stale, larger size instead produced
+            // #1040's panic: window rects computed against the old size
+            // indexed past the already-shrunk buffer's real extent.
+            let frame_area = frame.area();
+            backend.begin_frame(crate::Viewport::new(
+                frame_area.width as f32,
+                frame_area.height as f32,
+                1.0,
+            ));
             backend.enter_frame_scope(frame, |b| {
                 // TUI is single-area; always pass the app's default
                 // `AreaId`. Multi-area runners (GTK) pass the AreaId for
@@ -448,13 +471,16 @@ where
     Ok(())
 }
 
-/// Render one frame, syncing the viewport from the *backend's* real size.
+/// Render one frame.
 ///
-/// Thin wrapper over [`paint_frame`] for callers whose backend can actually
-/// answer `terminal.size()` honestly — the live runner (real stdout) and
-/// the headless `TestBackend` driver (told its size at construction, so
-/// `size()` is just a getter). See [`paint_frame`]'s doc for why a
-/// `CrosstermBackend` wrapping anything else needs to skip this query.
+/// Thin, name-preserving wrapper over [`paint_frame`] for the live runner
+/// (real stdout) and the headless `TestBackend` driver — both call sites
+/// that pre-#1040 needed a pre-`terminal.draw` `terminal.size()` query to
+/// seed `paint_frame`'s (now-removed) `size` parameter. `paint_frame` no
+/// longer needs one (see its doc), so this wrapper's only remaining job is
+/// giving the two live-ish callers a name distinct from the vt100 driver's
+/// direct [`paint_frame`] call — it does not skip anything the direct
+/// caller doesn't also get for free.
 pub(crate) fn render_frame<A, B>(
     terminal: &mut Terminal<B>,
     backend: &mut TuiBackend,
@@ -464,10 +490,7 @@ where
     A: AppLogic,
     B: ratatui::backend::Backend,
 {
-    let size = terminal
-        .size()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    paint_frame(terminal, backend, app, size)
+    paint_frame(terminal, backend, app)
 }
 
 // `EventOutcome` — what the frame loop should do after [`dispatch_event`]
