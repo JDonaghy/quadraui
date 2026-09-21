@@ -429,8 +429,9 @@ pub use primitives::menu_bar::{
 };
 pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
 pub use primitives::minimap::{
-    aggregate_spans, reserved_width, sample_blocks, Minimap, MinimapGrid, MinimapHit,
-    MinimapLayout, MinimapLine, MinimapSizing, MinimapSpan, VisibleMinimapLine,
+    aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
+    MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapSizing, MinimapSpan,
+    VisibleMinimapLine,
 };
 // #822: `SyntaxSpan` was merged into `MinimapSpan` (byte-identical
 // four-field structs). `SyntaxSpan` survives as a `#[deprecated]` `pub
