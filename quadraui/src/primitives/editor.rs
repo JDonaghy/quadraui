@@ -562,6 +562,33 @@ impl EditorLayout {
         };
         self.scroll_left + col_offset + segment_col_offset
     }
+
+    /// Resolve a character column within `editor.lines[view_row]` back to
+    /// an absolute `x` — the exact inverse of [`Self::col_at_x`], so
+    /// `col_at_x(x_at_col(editor, view_row, c)) == c` holds for any `c`
+    /// reachable from a valid on-screen `x` (i.e. `c >= self.scroll_left +
+    /// segment_col_offset`; smaller columns are off the left edge of the
+    /// viewport and have no `x` to return).
+    ///
+    /// Like `col_at_x`, this is a uniform-monospace calculation (`self.
+    /// cell_width`) with no tab expansion — correct for TUI's fixed-cell
+    /// grid, and the default [`crate::Backend`] behaviour for any host
+    /// that hasn't overridden the exact-glyph resolution. A host anchoring
+    /// UI at a caret column (a popup, say) on a backend with per-span
+    /// attributes or proportional fonts should resolve the exact pixel
+    /// position through that backend's own text-shaping engine instead of
+    /// this approximation, the same way [`Self::col_at_x`] recommends
+    /// `Backend::editor_col_at_x` for the inverse direction (#420,
+    /// #1042).
+    pub fn x_at_col(&self, editor: &Editor, view_row: usize, col: usize) -> f32 {
+        let segment_col_offset = editor
+            .lines
+            .get(view_row)
+            .map(|line| line.segment_col_offset)
+            .unwrap_or(0);
+        let col_offset = col.saturating_sub(self.scroll_left + segment_col_offset);
+        self.text_bounds.x + col_offset as f32 * self.cell_width
+    }
 }
 
 impl Editor {
@@ -1035,5 +1062,66 @@ mod tests {
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
         assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x), 7);
+    }
+
+    // ── EditorLayout::x_at_col (#1042) ──────────────────────────────
+
+    #[test]
+    fn editor_x_at_col_round_trips_with_col_at_x_in_monospace_case() {
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_top = 10;
+        ed.scroll_left = 5;
+        ed.lines = vec![line_with_segment_offset(0)];
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+
+        let col = l.col_at_x(&ed, 2, 7.0);
+        let x = l.x_at_col(&ed, 2, col);
+        assert_eq!(l.col_at_x(&ed, 2, x), col);
+    }
+
+    #[test]
+    fn editor_x_at_col_subtracts_segment_col_offset_for_wrapped_rows() {
+        // Inverse of editor_col_at_x_adds_segment_col_offset_for_wrapped_rows:
+        // a column within a wrap-continuation row's segment must resolve
+        // back to the same x col_at_x derived it from.
+        let mut ed = make_editor(4, 100, 40);
+        ed.lines = vec![line_with_segment_offset(20)];
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+
+        assert_eq!(l.x_at_col(&ed, 0, 20), l.text_bounds.x);
+        assert_eq!(l.x_at_col(&ed, 0, 23), l.text_bounds.x + 3.0);
+    }
+
+    #[test]
+    fn editor_x_at_col_out_of_range_row_falls_back_to_scroll_left() {
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_left = 7;
+        ed.lines = Vec::new();
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+        assert_eq!(l.x_at_col(&ed, 0, 7), l.text_bounds.x);
+    }
+
+    #[test]
+    fn editor_col_at_x_and_x_at_col_round_trip_over_a_range() {
+        // The property the issue asks for directly: col_at_x(x_at_col(c))
+        // == c for every valid on-screen column.
+        let mut ed = make_editor(4, 100, 40);
+        ed.scroll_left = 3;
+        ed.lines = vec![line_with_segment_offset(2)];
+        let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let l = ed.layout(vp, 1.0, 1.0);
+
+        let base = l.scroll_left + 2; // segment_col_offset
+        for col in base..base + 20 {
+            let x = l.x_at_col(&ed, 0, col);
+            assert_eq!(
+                l.col_at_x(&ed, 0, x),
+                col,
+                "round-trip failed for col {col}"
+            );
+        }
     }
 }
