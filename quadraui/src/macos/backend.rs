@@ -2000,6 +2000,7 @@ impl Backend for MacBackend {
                 rect.x as f64,
                 rect.y as f64,
                 rect.width as f64,
+                rect.height as f64,
                 line_height,
                 header_text,
                 query,

@@ -244,13 +244,20 @@ const SETTINGS_CURSOR_W: f64 = 1.5;
 /// Prefix rendered before the settings search query.
 const SETTINGS_SEARCH_PREFIX: &str = " /  ";
 
-/// Draw settings-panel chrome: a 2-row strip with a header row and a
-/// search input row, designed to sit immediately above a [`Form`] body.
+/// Draw settings-panel chrome: a header row and, when `height` leaves
+/// room for it, a search input row beneath it, designed to sit
+/// immediately above a [`Form`] body.
 ///
-/// Port of [`crate::gtk::form::draw_settings_chrome`] — same two-row
+/// Port of [`crate::gtk::form::draw_settings_chrome`] — same row
 /// layout, same `" /  "` prefix, same placeholder rule (shown only when
 /// the query is empty *and* the row is inactive), same accent caret when
-/// active.
+/// active, and the same height-aware search-row gate (issue #1041
+/// review): the header row always paints at one `line_height`; the
+/// search row paints only when `height >= line_height * 1.5`, so a
+/// caller reserving a single row (e.g.
+/// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
+/// gets a header-only strip instead of an unrequested second row
+/// painted past its own rect.
 ///
 /// Chrome only: the form body and any scrollbar layered below are painted
 /// separately by the caller.
@@ -267,6 +274,7 @@ pub unsafe fn draw_settings_chrome(
     x: f64,
     y: f64,
     w: f64,
+    height: f64,
     line_height: f64,
     header_text: &str,
     query: &str,
@@ -278,8 +286,15 @@ pub unsafe fn draw_settings_chrome(
         return;
     }
 
+    let paints_search_row = height >= line_height * 1.5;
+    let clip_h = if paints_search_row {
+        line_height * 2.0
+    } else {
+        line_height
+    };
+
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, line_height * 2.0));
+    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, clip_h));
 
     // Row 0: header bar.
     fill_rect(ctx, x, y, w, line_height, theme.header_bg);
@@ -292,47 +307,51 @@ pub unsafe fn draw_settings_chrome(
         color_to_cg(theme.header_fg),
     );
 
-    // Row 1: search input.
-    let search_y = y + line_height;
-    let row_bg = if active {
-        theme.selected_bg
-    } else {
-        theme.tab_bar_bg
-    };
-    fill_rect(ctx, x, search_y, w, line_height, row_bg);
+    // Row 1: search input — only when `height` leaves room for it (see
+    // this fn's doc). Skipped for a header-only strip instead of
+    // overpainting whatever the caller placed directly beneath it.
+    if paints_search_row {
+        let search_y = y + line_height;
+        let row_bg = if active {
+            theme.selected_bg
+        } else {
+            theme.tab_bar_bg
+        };
+        fill_rect(ctx, x, search_y, w, line_height, row_bg);
 
-    draw_text(
-        ctx,
-        font,
-        SETTINGS_SEARCH_PREFIX,
-        x + 2.0,
-        search_y,
-        color_to_cg(theme.muted_fg),
-    );
-    let (prefix_w, _) = measure_text(font, SETTINGS_SEARCH_PREFIX);
-    let q_x = x + 2.0 + prefix_w;
-
-    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
-    let (text, color) = if show_placeholder {
-        (placeholder, theme.muted_fg)
-    } else if query.is_empty() {
-        (query, theme.muted_fg)
-    } else {
-        (query, theme.foreground)
-    };
-    draw_text(ctx, font, text, q_x, search_y, color_to_cg(color));
-
-    if active {
-        let (q_w, _) = measure_text(font, query);
-        let cur_x = q_x + if query.is_empty() { 0.0 } else { q_w };
-        fill_rect(
+        draw_text(
             ctx,
-            cur_x,
-            search_y + 2.0,
-            SETTINGS_CURSOR_W,
-            line_height - 4.0,
-            theme.accent_fg,
+            font,
+            SETTINGS_SEARCH_PREFIX,
+            x + 2.0,
+            search_y,
+            color_to_cg(theme.muted_fg),
         );
+        let (prefix_w, _) = measure_text(font, SETTINGS_SEARCH_PREFIX);
+        let q_x = x + 2.0 + prefix_w;
+
+        let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+        let (text, color) = if show_placeholder {
+            (placeholder, theme.muted_fg)
+        } else if query.is_empty() {
+            (query, theme.muted_fg)
+        } else {
+            (query, theme.foreground)
+        };
+        draw_text(ctx, font, text, q_x, search_y, color_to_cg(color));
+
+        if active {
+            let (q_w, _) = measure_text(font, query);
+            let cur_x = q_x + if query.is_empty() { 0.0 } else { q_w };
+            fill_rect(
+                ctx,
+                cur_x,
+                search_y + 2.0,
+                SETTINGS_CURSOR_W,
+                line_height - 4.0,
+                theme.accent_fg,
+            );
+        }
     }
 
     CGContextRestoreGState(ctx);
@@ -1117,6 +1136,40 @@ mod tests {
                 (r, g, b)
             },
             (255, 255, 255),
+        );
+    }
+
+    /// Issue #1041 review: a `rect.height` of exactly one `line_height`
+    /// (the shape
+    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
+    /// reserves) must not paint the search row — before this fix the
+    /// second row always painted (clipped to `2 * line_height`)
+    /// regardless of what the caller reserved, overpainting whatever sat
+    /// directly beneath a header-only chrome strip.
+    #[test]
+    fn settings_chrome_one_row_height_paints_no_search_row() {
+        let one_row_lh = MacBackend::new().line_height() as f64;
+        let (surface, lh) = paint_settings_chrome_at(
+            QRect::new(0.0, 0.0, W as f32, one_row_lh as f32),
+            "HEADER",
+            "",
+            "placeholder",
+            false,
+        );
+        let theme = Theme::default();
+
+        let (r, g, b, _) = surface.pixel(W - 4, (lh * 0.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "the header row must still paint even when the search row doesn't",
+        );
+
+        let (r, g, b, _) = surface.pixel(W - 4, (lh * 1.5) as u32);
+        assert_eq!(
+            (r, g, b),
+            (255, 255, 255),
+            "a 1-row-tall chrome rect must not paint a search row past its own height",
         );
     }
 }

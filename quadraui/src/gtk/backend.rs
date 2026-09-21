@@ -2501,6 +2501,7 @@ impl Backend for GtkBackend {
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
+            rect.height as f64,
             self.current_line_height,
             header_text,
             query,

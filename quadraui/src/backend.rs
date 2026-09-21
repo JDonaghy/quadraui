@@ -1892,11 +1892,24 @@ pub trait Backend: sealed::Sealed {
     /// disagreeing with what TUI actually paints.
     fn palette_layout(&self, rect: Rect, palette: &Palette) -> PaletteLayout;
 
-    /// Draw settings-panel chrome: a 2-row strip with a header row and a
-    /// search input row, designed to sit immediately above a [`Form`]
-    /// body. See `tui::draw_settings_chrome` / `gtk::draw_settings_chrome`
-    /// for the exact row layout, `" / "`-prefixed prompt construction, and
+    /// Draw settings-panel chrome: a header row and, when `rect.height`
+    /// leaves room for it, a search input row beneath it, designed to
+    /// sit immediately above a [`Form`] body. See
+    /// `tui::draw_settings_chrome` / `gtk::draw_settings_chrome` for the
+    /// exact row layout, `" / "`-prefixed prompt construction, and
     /// placeholder logic.
+    ///
+    /// **Height contract (issue #1041 review):** the header row always
+    /// paints at one `line_height`. The search row paints only when
+    /// `rect.height` covers a second row (every implementer uses the
+    /// same `line_height * 1.5` threshold, matching TUI's `area.height
+    /// < 2` cell check) — a caller that reserves a single row (e.g.
+    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
+    /// gets a header-only strip, not a second, unrequested row painted
+    /// past the rect the caller reserved. Before this contract existed,
+    /// GTK/macOS/Windows always painted both rows regardless of
+    /// `rect.height`, silently overpainting whatever a "header-only"
+    /// caller placed directly beneath the chrome.
     ///
     /// No default impl — every backend implementer sees this as a compile
     /// error and fills in a real rasteriser (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`

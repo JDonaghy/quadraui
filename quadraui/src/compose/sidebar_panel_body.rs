@@ -107,8 +107,13 @@ use crate::Backend;
 /// The two non-empty variants delegate straight to
 /// [`crate::Backend::draw_settings_chrome`] — see that method's doc for
 /// the exact row layout, `" / "`-prefixed prompt construction, and
-/// placeholder logic. This enum only decides *whether* the header row
-/// and the search row are reserved, not how they're painted.
+/// placeholder logic. [`Self::Header`] reserves (and passes) a 1-row
+/// `chrome_rect`; [`Self::HeaderAndSearch`] reserves 2 rows.
+/// `draw_settings_chrome` is height-aware on every backend (issue #1041
+/// review) — it only paints the search row when the rect it's given
+/// covers a second row — so a 1-row `Header` rect reliably paints
+/// header-only everywhere, not just on backends where that happened to
+/// fall out of paint ordering.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SidebarPanelChrome {
     /// No chrome rows reserved — the body rect starts at the top of the
