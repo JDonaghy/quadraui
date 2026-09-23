@@ -318,7 +318,17 @@ impl ShellApp for AppShellDemo {
                 format!("Bottom panel: {new_height:.0}px")
             }
             AppShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
+            // #1055: `AppShell` itself never opens the sidebar for a
+            // bottom-item click (a notifications bell shouldn't have to
+            // become the sidebar's owner just because it was clicked) — an
+            // app that *does* want its bottom item to own the sidebar (the
+            // Settings-gear case this issue exists for) opts in explicitly
+            // by calling `show_panel` with the clicked id, exactly like a
+            // top-panel switch. Before #1055 this call silently no-opped
+            // and the header stayed captioned with whatever top panel was
+            // open previously.
             AppShellEvent::BottomItemClicked { id } => {
+                ctx.shell_mut().show_panel(id);
                 format!("Bottom: {}", id.as_str())
             }
             _ => return,
