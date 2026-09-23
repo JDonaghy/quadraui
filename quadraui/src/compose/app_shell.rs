@@ -1332,11 +1332,26 @@ impl AppShell {
     fn handle_activity_click(&mut self, clicked_id: &WidgetId) -> AppShellEvent {
         for (i, panel) in self.panels.iter().enumerate() {
             if panel.id == *clicked_id {
-                if self.active_panel == Some(i) && self.sidebar_visible {
+                // A bottom item may currently own the sidebar header (see
+                // `show_panel`, issue #1055). Clicking a top panel through
+                // this real click/keyboard path must reclaim the header
+                // exactly like calling `show_panel(top panel)` would,
+                // otherwise the header (and this panel's `is_active` flag
+                // in `build_activity_bar`) stays stuck on the bottom
+                // item's title/highlight indefinitely. This also keeps
+                // `active_panel` in sync with what's actually visible, so
+                // the toggle-hide branch below doesn't fire on a stale
+                // `active_panel` left over from before the bottom item
+                // took ownership.
+                if self.active_panel == Some(i)
+                    && self.sidebar_visible
+                    && self.sidebar_bottom_owner.is_none()
+                {
                     self.sidebar_visible = false;
                     return AppShellEvent::SidebarHidden;
                 } else {
                     self.active_panel = Some(i);
+                    self.sidebar_bottom_owner = None;
                     self.sidebar_visible = true;
                     return AppShellEvent::PanelChanged {
                         panel_id: panel.id.clone(),
@@ -1686,6 +1701,76 @@ mod tests {
             Some(&WidgetId::new("panel:git")),
             "a subsequent show_panel(top panel) must reclaim the header"
         );
+    }
+
+    /// #1055 follow-up: clicking a *different* top panel through the real
+    /// activity-bar click path (`handle_activity_click`, not `show_panel`
+    /// directly) after a bottom item claimed the sidebar must also reclaim
+    /// the header. This is the path `AppShellDemo` and vimcode actually use
+    /// for mouse/keyboard interaction — `show_panel_top_panel_after_bottom_item_reclaims_header`
+    /// only covers the direct-API path.
+    #[test]
+    fn handle_activity_click_top_panel_after_bottom_item_reclaims_header() {
+        let mut s = shell();
+        s.show_panel(&WidgetId::new("panel:settings"));
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:settings")));
+
+        let ev = s.handle_activity_click(&WidgetId::new("panel:git"));
+        assert_eq!(
+            ev,
+            AppShellEvent::PanelChanged {
+                panel_id: WidgetId::new("panel:git")
+            }
+        );
+        assert_eq!(
+            s.active_panel_id(),
+            Some(&WidgetId::new("panel:git")),
+            "clicking a top panel via the activity bar must reclaim the header \
+             from a bottom item, not leave it stuck on Settings"
+        );
+        assert!(s.sidebar_visible());
+
+        let bar = s.build_activity_bar();
+        let git_item = bar
+            .top_items
+            .iter()
+            .find(|i| i.id == WidgetId::new("panel:git"))
+            .unwrap();
+        assert!(
+            git_item.is_active,
+            "Git's activity-bar row must be highlighted once it reclaims the header"
+        );
+    }
+
+    /// #1055 follow-up: the stale-`active_panel` toggle-hide bug. Before the
+    /// fix, `active_panel` stayed on the panel that was active *before* a
+    /// bottom item took ownership, so re-clicking that panel's icon would
+    /// hit the toggle-hide branch (`active_panel == Some(i) && visible`)
+    /// and hide the whole sidebar instead of switching the header back to
+    /// it.
+    #[test]
+    fn handle_activity_click_reclaim_does_not_hide_sidebar() {
+        let mut s = shell();
+        // Explorer (index 0) is active by default. Claim the sidebar with
+        // a bottom item without ever clicking Explorer away.
+        s.show_panel(&WidgetId::new("panel:settings"));
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:settings")));
+        assert!(s.sidebar_visible());
+
+        // Re-clicking Explorer's icon now must switch the header back to
+        // Explorer, not hide the sidebar.
+        let ev = s.handle_activity_click(&WidgetId::new("panel:explorer"));
+        assert_eq!(
+            ev,
+            AppShellEvent::PanelChanged {
+                panel_id: WidgetId::new("panel:explorer")
+            }
+        );
+        assert!(
+            s.sidebar_visible(),
+            "reclaiming the header must not hide the sidebar"
+        );
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:explorer")));
     }
 
     /// A top panel's activity-bar row must not still show as active while

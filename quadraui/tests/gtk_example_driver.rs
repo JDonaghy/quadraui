@@ -328,6 +328,53 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
         "on_shell_event_ctx(BottomItemClicked) must still fire as before: {:?}",
         driver.painted_texts()
     );
+
+    // #1055 follow-up (review): now navigate back to a top panel through
+    // the real keyboard activity-bar path (not `show_panel` directly) and
+    // confirm the header reclaims from Settings. Before the fix,
+    // `handle_activity_click`'s top-panel arm never cleared
+    // `sidebar_bottom_owner`, so the header stayed stuck on "Settings"
+    // forever after this point.
+    //
+    // Activating an item turns keyboard focus back off
+    // (`ShellAdapter::handle`'s `"l" | "Enter" | ...` arm), so `Tab` is
+    // needed to refocus the bar — which also resets the cursor to combined
+    // index 0 (Explorer, `ShellAdapter::handle`'s
+    // `take_activity_focus_requested()` block). `active_panel` was never
+    // moved away from Explorer (only `show_panel` touched Settings), so
+    // this also exercises the second symptom from the review: reclaiming
+    // the *same* `active_panel` index that was active before the bottom
+    // item took over must switch the header back to it, not hit the
+    // toggle-hide branch and hide the sidebar.
+    let reaction = driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Tab should request activity-bar keyboard focus and redraw"
+    );
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "activating Explorer from the activity bar must redraw"
+    );
+
+    let bounds = driver
+        .find_bounds("EXPLORER")
+        .expect("sidebar header must reclaim from the Settings bottom item");
+    assert!(bounds.width > 0.0 && bounds.height > 0.0);
+    assert!(
+        driver.find_bounds("Settings").is_none(),
+        "the stale Settings header must not still be painted once Explorer \
+         reclaims the sidebar: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("Panel: panel:explorer"),
+        "on_shell_event_ctx(PanelChanged) must fire for the reclaiming switch, \
+         not a SidebarHidden event: {:?}",
+        driver.painted_texts()
+    );
 }
 
 /// #454's fix, proven on GTK: `ctx.shell_mut()` reaches the real `AppShell`

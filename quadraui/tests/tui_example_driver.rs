@@ -1670,6 +1670,38 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
         "on_shell_event_ctx(BottomItemClicked) must still fire as before:\n{}",
         driver.screen()
     );
+
+    // #1055 follow-up (review): now click a *different* top panel through
+    // the real mouse click path (not `show_panel` directly) and confirm
+    // the header reclaims from Settings. Before the fix,
+    // `handle_activity_click`'s top-panel arm never cleared
+    // `sidebar_bottom_owner`, so the header stayed stuck on "Settings"
+    // forever after this point.
+    let (x, y) = driver.find("G│").unwrap_or_else(|| {
+        panic!(
+            "Source Control's activity-bar row (icon + separator) should be painted:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("SOURCE CONTROL"),
+        "clicking Source Control's activity-bar icon via the real click path \
+         must reclaim the header from the Settings bottom item:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Settings"),
+        "the stale Settings header must not still be showing once Source \
+         Control reclaims the sidebar:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Panel: panel:git"),
+        "on_shell_event_ctx(PanelChanged) must fire for the reclaiming click:\n{}",
+        driver.screen()
+    );
 }
 
 /// #454: `ctx.shell_mut()` reaches the real `AppShell` instance
