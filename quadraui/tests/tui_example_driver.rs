@@ -1614,6 +1614,64 @@ fn appshell_demo_programmatic_panel_switch_updates_chrome() {
     );
 }
 
+/// #1055: a bottom item (the Settings gear, added via `with_bottom_items`)
+/// can own the sidebar header once its `BottomItemClicked` handler calls
+/// `show_panel` — before the fix, `show_panel` silently no-opped for a
+/// bottom item's id, so the header stayed captioned with whatever top
+/// panel was open previously (here: Explorer) no matter what the sidebar
+/// actually showed. `AppShellDemo::on_shell_event_ctx`'s `BottomItemClicked`
+/// arm now calls `ctx.shell_mut().show_panel(id)` to opt in.
+#[test]
+fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 80, 24);
+
+    assert!(
+        driver.screen_contains("EXPLORER"),
+        "starts on the default (index 0) Explorer panel:\n{}",
+        driver.screen()
+    );
+
+    // Tab focuses the activity bar; three `j`s move the keyboard cursor
+    // from Explorer (index 0) past Search/Git (1, 2) to the Settings
+    // bottom item (combined index 3 — the first item past the 3 top
+    // panels), the same cursor arithmetic
+    // `appshell_demo_tab_focus_then_jj_enter_switches_panel` uses for git.
+    driver.press_named(NamedKey::Tab);
+    for _ in 0..3 {
+        let reaction = driver.type_char('j');
+        assert_eq!(
+            reaction,
+            Reaction::Redraw,
+            "'j' while focused must be intercepted as ActivityBar nav:\n{}",
+            driver.screen()
+        );
+    }
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "activating the Settings bottom item must redraw"
+    );
+
+    assert!(
+        driver.screen_contains("Settings"),
+        "the sidebar header must retitle to the bottom item that now owns it:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("EXPLORER"),
+        "the stale Explorer header must not still be showing once Settings \
+         owns the sidebar:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("Bottom: panel:settings"),
+        "on_shell_event_ctx(BottomItemClicked) must still fire as before:\n{}",
+        driver.screen()
+    );
+}
+
 /// #454: `ctx.shell_mut()` reaches the real `AppShell` instance
 /// `ShellAdapter` renders — `AppShellDemo` binds `Ctrl+B` to
 /// `ctx.shell_mut().toggle_sidebar()`, exactly the call a consumer like

@@ -160,7 +160,21 @@ pub struct AppShellLayout {
 pub struct AppShell {
     panels: Vec<PanelDefinition>,
     bottom_items: Vec<PanelDefinition>,
+    /// Index into `panels` of the top panel most recently made active by a
+    /// click or [`Self::show_panel`]. Drives the top item's `is_active`
+    /// accent and, when `sidebar_bottom_owner` is `None`, the sidebar
+    /// header title — see [`Self::sidebar_owner_panel`].
     active_panel: Option<usize>,
+    /// Index into `bottom_items` of the bottom item that currently owns
+    /// the sidebar header (issue #1055). `None` (the default, and the
+    /// state [`Self::handle_activity_click`]'s `BottomItemClicked` branch
+    /// deliberately leaves untouched) means the header is titled from
+    /// `active_panel` as before. Set only by [`Self::show_panel`] when
+    /// called with a bottom item's id — an app opts a bottom item into
+    /// owning the sidebar by calling `show_panel` from its own
+    /// `BottomItemClicked` handler; a bottom item that never opens the
+    /// sidebar (a notifications bell, say) is unaffected.
+    sidebar_bottom_owner: Option<usize>,
     sidebar_visible: bool,
     /// Sidebar width in line_height multiples.
     sidebar_width: f32,
@@ -245,6 +259,7 @@ impl AppShell {
             panels,
             bottom_items: Vec::new(),
             active_panel: active,
+            sidebar_bottom_owner: None,
             sidebar_visible: true,
             sidebar_width: default_sidebar_width,
             min_sidebar_width: 8.0,
@@ -406,12 +421,32 @@ impl AppShell {
 
     // ── State accessors ──────────────────────────────────────────────
 
+    /// The [`PanelDefinition`] that currently owns the sidebar: the active
+    /// top panel, or (issue #1055) a bottom item that was made the owner
+    /// via [`Self::show_panel`]. This is the same definition
+    /// [`Self::render`] titles the sidebar header from.
     pub fn active_panel(&self) -> Option<&PanelDefinition> {
-        self.active_panel.and_then(|i| self.panels.get(i))
+        self.sidebar_owner_panel()
     }
 
+    /// The id of [`Self::active_panel`] — a top panel's id, or a bottom
+    /// item's id when that bottom item owns the sidebar (issue #1055).
     pub fn active_panel_id(&self) -> Option<&WidgetId> {
         self.active_panel().map(|p| &p.id)
+    }
+
+    /// Resolves whichever [`PanelDefinition`] currently owns the sidebar —
+    /// a bottom item when `sidebar_bottom_owner` is `Some` (issue #1055),
+    /// otherwise the top panel at `active_panel`. Shared by
+    /// [`Self::active_panel`] and [`Self::render`]'s header block so the
+    /// two can never disagree.
+    fn sidebar_owner_panel(&self) -> Option<&PanelDefinition> {
+        if let Some(j) = self.sidebar_bottom_owner {
+            if let Some(p) = self.bottom_items.get(j) {
+                return Some(p);
+            }
+        }
+        self.active_panel.and_then(|i| self.panels.get(i))
     }
 
     pub fn sidebar_visible(&self) -> bool {
@@ -518,10 +553,31 @@ impl AppShell {
 
     // ── Programmatic state control ───────────────────────────────────
 
+    /// Make `panel_id` the sidebar's owner and reveal the sidebar.
+    ///
+    /// Accepts either a top panel's id or, as of issue #1055, a bottom
+    /// item's id (one registered via [`Self::with_bottom_items`] /
+    /// [`Self::add_bottom_item`]) — in the latter case the bottom item
+    /// becomes the sidebar header's title source (see
+    /// [`Self::active_panel`]/[`Self::active_panel_id`]) until `show_panel`
+    /// is called again with a different id. A bottom item's own click
+    /// ([`Self::handle_activity_click`]'s `BottomItemClicked` branch)
+    /// never calls this itself, so an app opts in explicitly from its
+    /// `BottomItemClicked` handler.
+    ///
+    /// A no-op if `panel_id` matches neither a top panel nor a bottom item.
     pub fn show_panel(&mut self, panel_id: &WidgetId) {
         for (i, p) in self.panels.iter().enumerate() {
             if p.id == *panel_id {
                 self.active_panel = Some(i);
+                self.sidebar_bottom_owner = None;
+                self.sidebar_visible = true;
+                return;
+            }
+        }
+        for (j, p) in self.bottom_items.iter().enumerate() {
+            if p.id == *panel_id {
+                self.sidebar_bottom_owner = Some(j);
                 self.sidebar_visible = true;
                 return;
             }
@@ -732,7 +788,10 @@ impl AppShell {
     /// Unregister a bottom item by ID.
     /// Adjusts `activity_cursor` so keyboard navigation remains consistent
     /// after a dynamic removal (mirrors `remove_panel`'s treatment of
-    /// `active_panel`).
+    /// `active_panel`). Also adjusts `sidebar_bottom_owner` (issue #1055)
+    /// the same way `remove_panel` adjusts `active_panel`: shifted down if
+    /// it pointed past the removed item, cleared (falling back to whatever
+    /// `active_panel` names) if it pointed at the removed item itself.
     pub fn remove_bottom_item(&mut self, id: &WidgetId) -> bool {
         let Some(idx) = self.bottom_items.iter().position(|p| p.id == *id) else {
             return false;
@@ -742,6 +801,11 @@ impl AppShell {
         let np = self.panels.len();
         let combined_idx = np + idx;
         self.bottom_items.remove(idx);
+        self.sidebar_bottom_owner = match self.sidebar_bottom_owner {
+            Some(j) if j == idx => None,
+            Some(j) if j > idx => Some(j - 1),
+            other => other,
+        };
         let total = np + self.bottom_items.len();
         if total == 0 {
             self.activity_cursor = 0;
@@ -784,7 +848,14 @@ impl AppShell {
                 id: p.id.clone(),
                 icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
-                is_active: self.active_panel == Some(i) && self.sidebar_visible,
+                // #1055: a top panel only shows as active while it — not a
+                // bottom item — actually owns the sidebar. Without this
+                // guard, showing a bottom item via `show_panel` would leave
+                // the previously-active top panel's row highlighted even
+                // though the header now names the bottom item.
+                is_active: self.sidebar_bottom_owner.is_none()
+                    && self.active_panel == Some(i)
+                    && self.sidebar_visible,
                 is_keyboard_selected: focused && self.activity_cursor == i,
             })
             .collect();
@@ -797,6 +868,13 @@ impl AppShell {
                 id: p.id.clone(),
                 icon: self.resolved_icon(p),
                 tooltip: p.tooltip.clone(),
+                // Deliberately not `self.sidebar_bottom_owner == Some(j)`:
+                // bottom items (gear/bell-style) never painted a persistent
+                // "active" accent even before #1055, and that issue is
+                // scoped to the sidebar header title, not activity-bar
+                // highlighting. `sidebar_owner_panel()` — not this flag —
+                // is what titles the header now that a bottom item can own
+                // it.
                 is_active: false,
                 is_keyboard_selected: focused && self.activity_cursor == np + j,
             })
@@ -892,7 +970,14 @@ impl AppShell {
         *self.cached_activity_bar_bounds.borrow_mut() = Some(layout.activity_bar_bounds);
 
         if let Some(header_bounds) = layout.sidebar_header_bounds {
-            if let Some(panel) = self.active_panel.and_then(|i| self.panels.get(i)) {
+            // #1055: titled from whichever `PanelDefinition` owns the
+            // sidebar — a bottom item when one was made the owner via
+            // `show_panel`, otherwise the active top panel. Before this,
+            // only `self.panels` was ever consulted here, so a bottom item
+            // (a Settings gear, say) could never title its own header —
+            // the sidebar stayed captioned with whatever top panel was
+            // open previously.
+            if let Some(panel) = self.sidebar_owner_panel() {
                 let header_bar = StatusBar {
                     id: WidgetId::new("app-shell:sidebar-header"),
                     left_segments: vec![StatusBarSegment {
@@ -1557,6 +1642,75 @@ mod tests {
             }
         );
         assert_eq!(s.sidebar_visible(), was_visible);
+        // #1055: the bottom item's own click never touches sidebar
+        // ownership — an app opts in explicitly via `show_panel`.
+        assert_eq!(
+            s.active_panel_id(),
+            Some(&WidgetId::new("panel:explorer")),
+            "a bare BottomItemClicked must not retitle the header on its own"
+        );
+    }
+
+    /// #1055: `show_panel` accepts a bottom item's id, not just a top
+    /// panel's — the fix that lets a bottom item (e.g. a Settings gear
+    /// added via `with_bottom_items`) title the sidebar header.
+    #[test]
+    fn show_panel_accepts_bottom_item_id_and_titles_header() {
+        let mut s = shell();
+        assert_eq!(
+            s.active_panel_id(),
+            Some(&WidgetId::new("panel:explorer")),
+            "starts on the top panel"
+        );
+        s.show_panel(&WidgetId::new("panel:settings"));
+        assert!(s.sidebar_visible());
+        assert_eq!(
+            s.active_panel_id(),
+            Some(&WidgetId::new("panel:settings")),
+            "show_panel(bottom item id) must make it the sidebar's owner"
+        );
+        assert_eq!(s.active_panel().unwrap().title, "Settings");
+    }
+
+    /// Switching back to a top panel after a bottom item owned the sidebar
+    /// must hand ownership back — the header must not get stuck on the
+    /// bottom item.
+    #[test]
+    fn show_panel_top_panel_after_bottom_item_reclaims_header() {
+        let mut s = shell();
+        s.show_panel(&WidgetId::new("panel:settings"));
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:settings")));
+        s.show_panel(&WidgetId::new("panel:git"));
+        assert_eq!(
+            s.active_panel_id(),
+            Some(&WidgetId::new("panel:git")),
+            "a subsequent show_panel(top panel) must reclaim the header"
+        );
+    }
+
+    /// A top panel's activity-bar row must not still show as active while
+    /// a bottom item owns the sidebar — otherwise the highlighted icon and
+    /// the header title would disagree about what's open.
+    #[test]
+    fn build_activity_bar_top_panel_not_active_once_bottom_item_owns_sidebar() {
+        let mut s = shell();
+        s.show_panel(&WidgetId::new("panel:settings"));
+        let bar = s.build_activity_bar();
+        assert!(bar.top_items.iter().all(|i| !i.is_active));
+    }
+
+    /// Unregistering the bottom item that currently owns the sidebar must
+    /// clear that ownership (mirrors `remove_last_panel_clears_active` for
+    /// top panels), not leave a dangling index.
+    #[test]
+    fn remove_bottom_item_that_owns_sidebar_clears_ownership() {
+        let mut s = shell();
+        s.show_panel(&WidgetId::new("panel:settings"));
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:settings")));
+        s.remove_bottom_item(&WidgetId::new("panel:settings"));
+        // Falls back to the top panel that was active before the bottom
+        // item took ownership.
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:explorer")));
     }
 
     // ── build_activity_bar ──────────────────────────────────────────
