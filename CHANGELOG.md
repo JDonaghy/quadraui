@@ -55,6 +55,20 @@ release time.
 
 ### Added
 
+- `Icon::color: Option<Color>` + `Icon::with_color(..)` builder (issue
+  #1057) — a tree row's icon can now carry an identity colour, matching
+  `TabIcon::color`'s tab-bar behaviour (#620). `None` (the default from
+  `Icon::new`/`From<&str>`/`From<String>`) paints byte-identical to
+  pre-#1057 rendering; `Some` is honoured by every backend's `TreeView`
+  rasteriser (`tui::tree::draw_tree`, `gtk::tree::draw_tree`,
+  `macos::tree::draw_tree`, `win::tree::draw_tree`), painting both the
+  Nerd Font glyph and its ASCII fallback in that colour. New field on a
+  public struct, so technically rule-8 territory — chosen over a new
+  `TreeRow.icon_color` field (would break ~21 `TreeRow { .. }` literals
+  in vimcode alone) and over a `TabIcon`-style sidecar (awkward for a
+  tree controller). No consumer hits: `grep -rn 'Icon {' ~/src/coord-tui/src
+  ~/src/vimcode/src` returns nothing — both consumers build `Icon` only via
+  `Icon::new`/`From`, never an exhaustive struct literal.
 - `PlatformServices::secret_store()` + `SecretStore` trait (issue #958,
   `ELECTRON_PARITY_AUDIT.md` §1.2 G16, ranked #9b) — get/set/delete access
   to the OS credential store (macOS Keychain, Windows Credential Manager,

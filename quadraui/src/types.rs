@@ -210,6 +210,14 @@ pub struct Icon {
     pub glyph: String,
     /// ASCII or basic-Unicode fallback used when `glyph` cannot render.
     pub fallback: String,
+    /// Glyph colour. `None` (the default from `Icon::new` / the `From`
+    /// impls) paints the icon in the surrounding row's default foreground,
+    /// byte-identical to pre-#1057 rendering. `Some` matches
+    /// [`crate::TabIcon`]'s always-coloured-glyph behaviour (issue #1057):
+    /// every backend's tree renderer paints both the Nerd Font glyph and
+    /// its ASCII fallback in this colour when set.
+    #[serde(default)]
+    pub color: Option<Color>,
 }
 
 impl Icon {
@@ -217,7 +225,15 @@ impl Icon {
         Self {
             glyph: glyph.into(),
             fallback: fallback.into(),
+            color: None,
         }
+    }
+
+    /// Attach a glyph colour (#1057). Painted by tree renderers in place of
+    /// the row's default foreground; see the `color` field docs.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
     }
 }
 

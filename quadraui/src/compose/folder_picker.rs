@@ -500,14 +500,8 @@ impl FolderPickerController {
         };
         let title = format!("Open Folder {root_display}");
 
-        let folder_icon = Icon {
-            glyph: "\u{1F4C1}".to_string(), // 📁
-            fallback: "\u{1F4C1}".to_string(),
-        };
-        let file_icon = Icon {
-            glyph: "\u{2699}".to_string(), // ⚙
-            fallback: "\u{2699}".to_string(),
-        };
+        let folder_icon = Icon::new("\u{1F4C1}", "\u{1F4C1}"); // 📁
+        let file_icon = Icon::new("\u{2699}", "\u{2699}"); // ⚙
 
         let items: Vec<PaletteItem> = self
             .filtered
