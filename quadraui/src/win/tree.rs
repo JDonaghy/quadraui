@@ -29,7 +29,9 @@
 //! is the only Win-GUI rasteriser wired to the flag so far —
 //! `win::activity_bar` still always paints `fallback` (see that
 //! module's doc); extending the rest of the icon-bearing Win-GUI
-//! rasterisers is separate, unstarted scope.
+//! rasterisers is separate, unstarted scope. The chosen glyph paints in
+//! [`crate::types::Icon::color`] when set (#1057), else the row's
+//! `def_fg`.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -151,9 +153,10 @@ pub fn draw_tree(
             } else {
                 icon.fallback.as_str()
             };
+            let icon_fg = icon.color.unwrap_or(def_fg);
             let (iw, ih) = dwrite.measure_text(glyph).unwrap_or((0.0, 0.0));
             let iy = row_rect.y + (row_rect.height - ih) / 2.0;
-            let _ = dwrite.draw_text(target, glyph, Rect::new(cursor_x, iy, iw, ih), def_fg);
+            let _ = dwrite.draw_text(target, glyph, Rect::new(cursor_x, iy, iw, ih), icon_fg);
             cursor_x += iw + 6.0;
         }
 
@@ -474,6 +477,79 @@ mod tests {
             "nerd_fonts_enabled: true should paint the wider glyph icon \
              (\"WWWW\", measured {glyph_width}px) vs the narrower fallback \
              (\"E\", measured {fallback_width}px) painted when false"
+        );
+    }
+
+    /// #1057: a row with `Icon::color` set paints its icon glyph in that
+    /// colour; a row without one paints it in the default row fg,
+    /// unchanged from pre-#1057 rendering. Empty row text (as in
+    /// `nerd_fonts_flag_selects_glyph_or_fallback` above) means the icon
+    /// glyph is the only ink in the row, so the most-inked pixel on the
+    /// row's mid-line is unambiguously the icon. `draw_tree` always
+    /// paints against `Theme::default()` (no theme parameter — see this
+    /// module's doc), so the test reads its expected colours from there
+    /// rather than injecting a theme.
+    #[test]
+    fn icon_color_paints_icon_glyph_in_that_color_else_default_fg() {
+        let icon_color = crate::types::Color::rgb(220, 80, 20);
+        let theme = Theme::default();
+        let default_fg = theme.foreground;
+        let bg = theme.tab_bar_bg;
+
+        let dist = |a: (u8, u8, u8), c: crate::types::Color| {
+            let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+            d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
+        };
+
+        let most_inked_on_row = |icon: Icon| -> (u8, u8, u8) {
+            let row = TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: Some(icon),
+                text: StyledText::plain(String::new()),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            };
+            let tree = make_tree(vec![row]);
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                })
+                .expect("paint");
+
+            let mid_y = (LINE_HEIGHT * 1.4 / 2.0) as u32;
+            let mut best = (bg.r, bg.g, bg.b);
+            let mut best_d = -1i32;
+            for x in 0..(W as u32) {
+                let px = surface.pixel_at(x, mid_y);
+                let c = (px.r, px.g, px.b);
+                let d = dist(c, bg);
+                if d > best_d {
+                    best_d = d;
+                    best = c;
+                }
+            }
+            best
+        };
+
+        let colored = most_inked_on_row(Icon::new("R", "R").with_color(icon_color));
+        assert!(
+            dist(colored, icon_color) < dist(colored, default_fg),
+            "row with Icon::color set: most-inked pixel {colored:?} should be \
+             closer to Icon::color {icon_color:?} than default fg {default_fg:?}"
+        );
+
+        let uncolored = most_inked_on_row(Icon::new("R", "R"));
+        assert!(
+            dist(uncolored, default_fg) < dist(uncolored, icon_color),
+            "row without Icon::color: most-inked pixel {uncolored:?} should be \
+             closer to default fg {default_fg:?} than the unrelated colour \
+             {icon_color:?}"
         );
     }
 }

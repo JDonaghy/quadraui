@@ -71,6 +71,8 @@ pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// - **Badge** (right-aligned): rendered in `badge.fg`/`badge.bg`
 ///   (falling back to [`Theme::muted_fg`] / row bg) when there's
 ///   room past the text.
+/// - **Icon:** painted in `icon.color` when set (#1057), else the row's
+///   default fg.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tree(
     cr: &Context,
@@ -177,7 +179,8 @@ pub fn draw_tree(
             } else {
                 icon.fallback.as_str()
             };
-            cr.set_source_rgb(def_fg.0, def_fg.1, def_fg.2);
+            let icon_fg = icon.color.map(cairo_rgb).unwrap_or(def_fg);
+            cr.set_source_rgb(icon_fg.0, icon_fg.1, icon_fg.2);
             layout.set_text(glyph);
             let (iw, ih) = layout.pixel_size();
             cr.move_to(cursor_x, (row_y + (row_h - ih as f64) / 2.0).round());
@@ -938,6 +941,108 @@ mod tests {
                 "row {} at local bounds {:?} did not round-trip through localised hit_test",
                 vr.row_idx,
                 vr.bounds,
+            );
+        }
+    }
+
+    /// #1057: a row with `Icon::color` set paints its icon glyph in that
+    /// colour; a row without one paints it in the default row fg,
+    /// unchanged from pre-#1057 rendering. Rows have no label text (so
+    /// the icon glyph is the *only* ink in the row — nothing else can
+    /// win the "most inked pixel" scan) and a high-contrast theme
+    /// (near-black default fg vs. white bg vs. a distinct orange icon
+    /// colour), so the strongest departure from the white background
+    /// within the row's bounds is unambiguously the icon glyph, not an
+    /// antialiasing fringe pixel or competing label text.
+    #[test]
+    fn icon_color_paints_icon_glyph_in_that_color_else_default_fg() {
+        use crate::types::Icon;
+
+        let icon_color = Color::rgb(220, 80, 20);
+        let default_fg = Color::rgb(10, 10, 10);
+        let bg = Color::rgb(255, 255, 255);
+        let theme = Theme {
+            tab_bar_bg: bg,
+            background: bg,
+            foreground: default_fg,
+            ..Theme::default()
+        };
+
+        let mut colored_row = leaf(0, "");
+        colored_row.icon = Some(Icon::new("R", "R").with_color(icon_color));
+        let mut plain_row = leaf(1, "");
+        plain_row.icon = Some(Icon::new("R", "R"));
+        let tree = make_tree(vec![colored_row, plain_row]);
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_tree(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &tree,
+                &theme,
+                LINE_HEIGHT,
+                /* nerd_fonts */ false,
+            );
+        }
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = gtk_tree_layout(&tree, area, LINE_HEIGHT);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let dist = |a: (u8, u8, u8), c: Color| {
+            let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+            d(a.0, c.r) + d(a.1, c.g) + d(a.2, c.b)
+        };
+
+        for (vis, expect_colored) in layout.visible_rows.iter().zip([true, false]) {
+            let bounds = vis.bounds;
+            let x_range = (
+                (bounds.x + 1.0).floor() as i32,
+                (bounds.x + bounds.width - 1.0).floor() as i32,
+            );
+            let y_range = (
+                (bounds.y + 1.0).floor() as i32,
+                (bounds.y + bounds.height - 1.0).floor() as i32,
+            );
+            // Most-inked pixel: the one furthest (squared RGB distance)
+            // from the white background — robust against picking a
+            // barely-antialiased fringe pixel near pure white.
+            let mut best: Option<(u8, u8, u8)> = None;
+            let mut best_d = -1i32;
+            for y in y_range.0..y_range.1 {
+                for x in x_range.0..x_range.1 {
+                    if x < 0 || y < 0 || x >= W || y >= H {
+                        continue;
+                    }
+                    let p = pixel(&data, stride, x, y);
+                    let d = dist(p, bg);
+                    if d > best_d {
+                        best_d = d;
+                        best = Some(p);
+                    }
+                }
+            }
+            let color = best.unwrap_or_else(|| {
+                panic!(
+                    "row {} contained no painted pixel — icon glyph missing",
+                    vis.row_idx
+                )
+            });
+            let closer_to_icon_color = dist(color, icon_color) < dist(color, default_fg);
+            assert_eq!(
+                closer_to_icon_color, expect_colored,
+                "row {}: most-inked pixel {color:?} — expected closer to \
+                 Icon::color {icon_color:?} than default fg {default_fg:?}: {expect_colored}",
+                vis.row_idx,
             );
         }
     }

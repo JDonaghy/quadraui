@@ -36,7 +36,8 @@ use crate::types::Decoration;
 ///   `tree.style.show_chevrons` is true; leaves get a 2-cell leading
 ///   gap for visual alignment.
 /// - **Icon:** `row.icon.glyph` when `nerd_fonts_enabled`, else the
-///   ASCII fallback.
+///   ASCII fallback. Painted in `icon.color` when set (#1057), else the
+///   row's `default_fg`.
 /// - **Badge** (right-aligned within row): rendered in
 ///   `badge.fg`/`badge.bg` (falling back to [`Theme::muted_fg`] /
 ///   row bg) when there's room past the text.
@@ -123,11 +124,12 @@ pub fn draw_tree(
             } else {
                 &icon.fallback
             };
+            let icon_fg = icon.color.map(ratatui_color).unwrap_or(default_fg);
             for ch in glyph.chars() {
                 if col >= area.width as usize {
                     break;
                 }
-                set_cell(buf, area.x + col as u16, y, ch, default_fg, bg);
+                set_cell(buf, area.x + col as u16, y, ch, icon_fg, bg);
                 col += 1;
             }
             if col < area.width as usize {
@@ -403,6 +405,35 @@ mod tests {
             false,
         );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    #[test]
+    fn icon_color_paints_icon_cell_in_that_color_else_default_fg() {
+        use crate::types::{Color, Icon};
+
+        let colored = Color::rgb(200, 30, 30);
+        let mut tree = make_tree();
+        // Row 1 ("main.rs") gets a colored icon; row 2 ("lib.rs") gets an
+        // uncolored one — same glyph, only the color field differs.
+        tree.rows[1].icon = Some(Icon::new("R", "R").with_color(colored));
+        tree.rows[2].icon = Some(Icon::new("R", "R"));
+
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+        draw_tree(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, true);
+
+        // Leaves: indent=1 → col 2 (indent_cells) + 2-cell leading gap = col 4.
+        let icon_col = 2 + 2;
+        assert_eq!(
+            buf[(icon_col as u16, 1u16)].fg,
+            ratatui_color(colored),
+            "row with Icon::color set should paint the icon glyph in that color"
+        );
+        assert_eq!(
+            buf[(icon_col as u16, 2u16)].fg,
+            ratatui_color(theme.foreground),
+            "row without Icon::color should paint the icon glyph in the default fg, unchanged"
+        );
     }
 
     // ── Paint↔click round-trip harness ─────────────────────────────────────
