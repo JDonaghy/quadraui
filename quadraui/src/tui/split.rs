@@ -2,10 +2,15 @@
 //!
 //! Paints only the divider — pane content is the app's responsibility.
 //! Horizontal splits draw a `│` column; vertical splits draw a `─` row.
+//! Where a divider's ends (or an interior crossing) meet an already
+//! painted perpendicular divider, the run is upgraded to the matching
+//! box-drawing junction glyph (`┼ ├ ┤ ┬ ┴`) — see
+//! [`super::split_junction`] (quadraui#1067).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::split_junction::upgrade_junctions;
 use super::{ratatui_color, set_cell};
 use crate::primitives::split::{Split, SplitDirection, SplitLayout, SplitMeasure};
 use crate::theme::Theme;
@@ -42,17 +47,21 @@ pub fn draw_split(buf: &mut Buffer, area: Rect, split: &Split, theme: &Theme) ->
             let x = div.x.round() as u16;
             let start_y = div.y.round() as u16;
             let h = div.height.round() as u16;
-            for dy in 0..h {
-                set_cell(buf, x, start_y + dy, '│', fg, bg);
+            let cells: Vec<(u16, u16)> = (0..h).map(|dy| (x, start_y + dy)).collect();
+            for &(cx, cy) in &cells {
+                set_cell(buf, cx, cy, '│', fg, bg);
             }
+            upgrade_junctions(buf, &cells, true, fg, bg);
         }
         SplitDirection::Vertical => {
             let y = div.y.round() as u16;
             let start_x = div.x.round() as u16;
             let w = div.width.round() as u16;
-            for dx in 0..w {
-                set_cell(buf, start_x + dx, y, '─', fg, bg);
+            let cells: Vec<(u16, u16)> = (0..w).map(|dx| (start_x + dx, y)).collect();
+            for &(cx, cy) in &cells {
+                set_cell(buf, cx, cy, '─', fg, bg);
             }
+            upgrade_junctions(buf, &cells, false, fg, bg);
         }
     }
 
@@ -168,6 +177,48 @@ mod tests {
         let split = hsplit(0.5);
         let _layout = draw_split(&mut buf, area, &split, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    /// quadraui#1067: an app that manually nests two independent
+    /// `draw_split` calls (rather than a `SplitTree`) still gets a
+    /// junction glyph where the second, full-extent divider crosses the
+    /// first, shorter one already sitting in the buffer — this is the
+    /// "read the four neighbours back out of the buffer" trick the
+    /// issue describes, exercised end-to-end rather than as a synthetic
+    /// buffer in `split_junction`'s own unit tests.
+    ///
+    /// Order matters for a *single*-pass-per-call API like this one: the
+    /// divider whose own run spans the crossing (the "long" one) must be
+    /// painted *after* the one it crosses, so its own upgrade pass can
+    /// read the already-painted perpendicular glyph back. `SplitTree`
+    /// (see `split_tree.rs`) sidesteps the ordering requirement with a
+    /// two-phase paint; plain `Split` has no such batching, so this is
+    /// the contract host code nesting `Split`s by hand must follow.
+    #[test]
+    fn manually_nested_splits_form_a_junction_when_the_spanning_one_paints_last() {
+        let area = Rect::new(0, 0, 21, 11);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+
+        // Inner: a Vertical (stacked) split confined to the left third
+        // of the area — its '─' row lands at y=5, x=0..9.
+        let inner_area = Rect::new(0, 0, 10, 11);
+        let inner = vsplit(0.5);
+        let inner_layout = draw_split(&mut buf, inner_area, &inner, &theme);
+        let inner_row = inner_layout.divider_bounds.y.round() as u16;
+        assert_eq!(cell_char(&buf, 4, inner_row), '─');
+
+        // Outer: a Horizontal (side-by-side) split over the FULL area,
+        // ratio chosen so its '│' column (x=5) crosses the inner row —
+        // painted *last*, so it can see the inner run already there.
+        let outer = hsplit(0.25);
+        let outer_layout = draw_split(&mut buf, area, &outer, &theme);
+        let outer_col = outer_layout.divider_bounds.x.round() as u16;
+        assert_eq!(outer_col, 5);
+
+        assert_eq!(cell_char(&buf, outer_col, inner_row), '┼');
+        // Away from the crossing row, the outer column is still plain.
+        assert_eq!(cell_char(&buf, outer_col, inner_row + 2), '│');
     }
 
     #[test]

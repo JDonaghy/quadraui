@@ -59,6 +59,7 @@ mod sidebar_panel;
 mod solid_fill;
 mod spinner;
 mod split;
+mod split_junction;
 mod split_tree;
 mod status_bar;
 mod tab_bar;
