@@ -3,11 +3,17 @@
 //! Paints only the dividers — leaf content is the app's responsibility,
 //! painted into the rects `SplitTreeLayout::leaves` returns. Mirrors
 //! [`super::split::draw_split`]'s divider glyphs: `│` for `Horizontal`
-//! (side-by-side) splits, `─` for `Vertical` (stacked) splits.
+//! (side-by-side) splits, `─` for `Vertical` (stacked) splits. Where one
+//! divider's run ends on, or crosses, another already-painted
+//! perpendicular divider (a nested `:vsplit` inside a `:split`, or a run
+//! ending on a status-bar row), the shared cell is upgraded to a
+//! box-drawing junction glyph (`┼ ├ ┤ ┬ ┴`) — see
+//! [`super::split_junction`] (quadraui#1067).
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::split_junction::upgrade_junctions;
 use super::{ratatui_color, set_cell};
 use crate::primitives::split_tree::{SplitDirection, SplitTree, SplitTreeLayout, SplitTreeMeasure};
 use crate::theme::Theme;
@@ -46,6 +52,18 @@ pub fn draw_split_tree(
     let fg = ratatui_color(theme.separator);
     let bg = ratatui_color(theme.background);
 
+    // Two phases, not one pass per divider: `SplitTreeMeasure`'s
+    // exact-adjacency layout means an outer divider (the one whose run
+    // spans the *full* cross-axis and so has the shared boundary cell as
+    // an interior cell) is always visited before its shorter inner
+    // dividers in `layout.dividers`' pre-order — the opposite of the
+    // order a single read-back-as-you-paint pass would need to see the
+    // inner run already there. Painting every run's plain glyph first,
+    // then upgrading every run's junctions in a second pass over the
+    // now-complete buffer, makes the result independent of that
+    // traversal order (quadraui#1067).
+    let mut runs: Vec<(Vec<(u16, u16)>, bool)> = Vec::with_capacity(layout.dividers.len());
+
     for div in &layout.dividers {
         // #452-class fix: paint at the exact same truncated cell
         // `SplitTreeLayout::hit_test_divider_cell` compares against —
@@ -55,16 +73,28 @@ pub fn draw_split_tree(
         let cross_len = div.cross_size.round() as u16;
         match div.direction {
             SplitDirection::Horizontal => {
-                for dy in 0..cross_len {
-                    set_cell(buf, axis_cell, cross_start + dy, '│', fg, bg);
+                let cells: Vec<(u16, u16)> = (0..cross_len)
+                    .map(|dy| (axis_cell, cross_start + dy))
+                    .collect();
+                for &(cx, cy) in &cells {
+                    set_cell(buf, cx, cy, '│', fg, bg);
                 }
+                runs.push((cells, true));
             }
             SplitDirection::Vertical => {
-                for dx in 0..cross_len {
-                    set_cell(buf, cross_start + dx, axis_cell, '─', fg, bg);
+                let cells: Vec<(u16, u16)> = (0..cross_len)
+                    .map(|dx| (cross_start + dx, axis_cell))
+                    .collect();
+                for &(cx, cy) in &cells {
+                    set_cell(buf, cx, cy, '─', fg, bg);
                 }
+                runs.push((cells, false));
             }
         }
+    }
+
+    for (cells, vertical) in &runs {
+        upgrade_junctions(buf, cells, *vertical, fg, bg);
     }
 
     layout
@@ -217,6 +247,99 @@ mod tests {
         }
 
         assert_eq!(layout.leaves.len(), 3);
+    }
+
+    /// quadraui#1067 acceptance: a `:vsplit` inside a `:split` — the
+    /// nested-tree geometry from `nested_tree_paints_all_dividers_and_
+    /// round_trips` above — paints a junction glyph, not a dangling
+    /// `'│'`, where the inner divider's row meets the outer divider's
+    /// column. `SplitTreeMeasure`'s exact-adjacency layout (each inner
+    /// pane's rect stops one cell short of the divider that bounds it)
+    /// means the inner run's endpoint always lands as an *interior*
+    /// cell of the outer (full cross-axis) run, never overlapping it, so
+    /// the junction always resolves onto the outer divider's own cell.
+    #[test]
+    fn nested_split_paints_a_junction_where_dividers_meet() {
+        let area = Rect::new(0, 0, 61, 21);
+        let mut buf = Buffer::empty(area);
+        let tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.5,
+            SplitTree::split(
+                SplitDirection::Vertical,
+                0.5,
+                SplitTree::leaf(wid("a")),
+                SplitTree::leaf(wid("c")),
+            ),
+            SplitTree::leaf(wid("b")),
+        );
+        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+
+        let outer = &layout.dividers[0]; // Horizontal (│), full height
+        let inner = &layout.dividers[1]; // Vertical (─), left pane only
+        assert_eq!(outer.direction, SplitDirection::Horizontal);
+        assert_eq!(inner.direction, SplitDirection::Vertical);
+
+        let outer_col = outer.cell_position();
+        let inner_row = inner.cell_position();
+
+        // The junction cell is the outer divider's own column at the
+        // inner divider's row — a T meeting from the left only (no pane
+        // to the right of the outer column's own run), so '┤'.
+        assert_eq!(cell_char(&buf, outer_col, inner_row), '┤');
+
+        // A row away from the junction, the outer divider is still a
+        // plain '│' — the upgrade only touches the meeting cell.
+        assert_eq!(cell_char(&buf, outer_col, inner_row.saturating_sub(3)), '│');
+
+        // hit_test_divider_cell still resolves the junction cell back
+        // to the outer divider's split_index — junction painting must
+        // not disturb hit-testing.
+        assert_eq!(
+            layout.hit_test_divider_cell(outer_col, inner_row),
+            Some(outer.split_index)
+        );
+    }
+
+    /// quadraui#1067: a genuine 4-way crossing (`┼`) — two inner
+    /// `Horizontal` (side-by-side) splits stacked by an outer
+    /// `Vertical` split, with matching ratios so both inner dividers
+    /// land on the same column. The outer divider's row then has an
+    /// inner vertical divider immediately above *and* below it in that
+    /// same column, plus its own left/right run — all four directions.
+    #[test]
+    fn stacked_matching_splits_form_a_plus_junction() {
+        let area = Rect::new(0, 0, 41, 21);
+        let mut buf = Buffer::empty(area);
+        let tree = SplitTree::split(
+            SplitDirection::Vertical,
+            0.5,
+            SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::leaf(wid("a")),
+                SplitTree::leaf(wid("b")),
+            ),
+            SplitTree::split(
+                SplitDirection::Horizontal,
+                0.5,
+                SplitTree::leaf(wid("c")),
+                SplitTree::leaf(wid("d")),
+            ),
+        );
+        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        assert_eq!(layout.dividers.len(), 3);
+
+        let outer = &layout.dividers[0]; // Vertical (─), full width
+        assert_eq!(outer.direction, SplitDirection::Vertical);
+        let outer_row = outer.cell_position();
+
+        let top_inner = &layout.dividers[1]; // Horizontal (│), top pane
+        let bottom_inner = &layout.dividers[2]; // Horizontal (│), bottom pane
+        assert_eq!(top_inner.cell_position(), bottom_inner.cell_position());
+        let shared_col = top_inner.cell_position();
+
+        assert_eq!(cell_char(&buf, shared_col, outer_row), '┼');
     }
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
