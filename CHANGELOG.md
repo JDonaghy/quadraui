@@ -55,6 +55,32 @@ release time.
 
 ### Added
 
+- `SidebarPanelChrome::Search { .. }` and `SidebarPanelChrome::StatusBars(Vec<StatusBar>)`
+  (issue #1061) — two chrome shapes `draw_settings_chrome` couldn't
+  express: a search-only row with no header above it (vimcode's
+  Extensions sidebar, whose title now comes from `AppShell`'s own
+  sidebar-header row since vimcode#1343 — reusing `draw_settings_chrome`
+  would repaint the double-header bug #1256, since its row 0 is
+  unconditionally header-styled), and one row per `StatusBar` (vimcode's
+  Debug sidebar: a title bar + a Run/Stop action bar) painted via
+  `Backend::draw_status_bar_interactive`, with every bar's hit regions
+  translated into panel-space and surfaced on the new
+  `SidebarPanelBodyLayout::status_bar_hit_regions` field so a host
+  routes clicks against the same geometry it painted. `layout()`
+  reserves the matching row count for both; `render()`/`render_with()`
+  paint them in the existing background → chrome → body order.
+
+  **Breaking, both admitted up front.** `SidebarPanelChrome` is now
+  `#[non_exhaustive]` — adding these variants breaks any downstream
+  exhaustive `match` with no wildcard arm regardless of the attribute
+  (vimcode's `render::paint_sidebar_panel_chrome` has exactly such a
+  match, confirmed against `origin/develop`), so marking it
+  `#[non_exhaustive]` in the same breaking PR is rule 8's preferred
+  shape so the *next* addition is additive instead. `SidebarPanelBodyLayout`
+  also loses `Copy` (the new `status_bar_hit_regions: Vec<(Rect,
+  StatusBarHit)>` field isn't `Copy`) while gaining that field — see
+  `## Downstream impact` in the PR body for both consumer call sites
+  that need to move.
 - `Icon::color: Option<Color>` + `Icon::with_color(..)` builder (issue
   #1057) — a tree row's icon can now carry an identity colour, matching
   `TabIcon::color`'s tab-bar behaviour (#620). `None` (the default from
