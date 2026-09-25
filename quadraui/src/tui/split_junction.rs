@@ -61,7 +61,21 @@ fn glyph_for(up: bool, down: bool, left: bool, right: bool, vertical: bool) -> c
     }
 }
 
+/// Is `(x, y)` inside `buf`'s area? Mirrors [`set_cell`]'s own guard —
+/// indexing a `Buffer` outside its area panics, and a divider run may
+/// legitimately extend past the buffer edge (see [`upgrade_junctions`]).
+fn in_area(buf: &Buffer, x: u16, y: u16) -> bool {
+    let area = buf.area;
+    x >= area.x && y >= area.y && x < area.x + area.width && y < area.y + area.height
+}
+
+/// Read a cell's first glyph, treating anything outside the buffer as
+/// blank. Out-of-area reads must not panic: `Buffer`'s `Index` impl does,
+/// and a clipped run's neighbour coordinates can land outside.
 fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+    if !in_area(buf, x, y) {
+        return ' ';
+    }
     buf[(x, y)].symbol().chars().next().unwrap_or(' ')
 }
 
@@ -83,6 +97,15 @@ fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
 /// of the plain `'│'`/`'─'` a cell may have started as — so a second run's
 /// own upgrade pass can only add connections at a shared cell, never lose
 /// the ones the first run already recorded there (see quadraui#1067).
+///
+/// `cells` may extend past the buffer's area — rounding in a caller's
+/// divider geometry routinely puts the last cell of a run one column or
+/// row outside `buf.area`, and `set_cell` silently drops those. Cells
+/// outside the area are skipped here for the same reason (indexing a
+/// `Buffer` out of area panics), while still counting as a run-order
+/// connection for their in-area neighbour — so a run clipped at the edge
+/// keeps a plain `'│'`/`'─'` at its last *visible* cell rather than
+/// sprouting a spurious tee where the buffer merely ran out.
 pub(super) fn upgrade_junctions(
     buf: &mut Buffer,
     cells: &[(u16, u16)],
@@ -90,26 +113,30 @@ pub(super) fn upgrade_junctions(
     fg: RatatuiColor,
     bg: RatatuiColor,
 ) {
-    let area = buf.area;
     for (i, &(x, y)) in cells.iter().enumerate() {
+        // Out-of-area run cells were never painted (`set_cell` guards),
+        // so there is nothing to upgrade — and reading their neighbours
+        // would index the buffer out of area and panic.
+        if !in_area(buf, x, y) {
+            continue;
+        }
+
         let (mut up, mut down, mut left, mut right) = if vertical {
             (i > 0, i + 1 < cells.len(), false, false)
         } else {
             (false, false, i > 0, i + 1 < cells.len())
         };
 
-        if y > area.y {
+        // `cell_char` clamps out-of-area reads to a blank, so only the
+        // `- 1` underflows need guarding here.
+        if y > 0 {
             up = up || (connections(cell_char(buf, x, y - 1)) & DOWN) != 0;
         }
-        if y + 1 < area.y + area.height {
-            down = down || (connections(cell_char(buf, x, y + 1)) & UP) != 0;
-        }
-        if x > area.x {
+        down = down || (connections(cell_char(buf, x, y + 1)) & UP) != 0;
+        if x > 0 {
             left = left || (connections(cell_char(buf, x - 1, y)) & RIGHT) != 0;
         }
-        if x + 1 < area.x + area.width {
-            right = right || (connections(cell_char(buf, x + 1, y)) & LEFT) != 0;
-        }
+        right = right || (connections(cell_char(buf, x + 1, y)) & LEFT) != 0;
 
         let glyph = glyph_for(up, down, left, right, vertical);
         set_cell(buf, x, y, glyph, fg, bg);
@@ -149,6 +176,65 @@ mod tests {
         for &(x, y) in &vcells {
             assert_eq!(cell_char(&b, x, y), '│');
         }
+    }
+
+    /// Regression (quadraui#1067 smoke failure): a caller's rounded
+    /// divider geometry can put run cells one column/row *outside* the
+    /// buffer — `set_cell` silently drops those, so `upgrade_junctions`
+    /// must skip them instead of indexing the buffer out of area (which
+    /// panics: "index outside of buffer"). The last *visible* cell of a
+    /// clipped run stays a plain axis glyph, not a spurious tee.
+    #[test]
+    fn run_clipped_past_the_far_edge_does_not_panic() {
+        let fg = Color::White;
+        let bg = Color::Black;
+
+        // Vertical run one row too tall, at a column one past the right
+        // edge for its final cell — both overshoot axes at once.
+        let mut b = buf(5, 5);
+        let vcells: Vec<(u16, u16)> = (0..6).map(|y| (2, y)).collect();
+        paint_run(&mut b, &vcells, '│', fg, bg);
+        upgrade_junctions(&mut b, &vcells, true, fg, bg);
+        assert_eq!(cell_char(&b, 2, 4), '│');
+
+        // Horizontal run overshooting the right edge — the out-of-area
+        // column x=5 is skipped, x=4 stays plain.
+        let mut b = buf(5, 5);
+        let hcells: Vec<(u16, u16)> = (0..6).map(|x| (x, 2)).collect();
+        paint_run(&mut b, &hcells, '─', fg, bg);
+        upgrade_junctions(&mut b, &hcells, false, fg, bg);
+        assert_eq!(cell_char(&b, 4, 2), '─');
+
+        // A run entirely outside the area is a no-op, not a panic.
+        let mut b = buf(5, 5);
+        let outside: Vec<(u16, u16)> = (7..10).map(|y| (9, y)).collect();
+        upgrade_junctions(&mut b, &outside, true, fg, bg);
+        assert_eq!(cell_char(&b, 4, 4), ' ');
+    }
+
+    /// Same guard on the near edge: a buffer whose area does not start at
+    /// the origin (an inset frame) must not have its `x - 1` / `y - 1`
+    /// neighbour reads underflow, and run cells before the area's origin
+    /// are skipped like `set_cell` skips them.
+    #[test]
+    fn run_clipped_before_the_area_origin_does_not_panic() {
+        let fg = Color::White;
+        let bg = Color::Black;
+        let mut b = Buffer::empty(RRect::new(5, 5, 5, 5));
+
+        // Starts two rows above the area's origin.
+        let vcells: Vec<(u16, u16)> = (3..10).map(|y| (7, y)).collect();
+        paint_run(&mut b, &vcells, '│', fg, bg);
+        upgrade_junctions(&mut b, &vcells, true, fg, bg);
+        assert_eq!(cell_char(&b, 7, 5), '│');
+
+        // A horizontal run reaching left of the area's origin, crossing
+        // the column above: the shared cell still resolves to a junction.
+        let hcells: Vec<(u16, u16)> = (2..11).map(|x| (x, 7)).collect();
+        paint_run(&mut b, &hcells, '─', fg, bg);
+        upgrade_junctions(&mut b, &hcells, false, fg, bg);
+        assert_eq!(cell_char(&b, 7, 7), '┼');
+        assert_eq!(cell_char(&b, 5, 7), '─');
     }
 
     #[test]
