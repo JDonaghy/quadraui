@@ -228,6 +228,44 @@ impl<A: AppLogic> TuiDriver<A> {
         render_frame(&mut terminal, backend, app).expect("TestBackend render is infallible");
     }
 
+    /// Resize the underlying `TestBackend`'s physical cell buffer to
+    /// `width`×`height` — **without** touching [`TuiBackend`]'s cached
+    /// [`crate::Viewport`] or any layout state a previous [`Self::render`]
+    /// cached (e.g. [`Self::tab_center`]'s `cached_tab_bar_layout`). Those
+    /// stay exactly as they were after the last repaint, at whatever size
+    /// the driver last actually painted (quadraui#1063).
+    ///
+    /// This deliberately does **not** go through [`Self::render`] /
+    /// `Terminal::draw`'s `autoresize`: that path (`paint_frame`,
+    /// quadraui#1040) re-derives `TuiBackend`'s per-frame `Viewport` from
+    /// the buffer's own post-resize `frame.area()` on *every* call, so a
+    /// full `Self::render` right after a resize always self-heals — a test
+    /// that only ever resized-then-rendered would never observe a
+    /// mismatch. To construct the exact stale-layout-vs-shrunk-buffer race
+    /// quadraui#1040 fixed for `draw_editor` (and the bug class this issue
+    /// exists to guard against for everything else that caches geometry
+    /// across frames — tab bars, sidebars, click hit maps), a test calls
+    /// this to shrink *only* the physical buffer first, then reads
+    /// [`Self::backend`]'s still-stale, larger viewport (or a cached
+    /// layout) to drive a click or a direct paint against it, asserting
+    /// the result degrades gracefully — truncates, ignores an
+    /// out-of-bounds hit — instead of panicking. Call [`Self::render`]
+    /// afterward, once the test is done observing the stale state, to
+    /// restore a consistent frame at the new size (it will resync
+    /// `TuiBackend`'s viewport to match, same as the live runner does on a
+    /// real terminal resize).
+    ///
+    /// Uses `ratatui::backend::TestBackend::resize` directly on the raw
+    /// cell buffer; no `Terminal::resize`/`autoresize` bookkeeping
+    /// (viewport area, cursor position, scrollback wiring) runs here
+    /// either — this is a strictly lower-level knob than either.
+    pub fn resize(&mut self, width: u16, height: u16) {
+        self.terminal
+            .borrow_mut()
+            .backend_mut()
+            .resize(width, height);
+    }
+
     /// Feed one synthetic event through the **full production pipeline**:
     /// backend translation ([`TuiBackend::translate_injected`] — drag
     /// state, accelerator matching, double-click folding) followed by the
@@ -2073,6 +2111,73 @@ mod tests {
         assert!(
             !driver.screen_contains("\u{25a0}"),
             "nerd_fonts on must not paint the bottom item's fallback glyph"
+        );
+    }
+
+    // ─── quadraui#1063 ───────────────────────────────────────────────────
+
+    /// `resize` must shrink the physical `TestBackend` buffer immediately,
+    /// but leave `TuiBackend`'s cached viewport exactly as it was after the
+    /// last `render()` — the stale-layout-vs-shrunk-buffer condition
+    /// quadraui#1040 fixed for `draw_editor`, now reproducible from a
+    /// driver test instead of only a hand-built `Buffer`/`Rect` pair.
+    #[test]
+    fn resize_shrinks_buffer_without_touching_cached_viewport() {
+        let mut driver = TuiDriver::new(
+            OneLineApp {
+                text: "hello resize world",
+            },
+            30,
+            3,
+        );
+        assert_eq!(
+            (
+                driver.backend().viewport().width,
+                driver.backend().viewport().height
+            ),
+            (30.0, 3.0),
+            "sanity: TuiBackend's viewport should start matching the driver's initial size"
+        );
+
+        driver.resize(5, 1);
+
+        // The physical buffer shrank immediately...
+        let area = driver.terminal.borrow().backend().buffer().area;
+        assert_eq!(
+            (area.width, area.height),
+            (5, 1),
+            "resize() must shrink the TestBackend's real cell buffer right away"
+        );
+
+        // ...but TuiBackend's cached viewport must NOT have moved: `resize`
+        // never reaches into `TuiBackend` at all, only `render()` (via
+        // `paint_frame`'s #1040 self-heal) does.
+        assert_eq!(
+            (
+                driver.backend().viewport().width,
+                driver.backend().viewport().height
+            ),
+            (30.0, 3.0),
+            "resize() must not touch TuiBackend's cached viewport — it should stay stale \
+             at the pre-resize size until the next render()"
+        );
+
+        // Driving a repaint against a buffer now far smaller than the
+        // app's content assumes must not panic — the exact TOCTOU shape
+        // #1040 fixed, reproduced here at driver tier rather than by
+        // hand-building a `Buffer`/`Rect` pair.
+        driver.render();
+
+        // render()'s autoresize (#1040) rebases TuiBackend's viewport to
+        // the new, smaller size before `app.render()` runs, so it's back
+        // in sync afterward.
+        assert_eq!(
+            (
+                driver.backend().viewport().width,
+                driver.backend().viewport().height
+            ),
+            (5.0, 1.0),
+            "render() after resize() must resync TuiBackend's viewport to the new size"
         );
     }
 }
