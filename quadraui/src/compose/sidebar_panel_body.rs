@@ -41,11 +41,16 @@
 //!   [`crate::Backend::draw_settings_chrome`] actually needs (Settings,
 //!   Extensions). Delegates straight to that method, so header/search
 //!   visuals don't get a second implementation here.
-//! - **Body** — any [`crate::BackendWidget`], painted into the
-//!   remaining rect after chrome and the scrollbar gutter are carved
-//!   off. Same trait `BottomPanelConfig` already uses for tab content,
-//!   so a host can share one widget between a bottom-panel tab and a
-//!   sidebar panel if it wants to.
+//! - **Body** — any [`crate::BackendWidget`] via [`SidebarPanelBody::render`],
+//!   painted into the remaining rect after chrome and the scrollbar
+//!   gutter are carved off. Same trait `BottomPanelConfig` already uses
+//!   for tab content, so a host can share one widget between a
+//!   bottom-panel tab and a sidebar panel if it wants to. `BackendWidget`
+//!   carries a `Send + 'static` bound, so a body that only *borrows* the
+//!   host's app state for one frame (a `TreeController`/`FormController`
+//!   behind `Rc<RefCell<_>>`, anything tied to a `!Send` engine) can't
+//!   implement it — [`SidebarPanelBody::render_with`] takes the body as
+//!   an unbounded closure instead, for exactly that case (issue #1059).
 //! - **Scrollbar** — [`SidebarPanelBody::scrollbar_gutter`] reserves a
 //!   fixed-width column on the right of the body rect (mirroring
 //!   [`crate::compose::tree_controller::TreeController`]'s own
@@ -229,11 +234,65 @@ impl SidebarPanelBody {
     /// and return the resolved layout so the caller can paint its own
     /// scrollbar into `layout.scrollbar_rect` (see the module doc for
     /// why the scrollbar itself isn't painted here).
+    ///
+    /// `body` must be [`BackendWidget`], i.e. `Send + 'static` — that
+    /// bound exists so *owned* content can live inside `ShellAdapter`
+    /// (`BottomPanelConfig`, `TabGroupController`'s `PaneTab::content`)
+    /// and cross into the runner thread. A body that only *borrows* the
+    /// host's app state for one frame — `Rc<RefCell<_>>`-backed
+    /// controllers like `TreeController`/`FormController`, or anything
+    /// tied to a `!Send` engine — can never satisfy it. Use
+    /// [`Self::render_with`] instead; it paints the identical
+    /// background/chrome/body/gutter sequence but takes the body as a
+    /// plain closure with no `Send`/`'static` bound (issue #1059).
     pub fn render(
         &self,
         backend: &mut dyn Backend,
         rect: Rect,
         body: &dyn BackendWidget,
+    ) -> SidebarPanelBodyLayout {
+        self.render_with(backend, rect, |b, r| body.render(b, r))
+    }
+
+    /// Same paint sequence as [`Self::render`] — background, then
+    /// chrome, then the body — but takes `body` as a borrowed closure
+    /// instead of a `&dyn BackendWidget`, so it can close over
+    /// non-`'static`, non-`Send` state (a `&TreeController`, an
+    /// `Rc<RefCell<Engine>>` borrow, …) that [`BackendWidget`]'s
+    /// `Send + 'static` supertrait would otherwise shut out (issue
+    /// #1059). `body` is called exactly once, with `layout.body_rect`.
+    ///
+    /// Prefer [`Self::render`] when the body is already a
+    /// [`BackendWidget`] (e.g. it's shared with a `BottomPanelConfig`
+    /// tab) — `render` is implemented in terms of this method, so the
+    /// two can never drift apart.
+    ///
+    /// ```
+    /// use quadraui::compose::sidebar_panel_body::SidebarPanelBody;
+    /// use quadraui::testing::RecordingBackend;
+    /// use quadraui::{Color, Rect};
+    /// use std::cell::RefCell;
+    /// use std::rc::Rc;
+    ///
+    /// // Not `Send`, not `'static` — could never be a `&dyn BackendWidget`.
+    /// let state = Rc::new(RefCell::new(vec!["one".to_string(), "two".to_string()]));
+    ///
+    /// let panel = SidebarPanelBody::default();
+    /// let mut backend = RecordingBackend::new();
+    /// panel.render_with(&mut backend, Rect::new(0.0, 0.0, 40.0, 20.0), |b, rect| {
+    ///     // Borrow the shared, `!Send` state right here, mid-frame.
+    ///     let rows = state.borrow();
+    ///     if !rows.is_empty() {
+    ///         b.draw_solid_fill(rect, Color::rgb(30, 30, 30));
+    ///     }
+    /// });
+    /// assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+    /// ```
+    pub fn render_with(
+        &self,
+        backend: &mut dyn Backend,
+        rect: Rect,
+        body: impl FnOnce(&mut dyn Backend, Rect),
     ) -> SidebarPanelBodyLayout {
         let layout = self.layout(rect, backend.line_height());
 
@@ -258,7 +317,7 @@ impl SidebarPanelBody {
             }
         }
 
-        body.render(backend, layout.body_rect);
+        body(backend, layout.body_rect);
 
         layout
     }
@@ -468,5 +527,84 @@ mod tests {
         let rendered = panel.render(&mut backend, rect(), &RecordingWidget);
         let computed = panel.layout(rect(), backend.line_height());
         assert_eq!(rendered, computed);
+    }
+
+    // ── render_with (issue #1059: borrowed, non-Send, non-'static body) ─
+
+    #[test]
+    fn render_with_paints_borrowed_rc_refcell_state() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // `Rc<RefCell<_>>` is neither `Send` nor `'static`-owned by the
+        // closure below (it's captured by reference) — this state could
+        // never back a `&dyn BackendWidget` for `SidebarPanelBody::render`.
+        let rows = Rc::new(RefCell::new(vec!["alpha".to_string(), "beta".to_string()]));
+
+        let panel = SidebarPanelBody {
+            background: Some(Color::rgb(5, 5, 5)),
+            chrome: SidebarPanelChrome::Header("TREE".into()),
+            ..Default::default()
+        };
+        let mut backend = RecordingBackend::new();
+        let layout = panel.render_with(&mut backend, rect(), |b, body_rect| {
+            // Mutate through the shared, `!Send` handle mid-frame, then
+            // paint based on what's there — exactly the pattern a
+            // `TreeController` body needs and `BackendWidget` forbids.
+            rows.borrow_mut().push("gamma".to_string());
+            if !rows.borrow().is_empty() {
+                b.draw_solid_fill(body_rect, Color::rgb(1, 2, 3));
+            }
+        });
+
+        assert_eq!(rows.borrow().len(), 3);
+        assert_eq!(
+            backend.calls,
+            vec!["draw_solid_fill", "draw_settings_chrome", "draw_solid_fill"]
+        );
+        assert_eq!(layout, panel.layout(rect(), 1.0));
+    }
+
+    #[test]
+    fn render_with_body_receives_body_rect_not_full_rect() {
+        let panel = SidebarPanelBody {
+            chrome: SidebarPanelChrome::Header("DEBUG".into()),
+            scrollbar_gutter: Some(1.0),
+            ..Default::default()
+        };
+        let mut backend = RecordingBackend::new();
+        let mut seen_rect = None;
+        let layout = panel.render_with(&mut backend, rect(), |_b, body_rect| {
+            seen_rect = Some(body_rect);
+        });
+        assert_eq!(seen_rect, Some(layout.body_rect));
+        assert_ne!(seen_rect, Some(rect()));
+    }
+
+    #[test]
+    fn render_delegates_to_render_with_identically() {
+        // `render`'s existing `&dyn BackendWidget` call sites must see no
+        // behaviour change now that it's implemented via `render_with`.
+        let panel = SidebarPanelBody {
+            background: Some(Color::rgb(10, 10, 10)),
+            chrome: SidebarPanelChrome::HeaderAndSearch {
+                header: "EXTENSIONS".into(),
+                query: String::new(),
+                placeholder: "Search".into(),
+                active: false,
+            },
+            scrollbar_gutter: Some(1.0),
+        };
+
+        let mut via_render = RecordingBackend::new();
+        let layout_a = panel.render(&mut via_render, rect(), &RecordingWidget);
+
+        let mut via_render_with = RecordingBackend::new();
+        let layout_b = panel.render_with(&mut via_render_with, rect(), |b, r| {
+            RecordingWidget.render(b, r)
+        });
+
+        assert_eq!(layout_a, layout_b);
+        assert_eq!(via_render.calls, via_render_with.calls);
     }
 }
