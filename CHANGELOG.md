@@ -366,7 +366,11 @@ release time.
   hit-testing are unaffected; `draw_split_tree` paints every divider's
   plain glyph first and upgrades junctions in a second pass, since its
   pre-order traversal always visits the full-extent divider before the
-  shorter ones it crosses.
+  shorter ones it crosses. The read-back clips exactly where `set_cell`
+  does: a caller's rounded divider geometry can put a run's last cell
+  one column/row outside the buffer area, and those cells are skipped
+  rather than indexed (which panics) — the last *visible* cell of a
+  clipped run keeps its plain axis glyph.
 
 ### Deprecated
 
