@@ -353,6 +353,20 @@ release time.
   equivalent, so it's folded into colour resolution rather than added
   as a fourth per-backend text-run attribute alongside bold/italic/
   underline.
+- TUI: `draw_split`/`draw_split_tree` painted plain `'│'`/`'─'` runs with
+  no glyph where two dividers met or crossed (#1067). Both now read a
+  run's perpendicular neighbour cells back out of the buffer (new
+  private `tui::split_junction` module, shared by both rasterisers) and
+  upgrade the run's ends — and any cell where it crosses an
+  already-painted perpendicular divider — to the matching box-drawing
+  junction glyph (`┼ ├ ┤ ┬ ┴`), so a cell-grid consumer no longer needs
+  its own divider rasteriser to get junctions right (vimcode's own
+  ~350-line `render_impl.rs` divider pass did this by hand). No
+  descriptor/signature change — `SplitLayout`/`SplitTreeLayout` and
+  hit-testing are unaffected; `draw_split_tree` paints every divider's
+  plain glyph first and upgrades junctions in a second pass, since its
+  pre-order traversal always visits the full-extent divider before the
+  shorter ones it crosses.
 
 ### Deprecated
 
