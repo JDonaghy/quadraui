@@ -881,20 +881,25 @@ impl crate::Backend for RecordingBackend {
     /// only because neither `TreeController` nor `ChatController` ever
     /// calls `draw_status_bar`) — `AppShell::render` calls this for
     /// real, so its behaviour wins.
+    ///
+    /// Computes a real [`crate::StatusBarLayout`] via [`crate::StatusBar::layout`]
+    /// with a char-cell measurer (`self.char_width` per character,
+    /// mirroring `TuiBackend`'s own measurer) rather than a hardcoded
+    /// empty layout — every prior caller only discarded the return
+    /// value, but `SidebarPanelBody`'s `StatusBars` chrome (issue
+    /// #1061) surfaces real hit regions from it, and a recorder that
+    /// always returns empty can never exercise that translation.
     fn draw_status_bar_interactive(
         &mut self,
-        _r: Rect,
-        _b: &crate::primitives::status_bar::StatusBar,
+        r: Rect,
+        b: &crate::primitives::status_bar::StatusBar,
         _interaction: &crate::interaction::InteractionState,
     ) -> crate::StatusBarLayout {
         self.record("draw_status_bar");
-        crate::StatusBarLayout {
-            bar_width: 0.0,
-            bar_height: 0.0,
-            visible_segments: Vec::new(),
-            hit_regions: Vec::new(),
-            resolved_right_start: 0,
-        }
+        let cw = self.char_width.max(0.0);
+        b.layout(r.width, r.height, 2.0 * cw, |seg| {
+            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cw)
+        })
     }
     /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
     /// real body wins for the same reason.
