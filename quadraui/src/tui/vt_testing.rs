@@ -72,6 +72,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::backend::Backend;
 use crate::runner::{AppLogic, Reaction};
+use crate::shell::{ShellApp, ShellConfig};
 use crate::testing::{Anchor, ConformanceDriver, FrameInventory, LogicalViewport, TextRun};
 use crate::tui::backend::TuiBackend;
 use crate::tui::run::{dispatch_event, paint_frame, EventOutcome};
@@ -97,6 +98,41 @@ impl io::Write for VtSink {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+/// Build a [`TuiVtDriver`] that wraps `app` in the full
+/// [`crate::shell_adapter::ShellAdapter`] stack, mirroring exactly what
+/// [`crate::tui::shell_runner::run_with_shell`] does at runtime — the
+/// `vt100`-backed twin of [`super::testing::driver_with_shell`] (issue
+/// #1060), which this mirrors constructor-for-constructor down to the
+/// shared [`crate::shell_adapter::build_shell_adapter`] call. Without this,
+/// a downstream `ShellApp` consumer had no way to reach `TuiVtDriver` at
+/// all: [`crate::shell_adapter::build_shell_adapter`] is `pub(crate)`, so
+/// only an in-crate caller could assemble the `ShellAdapter` this driver
+/// needs.
+///
+/// # Example
+///
+/// ```no_run
+/// # use quadraui::tui::vt_testing::driver_with_shell;
+/// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
+/// # struct MyApp;
+/// # impl ShellApp for MyApp {
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
+/// # }
+/// let config = ShellConfig::new("Demo", vec![]);
+/// let mut driver = driver_with_shell(MyApp, config, 80, 24);
+/// assert!(driver.screen_contains("Demo"));
+/// ```
+pub fn driver_with_shell<A: ShellApp + 'static>(
+    app: A,
+    config: ShellConfig,
+    width: u16,
+    height: u16,
+) -> TuiVtDriver<impl AppLogic> {
+    let adapter = crate::shell_adapter::build_shell_adapter(app, config);
+    TuiVtDriver::new(adapter, width, height)
 }
 
 /// Drives an [`AppLogic`] impl headlessly, observing it through a real ANSI
@@ -233,6 +269,26 @@ impl<A: AppLogic> TuiVtDriver<A> {
             .expect("Clear(All) write into an in-memory vt100 sink is infallible");
 
         self.terminal = terminal;
+    }
+
+    /// Feed raw bytes straight into the underlying `vt100::Parser`,
+    /// out-of-band from anything [`Self::render`] / [`paint_frame`] ever
+    /// writes (issue #1060).
+    ///
+    /// This is the hook a downstream black-box test needs to reproduce the
+    /// condition [`crate::Backend::request_full_repaint`] exists to fix: a
+    /// process other than this driver's own render path (a real PTY, a
+    /// subshell, anything sharing the terminal) writing directly to the
+    /// screen and leaving a stale cell ratatui's diff cache believes is
+    /// unchanged. Without a public way to inject bytes like that, no
+    /// consumer crate could write the "does calling
+    /// `request_full_repaint()` actually force a re-send of that cell"
+    /// assertion this driver's own
+    /// `render_actually_clears_stale_content_outside_the_diff_cache` test
+    /// makes in-crate — see that test for the full technique this method
+    /// exposes.
+    pub fn inject_raw(&self, bytes: &[u8]) {
+        self.parser.borrow_mut().process(bytes);
     }
 
     /// Feed one synthetic event through the full production pipeline — see
@@ -662,6 +718,77 @@ mod tests {
         assert!(driver.exited());
     }
 
+    /// Issue #1060 acceptance test: a downstream `ShellApp` consumer (the
+    /// vimcode#1243 scenario this issue blocks — "Ctrl+L forces a full
+    /// repaint") must be able to write this test with only the public API
+    /// this crate exposes. Before [`driver_with_shell`] and
+    /// [`TuiVtDriver::inject_raw`] existed, none of the three pieces below
+    /// were reachable from outside this crate: `build_shell_adapter` was
+    /// `pub(crate)`, `TuiVtDriver::new` demanded an already-built
+    /// `AppLogic` (which `ShellAdapter` is, but nothing could construct
+    /// one), and there was no way to inject the out-of-band byte an
+    /// incremental diff would skip.
+    #[test]
+    fn ctrl_l_forces_a_full_repaint_through_the_public_shell_driver_seam() {
+        use crate::compose::app_shell::AppShellLayout;
+        use crate::{Key, Modifiers, ShellApp, ShellConfig, ShellContext};
+
+        /// Minimal stand-in for vimcode's `TuiShellApp`: Ctrl+L calls
+        /// `Backend::request_full_repaint`, mirroring vimcode#1243.
+        struct CtrlLRepaints;
+
+        impl ShellApp for CtrlLRepaints {
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+
+            fn handle(
+                &mut self,
+                event: UiEvent,
+                backend: &mut dyn Backend,
+                _ctx: &ShellContext,
+            ) -> Reaction {
+                if let UiEvent::KeyPressed {
+                    key: Key::Char('l'),
+                    modifiers: Modifiers { ctrl: true, .. },
+                    ..
+                } = event
+                {
+                    backend.request_full_repaint();
+                    return Reaction::Redraw;
+                }
+                Reaction::Continue
+            }
+        }
+
+        let mut driver = driver_with_shell(CtrlLRepaints, ShellConfig::new("t", vec![]), 10, 3);
+
+        // Same out-of-band stale-cell technique
+        // `render_actually_clears_stale_content_outside_the_diff_cache`
+        // uses one layer down, but reached through the public
+        // `inject_raw` hook a downstream crate actually has.
+        driver.inject_raw(b"\x1b[2;1HX");
+        assert!(driver.screen_contains("X"), "sanity: stale glyph visible");
+
+        // A redraw with nothing pending leaves the stale glyph in place —
+        // the app never painted row 1, so the diff cache thinks it's
+        // unchanged.
+        driver.render();
+        assert!(
+            driver.screen_contains("X"),
+            "a redraw with no full-repaint request pending must not touch \
+             cells the diff cache believes are unchanged"
+        );
+
+        // Ctrl+L must force the next render to wipe it, proving the whole
+        // `ShellApp -> ShellAdapter -> TuiVtDriver` path this issue asked
+        // for actually wires `request_full_repaint` through.
+        driver.ctrl_char('l');
+        assert!(
+            !driver.screen_contains("X"),
+            "Ctrl+L must trigger request_full_repaint and force the stale \
+             glyph to clear, through the public driver_with_shell seam"
+        );
+    }
+
     /// Issue #1037 (review follow-up): `TuiVtDriver::render` must consume a
     /// pending [`crate::Backend::request_full_repaint`] request the same
     /// way `TuiDriver::render` and the live runner's `run_inner` frame loop
@@ -689,8 +816,11 @@ mod tests {
 
         // Simulate a PTY (or any other process) writing directly into the
         // shared terminal, out of band from anything `paint_frame` ever
-        // sent: move to row 2 (1-indexed in ANSI), col 1, print "X".
-        driver.parser.borrow_mut().process(b"\x1b[2;1HX");
+        // sent: move to row 2 (1-indexed in ANSI), col 1, print "X". Uses
+        // the public `inject_raw` hook (issue #1060) rather than reaching
+        // into the private `parser` field, so this test exercises the same
+        // seam a downstream consumer would.
+        driver.inject_raw(b"\x1b[2;1HX");
         assert!(
             driver.screen_contains("X"),
             "sanity: the injected stale glyph must be visible before either render"
