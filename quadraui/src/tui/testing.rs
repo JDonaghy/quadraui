@@ -1729,6 +1729,54 @@ mod tests {
         );
     }
 
+    /// Issue #1068: the rect a consumer hit-tests against must be the
+    /// *same* rect `draw_tab_bar` painted. `tab_close_center` resolves
+    /// against the [`crate::TabBarLayout`] `TuiBackend` cached at paint
+    /// time (quadraui#594); this test takes that exact point and runs it
+    /// back through the authoritative no-paint accessor,
+    /// [`crate::Backend::resolve_tab_bar_layout`] +
+    /// [`crate::TabBarLayout::hit_test`] — not the deprecated
+    /// `TabBarHits`/`tab_bar_layout` pair `InteractiveTabBarApp::handle`
+    /// uses above — and asserts it resolves to `TabBarHit::TabClose(1)`,
+    /// not a plain tab-select. If this is green, the TUI backend's paint
+    /// and hit-test rects agree and any divergence a consumer observes
+    /// (e.g. vimcode's hand-rolled click router) is on the consumer side.
+    #[test]
+    fn tab_close_center_resolves_to_authoritative_tab_close_hit() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        let app = InteractiveTabBarApp {
+            active: 0,
+            closed_idx: None,
+        };
+        let mut driver = TuiDriver::new(app, 20, 1);
+        let bar_id = QWidgetId::new("tabs");
+        let bar = driver.app().bar();
+
+        let (x, y) = driver
+            .tab_close_center(&bar_id, 1)
+            .expect("tab 1 is closable and should have a close button");
+
+        let resolved = crate::Backend::resolve_tab_bar_layout(
+            driver.core.backend_mut(),
+            InteractiveTabBarApp::RECT,
+            &bar,
+        );
+        // `resolve_tab_bar_layout` is bar-relative (see its doc), while
+        // `tab_close_center` returns absolute driver/screen coordinates —
+        // undo the `rect.x`/`rect.y` shift `TuiDriver::tab_close_center`
+        // applied before handing the point to `hit_test`.
+        let local_x = x - InteractiveTabBarApp::RECT.x;
+        let local_y = y - InteractiveTabBarApp::RECT.y;
+
+        assert_eq!(
+            resolved.hit_test(local_x, local_y),
+            TabBarHit::TabClose(1),
+            "the close-glyph rect `draw_tab_bar` painted must be the same \
+             rect a consumer hit-tests against"
+        );
+    }
+
     /// Acceptance criterion: `tab_close_center` returns `None` for a tab
     /// rendered with `is_closable: false`.
     #[test]
