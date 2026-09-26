@@ -805,10 +805,13 @@ pub fn editor_col_at_x(
     line.raw_text[..clamped].chars().count() + line.segment_col_offset
 }
 
-/// Paint a visual selection range (Char / Line / Block) onto `cr`.
-/// Handles wrap-continuation skipping (chooses the LAST non-skippable
-/// view row per buffer line). Mirrors
-/// `vimcode::gtk::draw::draw_visual_selection`.
+/// Paint a visual selection range (Char / Line / Block) onto `cr`. Each
+/// visual segment of a wrapped buffer line is highlighted independently
+/// (one rectangle per matching view row). Column math — including
+/// ghost-continuation / diff-padding row skipping and wrapped-segment
+/// offsetting — comes from [`EditorSelection::cols_on`] (#1082); this
+/// function only converts the returned columns to pixel positions.
+/// Mirrors `vimcode::gtk::draw::draw_visual_selection`.
 #[allow(clippy::too_many_arguments)]
 fn draw_visual_selection(
     cr: &Context,
@@ -824,129 +827,51 @@ fn draw_visual_selection(
     let (sr, sg, sb) = cairo_rgb(color);
     cr.set_source_rgba(sr, sg, sb, alpha);
 
-    match sel.kind {
-        SelectionKind::Line => {
-            for (view_idx, rl) in lines.iter().enumerate() {
-                if rl.line_idx >= sel.start_line
-                    && rl.line_idx <= sel.end_line
-                    && rl.diff_status != Some(DiffLine::Padding)
-                    && !rl.is_ghost_continuation
-                {
-                    let y = rect.y as f64 + view_idx as f64 * line_height;
-                    let highlight_width = rect.width as f64 - (text_x_offset - rect.x as f64);
-                    cr.rectangle(text_x_offset, y, highlight_width, line_height);
-                }
-            }
-            cr.fill().ok();
+    for (view_idx, rl) in lines.iter().enumerate() {
+        let Some(cols) = sel.cols_on(rl) else {
+            continue;
+        };
+
+        let y = rect.y as f64 + view_idx as f64 * line_height;
+
+        if sel.kind == SelectionKind::Line {
+            let highlight_width = rect.width as f64 - (text_x_offset - rect.x as f64);
+            cr.rectangle(text_x_offset, y, highlight_width, line_height);
+            continue;
         }
-        SelectionKind::Char => {
-            for (view_idx, rl) in lines.iter().enumerate() {
-                if rl.line_idx < sel.start_line
-                    || rl.line_idx > sel.end_line
-                    || rl.is_ghost_continuation
-                    || rl.diff_status == Some(DiffLine::Padding)
-                {
-                    continue;
-                }
-                let line_idx = rl.line_idx;
-                let sco = rl.segment_col_offset;
-                let seg_chars = rl.raw_text.chars().count();
 
-                let sel_start = if line_idx == sel.start_line {
-                    sel.start_col
-                } else {
-                    0
-                };
-                let sel_end = if line_idx == sel.end_line {
-                    sel.end_col + 1
-                } else {
-                    usize::MAX
-                };
+        let line_text = &rl.raw_text;
+        layout.set_text(line_text);
+        layout.set_attributes(None);
 
-                let hi_start = sel_start.max(sco).saturating_sub(sco);
-                let hi_end = sel_end.min(sco + seg_chars).saturating_sub(sco);
-                if hi_start >= hi_end {
-                    continue;
-                }
+        let start_byte = line_text
+            .char_indices()
+            .nth(cols.start)
+            .map(|(i, _)| i)
+            .unwrap_or(line_text.len());
+        let start_pos = layout.index_to_pos(start_byte as i32);
+        let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
 
-                let line_text = &rl.raw_text;
-                let y = rect.y as f64 + view_idx as f64 * line_height;
-                layout.set_text(line_text);
-                layout.set_attributes(None);
-
-                let start_byte = line_text
-                    .char_indices()
-                    .nth(hi_start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line_text.len());
-                let start_pos = layout.index_to_pos(start_byte as i32);
-                let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
-
-                if hi_end >= seg_chars && sel_end > sco + seg_chars {
-                    let (line_width, _) = layout.pixel_size();
-                    cr.rectangle(
-                        start_x,
-                        y,
-                        (text_x_offset + line_width as f64 - start_x).max(0.0),
-                        line_height,
-                    );
-                } else {
-                    let end_byte = line_text
-                        .char_indices()
-                        .nth(hi_end)
-                        .map(|(i, _)| i)
-                        .unwrap_or(line_text.len());
-                    let end_pos = layout.index_to_pos(end_byte as i32);
-                    let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
-                    cr.rectangle(start_x, y, end_x - start_x, line_height);
-                }
-                cr.fill().ok();
-            }
-        }
-        SelectionKind::Block => {
-            for (view_idx, rl) in lines.iter().enumerate() {
-                if rl.line_idx < sel.start_line
-                    || rl.line_idx > sel.end_line
-                    || rl.is_ghost_continuation
-                    || rl.diff_status == Some(DiffLine::Padding)
-                {
-                    continue;
-                }
-                let sco = rl.segment_col_offset;
-                let seg_chars = rl.raw_text.chars().count();
-
-                let hi_start = sel.start_col.max(sco).saturating_sub(sco);
-                let hi_end = (sel.end_col + 1).min(sco + seg_chars).saturating_sub(sco);
-                if hi_start >= hi_end {
-                    continue;
-                }
-
-                let line_text = &rl.raw_text;
-                let y = rect.y as f64 + view_idx as f64 * line_height;
-                layout.set_text(line_text);
-                layout.set_attributes(None);
-
-                let start_byte = line_text
-                    .char_indices()
-                    .nth(hi_start)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line_text.len());
-                let start_pos = layout.index_to_pos(start_byte as i32);
-                let start_x = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
-
-                let end_byte = line_text
-                    .char_indices()
-                    .nth(hi_end)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line_text.len());
-                let end_pos = layout.index_to_pos(end_byte as i32);
-                let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
-
-                cr.rectangle(start_x, y, end_x - start_x, line_height);
-            }
-            cr.fill().ok();
+        if cols.extends_beyond {
+            let (line_width, _) = layout.pixel_size();
+            cr.rectangle(
+                start_x,
+                y,
+                (text_x_offset + line_width as f64 - start_x).max(0.0),
+                line_height,
+            );
+        } else {
+            let end_byte = line_text
+                .char_indices()
+                .nth(cols.end)
+                .map(|(i, _)| i)
+                .unwrap_or(line_text.len());
+            let end_pos = layout.index_to_pos(end_byte as i32);
+            let end_x = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
+            cr.rectangle(start_x, y, end_x - start_x, line_height);
         }
     }
+    cr.fill().ok();
 }
 
 #[cfg(test)]
@@ -1511,6 +1436,87 @@ mod tests {
             px2,
             rgb(theme.background),
             "no horizontal scrollbar should paint when every line fits the viewport"
+        );
+    }
+
+    // ── Selection column math via `EditorSelection::cols_on` (#1082) ────
+
+    fn text_line(line_idx: usize, raw_text: &str) -> EditorLine {
+        EditorLine {
+            raw_text: raw_text.into(),
+            ..blank_line(line_idx)
+        }
+    }
+
+    /// One `Char` selection spanning buffer lines `[0, 2]` painted
+    /// across a plain row, a wrapped-segment row, a ghost-continuation
+    /// row, and a diff-padding row — the exact matrix
+    /// `tests/conformance/editor.rs` proves against
+    /// `EditorSelection::cols_on` directly, proven again here through a
+    /// real Cairo paint so the backend's own call site is covered too.
+    #[test]
+    fn draw_editor_selection_respects_wrapped_ghost_and_diff_padding_rows() {
+        let theme = Theme::default();
+
+        let lines = vec![
+            // Row 0: buffer line 0, plain, selection's own start line.
+            text_line(0, "0123456789"),
+            // Row 1: a wrap-continuation segment of buffer line 1,
+            // starting at buffer column 5 — its own text is only 5
+            // chars, entirely inside the selection.
+            EditorLine {
+                segment_col_offset: 5,
+                is_wrap_continuation: true,
+                ..text_line(1, "abcde")
+            },
+            // Row 2: the AI-ghost continuation of buffer line 1 — same
+            // `line_idx` as row 1, but virtual, must never be selected.
+            EditorLine {
+                ghost_suffix: Some("ai suggestion".into()),
+                ..text_line(1, "")
+            },
+            // Row 3: buffer line 2 (the selection's own end line), but a
+            // diff-padding filler row — must never be selected either.
+            EditorLine {
+                diff_status: Some(DiffLine::Padding),
+                ..text_line(2, "")
+            },
+        ];
+
+        let mut editor = scroll_test_editor(4, 0, 4);
+        editor.lines = lines;
+        editor.selection = Some(EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 2,
+            end_col: 10,
+        });
+
+        let (data, stride) = scroll_test_paint(&editor, &theme);
+        let stride = stride as usize;
+        let sample_x = 2; // just past the left text edge on every row
+        let row_y = |row: i32| row * SCROLL_TEST_LINE_H as i32 + (SCROLL_TEST_LINE_H as i32 / 2);
+
+        assert_ne!(
+            scroll_test_pixel(&data, stride, sample_x, row_y(0)),
+            rgb(theme.background),
+            "row 0 (plain, selection's start line) should be tinted"
+        );
+        assert_ne!(
+            scroll_test_pixel(&data, stride, sample_x, row_y(1)),
+            rgb(theme.background),
+            "row 1 (wrapped segment of a fully-selected line) should be tinted"
+        );
+        assert_eq!(
+            scroll_test_pixel(&data, stride, sample_x, row_y(2)),
+            rgb(theme.background),
+            "row 2 (ghost continuation) must never be tinted by a selection"
+        );
+        assert_eq!(
+            scroll_test_pixel(&data, stride, sample_x, row_y(3)),
+            rgb(theme.diff_padding_bg),
+            "row 3 (diff padding) must show only its diff background, not a selection tint"
         );
     }
 }

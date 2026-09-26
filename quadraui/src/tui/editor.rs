@@ -38,7 +38,6 @@
 
 use crate::primitives::editor::{
     CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLine, EditorSelection, GitLineStatus,
-    SelectionKind,
 };
 use crate::primitives::scrollbar::Scrollbar;
 use crate::text_util::snap_to_char_boundary;
@@ -648,13 +647,14 @@ fn render_text_line(
 }
 
 /// Paint one selection range overlay onto `buf`. Walks the editor's
-/// visible lines, mapping buffer-coordinate selection rows to
-/// segment-local visual columns (so wrapped lines highlight only the
-/// segment that overlaps the selection range). Sets each touched cell's
-/// bg to `color`, preserving the cell's existing fg unless that fg
-/// equals `window_bg` (in which case the cell would be invisible
-/// against the new bg, so it's swapped to `default_fg`). Mirrors
-/// `vimcode::tui_main::render_impl::render_selection`.
+/// visible lines, calling [`EditorSelection::cols_on`] to map each
+/// buffer-coordinate selection row to segment-local visual columns (so
+/// wrapped lines highlight only the segment that overlaps the selection
+/// range, and ghost-continuation / diff-padding rows are skipped
+/// entirely). Sets each touched cell's bg to `color`, preserving the
+/// cell's existing fg unless that fg equals `window_bg` (in which case
+/// the cell would be invisible against the new bg, so it's swapped to
+/// `default_fg`). Mirrors `vimcode::tui_main::render_impl::render_selection`.
 fn render_selection(
     buf: &mut Buffer,
     area: Rect,
@@ -670,51 +670,13 @@ fn render_selection(
     let text_width = area.width.saturating_sub(gutter_w) as usize;
 
     for (row_idx, line) in editor.lines.iter().enumerate() {
-        let buffer_line = line.line_idx;
-        if buffer_line < sel.start_line || buffer_line > sel.end_line {
+        let Some(cols) = sel.cols_on(line) else {
             continue;
-        }
+        };
         let screen_y = area.y + row_idx as u16;
-        let seg_offset = line.segment_col_offset;
 
-        let (buf_col_start, buf_col_end) = match sel.kind {
-            SelectionKind::Line => (0usize, usize::MAX),
-            SelectionKind::Char => {
-                let cs = if buffer_line == sel.start_line {
-                    sel.start_col
-                } else {
-                    0
-                };
-                let ce = if buffer_line == sel.end_line {
-                    sel.end_col + 1
-                } else {
-                    usize::MAX
-                };
-                (cs, ce)
-            }
-            SelectionKind::Block => (sel.start_col, sel.end_col + 1),
-        };
-
-        let char_count = line.raw_text.chars().filter(|&c| c != '\n').count().max(1);
-        let seg_end = seg_offset + char_count;
-
-        if buf_col_start >= seg_end && buf_col_end != usize::MAX {
-            continue;
-        }
-        if buf_col_end <= seg_offset {
-            continue;
-        }
-
-        let col_start = buf_col_start.saturating_sub(seg_offset);
-        let col_end = if buf_col_end == usize::MAX {
-            usize::MAX
-        } else {
-            buf_col_end.saturating_sub(seg_offset)
-        };
-        let effective_end = col_end.min(char_count);
-
-        let vis_start = char_col_to_visual(&line.raw_text, col_start, editor.tabstop);
-        let vis_end = char_col_to_visual(&line.raw_text, effective_end, editor.tabstop);
+        let vis_start = char_col_to_visual(&line.raw_text, cols.start, editor.tabstop);
+        let vis_end = char_col_to_visual(&line.raw_text, cols.end, editor.tabstop);
 
         for vis in vis_start..vis_end {
             if vis < editor.scroll_left {
@@ -741,7 +703,7 @@ fn render_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::editor::{DiagnosticMark, SpellMark};
+    use crate::primitives::editor::{DiagnosticMark, SelectionKind, SpellMark};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as RtRect;
 
@@ -844,5 +806,109 @@ mod tests {
 
         // Must not panic.
         let _ = draw_editor(&mut buf, area, &editor, &theme);
+    }
+
+    // ── Selection column math via `EditorSelection::cols_on` (#1082) ────
+
+    fn sel_test_line(
+        line_idx: usize,
+        raw_text: &str,
+        segment_col_offset: usize,
+        is_ghost_continuation: bool,
+        diff_status: Option<DiffLine>,
+    ) -> EditorLine {
+        EditorLine {
+            raw_text: raw_text.into(),
+            gutter_text: String::new(),
+            spans: vec![],
+            line_idx,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status,
+            diagnostics: vec![],
+            spell_errors: vec![],
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: segment_col_offset > 0,
+            segment_col_offset,
+            annotation: None,
+            ghost_suffix: is_ghost_continuation.then(|| "ai suggestion".to_string()),
+            is_ghost_continuation,
+            indent_guides: vec![],
+            colorcolumns: vec![],
+        }
+    }
+
+    /// One `Char` selection spanning buffer lines `[0, 2]` painted
+    /// across a plain row, a wrapped-segment row, a ghost-continuation
+    /// row, and a diff-padding row — same matrix
+    /// `tests/conformance/editor.rs` proves against
+    /// `EditorSelection::cols_on` directly, proven again here through a
+    /// real `draw_editor` paint so this backend's own call site is
+    /// covered too.
+    #[test]
+    fn draw_editor_selection_respects_wrapped_ghost_and_diff_padding_rows() {
+        let lines = vec![
+            // Row 0: buffer line 0, plain, selection's own start line.
+            sel_test_line(0, "0123456789", 0, false, None),
+            // Row 1: a wrap-continuation segment of buffer line 1,
+            // starting at buffer column 5 — its own text is only 5
+            // chars, entirely inside the selection.
+            sel_test_line(1, "abcde", 5, false, None),
+            // Row 2: the AI-ghost continuation of buffer line 1 — same
+            // `line_idx` as row 1, but virtual, must never be selected.
+            sel_test_line(1, "", 0, true, None),
+            // Row 3: buffer line 2 (the selection's own end line), but a
+            // diff-padding filler row — must never be selected either.
+            sel_test_line(2, "", 0, false, Some(DiffLine::Padding)),
+        ];
+        let mut editor = test_editor(lines, vec![]);
+        // `test_editor`'s fixed `max_col: 20` would otherwise overflow
+        // this 10-wide buffer and reserve the bottom row (row 3, exactly
+        // the diff-padding row this test samples) for a horizontal
+        // scrollbar track — unrelated to selection paint, and would
+        // clobber the very background this test asserts on.
+        editor.max_col = 0;
+        editor.total_lines = 4;
+        editor.selection = Some(EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 2,
+            end_col: 10,
+        });
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(RtRect::new(0, 0, 10, 4));
+        let area = RtRect::new(0, 0, 10, 4);
+        let _ = draw_editor(&mut buf, area, &editor, &theme);
+
+        let sel_bg = qc(theme.selection);
+        let window_bg = qc(theme.background);
+        let diff_padding_bg = qc(theme.diff_padding_bg);
+
+        assert_eq!(
+            buf[(0, 0)].bg,
+            sel_bg,
+            "row 0 (plain, selection's start line) should be tinted"
+        );
+        assert_eq!(
+            buf[(0, 1)].bg,
+            sel_bg,
+            "row 1 (wrapped segment of a fully-selected line) should be tinted"
+        );
+        assert_eq!(
+            buf[(0, 2)].bg,
+            window_bg,
+            "row 2 (ghost continuation) must never be tinted by a selection"
+        );
+        assert_eq!(
+            buf[(0, 3)].bg,
+            diff_padding_bg,
+            "row 3 (diff padding) must show only its diff background, not a selection tint"
+        );
     }
 }

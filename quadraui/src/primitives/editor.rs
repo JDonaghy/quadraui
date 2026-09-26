@@ -32,6 +32,16 @@
 //! matching the name the crate root already re-exported it under; the
 //! old name survives as a `#[deprecated]` `pub type` alias in this
 //! module per `PRIMITIVE_RULES.md` rule 8.
+//!
+//! ## `EditorSelection::cols_on` (#1082)
+//!
+//! Selection column-range math (mapping a buffer-coordinate
+//! [`EditorSelection`] onto one [`EditorLine`]'s own segment-local
+//! columns — handling wrapped segments, ghost-text continuation rows,
+//! and diff-padding filler rows) used to be reimplemented once per
+//! backend rasteriser. [`EditorSelection::cols_on`] is now the single
+//! source of truth; every backend calls it and only converts the
+//! returned [`SelectionCols`] to on-screen positions.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -134,6 +144,112 @@ pub struct EditorSelection {
     pub end_line: usize,
     /// Last selected column (Char / Block; ignored for Line).
     pub end_col: usize,
+}
+
+/// Segment-local column range that an [`EditorSelection`] highlights on
+/// one [`EditorLine`], returned by [`EditorSelection::cols_on`].
+///
+/// `start`/`end` are half-open `[start, end)` character-column offsets
+/// *within this visual segment's own text* (i.e. already adjusted for
+/// `segment_col_offset` — subtract nothing further, they're ready to
+/// hand to a per-character x-position lookup on `line.raw_text`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SelectionCols {
+    pub start: usize,
+    pub end: usize,
+    /// True when the selection continues past this segment's own text —
+    /// either onto a later buffer line, or (for a wrapped line) onto the
+    /// next visual segment of the same buffer line — rather than ending
+    /// exactly at `end`. Always `true` for [`SelectionKind::Line`] (a
+    /// line selection always highlights the full row, independent of
+    /// text length).
+    ///
+    /// Backends that measure text at pixel resolution (GTK/macOS) use
+    /// this to decide whether to extend the highlight rectangle to the
+    /// full rendered line width instead of stopping at the last
+    /// character's edge. Backends that paint per fixed-width cell
+    /// (TUI/Win) can ignore it — `end` already caps at the segment's own
+    /// character count, which is all they need.
+    pub extends_beyond: bool,
+}
+
+impl EditorSelection {
+    /// Column range this selection highlights on `line`, or `None` if
+    /// this visual row shows no part of the selection at all — outside
+    /// `[start_line, end_line]`, a ghost-text continuation row (virtual,
+    /// no buffer columns), or a diff-padding filler row (no buffer
+    /// content to select).
+    ///
+    /// Single source of truth for selection column math, consolidating
+    /// what used to be reimplemented once per backend rasteriser
+    /// (`tui::editor::render_selection`, `gtk::editor::draw_visual_selection`,
+    /// `macos::editor::draw_visual_selection`, and — incompletely, missing
+    /// the ghost/diff-padding/wrapped-segment handling and using an
+    /// exclusive `end_col` where the others use `end_col + 1` —
+    /// `win::editor::paint_selection`; quadraui#1082). Callers only need
+    /// to convert the returned columns to on-screen x positions.
+    pub fn cols_on(&self, line: &EditorLine) -> Option<SelectionCols> {
+        if line.is_ghost_continuation || line.diff_status == Some(DiffLine::Padding) {
+            return None;
+        }
+        let line_idx = line.line_idx;
+        if line_idx < self.start_line || line_idx > self.end_line {
+            return None;
+        }
+
+        let seg_offset = line.segment_col_offset;
+        // `.max(1)`: an empty segment (a blank buffer line, or a wrapped
+        // line's tail segment whose text ends exactly on the wrap
+        // boundary) still gets one highlighted column when a Char/Block
+        // selection passes through it — matches the convention of
+        // showing at least a cursor-width highlight on a blank selected
+        // line, rather than silently skipping it.
+        let char_count = line.raw_text.trim_end_matches('\n').chars().count().max(1);
+        let seg_end = seg_offset + char_count;
+
+        let (buf_start, buf_end) = match self.kind {
+            SelectionKind::Line => (0usize, usize::MAX),
+            SelectionKind::Char => {
+                let start = if line_idx == self.start_line {
+                    self.start_col
+                } else {
+                    0
+                };
+                let end = if line_idx == self.end_line {
+                    self.end_col + 1
+                } else {
+                    usize::MAX
+                };
+                (start, end)
+            }
+            SelectionKind::Block => (self.start_col, self.end_col + 1),
+        };
+
+        // Entirely before or after this segment's own columns.
+        if buf_start >= seg_end && buf_end != usize::MAX {
+            return None;
+        }
+        if buf_end <= seg_offset {
+            return None;
+        }
+
+        let start = buf_start.saturating_sub(seg_offset);
+        let end = if buf_end == usize::MAX {
+            char_count
+        } else {
+            buf_end.saturating_sub(seg_offset).min(char_count)
+        };
+        if start >= end {
+            return None;
+        }
+        let extends_beyond = end >= char_count && buf_end > seg_end;
+
+        Some(SelectionCols {
+            start,
+            end,
+            extends_beyond,
+        })
+    }
 }
 
 // ─── Style ──────────────────────────────────────────────────────────────────
@@ -1123,5 +1239,233 @@ mod tests {
                 "round-trip failed for col {col}"
             );
         }
+    }
+
+    // ── `EditorSelection::cols_on` (#1082) ──────────────────────────────
+
+    /// Builds a minimal [`EditorLine`] for `cols_on` tests, varying only
+    /// the fields that drive its column math.
+    fn cols_line(
+        line_idx: usize,
+        raw_text: &str,
+        segment_col_offset: usize,
+        is_ghost_continuation: bool,
+        diff_status: Option<DiffLine>,
+    ) -> EditorLine {
+        EditorLine {
+            raw_text: raw_text.into(),
+            gutter_text: String::new(),
+            spans: Vec::new(),
+            line_idx,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status,
+            diagnostics: Vec::new(),
+            spell_errors: Vec::new(),
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: segment_col_offset > 0,
+            segment_col_offset,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation,
+            indent_guides: Vec::new(),
+            colorcolumns: Vec::new(),
+        }
+    }
+
+    fn plain(line_idx: usize, raw_text: &str) -> EditorLine {
+        cols_line(line_idx, raw_text, 0, false, None)
+    }
+
+    /// Plain line × Char selection: single-line range is `[start_col,
+    /// end_col + 1)`, doesn't extend past its own text.
+    #[test]
+    fn cols_on_plain_line_char_selection() {
+        let line = plain(0, "hello world");
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 2,
+            end_line: 0,
+            end_col: 5,
+        };
+        let cols = sel.cols_on(&line).expect("line is within selection range");
+        assert_eq!((cols.start, cols.end), (2, 6));
+        assert!(!cols.extends_beyond);
+    }
+
+    /// A line outside `[start_line, end_line]` is not selected at all.
+    #[test]
+    fn cols_on_returns_none_outside_selection_line_range() {
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 3,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+        };
+        assert_eq!(sel.cols_on(&plain(1, "before")), None);
+        assert_eq!(sel.cols_on(&plain(6, "after")), None);
+        assert!(sel.cols_on(&plain(4, "inside")).is_some());
+    }
+
+    /// A ghost-text continuation row is virtual (no buffer columns) and
+    /// must never be selected, even when its `line_idx` falls inside the
+    /// selection's buffer-line range (ghost rows repeat the owning
+    /// line's `line_idx`, quadraui#1082).
+    #[test]
+    fn cols_on_ghost_continuation_row_is_none() {
+        let line = cols_line(0, "", 0, true, None);
+        let sel = EditorSelection {
+            kind: SelectionKind::Line,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+        };
+        assert_eq!(sel.cols_on(&line), None);
+    }
+
+    /// A diff-padding filler row has no buffer content and must never be
+    /// selected.
+    #[test]
+    fn cols_on_diff_padding_row_is_none() {
+        let line = cols_line(2, "", 0, false, Some(DiffLine::Padding));
+        let sel = EditorSelection {
+            kind: SelectionKind::Block,
+            start_line: 0,
+            start_col: 0,
+            end_line: 4,
+            end_col: 3,
+        };
+        assert_eq!(sel.cols_on(&line), None);
+    }
+
+    /// Diff statuses other than `Padding` don't suppress selection.
+    #[test]
+    fn cols_on_diff_added_row_is_still_selectable() {
+        let line = cols_line(0, "added line", 0, false, Some(DiffLine::Added));
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 2,
+        };
+        assert_eq!(sel.cols_on(&line).map(|c| (c.start, c.end)), Some((0, 3)));
+    }
+
+    /// A wrap-continuation segment's returned columns are already
+    /// shifted into segment-local space (subtract nothing further) — a
+    /// selection covering buffer columns `[10, 25)` on a row whose
+    /// `segment_col_offset` is 10 (this segment's own text spans buffer
+    /// columns `[10, 30)`) highlights local columns `[0, 15)`.
+    #[test]
+    fn cols_on_wrapped_segment_offsets_into_local_columns() {
+        let line = cols_line(0, &"x".repeat(20), 10, false, None);
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 10,
+            end_line: 0,
+            end_col: 24,
+        };
+        let cols = sel.cols_on(&line).expect("segment overlaps selection");
+        assert_eq!((cols.start, cols.end), (0, 15));
+        assert!(!cols.extends_beyond);
+    }
+
+    /// A selection entirely before a wrapped segment's own columns
+    /// doesn't touch that segment.
+    #[test]
+    fn cols_on_wrapped_segment_before_selection_is_none() {
+        let line = cols_line(0, &"x".repeat(20), 10, false, None);
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 4,
+        };
+        assert_eq!(sel.cols_on(&line), None);
+    }
+
+    /// A multi-line Char selection that continues past this segment's
+    /// own text sets `extends_beyond` — the flag pixel-measuring
+    /// backends (GTK/macOS) use to extend the highlight to the edge of
+    /// the rendered line instead of stopping at the last character.
+    #[test]
+    fn cols_on_char_selection_spanning_multiple_lines_extends_beyond_last_line() {
+        let line = plain(0, "short");
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 2,
+            end_col: 3,
+        };
+        let cols = sel.cols_on(&line).expect("first line is in range");
+        assert_eq!((cols.start, cols.end), (0, 5));
+        assert!(
+            cols.extends_beyond,
+            "line 0 isn't the selection's last line"
+        );
+    }
+
+    /// `SelectionKind::Line` always spans the whole row and always sets
+    /// `extends_beyond` (a line selection is never bounded by its own
+    /// text length).
+    #[test]
+    fn cols_on_line_kind_always_extends_beyond() {
+        let line = plain(1, "abc");
+        let sel = EditorSelection {
+            kind: SelectionKind::Line,
+            start_line: 0,
+            start_col: 99, // ignored for Line
+            end_line: 2,
+            end_col: 99, // ignored for Line
+        };
+        let cols = sel.cols_on(&line).expect("line 1 is within [0, 2]");
+        assert!(cols.extends_beyond);
+    }
+
+    /// `SelectionKind::Block` applies the exact same `[start_col,
+    /// end_col]` column window to every covered line — unlike `Char`,
+    /// it does not widen to the full line on interior rows.
+    #[test]
+    fn cols_on_block_kind_uses_same_columns_on_every_line() {
+        let sel = EditorSelection {
+            kind: SelectionKind::Block,
+            start_line: 0,
+            start_col: 2,
+            end_line: 2,
+            end_col: 4,
+        };
+        for idx in 0..=2 {
+            let line = plain(idx, "0123456789");
+            let cols = sel.cols_on(&line).unwrap();
+            assert_eq!((cols.start, cols.end), (2, 5), "line {idx}");
+        }
+    }
+
+    /// A blank buffer line inside a multi-line Char/Block selection still
+    /// gets one highlighted column (vim's convention: a selected empty
+    /// line shows a cursor-width highlight rather than nothing).
+    #[test]
+    fn cols_on_blank_interior_line_highlights_one_column() {
+        let line = plain(1, "");
+        let sel = EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 5,
+            end_line: 2,
+            end_col: 1,
+        };
+        let cols = sel.cols_on(&line).expect("blank interior line is selected");
+        assert_eq!((cols.start, cols.end), (0, 1));
     }
 }

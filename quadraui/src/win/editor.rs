@@ -31,7 +31,7 @@ use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::backend::EditorPaintResult;
 use crate::event::Rect;
 use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorSelection, SelectionKind,
+    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorSelection,
 };
 use crate::theme::Theme;
 use crate::types::Color;
@@ -228,13 +228,14 @@ pub fn draw_editor(
 }
 
 /// Paint one selection range as a translucent overlay across the
-/// visible `lines`, before text is painted. `SelectionKind::Block` is
-/// treated the same as `Char` (a per-row `[start_col, end_col)` span) —
-/// a column-rectangle selection needs the same column on every row,
-/// which this approximation already gives when `start_col`/`end_col`
-/// are equal across rows; a genuinely ragged block selection paints
-/// slightly wider than the exact column rectangle. Follow-up scope, not
-/// a correctness gap for the common case.
+/// visible `lines`, before text is painted. Column math — including
+/// `SelectionKind::Block` vs `Char` distinctness, wrapped-segment
+/// offsetting, and ghost-continuation / diff-padding row skipping —
+/// comes from [`EditorSelection::cols_on`] (#1082); this function only
+/// converts the returned segment-local columns to a fixed-cell-width
+/// pixel rectangle (mirrors `tui::editor::render_selection`'s per-cell
+/// approach rather than GTK/macOS's proportional text measurement,
+/// since Win paints a uniform monospace grid same as TUI).
 #[allow(clippy::too_many_arguments)]
 fn paint_selection(
     target: &ID2D1RenderTarget,
@@ -248,32 +249,12 @@ fn paint_selection(
     alpha: f32,
 ) {
     for (view_idx, line) in lines.iter().enumerate() {
-        if line.line_idx < sel.start_line || line.line_idx > sel.end_line {
+        let Some(cols) = sel.cols_on(line) else {
             continue;
-        }
-        let line_len = line.raw_text.trim_end_matches('\n').chars().count();
-        let (start_col, end_col) = match sel.kind {
-            SelectionKind::Line => (0, line_len),
-            SelectionKind::Char | SelectionKind::Block => {
-                let start = if line.line_idx == sel.start_line {
-                    sel.start_col
-                } else {
-                    0
-                };
-                let end = if line.line_idx == sel.end_line {
-                    sel.end_col
-                } else {
-                    line_len
-                };
-                (start, end)
-            }
         };
-        if end_col <= start_col {
-            continue;
-        }
         let y = rect.y + view_idx as f32 * line_height;
-        let x = text_x + start_col as f32 * cell_width;
-        let w = (end_col - start_col) as f32 * cell_width;
+        let x = text_x + cols.start as f32 * cell_width;
+        let w = (cols.end - cols.start) as f32 * cell_width;
         let blended = Theme::default().background.blend(color, alpha as f64);
         let _ = fill_rect(target, Rect::new(x, y, w, line_height), blended);
     }
@@ -361,7 +342,7 @@ mod tests {
     use super::*;
     use crate::event::Rect as QRect;
     use crate::primitives::editor::{
-        CursorPos, DiagnosticMark, EditorCursor, EditorStyledSpan, Style,
+        CursorPos, DiagnosticMark, DiffLine, EditorCursor, EditorStyledSpan, SelectionKind, Style,
     };
     use crate::types::WidgetId;
     use crate::win::testing::HeadlessSurface;
@@ -539,5 +520,93 @@ mod tests {
             .background
             .blend(theme.selection, theme.selection_alpha as f64);
         assert_eq!((px.r, px.g, px.b), (expected.r, expected.g, expected.b));
+    }
+
+    /// Regression for #1082: a naive re-derivation of the selection
+    /// column math (this backend's pre-fix `paint_selection`) ignored
+    /// `is_ghost_continuation`, `DiffLine::Padding`, and
+    /// `segment_col_offset` entirely — painting selection tint over
+    /// ghost/padding rows it should skip, and at the wrong x position on
+    /// a wrapped segment. `EditorSelection::cols_on` (shared with every
+    /// other backend) fixes all three; this proves it through a real
+    /// Direct2D paint.
+    #[test]
+    fn selection_respects_wrapped_ghost_and_diff_padding_rows() {
+        let surface = HeadlessSurface::new(200, 100).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Consolas", 10.0, None).expect("create DWrite");
+
+        let lines = vec![
+            // Row 0: buffer line 0, plain, selection's own start line.
+            plain_line(0, "0123456789"),
+            // Row 1: a wrap-continuation segment of buffer line 1,
+            // starting at buffer column 5 — its own text is only 5
+            // chars, entirely inside the selection.
+            EditorLine {
+                segment_col_offset: 5,
+                is_wrap_continuation: true,
+                ..plain_line(1, "abcde")
+            },
+            // Row 2: the AI-ghost continuation of buffer line 1 — same
+            // `line_idx` as row 1, but virtual, must never be selected.
+            EditorLine {
+                is_ghost_continuation: true,
+                ghost_suffix: Some("ai suggestion".into()),
+                ..plain_line(1, "")
+            },
+            // Row 3: buffer line 2 (the selection's own end line), but a
+            // diff-padding filler row — must never be selected either.
+            EditorLine {
+                diff_status: Some(DiffLine::Padding),
+                ..plain_line(2, "")
+            },
+        ];
+        let mut e = editor(lines);
+        e.total_lines = 4;
+        e.selection = Some(EditorSelection {
+            kind: SelectionKind::Char,
+            start_line: 0,
+            start_col: 0,
+            end_line: 2,
+            end_col: 10,
+        });
+
+        surface
+            .paint(|target| {
+                draw_editor(target, &dwrite, &e, CELL_W, LINE_H);
+            })
+            .expect("paint editor");
+
+        let theme = Theme::default();
+        let blended = theme
+            .background
+            .blend(theme.selection, theme.selection_alpha as f64);
+        let text_x = (e.gutter_char_width as f32 * CELL_W) as i32;
+        let sample_x = (text_x + 2) as u32;
+        let row_y = |row: i32| (row as f32 * LINE_H + LINE_H / 2.0) as u32;
+
+        let row0 = surface.pixel_at(sample_x, row_y(0));
+        assert_eq!(
+            (row0.r, row0.g, row0.b),
+            (blended.r, blended.g, blended.b),
+            "row 0 (plain, selection's start line) should be tinted"
+        );
+        let row1 = surface.pixel_at(sample_x, row_y(1));
+        assert_eq!(
+            (row1.r, row1.g, row1.b),
+            (blended.r, blended.g, blended.b),
+            "row 1 (wrapped segment of a fully-selected line) should be tinted"
+        );
+        let row2 = surface.pixel_at(sample_x, row_y(2));
+        assert_eq!(
+            (row2.r, row2.g, row2.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "row 2 (ghost continuation) must never be tinted by a selection"
+        );
+        let row3 = surface.pixel_at(sample_x, row_y(3));
+        assert_eq!(
+            (row3.r, row3.g, row3.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "row 3 (diff padding) must never be tinted by a selection"
+        );
     }
 }

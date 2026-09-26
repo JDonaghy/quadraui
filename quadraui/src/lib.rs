@@ -409,7 +409,8 @@ pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
     DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorHit, EditorLayout, EditorLine,
     EditorPaintOptions, EditorSelection, EditorStyledSpan, GitLineStatus,
-    SelectionKind as EditorSelectionKind, SpellMark, Style as EditorStyle,
+    SelectionCols as EditorSelectionCols, SelectionKind as EditorSelectionKind, SpellMark,
+    Style as EditorStyle,
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
