@@ -57,7 +57,8 @@ use crate::native_surface::NativeSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
 use super::text::{
-    draw_line, fill_rect, pop_clip, push_clip, stroke_rect, with_horizontal_scale, DWrite,
+    draw_line, fill_rect, fill_rounded_rect, pop_clip, push_clip, stroke_rect,
+    with_horizontal_scale, DWrite,
 };
 
 /// See the module doc for [`Self::dwrite`], the one field that carries
@@ -116,6 +117,12 @@ impl NativeSurface for D2dSurface<'_> {
 
     fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
         let _ = fill_rect(self.target, rect, color);
+    }
+
+    /// #1073: `super::text::fill_rounded_rect`'s `ID2D1RenderTarget`
+    /// twin of [`Self::surface_fill_rect`] above.
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        let _ = fill_rounded_rect(self.target, rect, radius, color);
     }
 
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
