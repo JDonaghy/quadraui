@@ -537,14 +537,19 @@ mod tests {
 
         let lines = vec![
             // Row 0: buffer line 0, plain, selection's own start line.
-            plain_line(0, "0123456789"),
+            // Visible glyphs only in the first two columns, spaces after
+            // — the sample column below lands on inkless space cells so
+            // the pixel is pure selection tint, not DirectWrite glyph
+            // antialiasing (same trick as `line_selection_spans_full_row`).
+            plain_line(0, &format!("01{}", " ".repeat(8))),
             // Row 1: a wrap-continuation segment of buffer line 1,
-            // starting at buffer column 5 — its own text is only 5
-            // chars, entirely inside the selection.
+            // starting at buffer column 5 — its own text (10 chars,
+            // same glyph-then-spaces shape) is entirely inside the
+            // selection.
             EditorLine {
                 segment_col_offset: 5,
                 is_wrap_continuation: true,
-                ..plain_line(1, "abcde")
+                ..plain_line(1, &format!("ab{}", " ".repeat(8)))
             },
             // Row 2: the AI-ghost continuation of buffer line 1 — same
             // `line_idx` as row 1, but virtual, must never be selected.
@@ -581,7 +586,9 @@ mod tests {
             .background
             .blend(theme.selection, theme.selection_alpha as f64);
         let text_x = (e.gutter_char_width as f32 * CELL_W) as i32;
-        let sample_x = (text_x + 2) as u32;
+        // Middle of column 5: past the two visible glyphs, inside
+        // every tinted row's selected range.
+        let sample_x = (text_x as f32 + 5.0 * CELL_W + CELL_W / 2.0) as u32;
         let row_y = |row: i32| (row as f32 * LINE_H + LINE_H / 2.0) as u32;
 
         let row0 = surface.pixel_at(sample_x, row_y(0));
