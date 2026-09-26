@@ -8,11 +8,17 @@
 //! - Tracks a rotating spinner frame while the "assistant" is thinking.
 //! - Supports `↑`/`↓` input-history navigation.
 //! - Shows a status strip with context label and model chip.
+//! - Opts into `submit_on_enter` (#1137) plus a persistent hint line, and a
+//!   clickable Send/Stop segment at the right of the input row.
 //! - Exits on `q` / `Ctrl+C`.
 //!
 //! Controls:
-//! - Type any text; press `Enter` for newlines in the input.
-//! - `Ctrl+Enter` or `Alt+Enter` — submit the message.
+//! - Type any text; `Enter` submits it (`submit_on_enter` — #1137).
+//! - `Shift+Enter` (or `Alt+Enter` as a terminal-compatibility fallback)
+//!   inserts a newline instead.
+//! - Click the **Send** segment at the right of the input row to submit
+//!   with the mouse instead of the keyboard; it reads **Stop** while the
+//!   simulated assistant is "thinking" — click it to cancel the reply.
 //! - `↑` / `↓` — history navigation (when cursor is on the first/last
 //!   *visual* row of the wrapped, auto-growing input box — quadraui#1136).
 //! - `PageUp` / `PageDown` — scroll the transcript.
@@ -61,10 +67,14 @@ pub struct ChatDemo {
 impl ChatDemo {
     pub fn new() -> Self {
         let mut controller = ChatController::new("demo:chat");
-        controller.set_status(StyledText::plain(
-            "Chat demo — Ctrl+Enter or Alt+Enter to send, q to quit",
-        ));
+        controller.set_status(StyledText::plain("Chat demo — Enter to send, q to quit"));
         controller.set_model_label("claude-opus-4-5");
+        // #1137: Zed-style "Enter to send" plus a persistent hint line
+        // (unlike the placeholder, this stays visible while typing).
+        controller.set_submit_on_enter(true);
+        controller.set_hint(Some(StyledText::plain(
+            "Enter to send · Shift+Enter for a newline",
+        )));
         Self {
             controller,
             turns: Vec::new(),
@@ -143,6 +153,15 @@ impl AppLogic for ChatDemo {
                     self.controller.clear_input();
                     Reaction::Redraw
                 }
+            }
+            // #1137: clicking the Send segment while it reads "Stop"
+            // interrupts the simulated "thinking" reply — a real app would
+            // cancel its backend session continuation here instead.
+            ChatControllerEvent::StopRequested => {
+                self.thinking_ticks = 0;
+                self.pending_reply = None;
+                self.sync_controller();
+                Reaction::Redraw
             }
             ChatControllerEvent::Consumed => Reaction::Redraw,
             _ => {

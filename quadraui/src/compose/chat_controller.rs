@@ -10,6 +10,9 @@
 //!
 //! # Keyboard behaviour
 //!
+//! By default (`submit_on_enter == false`, see
+//! [`set_submit_on_enter`](ChatController::set_submit_on_enter)):
+//!
 //! - `Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter` — submit the current input.
 //!   `Ctrl+S` and `Alt+Enter` work on most terminals; `Ctrl+Enter` requires Kitty
 //!   keyboard protocol (supported by kitty, Alacritty ≥0.12, WezTerm, foot).
@@ -17,6 +20,17 @@
 //!   terminal configurations (`stty -ixon` disables it). If `Ctrl+S` appears
 //!   to freeze the terminal, run `stty -ixon` or use `Alt+Enter` instead.
 //! - `Enter` — insert a newline in the input.
+//!
+//! When `submit_on_enter == true` (Zed-style: `Enter` sends by default —
+//! #1137):
+//!
+//! - `Enter` (no modifiers) — submit the current input.
+//! - `Shift+Enter` — insert a newline. `Alt+Enter` is accepted as a
+//!   fallback for terminals that cannot report `Shift+Enter`.
+//! - `Ctrl+S` / `Ctrl+Enter` still submit, same as the default mode.
+//!
+//! In both modes:
+//!
 //! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
 //!   whether to close the overlay.
 //! - The input soft-wraps long lines to fit the box (#1136), and `↑`/`↓`
@@ -40,6 +54,33 @@
 //! Mouse-wheel events (positive `delta.y` = scroll up) scroll the
 //! transcript by 3 rows per tick. Backends normalise their native
 //! scroll direction before emitting [`crate::UiEvent::Scroll`].
+//!
+//! # Send / Stop segment (#1137)
+//!
+//! A clickable segment is painted at the right of the input row —
+//! reusing [`crate::Form`]'s existing `FieldKind::Button` rasteriser so no
+//! new [`Backend`] trait method is needed, same rationale as
+//! [`render`](Self::render)'s doc. It reads **Send** normally and **Stop**
+//! while [`set_busy`](Self::set_busy)`(true)` is in effect. Clicking it:
+//!
+//! - while idle — behaves exactly like a keyboard submit (same
+//!   history-push and [`ChatControllerEvent::Submit`] emission), or is
+//!   ignored when the input is empty;
+//! - while busy — emits [`ChatControllerEvent::StopRequested`] instead
+//!   of touching the input buffer at all.
+//!
+//! The segment is omitted (and the `TextInput` takes the full row width)
+//! when the row is too narrow to fit both.
+//!
+//! # Persistent hint line (#1137)
+//!
+//! [`set_hint`](Self::set_hint) configures an optional one-row hint
+//! painted directly above the input box. Unlike the `TextInput`
+//! placeholder (which only shows while the buffer is empty and vanishes
+//! on the first keystroke), the hint stays visible while typing — the
+//! spot for a persistent "Enter to send, Shift+Enter for newline" style
+//! affordance. `None` (default) omits the row entirely, so the layout is
+//! unchanged for callers that don't opt in.
 
 use crate::compose::markdown::render_markdown_to_styled;
 use crate::text_util::{
@@ -49,8 +90,9 @@ use crate::text_util::{
 use crate::theme::Theme;
 use crate::types::StyledSpan;
 use crate::{
-    Backend, ButtonMask, Color, Key, MessageList, MessageRow, Modifiers, MouseButton, NamedKey,
-    Rect, Scrollbar, Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
+    Backend, ButtonMask, Color, FieldKind, Form, FormField, Key, MessageList, MessageRow,
+    Modifiers, MouseButton, NamedKey, Rect, Scrollbar, Spinner, StyledText, TextInput,
+    TextInputHit, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -109,6 +151,13 @@ pub enum ChatControllerEvent {
     /// User pressed `Esc`. The app decides whether to close the overlay,
     /// show a confirmation dialog, or ignore it.
     Cancelled,
+    /// User clicked the Send/Stop segment while [`ChatController::set_busy`]
+    /// was `true` (#1137). Distinct from [`Cancelled`](Self::Cancelled),
+    /// which is about closing the overlay — this is about interrupting an
+    /// in-flight generation. The app should stop its backend session
+    /// continuation (kill the subprocess, cancel the API call, etc.); the
+    /// input buffer is left untouched.
+    StopRequested,
     /// A key press that the chat controller did not consume. Apps can
     /// bind hotkeys here (e.g. `'c'` to copy the last assistant turn).
     KeyPressed { key: String, modifiers: Modifiers },
@@ -134,7 +183,14 @@ struct ChatLayout {
     scrollbar: Option<Rect>,
     /// Spinner rect within the status strip (rightmost `line_height` px).
     spinner: Option<Rect>,
+    /// Persistent hint row directly above the input box (#1137). `None`
+    /// when [`ChatController::set_hint`] hasn't been called.
+    hint: Option<Rect>,
     input: Rect,
+    /// Clickable Send/Stop segment at the right of the input row (#1137).
+    /// `None` when the row is too narrow to fit both it and the
+    /// `TextInput`.
+    send: Option<Rect>,
 }
 
 // ── Controller ─────────────────────────────────────────────────────────────────
@@ -254,6 +310,14 @@ pub struct ChatController {
     /// Fixed scrollbar track width in surface units, or `None` to use
     /// `backend.line_height()` (same convention as `TreeController`).
     scrollbar_width: Option<f32>,
+    /// When `true`, `Enter` submits and `Shift+Enter` (or `Alt+Enter` as a
+    /// fallback) inserts a newline. Default `false` — preserves the
+    /// pre-#1137 behaviour where `Enter` always inserts a newline. See
+    /// [`set_submit_on_enter`](Self::set_submit_on_enter).
+    submit_on_enter: bool,
+    /// Persistent hint row painted above the input box, or `None` to omit
+    /// it. See [`set_hint`](Self::set_hint).
+    hint: Option<StyledText>,
 }
 
 impl ChatController {
@@ -280,6 +344,8 @@ impl ChatController {
             input_min_rows: 1,
             input_max_rows: 8,
             scrollbar_width: None,
+            submit_on_enter: false,
+            hint: None,
         }
     }
 
@@ -364,6 +430,31 @@ impl ChatController {
     /// `None` (default) falls back to `backend.line_height()`.
     pub fn set_scrollbar_width(&mut self, width: Option<f32>) {
         self.scrollbar_width = width;
+    }
+
+    /// Toggle Zed-style "Enter to send" behaviour (#1137).
+    ///
+    /// `true` — `Enter` submits, `Shift+Enter`/`Alt+Enter` insert a
+    /// newline. `false` (default) — `Enter` always inserts a newline;
+    /// submit is `Ctrl+S` / `Alt+Enter` / `Ctrl+Enter`, preserving
+    /// pre-#1137 behaviour for callers that don't opt in.
+    pub fn set_submit_on_enter(&mut self, submit_on_enter: bool) {
+        self.submit_on_enter = submit_on_enter;
+    }
+
+    /// Whether `Enter` currently submits (`true`) or inserts a newline
+    /// (`false`). See [`set_submit_on_enter`](Self::set_submit_on_enter).
+    pub fn submit_on_enter(&self) -> bool {
+        self.submit_on_enter
+    }
+
+    /// Set (or clear) the persistent hint row painted above the input box
+    /// (#1137). Pass `None` to omit the row (default).
+    ///
+    /// Unlike the `TextInput` placeholder, this stays visible while
+    /// typing — see this struct's *Persistent hint line* doc section.
+    pub fn set_hint(&mut self, hint: Option<StyledText>) {
+        self.hint = hint;
     }
 
     // ── Transcript push helpers ───────────────────────────────────────
@@ -515,10 +606,30 @@ impl ChatController {
             backend.draw_scrollbar(sb_rect, &sb);
         }
 
-        // ── 5. Text input ─────────────────────────────────────────────
+        // ── 5. Hint row (#1137) ──────────────────────────────────────────
+        if let Some(hint_rect) = layout.hint {
+            let hint_text: String = self
+                .hint
+                .as_ref()
+                .map(|h| h.spans.iter().map(|s| s.text.as_str()).collect())
+                .unwrap_or_default();
+            let hint_list = MessageList {
+                id: WidgetId::new(format!("{}-hint", self.id.0)),
+                rows: vec![MessageRow::new(hint_text, Color::rgb(140, 140, 140), 0.0)],
+                scroll_top: 0,
+            };
+            backend.draw_message_list(hint_rect, &hint_list);
+        }
+
+        // ── 6. Text input ─────────────────────────────────────────────
         let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
         let ti = self.build_text_input(col_budget);
         backend.draw_text_input(layout.input, &ti);
+
+        // ── 7. Send / Stop segment (#1137) ───────────────────────────────
+        if let Some(send_rect) = layout.send {
+            backend.draw_form(send_rect, &self.build_send_form());
+        }
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -613,17 +724,47 @@ impl ChatController {
     fn compute_layout(&self, backend: &dyn Backend, rect: Rect) -> ChatLayout {
         let lh = backend.line_height().max(1.0);
         let status_h = lh;
+
+        // Send/Stop segment (#1137): reserve a fixed-width column at the
+        // right of the input row when there's room for it alongside a
+        // usable `TextInput`.
+        let send_w = self.send_segment_width(backend.char_width());
+        let show_send = rect.width > send_w * 2.0;
+        let input_row_w = if show_send {
+            rect.width - send_w
+        } else {
+            rect.width
+        };
+
         // Auto-grow (#1136): height tracks the wrapped visual row count of
         // the current buffer, clamped to [input_min_rows, input_max_rows].
-        // TextInput draws a 1-unit border on top and bottom plus content rows.
-        let col_budget = TextInput::content_cols(rect.width, backend.char_width());
+        // TextInput draws a 1-unit border on top and bottom plus content
+        // rows. Wraps against `input_row_w`, not the full row width, so
+        // auto-grow accounts for the Send/Stop segment eating into it.
+        let col_budget = TextInput::content_cols(input_row_w, backend.char_width());
         let visual_rows = wrap_input_rows(&self.input_buf, col_budget).len().max(1);
         let input_rows = visual_rows.clamp(self.input_min_rows, self.input_max_rows);
         let input_h = input_rows as f32 * lh + 2.0;
-        let middle_h = (rect.height - status_h - input_h).max(0.0);
+
+        // Persistent hint row (#1137): a fixed one-row strip directly
+        // above the input box, present only when `set_hint` was called.
+        let hint_h = if self.hint.is_some() { lh } else { 0.0 };
+
+        let middle_h = (rect.height - status_h - input_h - hint_h).max(0.0);
 
         let status = Rect::new(rect.x, rect.y, rect.width, status_h);
-        let input = Rect::new(rect.x, rect.y + rect.height - input_h, rect.width, input_h);
+        let input_y = rect.y + rect.height - input_h;
+        let input = Rect::new(rect.x, input_y, input_row_w, input_h);
+        let send = if show_send {
+            Some(Rect::new(rect.x + input_row_w, input_y, send_w, input_h))
+        } else {
+            None
+        };
+        let hint = if hint_h > 0.0 {
+            Some(Rect::new(rect.x, input_y - hint_h, rect.width, hint_h))
+        } else {
+            None
+        };
 
         // Spinner rect: rightmost `lh × lh` square inside the status strip.
         let spinner = if self.busy && rect.width > lh {
@@ -653,12 +794,43 @@ impl ChatController {
             transcript,
             scrollbar,
             spinner,
+            hint,
             input,
+            send,
         }
     }
 
     fn scrollbar_track_width(&self, line_height: f32) -> f32 {
         self.scrollbar_width.unwrap_or(line_height)
+    }
+
+    /// Width of the Send/Stop segment reserved at the right of the input
+    /// row (#1137). 8 columns comfortably fits either "Send" or "Stop"
+    /// plus padding on every backend's default font.
+    fn send_segment_width(&self, char_width: f32) -> f32 {
+        const SEND_SEGMENT_COLS: f32 = 8.0;
+        SEND_SEGMENT_COLS * char_width.max(1.0)
+    }
+
+    /// Build the single-button [`Form`] painted into the Send/Stop segment
+    /// (#1137). Reuses `FieldKind::Button`'s existing cross-backend
+    /// rasteriser — see this struct's *Send / Stop segment* doc section.
+    fn build_send_form(&self) -> Form {
+        let disabled = !self.busy && self.input_buf.trim().is_empty();
+        Form {
+            id: WidgetId::new(format!("{}-send-form", self.id.0)),
+            fields: vec![FormField {
+                id: WidgetId::new(format!("{}-send-btn", self.id.0)),
+                label: StyledText::plain(if self.busy { "Stop" } else { "Send" }),
+                kind: FieldKind::Button,
+                hint: StyledText::plain(""),
+                disabled,
+                validation: None,
+            }],
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: false,
+        }
     }
 
     fn transcript_visible_rows_for(line_height: f32, rect: Rect) -> usize {
@@ -795,40 +967,41 @@ impl ChatController {
         layout: &ChatLayout,
     ) -> ChatControllerEvent {
         match key {
-            // ── Submit: Ctrl+S, Alt+Enter, or Ctrl+Enter ─────────────────
-            // Ctrl+S works on all terminals.
-            // Alt+Enter works on all terminals (ESC+Enter escape sequence).
-            // Ctrl+Enter needs Kitty protocol — unreliable as the primary affordance.
-            Key::Char('s') if modifiers.ctrl => {
-                if self.input_buf.is_empty() {
-                    return ChatControllerEvent::Ignored;
-                }
-                let text = self.input_buf.clone();
-                if !text.trim().is_empty() && self.history.last() != Some(&text) {
-                    self.history.push(text.clone());
-                }
+            // ── Submit: Ctrl+S ──────────────────────────────────────────
+            // Works on all terminals in both `submit_on_enter` modes; see
+            // this arm's note on `stty -ixon` in the module doc.
+            Key::Char('s') if modifiers.ctrl => self.try_submit(),
+
+            // ── Enter: meaning depends on `submit_on_enter` (#1137) ─────
+            //
+            // `Ctrl+Enter` always submits, in both modes (Kitty-protocol
+            // terminals only — see the module doc).
+            //
+            // Default (`submit_on_enter == false`): `Alt+Enter` submits;
+            // plain `Enter` inserts a newline (pre-#1137 behaviour).
+            //
+            // `submit_on_enter == true`: plain `Enter` submits;
+            // `Shift+Enter` inserts a newline, with `Alt+Enter` accepted
+            // as a fallback for terminals that can't report `Shift+Enter`.
+            Key::Named(NamedKey::Enter) if modifiers.ctrl => self.try_submit(),
+            Key::Named(NamedKey::Enter)
+                if self.submit_on_enter && (modifiers.shift || modifiers.alt) =>
+            {
+                self.input_insert_char('\n');
                 self.history_pos = None;
                 self.saved_input = None;
-                ChatControllerEvent::Submit { text }
+                ChatControllerEvent::Consumed
             }
-            Key::Named(NamedKey::Enter) if modifiers.ctrl || modifiers.alt => {
-                if self.input_buf.is_empty() {
-                    return ChatControllerEvent::Ignored;
-                }
-                let text = self.input_buf.clone();
-                // Add to history if non-empty and not a duplicate of the last entry.
-                if !text.trim().is_empty() && self.history.last() != Some(&text) {
-                    self.history.push(text.clone());
-                }
-                self.history_pos = None;
-                self.saved_input = None;
-                ChatControllerEvent::Submit { text }
+            Key::Named(NamedKey::Enter) if !self.submit_on_enter && modifiers.alt => {
+                self.try_submit()
             }
+            Key::Named(NamedKey::Enter) if self.submit_on_enter => self.try_submit(),
 
             // ── Cancel: Esc ────────────────────────────────────────────
             Key::Named(NamedKey::Escape) => ChatControllerEvent::Cancelled,
 
-            // ── Newline: plain Enter (no Ctrl) ─────────────────────────
+            // ── Newline: plain Enter (no modifiers, `submit_on_enter`
+            //    false — pre-#1137 default behaviour) ────────────────────
             Key::Named(NamedKey::Enter) => {
                 self.input_insert_char('\n');
                 // Typing resets history navigation.
@@ -954,6 +1127,25 @@ impl ChatController {
         }
     }
 
+    /// Shared submit path for every submit trigger — `Ctrl+S`, `Alt+Enter`
+    /// / `Ctrl+Enter` / plain `Enter` (depending on
+    /// [`submit_on_enter`](Self::submit_on_enter)), and a click on the
+    /// Send segment while idle (#1137). Pushes the current input to
+    /// history (skipping empty/duplicate entries) and resets history
+    /// navigation state; ignores the request when the input is empty.
+    fn try_submit(&mut self) -> ChatControllerEvent {
+        if self.input_buf.is_empty() {
+            return ChatControllerEvent::Ignored;
+        }
+        let text = self.input_buf.clone();
+        if !text.trim().is_empty() && self.history.last() != Some(&text) {
+            self.history.push(text.clone());
+        }
+        self.history_pos = None;
+        self.saved_input = None;
+        ChatControllerEvent::Submit { text }
+    }
+
     // ── History navigation ────────────────────────────────────────────
 
     fn history_prev(&mut self) -> ChatControllerEvent {
@@ -1017,6 +1209,14 @@ impl ChatController {
         x: f32,
         y: f32,
     ) -> ChatControllerEvent {
+        // Send/Stop segment click? (#1137) — see this struct's *Send / Stop
+        // segment* doc section for the idle-vs-busy split.
+        if let Some(send_rect) = layout.send {
+            if rect_contains(send_rect, x, y) {
+                return self.click_send();
+            }
+        }
+
         // Scrollbar click?
         if let Some(sb_rect) = layout.scrollbar {
             if rect_contains(sb_rect, x, y) {
@@ -1056,6 +1256,18 @@ impl ChatController {
         }
 
         ChatControllerEvent::Ignored
+    }
+
+    /// Handle a click anywhere in the Send/Stop segment (#1137). The
+    /// segment always paints a single button filling the whole zone, so
+    /// no finer-grained hit-test is needed — any click inside it hits the
+    /// button.
+    fn click_send(&mut self) -> ChatControllerEvent {
+        if self.busy {
+            ChatControllerEvent::StopRequested
+        } else {
+            self.try_submit()
+        }
     }
 
     fn click_scrollbar(
@@ -1704,6 +1916,107 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_text(), "hello\n");
+    }
+
+    // ── Keyboard: submit_on_enter mode (#1137) ─────────────────────────
+
+    #[test]
+    fn submit_on_enter_defaults_to_false() {
+        let cc = ChatController::new("c");
+        assert!(!cc.submit_on_enter());
+    }
+
+    #[test]
+    fn submit_on_enter_plain_enter_submits() {
+        let mut cc = ChatController::new("c");
+        cc.set_submit_on_enter(true);
+        cc.input_insert_str("hello");
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(
+            ev,
+            ChatControllerEvent::Submit {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn submit_on_enter_shift_enter_inserts_newline() {
+        let mut cc = ChatController::new("c");
+        cc.set_submit_on_enter(true);
+        cc.input_insert_str("hello");
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.input_text(), "hello\n");
+    }
+
+    #[test]
+    fn submit_on_enter_alt_enter_inserts_newline_fallback() {
+        // Alt+Enter is the fallback for terminals that can't report
+        // Shift+Enter — it must insert a newline in submit_on_enter mode,
+        // the opposite of its meaning in the default mode.
+        let mut cc = ChatController::new("c");
+        cc.set_submit_on_enter(true);
+        cc.input_insert_str("hello");
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.input_text(), "hello\n");
+    }
+
+    #[test]
+    fn submit_on_enter_ctrl_enter_still_submits() {
+        let mut cc = ChatController::new("c");
+        cc.set_submit_on_enter(true);
+        cc.input_insert_str("hello");
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(
+            ev,
+            ChatControllerEvent::Submit {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn submit_on_enter_plain_enter_on_empty_input_ignored() {
+        let mut cc = ChatController::new("c");
+        cc.set_submit_on_enter(true);
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(ev, ChatControllerEvent::Ignored);
     }
 
     // ── History navigation ────────────────────────────────────────────
@@ -2570,6 +2883,118 @@ mod tests {
         assert!(layout.spinner.is_none());
     }
 
+    // ── Send/Stop segment + hint layout (#1137) ────────────────────────
+
+    #[test]
+    fn layout_send_segment_present_when_row_wide_enough() {
+        let cc = ChatController::new("c");
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        assert!(layout.send.is_some());
+        // The TextInput's own rect should be narrower than the full row
+        // to make room for the segment.
+        assert!(layout.input.width < make_rect().width);
+    }
+
+    #[test]
+    fn layout_send_segment_absent_when_row_too_narrow() {
+        let cc = ChatController::new("c");
+        let narrow = Rect::new(0.0, 0.0, 10.0, 24.0);
+        let layout = cc.compute_layout(&RecordingBackend::new(), narrow);
+        assert!(layout.send.is_none());
+        // TextInput falls back to the full row width.
+        assert_eq!(layout.input.width, narrow.width);
+    }
+
+    #[test]
+    fn layout_send_segment_spans_full_input_height() {
+        let cc = ChatController::new("c");
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        let send = layout.send.expect("send segment present");
+        assert_eq!(send.y, layout.input.y);
+        assert_eq!(send.height, layout.input.height);
+    }
+
+    #[test]
+    fn layout_hint_absent_by_default() {
+        let cc = ChatController::new("c");
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        assert!(layout.hint.is_none());
+    }
+
+    #[test]
+    fn layout_hint_present_when_set() {
+        let mut cc = ChatController::new("c");
+        cc.set_hint(Some(StyledText::plain(
+            "Enter to send, Shift+Enter for newline",
+        )));
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        let hint = layout.hint.expect("hint row present");
+        // The hint row sits directly above the input box.
+        assert_eq!(hint.y + hint.height, layout.input.y);
+    }
+
+    #[test]
+    fn layout_hint_cleared_by_set_hint_none() {
+        let mut cc = ChatController::new("c");
+        cc.set_hint(Some(StyledText::plain("hint")));
+        cc.set_hint(None);
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        assert!(layout.hint.is_none());
+    }
+
+    // ── Send/Stop segment click routing (#1137) ────────────────────────
+
+    fn click_at(cc: &mut ChatController, rect: Rect, x: f32, y: f32) -> ChatControllerEvent {
+        let event = crate::mouse_down(MouseButton::Left, x, y, Modifiers::default());
+        cc.handle(&event, &RecordingBackend::new(), rect)
+    }
+
+    #[test]
+    fn click_send_segment_while_idle_submits() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        let rect = make_rect();
+        let send = cc
+            .compute_layout(&RecordingBackend::new(), rect)
+            .send
+            .expect("send segment present");
+        let ev = click_at(&mut cc, rect, send.x + 1.0, send.y + 1.0);
+        assert_eq!(
+            ev,
+            ChatControllerEvent::Submit {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn click_send_segment_while_idle_and_empty_is_ignored() {
+        let mut cc = ChatController::new("c");
+        let rect = make_rect();
+        let send = cc
+            .compute_layout(&RecordingBackend::new(), rect)
+            .send
+            .expect("send segment present");
+        let ev = click_at(&mut cc, rect, send.x + 1.0, send.y + 1.0);
+        assert_eq!(ev, ChatControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn click_send_segment_while_busy_emits_stop_requested() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        cc.set_busy(true);
+        let rect = make_rect();
+        let send = cc
+            .compute_layout(&RecordingBackend::new(), rect)
+            .send
+            .expect("send segment present");
+        let ev = click_at(&mut cc, rect, send.x + 1.0, send.y + 1.0);
+        assert_eq!(ev, ChatControllerEvent::StopRequested);
+        // The input buffer is left untouched by a stop request.
+        assert_eq!(cc.input_text(), "hello");
+    }
+
     // ── Backend rendering tests ───────────────────────────────────────
     //
     // The tests above exercise state/layout against a `RecordingBackend` whose
@@ -2652,6 +3077,63 @@ mod tests {
             painted.contains("Type a message"),
             "input placeholder not painted:\n{painted}"
         );
+    }
+
+    /// TUI: the Send/Stop segment (#1137) paints "Send" while idle and
+    /// "Stop" while busy, and the persistent hint row paints its text —
+    /// through the real `TuiBackend::draw_form` / `draw_message_list`
+    /// rasterisers, not a mock.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn tui_render_paints_send_stop_segment_and_hint() {
+        use crate::tui::TuiBackend;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        const W: u16 = 48;
+        const H: u16 = 14;
+
+        fn paint(cc: &ChatController) -> String {
+            let mut terminal =
+                Terminal::new(TestBackend::new(W, H)).expect("construct test terminal");
+            let mut backend = TuiBackend::new();
+            backend.begin_frame(crate::Viewport {
+                width: W as f32,
+                height: H as f32,
+                scale: 1.0,
+            });
+            let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+            terminal
+                .draw(|frame| {
+                    backend.enter_frame_scope(frame, |b| {
+                        cc.render(b, rect);
+                    });
+                })
+                .expect("draw frame");
+            let buf = terminal.backend().buffer();
+            let mut painted = String::new();
+            for y in 0..H {
+                for x in 0..W {
+                    painted.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+                }
+                painted.push('\n');
+            }
+            painted
+        }
+
+        let mut cc = ChatController::new("chat");
+        cc.set_hint(Some(StyledText::plain("Enter to send")));
+
+        let idle = paint(&cc);
+        assert!(idle.contains("Send"), "Send label not painted:\n{idle}");
+        assert!(
+            idle.contains("Enter to send"),
+            "hint row not painted:\n{idle}"
+        );
+
+        cc.set_busy(true);
+        let busy = paint(&cc);
+        assert!(busy.contains("Stop"), "Stop label not painted:\n{busy}");
     }
 
     /// GTK: paint a populated controller into a `cairo::ImageSurface` via

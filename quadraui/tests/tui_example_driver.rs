@@ -4453,11 +4453,12 @@ fn modal_occlusion_q_exits() {
 //
 // `ChatDemo` wraps a `ChatController`; typing goes through
 // `ChatController::handle`'s `Key::Char(c) if !ctrl && !alt` arm (character
-// insertion), and submitting requires `Ctrl+S` (or Alt/Ctrl+Enter — plain
-// Enter only inserts a newline). A missed `ChatDemo::sync_controller()` call
-// or a dropped `Reaction::Redraw` on `ChatControllerEvent::Submit` would
-// leave the typed text stuck in the input box and never reach the
-// transcript — exactly what this test would catch.
+// insertion). `ChatDemo` opts into `submit_on_enter` (#1137), so plain
+// `Enter` submits — `Ctrl+S` remains a working alternative in both modes.
+// A missed `ChatDemo::sync_controller()` call or a dropped
+// `Reaction::Redraw` on `ChatControllerEvent::Submit` would leave the typed
+// text stuck in the input box and never reach the transcript — exactly
+// what this test would catch.
 
 #[test]
 fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
@@ -4487,6 +4488,146 @@ fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
     assert!(
         screen.contains("hello world"),
         "the submitted message text should appear in the transcript:\n{screen}"
+    );
+}
+
+// ─── ChatDemo (#1137): submit_on_enter, hint line, Send/Stop segment ────────
+//
+// `ChatDemo::new` opts into `set_submit_on_enter(true)` and a persistent
+// hint line via `set_hint`, and `ChatController::render` always paints the
+// Send/Stop segment when the row is wide enough. These drive the real
+// `ChatController::handle`/`render` path exactly like the Ctrl+S test
+// above, just through the new #1137 affordances instead.
+
+#[test]
+fn chat_plain_enter_submits_when_submit_on_enter_is_set() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "ship it".chars() {
+        driver.type_char(c);
+    }
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "plain Enter should submit when submit_on_enter is set"
+    );
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("You") && screen.contains("ship it"),
+        "the submitted message should reach the transcript:\n{screen}"
+    );
+}
+
+#[test]
+fn chat_shift_enter_inserts_newline_instead_of_submitting() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "line one".chars() {
+        driver.type_char(c);
+    }
+    let reaction = driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter),
+        modifiers: Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+        repeat: false,
+    });
+    assert_eq!(reaction, Reaction::Redraw);
+    for c in "line two".chars() {
+        driver.type_char(c);
+    }
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("line one") && screen.contains("line two"),
+        "Shift+Enter should insert a newline, keeping both lines in the \
+         input box rather than submitting:\n{screen}"
+    );
+    assert!(
+        !screen.contains("You"),
+        "no submit should have happened yet — the transcript should still \
+         be empty:\n{screen}"
+    );
+}
+
+#[test]
+fn chat_hint_line_stays_visible_while_typing() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+    assert!(
+        driver.screen_contains("Enter to send"),
+        "the persistent hint should be visible before typing:\n{}",
+        driver.screen()
+    );
+
+    for c in "hello".chars() {
+        driver.type_char(c);
+    }
+    assert!(
+        driver.screen_contains("Enter to send"),
+        "unlike the placeholder, the hint should still be visible after \
+         typing starts:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn chat_clicking_send_segment_submits_message() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "clicked send".chars() {
+        driver.type_char(c);
+    }
+    let (x, y) = driver
+        .find("Send")
+        .expect("Send segment should be visible next to the input box");
+    let reaction = driver.click(x, y);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "clicking Send should submit the message"
+    );
+
+    let screen = driver.screen();
+    assert!(
+        screen.contains("You") && screen.contains("clicked send"),
+        "the message submitted via the Send click should reach the \
+         transcript:\n{screen}"
+    );
+}
+
+#[test]
+fn chat_clicking_stop_segment_while_busy_cancels_the_reply() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "hi".chars() {
+        driver.type_char(c);
+    }
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Stop"),
+        "the segment should read Stop while the simulated reply is \
+         pending:\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver
+        .find("Stop")
+        .expect("Stop segment should be visible while busy");
+    let reaction = driver.click(x, y);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "clicking Stop should interrupt the simulated reply"
+    );
+    // Ticking further should not deliver the now-cancelled reply.
+    driver.tick();
+    assert!(
+        !driver.screen_contains("Echo:"),
+        "the simulated reply should not arrive after Stop was clicked:\n{}",
+        driver.screen()
     );
 }
 
@@ -4526,7 +4667,17 @@ fn chat_long_message_soft_wraps_inside_the_input_box_instead_of_scrolling() {
 
 #[test]
 fn chat_input_box_grows_taller_as_wrapped_row_count_increases() {
-    let mut driver = TuiDriver::new(ChatDemo::new(), 30, 20);
+    // #1137 widened this from 30: the Send/Stop segment now reserves a
+    // fixed-width column on the right of the input row, so a narrower
+    // viewport shrinks the wrap budget further and can land the last
+    // wrapped row exactly on the horizontal-scroll boundary (cursor at
+    // the end of a row that exactly fills the visible column count),
+    // which shifts *every* row left by one column to keep the cursor's
+    // one-column slack visible (`TextInput::layout`'s documented
+    // behaviour) — incidental to what this test is about. The wider
+    // viewport keeps the wrap boundaries clear of that edge case while
+    // still exercising several rows of auto-grow.
+    let mut driver = TuiDriver::new(ChatDemo::new(), 40, 20);
 
     // Empty input: the placeholder sits on a single (min-clamped) row —
     // record its row. The box is bottom-anchored (`compute_layout` pins
