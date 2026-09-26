@@ -4879,6 +4879,20 @@ impl NativeSurface for WinBackend {
         let _ = (rect, color);
     }
 
+    /// #1073: `super::text::fill_rounded_rect` is the
+    /// `FillRoundedRectangle` twin of `fill_rect` above — same
+    /// no-surface degrade as every other verb here (issue #924).
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: crate::Color) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = super::text::fill_rounded_rect(&surface.target, rect, radius, color);
+            return;
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
+        let _ = (rect, radius, color);
+    }
+
     fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
@@ -4935,6 +4949,53 @@ impl NativeSurface for WinBackend {
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
         // no-op instead of panicking (issue #924).
         let _ = (rect, text, color, bold, scale_x);
+    }
+
+    /// #1073: overrides the default (which ignores `role`) — `chrome_dwrite`
+    /// (built by [`Self::attach_headless`]/the live-surface setup path
+    /// alongside the editor `dwrite` handle) has sat unused since it was
+    /// added; this is the first call site that actually selects it.
+    /// `italic` is dropped, matching [`Self::surface_draw_text_run_styled`]'s
+    /// own documented pre-#810 limitation ("DWrite has no italic text
+    /// format ... wired up today") — adding one is out of this issue's
+    /// scope.
+    fn surface_draw_text_run_with_role(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: crate::Color,
+        role: crate::FontRole,
+        italic: bool,
+    ) {
+        let _ = italic;
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            // Chrome text falls back to the editor `dwrite` handle if no
+            // live chrome one exists yet — same "degrade, don't panic"
+            // convention as `WinBackend::draw_tree`'s doc describes.
+            let dwrite = match role {
+                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
+                crate::FontRole::Editor => self.dwrite.as_ref(),
+            };
+            if let Some(dwrite) = dwrite {
+                let _ = dwrite.draw_text(&surface.target, text, rect, color);
+                return;
+            }
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
+        let _ = (rect, text, color, role);
+    }
+
+    /// #1073: overrides the default only to document why it needn't
+    /// change anything — `DWrite::new` already bakes
+    /// [`Self::set_nerd_font_fallback`]'s `IDWriteFontFallback` into
+    /// every `IDWriteTextFormat` it builds (editor and chrome alike) via
+    /// `IDWriteTextFormat1::SetFontFallback`, so
+    /// [`Self::surface_draw_text_run`] already resolves an icon glyph
+    /// the same way this verb would.
+    fn surface_draw_icon_glyph(&mut self, rect: Rect, text: &str, color: crate::Color) {
+        self.surface_draw_text_run(rect, text, color)
     }
 
     fn surface_draw_line(
