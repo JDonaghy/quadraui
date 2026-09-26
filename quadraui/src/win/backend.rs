@@ -6192,12 +6192,80 @@ mod tests {
         );
     }
 
+    /// The colour an *unpainted* pixel carries after
+    /// [`Backend::begin_frame`] on a freshly-attached [`HeadlessSurface`]
+    /// — read back from an empty frame rather than hardcoded.
+    ///
+    /// Win-GUI's `begin_frame` issues a `Clear` with its placeholder
+    /// background (`0.117` grey today, the app's real `Theme` background
+    /// once that's wired through), so "untouched" on this backend is
+    /// **not** `(0, 0, 0)` the way it is for the GTK twins of the tests
+    /// below — those probe a zeroed `cairo::ImageSurface` that nothing
+    /// clears. Copying GTK's literal black is what reddened the
+    /// `windows-latest` leg on #1073's first push; resolving it from a
+    /// live empty frame instead keeps these assertions honest whichever
+    /// colour that clear grows into.
+    ///
+    /// Reads one pixel because the clear covers the whole target —
+    /// `win_backend_begin_frame_clears_the_whole_surface_uniformly`
+    /// below is the test that keeps that premise true.
+    #[cfg(target_os = "windows")]
+    fn cleared_frame_background(width: u32, height: u32) -> (u8, u8, u8) {
+        use crate::win::testing::HeadlessSurface;
+
+        let surface = HeadlessSurface::new(width, height).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), width, height)
+            .expect("attach headless surface");
+        backend.begin_frame(Viewport::new(width as f32, height as f32, 1.0));
+        backend.end_frame();
+        let px = surface.pixel_at(0, 0);
+        (px.r, px.g, px.b)
+    }
+
+    /// [`cleared_frame_background`] samples a single pixel as "the
+    /// background every other headless test compares against"; this is
+    /// the test that proves one pixel is enough, i.e. that
+    /// [`Backend::begin_frame`]'s `Clear` really covers the whole render
+    /// target rather than some sub-rect.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_begin_frame_clears_the_whole_surface_uniformly() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 16;
+        const H: u32 = 16;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.end_frame();
+
+        let expected = cleared_frame_background(W, H);
+        for y in 0..H {
+            for x in 0..W {
+                let px = surface.pixel_at(x, y);
+                assert_eq!(
+                    (px.r, px.g, px.b),
+                    expected,
+                    "begin_frame's Clear must cover every pixel — ({x}, {y}) differs, so \
+                     sampling one pixel as 'the background' would be wrong"
+                );
+            }
+        }
+    }
+
     /// #1073: real `FillRoundedRectangle` execution, mirroring
     /// `gtk_backend_native_surface_fill_rounded_rect_clips_the_corners` —
     /// a centre pixel must land the fill colour, and a corner pixel well
-    /// inside a generous radius must stay untouched (background black,
-    /// same as every other headless-surface test in this file), or this
-    /// would just be `surface_fill_rect` under a new name.
+    /// inside a generous radius must stay at [`begin_frame`](Backend::begin_frame)'s
+    /// clear colour (see [`cleared_frame_background`] for why that isn't
+    /// black here, unlike the GTK twin), or this would just be
+    /// `surface_fill_rect` under a new name.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_native_surface_fill_rounded_rect_clips_the_corners() {
@@ -6207,6 +6275,7 @@ mod tests {
         const W: u32 = 40;
         const H: u32 = 40;
 
+        let background = cleared_frame_background(W, H);
         let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
         backend
@@ -6214,6 +6283,12 @@ mod tests {
             .expect("attach headless surface");
 
         let red = Color::rgb(200, 20, 20);
+        assert_ne!(
+            background,
+            (red.r, red.g, red.b),
+            "the fill colour must differ from the frame's clear colour, or \
+             'this corner stayed untouched' is unprovable"
+        );
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.surface_fill_rounded_rect(Rect::new(0.0, 0.0, W as f32, H as f32), 15.0, red);
         backend.end_frame();
@@ -6227,9 +6302,10 @@ mod tests {
         let corner = surface.pixel_at(1, 1);
         assert_eq!(
             (corner.r, corner.g, corner.b),
-            (0, 0, 0),
-            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
-             untouched — otherwise this is just `surface_fill_rect` under a new name"
+            background,
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay at \
+             the frame's clear colour — otherwise this is just `surface_fill_rect` \
+             under a new name"
         );
     }
 
@@ -6272,16 +6348,22 @@ mod tests {
             px.b
         );
         // Real source-over compositing of 50%-alpha red onto opaque white
-        // lands roughly halfway between the two on every channel.
+        // lands roughly halfway between the two on every channel. The
+        // bands are deliberately generous rather than exact: which colour
+        // space Direct2D blends in (gamma-encoded for this target's
+        // non-`_SRGB` `DXGI_FORMAT_B8G8R8A8_UNORM`, linear for an `_SRGB`
+        // one) shifts the midpoint without changing what's being asserted
+        // — that a blend happened at all, and towards the right end of
+        // each channel.
         assert!(
-            (200..245).contains(&px.r),
+            (200..=245).contains(&px.r),
             "red channel should sit between the fill's 200 and white's 255: got {}",
             px.r
         );
         assert!(
-            (100..160).contains(&px.g) && (100..160).contains(&px.b),
-            "green/blue channels should sit roughly halfway between the fill's 20 and \
-             white's 255: got ({}, {})",
+            (100..=200).contains(&px.g) && (100..=200).contains(&px.b),
+            "green/blue channels should sit between the fill's 20 and white's 255: \
+             got ({}, {})",
             px.g,
             px.b
         );
@@ -6302,12 +6384,16 @@ mod tests {
         const W: u32 = 80;
         const H: u32 = 80;
 
-        fn ink_pixel_count(surface: &HeadlessSurface) -> u32 {
+        // "Ink" is any pixel the glyph moved off `begin_frame`'s clear
+        // colour — not "any pixel brighter than black", which on this
+        // backend counts the whole cleared surface (see
+        // `cleared_frame_background`).
+        fn ink_pixel_count(surface: &HeadlessSurface, background: (u8, u8, u8)) -> u32 {
             let mut count = 0;
             for y in 0..H {
                 for x in 0..W {
                     let px = surface.pixel_at(x, y);
-                    if px.r as u32 + px.g as u32 + px.b as u32 > 0 {
+                    if (px.r, px.g, px.b) != background {
                         count += 1;
                     }
                 }
@@ -6315,6 +6401,7 @@ mod tests {
             count
         }
 
+        let background = cleared_frame_background(W, H);
         let white = Color::rgb(255, 255, 255);
 
         // `set_editor_font`/`set_ui_font` must precede `attach_headless`
@@ -6336,7 +6423,7 @@ mod tests {
             false,
         );
         backend.end_frame();
-        let chrome_ink = ink_pixel_count(&chrome_surface);
+        let chrome_ink = ink_pixel_count(&chrome_surface, background);
 
         let editor_surface = HeadlessSurface::new(W, H).expect("create headless surface");
         backend
@@ -6351,7 +6438,7 @@ mod tests {
             false,
         );
         backend.end_frame();
-        let editor_ink = ink_pixel_count(&editor_surface);
+        let editor_ink = ink_pixel_count(&editor_surface, background);
 
         assert!(
             chrome_ink > editor_ink * 4,
@@ -6376,6 +6463,7 @@ mod tests {
         const W: u32 = 40;
         const H: u32 = 40;
 
+        let background = cleared_frame_background(W, H);
         let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
         backend
@@ -6383,15 +6471,26 @@ mod tests {
             .expect("attach headless surface");
 
         let white = Color::rgb(255, 255, 255);
+        assert_ne!(
+            background,
+            (white.r, white.g, white.b),
+            "the glyph colour must differ from the frame's clear colour, or \
+             'it painted ink' is unprovable"
+        );
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.surface_draw_icon_glyph(Rect::new(2.0, 2.0, 30.0, 30.0), "i", white);
         backend.end_frame();
 
+        // Pixels the glyph moved off `begin_frame`'s clear colour — not a
+        // channel sum against black, which every cleared pixel would pass
+        // (see `cleared_frame_background`).
         let mut ink = 0u32;
         for y in 0..H {
             for x in 0..W {
                 let px = surface.pixel_at(x, y);
-                ink += px.r as u32 + px.g as u32 + px.b as u32;
+                if (px.r, px.g, px.b) != background {
+                    ink += 1;
+                }
             }
         }
         assert!(
