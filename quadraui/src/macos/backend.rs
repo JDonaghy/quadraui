@@ -4028,7 +4028,8 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
 pub(crate) unsafe fn ns_fill_rounded_rect(ctx: CGContextRef, rect: Rect, radius: f32, c: Color) {
     let r = (radius as f64)
         .min(rect.width as f64 / 2.0)
-        .min(rect.height as f64 / 2.0);
+        .min(rect.height as f64 / 2.0)
+        .max(0.0);
     let (x, y, w, h) = (
         rect.x as f64,
         rect.y as f64,
