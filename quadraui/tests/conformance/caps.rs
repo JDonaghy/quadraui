@@ -801,6 +801,26 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "WinBackend paints its own caret in draw_editor; there is no separate hardware caret to \
          steer (#1015)",
     ),
+    // ── issue #1143: `minimap_scale`/`set_minimap_scale` pick the on-screen
+    // size of one character cell in `MinimapRenderMode::Characters` — a
+    // font-scaling-technique concept. TUI's braille rasteriser has no font
+    // to scale at all (it packs 4 buffer lines x 2 columns into one
+    // cell-native `U+2800`-block dot cell, per `primitives::minimap`'s own
+    // module doc), so the trait's no-op default is the correct, permanent
+    // answer, not unfinished work — GTK/macOS/Win-GUI all override both
+    // methods to back a real field.
+    (
+        "tui",
+        "minimap_scale",
+        "braille has no font to scale — the cell-native dot packing described in \
+         primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
+    ),
+    (
+        "tui",
+        "set_minimap_scale",
+        "braille has no font to scale — the cell-native dot packing described in \
+         primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

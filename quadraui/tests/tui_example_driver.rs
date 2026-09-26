@@ -6617,6 +6617,35 @@ fn minimap_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the minimap demo");
 }
 
+/// Issue #1143: the `s` key toggles `MinimapScale::One`/`Two`, and the
+/// status bar's own scale label (the app's literal-text proof, same
+/// technique the braille test above uses) must flip with it — TUI has no
+/// font to scale, so this is only a state-toggle proof, not a visual one
+/// (the real visual difference is GTK's own atlas test).
+#[test]
+fn pressing_s_toggles_the_minimap_scale_label() {
+    let mut driver = TuiDriver::new(MinimapApp::new(), 100, 30);
+    assert!(
+        driver.screen_contains("scale 1 (1x2)"),
+        "default scale label should read 1 (1x2):\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('s');
+    assert!(
+        driver.screen_contains("scale 2 (2x4)"),
+        "pressing s should flip the scale label to 2 (2x4):\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('s');
+    assert!(
+        driver.screen_contains("scale 1 (1x2)"),
+        "pressing s again should flip the scale label back to 1 (1x2):\n{}",
+        driver.screen()
+    );
+}
+
 // ─── ImageApp (#662): Image primitive + MenuBar leading icon slot ─────────
 //
 // TUI can't rasterise `examples/assets/quadra_logo.png`, so

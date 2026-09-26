@@ -2,7 +2,7 @@
 //! colour blocks (#667; supersedes the file-length-dependent font scaling
 //! from #382).
 //!
-//! Rows tile at a fixed [`ROW_PITCH_PX`], independent of the file's
+//! Rows tile at a fixed [`crate::primitives::minimap::ROW_PITCH_PX`], independent of the file's
 //! length ([`crate::MinimapSizing::FixedPitch`]) — see
 //! `Minimap::layout`'s module docs for the slide behaviour when a file
 //! needs more rows than the strip holds at that pitch. At that pitch,
@@ -15,7 +15,7 @@
 //! at a scaled-down **absolute** size (`FontDescription::set_absolute_size`)
 //! — is kept for pitches at or above
 //! [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`] (not reached
-//! by [`ROW_PITCH_PX`] today, but still a real, tested code path: nothing
+//! by [`crate::primitives::minimap::ROW_PITCH_PX`] today, but still a real, tested code path: nothing
 //! stops a future caller from requesting a taller fixed pitch). The mode
 //! switch ([`render_mode`]) is a pure function of the row pitch so it's
 //! deterministic and directly testable without a live surface.
@@ -69,8 +69,8 @@ use super::{cairo_rgb, set_source};
 use crate::event::Rect as QRect;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapAtlasCache,
-    MinimapCharAtlas, MinimapLayout, MinimapRenderMode, MinimapSizing, MinimapSpan, SpanCursor,
-    VisibleMinimapLine, ATLAS_FIRST_CHAR, ATLAS_LAST_CHAR, COLUMN_CAPACITY, ROW_PITCH_PX,
+    MinimapCharAtlas, MinimapLayout, MinimapRenderMode, MinimapScale, MinimapSizing, MinimapSpan,
+    SpanCursor, VisibleMinimapLine, ATLAS_FIRST_CHAR, ATLAS_LAST_CHAR, COLUMN_CAPACITY,
 };
 use crate::theme::Theme;
 
@@ -78,12 +78,35 @@ use crate::theme::Theme;
 /// reduction (see [`crate::MinimapGrid`]'s doc for why TUI differs).
 pub const LINES_PER_ROW: usize = 1;
 
-/// Compute the GTK pixel-unit layout for a [`Minimap`] without painting.
+/// Compute the GTK pixel-unit layout for a [`Minimap`] without painting, at
+/// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is
+/// for source compatibility with any caller reaching this free function
+/// directly (mirrors [`draw_minimap`]'s own pre-#1035 shim doc); every real
+/// paint path goes through [`GtkBackend::minimap_layout`]'s
+/// [`gtk_minimap_layout_scaled`] instead, so it can honor
+/// [`crate::backend::Backend::minimap_scale`] (issue #1143).
+///
+/// [`GtkBackend::minimap_layout`]: crate::gtk::backend::GtkBackend
 pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> MinimapLayout {
+    gtk_minimap_layout_scaled(minimap, x, y, w, h, MinimapScale::One)
+}
+
+/// [`gtk_minimap_layout`], but at an explicit [`MinimapScale`] (issue
+/// #1143) — what [`GtkBackend::minimap_layout`] actually calls.
+///
+/// [`GtkBackend::minimap_layout`]: crate::gtk::backend::GtkBackend
+pub(crate) fn gtk_minimap_layout_scaled(
+    minimap: &Minimap,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    scale: MinimapScale,
+) -> MinimapLayout {
     minimap.layout_with_sizing(
         QRect::new(x as f32, y as f32, w as f32, h as f32),
         LINES_PER_ROW,
-        MinimapSizing::FixedPitch(ROW_PITCH_PX as f32),
+        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
     )
 }
 
@@ -97,7 +120,10 @@ pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> 
 /// — see [`draw_minimap`]'s old comment on why this beats recomputing `h
 /// / visible_lines.len()`), even though every row shares one pitch under
 /// [`MinimapSizing::FixedPitch`], so a caller never has to special-case
-/// "read it off the first row instead".
+/// "read it off the first row instead" — plus `scale`'s own
+/// [`MinimapScale::cell_w_px`] (issue #1143), so a row's per-column paint
+/// walk steps by the right cell width without re-deriving it from `scale`
+/// itself.
 #[allow(clippy::too_many_arguments)]
 fn paint_minimap_rows(
     cr: &Context,
@@ -107,9 +133,10 @@ fn paint_minimap_rows(
     h: f64,
     minimap: &Minimap,
     theme: &Theme,
-    mut paint_row: impl FnMut(&Context, &VisibleMinimapLine, f64, &str, &[MinimapSpan]),
+    scale: MinimapScale,
+    mut paint_row: impl FnMut(&Context, &VisibleMinimapLine, f64, f64, &str, &[MinimapSpan]),
 ) -> MinimapLayout {
-    let layout = gtk_minimap_layout(minimap, x, y, w, h);
+    let layout = gtk_minimap_layout_scaled(minimap, x, y, w, h, scale);
 
     if layout.visible_lines.is_empty() {
         return layout;
@@ -146,7 +173,14 @@ fn paint_minimap_rows(
             continue;
         };
         let row_spans = spans.row_spans(vline.start_line_idx);
-        paint_row(cr, vline, vline.bounds.height as f64, &line.text, row_spans);
+        paint_row(
+            cr,
+            vline,
+            vline.bounds.height as f64,
+            scale.cell_w_px(),
+            &line.text,
+            row_spans,
+        );
     }
 
     cr.restore().ok();
@@ -188,7 +222,8 @@ pub fn draw_minimap(
         h,
         minimap,
         theme,
-        |cr, vline, row_px, text, row_spans| match render_mode(row_px) {
+        MinimapScale::One,
+        |cr, vline, row_px, cell_w, text, row_spans| match render_mode(row_px) {
             MinimapRenderMode::Characters => paint_row_glyphs(
                 cr,
                 pango_layout,
@@ -199,7 +234,9 @@ pub fn draw_minimap(
                 row_spans,
                 theme,
             ),
-            MinimapRenderMode::ColumnBlocks => paint_row_blocks(cr, vline, text, row_spans, theme),
+            MinimapRenderMode::ColumnBlocks => {
+                paint_row_blocks(cr, vline, text, row_spans, theme, cell_w)
+            }
         },
     );
 
@@ -218,18 +255,29 @@ pub fn draw_minimap(
 /// font scaling. `atlas_cache` should be a field the caller keeps alive
 /// across frames — [`crate::gtk::backend::GtkBackend`] owns one, the same
 /// way it owns `image_cache` for #1014. `dpi_scale` sizes each glyph tile
-/// to real device pixels (issue's "Scale / HiDPI" section): a `2` DIP
-/// row pitch at `dpi_scale` 2.0 gets `4` real device pixels of glyph
-/// detail, not `2`.
+/// to real device pixels (issue's "Scale / HiDPI" section): a `mm_scale`
+/// cell at `dpi_scale` 2.0 gets twice the real device pixels of glyph
+/// detail a `dpi_scale` 1.0 cell of the same logical size does.
+///
+/// `mm_scale` (issue #1143) is the *logical* cell size — [`MinimapScale::One`]
+/// is a 1x2 px cell (pre-#1143: a density dot, since the atlas tile is too
+/// small to carry a shape even at HiDPI), [`MinimapScale::Two`] a 2x4 px
+/// cell (VS Code parity: large enough for the downsampled tile to read
+/// back as a recognisable glyph). `dpi_scale` is an orthogonal axis — real
+/// device-pixel crispness at whatever logical cell size `mm_scale` picked
+/// — so a `mm_scale: Two` cell at `dpi_scale` 1.0 already paints
+/// recognisable shapes; before #1143 the only way to reach a 2x4-pixel
+/// tile was a `dpi_scale` of 2.0, conflating "the user asked for bigger
+/// minimap glyphs" with "the display has more physical pixels per DIP".
 ///
 /// Never shapes at the target pitch: the atlas build (large, once per
-/// `(font family, scale)`) happens inside `atlas_cache.get_or_build`
-/// only on a cache miss; every paint after that just blits pre-downsampled
-/// alpha tiles. Falls back to [`paint_row_blocks`] only if the atlas
-/// itself degrades to [`MinimapCharAtlas::filled`] returning a zero-sized
-/// tile (never happens in practice — `filled` always clamps to at least
-/// `1x1` — kept as a defensive no-op-safe branch rather than an
-/// `unwrap`).
+/// `(font family, mm_scale, dpi_scale)`) happens inside
+/// `atlas_cache.get_or_build` only on a cache miss; every paint after that
+/// just blits pre-downsampled alpha tiles. Falls back to
+/// [`paint_row_blocks`] only if the atlas itself degrades to
+/// [`MinimapCharAtlas::filled`] returning a zero-sized tile (never happens
+/// in practice — `filled` always clamps to at least `1x1` — kept as a
+/// defensive no-op-safe branch rather than an `unwrap`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_minimap_cached(
     cr: &Context,
@@ -242,22 +290,27 @@ pub(crate) fn draw_minimap_cached(
     theme: &Theme,
     atlas_cache: &mut MinimapAtlasCache,
     dpi_scale: f64,
+    mm_scale: MinimapScale,
 ) -> MinimapLayout {
     let family = pango_layout
         .font_description()
         .and_then(|f| f.family())
         .map(|g| g.to_string())
         .unwrap_or_else(|| "Monospace".to_string());
-    let scale = dpi_scale.max(1.0);
-    // One column is 1 DIP wide (see `paint_row_blocks`'s own "1px-wide
-    // block per column"), one row is `ROW_PITCH_PX` DIPs tall -- convert
-    // both to real device pixels via `scale` (issue's HiDPI note: `m =
-    // round(scale * 2)` in VS Code's own terms, keeping the *logical*
-    // pitch unchanged while the atlas gets real device-pixel detail).
-    let tile_w = (scale).round().max(1.0) as usize;
-    let tile_h = (ROW_PITCH_PX * scale).round().max(1.0) as usize;
+    let dpi_scale = dpi_scale.max(1.0);
+    // Convert `mm_scale`'s logical cell size to real device pixels via
+    // `dpi_scale` (issue's HiDPI note: `m = round(scale * 2)` in VS Code's
+    // own terms, keeping the *logical* cell size unchanged while the
+    // atlas gets real device-pixel detail).
+    let tile_w = (mm_scale.cell_w_px() * dpi_scale).round().max(1.0) as usize;
+    let tile_h = (mm_scale.row_pitch_px() * dpi_scale).round().max(1.0) as usize;
 
-    let atlas = atlas_cache.get_or_build(&family, scale as f32, || {
+    // `mm_scale` changes the atlas's tile dimensions just as much as
+    // `family`/`dpi_scale` do, so it must be part of the cache key too —
+    // folded into the family string rather than growing
+    // `MinimapAtlasCache::get_or_build`'s own `(String, f32)` key shape.
+    let family_key = format!("{family}#{mm_scale:?}");
+    let atlas = atlas_cache.get_or_build(&family_key, dpi_scale as f32, || {
         build_char_atlas(&family, tile_w, tile_h)
     });
 
@@ -269,11 +322,12 @@ pub(crate) fn draw_minimap_cached(
         h,
         minimap,
         theme,
-        |cr, vline, _row_px, text, row_spans| {
+        mm_scale,
+        |cr, vline, _row_px, cell_w, text, row_spans| {
             if atlas.tile_w() == 0 || atlas.tile_h() == 0 {
-                paint_row_blocks(cr, vline, text, row_spans, theme);
+                paint_row_blocks(cr, vline, text, row_spans, theme, cell_w);
             } else {
-                paint_row_atlas(cr, atlas, scale, vline, text, row_spans, theme);
+                paint_row_atlas(cr, atlas, dpi_scale, vline, text, row_spans, theme, cell_w);
             }
         },
     )
@@ -350,6 +404,17 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
         // review.
         pangocairo::functions::show_layout(&cr, &pango_layout);
     }
+    // `ImageSurface::data()` needs exclusive access to the surface (it
+    // hands back a mutable-capable view), and both `pango_layout` and
+    // `cr` still hold their own reference to it -- drop them first, the
+    // same ordering `blit_alpha_tile` already follows for its own tile
+    // surface. Without this, `.data()` always returns `Err` (the surface
+    // has more than one live reference), `.ok()?` turns that into a
+    // silent `None`, and every real paint quietly took the
+    // `MinimapCharAtlas::filled` fallback instead of a real glyph atlas —
+    // #1035's atlas was never actually reachable before this fix.
+    drop(pango_layout);
+    drop(cr);
     surface.flush();
 
     let stride = surface.stride() as usize;
@@ -372,7 +437,10 @@ fn render_char_sample_sheet(family: &str) -> Option<Vec<u8>> {
 /// tile per non-blank character, tinted by whichever span covers it — no
 /// shaping, matching [`paint_row_blocks`]'s own column-capacity bound
 /// (#667 pt. 3) and whitespace skip, but painting real glyph shapes
-/// instead of solid blocks.
+/// instead of solid blocks. `cell_w` (issue #1143's [`MinimapScale::cell_w_px`])
+/// is the logical column advance — `col as f64 * cell_w`, not a bare
+/// `col as f64` — so a wider [`MinimapScale::Two`] cell doesn't overlap
+/// its neighbour.
 #[allow(clippy::too_many_arguments)]
 fn paint_row_atlas(
     cr: &Context,
@@ -382,6 +450,7 @@ fn paint_row_atlas(
     text: &str,
     row_spans: &[MinimapSpan],
     theme: &Theme,
+    cell_w: f64,
 ) {
     for (col, ch) in text.chars().enumerate().take(COLUMN_CAPACITY) {
         if ch.is_whitespace() {
@@ -393,7 +462,7 @@ fn paint_row_atlas(
             atlas.tile(ch),
             atlas.tile_w(),
             atlas.tile_h(),
-            vline.bounds.x as f64 + col as f64,
+            vline.bounds.x as f64 + col as f64 * cell_w,
             vline.bounds.y as f64,
             dpi_scale,
             color,
@@ -407,8 +476,9 @@ fn paint_row_atlas(
 /// alpha blend, not a shaped glyph run. The `cr.scale(1.0 / dpi_scale,
 /// ..)` maps the tile's device-pixel resolution back down to logical
 /// units, so a `tile_w x tile_h` device-pixel tile always occupies
-/// exactly one column x [`ROW_PITCH_PX`] logical units on screen,
-/// regardless of `dpi_scale`.
+/// exactly one [`MinimapScale::cell_w_px`] x one
+/// [`MinimapScale::row_pitch_px`] logical units on screen, regardless of
+/// `dpi_scale`.
 #[allow(clippy::too_many_arguments)]
 fn blit_alpha_tile(
     cr: &Context,
@@ -500,18 +570,22 @@ fn paint_row_glyphs(
     super::painted_text::show_layout(cr, pango_layout);
 }
 
-/// Paint one 1px-wide block per non-blank character column of `text`,
-/// each coloured by whichever span covers it — VS Code's
+/// Paint one `cell_w`-wide block per non-blank character column of
+/// `text`, each coloured by whichever span covers it — VS Code's
 /// `renderCharacters: false` look, which (unlike a single per-line bar)
 /// preserves the line's indent and internal-gap silhouette (#667 pt. 2).
 /// Stops after [`COLUMN_CAPACITY`] columns, so a pathologically long
-/// line costs no more to paint than a short one.
+/// line costs no more to paint than a short one. `cell_w` is
+/// [`MinimapScale::cell_w_px`] (issue #1143) — `1.0` at the pre-#1143
+/// default [`MinimapScale::One`], matching this function's original
+/// hardcoded block width byte for byte.
 fn paint_row_blocks(
     cr: &Context,
     vline: &VisibleMinimapLine,
     text: &str,
     row_spans: &[MinimapSpan],
     theme: &Theme,
+    cell_w: f64,
 ) {
     for (col, ch) in text.chars().enumerate().take(COLUMN_CAPACITY) {
         if ch.is_whitespace() {
@@ -520,9 +594,9 @@ fn paint_row_blocks(
         let color = color_at_column(row_spans, col, theme.foreground);
         set_source(cr, color);
         cr.rectangle(
-            vline.bounds.x as f64 + col as f64,
+            vline.bounds.x as f64 + col as f64 * cell_w,
             vline.bounds.y as f64,
-            1.0,
+            cell_w,
             vline.bounds.height as f64,
         );
         cr.fill().ok();
@@ -560,7 +634,7 @@ fn char_range_to_byte_range(text: &str, start_col: usize, end_col: usize) -> (u3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::minimap::{MinimapHit, MinimapLine};
+    use crate::primitives::minimap::{MinimapHit, MinimapLine, ROW_PITCH_PX};
     use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
 
@@ -708,6 +782,18 @@ mod tests {
     /// return the raw pixel bytes -- used to compare two paints for
     /// pixel-level identity/difference.
     fn paint_cached_pixels(mm: &Minimap, w: i32, h: i32) -> Vec<u8> {
+        paint_cached_pixels_at_scale(mm, w, h, MinimapScale::One, &Theme::default())
+    }
+
+    /// [`paint_cached_pixels`], but at an explicit [`MinimapScale`] and
+    /// [`Theme`] (issue #1143).
+    fn paint_cached_pixels_at_scale(
+        mm: &Minimap,
+        w: i32,
+        h: i32,
+        mm_scale: MinimapScale,
+        theme: &Theme,
+    ) -> Vec<u8> {
         let mut surface = ImageSurface::create(Format::ARgb32, w, h).expect("create surface");
         {
             let cr = CairoContext::new(&surface).expect("Context::new");
@@ -721,9 +807,10 @@ mod tests {
                 w as f64,
                 h as f64,
                 mm,
-                &Theme::default(),
+                theme,
                 &mut cache,
                 1.0,
+                mm_scale,
             );
         }
         surface.flush();
@@ -826,7 +913,7 @@ mod tests {
             let cr = CairoContext::new(&surface).expect("Context::new");
             let vline = layout_first_vline(&mm, 20.0, 4.0);
             let row_spans: &[MinimapSpan] = &[];
-            paint_row_blocks(&cr, &vline, &mm.lines[0].text, row_spans, &theme);
+            paint_row_blocks(&cr, &vline, &mm.lines[0].text, row_spans, &theme, 1.0);
             vline
         };
         surface.flush();
@@ -834,6 +921,143 @@ mod tests {
         let data = surface.data().expect("surface data");
         let fg = (theme.foreground.r, theme.foreground.g, theme.foreground.b);
         assert_eq!(pixel(&data, stride, layout.bounds.x as i32 + 4, 0), fg);
+    }
+
+    /// #1143's own acceptance bar: at [`MinimapScale::Two`] (a 2px wide x
+    /// 4px tall cell), a row of real code paints *shapes* -- non-uniform
+    /// pixel values across a character's own cell, not `ColumnBlocks`'
+    /// solid, uniformly-coloured block -- and a blank (whitespace) column
+    /// stays fully background throughout its cell.
+    #[test]
+    fn scale_two_atlas_mode_paints_a_shape_and_leaves_blank_columns_empty() {
+        let line = "fn main()";
+        let mm = minimap_from(vec![line], 1);
+        let cell_w = MinimapScale::Two.cell_w_px() as i32;
+        let row_h = MinimapScale::Two.row_pitch_px() as i32;
+        let w = line.chars().count() as i32 * cell_w;
+
+        let theme = Theme {
+            background: Color::rgb(255, 255, 255),
+            foreground: Color::rgb(0, 0, 0),
+            ..Theme::default()
+        };
+
+        let pixels = paint_cached_pixels_at_scale(&mm, w, row_h, MinimapScale::Two, &theme);
+        let stride = ImageSurface::create(Format::ARgb32, w, row_h)
+            .expect("create surface")
+            .stride() as usize;
+        let bg = (theme.background.r, theme.background.g, theme.background.b);
+
+        // The space between "fn" and "main" is column 2 -- its whole
+        // `cell_w`-wide, `row_h`-tall cell must stay fully background.
+        let space_col = 2i32;
+        for dx in 0..cell_w {
+            for y in 0..row_h {
+                let x = space_col * cell_w + dx;
+                assert_eq!(
+                    pixel(&pixels, stride, x, y),
+                    bg,
+                    "a blank column must stay fully background at ({x}, {y})"
+                );
+            }
+        }
+
+        // The first character's own cell ('f', column 0) must show a
+        // *shape* -- at least two pixels inside the cell with different
+        // colours -- rather than a solid, uniformly-filled block (what
+        // `ColumnBlocks` paints, and what pre-#1143 GTK's own 1x2 cell
+        // was too small to ever show).
+        let mut cell_pixels = Vec::new();
+        for dx in 0..cell_w {
+            for y in 0..row_h {
+                cell_pixels.push(pixel(&pixels, stride, dx, y));
+            }
+        }
+        assert!(
+            cell_pixels.windows(2).any(|w| w[0] != w[1]),
+            "expected non-uniform alpha (a glyph shape) across the 'f' cell, got {cell_pixels:?}"
+        );
+    }
+
+    /// The atlas cache is keyed on `(family, dpi_scale)` alone
+    /// ([`MinimapAtlasCache`]) — `mm_scale` is folded into the family
+    /// string ([`draw_minimap_cached`]'s own `family_key`), precisely so
+    /// reusing one cache across a [`MinimapScale`] change doesn't
+    /// silently keep serving a wrong-sized tile from the previous scale
+    /// (issue #1143).
+    #[test]
+    fn atlas_cache_key_includes_minimap_scale_so_a_scale_change_rebuilds() {
+        let mm = minimap_from(vec!["fn main() {}"], 1);
+        let mut cache = MinimapAtlasCache::new();
+        let theme = Theme::default();
+        let bg = (theme.background.r, theme.background.g, theme.background.b);
+        let w = 40;
+        let two_h = MinimapScale::Two.row_pitch_px() as i32;
+
+        // Paint once at `One` (a 1x2 cell) through the shared cache...
+        let surface_one =
+            ImageSurface::create(Format::ARgb32, w, MinimapScale::One.row_pitch_px() as i32)
+                .expect("create surface");
+        {
+            let cr = CairoContext::new(&surface_one).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_minimap_cached(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                w as f64,
+                MinimapScale::One.row_pitch_px(),
+                &mm,
+                &theme,
+                &mut cache,
+                1.0,
+                MinimapScale::One,
+            );
+        }
+
+        // ...then at `Two` (a 2x4 cell) through the *same* cache instance.
+        let mut surface_two =
+            ImageSurface::create(Format::ARgb32, w, two_h).expect("create surface");
+        {
+            let cr = CairoContext::new(&surface_two).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_minimap_cached(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                w as f64,
+                two_h as f64,
+                &mm,
+                &theme,
+                &mut cache,
+                1.0,
+                MinimapScale::Two,
+            );
+        }
+        surface_two.flush();
+        let stride = surface_two.stride() as usize;
+        let data = surface_two.data().expect("surface data");
+
+        // If the cache had wrongly reused `One`'s 1x2 tile for this
+        // `Two` paint, the blit would only ever touch the tile's own
+        // (much smaller) device-pixel footprint, leaving the bottom of
+        // this 4px-tall row untouched (still background). A correctly
+        // rebuilt 2x4 tile paints something below row 2.
+        let mut painted_below_row_2 = false;
+        for y in 2..two_h {
+            for x in 0..w {
+                if pixel(&data, stride, x, y) != bg {
+                    painted_below_row_2 = true;
+                }
+            }
+        }
+        assert!(
+            painted_below_row_2,
+            "MinimapScale::Two's own 4px-tall cell must paint below row 2 -- a stale \
+             1x2 tile carried over from MinimapScale::One would not"
+        );
     }
 
     fn layout_first_vline(mm: &Minimap, w: f64, h: f64) -> VisibleMinimapLine {

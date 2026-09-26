@@ -50,8 +50,8 @@ use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
-    MinimapRenderMode, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine, COLUMN_CAPACITY,
-    ROW_PITCH_PX,
+    MinimapRenderMode, MinimapScale, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine,
+    COLUMN_CAPACITY,
 };
 use crate::theme::Theme;
 
@@ -60,15 +60,33 @@ use crate::theme::Theme;
 /// [`crate::MinimapGrid`]'s doc for why TUI's braille packing differs).
 pub const LINES_PER_ROW: usize = 1;
 
-/// Compute the Win-GUI DIP-unit layout for a [`Minimap`] without painting
-/// — the DirectWrite twin of [`draw_minimap`]'s internal layout call. Same
-/// contract as the GTK/TUI twins' `*_minimap_layout`: `rect.x`/`rect.y`
-/// are baked into every returned bound (absolute frame).
+/// Compute the Win-GUI DIP-unit layout for a [`Minimap`] without painting,
+/// at [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly
+/// as-is for source compatibility with any caller reaching this free
+/// function directly; every real paint path goes through
+/// [`WinBackend::minimap_layout`]'s [`win_minimap_layout_scaled`] instead,
+/// so it can honor [`crate::backend::Backend::minimap_scale`] (issue
+/// #1143). Same contract as the GTK/TUI twins' `*_minimap_layout`:
+/// `rect.x`/`rect.y` are baked into every returned bound (absolute frame).
+///
+/// [`WinBackend::minimap_layout`]: crate::win::backend::WinBackend
 pub fn win_minimap_layout(minimap: &Minimap, rect: Rect) -> MinimapLayout {
+    win_minimap_layout_scaled(minimap, rect, MinimapScale::One)
+}
+
+/// [`win_minimap_layout`], but at an explicit [`MinimapScale`] (issue
+/// #1143) — what [`WinBackend::minimap_layout`] actually calls.
+///
+/// [`WinBackend::minimap_layout`]: crate::win::backend::WinBackend
+pub(crate) fn win_minimap_layout_scaled(
+    minimap: &Minimap,
+    rect: Rect,
+    scale: MinimapScale,
+) -> MinimapLayout {
     minimap.layout_with_sizing(
         rect,
         LINES_PER_ROW,
-        MinimapSizing::FixedPitch(ROW_PITCH_PX as f32),
+        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
     )
 }
 
@@ -83,7 +101,33 @@ pub fn draw_minimap(
     minimap: &Minimap,
     theme: &Theme,
 ) -> MinimapLayout {
-    let layout = win_minimap_layout(minimap, rect);
+    draw_minimap_scaled(target, dwrite, rect, minimap, theme, MinimapScale::One)
+}
+
+/// [`draw_minimap`], but at an explicit [`MinimapScale`] (issue #1143) —
+/// what [`WinBackend::draw_minimap`] actually calls. At
+/// [`MinimapScale::Two`] the row pitch clears
+/// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`], so `render_mode`
+/// resolves to [`MinimapRenderMode::Characters`] and this rasteriser paints
+/// real `DrawText` glyph runs via [`paint_row_glyphs`] — unlike GTK's atlas
+/// blit (#1035), this still shapes with the backend's single configured
+/// [`DWrite`] text format rather than a downsampled sample-sheet tile (see
+/// the module doc's divergence note); a DirectWrite sample-sheet atlas
+/// mirroring GTK's is left as follow-up work for a Windows-hosted session
+/// (see `CLAUDE.md`'s "Win-GUI: building and testing for real" — an
+/// FFI-heavy pixel-readback port like this needs to be verified against a
+/// live Direct2D/WARP surface, not just `cargo check`).
+///
+/// [`WinBackend::draw_minimap`]: crate::win::backend::WinBackend
+pub(crate) fn draw_minimap_scaled(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    minimap: &Minimap,
+    theme: &Theme,
+    scale: MinimapScale,
+) -> MinimapLayout {
+    let layout = win_minimap_layout_scaled(minimap, rect, scale);
 
     if layout.visible_lines.is_empty() {
         return layout;
@@ -131,9 +175,14 @@ pub fn draw_minimap(
             MinimapRenderMode::Characters => {
                 paint_row_glyphs(target, dwrite, vline, &line.text, row_spans, theme)
             }
-            MinimapRenderMode::ColumnBlocks => {
-                paint_row_blocks(target, vline, &line.text, row_spans, theme)
-            }
+            MinimapRenderMode::ColumnBlocks => paint_row_blocks(
+                target,
+                vline,
+                &line.text,
+                row_spans,
+                theme,
+                scale.cell_w_px() as f32,
+            ),
         }
     }
 
@@ -174,18 +223,22 @@ fn paint_row_glyphs(
     let _ = dwrite.draw_text(target, truncated, vline.bounds, fg);
 }
 
-/// `ColumnBlocks` branch: paint one 1-DIP-wide block per non-blank
+/// `ColumnBlocks` branch: paint one `cell_w`-DIP-wide block per non-blank
 /// character column of `text`, each coloured by whichever span covers it
 /// — VS Code's `renderCharacters: false` look, which (unlike a single
 /// per-line bar) preserves the line's indent and internal-gap silhouette
 /// (#667 pt. 2). Stops after [`COLUMN_CAPACITY`] columns, so a
 /// pathologically long line costs no more to paint than a short one.
+/// `cell_w` is [`MinimapScale::cell_w_px`] (issue #1143) — `1.0` at the
+/// pre-#1143 default [`MinimapScale::One`], matching this function's
+/// original hardcoded block width byte for byte.
 fn paint_row_blocks(
     target: &ID2D1RenderTarget,
     vline: &VisibleMinimapLine,
     text: &str,
     row_spans: &[MinimapSpan],
     theme: &Theme,
+    cell_w: f32,
 ) {
     for (col, ch) in text.chars().enumerate().take(COLUMN_CAPACITY) {
         if ch.is_whitespace() {
@@ -193,9 +246,9 @@ fn paint_row_blocks(
         }
         let color = color_at_column(row_spans, col, theme.foreground);
         let block = Rect::new(
-            vline.bounds.x + col as f32,
+            vline.bounds.x + col as f32 * cell_w,
             vline.bounds.y,
-            1.0,
+            cell_w,
             vline.bounds.height,
         );
         let _ = fill_rect(target, block, color);
@@ -205,7 +258,7 @@ fn paint_row_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::minimap::{MinimapHit, MinimapLine};
+    use crate::primitives::minimap::{MinimapHit, MinimapLine, ROW_PITCH_PX};
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
 

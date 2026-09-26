@@ -1057,6 +1057,88 @@ pub fn minimap_font_px(line_px: f64) -> f64 {
     line_px.clamp(1.0, 64.0)
 }
 
+// ── Render scale (#1143) ──────────────────────────────────────────────
+//
+// VS Code's `editor.minimap.scale` picks the on-screen size of one
+// character *cell* in `renderCharacters: true` mode — 1 is a bare
+// density dot, 2 (VS Code's own default) is the smallest cell a
+// downsampled glyph tile actually reads back as a recognisable shape
+// rather than a blob. `ROW_PITCH_PX` above is a *fixed* row pitch (#667)
+// deliberately picked below `LEGIBILITY_FLOOR_PX` so the default
+// rasteriser lands in `ColumnBlocks` — `MinimapScale` is an orthogonal,
+// opt-in axis on top of it: a backend that wants `Characters` to
+// actually paint character *shapes* (not just clear the legibility gate)
+// asks for `MinimapScale::Two` and feeds `row_pitch_px()` into
+// `MinimapSizing::FixedPitch` instead of the bare `ROW_PITCH_PX`
+// constant.
+//
+// This is deliberately not a field on [`Minimap`] itself — `Minimap` is
+// not `#[non_exhaustive]`, and any out-of-tree struct-literal
+// constructor (`CLAUDE.md`'s downstream-consumers section: `vimcode`
+// builds `Minimap` values directly) would need to grow a new field at
+// every call site the instant this crate added one. Instead each
+// backend carries its own scale as paint-time state (`Backend::
+// minimap_scale`/`set_minimap_scale`, both default-provided so the
+// trait's existing 2-argument `draw_minimap(rect, minimap)` /
+// `minimap_layout(rect, minimap)` call shape — the exact shape
+// `vimcode::render`'s `Backend::minimap_layout`/`draw_minimap` call
+// sites use — never has to change).
+
+/// VS Code-parity minimap render scale (`editor.minimap.scale`) — how
+/// large a logical pixel cell one character occupies in
+/// [`MinimapRenderMode::Characters`] (issue #1143).
+///
+/// Backends read this off [`crate::backend::Backend::minimap_scale`]
+/// (a per-backend paint-time setting, not a field on [`Minimap`] — see
+/// the section docs above for why) and feed [`Self::row_pitch_px`] into
+/// [`MinimapSizing::FixedPitch`] in place of the bare [`ROW_PITCH_PX`]
+/// constant, and [`Self::cell_w_px`] into their per-column paint-walk
+/// x-advance (in place of a hardcoded `1.0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MinimapScale {
+    /// A 1 px wide × [`ROW_PITCH_PX`]-tall cell — the pre-#1143 default.
+    /// [`ROW_PITCH_PX`] (2) sits below [`LEGIBILITY_FLOOR_PX`] (4), so
+    /// `render_mode` always resolves to [`MinimapRenderMode::ColumnBlocks`]
+    /// at this scale: a "character" here is a density dot, not a shape.
+    #[default]
+    One,
+    /// A 2 px wide × 4 px tall cell — VS Code's own default `minimap.scale`,
+    /// and the smallest cell size at which an atlas-blitted glyph tile
+    /// (see the "Character glyph atlas" section below) reads back as a
+    /// recognisable shape instead of a blob. `row_pitch_px()` (4) clears
+    /// [`LEGIBILITY_FLOOR_PX`], so `render_mode` resolves to
+    /// [`MinimapRenderMode::Characters`] at this scale without needing any
+    /// change to `render_mode`/`is_legible` themselves.
+    Two,
+}
+
+impl MinimapScale {
+    /// Row pitch (vertical logical pixels/DIPs/points) one row occupies at
+    /// this scale — what a caller feeds into
+    /// [`MinimapSizing::FixedPitch`] in place of the bare [`ROW_PITCH_PX`]
+    /// constant.
+    pub fn row_pitch_px(self) -> f64 {
+        match self {
+            MinimapScale::One => ROW_PITCH_PX,
+            MinimapScale::Two => ROW_PITCH_PX * 2.0,
+        }
+    }
+
+    /// Column width (horizontal logical pixels/DIPs/points) one character
+    /// cell occupies at this scale — what a rasteriser's per-column paint
+    /// walk steps by, and what a host's own `reserved_width`/
+    /// [`MinimapSizing::resolve_width`] call must scale its column count
+    /// by so the strip stays wide enough for [`COLUMN_CAPACITY`] columns
+    /// at this cell width (issue #1143's "keep `reserved_width`/
+    /// `resolve_width` consistent with the larger cell").
+    pub fn cell_w_px(self) -> f64 {
+        match self {
+            MinimapScale::One => 1.0,
+            MinimapScale::Two => 2.0,
+        }
+    }
+}
+
 // ── Character glyph atlas (#1035) ─────────────────────────────────────
 //
 // `MinimapRenderMode::Characters` was unreachable: `ROW_PITCH_PX` (2.0)
@@ -2244,6 +2326,40 @@ mod tests {
         assert_eq!(minimap_font_px(0.0), 1.0);
         assert_eq!(minimap_font_px(1000.0), 64.0);
         assert_eq!(minimap_font_px(10.0), 10.0);
+    }
+
+    // ── MinimapScale (#1143) ────────────────────────────────────────────
+
+    #[test]
+    fn minimap_scale_default_is_one_and_matches_row_pitch_px() {
+        // `MinimapScale::default()` must be the pre-#1143 behaviour byte
+        // for byte -- a backend that never opts in must see no change.
+        assert_eq!(MinimapScale::default(), MinimapScale::One);
+        assert_eq!(MinimapScale::One.row_pitch_px(), ROW_PITCH_PX);
+        assert_eq!(MinimapScale::One.cell_w_px(), 1.0);
+    }
+
+    #[test]
+    fn minimap_scale_two_is_a_2x4_cell_and_clears_the_legibility_floor() {
+        // VS Code parity: a 2px wide x 4px tall cell -- and 4px clears
+        // `LEGIBILITY_FLOOR_PX` so `render_mode` resolves to `Characters`
+        // at this scale without any change to `render_mode` itself.
+        assert_eq!(MinimapScale::Two.cell_w_px(), 2.0);
+        assert_eq!(MinimapScale::Two.row_pitch_px(), 4.0);
+        assert!(is_legible(MinimapScale::Two.row_pitch_px()));
+        assert_eq!(
+            render_mode(MinimapScale::Two.row_pitch_px()),
+            MinimapRenderMode::Characters
+        );
+    }
+
+    #[test]
+    fn minimap_scale_one_stays_below_the_legibility_floor() {
+        assert!(!is_legible(MinimapScale::One.row_pitch_px()));
+        assert_eq!(
+            render_mode(MinimapScale::One.row_pitch_px()),
+            MinimapRenderMode::ColumnBlocks
+        );
     }
 
     // ── truncate_to_columns / color_at_column / SpanCursor ─────────────

@@ -431,7 +431,7 @@ pub use primitives::menu_bar::{
 pub use primitives::message_list::{MessageList, MessageListHit, MessageListMeasure, MessageRow};
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
-    MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapSizing, MinimapSpan,
+    MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing, MinimapSpan,
     VisibleMinimapLine,
 };
 // #822: `SyntaxSpan` was merged into `MinimapSpan` (byte-identical
