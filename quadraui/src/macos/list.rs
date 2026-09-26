@@ -1,23 +1,28 @@
 //! macOS rasteriser for [`crate::ListView`].
 //!
-//! Mirrors [`crate::gtk::list::draw_list`]: optional title strip at the
-//! top, then flat rows from `scroll_offset` until the viewport fills.
-//! Selection / header / decoration styling matches the GTK contract.
+//! Content painting (background, title, rows, h/v scrollbars) moved to
+//! the shared [`crate::primitives::list::native_surface_paint::paint`]
+//! (#1075, `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc
+//! for what's shared and what stays per-backend.
 //!
 //! ## Scope omissions (follow-up)
 //!
-//! - **`bordered` mode** — same status as GTK: no consumer sets it
-//!   today. The flat header+rows path is fully supported. Add the
-//!   rounded-rect frame + overlay title when a consumer needs it.
+//! - **`bordered` mode** — same status as before this migration: no
+//!   consumer sets it today. The flat header+rows path is fully
+//!   supported; this rasteriser passes `supports_border: false` to the
+//!   shared paint, so it always takes the flat title/inset path
+//!   regardless of [`crate::ListView::bordered`] (only the background
+//!   colour choice honours it — matching the pre-migration behaviour
+//!   exactly). Add the rounded-rect frame + overlay title when a
+//!   consumer needs it.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
+use super::text::measure_text;
 use crate::primitives::list::{ListView, ListViewLayout};
 use crate::theme::Theme;
-use crate::types::{Color, Decoration};
 
 /// Compute the layout the macOS rasteriser would produce for `list`
 /// at `(w, h)` and `line_height`, including the horizontal-scrollbar
@@ -70,6 +75,14 @@ pub fn mac_list_layout(
 /// layout `mac_list_layout` would produce — callers route clicks
 /// against this to consume one layout per frame.
 ///
+/// `nerd_fonts_enabled` controls which icon variant an item's
+/// [`crate::types::Icon`] paints — see
+/// [`crate::primitives::list::native_surface_paint::paint`]'s doc.
+/// Before this parameter existed, this rasteriser never painted
+/// `ListItem::icon` at all (a real omission, not a nerd-font policy
+/// choice — see `MacBackend::draw_list`'s call site for how it
+/// threads `self.nerd_fonts_enabled` through now, matching GTK/Windows).
+///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
@@ -86,13 +99,12 @@ pub unsafe fn draw_list(
     list: &ListView,
     theme: &Theme,
     line_height: f64,
+    nerd_fonts_enabled: bool,
 ) -> ListViewLayout {
     // Measure a reference glyph for char-to-pixel conversion up front —
     // `mac_list_layout` needs it for the h-scrollbar-overflow threshold
-    // check, and `h_off_px` below reuses the same measurement. `h_scroll`
-    // is expressed in character columns (matching TUI cells); macOS
-    // works in pixels, so we multiply by `char_w` before offsetting
-    // cursor positions.
+    // check, and the shared paint re-derives the same measurement for
+    // its own `h_scroll` cursor shift.
     let (char_w, _) = measure_text(font, "M");
     let char_w = char_w.max(1.0);
 
@@ -100,17 +112,6 @@ pub unsafe fn draw_list(
         return mac_list_layout(list, x, y, w.max(0.0), h.max(0.0), line_height, char_w);
     }
 
-    let h_off_px = list.h_scroll as f64 * char_w;
-
-    // #712: `mac_list_layout` is the single source of truth for the
-    // h-scrollbar row reservation — no separate recompute here. Before
-    // #712 this branched on a locally-recomputed `needs_hscrollbar` and
-    // called `list.layout` a second time with a reduced height, which
-    // `Backend::list_layout` (routed through `mac_list_layout` alone)
-    // had no way to reproduce.
-    let needs_hscrollbar = list
-        .max_content_width
-        .is_some_and(|n| n as f64 * char_w > w);
     let layout = mac_list_layout(list, x, y, w, h, line_height, char_w);
 
     CGContextSaveGState(ctx);
@@ -118,172 +119,25 @@ pub unsafe fn draw_list(
     // rows don't paint past the viewport.
     CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
 
-    fill_rect(ctx, x, y, w, h, theme.background);
-
-    if let (Some(title_bounds), Some(title)) = (layout.title_bounds, list.title.as_ref()) {
-        // Layout returns local coords; shift to absolute for paint.
-        let tx = title_bounds.x as f64 + x;
-        let ty = title_bounds.y as f64 + y;
-        let th = title_bounds.height as f64;
-        fill_rect(ctx, tx, ty, w, th, theme.header_bg);
-        let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
-        let (_, text_h) = measure_text(font, &title_text);
-        draw_text(
-            ctx,
-            font,
-            &title_text,
-            tx + 2.0,
-            ty + (th - text_h) / 2.0,
-            color_to_cg(theme.header_fg),
-        );
-    }
-
-    for vis in &layout.visible_items {
-        let item = &list.items[vis.item_idx];
-        // Layout returns local coords; shift to absolute for paint.
-        let row_x = vis.bounds.x as f64 + x;
-        let row_y = vis.bounds.y as f64 + y;
-        let row_w = vis.bounds.width as f64;
-        let row_h = vis.bounds.height as f64;
-
-        let is_selected = vis.item_idx == list.selected_idx && list.has_focus;
-
-        let decoration_fg = match item.decoration {
-            Decoration::Error => theme.error_fg,
-            Decoration::Warning => theme.warning_fg,
-            Decoration::Muted => theme.muted_fg,
-            Decoration::Header => theme.header_fg,
-            _ => theme.surface_fg,
-        };
-        let row_bg = if is_selected {
-            theme.selected_bg
-        } else if matches!(item.decoration, Decoration::Header) {
-            theme.header_bg
-        } else {
-            theme.background
-        };
-
-        fill_rect(ctx, row_x, row_y, row_w, row_h, row_bg);
-
-        // Per-row clip: with h_scroll the cursor starts to the left of `row_x`,
-        // so scrolled-off glyphs would paint outside the row band.  The list-
-        // level CGContextClipToRect already clips to the list box, but adding a
-        // row-level clip is cheap and makes the intent explicit.
-        CGContextSaveGState(ctx);
-        CGContextClipToRect(ctx, CGRect::new_xywh(row_x, row_y, row_w, row_h));
-
-        // Shift cursor left by the horizontal scroll offset so that content
-        // columns < h_scroll are clipped away by the clip set above.
-        let mut cursor_x = row_x + 2.0 - h_off_px;
-
-        let prefix = if is_selected { "▶ " } else { "  " };
-        let (pw, _) = measure_text(font, prefix);
-        let (_, text_h) = measure_text(font, prefix);
-        let text_y = row_y + (row_h - text_h) / 2.0;
-        draw_text(
-            ctx,
-            font,
-            prefix,
-            cursor_x,
-            text_y,
-            color_to_cg(decoration_fg),
-        );
-        cursor_x += pw;
-
-        let detail_info = item.detail.as_ref().map(|d| {
-            let detail_text: String = d.spans.iter().map(|s| s.text.as_str()).collect();
-            let (dw, _) = measure_text(font, &detail_text);
-            (detail_text, dw)
-        });
-        let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
-        // text_right_limit is in absolute pixel coords; the h_scroll shift of
-        // cursor_x does not affect where the detail reserve boundary sits.
-        let text_right_limit = row_x + row_w - detail_reserve - 4.0;
-
-        for span in &item.text.spans {
-            if cursor_x >= text_right_limit {
-                break;
-            }
-            let span_fg = span.fg.unwrap_or(decoration_fg);
-            if let Some(sbg) = span.bg {
-                let (sw, _) = measure_text(font, &span.text);
-                fill_rect(
-                    ctx,
-                    cursor_x,
-                    row_y,
-                    sw.min(text_right_limit - cursor_x),
-                    row_h,
-                    sbg,
-                );
-            }
-            let (sw, _) = measure_text(font, &span.text);
-            draw_text(
-                ctx,
-                font,
-                &span.text,
-                cursor_x,
-                text_y,
-                color_to_cg(span_fg),
-            );
-            cursor_x += sw;
-        }
-
-        // Detail text is pinned to the visible viewport (does not scroll with
-        // h_scroll).  Restore the per-row clip before rendering it so the detail
-        // slot is unaffected by the h_scroll shift.
-        CGContextRestoreGState(ctx);
-
-        if let Some((detail_text, dw)) = detail_info {
-            let dx = row_x + row_w - dw - 4.0;
-            if dx > cursor_x {
-                draw_text(
-                    ctx,
-                    font,
-                    &detail_text,
-                    dx,
-                    text_y,
-                    color_to_cg(theme.muted_fg),
-                );
-            }
-        }
-    }
-
-    // ── Horizontal scrollbar ─────────────────────────────────────────────
-    // Painted after items so it overlays the bottom row's background fill.
-    if needs_hscrollbar {
-        let content_px = list.max_content_width.unwrap_or(0) as f64 * char_w;
-        let track_y = y + h - line_height;
-        let hsb_track =
-            crate::event::Rect::new(x as f32, track_y as f32, w as f32, line_height as f32);
-        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
-            list.id.clone(),
-            hsb_track,
-            list.h_scroll as f32 * char_w as f32,
-            content_px as f32,
-            w as f32,
-            line_height as f32,
-        );
-        let mut raw = super::surface::CgSurface { ctx, font: None };
-        crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
-    }
+    let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::list::native_surface_paint::paint(
+        list,
+        area,
+        &layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        /* supports_border */ false,
+        /* supports_hscrollbar */ true,
+        &mut surface,
+        theme,
+    );
 
     CGContextRestoreGState(ctx);
     layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
 }
 
 trait CGRectExt {
@@ -300,14 +154,6 @@ extern "C" {
     fn CGContextSaveGState(c: CGContextRef);
     fn CGContextRestoreGState(c: CGContextRef);
     fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -318,7 +164,7 @@ mod tests {
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::list::{ListItem, ListViewHit};
-    use crate::types::{Color, StyledSpan, StyledText, WidgetId};
+    use crate::types::{Color, Decoration, StyledSpan, StyledText, WidgetId};
     use crate::Backend;
 
     const W: u32 = 240;

@@ -254,7 +254,12 @@ unsafe fn paint_body(
             super::tree::draw_tree(ctx, font, bx, by, bw, bh, t, theme, line_height, false);
         }
         SectionBody::List(l) => {
-            super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height);
+            // Same rationale as the `SectionBody::Tree` arm just above:
+            // `nerd_fonts_enabled` isn't threaded through
+            // `draw_multi_section_view`'s call chain yet, so `false`
+            // preserves this call site's pre-#1075 behaviour (which
+            // never painted list-item icons at all).
+            super::list::draw_list(ctx, font, bx, by, bw, bh, l, theme, line_height, false);
         }
         SectionBody::Form(f) => {
             draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);

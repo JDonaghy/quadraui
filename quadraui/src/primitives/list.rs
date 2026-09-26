@@ -674,6 +674,607 @@ mod vscrollbar_tests {
     }
 }
 
+// ── NativeSurface paint (#1075, NativeSurface Phase 4 slice 2/8) ───────────
+//
+// Before this, `gtk::draw_list` (Cairo), `macos::list::draw_list` (Core
+// Graphics) and `win::list::draw_list` (Direct2D) each independently
+// painted the same title/row/decoration/scrollbar content with their own
+// drawing API. `paint` below is the one shared implementation, written
+// against [`crate::native_surface::NativeSurface`] instead of any one
+// backend's API — see `crate::primitives::split_tree::native_surface_paint`
+// and `crate::primitives::scrollbar::native_surface_paint` for the same
+// pattern applied to earlier primitives.
+//
+// What this migration fixes (issue #1075's named drift):
+//
+// - **Missing vertical scrollbar.** `Backend::list_vscrollbar` already
+//   returns real track/thumb geometry on every pixel backend (used for
+//   hit-testing/dragging), but none of the three `draw_list`s ever
+//   painted it — `paint` below does, via
+//   [`crate::primitives::scrollbar::native_surface_paint::paint`], the
+//   same helper the horizontal scrollbar already used on GTK/macOS.
+//
+// What this migration does NOT change: `bordered`'s frame stroke — GTK
+// clips to (and later strokes) a *rounded* rect, Windows fills a plain
+// square 1-DIP frame, and macOS renders no frame at all yet (see
+// `macos::list`'s module doc, "Scope omissions"). None of the three
+// backends has a `NativeSurface` verb for a rounded stroke, and
+// unifying "does this backend draw a frame at all" is a real,
+// documented per-backend capability difference rather than paint/click
+// drift — so each backend's thin wrapper still paints its own frame
+// immediately before/after calling this shared `paint` for the content.
+// `supports_border` below only toggles the *content*-side effects of
+// `bordered` (the inset content area + overlay title vs. the flat
+// header+rows layout) that a backend without frame support should skip
+// — matching what `macos::list`'s pre-migration `draw_list` already did
+// (it never took the overlay-title branch, so `title_overlay` is always
+// `false` there, same as passing `supports_border: false`).
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{ListView, ListViewLayout};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::Decoration;
+    use crate::Rect;
+
+    /// Paint a [`ListView`]'s content — background, optional title,
+    /// visible rows (selection/decoration/icon/detail), and h/v
+    /// scrollbars — onto `surface` at `area`.
+    ///
+    /// - `list_layout` must be the same [`ListViewLayout`] the caller
+    ///   uses for hit-testing (typically `gtk_list_layout`/
+    ///   `mac_list_layout`/`win_list_layout`'s return value) so paint
+    ///   and hit-test can never disagree.
+    /// - `line_height` is one row's height in `surface`'s native units
+    ///   (pixels on every current caller).
+    /// - `nerd_fonts_enabled` selects `Icon::glyph` vs. `Icon::fallback`.
+    /// - `supports_border` — see this module's doc for what it toggles.
+    /// - `supports_hscrollbar` — `false` on Windows only: `win_list_layout`
+    ///   never reserves a bottom row for an overflowing
+    ///   `ListView::max_content_width` (a real, tracked-separately gap —
+    ///   see `win::list`'s module doc, "Known gap: no horizontal
+    ///   scrollbar"), so painting one there without a reservation would
+    ///   overlap the last content row — a new (and wrong) visual, not a
+    ///   fix. `true` on GTK/macOS, which both already reserve the row.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        list: &ListView,
+        area: Rect,
+        list_layout: &ListViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        supports_border: bool,
+        supports_hscrollbar: bool,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        if area.width <= 0.0 || area.height <= 0.0 {
+            return;
+        }
+
+        let base_bg = if list.bordered {
+            theme.surface_bg
+        } else {
+            theme.background
+        };
+        let border_inset = if list.bordered && supports_border {
+            1.0
+        } else {
+            0.0
+        };
+        let title_overlay = list.bordered && supports_border;
+
+        surface.surface_push_clip(area);
+        surface.surface_fill_rect(area, base_bg);
+
+        let char_w = surface.surface_measure_text("M").0.max(1.0);
+        let h_off_px = list.h_scroll as f32 * char_w;
+        let visible_px = (area.width - border_inset * 2.0).max(0.0);
+        let needs_hscrollbar = supports_hscrollbar
+            && list
+                .max_content_width
+                .is_some_and(|n| n as f32 * char_w > visible_px);
+
+        if title_overlay {
+            if let Some(ref title) = list.title {
+                let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
+                let label = format!(" {} ", title_text.trim());
+                let (tw, th) = surface.surface_measure_text(&label);
+                let title_x = area.x + 8.0;
+                let title_y = area.y + (line_height - th) / 2.0;
+                surface.surface_fill_rect(
+                    Rect::new(title_x - 2.0, area.y, tw + 4.0, line_height),
+                    base_bg,
+                );
+                surface.surface_draw_text_run(
+                    Rect::new(title_x, title_y, tw, th),
+                    &label,
+                    theme.title_fg,
+                );
+            }
+        } else if let (Some(title_bounds), Some(title)) =
+            (list_layout.title_bounds, list.title.as_ref())
+        {
+            let tb = Rect::new(
+                area.x + title_bounds.x,
+                area.y + title_bounds.y,
+                title_bounds.width,
+                title_bounds.height,
+            );
+            surface.surface_fill_rect(tb, theme.header_bg);
+            let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
+            let (_, text_h) = surface.surface_measure_text(&title_text);
+            surface.surface_draw_text_run(
+                Rect::new(
+                    tb.x + 2.0,
+                    tb.y + (tb.height - text_h) / 2.0,
+                    tb.width,
+                    text_h,
+                ),
+                &title_text,
+                theme.header_fg,
+            );
+        }
+
+        let item_x_offset = area.x + border_inset;
+        let item_y_offset = area.y + border_inset;
+
+        for vis_item in &list_layout.visible_items {
+            let item = &list.items[vis_item.item_idx];
+            let row_x = item_x_offset + vis_item.bounds.x;
+            let row_y = item_y_offset + vis_item.bounds.y;
+            let row_w = vis_item.bounds.width;
+            let row_h = vis_item.bounds.height;
+
+            let is_selected = vis_item.item_idx == list.selected_idx && list.has_focus;
+            let decoration_fg = match item.decoration {
+                Decoration::Error => theme.error_fg,
+                Decoration::Warning => theme.warning_fg,
+                Decoration::Muted => theme.muted_fg,
+                Decoration::Header => theme.header_fg,
+                _ => theme.surface_fg,
+            };
+            let row_bg = if is_selected {
+                theme.selected_bg
+            } else if matches!(item.decoration, Decoration::Header) {
+                theme.header_bg
+            } else {
+                base_bg
+            };
+
+            let row_rect = Rect::new(row_x, row_y, row_w, row_h);
+            surface.surface_fill_rect(row_rect, row_bg);
+
+            // Per-row clip: with h_scroll the cursor starts to the left
+            // of `row_x`, so scrolled-off glyphs would paint outside the
+            // row band without an explicit clip.
+            surface.surface_push_clip(row_rect);
+            let mut cursor_x = row_x + 2.0 - h_off_px;
+
+            let prefix = if is_selected { "▶ " } else { "  " };
+            let (pw, ph) = surface.surface_measure_text(prefix);
+            surface.surface_draw_text_run(
+                Rect::new(cursor_x, row_y + (row_h - ph) / 2.0, pw, ph),
+                prefix,
+                decoration_fg,
+            );
+            cursor_x += pw;
+
+            if let Some(ref icon) = item.icon {
+                let glyph = if nerd_fonts_enabled {
+                    icon.glyph.as_str()
+                } else {
+                    icon.fallback.as_str()
+                };
+                let (iw, ih) = surface.surface_measure_text(glyph);
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
+                    glyph,
+                    decoration_fg,
+                );
+                cursor_x += iw + 6.0;
+            }
+
+            let detail_info = item.detail.as_ref().map(|detail| {
+                let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
+                let (dw, _) = surface.surface_measure_text(&detail_text);
+                (detail_text, dw)
+            });
+            let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+            // text_right_limit is absolute; the h_scroll shift of
+            // cursor_x does not affect where the detail reserve
+            // boundary sits.
+            let text_right_limit = row_x + row_w - detail_reserve - 4.0;
+
+            for span in &item.text.spans {
+                if cursor_x >= text_right_limit {
+                    break;
+                }
+                let span_fg = span.fg.unwrap_or(decoration_fg);
+                if let Some(sbg) = span.bg {
+                    let (sw, _) = surface.surface_measure_text_styled(&span.text, span.bold);
+                    surface.surface_fill_rect(
+                        Rect::new(cursor_x, row_y, sw.min(text_right_limit - cursor_x), row_h),
+                        sbg,
+                    );
+                }
+                let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+                surface.surface_draw_text_run_styled(
+                    Rect::new(cursor_x, row_y + (row_h - sh) / 2.0, sw, sh),
+                    &span.text,
+                    span_fg,
+                    span.bold,
+                    false,
+                    false,
+                    1.0,
+                );
+                cursor_x += sw;
+            }
+
+            // Detail text is pinned to the visible viewport (does not
+            // scroll with h_scroll) so it stays readable regardless of
+            // scroll position — render it outside the h_scroll-shifted
+            // row clip.
+            surface.surface_pop_clip();
+
+            if let Some((detail_text, dw)) = detail_info {
+                let dx = row_x + row_w - dw - 4.0;
+                if dx > cursor_x {
+                    let (_, dh) = surface.surface_measure_text(&detail_text);
+                    surface.surface_draw_text_run(
+                        Rect::new(dx, row_y + (row_h - dh) / 2.0, dw, dh),
+                        &detail_text,
+                        theme.muted_fg,
+                    );
+                }
+            }
+        }
+
+        // ── Horizontal scrollbar ──────────────────────────────────────
+        // Painted after items so it overlays the bottom row's background.
+        if needs_hscrollbar {
+            let content_px = list.max_content_width.unwrap_or(0) as f32 * char_w;
+            let track_y = if list.bordered {
+                area.y + area.height - border_inset - line_height
+            } else {
+                area.y + area.height - line_height
+            };
+            let (track_x, track_w) = if list.bordered {
+                (
+                    area.x + border_inset,
+                    (area.width - 2.0 * border_inset).max(0.0),
+                )
+            } else {
+                (area.x, area.width)
+            };
+            let hsb_track = Rect::new(track_x, track_y, track_w, line_height);
+            let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
+                list.id.clone(),
+                hsb_track,
+                list.h_scroll as f32 * char_w,
+                content_px,
+                visible_px,
+                line_height,
+            );
+            crate::primitives::scrollbar::native_surface_paint::paint(&hsb, surface, theme);
+        }
+
+        // ── Vertical scrollbar (#1075 fix: previously never painted) ───
+        if let Some(vsb) = list.vscrollbar(area, line_height) {
+            crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
+        }
+
+        surface.surface_pop_clip();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::list::ListItem;
+        use crate::types::{Color, Icon, StyledText, WidgetId};
+        use crate::Image;
+
+        /// Records every fill + text-run call — mirrors
+        /// `primitives::scrollbar`'s `RecordingSurface` test double,
+        /// scoped to the verbs this primitive uses, so this test runs on
+        /// any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            texts: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        use crate::event::Point;
+
+        fn item(label: &str) -> ListItem {
+            ListItem {
+                text: StyledText::plain(label.to_string()),
+                icon: None,
+                detail: None,
+                decoration: Decoration::Normal,
+            }
+        }
+
+        fn vlist(n_items: usize) -> ListView {
+            ListView {
+                id: WidgetId::new("l"),
+                title: None,
+                items: (0..n_items).map(|i| item(&format!("row {i}"))).collect(),
+                selected_idx: 0,
+                scroll_offset: 0,
+                has_focus: true,
+                bordered: false,
+                h_scroll: 0,
+                max_content_width: None,
+                show_v_scrollbar: true,
+            }
+        }
+
+        const LINE_HEIGHT: f32 = 16.0;
+        const AREA: Rect = Rect::new(0.0, 0.0, 100.0, 80.0);
+
+        /// #1075 regression: before this migration, none of the three
+        /// backends' `draw_list` painted `ListView::show_v_scrollbar`'s
+        /// track/thumb even though `Backend::list_vscrollbar` already
+        /// exposed real geometry for hit-testing. This test paints
+        /// through the shared fn and asserts a fill lands at the exact
+        /// track rect `ListView::vscrollbar` resolves — this would have
+        /// failed (no such fill recorded) against any of the pre-#1075
+        /// per-backend `draw_list` bodies.
+        #[test]
+        fn paints_vertical_scrollbar_track_when_enabled() {
+            let list = vlist(50); // overflows AREA's 80px / 16px = 5 rows.
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+            );
+
+            let expected = list
+                .vscrollbar(AREA, LINE_HEIGHT)
+                .expect("50 rows in an 80px/16px viewport must need a v-scrollbar");
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, _)| (r.x - expected.track.x).abs() < 0.01
+                        && (r.y - expected.track.y).abs() < 0.01
+                        && (r.width - expected.track.width).abs() < 0.01
+                        && (r.height - expected.track.height).abs() < 0.01),
+                "expected a fill at the v-scrollbar track {:?}, got fills: {:?}",
+                expected.track,
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn no_vertical_scrollbar_fill_when_show_v_scrollbar_false() {
+            let mut list = vlist(50);
+            list.show_v_scrollbar = false;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+            );
+            assert!(list.vscrollbar(AREA, LINE_HEIGHT).is_none());
+            // Every recorded fill must stay within the list's own bounds
+            // (nothing painted a scrollbar track past the right edge).
+            for (r, _) in &surface.fills {
+                assert!(
+                    r.x + r.width <= AREA.x + AREA.width + 0.01,
+                    "unexpected fill past the list's right edge: {:?}",
+                    r
+                );
+            }
+        }
+
+        /// Windows-only gap preserved deliberately (see `win::list`'s
+        /// module doc, "Known gap: no horizontal scrollbar", and this
+        /// fn's own doc for `supports_hscrollbar`): with
+        /// `supports_hscrollbar: false`, an overflowing
+        /// `max_content_width` must never paint an h-scrollbar track,
+        /// even though the same list *would* need one on a backend that
+        /// passes `true`.
+        #[test]
+        fn no_hscrollbar_fill_when_supports_hscrollbar_false() {
+            let mut list = vlist(3);
+            list.max_content_width = Some(1000); // wildly overflows AREA.
+            list.show_v_scrollbar = false;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let theme = Theme::default();
+
+            let mut supported = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut supported,
+                &theme,
+            );
+            assert!(
+                !supported.fills.is_empty(),
+                "sanity: supports_hscrollbar: true must paint something for an \
+                 overflowing max_content_width"
+            );
+
+            let mut unsupported = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                false,
+                &mut unsupported,
+                &theme,
+            );
+            // Every fill must stay within the row content area — none of
+            // them may be the bottom-row-height h-scrollbar track, which
+            // would sit at `AREA.y + AREA.height - LINE_HEIGHT`.
+            let hscrollbar_track_y = AREA.y + AREA.height - LINE_HEIGHT;
+            for (r, _) in &unsupported.fills {
+                assert!(
+                    (r.y - hscrollbar_track_y).abs() > 0.01,
+                    "supports_hscrollbar: false must not paint a fill at the \
+                     h-scrollbar track's y ({hscrollbar_track_y}), got {:?}",
+                    r
+                );
+            }
+        }
+
+        #[test]
+        fn selected_row_paints_selected_bg() {
+            let mut list = vlist(3);
+            list.selected_idx = 1;
+            list.has_focus = true;
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut surface,
+                &theme,
+            );
+
+            let row1 = layout
+                .visible_items
+                .iter()
+                .find(|v| v.item_idx == 1)
+                .expect("row 1 visible");
+            let row1_rect = Rect::new(
+                row1.bounds.x,
+                row1.bounds.y,
+                row1.bounds.width,
+                row1.bounds.height,
+            );
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| (r.x - row1_rect.x).abs() < 0.01
+                        && (r.y - row1_rect.y).abs() < 0.01
+                        && *c == theme.selected_bg),
+                "selected row must paint theme.selected_bg at its own bounds"
+            );
+        }
+
+        #[test]
+        fn icon_uses_nerd_glyph_or_ascii_fallback() {
+            let mut list = vlist(1);
+            list.items[0].icon = Some(Icon::new("nf-glyph", "F"));
+            let layout = list.layout(AREA.width, AREA.height, 0.0, |_| {
+                super::super::ListItemMeasure::new(LINE_HEIGHT)
+            });
+            let theme = Theme::default();
+
+            let mut nerd_surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                true,
+                true,
+                true,
+                &mut nerd_surface,
+                &theme,
+            );
+            assert!(nerd_surface.texts.iter().any(|(_, t, _)| t == "nf-glyph"));
+
+            let mut ascii_surface = RecordingSurface::default();
+            paint(
+                &list,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                true,
+                true,
+                &mut ascii_surface,
+                &theme,
+            );
+            assert!(ascii_surface.texts.iter().any(|(_, t, _)| t == "F"));
+        }
+    }
+}
+
 /// Events a `ListView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListViewEvent {

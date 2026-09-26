@@ -1786,6 +1786,7 @@ impl Backend for MacBackend {
                 list,
                 &theme,
                 line_height,
+                self.nerd_fonts_enabled,
             );
         }
     }

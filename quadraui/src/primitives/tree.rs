@@ -350,6 +350,580 @@ impl TreeView {
     }
 }
 
+// ── NativeSurface paint (#1075, NativeSurface Phase 4 slice 2/8) ───────────
+//
+// Before this, `gtk::draw_tree` (Cairo), `macos::tree::draw_tree` (Core
+// Graphics) and `win::tree::draw_tree` (Direct2D) each independently
+// painted the same row/chevron/icon/badge/scrollbar content with their
+// own drawing API. `paint` below is the one shared implementation,
+// written against [`crate::native_surface::NativeSurface`] instead of
+// any one backend's API — see `crate::primitives::list::native_surface_paint`
+// for the same pattern applied one primitive earlier.
+//
+// What this migration fixes (issue #1075's named drift, plus two
+// smaller ones surfaced while unifying — reported here rather than
+// silently assumed, per this issue's "re-verify before you implement"):
+//
+// - **Missing vertical scrollbar.** `Backend::tree_vscrollbar` already
+//   returns real track/thumb geometry (#1043), but none of the three
+//   `draw_tree`s ever painted it. Fixed via
+//   [`crate::primitives::scrollbar::native_surface_paint::paint`].
+// - **Win never painted `TreeRow::edit`** (inline rename) at all —
+//   rows mid-rename rendered their stale label instead. macOS painted
+//   a reduced fallback (plain text, no caret/selection — see its
+//   pre-migration module doc, "Scope omissions"); GTK alone had the
+//   full caret + selection-highlight + placeholder treatment. `paint`
+//   below carries GTK's full version for all three backends, rather
+//   than picking the lowest common denominator — a caret-less rename
+//   box is a real usability gap, not a style choice worth preserving.
+// - **Error/Warning decoration colour**: `win::tree` alone mapped
+//   `Decoration::Error`/`Warning` to `theme.error_fg`/`warning_fg`;
+//   GTK/macOS's `def_fg` match only special-cased `Muted`, falling
+//   through to plain `foreground` for Error/Warning rows — an
+//   inconsistency with `ListView`, whose per-item decoration → fg
+//   mapping already colours all four decorations identically on every
+//   backend (see `gtk::list::draw_list`'s doc). `paint` adopts Win's
+//   fuller mapping for all three, matching `ListView`'s convention.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{TreeRowEditState, TreeView, TreeViewLayout};
+    use crate::native_surface::NativeSurface;
+    use crate::text_util::{safe_prefix, snap_to_char_boundary};
+    use crate::theme::Theme;
+    use crate::types::Decoration;
+    use crate::Rect;
+
+    /// Paint a [`TreeView`]'s content — background, rows
+    /// (selection/decoration/chevron/icon/badge/text or inline-edit),
+    /// and vertical scrollbar — onto `surface` at `area`.
+    ///
+    /// `tree_layout` must be the same [`TreeViewLayout`] the caller uses
+    /// for hit-testing (typically `gtk_tree_layout`/`mac_tree_layout`/
+    /// `win_tree_layout`'s return value) so paint and hit-test can never
+    /// disagree. `line_height` is one text row's height in `surface`'s
+    /// native units; row pitch (header vs. leaf/branch) is derived from
+    /// it via [`crate::primitives::layout_metrics::tree_row_pitch`], the
+    /// same formula `tree_layout` itself used. `nerd_fonts_enabled`
+    /// selects `Icon::glyph` vs. `Icon::fallback`.
+    pub(crate) fn paint(
+        tree: &TreeView,
+        area: Rect,
+        tree_layout: &TreeViewLayout,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        if area.width <= 0.0 || area.height <= 0.0 {
+            return;
+        }
+
+        surface.surface_push_clip(area);
+        surface.surface_fill_rect(area, theme.tab_bar_bg);
+
+        let indent_px = (line_height * 0.9).round();
+        let header_height = (line_height * 1.2).round();
+        let item_height =
+            crate::primitives::layout_metrics::tree_row_pitch(tree, line_height as f64) as f32;
+
+        for vis_row in &tree_layout.visible_rows {
+            let row = &tree.rows[vis_row.row_idx];
+            let row_x = area.x + vis_row.bounds.x;
+            let row_y = area.y + vis_row.bounds.y;
+            let row_w = vis_row.bounds.width;
+            let row_h = vis_row.bounds.height;
+
+            // Skip rows the layout clipped to a partial height — painting
+            // them produces a compressed background band at the section
+            // boundary (matches GTK/macOS's pre-migration behaviour; Win's
+            // pre-migration `draw_tree` did not skip these, an oversight
+            // fixed by this unification rather than a deliberate
+            // per-backend choice — nothing documented it as one).
+            let is_header = matches!(row.decoration, Decoration::Header);
+            let full_h = if is_header {
+                header_height
+            } else {
+                item_height
+            };
+            if row_h < full_h - 0.5 {
+                continue;
+            }
+
+            let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
+            let is_selected = tree.has_focus && path_selected;
+            let is_inactive_selected = !tree.has_focus && path_selected;
+
+            let (def_fg, row_bg) = if is_selected {
+                (theme.header_fg, theme.selected_bg)
+            } else if is_inactive_selected {
+                (theme.foreground, theme.inactive_selected_bg)
+            } else if is_header {
+                (theme.header_fg, theme.header_bg)
+            } else {
+                match row.decoration {
+                    Decoration::Muted => (theme.muted_fg, theme.tab_bar_bg),
+                    Decoration::Error => (theme.error_fg, theme.tab_bar_bg),
+                    Decoration::Warning => (theme.warning_fg, theme.tab_bar_bg),
+                    _ => (theme.foreground, theme.tab_bar_bg),
+                }
+            };
+
+            let row_rect = Rect::new(row_x, row_y, row_w, row_h);
+            surface.surface_fill_rect(row_rect, row_bg);
+
+            let mut cursor_x = row_x + 2.0 + row.indent as f32 * indent_px;
+
+            if let Some(expanded) = row.is_expanded {
+                if tree.style.show_chevrons {
+                    let chevron = if expanded {
+                        &tree.style.chevron_expanded
+                    } else {
+                        &tree.style.chevron_collapsed
+                    };
+                    let (cw, ch) = surface.surface_measure_text(chevron);
+                    let cy = row_y + (row_h - ch) / 2.0;
+                    surface.surface_draw_text_run(Rect::new(cursor_x, cy, cw, ch), chevron, def_fg);
+                    cursor_x += cw + 4.0;
+                }
+            } else {
+                cursor_x += line_height * 0.8;
+            }
+
+            if let Some(ref icon) = row.icon {
+                let glyph = if nerd_fonts_enabled {
+                    icon.glyph.as_str()
+                } else {
+                    icon.fallback.as_str()
+                };
+                let icon_fg = icon.color.unwrap_or(def_fg);
+                let (iw, ih) = surface.surface_measure_text(glyph);
+                let iy = row_y + (row_h - ih) / 2.0;
+                surface.surface_draw_text_run(Rect::new(cursor_x, iy, iw, ih), glyph, icon_fg);
+                cursor_x += iw + 6.0;
+            }
+
+            if let Some(ref edit) = row.edit {
+                paint_edit_input(
+                    surface,
+                    cursor_x,
+                    row_y,
+                    row_h,
+                    row_x + row_w,
+                    edit,
+                    def_fg,
+                    theme.selection_bg,
+                    theme.muted_fg,
+                );
+                continue;
+            }
+
+            let badge_info = row.badge.as_ref().map(|badge| {
+                let (bw, _) = surface.surface_measure_text(&badge.text);
+                let bfg = badge.fg.unwrap_or(theme.muted_fg);
+                let bbg = badge.bg.unwrap_or(row_bg);
+                (badge.text.clone(), bw, bfg, bbg)
+            });
+            let badge_reserve = badge_info
+                .as_ref()
+                .map(|(_, bw, ..)| *bw + 8.0)
+                .unwrap_or(0.0);
+            let text_right_limit = row_x + row_w - badge_reserve - 4.0;
+
+            for span in &row.text.spans {
+                if cursor_x >= text_right_limit {
+                    break;
+                }
+                let span_fg = if let Some(c) = span.fg {
+                    c
+                } else if matches!(row.decoration, Decoration::Muted) {
+                    theme.muted_fg
+                } else {
+                    def_fg
+                };
+                let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+                if let Some(sbg) = span.bg {
+                    let clipped_w = sw.min((text_right_limit - cursor_x).max(0.0));
+                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, clipped_w, row_h), sbg);
+                }
+                let sy = row_y + (row_h - sh) / 2.0;
+                surface.surface_draw_text_run_styled(
+                    Rect::new(cursor_x, sy, sw, sh),
+                    &span.text,
+                    span_fg,
+                    span.bold,
+                    false,
+                    false,
+                    1.0,
+                );
+                cursor_x += sw;
+            }
+
+            if let Some((btext, bw, bfg, bbg)) = badge_info {
+                let bx = row_x + row_w - bw - 4.0;
+                if bx > cursor_x {
+                    if bbg != row_bg {
+                        surface.surface_fill_rect(Rect::new(bx - 2.0, row_y, bw + 4.0, row_h), bbg);
+                    }
+                    let (_, bh) = surface.surface_measure_text(&btext);
+                    let by = row_y + (row_h - bh) / 2.0;
+                    surface.surface_draw_text_run(Rect::new(bx, by, bw, bh), &btext, bfg);
+                }
+            }
+        }
+
+        // ── Vertical scrollbar (#1075 fix: previously never painted) ───
+        if let Some(vsb) = tree.vscrollbar(area, item_height) {
+            crate::primitives::scrollbar::native_surface_paint::paint(&vsb, surface, theme);
+        }
+
+        surface.surface_pop_clip();
+    }
+
+    /// Paint an inline-rename [`TreeRowEditState`]: placeholder (when
+    /// `edit.text` is empty), selection highlight, text, and a thin
+    /// vertical caret bar. Ported from GTK's original
+    /// `paint_edit_input_gtk` (the only one of the three pre-migration
+    /// rasterisers with the full treatment — see this module's doc).
+    #[allow(clippy::too_many_arguments)]
+    fn paint_edit_input(
+        surface: &mut dyn NativeSurface,
+        text_x: f32,
+        row_y: f32,
+        row_h: f32,
+        right_edge: f32,
+        edit: &TreeRowEditState,
+        fg: crate::types::Color,
+        sel_bg: crate::types::Color,
+        dim: crate::types::Color,
+    ) {
+        let text_w = right_edge - text_x - 4.0;
+        if text_w <= 0.0 {
+            return;
+        }
+
+        if edit.text.is_empty() {
+            if let Some(ref ph) = edit.placeholder {
+                let (_, th) = surface.surface_measure_text(ph);
+                surface.surface_draw_text_run(
+                    Rect::new(text_x, row_y + (row_h - th) / 2.0, text_w, th),
+                    ph,
+                    dim,
+                );
+            }
+            // Caret at position 0.
+            surface.surface_fill_rect(Rect::new(text_x, row_y + 3.0, 1.5, row_h - 6.0), fg);
+            return;
+        }
+
+        // Selection highlight.
+        if let Some(anchor) = edit.selection_anchor {
+            if anchor != edit.cursor {
+                let lo = snap_to_char_boundary(&edit.text, anchor.min(edit.cursor));
+                let hi = snap_to_char_boundary(&edit.text, anchor.max(edit.cursor));
+                let prefix = &edit.text[..lo];
+                let sel_text = &edit.text[lo..hi];
+                let (prefix_w, _) = surface.surface_measure_text(prefix);
+                let (sel_w, _) = surface.surface_measure_text(sel_text);
+                surface.surface_fill_rect(
+                    Rect::new(text_x + prefix_w, row_y + 2.0, sel_w, row_h - 4.0),
+                    sel_bg,
+                );
+            }
+        }
+
+        // Text.
+        let (_, th) = surface.surface_measure_text(&edit.text);
+        surface.surface_draw_text_run(
+            Rect::new(text_x, row_y + (row_h - th) / 2.0, text_w, th),
+            &edit.text,
+            fg,
+        );
+
+        // Thin vertical caret bar.
+        let cursor_prefix = safe_prefix(&edit.text, edit.cursor);
+        let (cx_off, _) = surface.surface_measure_text(cursor_prefix);
+        let caret_x = text_x + cx_off;
+        surface.surface_fill_rect(Rect::new(caret_x, row_y + 3.0, 1.5, row_h - 6.0), fg);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Viewport};
+        use crate::primitives::tree::TreeRow;
+        use crate::types::{Color, SelectionMode, StyledText, TreeStyle, WidgetId};
+        use crate::Image;
+
+        /// Records every fill + text-run call — mirrors
+        /// `primitives::list::native_surface_paint`'s `RecordingSurface`
+        /// test double, scoped to the verbs this primitive uses, so this
+        /// test runs on any host without Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            texts: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn leaf(idx: u16, label: &str) -> TreeRow {
+            TreeRow {
+                path: vec![idx],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain(label.to_string()),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            }
+        }
+
+        fn make_tree(rows: Vec<TreeRow>) -> TreeView {
+            TreeView {
+                id: WidgetId::new("t"),
+                rows,
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: TreeStyle::default(),
+                has_focus: true,
+            }
+        }
+
+        const LINE_HEIGHT: f32 = 16.0;
+        const AREA: Rect = Rect::new(0.0, 0.0, 100.0, 80.0);
+
+        /// #1075 regression: before this migration, none of the three
+        /// backends' `draw_tree` painted a vertical scrollbar even
+        /// though `Backend::tree_vscrollbar` (#1043) already exposed
+        /// real geometry for hit-testing. Paints through the shared fn
+        /// and asserts a fill lands at the exact track rect
+        /// `TreeView::vscrollbar` resolves.
+        #[test]
+        fn paints_vertical_scrollbar_track_when_overflowing() {
+            let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            let item_height =
+                crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+            let expected = tree
+                .vscrollbar(AREA, item_height)
+                .expect("50 rows in an 80px/22px viewport must need a v-scrollbar");
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, _)| (r.x - expected.track.x).abs() < 0.01
+                        && (r.y - expected.track.y).abs() < 0.01
+                        && (r.width - expected.track.width).abs() < 0.01
+                        && (r.height - expected.track.height).abs() < 0.01),
+                "expected a fill at the v-scrollbar track {:?}, got fills: {:?}",
+                expected.track,
+                surface.fills
+            );
+        }
+
+        /// #1075 regression: `win::tree::draw_tree` never painted
+        /// `TreeRow::edit` at all (see this module's doc). This test
+        /// paints a row mid-rename through the shared fn and asserts a
+        /// caret bar (a thin, distinctly-sized fill) shows up — it would
+        /// have failed against the pre-migration Win rasteriser, which
+        /// rendered the row's stale label instead of any edit-state
+        /// paint at all.
+        #[test]
+        fn paints_caret_for_row_being_edited() {
+            let mut rows = vec![leaf(0, "alpha"), leaf(1, "old-name"), leaf(2, "gamma")];
+            rows[1].edit = Some(TreeRowEditState {
+                text: "new-name".into(),
+                cursor: 3,
+                selection_anchor: None,
+                placeholder: None,
+            });
+            let tree = make_tree(rows);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            let row1 = &layout.visible_rows[1];
+            let caret_fill = surface.fills.iter().find(|(r, _)| {
+                (r.width - 1.5).abs() < 0.01
+                    && r.y >= row1.bounds.y
+                    && r.y < row1.bounds.y + row1.bounds.height
+            });
+            assert!(
+                caret_fill.is_some(),
+                "expected a 1.5px-wide caret fill inside row 1's bounds {:?}, got fills: {:?}",
+                row1.bounds,
+                surface.fills
+            );
+        }
+
+        /// Selection highlight inside an edited row paints a fill in
+        /// `theme.selection_bg` sized to the selected substring, distinct
+        /// from the caret fill.
+        #[test]
+        fn paints_selection_highlight_for_edited_row_with_selection() {
+            let mut rows = vec![leaf(0, "old-name")];
+            rows[0].edit = Some(TreeRowEditState {
+                text: "new-name".into(),
+                cursor: 3,
+                selection_anchor: Some(0),
+                placeholder: None,
+            });
+            let tree = make_tree(rows);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *c == theme.selection_bg && r.width > 1.5),
+                "expected a selection-highlight fill in theme.selection_bg wider than \
+                 the caret bar, got fills: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn selected_row_paints_selected_bg() {
+            let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
+            tree.selected_path = Some(vec![1]);
+            tree.has_focus = true;
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            let row1 = &layout.visible_rows[1];
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| (r.x - row1.bounds.x).abs() < 0.01
+                        && (r.y - row1.bounds.y).abs() < 0.01
+                        && *c == theme.selected_bg),
+                "selected row must paint theme.selected_bg at its own bounds"
+            );
+        }
+
+        /// Error/Warning decoration rows paint their dedicated fg colour
+        /// (adopted from Win's pre-migration mapping — see this module's
+        /// doc for why GTK/macOS's narrower `Muted`-only mapping wasn't
+        /// preserved instead).
+        #[test]
+        fn error_and_warning_decoration_use_dedicated_fg() {
+            let mut err_row = leaf(0, "boom");
+            err_row.decoration = Decoration::Error;
+            let mut warn_row = leaf(1, "careful");
+            warn_row.decoration = Decoration::Warning;
+            let tree = make_tree(vec![err_row, warn_row]);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(surface
+                .texts
+                .iter()
+                .any(|(_, t, c)| t == "boom" && *c == theme.error_fg));
+            assert!(surface
+                .texts
+                .iter()
+                .any(|(_, t, c)| t == "careful" && *c == theme.warning_fg));
+        }
+    }
+}
+
 /// Events a `TreeView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TreeEvent {
