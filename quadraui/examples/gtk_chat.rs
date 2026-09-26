@@ -11,8 +11,10 @@
 //! ```
 //!
 //! Controls:
-//! - Type any text and press `Enter` for newlines.
-//! - `Ctrl+Enter` — submit the message.
+//! - Type any text; `Enter` submits it (`submit_on_enter` — #1137).
+//! - `Shift+Enter` (or `Alt+Enter` as a fallback) inserts a newline.
+//! - Click the Send/Stop segment at the right of the input row to submit
+//!   or interrupt the simulated reply with the mouse.
 //! - `↑` / `↓` — history navigation (when cursor is on the first/last line).
 //! - `PageUp` / `PageDown` — scroll the transcript.
 //! - `Esc` — clear the input, or quit when the input is already empty.
