@@ -13,6 +13,7 @@ use crate::compose::app_shell::{
 };
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::Rect;
+use crate::primitives::image::ImageSource;
 use crate::types::{Icon, WidgetId};
 use crate::{Backend, Reaction, ResizeEdge, UiEvent};
 
@@ -140,6 +141,23 @@ pub struct ShellConfig {
     /// the `AppShell` directly from `panels/bottom_items` and never
     /// exposed a hook for it (#914).
     pub panel_icons: Vec<(WidgetId, Icon)>,
+    /// App icon (Dock/app-switcher on macOS, big+small taskbar/titlebar
+    /// icon on Win-GUI) — issue #1142. `None` (the default) leaves each
+    /// backend's previous behaviour unchanged: macOS shows the generic
+    /// unbundled-executable icon, Win-GUI shows no titlebar/taskbar icon.
+    ///
+    /// This is a **window-manager identity concern**, not a paint-time
+    /// [`crate::primitives::image::Image`] primitive — there is no
+    /// `Backend::draw_*` method for it, mirroring [`Self::app_id`] /
+    /// [`Self::icon_name`] (GTK's equivalent window-manager identity
+    /// fields, also consulted only by each backend's own shell runner,
+    /// never by [`crate::shell_adapter`]). GTK keeps using
+    /// [`Self::icon_name`] (the themed icon) and ignores this field —
+    /// backends with no separate Dock/taskbar icon concept (TUI) ignore
+    /// it too.
+    ///
+    /// Set via [`Self::with_app_icon`].
+    pub app_icon: Option<ImageSource>,
 }
 
 impl ShellConfig {
@@ -169,6 +187,7 @@ impl ShellConfig {
             app_id: "org.quadraui.app".to_string(),
             icon_name: None,
             panel_icons: Vec::new(),
+            app_icon: None,
         }
     }
 
@@ -321,6 +340,14 @@ impl ShellConfig {
     /// i.e. quadraui's own tests and examples, not any real consumer.
     pub fn with_panel_icon(mut self, id: WidgetId, icon: Icon) -> Self {
         self.panel_icons.push((id, icon));
+        self
+    }
+
+    /// Set the app icon (Dock/app-switcher on macOS, taskbar/titlebar on
+    /// Win-GUI) — see [`Self::app_icon`] for the per-backend contract
+    /// (#1142).
+    pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
+        self.app_icon = Some(icon);
         self
     }
 }
@@ -894,6 +921,25 @@ mod tests {
                 (WidgetId::new("panel:settings"), Icon::new("\u{f013}", "S")),
             ]
         );
+    }
+
+    /// #1142: a fresh `ShellConfig` has no app-icon override — every
+    /// existing consumer keeps whatever generic icon its backend showed
+    /// before this field existed (macOS: the unbundled-executable icon;
+    /// Win-GUI: no titlebar/taskbar icon).
+    #[test]
+    fn shell_config_app_icon_defaults_to_none() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.app_icon, None);
+    }
+
+    /// #1142: `with_app_icon` stores the source verbatim for each
+    /// backend's shell runner to thread onto its own `RunConfig`.
+    #[test]
+    fn shell_config_with_app_icon_sets_the_source() {
+        let config =
+            ShellConfig::new("test", Vec::new()).with_app_icon(ImageSource::Bytes(vec![1, 2, 3]));
+        assert_eq!(config.app_icon, Some(ImageSource::Bytes(vec![1, 2, 3])));
     }
 
     /// #997: a fresh `ShellConfig` registers no bottom bands — nothing

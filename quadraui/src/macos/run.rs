@@ -98,9 +98,14 @@ use super::events::{
     ns_files_dropped, ns_key_to_uievent, ns_mouse_down, ns_mouse_moved, ns_mouse_up, ns_scroll,
 };
 use super::text::make_font;
+// #1142: reuses the tray icon's AppKit-decoder for the Dock/app-switcher
+// icon — see `decode_ns_image`'s doc for why this is a shared pipeline
+// rather than a second decoder.
+use super::tray::decode_ns_image;
 use crate::backend::Backend;
 use crate::dispatch::DragTarget;
 use crate::event::Viewport;
+use crate::primitives::image::ImageSource;
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink, ResizeDebouncer, RESIZE_SETTLE};
 // Re-exported (not just imported) so `macos::testing` — and any other
@@ -1650,6 +1655,15 @@ pub struct RunConfig {
     /// module hardcoded before #947. See [`window_style_mask`] for what
     /// setting it changes.
     pub client_side_titlebar: bool,
+    /// App icon applied via `NSApplication::setApplicationIconImage`
+    /// right after `setActivationPolicy` in [`run_with`] — issue #1142.
+    /// `None` (the default) reproduces every pre-#1142 launch: no call
+    /// at all, so a bare unbundled binary keeps showing the generic
+    /// executable icon in the Dock and Cmd-Tab switcher. Set via
+    /// [`Self::with_app_icon`]; a `ShellConfig`-driven consumer reaches
+    /// this through [`crate::shell::ShellConfig::with_app_icon`] via
+    /// `macos::shell_runner::run_with_shell`.
+    pub app_icon: Option<ImageSource>,
 }
 
 impl RunConfig {
@@ -1658,6 +1672,7 @@ impl RunConfig {
         Self {
             title: title.into(),
             client_side_titlebar: false,
+            app_icon: None,
         }
     }
 
@@ -1666,6 +1681,14 @@ impl RunConfig {
     /// mechanism and why the native traffic lights stay put on macOS.
     pub fn with_client_side_titlebar(mut self, enabled: bool) -> Self {
         self.client_side_titlebar = enabled;
+        self
+    }
+
+    /// Set the Dock/app-switcher icon applied via
+    /// `NSApplication::setApplicationIconImage` — see [`Self::app_icon`]
+    /// (#1142).
+    pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
+        self.app_icon = Some(icon);
         self
     }
 }
@@ -1678,6 +1701,7 @@ impl Default for RunConfig {
         Self {
             title: "quadraui (macos)".to_string(),
             client_side_titlebar: false,
+            app_icon: None,
         }
     }
 }
@@ -1860,6 +1884,26 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     // ── AppKit bootstrap ─────────────────────────────────────────
     let ns_app = NSApplication::sharedApplication(mtm);
     let _ = ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+
+    // #1142: `config.app_icon` (from `ShellConfig::with_app_icon`) becomes
+    // the Dock/app-switcher icon — right after `setActivationPolicy`,
+    // before the window opens, so the icon is already in place by the
+    // time the app first appears in the Dock rather than flashing the
+    // generic executable icon first. This is what makes a bare,
+    // unbundled binary (no `Info.plist`/`.icns` bundle resource) show its
+    // own icon at all. A decode failure (missing file, corrupt bytes,
+    // unrecognised format) silently leaves the generic icon in place —
+    // same collapse-to-nothing posture `TrayService::set_icon`'s
+    // `decode_ns_image` documents — rather than failing startup over a
+    // cosmetic detail.
+    if let Some(source) = &config.app_icon {
+        if let Some(image) = decode_ns_image(source) {
+            // SAFETY: `image` is a live, owned `NSImage` for the
+            // duration of this call; `ns_app` is the live, main-thread
+            // `NSApplication` singleton obtained just above.
+            unsafe { ns_app.setApplicationIconImage(Some(&image)) };
+        }
+    }
 
     // #951: the app delegate needs its own handle to `handle` (Cmd-Q /
     // menu Quit routes through `applicationShouldTerminate:`, not
@@ -2070,6 +2114,24 @@ mod run_config_tests {
     fn with_client_side_titlebar_sets_the_flag() {
         let config = RunConfig::new("kubeui").with_client_side_titlebar(true);
         assert!(config.client_side_titlebar);
+    }
+
+    /// #1142: a fresh `RunConfig` sets no app icon — every existing
+    /// consumer keeps the pre-#1142 behaviour (no
+    /// `setApplicationIconImage` call at all).
+    #[test]
+    fn new_and_default_set_no_app_icon() {
+        assert_eq!(RunConfig::new("kubeui").app_icon, None);
+        assert_eq!(RunConfig::default().app_icon, None);
+    }
+
+    /// #1142: `with_app_icon` stores the source verbatim for
+    /// `run_with`'s AppKit-bootstrap call site to decode via
+    /// `macos::tray::decode_ns_image`.
+    #[test]
+    fn with_app_icon_sets_the_source() {
+        let config = RunConfig::new("kubeui").with_app_icon(ImageSource::Bytes(vec![0xde, 0xad]));
+        assert_eq!(config.app_icon, Some(ImageSource::Bytes(vec![0xde, 0xad])));
     }
 
     #[test]

@@ -339,8 +339,14 @@ fn win_wide_nul_terminated(text: &str) -> Vec<u16> {
 /// allocation failure) — same collapse-to-`None` posture
 /// `super::image::decode_bitmap` documents for the in-canvas `Image`
 /// primitive's decode failures.
+///
+/// `pub(crate)` (issue #1142): `win::run`'s window-creation call site
+/// reuses this same WIC → `HICON` pipeline to set the titlebar/taskbar
+/// icon via `WM_SETICON`, rather than hand-rolling a second decoder for
+/// what is exactly the same source-to-`HICON` conversion the tray icon
+/// already needs.
 #[cfg(target_os = "windows")]
-fn decode_hicon(source: &ImageSource) -> Option<HICON> {
+pub(crate) fn decode_hicon(source: &ImageSource) -> Option<HICON> {
     let bytes: Vec<u8> = match source {
         ImageSource::Path(path) => std::fs::read(path).ok()?,
         ImageSource::Bytes(bytes) => bytes.clone(),

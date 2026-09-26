@@ -29,10 +29,19 @@
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, InteractionState, Key, Modifiers, MouseButton, NamedKey, PointerShape,
-    Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
+    Backend, Color, ImageSource, InteractionState, Key, Modifiers, MouseButton, NamedKey,
+    PointerShape, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
     StatusBarAction, StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
+
+/// App icon (issue #1142) — the same real PNG asset `image_app.rs`'s
+/// `LOGO_PNG` decodes, reused here so this demo proves
+/// `ShellConfig::with_app_icon` reaches a real Dock/app-switcher icon
+/// (macOS) / titlebar+taskbar icon (Win-GUI) on a real asset, not a
+/// synthetic fixture. GTK/TUI ignore this field (see
+/// [`ShellConfig::app_icon`]'s doc), so this has no visible effect on
+/// those two backends' own runs of this demo.
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/quadra_logo.png");
 
 /// `action_id`s for the CSD title-bar button row (#402). Namespaced per
 /// `StatusBarSegment::action_id`'s doc convention.
@@ -99,6 +108,7 @@ impl FullChromeDemo {
         .with_bottom_panel_limits(3.0, 25.0)
         .with_command_line()
         .with_status_bar()
+        .with_app_icon(ImageSource::Bytes(APP_ICON_PNG.to_vec()))
     }
 
     fn draw_label(
