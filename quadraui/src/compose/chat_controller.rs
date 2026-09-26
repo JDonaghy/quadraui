@@ -945,9 +945,17 @@ impl ChatController {
         ti.lines = lines;
         ti.cursor_line = visual_row;
         ti.cursor_col = visual_col;
+        // The placeholder advertises the *live* submit binding: in
+        // `submit_on_enter` mode (#1137) plain `Enter` sends and
+        // `Shift+Enter` breaks the line, so the default hint would tell
+        // the user the exact opposite of what the keymap does.
         ti.placeholder = Some(
-            "Type a message\u{2026} (Ctrl+S or Alt+Enter to send, Enter for newline, Esc to cancel)"
-                .into(),
+            if self.submit_on_enter {
+                "Type a message\u{2026} (Enter to send, Shift+Enter for newline, Esc to cancel)"
+            } else {
+                "Type a message\u{2026} (Ctrl+S or Alt+Enter to send, Enter for newline, Esc to cancel)"
+            }
+            .into(),
         );
         ti.scroll_offset = self.input_scroll_offset;
         // No horizontal scroll: `rows` is already wrapped to fit the box's
@@ -3134,6 +3142,86 @@ mod tests {
         cc.set_busy(true);
         let busy = paint(&cc);
         assert!(busy.contains("Stop"), "Stop label not painted:\n{busy}");
+    }
+
+    /// TUI: the input placeholder advertises the binding that is actually
+    /// live, not a hardcoded one (#1137 follow-up).
+    ///
+    /// `set_submit_on_enter(true)` inverts the meaning of `Enter` and
+    /// `Shift+Enter`, so the default placeholder ("Alt+Enter to send, Enter
+    /// for newline") would instruct the user to do the exact opposite of
+    /// what the keymap does — the worst kind of discoverability bug, since
+    /// the wrong hint is *more* prominent than the right behaviour. Painted
+    /// through the real `TuiBackend::draw_text_input` rasteriser, wide
+    /// enough that the full string fits without truncation.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn tui_placeholder_tracks_submit_on_enter_mode() {
+        use crate::tui::TuiBackend;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Wide enough that the whole placeholder fits inside the input box
+        // (box borders + the Send segment eat ~10 columns).
+        const W: u16 = 110;
+        const H: u16 = 14;
+
+        fn paint(cc: &ChatController) -> String {
+            let mut terminal =
+                Terminal::new(TestBackend::new(W, H)).expect("construct test terminal");
+            let mut backend = TuiBackend::new();
+            backend.begin_frame(crate::Viewport {
+                width: W as f32,
+                height: H as f32,
+                scale: 1.0,
+            });
+            let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+            terminal
+                .draw(|frame| {
+                    backend.enter_frame_scope(frame, |b| {
+                        cc.render(b, rect);
+                    });
+                })
+                .expect("draw frame");
+            let buf = terminal.backend().buffer();
+            let mut painted = String::new();
+            for y in 0..H {
+                for x in 0..W {
+                    painted.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+                }
+                painted.push('\n');
+            }
+            painted
+        }
+
+        // Default mode: Alt+Enter sends, plain Enter breaks the line.
+        let mut cc = ChatController::new("chat");
+        let default_mode = paint(&cc);
+        assert!(
+            default_mode.contains("Alt+Enter to send"),
+            "default-mode placeholder should advertise Alt+Enter as submit:\n{default_mode}"
+        );
+        assert!(
+            default_mode.contains("Enter for newline"),
+            "default-mode placeholder should advertise plain Enter as newline:\n{default_mode}"
+        );
+
+        // submit_on_enter: the two bindings swap, and so must the hint.
+        cc.set_submit_on_enter(true);
+        let enter_mode = paint(&cc);
+        assert!(
+            enter_mode.contains("Enter to send"),
+            "submit_on_enter placeholder should advertise Enter as submit:\n{enter_mode}"
+        );
+        assert!(
+            enter_mode.contains("Shift+Enter for newline"),
+            "submit_on_enter placeholder should advertise Shift+Enter as newline:\n{enter_mode}"
+        );
+        assert!(
+            !enter_mode.contains("Alt+Enter to send"),
+            "submit_on_enter placeholder must not still claim Alt+Enter submits — in this \
+             mode Alt+Enter inserts a newline:\n{enter_mode}"
+        );
     }
 
     /// GTK: paint a populated controller into a `cairo::ImageSurface` via
