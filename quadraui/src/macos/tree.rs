@@ -23,7 +23,7 @@ use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
-use crate::types::{Color, Decoration};
+use crate::types::Decoration;
 
 /// Compute the layout the macOS rasteriser would produce for `tree`
 /// in `area` at `line_height`. Hosts and tests call this to drive
