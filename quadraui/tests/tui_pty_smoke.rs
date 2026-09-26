@@ -321,6 +321,23 @@ fn tui_pipeline_keyboard_and_quit_roundtrip() {
 
 // ─── tui_chat: SGR mouse-motion round-trip (#293 class) ───────────────────
 
+/// Substring of `tui_chat`'s status strip, used by both `tui_chat` fixtures
+/// below purely as a "the example booted and painted a full frame" gate
+/// before they start writing escape sequences at it.
+///
+/// Factored into one constant deliberately: it is a copy of a *demo's*
+/// user-facing string (`examples/common/chat_demo.rs`'s `set_status`), so it
+/// goes stale whenever that demo's wording is reworded — as it did in #1137,
+/// when `submit_on_enter` changed the advertised binding from "Ctrl+Enter or
+/// Alt+Enter to send" to "Enter to send" and turned both fixtures red. One
+/// constant means the next rewording is a one-line fix with an obvious
+/// pointer to its source, rather than two identical strings buried 100 lines
+/// apart. Keep it to the part of the status that is unique to the status
+/// strip — "Enter to send" alone also appears in the hint line (#1137) and
+/// the input placeholder, so matching that would no longer prove the status
+/// strip itself painted.
+const CHAT_STATUS_SENTINEL: &str = "Enter to send, q to quit";
+
 /// Sends a raw SGR mouse-motion report (`ESC [ < 35 ; x ; y M` — motion, no
 /// button, per xterm's SGR encoding) directly to the pty's stdin, mid-way
 /// through composing an input. This is exactly the byte-for-byte shape #293
@@ -333,7 +350,7 @@ fn tui_chat_sgr_mouse_motion_does_not_leak_into_input() {
     let mut ex = PtyExample::spawn("tui_chat", 100, 30);
 
     assert!(
-        ex.wait_for("Ctrl+Enter or Alt+Enter to send", WAIT),
+        ex.wait_for(CHAT_STATUS_SENTINEL, WAIT),
         "chat example did not render its status strip over the pty; screen:\n{}",
         ex.screen_text()
     );
@@ -436,7 +453,7 @@ fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
     for (label, combined) in cases {
         let mut ex = PtyExample::spawn("tui_chat", 100, 30);
         assert!(
-            ex.wait_for("Ctrl+Enter or Alt+Enter to send", WAIT),
+            ex.wait_for(CHAT_STATUS_SENTINEL, WAIT),
             "[{label}] chat example did not render its status strip over the pty"
         );
 
