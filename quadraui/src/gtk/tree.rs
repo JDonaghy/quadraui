@@ -1,10 +1,17 @@
 //! GTK rasteriser for [`crate::TreeView`].
 //!
-//! Paints the tree onto a [`Context`] using a [`pango::Layout`] for
-//! text measurement. Per-row heights are **non-uniform**: header rows
-//! use `line_height`, leaves and ordinary branches use
-//! `(line_height * 1.4).round()` (the established GTK convention) —
-//! unless the host set
+//! Content painting (background, rows, chevron/icon/badge/text or
+//! inline-edit, vertical scrollbar) moved to the shared
+//! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
+//! `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc for
+//! what's shared (including two divergences it fixes: Win never painted
+//! `TreeRow::edit`, and none of the three backends painted the vertical
+//! scrollbar despite `Backend::tree_vscrollbar` already returning real
+//! geometry).
+//!
+//! Per-row heights are **non-uniform**: header rows use `line_height`,
+//! leaves and ordinary branches use `(line_height * 1.4).round()` (the
+//! established GTK convention) — unless the host set
 //! [`TreeStyle::row_height`](crate::types::TreeStyle::row_height), which
 //! pins the leaf/branch pitch independent of `line_height` (#623). The
 //! primitive's `tree.layout()` measurer reports each row's height so
@@ -13,12 +20,9 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::cairo_rgb;
 use crate::event::Rect as QRect;
-use crate::primitives::tree::{TreeRowEditState, TreeView, TreeViewLayout};
-use crate::text_util::{safe_prefix, snap_to_char_boundary};
+use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
-use crate::types::Decoration;
 
 /// Compute the layout the GTK rasteriser would produce for `tree` in
 /// `area` at `line_height`. Hosts and tests call this to drive
@@ -90,254 +94,27 @@ pub fn draw_tree(
         return;
     }
 
-    let bg = cairo_rgb(theme.tab_bar_bg);
-    let hdr_bg = cairo_rgb(theme.header_bg);
-    let hdr_fg = cairo_rgb(theme.header_fg);
-    let fg = cairo_rgb(theme.foreground);
-    let dim = cairo_rgb(theme.muted_fg);
-    let sel = cairo_rgb(theme.selected_bg);
-    let inactive_sel = cairo_rgb(theme.inactive_selected_bg);
-    let text_sel = cairo_rgb(theme.selection_bg);
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-
     layout.set_attributes(None);
 
-    let indent_px = (line_height * 0.9).round();
-    let header_height = (line_height * 1.2).round();
-    let item_height = tree
-        .style
-        .row_height
-        .map(|h| h as f64)
-        .unwrap_or(line_height * 1.4)
-        .round();
     let tree_layout = gtk_tree_layout(tree, QRect::new(0.0, 0.0, w as f32, h as f32), line_height);
 
-    for vis_row in &tree_layout.visible_rows {
-        let row = &tree.rows[vis_row.row_idx];
-        let row_y = (y + vis_row.bounds.y as f64).round();
-        let row_h = vis_row.bounds.height as f64;
-
-        // Skip rows the layout clipped to a partial height — painting
-        // them produces a compressed background band at the section
-        // boundary.
-        let is_header = matches!(row.decoration, Decoration::Header);
-        let full_h = if is_header {
-            header_height
-        } else {
-            item_height
-        };
-        if row_h < full_h - 0.5 {
-            continue;
-        }
-
-        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
-        let is_selected = tree.has_focus && path_selected;
-        let is_inactive_selected = !tree.has_focus && path_selected;
-
-        let (def_fg, row_bg) = if is_selected {
-            (hdr_fg, sel)
-        } else if is_inactive_selected {
-            (fg, inactive_sel)
-        } else if is_header {
-            (hdr_fg, hdr_bg)
-        } else if matches!(row.decoration, Decoration::Muted) {
-            (dim, bg)
-        } else {
-            (fg, bg)
-        };
-
-        cr.set_source_rgb(row_bg.0, row_bg.1, row_bg.2);
-        cr.rectangle(x, row_y, w, row_h);
-        cr.fill().ok();
-
-        let mut cursor_x = x + 2.0 + (row.indent as f64) * indent_px;
-
-        if let Some(expanded) = row.is_expanded {
-            if tree.style.show_chevrons {
-                let chevron = if expanded {
-                    &tree.style.chevron_expanded
-                } else {
-                    &tree.style.chevron_collapsed
-                };
-                cr.set_source_rgb(def_fg.0, def_fg.1, def_fg.2);
-                layout.set_text(chevron);
-                let (cw, ch) = layout.pixel_size();
-                cr.move_to(cursor_x, (row_y + (row_h - ch as f64) / 2.0).round());
-                super::painted_text::show_layout(cr, layout);
-                cursor_x += cw as f64 + 4.0;
-            }
-        } else {
-            cursor_x += line_height * 0.8;
-        }
-
-        if let Some(ref icon) = row.icon {
-            let glyph = if nerd_fonts_enabled {
-                icon.glyph.as_str()
-            } else {
-                icon.fallback.as_str()
-            };
-            let icon_fg = icon.color.map(cairo_rgb).unwrap_or(def_fg);
-            cr.set_source_rgb(icon_fg.0, icon_fg.1, icon_fg.2);
-            layout.set_text(glyph);
-            let (iw, ih) = layout.pixel_size();
-            cr.move_to(cursor_x, (row_y + (row_h - ih as f64) / 2.0).round());
-            super::painted_text::show_layout(cr, layout);
-            cursor_x += iw as f64 + 6.0;
-        }
-
-        if let Some(ref edit) = row.edit {
-            paint_edit_input_gtk(
-                cr,
-                layout,
-                cursor_x,
-                row_y,
-                row_h,
-                x + w,
-                edit,
-                def_fg,
-                text_sel,
-                dim,
-            );
-        } else {
-            let badge_info = row.badge.as_ref().map(|badge| {
-                layout.set_text(&badge.text);
-                let (bw, _) = layout.pixel_size();
-                let bfg = badge.fg.map(cairo_rgb).unwrap_or(dim);
-                let bbg = badge.bg.map(cairo_rgb).unwrap_or(row_bg);
-                (badge.text.clone(), bw as f64, bfg, bbg)
-            });
-            let badge_reserve = badge_info
-                .as_ref()
-                .map(|(_, bw, ..)| *bw + 8.0)
-                .unwrap_or(0.0);
-            let text_right_limit = x + w - badge_reserve - 4.0;
-
-            for span in &row.text.spans {
-                if cursor_x >= text_right_limit {
-                    break;
-                }
-                let span_fg = if let Some(c) = span.fg {
-                    cairo_rgb(c)
-                } else if matches!(row.decoration, Decoration::Muted) {
-                    dim
-                } else {
-                    def_fg
-                };
-                if let Some(sbg) = span.bg {
-                    let span_bg = cairo_rgb(sbg);
-                    layout.set_text(&span.text);
-                    let (sw, _) = layout.pixel_size();
-                    cr.set_source_rgb(span_bg.0, span_bg.1, span_bg.2);
-                    cr.rectangle(
-                        cursor_x,
-                        row_y,
-                        (sw as f64).min(text_right_limit - cursor_x),
-                        row_h,
-                    );
-                    cr.fill().ok();
-                }
-                cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
-                layout.set_text(&span.text);
-                let (sw, sh) = layout.pixel_size();
-                cr.move_to(cursor_x, (row_y + (row_h - sh as f64) / 2.0).round());
-                super::painted_text::show_layout(cr, layout);
-                cursor_x += sw as f64;
-            }
-
-            if let Some((btext, bw, bfg, bbg)) = badge_info {
-                let bx = x + w - bw - 4.0;
-                if bx > cursor_x {
-                    if bbg != row_bg {
-                        cr.set_source_rgb(bbg.0, bbg.1, bbg.2);
-                        cr.rectangle(bx - 2.0, row_y, bw + 4.0, row_h);
-                        cr.fill().ok();
-                    }
-                    cr.set_source_rgb(bfg.0, bfg.1, bfg.2);
-                    layout.set_text(&btext);
-                    let (_, bh) = layout.pixel_size();
-                    cr.move_to(bx, row_y + (row_h - bh as f64) / 2.0);
-                    super::painted_text::show_layout(cr, layout);
-                }
-            }
-        }
-    }
+    let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    crate::primitives::tree::native_surface_paint::paint(
+        tree,
+        area,
+        &tree_layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        &mut surface,
+        theme,
+    );
 
     layout.set_attributes(None);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_edit_input_gtk(
-    cr: &Context,
-    layout: &pango::Layout,
-    text_x: f64,
-    row_y: f64,
-    row_h: f64,
-    right_edge: f64,
-    edit: &TreeRowEditState,
-    fg: (f64, f64, f64),
-    sel_rgb: (f64, f64, f64),
-    dim: (f64, f64, f64),
-) {
-    let text_w = right_edge - text_x - 4.0;
-    if text_w <= 0.0 {
-        return;
-    }
-
-    if edit.text.is_empty() {
-        if let Some(ref ph) = edit.placeholder {
-            cr.set_source_rgb(dim.0, dim.1, dim.2);
-            layout.set_text(ph);
-            let (_, th) = layout.pixel_size();
-            cr.move_to(text_x, (row_y + (row_h - th as f64) / 2.0).round());
-            super::painted_text::show_layout(cr, layout);
-        }
-        // Caret at position 0.
-        cr.set_source_rgb(fg.0, fg.1, fg.2);
-        cr.rectangle(text_x, row_y + 3.0, 1.5, row_h - 6.0);
-        cr.fill().ok();
-        return;
-    }
-
-    // Selection highlight.
-    if let Some(anchor) = edit.selection_anchor {
-        if anchor != edit.cursor {
-            let lo = snap_to_char_boundary(&edit.text, anchor.min(edit.cursor));
-            let hi = snap_to_char_boundary(&edit.text, anchor.max(edit.cursor));
-            let prefix = &edit.text[..lo];
-            let sel_text = &edit.text[lo..hi];
-            layout.set_text(prefix);
-            let (prefix_w, _) = layout.pixel_size();
-            layout.set_text(sel_text);
-            let (sel_w, _) = layout.pixel_size();
-            cr.set_source_rgb(sel_rgb.0, sel_rgb.1, sel_rgb.2);
-            cr.rectangle(
-                text_x + prefix_w as f64,
-                row_y + 2.0,
-                sel_w as f64,
-                row_h - 4.0,
-            );
-            cr.fill().ok();
-        }
-    }
-
-    // Text.
-    cr.set_source_rgb(fg.0, fg.1, fg.2);
-    layout.set_text(&edit.text);
-    let (_, th) = layout.pixel_size();
-    cr.move_to(text_x, (row_y + (row_h - th as f64) / 2.0).round());
-    super::painted_text::show_layout(cr, layout);
-
-    // Thin vertical caret bar.
-    let cursor_prefix = safe_prefix(&edit.text, edit.cursor);
-    layout.set_text(cursor_prefix);
-    let (cx_off, _) = layout.pixel_size();
-    let caret_x = text_x + cx_off as f64;
-    cr.set_source_rgb(fg.0, fg.1, fg.2);
-    cr.rectangle(caret_x, row_y + 3.0, 1.5, row_h - 6.0);
-    cr.fill().ok();
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -360,7 +137,7 @@ fn paint_edit_input_gtk(
 mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeView, TreeViewHit};
-    use crate::types::{Color, SelectionMode, StyledText, TreeStyle, WidgetId};
+    use crate::types::{Color, Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     const W: i32 = 200;
@@ -1045,5 +822,101 @@ mod tests {
                 vis.row_idx,
             );
         }
+    }
+
+    /// #1075 regression: before the `native_surface_paint` migration,
+    /// `draw_tree` never painted a vertical scrollbar even though
+    /// `Backend::tree_vscrollbar` (#1043) already returned real
+    /// geometry for hit-testing. Paints through the real `draw_tree`
+    /// into a Cairo `ImageSurface` and probes a pixel inside the
+    /// resolved track rect — this would have failed (background
+    /// colour, nothing painted) against the pre-#1075 body.
+    #[test]
+    fn gtk_paints_vertical_scrollbar_track_when_overflowing() {
+        let tree = make_tree((0..40).map(|i| leaf(i, &format!("row{i}"))).collect());
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let item_height =
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT) as f32;
+        let expected = tree
+            .vscrollbar(area, item_height)
+            .expect("40 rows in a 200px viewport must need a v-scrollbar");
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_tree(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &tree,
+                &test_theme(),
+                LINE_HEIGHT,
+                false,
+            );
+        }
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let probe_x = (expected.track.x + expected.track.width / 2.0).round() as i32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0).round() as i32;
+        let (r, g, b) = pixel(
+            &data,
+            stride,
+            probe_x.clamp(0, W - 1),
+            probe_y.clamp(0, H - 1),
+        );
+        assert_ne!(
+            (r, g, b),
+            (255, 255, 255),
+            "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
+             (non-background), got white — the #1075 regression this test guards"
+        );
+    }
+
+    /// #1075 regression: before the `native_surface_paint` migration,
+    /// `paint`'s row-being-edited path did not yet exist on Windows at
+    /// all (`win::tree::draw_tree` painted the row's stale label
+    /// instead — see that module's pre-migration doc). GTK already had
+    /// full caret/selection support; this test just re-confirms GTK's
+    /// caret still paints post-migration (companion to the primitive-
+    /// level `paints_caret_for_row_being_edited` test, which covers Win
+    /// and macOS via the shared `RecordingSurface`).
+    #[test]
+    fn gtk_editing_row_still_paints_caret_after_migration() {
+        let tree = make_tree(vec![TreeRow {
+            path: vec![0],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain("old-name".to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: Some(crate::primitives::tree::TreeRowEditState {
+                text: "new-name".into(),
+                cursor: 3,
+                selection_anchor: None,
+                placeholder: None,
+            }),
+        }]);
+        let (mut surface, layout) = paint_then_layout(&tree);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let vis = &layout.visible_rows[0];
+        let bounds = vis.bounds;
+        let y_top = (bounds.y + 1.0).floor() as i32;
+        let y_bot = (bounds.y + bounds.height - 1.0).floor() as i32;
+        let painted = first_painted_in(&data, stride, (1, W - 1), (y_top, y_bot.min(H)));
+        assert!(
+            painted.is_some(),
+            "editing row interior should still contain painted pixels (caret + text) \
+             after the #1075 migration"
+        );
     }
 }

@@ -1,29 +1,28 @@
 //! macOS rasteriser for [`crate::TreeView`].
 //!
-//! Mirrors [`crate::gtk::tree::draw_tree`]: header rows use
-//! `(line_height * 1.2)` pitch, leaves and branches use
+//! Content painting (background, rows, chevron/icon/badge/text or
+//! inline-edit, vertical scrollbar) moved to the shared
+//! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
+//! `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc for
+//! what's shared. Notably, this migration upgrades macOS's inline-rename
+//! rendering from a plain-text fallback (this module's pre-migration
+//! "Scope omissions" — caret/selection were GTK-only) to the same full
+//! caret + selection-highlight + placeholder treatment every backend now
+//! shares.
+//!
+//! Header rows use `(line_height * 1.2)` pitch, leaves and branches use
 //! `(line_height * 1.4)` unless `TreeStyle::row_height` overrides the
 //! non-header pitch (#623). Chevron / icon / text / badge layout within
 //! a row matches the GTK convention so a paired `macos_multi_tree`
 //! example reads identically to its GTK twin.
-//!
-//! ## Scope omissions (follow-up)
-//!
-//! - **Inline `TreeRowEditState` text input** — caret, selection
-//!   anchor, placeholder. Painted as a plain text fallback for now;
-//!   full inline-edit input lands with the unified text-attribute pass
-//!   alongside the editor selection highlight.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-
-use super::text::{draw_text, measure_text};
+use super::cg::{rect, CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use crate::event::Rect as QRect;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
-use crate::types::Decoration;
 
 /// Compute the layout the macOS rasteriser would produce for `tree`
 /// in `area` at `line_height`. Hosts and tests call this to drive
@@ -81,191 +80,19 @@ pub unsafe fn draw_tree(
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, rect(x, y, w, h));
 
-    fill_rect(ctx, x, y, w, h, theme.tab_bar_bg);
-
-    let indent_px = (line_height * 0.9).round();
-    let header_height = (line_height * 1.2).round();
-    let item_height = tree
-        .style
-        .row_height
-        .map(|h| h as f64)
-        .unwrap_or(line_height * 1.4)
-        .round();
-
-    for vis_row in &layout.visible_rows {
-        let row = &tree.rows[vis_row.row_idx];
-        // Layout returns local coords; shift to absolute for paint.
-        let row_x = vis_row.bounds.x as f64 + x;
-        let row_y = vis_row.bounds.y as f64 + y;
-        let row_w = vis_row.bounds.width as f64;
-        let row_h = vis_row.bounds.height as f64;
-
-        let is_header = matches!(row.decoration, Decoration::Header);
-        let full_h = if is_header {
-            header_height
-        } else {
-            item_height
-        };
-        // Skip rows the viewport clipped to a partial height — same
-        // smoothing as GTK.
-        if row_h < full_h - 0.5 {
-            continue;
-        }
-
-        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
-        let is_selected = tree.has_focus && path_selected;
-        let is_inactive_selected = !tree.has_focus && path_selected;
-
-        let (def_fg, row_bg) = if is_selected {
-            (theme.header_fg, theme.selected_bg)
-        } else if is_inactive_selected {
-            (theme.foreground, theme.inactive_selected_bg)
-        } else if is_header {
-            (theme.header_fg, theme.header_bg)
-        } else if matches!(row.decoration, Decoration::Muted) {
-            (theme.muted_fg, theme.tab_bar_bg)
-        } else {
-            (theme.foreground, theme.tab_bar_bg)
-        };
-
-        fill_rect(ctx, row_x, row_y, row_w, row_h, row_bg);
-
-        let mut cursor_x = row_x + 2.0 + (row.indent as f64) * indent_px;
-
-        if let Some(expanded) = row.is_expanded {
-            if tree.style.show_chevrons {
-                let chevron = if expanded {
-                    &tree.style.chevron_expanded
-                } else {
-                    &tree.style.chevron_collapsed
-                };
-                let (cw, ch) = measure_text(font, chevron);
-                draw_text(
-                    ctx,
-                    font,
-                    chevron,
-                    cursor_x,
-                    (row_y + (row_h - ch) / 2.0).round(),
-                    color_to_cg(def_fg),
-                );
-                cursor_x += cw + 4.0;
-            }
-        } else {
-            cursor_x += line_height * 0.8;
-        }
-
-        // Icon — `glyph` when `nerd_fonts_enabled`, else the ASCII
-        // `fallback` (issue #804; mirrors `macos::activity_bar`'s
-        // `draw_activity_bar` and the TUI/GTK `draw_tree` rasterisers).
-        // Painted in `icon.color` when set (#1057), else `def_fg`.
-        if let Some(ref icon) = row.icon {
-            let glyph = if nerd_fonts_enabled {
-                icon.glyph.as_str()
-            } else {
-                icon.fallback.as_str()
-            };
-            let icon_fg = icon.color.unwrap_or(def_fg);
-            let (iw, ih) = measure_text(font, glyph);
-            draw_text(
-                ctx,
-                font,
-                glyph,
-                cursor_x,
-                (row_y + (row_h - ih) / 2.0).round(),
-                color_to_cg(icon_fg),
-            );
-            cursor_x += iw + 6.0;
-        }
-
-        if let Some(ref edit) = row.edit {
-            // Inline-edit fallback: render the text + placeholder
-            // unstyled. Caret/selection painting deferred — see module
-            // header.
-            let render_text = if edit.text.is_empty() {
-                edit.placeholder.clone().unwrap_or_default()
-            } else {
-                edit.text.clone()
-            };
-            let (_, th) = measure_text(font, &render_text);
-            draw_text(
-                ctx,
-                font,
-                &render_text,
-                cursor_x,
-                (row_y + (row_h - th) / 2.0).round(),
-                color_to_cg(if edit.text.is_empty() {
-                    theme.muted_fg
-                } else {
-                    def_fg
-                }),
-            );
-            continue;
-        }
-
-        let badge_info = row.badge.as_ref().map(|b| {
-            let (bw, _) = measure_text(font, &b.text);
-            let bfg = b.fg.unwrap_or(theme.muted_fg);
-            let bbg = b.bg.unwrap_or(row_bg);
-            (b.text.clone(), bw, bfg, bbg)
-        });
-        let badge_reserve = badge_info
-            .as_ref()
-            .map(|(_, bw, ..)| *bw + 8.0)
-            .unwrap_or(0.0);
-        let text_right_limit = row_x + row_w - badge_reserve - 4.0;
-
-        for span in &row.text.spans {
-            if cursor_x >= text_right_limit {
-                break;
-            }
-            let span_fg = if let Some(c) = span.fg {
-                c
-            } else if matches!(row.decoration, Decoration::Muted) {
-                theme.muted_fg
-            } else {
-                def_fg
-            };
-            if let Some(sbg) = span.bg {
-                let (sw, _) = measure_text(font, &span.text);
-                fill_rect(
-                    ctx,
-                    cursor_x,
-                    row_y,
-                    sw.min(text_right_limit - cursor_x),
-                    row_h,
-                    sbg,
-                );
-            }
-            let (sw, sh) = measure_text(font, &span.text);
-            draw_text(
-                ctx,
-                font,
-                &span.text,
-                cursor_x,
-                (row_y + (row_h - sh) / 2.0).round(),
-                color_to_cg(span_fg),
-            );
-            cursor_x += sw;
-        }
-
-        if let Some((btext, bw, bfg, bbg)) = badge_info {
-            let bx = row_x + row_w - bw - 4.0;
-            if bx > cursor_x {
-                if bbg != row_bg {
-                    fill_rect(ctx, bx - 2.0, row_y, bw + 4.0, row_h, bbg);
-                }
-                let (_, bh) = measure_text(font, &btext);
-                draw_text(
-                    ctx,
-                    font,
-                    &btext,
-                    bx,
-                    row_y + (row_h - bh) / 2.0,
-                    color_to_cg(bfg),
-                );
-            }
-        }
-    }
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::tree::native_surface_paint::paint(
+        tree,
+        area,
+        &layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        &mut surface,
+        theme,
+    );
 
     CGContextRestoreGState(ctx);
     layout
@@ -279,7 +106,7 @@ mod tests {
     use super::*;
     use crate::event::Viewport;
     use crate::primitives::tree::{TreeRow, TreeViewHit};
-    use crate::types::{Color, SelectionMode, StyledText, TreeStyle, WidgetId};
+    use crate::types::{Color, Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::Backend;
 
     const W: u32 = 240;
@@ -685,6 +512,82 @@ mod tests {
             "row without Icon::color: most-inked pixel {uncolored:?} should be \
              closer to default fg {default_fg:?} than the unrelated colour \
              {icon_color:?}"
+        );
+    }
+
+    /// #1075 regression: before the `native_surface_paint` migration,
+    /// `draw_tree` never painted a vertical scrollbar even though
+    /// `Backend::tree_vscrollbar` (#1043) already returned real
+    /// geometry for hit-testing. This would have failed (background
+    /// colour, nothing painted) against the pre-#1075 body.
+    #[test]
+    fn paints_vertical_scrollbar_track_when_overflowing() {
+        let tree = make_tree((0..40).map(|i| leaf(i, &format!("row{i}"))).collect());
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_theme(Theme {
+            tab_bar_bg: Color::rgb(255, 255, 255),
+            background: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        });
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let expected = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_tree(area, &tree);
+            let item_height =
+                crate::primitives::layout_metrics::tree_row_pitch(&tree, b.line_height() as f64)
+                    as f32;
+            *expected.borrow_mut() = tree.vscrollbar(area, item_height);
+        });
+        backend.end_frame();
+        let expected = expected
+            .into_inner()
+            .expect("40 rows should overflow this viewport");
+
+        let probe_x = (expected.track.x + expected.track.width / 2.0) as u32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(probe_x.min(W - 1), probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (255, 255, 255),
+            "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
+             (non-background) — the #1075 regression this test guards"
+        );
+    }
+
+    /// #1075: macOS upgrades from a plain-text inline-rename fallback
+    /// (pre-migration "Scope omissions") to the same caret/selection
+    /// treatment GTK always had. A row mid-rename must still paint
+    /// *something* distinct from the background inside its bounds.
+    #[test]
+    fn editing_row_paints_something_after_migration() {
+        let mut rows = vec![leaf(0, "alpha"), leaf(1, "old-name"), leaf(2, "gamma")];
+        rows[1].edit = Some(crate::primitives::tree::TreeRowEditState {
+            text: "new-name".into(),
+            cursor: 3,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        let tree = make_tree(rows);
+        let (surface, layout) = paint_via_backend(&tree);
+        let bg = (255u8, 255u8, 255u8);
+
+        let row1 = &layout.visible_rows[1];
+        let y = (row1.bounds.y + row1.bounds.height / 2.0) as u32;
+        let mut found_paint = false;
+        for x in (row1.bounds.x as u32)..(row1.bounds.x + row1.bounds.width) as u32 {
+            let (r, g, b, _) = surface.pixel(x.min(W - 1), y.min(H - 1));
+            if (r, g, b) != bg {
+                found_paint = true;
+                break;
+            }
+        }
+        assert!(
+            found_paint,
+            "editing row interior should contain painted pixels (caret + text)"
         );
     }
 }

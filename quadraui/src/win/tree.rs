@@ -1,13 +1,21 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::TreeView`] (issue #26).
 //!
-//! Mirrors `gtk::tree`'s structure: [`TreeView::layout`] (the D6 layout
-//! API) does every positioning and row-clipping decision; this module
-//! only estimates row geometry (chevron width is an estimate, not a
-//! real DirectWrite measurement — see [`win_tree_layout`]'s doc, same
-//! shortcut `gtk::tree::gtk_tree_layout` takes) and paints (via
-//! [`super::text::fill_rect`] + [`DWrite::draw_text`]/`draw_text_styled`).
-//! Paint and hit-test both derive from one [`win_tree_layout`] call, so
-//! they can't drift apart.
+//! Content painting (background, rows, chevron/icon/badge/text or
+//! inline-edit, vertical scrollbar) moved to the shared
+//! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
+//! `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc for
+//! what's shared. Notably: this rasteriser previously never painted
+//! `TreeRow::edit` at all (see *Scope for #26* below — inherited from
+//! before this migration, kept for the historical record); it now
+//! shares GTK's full caret + selection-highlight + placeholder
+//! treatment like every other backend.
+//!
+//! [`TreeView::layout`] (the D6 layout API) does every positioning and
+//! row-clipping decision; this module only estimates row geometry
+//! (chevron width is an estimate, not a real DirectWrite measurement —
+//! see [`win_tree_layout`]'s doc, same shortcut `gtk::tree::gtk_tree_layout`
+//! takes). Paint and hit-test both derive from one [`win_tree_layout`]
+//! call, so they can't drift apart.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod tree;` and `backend.rs`'s module
@@ -16,11 +24,11 @@
 //! module doc for why colours come from `Theme::default()` rather than a
 //! live `WinBackend` theme field.
 //!
-//! # Scope for #26
+//! # Scope for #26 (historical)
 //!
-//! Inline row editing ([`TreeRow::edit`]) is not painted — rows with
-//! `edit: Some(_)` render their normal label instead; that remains
-//! follow-up scope, not a compile-error gap.
+//! Inline row editing ([`TreeRow::edit`]) was not painted prior to
+//! #1075 — rows with `edit: Some(_)` rendered their normal (stale)
+//! label instead. Fixed by the migration above.
 //!
 //! Nerd-Font icon glyphs: `WinBackend` now tracks a `nerd_fonts_enabled`
 //! flag the same way `TuiBackend`/`GtkBackend`/`MacBackend` do (#804),
@@ -35,11 +43,10 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
-use crate::types::Decoration;
 
 /// Compute a [`TreeView`]'s layout without painting — the DirectWrite
 /// twin of [`draw_tree`]'s internal layout call. `line_height` is the
@@ -94,133 +101,21 @@ pub fn draw_tree(
     nerd_fonts_enabled: bool,
 ) -> TreeViewLayout {
     let theme = Theme::default();
-    let _ = fill_rect(target, rect, theme.tab_bar_bg);
-
     let layout = win_tree_layout(tree, rect, line_height);
-    let indent_px = (line_height * 0.9).round();
 
-    for vis_row in &layout.visible_rows {
-        let row = &tree.rows[vis_row.row_idx];
-        let row_rect = Rect::new(
-            rect.x + vis_row.bounds.x,
-            rect.y + vis_row.bounds.y,
-            vis_row.bounds.width,
-            vis_row.bounds.height,
-        );
-
-        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
-        let is_selected = tree.has_focus && path_selected;
-        let is_inactive_selected = !tree.has_focus && path_selected;
-        let is_header = matches!(row.decoration, Decoration::Header);
-
-        let (def_fg, row_bg) = if is_selected {
-            (theme.header_fg, theme.selected_bg)
-        } else if is_inactive_selected {
-            (theme.foreground, theme.inactive_selected_bg)
-        } else if is_header {
-            (theme.header_fg, theme.header_bg)
-        } else {
-            match row.decoration {
-                Decoration::Muted => (theme.muted_fg, theme.tab_bar_bg),
-                Decoration::Error => (theme.error_fg, theme.tab_bar_bg),
-                Decoration::Warning => (theme.warning_fg, theme.tab_bar_bg),
-                _ => (theme.foreground, theme.tab_bar_bg),
-            }
-        };
-        let _ = fill_rect(target, row_rect, row_bg);
-
-        let mut cursor_x = row_rect.x + 2.0 + row.indent as f32 * indent_px;
-
-        if let Some(expanded) = row.is_expanded {
-            if tree.style.show_chevrons {
-                let chevron = if expanded {
-                    &tree.style.chevron_expanded
-                } else {
-                    &tree.style.chevron_collapsed
-                };
-                let (cw, ch) = dwrite.measure_text(chevron).unwrap_or((0.0, 0.0));
-                let cy = row_rect.y + (row_rect.height - ch) / 2.0;
-                let _ = dwrite.draw_text(target, chevron, Rect::new(cursor_x, cy, cw, ch), def_fg);
-                cursor_x += cw + 4.0;
-            }
-        } else {
-            cursor_x += line_height * 0.8;
-        }
-
-        if let Some(ref icon) = row.icon {
-            let glyph = if nerd_fonts_enabled {
-                icon.glyph.as_str()
-            } else {
-                icon.fallback.as_str()
-            };
-            let icon_fg = icon.color.unwrap_or(def_fg);
-            let (iw, ih) = dwrite.measure_text(glyph).unwrap_or((0.0, 0.0));
-            let iy = row_rect.y + (row_rect.height - ih) / 2.0;
-            let _ = dwrite.draw_text(target, glyph, Rect::new(cursor_x, iy, iw, ih), icon_fg);
-            cursor_x += iw + 6.0;
-        }
-
-        let badge_info = row.badge.as_ref().map(|badge| {
-            let (bw, _) = dwrite.measure_text(&badge.text).unwrap_or((0.0, 0.0));
-            let bfg = badge.fg.unwrap_or(theme.muted_fg);
-            let bbg = badge.bg.unwrap_or(row_bg);
-            (badge.text.clone(), bw, bfg, bbg)
-        });
-        let badge_reserve = badge_info
-            .as_ref()
-            .map(|(_, bw, ..)| *bw + 8.0)
-            .unwrap_or(0.0);
-        let text_right_limit = row_rect.x + row_rect.width - badge_reserve - 4.0;
-
-        for span in &row.text.spans {
-            if cursor_x >= text_right_limit {
-                break;
-            }
-            let span_fg = if let Some(c) = span.fg {
-                c
-            } else if matches!(row.decoration, Decoration::Muted) {
-                theme.muted_fg
-            } else {
-                def_fg
-            };
-            let (sw, sh) = dwrite
-                .measure_text_styled(&span.text, span.bold)
-                .unwrap_or((0.0, 0.0));
-            if let Some(sbg) = span.bg {
-                let clipped_w = sw.min((text_right_limit - cursor_x).max(0.0));
-                let _ = fill_rect(
-                    target,
-                    Rect::new(cursor_x, row_rect.y, clipped_w, row_rect.height),
-                    sbg,
-                );
-            }
-            let sy = row_rect.y + (row_rect.height - sh) / 2.0;
-            let _ = dwrite.draw_text_styled(
-                target,
-                &span.text,
-                Rect::new(cursor_x, sy, sw, sh),
-                span_fg,
-                span.bold,
-            );
-            cursor_x += sw;
-        }
-
-        if let Some((btext, bw, bfg, bbg)) = badge_info {
-            let bx = row_rect.x + row_rect.width - bw - 4.0;
-            if bx > cursor_x {
-                if bbg != row_bg {
-                    let _ = fill_rect(
-                        target,
-                        Rect::new(bx - 2.0, row_rect.y, bw + 4.0, row_rect.height),
-                        bbg,
-                    );
-                }
-                let (_, bh) = dwrite.measure_text(&btext).unwrap_or((0.0, 0.0));
-                let by = row_rect.y + (row_rect.height - bh) / 2.0;
-                let _ = dwrite.draw_text(target, &btext, Rect::new(bx, by, bw, bh), bfg);
-            }
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::tree::native_surface_paint::paint(
+        tree,
+        rect,
+        &layout,
+        line_height,
+        nerd_fonts_enabled,
+        &mut surface,
+        &theme,
+    );
 
     layout
 }
@@ -229,7 +124,7 @@ pub fn draw_tree(
 mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeViewHit};
-    use crate::types::{Badge, Icon, SelectionMode, StyledText, TreeStyle, WidgetId};
+    use crate::types::{Badge, Decoration, Icon, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 200.0;
@@ -550,6 +445,111 @@ mod tests {
             "row without Icon::color: most-inked pixel {uncolored:?} should be \
              closer to default fg {default_fg:?} than the unrelated colour \
              {icon_color:?}"
+        );
+    }
+
+    /// #1075 regression: before this migration, `win::tree::draw_tree`
+    /// never painted `TreeRow::edit` at all — a row mid-rename rendered
+    /// its stale label instead of any edit-state affordance (see this
+    /// module's pre-migration doc, "Scope for #26"). This test paints a
+    /// row with `edit: Some(_)` and asserts its interior contains
+    /// painted (non-background) pixels distinct from the plain label it
+    /// would have shown pre-fix — observed RED against the pre-#1075
+    /// body (which painted `"old-name"`, not the edit state, at that
+    /// same probed position once `edit.text` differs from the label).
+    #[test]
+    fn paints_row_being_edited() {
+        // Differential design, not a bare "something is painted" check:
+        // a bare presence check would also pass against the pre-#1075
+        // body, which ignored `row.edit` and painted the row's *label*
+        // regardless — this row's `text` is a single narrow glyph
+        // ("x"), while its `edit.text` is a much wider string, so the
+        // rightmost painted column tells the two apart. Pre-fix, both
+        // trees below paint identically (the label "x"); post-fix, the
+        // edited tree paints substantially further right.
+        let rightmost_painted_x = |edit: Option<crate::primitives::tree::TreeRowEditState>| -> u32 {
+            let row = TreeRow {
+                path: vec![0],
+                indent: 0,
+                icon: None,
+                text: StyledText::plain("x".to_string()),
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit,
+            };
+            let tree = make_tree(vec![row]);
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let layout = surface
+                .paint(|target| {
+                    draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                })
+                .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+                .expect("paint tree");
+
+            let theme = Theme::default();
+            let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+            let row0 = &layout.visible_rows[0];
+            let y = (row0.bounds.y + row0.bounds.height / 2.0) as u32;
+            let mut rightmost = 0u32;
+            for x in (row0.bounds.x as u32)..(row0.bounds.x + row0.bounds.width) as u32 {
+                let px = surface.pixel_at(x.min(W as u32 - 1), y.min(H as u32 - 1));
+                if (px.r, px.g, px.b) != bg {
+                    rightmost = x;
+                }
+            }
+            rightmost
+        };
+
+        let plain_label_x = rightmost_painted_x(None);
+        let editing_x = rightmost_painted_x(Some(crate::primitives::tree::TreeRowEditState {
+            text: "a much wider inline-rename string".into(),
+            cursor: 3,
+            selection_anchor: None,
+            placeholder: None,
+        }));
+
+        assert!(
+            editing_x > plain_label_x + 20,
+            "a row with `edit: Some(_)` carrying much wider text must paint \
+             noticeably further right ({editing_x}) than the same row's plain \
+             label ({plain_label_x}) — this is the #1075 fix for Win never \
+             painting TreeRow::edit at all (pre-fix, both values were equal)"
+        );
+    }
+
+    /// #1075 regression: before this migration, `draw_tree` never
+    /// painted a vertical scrollbar even though `Backend::tree_vscrollbar`
+    /// (#1043) already returned real geometry for hit-testing.
+    #[test]
+    fn paints_vertical_scrollbar_track_when_overflowing() {
+        let tree = make_tree((0..40).map(|i| leaf(i, &format!("row-{i}"))).collect());
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let item_height =
+            crate::primitives::layout_metrics::tree_row_pitch(&tree, LINE_HEIGHT as f64) as f32;
+        let expected = tree
+            .vscrollbar(rect, item_height)
+            .expect("40 rows in this viewport must need a v-scrollbar");
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        surface
+            .paint(|target| {
+                draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+            })
+            .expect("paint tree");
+
+        let theme = Theme::default();
+        let probe_x = (expected.track.x + expected.track.width / 2.0) as u32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
+        let px = surface.pixel_at(probe_x.min(W as u32 - 1), probe_y.min(H as u32 - 1));
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
+             (non-background) — the #1075 regression this test guards"
         );
     }
 }

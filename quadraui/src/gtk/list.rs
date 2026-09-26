@@ -1,13 +1,19 @@
 //! GTK rasteriser for [`crate::ListView`].
 //!
-//! Paints the list onto a [`Context`] using a [`pango::Layout`] for
-//! text measurement. Title / item rows / decoration colouring follow
-//! the same visual contract as the TUI rasteriser; pixel positioning
-//! comes from Pango.
+//! Content painting (background, title, rows, h/v scrollbars) moved to
+//! the shared [`crate::primitives::list::native_surface_paint::paint`]
+//! (#1075, `NativeSurface` Phase 4 slice 2/8) — see that fn's module
+//! doc for what's shared and what stays per-backend. This module still
+//! owns the [`ListView::bordered`] frame itself: a rounded-rectangle
+//! clip + stroke (3px corner radius) around the shared content paint,
+//! since no `NativeSurface` verb exists for a rounded stroke and GTK's
+//! rounded frame is a real, documented visual divergence from Windows'
+//! square one and macOS's absent one (see the shared `paint`'s module
+//! doc).
 //!
-//! When [`ListView::bordered`] is `true`, a rounded-rectangle border
-//! is stroked around the list (3px corner radius) with an optional
-//! title overlaid on the top edge. Item rows are inset by the border.
+//! [`gtk_list_layout`] and the deprecated [`draw_list`] compatibility
+//! shim live over the shared [`super::surface::CairoSurface`] adapter
+//! (#1072).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -15,7 +21,6 @@ use gtk4::pango;
 use super::{cairo_rgb, rounded_rect_path};
 use crate::primitives::list::{ListView, ListViewLayout};
 use crate::theme::Theme;
-use crate::types::Decoration;
 
 /// Compute the GTK pixel-unit layout for a [`ListView`] without painting —
 /// the same viewport reservation (border inset, h-scrollbar row)
@@ -73,14 +78,18 @@ pub fn gtk_list_layout(
 ///   [`Theme::header_fg`] strip at the top.
 /// - **Selected row:** [`Theme::selected_bg`] background and a `▶`
 ///   selection prefix.
-/// - **Header decoration:** items with [`Decoration::Header`] use
-///   [`Theme::header_bg`] / [`Theme::header_fg`] (used by the source
+/// - **Header decoration:** items with [`crate::types::Decoration::Header`]
+///   use [`Theme::header_bg`] / [`Theme::header_fg`] (used by the source
 ///   control panel for section titles).
 /// - **Per-item decoration → fg:** `Error → error_fg`, `Warning →
 ///   warning_fg`, `Muted → muted_fg`, `Header → header_fg`, others
 ///   → [`Theme::surface_fg`].
 /// - **Detail span:** right-aligned in [`Theme::muted_fg`], skipped
 ///   when there isn't room past the main text.
+/// - **Vertical / horizontal scrollbar:** painted via
+///   [`crate::primitives::scrollbar::native_surface_paint::paint`] when
+///   [`ListView::show_v_scrollbar`] / an overflowing
+///   [`ListView::max_content_width`] call for one (#1075).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_list(
     cr: &Context,
@@ -98,20 +107,18 @@ pub fn draw_list(
         return;
     }
 
-    let base_bg = if list.bordered {
-        cairo_rgb(theme.surface_bg)
-    } else {
-        cairo_rgb(theme.background)
-    };
-    let hdr_bg = cairo_rgb(theme.header_bg);
-    let hdr_fg = cairo_rgb(theme.header_fg);
-    let fg = cairo_rgb(theme.surface_fg);
-    let dim = cairo_rgb(theme.muted_fg);
-    let sel = cairo_rgb(theme.selected_bg);
-    let err = cairo_rgb(theme.error_fg);
-    let warn = cairo_rgb(theme.warning_fg);
-    let border_color = cairo_rgb(theme.border_fg);
-    let title_color = cairo_rgb(theme.title_fg);
+    layout.set_attributes(None);
+
+    // Measure a reference glyph for char-to-pixel conversion.  `h_scroll` is
+    // expressed in character columns (same unit as TUI cells); GTK works in
+    // pixels, so the shared paint multiplies by this before subtracting from
+    // cursor_x — mirrored here only for `gtk_list_layout`'s own char-width
+    // parameter, which must agree with what the shared paint measures.
+    layout.set_text("M");
+    let (cw_px, _) = layout.pixel_size();
+    let char_w = cw_px.max(1) as f64;
+
+    let list_layout = gtk_list_layout(w, h, list, line_height, char_w);
 
     if list.bordered {
         cr.save().ok();
@@ -119,237 +126,137 @@ pub fn draw_list(
         cr.clip();
     }
 
-    cr.set_source_rgb(base_bg.0, base_bg.1, base_bg.2);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-
-    layout.set_attributes(None);
-
-    // Measure a reference glyph for char-to-pixel conversion.  `h_scroll` is
-    // expressed in character columns (same unit as TUI cells); GTK works in
-    // pixels, so we multiply by `char_w` before subtracting from cursor_x.
-    layout.set_text("M");
-    let (cw_px, _) = layout.pixel_size();
-    let char_w = cw_px.max(1) as f64;
-    let h_off_px = list.h_scroll as f64 * char_w;
-
-    let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
-    // Visible content width for scrollbar threshold check.
-    let visible_px = (w - border_inset * 2.0).max(0.0);
-    // Reserve the bottom row for a horizontal scrollbar when content overflows
-    // — mirrors the TUI rasteriser's `viewport_h` reduction.
-    let needs_hscrollbar = list
-        .max_content_width
-        .is_some_and(|n| n as f64 * char_w > visible_px);
-
-    let list_layout = gtk_list_layout(w, h, list, line_height, char_w);
-
-    if list.bordered {
-        if let Some(ref title) = list.title {
-            let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
-            let label = format!(" {} ", title_text.trim());
-            layout.set_text(&label);
-            let (tw, th) = layout.pixel_size();
-            let title_x = x + 8.0;
-            let title_y = y + (line_height - th as f64) / 2.0;
-            cr.set_source_rgb(base_bg.0, base_bg.1, base_bg.2);
-            cr.rectangle(title_x - 2.0, y, tw as f64 + 4.0, line_height);
-            cr.fill().ok();
-            cr.set_source_rgb(title_color.0, title_color.1, title_color.2);
-            cr.move_to(title_x, title_y);
-            super::painted_text::show_layout(cr, layout);
-        }
-    } else if let (Some(title_bounds), Some(title)) =
-        (list_layout.title_bounds, list.title.as_ref())
-    {
-        let ty = y + title_bounds.y as f64;
-        let th_px = title_bounds.height as f64;
-        cr.set_source_rgb(hdr_bg.0, hdr_bg.1, hdr_bg.2);
-        cr.rectangle(x, ty, w, th_px);
-        cr.fill().ok();
-
-        cr.set_source_rgb(hdr_fg.0, hdr_fg.1, hdr_fg.2);
-        let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
-        layout.set_text(&title_text);
-        let (_, text_h) = layout.pixel_size();
-        cr.move_to(x + 2.0, ty + (th_px - text_h as f64) / 2.0);
-        super::painted_text::show_layout(cr, layout);
-    }
-
-    let item_x_offset = x + border_inset;
-    let item_y_offset = y + border_inset;
-
-    for vis_item in &list_layout.visible_items {
-        let item = &list.items[vis_item.item_idx];
-        let row_y = item_y_offset + vis_item.bounds.y as f64;
-        let row_w = vis_item.bounds.width as f64;
-        let row_h = vis_item.bounds.height as f64;
-
-        let is_selected = vis_item.item_idx == list.selected_idx && list.has_focus;
-
-        let decoration_fg = match item.decoration {
-            Decoration::Error => err,
-            Decoration::Warning => warn,
-            Decoration::Muted => dim,
-            Decoration::Header => hdr_fg,
-            _ => fg,
-        };
-        let row_bg = if is_selected {
-            sel
-        } else if matches!(item.decoration, Decoration::Header) {
-            hdr_bg
-        } else {
-            base_bg
-        };
-
-        cr.set_source_rgb(row_bg.0, row_bg.1, row_bg.2);
-        cr.rectangle(item_x_offset, row_y, row_w, row_h);
-        cr.fill().ok();
-
-        // Per-row clip: with h_scroll the cursor starts to the left of
-        // `item_x_offset`, so scrolled-off glyphs would paint outside the row
-        // band without an explicit clipping rectangle.
-        cr.save().ok();
-        cr.rectangle(item_x_offset, row_y, row_w, row_h);
-        cr.clip();
-
-        // Shift cursor left by the horizontal scroll offset so that content
-        // columns < h_scroll are clipped away by the clip set above.
-        let mut cursor_x = item_x_offset + 2.0 - h_off_px;
-
-        let prefix = if is_selected { "▶ " } else { "  " };
-        cr.set_source_rgb(decoration_fg.0, decoration_fg.1, decoration_fg.2);
-        layout.set_text(prefix);
-        let (pw, ph) = layout.pixel_size();
-        cr.move_to(cursor_x, row_y + (row_h - ph as f64) / 2.0);
-        super::painted_text::show_layout(cr, layout);
-        cursor_x += pw as f64;
-
-        if let Some(ref icon) = item.icon {
-            let glyph = if nerd_fonts_enabled {
-                icon.glyph.as_str()
-            } else {
-                icon.fallback.as_str()
-            };
-            cr.set_source_rgb(decoration_fg.0, decoration_fg.1, decoration_fg.2);
-            layout.set_text(glyph);
-            let (iw, ih) = layout.pixel_size();
-            cr.move_to(cursor_x, row_y + (row_h - ih as f64) / 2.0);
-            super::painted_text::show_layout(cr, layout);
-            cursor_x += iw as f64 + 6.0;
-        }
-
-        let detail_info = item.detail.as_ref().map(|detail| {
-            let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
-            layout.set_text(&detail_text);
-            let (dw, _) = layout.pixel_size();
-            (detail_text, dw as f64)
-        });
-        let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
-        // text_right_limit is in absolute pixel coords; the h_scroll shift of
-        // cursor_x does not affect where the detail reserve boundary sits.
-        let text_right_limit = item_x_offset + row_w - detail_reserve - 4.0;
-
-        for span in &item.text.spans {
-            if cursor_x >= text_right_limit {
-                break;
-            }
-            let span_fg = if let Some(c) = span.fg {
-                cairo_rgb(c)
-            } else {
-                decoration_fg
-            };
-            if let Some(sbg) = span.bg {
-                let span_bg = cairo_rgb(sbg);
-                layout.set_text(&span.text);
-                let (sw, _) = layout.pixel_size();
-                cr.set_source_rgb(span_bg.0, span_bg.1, span_bg.2);
-                cr.rectangle(
-                    cursor_x,
-                    row_y,
-                    (sw as f64).min(text_right_limit - cursor_x),
-                    row_h,
-                );
-                cr.fill().ok();
-            }
-            cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
-            layout.set_text(&span.text);
-            let (sw, sh) = layout.pixel_size();
-            cr.move_to(cursor_x, row_y + (row_h - sh as f64) / 2.0);
-            super::painted_text::show_layout(cr, layout);
-            cursor_x += sw as f64;
-        }
-
-        // Detail text is pinned to the visible viewport (does not scroll with
-        // h_scroll) so it stays readable regardless of the scroll position.
-        // Render it outside the h_scroll-shifted clip region by restoring first,
-        // then clipping only the detail slot.
-        cr.restore().ok();
-
-        if let Some((detail_text, dw)) = detail_info {
-            let dx = item_x_offset + row_w - dw - 4.0;
-            // Guard: only render detail when it wouldn't overlap scrolled main
-            // text.  `cursor_x` after the span loop is the pixel position of the
-            // last rendered text column (possibly off-screen left when h_scroll is
-            // large, in which case the detail always has room).
-            if dx > cursor_x {
-                cr.set_source_rgb(dim.0, dim.1, dim.2);
-                layout.set_text(&detail_text);
-                let (_, dh) = layout.pixel_size();
-                cr.move_to(dx, row_y + (row_h - dh as f64) / 2.0);
-                super::painted_text::show_layout(cr, layout);
-            }
-        }
-    }
-
-    // ── Horizontal scrollbar ──────────────────────────────────────────────
-    // Painted after items so it overlays the bottom row's background.
-    // `needs_hscrollbar` was resolved above from `max_content_width` and the
-    // char-width measurement, matching the same threshold used to reduce
-    // `layout_h`.  The track geometry mirrors `ListView::hscrollbar` but uses
-    // pixel units throughout — `h_scroll` (chars) is converted to pixels with
-    // `char_w`.
-    if needs_hscrollbar {
-        let content_px = list.max_content_width.unwrap_or(0) as f64 * char_w;
-        let track_y = if list.bordered {
-            y + h - border_inset - line_height
-        } else {
-            y + h - line_height
-        };
-        let (track_x, track_w_sb) = if list.bordered {
-            (x + border_inset, (w - 2.0 * border_inset).max(0.0))
-        } else {
-            (x, w)
-        };
-        let hsb_track = crate::event::Rect::new(
-            track_x as f32,
-            track_y as f32,
-            track_w_sb as f32,
-            line_height as f32,
-        );
-        let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
-            list.id.clone(),
-            hsb_track,
-            list.h_scroll as f32 * char_w as f32,
-            content_px as f32,
-            visible_px as f32,
-            line_height as f32,
-        );
-        let mut raw = super::surface::CairoSurface {
-            cr,
-            layout: None,
-            translucent_fill: true,
-        };
-        crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
-    }
+    let area = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    crate::primitives::list::native_surface_paint::paint(
+        list,
+        area,
+        &list_layout,
+        line_height as f32,
+        nerd_fonts_enabled,
+        /* supports_border */ true,
+        /* supports_hscrollbar */ true,
+        &mut surface,
+        theme,
+    );
 
     if list.bordered {
         cr.restore().ok();
         rounded_rect_path(cr, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 3.0);
+        let border_color = cairo_rgb(theme.border_fg);
         cr.set_source_rgb(border_color.0, border_color.1, border_color.2);
         cr.set_line_width(1.0);
         cr.stroke().ok();
     }
 
     layout.set_attributes(None);
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+//
+// #1075 regression: before the `native_surface_paint` migration,
+// `draw_list` never painted `ListView::show_v_scrollbar`'s track/thumb
+// even though `GtkBackend::list_vscrollbar` already exposed real
+// geometry for hit-testing/dragging (`list.vscrollbar(...)` — see that
+// method's own doc). This test paints through the real `draw_list` into
+// a Cairo `ImageSurface` and probes a pixel inside the resolved track
+// rect — it would have failed (background colour, nothing painted)
+// against the pre-#1075 body.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::list::ListItem;
+    use crate::types::{Color, Decoration, StyledText, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    const W: i32 = 120;
+    const H: i32 = 100;
+    const LINE_HEIGHT: f64 = 10.0;
+
+    fn test_theme() -> Theme {
+        Theme {
+            background: Color::rgb(255, 255, 255),
+            surface_bg: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        }
+    }
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn vlist(n: usize) -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..n).map(|i| item(&format!("row {i}"))).collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: true,
+        }
+    }
+
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    #[test]
+    fn gtk_paints_vertical_scrollbar_track_when_enabled() {
+        let list = vlist(30); // 30 rows in a 100px / 10px viewport overflow.
+        let area = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
+        let expected = list
+            .vscrollbar(area, LINE_HEIGHT as f32)
+            .expect("30 rows in a 10-row viewport must need a v-scrollbar");
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            draw_list(
+                &cr,
+                &pango_layout,
+                0.0,
+                0.0,
+                W as f64,
+                H as f64,
+                &list,
+                &test_theme(),
+                LINE_HEIGHT,
+                false,
+            );
+        }
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let probe_x = (expected.track.x + expected.track.width / 2.0).round() as i32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0).round() as i32;
+        let (r, g, b) = pixel(
+            &data,
+            stride,
+            probe_x.clamp(0, W - 1),
+            probe_y.clamp(0, H - 1),
+        );
+        assert_ne!(
+            (r, g, b),
+            (255, 255, 255),
+            "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
+             (non-background), got white — the #1075 regression this test guards"
+        );
+    }
 }
