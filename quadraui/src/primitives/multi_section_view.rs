@@ -1368,6 +1368,587 @@ fn push_aux_hits(
     }
 }
 
+// ── NativeSurface chrome paint (#1074, NativeSurface Phase 4) ──────────────
+
+/// Shared chrome-paint helpers for the `MultiSectionView` rasterisers
+/// (issue #1074, `NativeSurface` Phase 4, primitive 1/8).
+///
+/// Only the **chrome** — header row, aux row, per-section and panel-level
+/// scrollbars, divider strip, `Text`/`Empty` bodies — moves here. Each
+/// pixel backend's own `src/{gtk,macos,win}/multi_section_view.rs` keeps
+/// its `draw_multi_section_view` orchestrator and its `paint_body`
+/// dispatcher: `SectionBody::Tree`/`List`/`MessageList` still call each
+/// backend's own native rasteriser (`gtk::draw_tree`, `win::list::draw_list`,
+/// …), which take a raw `(&Context, &pango::Layout)` / `(&ID2D1RenderTarget,
+/// &DWrite)` pair, not `&mut dyn NativeSurface` — those primitives haven't
+/// been ported onto this trait yet (see `crate::native_surface`'s own doc
+/// for the full ported/unported split). Moving only what's already
+/// expressible through the ~15 verbs on `NativeSurface` mirrors exactly how
+/// `crate::primitives::form::native_surface_paint` left `FieldKind::Toolbar`
+/// (no rounded-rect/hover chrome available) to each backend's own
+/// `draw_form` wrapper.
+///
+/// # Fixed drift (#1074)
+///
+/// Pre-port, only the Win-GUI and macOS `paint_header`s clipped the title
+/// paint to the region between the chevron and the first reserved action
+/// slot; `gtk::multi_section_view::paint_header` painted the title
+/// unclipped (its own comment — "Pango clips automatically when we don't
+/// set width" — was simply wrong: Pango only wraps/ellipsises when a
+/// width *is* set on the layout). A title wider than its title/badge
+/// region bled ink past the header's own trailing margin on GTK. This
+/// shared [`paint_header`] always brackets the title draw in
+/// [`NativeSurface::surface_push_clip`]/[`NativeSurface::surface_pop_clip`],
+/// unifying on the already-majority-correct behaviour. See
+/// `gtk::multi_section_view::tests::gtk_header_clips_long_title_before_right_margin`
+/// for the regression test (observed RED against the pre-port
+/// unclipped GTK implementation).
+///
+/// A second drift, not called out in #1074's text but found while
+/// porting: macOS's `paint_panel_scrollbar` (pre-port) recomputed the
+/// panel thumb's position/size itself from `(scroll, total_content)`
+/// instead of consuming the layout's own `panel_scrollbar_thumb` —
+/// exactly the quadraui#820 bug already fixed for GTK/Win. Routing macOS
+/// through this shared [`paint_panel_scrollbar`] (which only ever
+/// consumes a pre-computed `thumb_bounds`) closes that gap too.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{EmptyBody, SectionAux, SectionHeader};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText};
+
+    fn plain_text(t: &StyledText) -> String {
+        t.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// Paint a section header row: background fill, optional leading
+    /// chevron, right-aligned action glyphs (right-to-left), then the
+    /// title — clipped to the region between the chevron and the first
+    /// reserved action slot so it can never bleed past it — and an
+    /// optional badge after the title. See this module's doc for the
+    /// drift this clip closes.
+    pub(crate) fn paint_header(
+        surface: &mut dyn NativeSurface,
+        bounds: Rect,
+        header: &SectionHeader,
+        collapsed: bool,
+        theme: &Theme,
+    ) {
+        surface.surface_fill_rect(bounds, theme.header_bg);
+
+        let mut left_x = bounds.x + 4.0;
+        let row_text_y = |th: f32| (bounds.y + (bounds.height - th) * 0.4).round();
+
+        if header.show_chevron {
+            let chevron = if collapsed { "\u{25B8}" } else { "\u{25BE}" };
+            let (cw, ch) = surface.surface_measure_text(chevron);
+            surface.surface_draw_text_run(
+                Rect::new(left_x, row_text_y(ch), cw, ch),
+                chevron,
+                theme.header_fg,
+            );
+            left_x += cw + 4.0;
+        }
+
+        // Right-aligned actions, right-to-left.
+        let mut right_x = bounds.x + bounds.width - 4.0;
+        for action in header.actions.iter().rev() {
+            let glyph = action.icon.fallback.as_str();
+            let (gw, gh) = surface.surface_measure_text(glyph);
+            right_x -= gw;
+            if right_x < left_x {
+                break;
+            }
+            let action_fg = if action.enabled {
+                theme.header_fg
+            } else {
+                theme.muted_fg
+            };
+            surface.surface_draw_text_run(
+                Rect::new(right_x, row_text_y(gh), gw, gh),
+                glyph,
+                action_fg,
+            );
+            right_x -= 8.0;
+        }
+
+        // Title text, clipped to `[left_x, right_x)` — see module doc.
+        let title_text = plain_text(&header.title);
+        if !title_text.is_empty() {
+            let (tw, th) = surface.surface_measure_text(&title_text);
+            let max_w = (right_x - left_x).max(0.0);
+            if max_w > 0.0 {
+                surface.surface_push_clip(Rect::new(left_x, bounds.y, max_w, bounds.height));
+                surface.surface_draw_text_run(
+                    Rect::new(left_x, row_text_y(th), tw, th),
+                    &title_text,
+                    theme.header_fg,
+                );
+                surface.surface_pop_clip();
+                let after_title_x = left_x + tw.min(max_w);
+
+                if let Some(badge) = &header.badge {
+                    let badge_text = plain_text(badge);
+                    if !badge_text.is_empty() {
+                        let badge_x = after_title_x + 6.0;
+                        if badge_x < right_x {
+                            let (bw, bth) = surface.surface_measure_text(&badge_text);
+                            surface.surface_draw_text_run(
+                                Rect::new(badge_x, bounds.y + (bounds.height - bth) / 2.0, bw, bth),
+                                &badge_text,
+                                theme.muted_fg,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Paint a section's aux row (`Input`/`Search`/`Toolbar`/`Custom`).
+    ///
+    /// `caret_visible` lets a caller with its own blink-timer state
+    /// (macOS, #188) gate the caret paint; a caller without one (GTK,
+    /// Win) passes `true` unconditionally, reproducing their pre-port
+    /// always-on-while-focused behaviour exactly.
+    pub(crate) fn paint_aux(
+        surface: &mut dyn NativeSurface,
+        bounds: Rect,
+        aux: &SectionAux,
+        theme: &Theme,
+        caret_visible: bool,
+    ) {
+        surface.surface_fill_rect(bounds, theme.input_bg);
+
+        match aux {
+            SectionAux::Input(input) | SectionAux::Search(input) => {
+                let display: &str = if input.text.is_empty() && !input.has_focus {
+                    input.placeholder.as_deref().unwrap_or("")
+                } else {
+                    input.text.as_str()
+                };
+                let text_fg = if input.text.is_empty() && !input.has_focus {
+                    theme.muted_fg
+                } else {
+                    theme.foreground
+                };
+                let (dw, dh) = surface.surface_measure_text(display);
+                surface.surface_draw_text_run(
+                    Rect::new(
+                        bounds.x + 4.0,
+                        bounds.y + (bounds.height - dh) / 2.0,
+                        dw,
+                        dh,
+                    ),
+                    display,
+                    text_fg,
+                );
+
+                if input.has_focus && caret_visible {
+                    let prefix: String = input.text.chars().take(input.caret).collect();
+                    let (cx_off, _) = surface.surface_measure_text(&prefix);
+                    let caret_x = bounds.x + 4.0 + cx_off;
+                    surface.surface_fill_rect(
+                        Rect::new(caret_x, bounds.y + 2.0, 1.0, bounds.height - 4.0),
+                        theme.foreground,
+                    );
+                }
+            }
+            SectionAux::Toolbar(actions) => {
+                let mut tx = bounds.x + 4.0;
+                for a in actions {
+                    let glyph = a.icon.fallback.as_str();
+                    let action_fg = if a.enabled {
+                        theme.foreground
+                    } else {
+                        theme.muted_fg
+                    };
+                    let (gw, gh) = surface.surface_measure_text(glyph);
+                    surface.surface_draw_text_run(
+                        Rect::new(tx, bounds.y + (bounds.height - gh) / 2.0, gw, gh),
+                        glyph,
+                        action_fg,
+                    );
+                    tx += gw + 8.0;
+                }
+            }
+            SectionAux::Custom(_) => {
+                // Host paints; we cleared the bg already.
+            }
+        }
+    }
+
+    /// Paint a `SectionBody::Text` body: background fill, then one row
+    /// per `StyledText` line (dropped once rows would overflow `bounds`).
+    pub(crate) fn paint_text_lines(
+        surface: &mut dyn NativeSurface,
+        bounds: Rect,
+        lines: &[StyledText],
+        theme: &Theme,
+        line_height: f32,
+    ) {
+        surface.surface_fill_rect(bounds, theme.background);
+        let mut row_y = bounds.y;
+        for line in lines {
+            if row_y + line_height > bounds.y + bounds.height {
+                break;
+            }
+            let text = plain_text(line);
+            let (tw, th) = surface.surface_measure_text(&text);
+            surface.surface_draw_text_run(
+                Rect::new(bounds.x + 4.0, row_y + (line_height - th) / 2.0, tw, th),
+                &text,
+                theme.foreground,
+            );
+            row_y += line_height;
+        }
+    }
+
+    /// Paint a `SectionBody::Empty` welcome/empty state: background
+    /// fill, then a vertically-centred, individually horizontally-centred
+    /// stack of (optional icon, primary text, optional hint, optional
+    /// action) blocks.
+    pub(crate) fn paint_empty_body(
+        surface: &mut dyn NativeSurface,
+        bounds: Rect,
+        empty: &EmptyBody,
+        theme: &Theme,
+        line_height: f32,
+    ) {
+        surface.surface_fill_rect(bounds, theme.background);
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+
+        let mut blocks: Vec<(String, Color)> = Vec::new();
+        if let Some(icon) = &empty.icon {
+            blocks.push((icon.fallback.clone(), theme.foreground));
+        }
+        let primary = plain_text(&empty.text);
+        if !primary.is_empty() {
+            blocks.push((primary, theme.foreground));
+        }
+        if let Some(hint) = &empty.hint {
+            let hint_str = plain_text(hint);
+            if !hint_str.is_empty() {
+                blocks.push((hint_str, theme.muted_fg));
+            }
+        }
+        if let Some(action) = &empty.action {
+            let label = action
+                .tooltip
+                .clone()
+                .unwrap_or_else(|| action.icon.fallback.clone());
+            blocks.push((format!("[ {label} ]"), theme.accent_fg));
+        }
+        if blocks.is_empty() {
+            return;
+        }
+
+        let total_h = blocks.len() as f32 * line_height;
+        let mut block_y = bounds.y + (bounds.height - total_h).max(0.0) / 2.0;
+        for (text, color) in &blocks {
+            let (tw, th) = surface.surface_measure_text(text);
+            let block_x = bounds.x + (bounds.width - tw).max(0.0) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(block_x, block_y + (line_height - th) / 2.0, tw, th),
+                text,
+                *color,
+            );
+            block_y += line_height;
+        }
+    }
+
+    /// Paint a per-section scrollbar gutter: a 50%-alpha track with a
+    /// 90%-alpha thumb on top, both real alpha blends against whatever
+    /// is already painted underneath (matching GTK's/macOS's pre-port
+    /// behaviour; Win-GUI's `D2dSurface::surface_fill_rect` has honoured
+    /// real alpha since #791/#1072, so routing it through here is not a
+    /// behaviour change for Win either — see this module's doc for the
+    /// one drift this port does fix).
+    ///
+    /// `thumb_bounds` comes from the layout when the body's scroll state
+    /// is introspectable (`Tree`, `List`); `None` falls back to a
+    /// 20%-tall top-anchored placeholder thumb, preserving the pre-#9
+    /// visual for other overflowing body types.
+    pub(crate) fn paint_scrollbar(
+        surface: &mut dyn NativeSurface,
+        gutter: Rect,
+        thumb_bounds: Option<Rect>,
+        theme: &Theme,
+    ) {
+        surface.surface_fill_rect(gutter, theme.scrollbar_track.with_alpha(0.5));
+
+        let (ty, th) = match thumb_bounds {
+            Some(t) => (t.y, t.height.max(1.0)),
+            None => (gutter.y, (gutter.height * 0.2).max(20.0).min(gutter.height)),
+        };
+        surface.surface_fill_rect(
+            Rect::new(gutter.x, ty, gutter.width, th),
+            theme.scrollbar_thumb.with_alpha(0.9),
+        );
+    }
+
+    /// Paint the panel-level scrollbar (`ScrollMode::WholePanel`): an
+    /// opaque track, then an opaque thumb at `thumb_bounds` — geometry
+    /// computed once by
+    /// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
+    /// (`fit_thumb`) and published as
+    /// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
+    /// Never re-derived here — see this module's doc for the quadraui#820
+    /// class of bug that re-deriving it caused on three of the four
+    /// backends that have ever painted this scrollbar (GTK, Win, and now
+    /// fixed here, macOS).
+    pub(crate) fn paint_panel_scrollbar(
+        surface: &mut dyn NativeSurface,
+        bounds: Rect,
+        thumb_bounds: Option<Rect>,
+        theme: &Theme,
+    ) {
+        if bounds.height <= 0.0 {
+            return;
+        }
+        surface.surface_fill_rect(bounds, theme.scrollbar_track);
+        let (thumb_y, thumb_h) = match thumb_bounds {
+            Some(t) => (t.y, t.height.max(1.0)),
+            None => (bounds.y, bounds.height),
+        };
+        surface.surface_fill_rect(
+            Rect::new(bounds.x, thumb_y, bounds.width, thumb_h),
+            theme.scrollbar_thumb,
+        );
+    }
+
+    /// Paint a draggable divider strip between two adjacent sections.
+    pub(crate) fn paint_divider(surface: &mut dyn NativeSurface, bounds: Rect, theme: &Theme) {
+        surface.surface_fill_rect(bounds, theme.separator);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::multi_section_view::{HeaderAction, InlineInput};
+        use crate::types::WidgetId;
+        use crate::Image;
+
+        /// Records every draw verb this module's functions call, plus
+        /// clip push/pop order — mirrors `primitives::scrollbar`'s
+        /// `RecordingSurface` test double, scoped to the verbs these
+        /// chrome functions use, so these tests run on any host without
+        /// Cairo/Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            /// One entry per `surface_draw_text_run` call: `(rect, text,
+            /// color, clip_depth)` — `clip_depth` is `clips.len()` at
+            /// the moment of the call, so a test can tell whether a
+            /// given text draw happened while a clip was active.
+            texts: Vec<(Rect, String, Color, usize)>,
+            /// Stack of pushed clip rects; popped on `surface_pop_clip`.
+            clips: Vec<Rect>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts
+                    .push((rect, text.to_string(), color, self.clips.len()));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clips.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clips.pop();
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn header_with(title: &str, actions: Vec<HeaderAction>) -> SectionHeader {
+            SectionHeader {
+                icon: None,
+                title: StyledText::plain(title),
+                badge: None,
+                actions,
+                show_chevron: false,
+            }
+        }
+
+        /// Regression for #1074: the title text draw must always happen
+        /// while exactly one clip is active (pushed immediately before,
+        /// popped immediately after) — the drift this port fixes was
+        /// GTK's `paint_header` never pushing that clip at all.
+        #[test]
+        fn paint_header_clips_the_title_draw() {
+            let header = header_with("a very long title indeed", vec![]);
+            let mut surface = RecordingSurface::default();
+            paint_header(
+                &mut surface,
+                Rect::new(0.0, 0.0, 120.0, 20.0),
+                &header,
+                false,
+                &Theme::default(),
+            );
+
+            let title_draw = surface
+                .texts
+                .iter()
+                .find(|(_, text, ..)| text == "a very long title indeed")
+                .expect("title must be drawn");
+            assert_eq!(
+                title_draw.3, 1,
+                "title draw must happen with exactly one clip active, got depth {}",
+                title_draw.3
+            );
+            assert!(
+                surface.clips.is_empty(),
+                "every pushed clip must be popped by the time paint_header returns"
+            );
+        }
+
+        /// No title text at all ⇒ no clip is pushed (nothing to bracket).
+        #[test]
+        fn paint_header_skips_clip_when_title_is_empty() {
+            let header = header_with("", vec![]);
+            let mut surface = RecordingSurface::default();
+            paint_header(
+                &mut surface,
+                Rect::new(0.0, 0.0, 120.0, 20.0),
+                &header,
+                false,
+                &Theme::default(),
+            );
+            assert!(surface.clips.is_empty());
+            assert!(surface.texts.is_empty());
+        }
+
+        /// Regression for quadraui#791, ported to the shared chrome
+        /// path: per-section scrollbar track/thumb must carry real
+        /// alpha, never a fully-opaque colour pre-blended against a
+        /// hardcoded destination.
+        #[test]
+        fn scrollbar_track_and_thumb_paint_with_real_alpha() {
+            let mut surface = RecordingSurface::default();
+            paint_scrollbar(
+                &mut surface,
+                Rect::new(0.0, 0.0, 8.0, 100.0),
+                Some(Rect::new(0.0, 10.0, 8.0, 20.0)),
+                &Theme::default(),
+            );
+            assert_eq!(surface.fills.len(), 2);
+            for (_, color) in &surface.fills {
+                assert!(color.a < 255, "expected real alpha, got a={}", color.a);
+            }
+        }
+
+        /// The panel-level scrollbar must consume the layout-supplied
+        /// `thumb_bounds` verbatim rather than re-deriving thumb geometry
+        /// from `(scroll, total)` — the quadraui#820 class of bug this
+        /// module's doc calls out as still present, pre-port, on macOS.
+        #[test]
+        fn panel_scrollbar_uses_supplied_thumb_bounds_not_a_recomputed_one() {
+            let mut surface = RecordingSurface::default();
+            let thumb = Rect::new(0.0, 37.0, 8.0, 15.0);
+            paint_panel_scrollbar(
+                &mut surface,
+                Rect::new(0.0, 0.0, 8.0, 100.0),
+                Some(thumb),
+                &Theme::default(),
+            );
+            let thumb_fill = surface
+                .fills
+                .iter()
+                .find(|(r, _)| {
+                    (r.y - thumb.y).abs() < 0.01 && (r.height - thumb.height).abs() < 0.01
+                })
+                .expect("thumb must paint at the exact supplied thumb_bounds");
+            assert_eq!(thumb_fill.0, thumb);
+        }
+
+        #[test]
+        fn empty_body_with_no_content_paints_only_background() {
+            let mut surface = RecordingSurface::default();
+            paint_empty_body(
+                &mut surface,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                &EmptyBody::default(),
+                &Theme::default(),
+                16.0,
+            );
+            assert_eq!(surface.fills.len(), 1, "only the background fill");
+            assert!(surface.texts.is_empty());
+        }
+
+        #[test]
+        fn aux_caret_paints_only_when_focused_and_visible() {
+            let aux = SectionAux::Search(InlineInput {
+                id: WidgetId::new("q"),
+                text: String::new(),
+                caret: 0,
+                placeholder: None,
+                has_focus: true,
+            });
+            let bounds = Rect::new(0.0, 0.0, 100.0, 16.0);
+
+            let mut visible = RecordingSurface::default();
+            paint_aux(&mut visible, bounds, &aux, &Theme::default(), true);
+            // Background + (empty display text, still measured/drawn as
+            // an empty string) + caret fill.
+            assert_eq!(
+                visible.fills.len(),
+                2,
+                "expected background fill + caret fill"
+            );
+
+            let mut hidden = RecordingSurface::default();
+            paint_aux(&mut hidden, bounds, &aux, &Theme::default(), false);
+            assert_eq!(
+                hidden.fills.len(),
+                1,
+                "caret_visible=false must skip the caret fill"
+            );
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

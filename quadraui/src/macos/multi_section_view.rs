@@ -31,14 +31,14 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::cg::*;
-use super::text::{draw_text, measure_text};
+use super::text::measure_text;
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
     SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
-use crate::types::{Color, StyledText};
+use crate::types::StyledText;
 
 /// Compute the macOS metrics for a `MultiSectionView` from a
 /// `line_height`. Hosts call this and the primitive's `layout()`
@@ -150,12 +150,31 @@ pub unsafe fn draw_multi_section_view(
     CGContextRestoreGState(ctx);
 
     // Panel-level scrollbar (WholePanel mode) painted outside the
-    // panel clip so it isn't itself clipped.
+    // panel clip so it isn't itself clipped. Thumb geometry comes
+    // straight from `view_layout.panel_scrollbar_thumb` (computed once,
+    // via `fit_thumb`, in `MultiSectionView::layout`) — see
+    // `paint_panel_scrollbar`'s doc for the quadraui#820-class bug this
+    // fixes: pre-#1074 this call re-derived thumb geometry from
+    // `(scroll, total_content)` with a formula that disagreed with the
+    // layout's own, the same bug GTK/Win already had fixed.
     if let Some(panel_sb) = view_layout.panel_scrollbar {
-        let total_content: f32 = view_layout.sections.iter().map(|s| s.resolved_size).sum();
-        paint_panel_scrollbar(ctx, panel_sb, view.panel_scroll, total_content, theme);
+        paint_panel_scrollbar(ctx, panel_sb, view_layout.panel_scrollbar_thumb, theme);
     }
 }
+
+// #1074 (NativeSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// chrome painting moved to the shared
+// [`crate::primitives::multi_section_view::native_surface_paint`] — these
+// wrappers just build a [`super::surface::CgSurface`] adapter and forward.
+// `paint_body` (below) stays here: `Tree`/`List` bodies still dispatch to
+// this backend's own `super::tree::draw_tree`/`super::list::draw_list`,
+// which take a raw `(CGContextRef, &CTFont)` pair, not `&mut dyn
+// NativeSurface`.
+//
+// Pre-port, this rasteriser already clipped the title paint the same way
+// the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
+// does — see that function's doc for the GTK-only drift this port fixes
+// elsewhere, not here.
 
 unsafe fn paint_header(
     ctx: CGContextRef,
@@ -165,94 +184,17 @@ unsafe fn paint_header(
     collapsed: bool,
     theme: &Theme,
 ) {
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    fill_rect(ctx, bx, by, bw, bh, theme.header_bg);
-
-    let mut left_x = bx + 4.0;
-    let row_text_y = |th: f64| (by + (bh - th) * 0.4).round();
-
-    if header.show_chevron {
-        let chevron = if collapsed { "▸" } else { "▾" };
-        let (cw, ch) = measure_text(font, chevron);
-        draw_text(
-            ctx,
-            font,
-            chevron,
-            left_x,
-            row_text_y(ch),
-            color_to_cg(theme.header_fg),
-        );
-        left_x += cw + 4.0;
-    }
-
-    // Right-aligned actions, right-to-left.
-    let mut right_x = bx + bw - 4.0;
-    for action in header.actions.iter().rev() {
-        let glyph = action.icon.fallback.as_str();
-        let (gw, gh) = measure_text(font, glyph);
-        right_x -= gw;
-        if right_x < left_x {
-            break;
-        }
-        let action_fg = if action.enabled {
-            theme.header_fg
-        } else {
-            theme.muted_fg
-        };
-        draw_text(
-            ctx,
-            font,
-            glyph,
-            right_x,
-            row_text_y(gh),
-            color_to_cg(action_fg),
-        );
-        right_x -= 8.0;
-    }
-
-    // Title text + badge.
-    let title_text: String = header.title.spans.iter().map(|s| s.text.as_str()).collect();
-    if !title_text.is_empty() {
-        let (tw, th) = measure_text(font, &title_text);
-        let max_w = (right_x - left_x).max(0.0);
-        if max_w > 0.0 {
-            // Clip title to the header's title region.
-            CGContextSaveGState(ctx);
-            CGContextClipToRect(ctx, rect(left_x, by, max_w, bh));
-            draw_text(
-                ctx,
-                font,
-                &title_text,
-                left_x,
-                row_text_y(th),
-                color_to_cg(theme.header_fg),
-            );
-            CGContextRestoreGState(ctx);
-            let after_title_x = left_x + tw.min(max_w);
-
-            if let Some(badge) = &header.badge {
-                let badge_text: String = badge.spans.iter().map(|s| s.text.as_str()).collect();
-                if !badge_text.is_empty() {
-                    let badge_x = after_title_x + 6.0;
-                    if badge_x < right_x {
-                        let (_, bth) = measure_text(font, &badge_text);
-                        draw_text(
-                            ctx,
-                            font,
-                            &badge_text,
-                            badge_x,
-                            by + (bh - bth) / 2.0,
-                            color_to_cg(theme.muted_fg),
-                        );
-                    }
-                }
-            }
-        }
-    }
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_header(
+        &mut surface,
+        bounds,
+        header,
+        collapsed,
+        theme,
+    );
 }
 
 unsafe fn paint_aux(
@@ -263,71 +205,20 @@ unsafe fn paint_aux(
     theme: &Theme,
     caret_visible: bool,
 ) {
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    fill_rect(ctx, bx, by, bw, bh, theme.input_bg);
-
-    match aux {
-        SectionAux::Input(input) | SectionAux::Search(input) => {
-            let display: &str = if input.text.is_empty() && !input.has_focus {
-                input.placeholder.as_deref().unwrap_or("")
-            } else {
-                input.text.as_str()
-            };
-            let text_fg = if input.text.is_empty() && !input.has_focus {
-                theme.muted_fg
-            } else {
-                theme.foreground
-            };
-            let (_, th) = measure_text(font, display);
-            draw_text(
-                ctx,
-                font,
-                display,
-                bx + 4.0,
-                by + (bh - th) / 2.0,
-                color_to_cg(text_fg),
-            );
-
-            // Caret as a thin vertical bar at the caret column.
-            // Painted only when the InlineInput is focused AND the
-            // current blink phase is "on" — the run-loop blink timer
-            // toggles `caret_visible` ~530 ms (#188).
-            if input.has_focus && caret_visible {
-                let prefix: String = input.text.chars().take(input.caret).collect();
-                let (cx_off, _) = measure_text(font, &prefix);
-                let caret_x = bx + 4.0 + cx_off;
-                fill_rect(ctx, caret_x, by + 2.0, 1.0, bh - 4.0, theme.foreground);
-            }
-        }
-        SectionAux::Toolbar(actions) => {
-            let mut tx = bx + 4.0;
-            for a in actions {
-                let glyph = a.icon.fallback.as_str();
-                let action_fg = if a.enabled {
-                    theme.foreground
-                } else {
-                    theme.muted_fg
-                };
-                let (gw, gh) = measure_text(font, glyph);
-                draw_text(
-                    ctx,
-                    font,
-                    glyph,
-                    tx,
-                    by + (bh - gh) / 2.0,
-                    color_to_cg(action_fg),
-                );
-                tx += gw + 8.0;
-            }
-        }
-        SectionAux::Custom(_) => {
-            // Host paints; we cleared the bg already.
-        }
-    }
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    // `caret_visible` threads macOS's own blink-timer phase (#188)
+    // straight through to the shared implementation, preserving this
+    // backend's blink-aware caret exactly.
+    crate::primitives::multi_section_view::native_surface_paint::paint_aux(
+        &mut surface,
+        bounds,
+        aux,
+        theme,
+        caret_visible,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,24 +357,18 @@ unsafe fn paint_text_lines(
     theme: &Theme,
     line_height: f64,
 ) {
-    fill_rect(ctx, x, y, w, h, theme.background);
-    let mut row_y = y;
-    for line in lines {
-        if row_y + line_height > y + h {
-            break;
-        }
-        let text: String = line.spans.iter().map(|s| s.text.as_str()).collect();
-        let (_, th) = measure_text(font, &text);
-        draw_text(
-            ctx,
-            font,
-            &text,
-            x + 4.0,
-            row_y + (line_height - th) / 2.0,
-            color_to_cg(theme.foreground),
-        );
-        row_y += line_height;
-    }
+    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_text_lines(
+        &mut surface,
+        bounds,
+        lines,
+        theme,
+        line_height as f32,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -498,98 +383,72 @@ unsafe fn paint_empty_body(
     theme: &Theme,
     line_height: f64,
 ) {
-    fill_rect(ctx, x, y, w, h, theme.background);
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let mut blocks: Vec<(String, Color)> = Vec::new();
-    if let Some(icon) = &empty.icon {
-        blocks.push((icon.fallback.clone(), theme.foreground));
-    }
-    let primary: String = empty.text.spans.iter().map(|s| s.text.as_str()).collect();
-    if !primary.is_empty() {
-        blocks.push((primary, theme.foreground));
-    }
-    if let Some(hint) = &empty.hint {
-        let hint_str: String = hint.spans.iter().map(|s| s.text.as_str()).collect();
-        if !hint_str.is_empty() {
-            blocks.push((hint_str, theme.muted_fg));
-        }
-    }
-    if let Some(action) = &empty.action {
-        let label = action
-            .tooltip
-            .clone()
-            .unwrap_or_else(|| action.icon.fallback.clone());
-        blocks.push((format!("[ {label} ]"), theme.accent_fg));
-    }
-    if blocks.is_empty() {
-        return;
-    }
-    let total_h = blocks.len() as f64 * line_height;
-    let mut block_y = y + (h - total_h).max(0.0) / 2.0;
-    for (text, color) in &blocks {
-        let (tw, th) = measure_text(font, text);
-        let block_x = x + (w - tw).max(0.0) / 2.0;
-        draw_text(
-            ctx,
-            font,
-            text,
-            block_x,
-            block_y + (line_height - th) / 2.0,
-            color_to_cg(*color),
-        );
-        block_y += line_height;
-    }
+    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_empty_body(
+        &mut surface,
+        bounds,
+        empty,
+        theme,
+        line_height as f32,
+    );
 }
 
+/// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb, both
+/// real alpha blends against whatever is already painted underneath.
+/// [`super::surface::CgSurface::surface_fill_rect`] has honoured real
+/// alpha since before #1072 (see that adapter's module doc: "no
+/// fill-translucency divergence to preserve"), so routing this through
+/// the shared, real-alpha
+/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`]
+/// is not a behaviour change here.
 unsafe fn paint_section_scrollbar(
     ctx: CGContextRef,
     gutter: QRect,
     thumb_bounds: Option<QRect>,
     theme: &Theme,
 ) {
-    let bx = gutter.x as f64;
-    let by = gutter.y as f64;
-    let bw = gutter.width as f64;
-    let bh = gutter.height as f64;
-
-    fill_rect(ctx, bx, by, bw, bh, theme.scrollbar_track.with_alpha(0.5));
-
-    let (ty, th) = match thumb_bounds {
-        Some(t) => (t.y as f64, (t.height as f64).max(1.0)),
-        None => (by, (bh * 0.2).max(20.0).min(bh)),
-    };
-    fill_rect(ctx, bx, ty, bw, th, theme.scrollbar_thumb.with_alpha(0.9));
+    let mut surface = super::surface::CgSurface { ctx, font: None };
+    crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar(
+        &mut surface,
+        gutter,
+        thumb_bounds,
+        theme,
+    );
 }
 
+/// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
+/// thumb. Thumb geometry comes from `thumb_bounds` — computed once by
+/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
+/// (`fit_thumb`) and published as
+/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
+///
+/// Pre-#1074 this function recomputed thumb size/position itself from
+/// `(scroll, total_content)` — the same quadraui#820 class of bug
+/// already fixed on GTK/Win: a hardcoded `20.0`-pixel minimum thumb here
+/// disagreed with `panel_thumb_min`'s
+/// `metrics.scrollbar_size.max(8.0)` used everywhere else, and the
+/// caller's `total_content` summed only section sizes, silently
+/// dropping divider strips. Consuming the layout's own `thumb_bounds`
+/// closes both gaps at once. Mirrors [`paint_section_scrollbar`]'s
+/// (per-section) pattern of consuming pre-computed bounds instead of
+/// re-deriving them.
 unsafe fn paint_panel_scrollbar(
     ctx: CGContextRef,
     bounds: QRect,
-    scroll: f32,
-    total: f32,
+    thumb_bounds: Option<QRect>,
     theme: &Theme,
 ) {
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-    if bh <= 0.0 || total <= 0.0 {
-        return;
-    }
-
-    fill_rect(ctx, bx, by, bw, bh, theme.scrollbar_track);
-
-    let visible_frac = (bh / total as f64).min(1.0);
-    let scroll_frac = if total as f64 > bh {
-        scroll as f64 / (total as f64 - bh)
-    } else {
-        0.0
-    };
-    let thumb_h = (bh * visible_frac).max(20.0);
-    let thumb_track = (bh - thumb_h).max(0.0);
-    let thumb_y = by + thumb_track * scroll_frac;
-    fill_rect(ctx, bx, thumb_y, bw, thumb_h, theme.scrollbar_thumb);
+    let mut surface = super::surface::CgSurface { ctx, font: None };
+    crate::primitives::multi_section_view::native_surface_paint::paint_panel_scrollbar(
+        &mut surface,
+        bounds,
+        thumb_bounds,
+        theme,
+    );
 }
 
 #[cfg(test)]

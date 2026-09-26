@@ -49,14 +49,15 @@
 //!   the input `has_focus`, matching `gtk::multi_section_view`'s
 //!   simpler (non-blinking) convention rather than macOS's blink-aware
 //!   one.
-//! - **Translucent overlays are CPU-premixed, not native D2D alpha
-//!   blending** — every other rasteriser in this module premixes
-//!   translucent fills against a known base colour via
-//!   [`crate::types::Color::blend`] rather than painting a
-//!   partially-transparent brush directly (see that method's doc for
-//!   why); the per-section and standalone scrollbar tracks/thumbs here
-//!   follow the same convention instead of macOS/GTK's real
-//!   alpha-blended overlay.
+//! - ~~Translucent overlays are CPU-premixed, not native D2D alpha
+//!   blending~~ — fixed by #1074: the per-section scrollbar now paints
+//!   through the shared
+//!   [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
+//!   which fills with real alpha (`Color::with_alpha`) the same way
+//!   GTK/macOS always have. [`super::surface::D2dSurface::surface_fill_rect`]
+//!   has honoured real alpha since quadraui#791/#1072 — the CPU-premix
+//!   convention this bullet used to document was legacy from before
+//!   that adapter existed, not a remaining Direct2D limitation.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -67,7 +68,7 @@ use crate::primitives::multi_section_view::{
     SectionBody, SectionHeader,
 };
 use crate::theme::Theme;
-use crate::types::{Color, StyledText};
+use crate::types::StyledText;
 
 /// Compute the Win-GUI metrics for a `MultiSectionView` from a
 /// `line_height`. Hosts call this and the primitive's `layout()` with
@@ -180,6 +181,21 @@ pub fn draw_multi_section_view(
     }
 }
 
+// #1074 (NativeSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// chrome painting moved to the shared
+// [`crate::primitives::multi_section_view::native_surface_paint`] — these
+// wrappers just build a [`super::surface::D2dSurface`] adapter and
+// forward. `paint_body` (below) stays here: `Tree`/`List`/`MessageList`
+// bodies still dispatch to this backend's own `super::tree::draw_tree`/
+// `super::list::draw_list`/`super::message_list::draw_message_list`, which
+// take a raw `(&ID2D1RenderTarget, &DWrite)` pair, not `&mut dyn
+// NativeSurface`.
+//
+// Pre-port, this rasteriser already clipped the title paint the same way
+// the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
+// does — see that function's doc for the GTK-only drift this port fixes
+// elsewhere, not here.
+
 fn paint_header(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -188,80 +204,17 @@ fn paint_header(
     collapsed: bool,
     theme: &Theme,
 ) {
-    let _ = fill_rect(target, bounds, theme.header_bg);
-
-    let mut left_x = bounds.x + 4.0;
-    let row_text_y = |th: f32| (bounds.y + (bounds.height - th) * 0.4).round();
-
-    if header.show_chevron {
-        let chevron = if collapsed { "\u{25B8}" } else { "\u{25BE}" };
-        let (cw, ch) = dwrite.measure_text(chevron).unwrap_or((0.0, 0.0));
-        let _ = dwrite.draw_text(
-            target,
-            chevron,
-            Rect::new(left_x, row_text_y(ch), cw, ch),
-            theme.header_fg,
-        );
-        left_x += cw + 4.0;
-    }
-
-    // Right-aligned actions, right-to-left.
-    let mut right_x = bounds.x + bounds.width - 4.0;
-    for action in header.actions.iter().rev() {
-        let glyph = action.icon.fallback.as_str();
-        let (gw, gh) = dwrite.measure_text(glyph).unwrap_or((0.0, 0.0));
-        right_x -= gw;
-        if right_x < left_x {
-            break;
-        }
-        let action_fg = if action.enabled {
-            theme.header_fg
-        } else {
-            theme.muted_fg
-        };
-        let _ = dwrite.draw_text(
-            target,
-            glyph,
-            Rect::new(right_x, row_text_y(gh), gw, gh),
-            action_fg,
-        );
-        right_x -= 8.0;
-    }
-
-    // Title text + badge.
-    let title_text: String = header.title.spans.iter().map(|s| s.text.as_str()).collect();
-    if !title_text.is_empty() {
-        let (tw, th) = dwrite.measure_text(&title_text).unwrap_or((0.0, 0.0));
-        let max_w = (right_x - left_x).max(0.0);
-        if max_w > 0.0 {
-            // Clip title to the header's title region.
-            push_clip(target, Rect::new(left_x, bounds.y, max_w, bounds.height));
-            let _ = dwrite.draw_text(
-                target,
-                &title_text,
-                Rect::new(left_x, row_text_y(th), tw, th),
-                theme.header_fg,
-            );
-            pop_clip(target);
-            let after_title_x = left_x + tw.min(max_w);
-
-            if let Some(badge) = &header.badge {
-                let badge_text: String = badge.spans.iter().map(|s| s.text.as_str()).collect();
-                if !badge_text.is_empty() {
-                    let badge_x = after_title_x + 6.0;
-                    if badge_x < right_x {
-                        let (bw, bth) = dwrite.measure_text(&badge_text).unwrap_or((0.0, 0.0));
-                        let _ = dwrite.draw_text(
-                            target,
-                            &badge_text,
-                            Rect::new(badge_x, bounds.y + (bounds.height - bth) / 2.0, bw, bth),
-                            theme.muted_fg,
-                        );
-                    }
-                }
-            }
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_header(
+        &mut surface,
+        bounds,
+        header,
+        collapsed,
+        theme,
+    );
 }
 
 fn paint_aux(
@@ -271,71 +224,21 @@ fn paint_aux(
     aux: &SectionAux,
     theme: &Theme,
 ) {
-    let _ = fill_rect(target, bounds, theme.input_bg);
-
-    match aux {
-        SectionAux::Input(input) | SectionAux::Search(input) => {
-            let display: &str = if input.text.is_empty() && !input.has_focus {
-                input.placeholder.as_deref().unwrap_or("")
-            } else {
-                input.text.as_str()
-            };
-            let text_fg = if input.text.is_empty() && !input.has_focus {
-                theme.muted_fg
-            } else {
-                theme.foreground
-            };
-            let (dw, dh) = dwrite.measure_text(display).unwrap_or((0.0, 0.0));
-            let _ = dwrite.draw_text(
-                target,
-                display,
-                Rect::new(
-                    bounds.x + 4.0,
-                    bounds.y + (bounds.height - dh) / 2.0,
-                    dw,
-                    dh,
-                ),
-                text_fg,
-            );
-
-            // Caret as a thin vertical bar at the caret column. Painted
-            // whenever the input is focused — see this module's "Caret
-            // blink" scope-omission note for why this doesn't gate on a
-            // blink phase the way `macos::multi_section_view` does.
-            if input.has_focus {
-                let prefix: String = input.text.chars().take(input.caret).collect();
-                let (cx_off, _) = dwrite.measure_text(&prefix).unwrap_or((0.0, 0.0));
-                let caret_x = bounds.x + 4.0 + cx_off;
-                let _ = fill_rect(
-                    target,
-                    Rect::new(caret_x, bounds.y + 2.0, 1.0, bounds.height - 4.0),
-                    theme.foreground,
-                );
-            }
-        }
-        SectionAux::Toolbar(actions) => {
-            let mut tx = bounds.x + 4.0;
-            for a in actions {
-                let glyph = a.icon.fallback.as_str();
-                let action_fg = if a.enabled {
-                    theme.foreground
-                } else {
-                    theme.muted_fg
-                };
-                let (gw, gh) = dwrite.measure_text(glyph).unwrap_or((0.0, 0.0));
-                let _ = dwrite.draw_text(
-                    target,
-                    glyph,
-                    Rect::new(tx, bounds.y + (bounds.height - gh) / 2.0, gw, gh),
-                    action_fg,
-                );
-                tx += gw + 8.0;
-            }
-        }
-        SectionAux::Custom(_) => {
-            // Host paints; we cleared the bg already.
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    // `caret_visible: true` — see this module's "Caret blink" scope-
+    // omission note: Win-GUI has no blink timer for MSV aux inputs, so
+    // the caret always paints while focused, matching this rasteriser's
+    // pre-port behaviour exactly.
+    crate::primitives::multi_section_view::native_surface_paint::paint_aux(
+        &mut surface,
+        bounds,
+        aux,
+        theme,
+        true,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -505,22 +408,17 @@ fn paint_text_lines(
     theme: &Theme,
     line_height: f32,
 ) {
-    let _ = fill_rect(target, bounds, theme.background);
-    let mut row_y = bounds.y;
-    for line in lines {
-        if row_y + line_height > bounds.y + bounds.height {
-            break;
-        }
-        let text: String = line.spans.iter().map(|s| s.text.as_str()).collect();
-        let (tw, th) = dwrite.measure_text(&text).unwrap_or((0.0, 0.0));
-        let _ = dwrite.draw_text(
-            target,
-            &text,
-            Rect::new(bounds.x + 4.0, row_y + (line_height - th) / 2.0, tw, th),
-            theme.foreground,
-        );
-        row_y += line_height;
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_text_lines(
+        &mut surface,
+        bounds,
+        lines,
+        theme,
+        line_height,
+    );
 }
 
 fn paint_empty_body(
@@ -531,73 +429,49 @@ fn paint_empty_body(
     theme: &Theme,
     line_height: f32,
 ) {
-    let _ = fill_rect(target, bounds, theme.background);
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-    let mut blocks: Vec<(String, Color)> = Vec::new();
-    if let Some(icon) = &empty.icon {
-        blocks.push((icon.fallback.clone(), theme.foreground));
-    }
-    let primary: String = empty.text.spans.iter().map(|s| s.text.as_str()).collect();
-    if !primary.is_empty() {
-        blocks.push((primary, theme.foreground));
-    }
-    if let Some(hint) = &empty.hint {
-        let hint_str: String = hint.spans.iter().map(|s| s.text.as_str()).collect();
-        if !hint_str.is_empty() {
-            blocks.push((hint_str, theme.muted_fg));
-        }
-    }
-    if let Some(action) = &empty.action {
-        let label = action
-            .tooltip
-            .clone()
-            .unwrap_or_else(|| action.icon.fallback.clone());
-        blocks.push((format!("[ {label} ]"), theme.accent_fg));
-    }
-    if blocks.is_empty() {
-        return;
-    }
-    let total_h = blocks.len() as f32 * line_height;
-    let mut block_y = bounds.y + (bounds.height - total_h).max(0.0) / 2.0;
-    for (text, color) in &blocks {
-        let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
-        let block_x = bounds.x + (bounds.width - tw).max(0.0) / 2.0;
-        let _ = dwrite.draw_text(
-            target,
-            text,
-            Rect::new(block_x, block_y + (line_height - th) / 2.0, tw, th),
-            *color,
-        );
-        block_y += line_height;
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_empty_body(
+        &mut surface,
+        bounds,
+        empty,
+        theme,
+        line_height,
+    );
 }
 
-/// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb,
-/// both premixed against `theme.background` via
-/// [`crate::types::Color::blend`] (see this module's doc for why
-/// Direct2D fills here are opaque, not native alpha blends).
+/// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb.
+///
+/// Pre-port this premixed both fills against `theme.background` via
+/// [`crate::types::Color::blend`] rather than painting a real
+/// translucent brush, on the (once-true) rationale that Direct2D fills
+/// here were opaque-only. That stopped being true when
+/// [`super::surface::D2dSurface::surface_fill_rect`] started honouring
+/// real alpha (quadraui#791/#1072 — see that adapter's module doc: "no
+/// fill-translucency divergence to preserve"), so routing this scrollbar
+/// through the shared, real-alpha
+/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`]
+/// unifies Win-GUI onto the same real alpha blend GTK/macOS already use
+/// here, rather than continuing to approximate it against a hardcoded
+/// destination colour.
 fn paint_section_scrollbar(
     target: &ID2D1RenderTarget,
     gutter: Rect,
     thumb_bounds: Option<Rect>,
     theme: &Theme,
 ) {
-    let track_color = theme.background.blend(theme.scrollbar_track, 0.5);
-    let _ = fill_rect(target, gutter, track_color);
-
-    let thumb_rect = match thumb_bounds {
-        Some(t) => Rect::new(gutter.x, t.y, gutter.width, t.height.max(1.0)),
-        None => Rect::new(
-            gutter.x,
-            gutter.y,
-            gutter.width,
-            (gutter.height * 0.2).max(20.0).min(gutter.height),
-        ),
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: None,
     };
-    let thumb_color = track_color.blend(theme.scrollbar_thumb, 0.9);
-    let _ = fill_rect(target, thumb_rect, thumb_color);
+    crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar(
+        &mut surface,
+        gutter,
+        thumb_bounds,
+        theme,
+    );
 }
 
 /// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
@@ -622,17 +496,16 @@ fn paint_panel_scrollbar(
     thumb_bounds: Option<Rect>,
     theme: &Theme,
 ) {
-    if bounds.height <= 0.0 {
-        return;
-    }
-
-    let _ = fill_rect(target, bounds, theme.scrollbar_track);
-
-    let thumb_rect = match thumb_bounds {
-        Some(t) => Rect::new(bounds.x, t.y, bounds.width, t.height.max(1.0)),
-        None => bounds,
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: None,
     };
-    let _ = fill_rect(target, thumb_rect, theme.scrollbar_thumb);
+    crate::primitives::multi_section_view::native_surface_paint::paint_panel_scrollbar(
+        &mut surface,
+        bounds,
+        thumb_bounds,
+        theme,
+    );
 }
 
 #[cfg(test)]
