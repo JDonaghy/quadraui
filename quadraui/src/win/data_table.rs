@@ -17,12 +17,13 @@
 //! Scrollbar track/thumb paint as flat fills (no `win::draw_scrollbar`
 //! dependency — that trait method is still a `todo!()` stub). Row
 //! selection/hover tint is computed as a CPU-side RGB blend
-//! ([`blend`]) rather than an alpha-blended `FillRectangle`, since the
-//! shared [`super::text::fill_rect`] helper takes an opaque [`crate::Color`].
+//! ([`crate::types::Color::blend`]) rather than an alpha-blended
+//! `FillRectangle`, since the shared [`super::text::fill_rect`] helper
+//! takes an opaque [`crate::Color`].
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{blend, fill_rect, pop_clip, push_clip, DWrite};
+use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::data_table::{ColumnAlign, ColumnMeasure, DataTable, SortDirection};
 use crate::primitives::scrollbar::Scrollbar;
@@ -152,9 +153,11 @@ pub fn draw_data_table(
         let is_muted = row.decoration == Decoration::Muted;
 
         let row_bg = if is_selected {
-            blend(theme.background, theme.selection_bg, theme.selection_alpha)
+            theme
+                .background
+                .blend(theme.selection_bg, theme.selection_alpha as f64)
         } else if is_hovered {
-            blend(theme.background, theme.tab_bar_bg, 0.5)
+            theme.background.blend(theme.tab_bar_bg, 0.5)
         } else {
             theme.background
         };

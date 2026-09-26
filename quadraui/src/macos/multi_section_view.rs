@@ -27,10 +27,10 @@
 //!   GTK but the `EmptyBody::action` button is rendered as plain
 //!   centred text (no clickable button chrome yet).
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::*;
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
@@ -95,7 +95,7 @@ pub unsafe fn draw_multi_section_view(
     }
 
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
+    CGContextClipToRect(ctx, rect(x, y, w, h));
     fill_rect(ctx, x, y, w, h, theme.background);
 
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
@@ -222,7 +222,7 @@ unsafe fn paint_header(
         if max_w > 0.0 {
             // Clip title to the header's title region.
             CGContextSaveGState(ctx);
-            CGContextClipToRect(ctx, CGRect::new_xywh(left_x, by, max_w, bh));
+            CGContextClipToRect(ctx, rect(left_x, by, max_w, bh));
             draw_text(
                 ctx,
                 font,
@@ -350,7 +350,7 @@ unsafe fn paint_body(
     // Clip to body bounds so inner primitives can't paint past the
     // section boundary.
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(bx, by, bw, bh));
+    CGContextClipToRect(ctx, rect(bx, by, bw, bh));
 
     match body {
         SectionBody::Tree(t) => {
@@ -548,13 +548,13 @@ unsafe fn paint_section_scrollbar(
     let bw = gutter.width as f64;
     let bh = gutter.height as f64;
 
-    fill_rect(ctx, bx, by, bw, bh, with_alpha(theme.scrollbar_track, 0.5));
+    fill_rect(ctx, bx, by, bw, bh, theme.scrollbar_track.with_alpha(0.5));
 
     let (ty, th) = match thumb_bounds {
         Some(t) => (t.y as f64, (t.height as f64).max(1.0)),
         None => (by, (bh * 0.2).max(20.0).min(bh)),
     };
-    fill_rect(ctx, bx, ty, bw, th, with_alpha(theme.scrollbar_thumb, 0.9));
+    fill_rect(ctx, bx, ty, bw, th, theme.scrollbar_thumb.with_alpha(0.9));
 }
 
 unsafe fn paint_panel_scrollbar(
@@ -584,54 +584,6 @@ unsafe fn paint_panel_scrollbar(
     let thumb_track = (bh - thumb_h).max(0.0);
     let thumb_y = by + thumb_track * scroll_frac;
     fill_rect(ctx, bx, thumb_y, bw, thumb_h, theme.scrollbar_thumb);
-}
-
-fn with_alpha(c: Color, alpha: f64) -> Color {
-    Color {
-        r: c.r,
-        g: c.g,
-        b: c.b,
-        a: (255.0 * alpha).round().clamp(0.0, 255.0) as u8,
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

@@ -38,7 +38,7 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{blend, draw_line, fill_rect, stroke_rect, DWrite};
+use super::text::{draw_line, fill_rect, stroke_rect, DWrite};
 use crate::event::Rect;
 use crate::primitives::pipeline_view::{
     status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
@@ -177,7 +177,7 @@ pub fn draw_pipeline_view(
             let btn_label = format!("[{}]", action_text);
 
             // Subtle tint background for the button area.
-            let tint = blend(theme.surface_bg, theme.accent_bg, 0.15);
+            let tint = theme.surface_bg.blend(theme.accent_bg, 0.15);
             let _ = fill_rect(target, ab, tint);
 
             if let Ok((bw2, bh2)) = dwrite.measure_text(&btn_label) {

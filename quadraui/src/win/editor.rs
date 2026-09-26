@@ -5,7 +5,7 @@
 //! bounds, all in the caller's `cell_width`/`line_height` — uniform
 //! monospace, same convention as TUI). Text and every other paint
 //! category are done in this module via [`DWrite`] + [`fill_rect`] /
-//! [`blend`].
+//! [`crate::types::Color::blend`].
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod editor;` and `backend.rs`'s
@@ -27,7 +27,7 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{blend, fill_rect, pop_clip, push_clip, DWrite};
+use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::backend::EditorPaintResult;
 use crate::event::Rect;
 use crate::primitives::editor::{
@@ -205,7 +205,7 @@ pub fn draw_editor(
         let x = layout.text_bounds.x + col as f32 * cell_width;
         match cursor.shape {
             CursorShape::Block => {
-                let color = blend(bg, theme.cursor, theme.cursor_normal_alpha);
+                let color = bg.blend(theme.cursor, theme.cursor_normal_alpha as f64);
                 let _ = fill_rect(target, Rect::new(x, y, cell_width, line_height), color);
             }
             CursorShape::Bar => {
@@ -274,7 +274,7 @@ fn paint_selection(
         let y = rect.y + view_idx as f32 * line_height;
         let x = text_x + start_col as f32 * cell_width;
         let w = (end_col - start_col) as f32 * cell_width;
-        let blended = blend(Theme::default().background, color, alpha);
+        let blended = Theme::default().background.blend(color, alpha as f64);
         let _ = fill_rect(target, Rect::new(x, y, w, line_height), blended);
     }
 }
@@ -535,7 +535,9 @@ mod tests {
         // `end_col`'s column — a `Line` selection should still cover it.
         let sample_x = 180u32.max(text_x + 5);
         let px = surface.pixel_at(sample_x, 4);
-        let expected = blend(theme.background, theme.selection, theme.selection_alpha);
+        let expected = theme
+            .background
+            .blend(theme.selection, theme.selection_alpha as f64);
         assert_eq!((px.r, px.g, px.b), (expected.r, expected.g, expected.b));
     }
 }

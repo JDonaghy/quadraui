@@ -14,9 +14,10 @@
 //!   full inline-edit input lands with the unified text-attribute pass
 //!   alongside the editor selection highlight.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
+
+use super::cg::*;
 
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
@@ -78,7 +79,7 @@ pub unsafe fn draw_tree(
     let layout = mac_tree_layout(tree, area, line_height);
 
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
+    CGContextClipToRect(ctx, rect(x, y, w, h));
 
     fill_rect(ctx, x, y, w, h, theme.tab_bar_bg);
 
@@ -268,45 +269,6 @@ pub unsafe fn draw_tree(
 
     CGContextRestoreGState(ctx);
     layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

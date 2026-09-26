@@ -23,14 +23,13 @@
 //!
 //! Then draws either the plain `text` or per-row `styled_lines`.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::*;
 use super::text::{draw_text, measure_text};
 use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Draw a [`Tooltip`] at its resolved layout position with the default
 /// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
@@ -188,89 +187,6 @@ pub unsafe fn draw_tooltip_with_chrome(
         }
         draw_text(ctx, font, text_line, text_x, row_y, color_to_cg(fg));
     }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-unsafe fn stroke_rect(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextStrokeRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-/// Stroke a single line segment — used by [`TooltipBorder::Sides`] to
-/// paint the left/right edges without the top/bottom rules `stroke_rect`
-/// would also draw.
-unsafe fn stroke_line(
-    ctx: CGContextRef,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    CGContextMoveToPoint(ctx, x0, y0);
-    CGContextAddLineToPoint(ctx, x1, y1);
-    CGContextStrokePath(ctx);
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetLineWidth(c: CGContextRef, w: core_graphics::base::CGFloat);
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
-    fn CGContextMoveToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    fn CGContextAddLineToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    fn CGContextStrokePath(c: CGContextRef);
 }
 
 #[cfg(test)]

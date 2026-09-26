@@ -16,16 +16,17 @@
 //!   for translucent selection; macOS paints a solid `selection_bg`
 //!   pixel today. Visual parity tracked separately.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
+
+use super::cg::*;
 
 use super::text::{draw_text, measure_text};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataTable, DataTableLayout, SortDirection,
 };
 use crate::theme::Theme;
-use crate::types::{Color, Decoration};
+use crate::types::Decoration;
 
 const SCROLLBAR_WIDTH: f32 = 8.0;
 
@@ -83,7 +84,7 @@ pub unsafe fn draw_data_table(
     }
 
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
+    CGContextClipToRect(ctx, rect(x, y, w, h));
 
     // Header background.
     fill_rect(ctx, x, y, w, layout.header_height as f64, theme.tab_bar_bg);
@@ -117,7 +118,7 @@ pub unsafe fn draw_data_table(
         // the column width truncate instead of overflowing into the
         // neighbour. Matches the GTK rasteriser.
         CGContextSaveGState(ctx);
-        CGContextClipToRect(ctx, CGRect::new_xywh(col_x, y, col_w, header_height));
+        CGContextClipToRect(ctx, rect(col_x, y, col_w, header_height));
         draw_text(
             ctx,
             font,
@@ -190,7 +191,7 @@ pub unsafe fn draw_data_table(
             // Clip to the cell rect so text doesn't bleed past a
             // narrow column when the user shrinks it.
             CGContextSaveGState(ctx);
-            CGContextClipToRect(ctx, CGRect::new_xywh(col_x, row_y, col_w, line_height));
+            CGContextClipToRect(ctx, rect(col_x, row_y, col_w, line_height));
 
             // Per-span colouring: paint each span at its measured
             // x-offset using its own fg. Muted rows override fg
@@ -313,7 +314,7 @@ pub unsafe fn draw_data_table(
                 };
 
                 CGContextSaveGState(ctx);
-                CGContextClipToRect(ctx, CGRect::new_xywh(col_x, footer_y, col_w, line_height));
+                CGContextClipToRect(ctx, rect(col_x, footer_y, col_w, line_height));
 
                 let mut span_x = text_x;
                 let text_y = footer_y + (line_height - text_h) / 2.0;
@@ -331,45 +332,6 @@ pub unsafe fn draw_data_table(
 
     CGContextRestoreGState(ctx);
     layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

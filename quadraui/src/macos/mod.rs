@@ -24,6 +24,9 @@ pub mod activity_bar;
 pub mod backend;
 pub mod board;
 pub(crate) mod caret_blink;
+// Shared CoreGraphics FFI bindings + fill/stroke/rect helpers
+// (quadraui#1071) — internal, not part of the public `macos` surface.
+mod cg;
 pub mod chart;
 pub mod command_center;
 pub mod command_line;

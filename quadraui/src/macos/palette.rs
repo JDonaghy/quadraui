@@ -14,15 +14,14 @@
 //! - **Preview pane content** — preview lines render as plain text;
 //!   syntax-highlighted spans land with the same pass.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::*;
 use super::text::{draw_text, measure_text};
 use crate::primitives::palette::{Palette, PaletteItemMeasure};
 use crate::text_util::safe_prefix;
 use crate::theme::Theme;
-use crate::types::Color;
 
 const SCROLLBAR_PX: f32 = 8.0;
 
@@ -101,7 +100,7 @@ pub unsafe fn draw_palette(
     }
 
     CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, w, h));
+    CGContextClipToRect(ctx, rect(x, y, w, h));
     fill_rect(ctx, x, y, w, h, theme.surface_bg);
     stroke_rect(ctx, x, y, w, h, theme.border_fg, 1.0);
 
@@ -251,7 +250,7 @@ pub unsafe fn draw_palette(
             sb.track.y as f64 + y,
             sb.track.width as f64,
             sb.track.height as f64,
-            with_alpha(theme.scrollbar_track, 0.4),
+            theme.scrollbar_track.with_alpha(0.4),
         );
         fill_rect(
             ctx,
@@ -259,7 +258,7 @@ pub unsafe fn draw_palette(
             sb.thumb.y as f64 + y,
             sb.thumb.width as f64,
             sb.thumb.height as f64,
-            with_alpha(theme.scrollbar_thumb, 0.8),
+            theme.scrollbar_thumb.with_alpha(0.8),
         );
     }
 
@@ -306,78 +305,6 @@ pub unsafe fn draw_palette(
     }
 
     CGContextRestoreGState(ctx);
-}
-
-fn with_alpha(c: Color, alpha: f64) -> Color {
-    Color {
-        r: c.r,
-        g: c.g,
-        b: c.b,
-        a: (255.0 * alpha).round().clamp(0.0, 255.0) as u8,
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-unsafe fn stroke_rect(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    CGContextStrokeRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetLineWidth(c: CGContextRef, w: core_graphics::base::CGFloat);
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

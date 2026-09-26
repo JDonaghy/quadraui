@@ -52,14 +52,15 @@
 //! - **Translucent overlays are CPU-premixed, not native D2D alpha
 //!   blending** — every other rasteriser in this module premixes
 //!   translucent fills against a known base colour via
-//!   [`super::text::blend`] rather than painting a partially-transparent
-//!   brush directly (see that function's doc for why); the per-section
-//!   and standalone scrollbar tracks/thumbs here follow the same
-//!   convention instead of macOS/GTK's real alpha-blended overlay.
+//!   [`crate::types::Color::blend`] rather than painting a
+//!   partially-transparent brush directly (see that method's doc for
+//!   why); the per-section and standalone scrollbar tracks/thumbs here
+//!   follow the same convention instead of macOS/GTK's real
+//!   alpha-blended overlay.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{blend, fill_rect, pop_clip, push_clip, DWrite};
+use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
@@ -564,16 +565,16 @@ fn paint_empty_body(
 }
 
 /// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb,
-/// both premixed against `theme.background` via [`blend`] (see this
-/// module's doc for why Direct2D fills here are opaque, not native
-/// alpha blends).
+/// both premixed against `theme.background` via
+/// [`crate::types::Color::blend`] (see this module's doc for why
+/// Direct2D fills here are opaque, not native alpha blends).
 fn paint_section_scrollbar(
     target: &ID2D1RenderTarget,
     gutter: Rect,
     thumb_bounds: Option<Rect>,
     theme: &Theme,
 ) {
-    let track_color = blend(theme.background, theme.scrollbar_track, 0.5);
+    let track_color = theme.background.blend(theme.scrollbar_track, 0.5);
     let _ = fill_rect(target, gutter, track_color);
 
     let thumb_rect = match thumb_bounds {
@@ -585,7 +586,7 @@ fn paint_section_scrollbar(
             (gutter.height * 0.2).max(20.0).min(gutter.height),
         ),
     };
-    let thumb_color = blend(track_color, theme.scrollbar_thumb, 0.9);
+    let thumb_color = track_color.blend(theme.scrollbar_thumb, 0.9);
     let _ = fill_rect(target, thumb_rect, thumb_color);
 }
 

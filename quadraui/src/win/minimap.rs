@@ -46,7 +46,7 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{blend, fill_rect, pop_clip, push_clip, DWrite};
+use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
@@ -93,7 +93,7 @@ pub fn draw_minimap(
 
     let hl = &layout.viewport_highlight;
     if hl.height > 0.0 {
-        let tint = blend(theme.background, theme.accent_bg, 0.25);
+        let tint = theme.background.blend(theme.accent_bg, 0.25);
         let _ = fill_rect(target, *hl, tint);
     }
 

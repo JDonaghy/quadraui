@@ -331,17 +331,6 @@ pub(crate) mod native_surface_paint {
     use super::DropOverlay;
     use crate::native_surface::NativeSurface;
     use crate::theme::Theme;
-    use crate::types::Color;
-
-    /// `color` with its alpha channel replaced by `alpha` (`0.0`-`1.0`).
-    fn with_alpha(color: Color, alpha: f32) -> Color {
-        Color::rgba(
-            color.r,
-            color.g,
-            color.b,
-            (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
-        )
-    }
 
     /// Paint a [`DropOverlay`] onto `surface`: a translucent highlight
     /// rect at [`DropOverlay::HIGHLIGHT_ALPHA`] and/or a solid insertion
@@ -354,7 +343,9 @@ pub(crate) mod native_surface_paint {
             if h.width > 0.0 && h.height > 0.0 {
                 surface.surface_fill_rect(
                     h,
-                    with_alpha(theme.accent_fg, DropOverlay::HIGHLIGHT_ALPHA),
+                    theme
+                        .accent_fg
+                        .with_alpha(DropOverlay::HIGHLIGHT_ALPHA as f64),
                 );
             }
         }
@@ -377,6 +368,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::{Rect, Viewport};
+        use crate::types::Color;
         use crate::Image;
 
         /// Records every `surface_fill_rect` call — mirrors

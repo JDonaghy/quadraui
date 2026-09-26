@@ -125,6 +125,44 @@ impl Color {
             a: self.a,
         }
     }
+
+    /// Return this colour with the alpha channel scaled to `alpha`
+    /// (clamped to `[0.0, 1.0]`) on the `0..=255` byte scale, leaving
+    /// `r`/`g`/`b` untouched.
+    ///
+    /// Consolidates five copy-pasted `with_alpha` helpers (quadraui#1071)
+    /// that used to live in `macos/{multi_section_view,palette,
+    /// rich_text_popup}.rs` and `primitives/{scrollbar,drop_zone}.rs` —
+    /// all four expressions were mathematically equivalent (scaling by
+    /// 255 and clamping to `0.0..=255.0` gives the same rounded byte as
+    /// clamping the input to `0.0..=1.0` first and then scaling), just
+    /// written with the clamp on either side of the multiply.
+    pub fn with_alpha(self, alpha: f64) -> Self {
+        Self {
+            a: (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
+            ..self
+        }
+    }
+
+    /// Alpha-blend `over` on top of `self` at `alpha` (clamped to
+    /// `[0.0, 1.0]`), discarding both inputs' own alpha channels — the
+    /// result is always fully opaque (`a: 255`).
+    ///
+    /// Used by rasterisers on backends whose fill/line primitives don't
+    /// honour `Color::a`, as a CPU-side alpha pre-mix. Consolidates the
+    /// byte-identical `win::text::blend` and
+    /// `primitives::chart::native_surface_paint::blend` free functions
+    /// (quadraui#1071).
+    pub fn blend(self, over: Self, alpha: f64) -> Self {
+        let alpha = alpha.clamp(0.0, 1.0);
+        let mix =
+            |b: u8, o: u8| -> u8 { (b as f64 * (1.0 - alpha) + o as f64 * alpha).round() as u8 };
+        Self::rgb(
+            mix(self.r, over.r),
+            mix(self.g, over.g),
+            mix(self.b, over.b),
+        )
+    }
 }
 
 /// A contiguous run of text sharing a single style.
@@ -424,6 +462,34 @@ impl Default for TreeStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_alpha_scales_a_leaves_rgb_untouched() {
+        let c = Color::rgb(10, 20, 30).with_alpha(0.5);
+        assert_eq!((c.r, c.g, c.b, c.a), (10, 20, 30, 128));
+    }
+
+    #[test]
+    fn with_alpha_clamps_out_of_range_input() {
+        assert_eq!(Color::rgb(1, 2, 3).with_alpha(-1.0).a, 0);
+        assert_eq!(Color::rgb(1, 2, 3).with_alpha(2.0).a, 255);
+    }
+
+    #[test]
+    fn blend_zero_alpha_is_base_one_alpha_is_over() {
+        let base = Color::rgb(0, 0, 0);
+        let over = Color::rgb(200, 100, 50);
+        assert_eq!(base.blend(over, 0.0), Color::rgb(0, 0, 0));
+        assert_eq!(base.blend(over, 1.0), Color::rgb(200, 100, 50));
+    }
+
+    #[test]
+    fn blend_midpoint_averages_channels_and_is_opaque() {
+        let base = Color::rgba(0, 0, 0, 10);
+        let over = Color::rgba(200, 100, 50, 20);
+        let mixed = base.blend(over, 0.5);
+        assert_eq!((mixed.r, mixed.g, mixed.b, mixed.a), (100, 50, 25, 255));
+    }
 
     #[test]
     fn from_hex_parses_rgb() {
