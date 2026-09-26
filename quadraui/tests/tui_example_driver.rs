@@ -4490,6 +4490,74 @@ fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
     );
 }
 
+// ─── ChatDemo (quadraui#1136): input soft-wrap + auto-grow ──────────────────
+//
+// Before #1136 `ChatController::build_text_input` split only on `\n` and
+// forwarded a `scroll_col`, so a line longer than the input box scrolled
+// horizontally — the last word of a long message would never appear on
+// screen at all. Now it's pre-wrapped to `TextInput::content_cols`, so a
+// long message's words all paint, spread across multiple visual rows
+// inside the (now auto-grown) box.
+
+#[test]
+fn chat_long_message_soft_wraps_inside_the_input_box_instead_of_scrolling() {
+    // A narrow viewport keeps the wrap budget small relative to the
+    // message length without needing a huge string.
+    let mut driver = TuiDriver::new(ChatDemo::new(), 30, 20);
+
+    for c in "alpha bravo charlie delta echo foxtrot golf hotel".chars() {
+        driver.type_char(c);
+    }
+
+    let first_word = driver
+        .find_bounds("alpha")
+        .expect("first word of the typed message should be visible on screen");
+    let last_word = driver
+        .find_bounds("hotel")
+        .unwrap_or_else(|| panic!("last word should still be visible (wrapped, not scrolled off) instead of horizontally scrolled out of view:\n{}", driver.screen()));
+
+    assert!(
+        last_word.y > first_word.y,
+        "a message wider than the input box should soft-wrap onto a later \
+         visual row, not stay on the first word's row:\nfirst={first_word:?} last={last_word:?}\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn chat_input_box_grows_taller_as_wrapped_row_count_increases() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 30, 20);
+
+    // Empty input: the placeholder sits on a single (min-clamped) row —
+    // record its row. The box is bottom-anchored (`compute_layout` pins
+    // its bottom edge to the host rect's bottom), so growing it pushes
+    // its *top* — and therefore its first visual row — further up the
+    // screen (smaller y), not down.
+    let placeholder_row = driver
+        .find_bounds("Type a message")
+        .expect("placeholder should paint in the empty input box")
+        .y;
+
+    // Type a message long enough to wrap across several visual rows.
+    for c in "alpha bravo charlie delta echo foxtrot golf hotel india juliet".chars() {
+        driver.type_char(c);
+    }
+
+    let first_word_row = driver
+        .find_bounds("alpha")
+        .expect("first word should still be visible once the box has grown")
+        .y;
+
+    assert!(
+        first_word_row < placeholder_row,
+        "the input box should have grown taller (more visual rows painted) \
+         to fit the wrapped message, pushing its bottom-anchored top edge \
+         (and the first word painted just inside it) higher up the screen \
+         than the single-row placeholder used to sit:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── ChatDemo (quadraui#832): the "thinking" spinner schedules its own frames ─
 //
 // Before #832 every backend polled on a fixed cadence (TUI 16ms, GTK 33ms) and

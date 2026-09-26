@@ -853,6 +853,17 @@ impl TextInputMeasure {
     }
 }
 
+/// Border (1 cell/px) + horizontal padding (1 char column) inset shared by
+/// [`TextInput::layout`] (which uses it to compute `content_bounds`) and
+/// [`TextInput::content_cols`] (which uses it to compute a pre-wrap column
+/// budget) — kept as one function so the two computations can't drift
+/// apart.
+fn content_x_inset(char_w: f32) -> f32 {
+    let border = 1.0;
+    let pad_x = char_w;
+    border + pad_x
+}
+
 impl TextInput {
     /// Compute layout for `rect`. `measure` supplies row height + char
     /// width in the backend's native units.
@@ -863,10 +874,10 @@ impl TextInput {
         // Border (1 cell / 1 px) + horizontal padding (1 char column).
         // Vertical padding is zero so each row neatly fills `row_h`.
         let border = 1.0;
-        let pad_x = char_w;
-        let content_x = rect.x + border + pad_x;
+        let inset = content_x_inset(char_w);
+        let content_x = rect.x + inset;
         let content_y = rect.y + border;
-        let content_w = (rect.width - (border + pad_x) * 2.0).max(0.0);
+        let content_w = (rect.width - inset * 2.0).max(0.0);
         let content_h = (rect.height - border * 2.0).max(0.0);
         let content_bounds = Rect::new(content_x, content_y, content_w, content_h);
 
@@ -950,6 +961,25 @@ impl TextInput {
             hit_regions,
             placeholder_active,
         }
+    }
+
+    /// Content width in *char columns* for an outer `TextInput` width of
+    /// `width` at `char_width` — the same border+padding inset
+    /// [`Self::layout`] uses internally to compute `content_bounds`, minus
+    /// the row-height/height terms `layout` also needs (a column budget
+    /// doesn't depend on `rect.height`).
+    ///
+    /// Exposed so callers that need to pre-wrap text to a fixed width
+    /// *before* calling [`Self::layout`] — e.g.
+    /// [`crate::compose::ChatController`]'s soft-wrapping, auto-growing
+    /// chat input (quadraui#1136) — compute the same budget `layout` will
+    /// end up rendering into, without duplicating the border/padding
+    /// constants (and risking the two drifting apart).
+    pub fn content_cols(width: f32, char_width: f32) -> usize {
+        let char_w = char_width.max(1.0);
+        let inset = content_x_inset(char_w);
+        let content_w = (width - inset * 2.0).max(0.0);
+        ((content_w / char_w).floor() as usize).max(1)
     }
 }
 
@@ -1166,6 +1196,29 @@ mod tests {
                                                        // Auto-scroll keeps cursor in view, so it's still visible:
         assert!(l.cursor_bounds.is_some());
         assert_eq!(l.resolved_scroll_offset, 2);
+    }
+
+    // ── content_cols (pre-wrap budget, quadraui#1136) ────────────────
+
+    #[test]
+    fn content_cols_matches_layouts_content_width() {
+        // Same rect/measure `layout()` would use — the column budget must
+        // agree with what `content_bounds.width` actually renders, or a
+        // caller pre-wrapping text to `content_cols` would produce rows
+        // that don't fit (or leave slack) once painted.
+        let ti = TextInput::new(WidgetId::new("ti"));
+        let l = ti.layout(rect(20.0, 10.0), measure());
+        let cols = TextInput::content_cols(20.0, 1.0);
+        assert_eq!(cols, l.content_bounds.width as usize);
+    }
+
+    #[test]
+    fn content_cols_never_below_one() {
+        // A pathologically narrow rect must still yield a usable (>=1)
+        // wrap budget, not zero (which would make callers loop forever
+        // trying to fit even a single character per row).
+        assert_eq!(TextInput::content_cols(0.0, 1.0), 1);
+        assert_eq!(TextInput::content_cols(1.0, 8.0), 1);
     }
 
     // ── apply(EditOp) — insert / delete / cursor / selection / undo ─────
