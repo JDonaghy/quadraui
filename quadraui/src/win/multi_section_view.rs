@@ -375,17 +375,24 @@ fn paint_body(
             // #810: painting moved to the shared
             // `crate::primitives::chart::paint`; this raw
             // `(&ID2D1RenderTarget, &DWrite)` call site (no live
-            // `WinBackend` on hand) reuses `win::form::RawFormSurface` —
-            // a generic adapter despite its name, see that struct's doc.
+            // `WinBackend` on hand) reuses the shared
+            // `super::surface::D2dSurface` adapter (#1072).
             let chart_layout = super::chart::win_chart_layout(c, bounds, char_width, line_height);
-            let mut surface = super::form::RawFormSurface { target, dwrite };
+            let mut surface = super::surface::D2dSurface {
+                target,
+                dwrite: Some(dwrite),
+            };
             crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::Terminal(t) => {
             // #810: painting moved to the shared
-            // `crate::primitives::terminal::paint`; reuses
-            // `win::form::RawFormSurface` like the `Chart` arm above.
-            let mut surface = super::form::RawFormSurface { target, dwrite };
+            // `crate::primitives::terminal::paint`; reuses the shared
+            // `super::surface::D2dSurface` adapter like the `Chart` arm
+            // above.
+            let mut surface = super::surface::D2dSurface {
+                target,
+                dwrite: Some(dwrite),
+            };
             crate::primitives::terminal::paint(
                 t,
                 &mut surface,
@@ -425,7 +432,7 @@ fn paint_body(
 
 /// Paint an embedded [`crate::Form`] section body. #808: field-kind
 /// painting goes through the shared [`crate::primitives::form::paint`]
-/// via [`super::form::RawFormSurface`] (this call site has only a raw
+/// via [`super::surface::D2dSurface`] (this call site has only a raw
 /// `target`/`dwrite`, not a live [`super::WinBackend`]) —
 /// `FieldKind::Toolbar` is painted separately below, same as
 /// `WinBackend::draw_form`, for the same reason (see that fn's doc).
@@ -439,7 +446,10 @@ fn draw_form_body(
 ) {
     let flayout = super::form::win_form_layout(dwrite, bounds, form, line_height);
     let origin = crate::Point::new(bounds.x, bounds.y);
-    let mut surface = super::form::RawFormSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
     for vf in &flayout.visible_fields {

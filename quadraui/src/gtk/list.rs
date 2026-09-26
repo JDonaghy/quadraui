@@ -335,7 +335,11 @@ pub fn draw_list(
             visible_px as f32,
             line_height as f32,
         );
-        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        let mut raw = super::surface::CairoSurface {
+            cr,
+            layout: None,
+            translucent_fill: true,
+        };
         crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
     }
 

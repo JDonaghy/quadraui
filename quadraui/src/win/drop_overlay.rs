@@ -22,9 +22,10 @@
 //! alpha blend instead of reproducing the old premix. The insertion bar
 //! was already opaque on every backend, so it fills unchanged.
 //!
-//! This module now only carries [`RawDropOverlaySurface`] and the
-//! deprecated [`draw_drop_overlay`] compatibility shim over it, mirroring
-//! `win::scrollbar::RawScrollbarSurface` (#811 slice 1/9).
+//! This module now only carries the deprecated [`draw_drop_overlay`]
+//! compatibility shim over the shared [`super::surface::D2dSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawDropOverlaySurface`).
 //!
 //! `DropOverlay::ghost_position` is not rendered — neither GTK, macOS
 //! nor TUI paints a ghost label either, so this is parity, not a
@@ -37,92 +38,8 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::drop_zone::DropOverlay;
 use crate::theme::Theme;
-
-/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget`,
-/// used only by the deprecated [`draw_drop_overlay`] shim below and by
-/// this module's own tests — a drop overlay's paint calls exactly one
-/// verb (`surface_fill_rect`), so every other method is
-/// `unreachable!()`. Mirrors `win::scrollbar::RawScrollbarSurface`'s
-/// identical pattern (#811).
-pub(crate) struct RawDropOverlaySurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-}
-
-impl NativeSurface for RawDropOverlaySurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawDropOverlaySurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawDropOverlaySurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawDropOverlaySurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawDropOverlaySurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawDropOverlaySurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
-        unreachable!("RawDropOverlaySurface has no text measurement")
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // `win::text::fill_rect` already honours `color.a` with a real
-        // translucent `ID2D1SolidColorBrush` (the quadraui#791 fix — see
-        // the module doc for why this migration relies on that instead
-        // of the old CPU premix).
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("DropOverlay::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
-        unreachable!("DropOverlay::paint never draws text")
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("DropOverlay::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("DropOverlay::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("DropOverlay::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("DropOverlay::paint never draws an image")
-    }
-}
 
 /// Deprecated free-function shim (#865, CLAUDE.md rule 8): reproduces
 /// the pre-#865 signature exactly for any external caller that held a
@@ -141,7 +58,10 @@ impl NativeSurface for RawDropOverlaySurface<'_> {
     note = "call `Backend::draw_drop_overlay` instead — this free function is a compatibility shim over the shared #865 implementation"
 )]
 pub fn draw_drop_overlay(target: &ID2D1RenderTarget, overlay: &DropOverlay, theme: &Theme) {
-    let mut surface = RawDropOverlaySurface { target };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: None,
+    };
     crate::primitives::drop_zone::native_surface_paint::paint(overlay, &mut surface, theme);
 }
 
@@ -156,7 +76,7 @@ mod tests {
 
     /// Paint `overlay` via the shared
     /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
-    /// through a [`RawDropOverlaySurface`] over `surface`'s headless
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the deprecated [`draw_drop_overlay`]
     /// shim uses, exercised here directly so these tests don't trip the
     /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
@@ -173,7 +93,10 @@ mod tests {
             .expect("fill bg");
         surface
             .paint(|target| {
-                let mut raw = RawDropOverlaySurface { target };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: None,
+                };
                 crate::primitives::drop_zone::native_surface_paint::paint(
                     overlay,
                     &mut raw,
@@ -237,7 +160,10 @@ mod tests {
             .expect("fill bg");
         surface
             .paint(|target| {
-                let mut raw = RawDropOverlaySurface { target };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: None,
+                };
                 crate::primitives::drop_zone::native_surface_paint::paint(
                     &overlay, &mut raw, &theme,
                 );

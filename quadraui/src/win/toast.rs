@@ -20,9 +20,10 @@
 //!
 //! This module now only carries [`win_toast_stack_layout`] (pure layout,
 //! still needed by `WinBackend::toast_stack_layout` for no-paint
-//! hit-test queries), [`RawWinToastSurface`], and the deprecated
-//! [`draw_toast_stack`] compatibility shim over it, mirroring
-//! `win::status_bar`'s identical #860 shape.
+//! hit-test queries) and the deprecated [`draw_toast_stack`]
+//! compatibility shim over the shared [`super::surface::D2dSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawWinToastSurface`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod toast;` and `backend.rs`'s module
@@ -31,9 +32,8 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::theme::Theme;
 
@@ -90,80 +90,6 @@ pub fn win_toast_stack_layout(
     )
 }
 
-/// Minimal [`NativeSurface`] adapter over a raw `(&ID2D1RenderTarget,
-/// &DWrite)` pair, used only by the deprecated [`draw_toast_stack`] shim
-/// below — mirrors `win::form::RawFormSurface`'s identical pattern
-/// (#808), scoped to the three verbs a toast's paint actually uses
-/// (fill, plain text run, measure).
-pub(crate) struct RawWinToastSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-    pub(crate) dwrite: &'a DWrite,
-}
-
-impl NativeSurface for RawWinToastSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawWinToastSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawWinToastSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawWinToastSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawWinToastSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawWinToastSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
-        let _ = fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(&mut self, _rect: Rect, _color: crate::Color, _stroke_width: f32) {
-        unreachable!("ToastStack::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
-        let _ = self.dwrite.draw_text(self.target, text, rect, color);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("ToastStack::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: Rect) {
-        unreachable!("ToastStack::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("ToastStack::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("ToastStack::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
 /// the pre-#861 signature exactly for any external caller that held a
 /// direct `quadraui::win::draw_toast_stack` reference rather than going
@@ -189,7 +115,10 @@ pub fn draw_toast_stack(
     theme: &Theme,
     line_height: f32,
 ) -> ToastStackLayout {
-    let mut surface = RawWinToastSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::toast::native_surface_paint::paint(
         stack,
         &mut surface,
@@ -244,7 +173,7 @@ mod tests {
     /// Paint↔click round trip: the toast box's painted fill colour lands
     /// at its own bounds, and `hit_test` resolves clicks on dismiss,
     /// action, and body to the matching `ToastHit`. Exercises the shared
-    /// paint through [`RawWinToastSurface`] directly rather than the
+    /// paint through [`super::super::surface::D2dSurface`] directly rather than the
     /// deprecated [`draw_toast_stack`] shim, so this test doesn't trip
     /// the `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3;
     /// mirrors `win::status_bar`'s identical #860 test-migration note).
@@ -258,9 +187,9 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                let mut raw = RawWinToastSurface {
+                let mut raw = super::super::surface::D2dSurface {
                     target,
-                    dwrite: &dwrite,
+                    dwrite: Some(&dwrite),
                 };
                 crate::primitives::toast::native_surface_paint::paint(
                     &stack,
@@ -315,9 +244,9 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let painted = surface
             .paint(|target| {
-                let mut raw = RawWinToastSurface {
+                let mut raw = super::super::surface::D2dSurface {
                     target,
-                    dwrite: &dwrite,
+                    dwrite: Some(&dwrite),
                 };
                 crate::primitives::toast::native_surface_paint::paint(
                     &stack,
@@ -351,9 +280,9 @@ mod tests {
         let surface = HeadlessSurface::new(W + 20, H + 30).expect("create surface");
         let layout = surface
             .paint(|target| {
-                let mut raw = RawWinToastSurface {
+                let mut raw = super::super::surface::D2dSurface {
                     target,
-                    dwrite: &dwrite,
+                    dwrite: Some(&dwrite),
                 };
                 crate::primitives::toast::native_surface_paint::paint(
                     &stack,

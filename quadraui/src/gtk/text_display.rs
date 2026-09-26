@@ -8,12 +8,12 @@
 //! `macos::text_display::draw_text_display` and
 //! `win::text_display::draw_text_display` into one implementation. This
 //! module's own [`draw_text_display`] is now a thin wrapper over that
-//! shared `paint`, via [`super::form::RawFormSurface`] — kept (not
+//! shared `paint`, via [`super::surface::CairoSurface`] — kept (not
 //! deleted, unlike the `macos`/`win` twins) because `kubeui-gtk`'s
 //! `paint()` calls it directly on a raw `(&Context, &pango::Layout)`
 //! pair with no live [`super::backend::GtkBackend`] on hand, the same
 //! shape [`crate::gtk::multi_section_view`]'s embedded-`Chart` section
-//! body uses `RawFormSurface` for. [`gtk_text_display_layout`] is the
+//! body uses `super::surface::CairoSurface` for. [`gtk_text_display_layout`] is the
 //! pixel-unit layout query used for both hit-testing
 //! (`GtkBackend::text_display_layout`) and painting
 //! (`GtkBackend::draw_text_display`, via `Backend::text_display_layout`).
@@ -24,7 +24,7 @@ use crate::theme::Theme;
 /// Draw a [`TextDisplay`] into `(x, y, w, h)` on `cr`.
 ///
 /// Thin wrapper over [`crate::primitives::text_display::paint`] via
-/// [`super::form::RawFormSurface`] — see this module's doc for why it's
+/// [`super::surface::CairoSurface`] — see this module's doc for why it's
 /// kept rather than deleted like the `macos`/`win` equivalents. `theme`
 /// is threaded through unchanged from the pre-#810 signature.
 ///
@@ -45,7 +45,11 @@ pub fn draw_text_display(
     char_width: f64,
 ) {
     let rect = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = super::form::RawFormSurface { cr, layout };
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: false,
+    };
     crate::primitives::text_display::paint(
         display,
         rect,

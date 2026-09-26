@@ -8,15 +8,14 @@
 //! `gtk::draw_toast_stack`, `macos::toast::draw_toast_stack` and
 //! `win::toast::draw_toast_stack` into one implementation. This module
 //! now only carries [`gtk_toast_stack_layout`] (pure layout, still needed
-//! by `GtkDriver`/downstream callers for no-paint hit-test queries),
-//! [`RawGtkToastSurface`], and the deprecated [`draw_toast_stack`]
-//! compatibility shim over it, mirroring `gtk::status_bar`'s identical
-//! #860 shape.
+//! by `GtkDriver`/downstream callers for no-paint hit-test queries) and
+//! the deprecated [`draw_toast_stack`] compatibility shim over the shared
+//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawGtkToastSurface`).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::theme::Theme;
 
@@ -81,99 +80,6 @@ pub fn gtk_toast_stack_layout(
     )
 }
 
-/// Minimal [`NativeSurface`] adapter over a bare Cairo context + Pango
-/// layout, used only by the deprecated [`draw_toast_stack`] shim below —
-/// mirrors `gtk::status_bar::RawGtkStatusBarSurface`'s identical pattern
-/// (#860), scoped to the three verbs a toast's paint actually uses
-/// (fill, plain text run, measure).
-struct RawGtkToastSurface<'a> {
-    cr: &'a Context,
-    pango_layout: &'a pango::Layout,
-}
-
-impl NativeSurface for RawGtkToastSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawGtkToastSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawGtkToastSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawGtkToastSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawGtkToastSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawGtkToastSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.pango_layout.set_text(text);
-        self.pango_layout.set_attributes(None);
-        let (w, h) = self.pango_layout.pixel_size();
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        super::set_source_rgba(self.cr, color);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.fill().ok();
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("ToastStack::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        self.pango_layout.set_text(text);
-        self.pango_layout.set_attributes(None);
-        super::set_source(self.cr, color);
-        self.cr.move_to(rect.x as f64, rect.y as f64);
-        super::painted_text::show_layout(self.cr, self.pango_layout);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("ToastStack::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("ToastStack::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("ToastStack::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("ToastStack::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
 /// the pre-#861 signature exactly for any external caller that held a
 /// direct `quadraui::gtk::draw_toast_stack` reference rather than going
@@ -197,7 +103,11 @@ pub fn draw_toast_stack(
     theme: &Theme,
     line_height: f64,
 ) -> ToastStackLayout {
-    let mut surface = RawGtkToastSurface { cr, pango_layout };
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
     crate::primitives::toast::native_surface_paint::paint(
         stack,
         &mut surface,
@@ -257,7 +167,7 @@ mod tests {
     }
 
     /// Paint→click round trip at `(origin_x, origin_y)`: paints a single
-    /// toast through [`RawGtkToastSurface`] and the shared
+    /// toast through [`super::super::surface::CairoSurface`] and the shared
     /// `primitives::toast::native_surface_paint::paint` directly (rather
     /// than the deprecated [`draw_toast_stack`] shim, so this test
     /// doesn't trip the `-D warnings`-denied `deprecated` lint — mirrors
@@ -283,9 +193,10 @@ mod tests {
             cr.set_source_rgb(1.0, 1.0, 1.0);
             cr.paint().ok();
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            let mut raw = RawGtkToastSurface {
+            let mut raw = crate::gtk::surface::CairoSurface {
                 cr: &cr,
-                pango_layout: &pango_layout,
+                layout: Some(&pango_layout),
+                translucent_fill: true,
             };
             crate::primitives::toast::native_surface_paint::paint(
                 &stack,

@@ -11,9 +11,10 @@
 //! module now only carries [`mac_status_bar_layout`] (pure layout, still
 //! needed by `MacBackend::status_bar_layout` for no-paint hit-test
 //! queries) and the deprecated [`draw_status_bar`] compatibility shim over
-//! [`RawMacStatusBarSurface`], mirroring `macos::panel`'s identical #859
-//! shape. `MIN_GAP_PX` stays put — it's still [`mac_status_bar_layout`]'s
-//! own measurer constant, untouched by this migration.
+//! the shared [`super::surface::CgSurface`] adapter (#1072 — consolidated
+//! from this module's own private `RawMacStatusBarSurface`). `MIN_GAP_PX`
+//! stays put — it's still [`mac_status_bar_layout`]'s own measurer
+//! constant, untouched by this migration.
 //!
 //! ## Bold segments
 //!
@@ -33,7 +34,6 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::status_bar::StatusSegmentMeasure;
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -79,102 +79,6 @@ pub fn mac_status_bar_layout(
     bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure)
 }
 
-/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
-/// used only by the deprecated [`draw_status_bar`] shim below — mirrors
-/// `macos::panel::RawPanelSurface`'s identical pattern (#859), extended
-/// with clip push/pop, which this primitive's paint actually uses.
-/// `surface_measure_text_styled`/`surface_draw_text_run_styled` take the
-/// trait's default (drop `bold`) — see this module's doc, "Bold segments".
-struct RawMacStatusBarSurface<'a> {
-    ctx: CGContextRef,
-    font: &'a CTFont,
-}
-
-impl NativeSurface for RawMacStatusBarSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawMacStatusBarSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawMacStatusBarSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawMacStatusBarSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawMacStatusBarSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawMacStatusBarSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = super::text::measure_text(self.font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
-        // pass — see this struct's construction site.
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("StatusBar::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        // SAFETY: `self.ctx` is the caller-supplied context passed to
-        // `draw_status_bar`, valid for the duration of the shim call.
-        unsafe {
-            super::text::draw_text(
-                self.ctx,
-                self.font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                super::backend::ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("StatusBar::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
-    }
-
-    fn surface_pop_clip(&mut self) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_pop_clip(self.ctx) };
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("StatusBar::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
 /// the pre-#860 signature exactly for any external caller that held a
 /// direct `quadraui::macos::draw_status_bar` reference rather than going
@@ -204,7 +108,10 @@ pub unsafe fn draw_status_bar(
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
 ) -> StatusBarLayout {
-    let mut surface = RawMacStatusBarSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::status_bar::native_surface_paint::paint(
         bar,
         &mut surface,

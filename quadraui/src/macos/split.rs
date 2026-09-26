@@ -7,10 +7,10 @@
 //! macOS's `CGContextSetRGBFillColor` (via `ns_fill_rect`) always
 //! honoured a translucent `theme.separator`, while pre-migration GTK
 //! did not — this module's behaviour is unchanged by the migration.
-//! This module now carries [`mac_split_layout`], [`RawSplitSurface`],
-//! and the deprecated [`draw_split`] compatibility shim over the shared
-//! paint, mirroring `macos::split_tree::RawSplitTreeSurface` (#863,
-//! slice 6/9).
+//! This module now carries [`mac_split_layout`] and the deprecated
+//! [`draw_split`] compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawSplitSurface`).
 
 use core_graphics::sys::CGContextRef;
 
@@ -25,86 +25,6 @@ const DIVIDER_PX: f32 = 4.0;
 pub fn mac_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     split.layout(bounds, SplitMeasure::new(DIVIDER_PX))
-}
-
-/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
-/// `CGContextRef`, used only by the deprecated [`draw_split`] shim below
-/// — a split's paint calls exactly one verb (`surface_fill_rect`, once
-/// for the divider), so every other method is `unreachable!()`. Mirrors
-/// `macos::split_tree::RawSplitTreeSurface`'s identical pattern (#863).
-pub(crate) struct RawSplitSurface {
-    pub(crate) ctx: CGContextRef,
-}
-
-impl crate::native_surface::NativeSurface for RawSplitSurface {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawSplitSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawSplitSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawSplitSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawSplitSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawSplitSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
-        unreachable!("RawSplitSurface has no text measurement")
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
-        // pass — see this struct's construction site.
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Split::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
-        unreachable!("Split::paint never draws text")
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Split::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("Split::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("Split::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("Split::paint never draws an image")
-    }
 }
 
 /// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces
@@ -134,7 +54,7 @@ pub unsafe fn draw_split(
     theme: &Theme,
 ) -> SplitLayout {
     let layout = mac_split_layout(split, x, y, w, h);
-    let mut surface = RawSplitSurface { ctx };
+    let mut surface = super::surface::CgSurface { ctx, font: None };
     crate::primitives::split::native_surface_paint::paint(&layout, &mut surface, theme);
     layout
 }

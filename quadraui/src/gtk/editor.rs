@@ -42,7 +42,7 @@
 //! already uses, so paint and click agree by construction), converted
 //! to [`crate::primitives::scrollbar::Scrollbar`] and painted through
 //! [`crate::primitives::scrollbar::native_surface_paint::paint`] via
-//! the [`super::scrollbar::RawScrollbarSurface`] adapter — the same
+//! the shared [`super::surface::CairoSurface`] adapter (#1072) — the same
 //! pattern `gtk::data_table` and `gtk::list` already use to paint an
 //! embedded scrollbar from a bare `cr: &Context` rather than a live
 //! `GtkBackend`.
@@ -555,7 +555,11 @@ pub fn draw_editor_with_options(
             editor_geom.visible_lines as f32,
             line_height as f32,
         );
-        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        let mut raw = super::surface::CairoSurface {
+            cr,
+            layout: None,
+            translucent_fill: true,
+        };
         crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
     }
     if let Some(h_track) = editor_geom.h_scrollbar_bounds {
@@ -567,7 +571,11 @@ pub fn draw_editor_with_options(
             editor_geom.visible_cols as f32,
             line_height as f32,
         );
-        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        let mut raw = super::surface::CairoSurface {
+            cr,
+            layout: None,
+            translucent_fill: true,
+        };
         crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
     }
 

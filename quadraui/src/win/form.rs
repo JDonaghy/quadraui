@@ -1,6 +1,8 @@
-//! Direct2D / DirectWrite layout + [`RawFormSurface`] for
-//! [`crate::Form`] (issue #26; field-kind painting moved to the shared
-//! [`crate::primitives::form::paint`] in #808).
+//! Direct2D / DirectWrite layout for [`crate::Form`] (issue #26;
+//! field-kind painting moved to the shared [`crate::primitives::form::paint`]
+//! in #808, via the shared [`super::surface::D2dSurface`] adapter
+//! consolidated in #1072 from this module's own private
+//! `RawFormSurface`).
 //!
 //! [`win_form_layout`] computes one [`crate::FormLayout`] — the same
 //! "one layout, paint and hit-test both consume it" contract
@@ -23,129 +25,16 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-/// Minimal [`NativeSurface`] adapter over a raw `(&ID2D1RenderTarget,
-/// &DWrite)` pair, for [`crate::primitives::form::paint`] call sites
-/// that have only those — not a live [`super::WinBackend`] — such as
-/// [`crate::win::multi_section_view`]'s embedded-`Form` section body.
-///
-/// Frame-lifecycle / metrics verbs are unreachable from a raw target
-/// (there is no backend to ask) so they panic if ever called — `paint`
-/// never calls them (it only fills, draws text, and measures text), so
-/// this is a latent contract, not a live gap.
-pub(crate) struct RawFormSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-    pub(crate) dwrite: &'a DWrite,
-}
-
-impl NativeSurface for RawFormSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawFormSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawFormSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawFormSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawFormSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawFormSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
-        let _ = fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
-        let _ = super::text::stroke_rect(self.target, rect, color, stroke_width);
-    }
-
-    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
-        let _ = self.dwrite.draw_text(self.target, text, rect, color);
-    }
-
-    /// #810: overrides the default (which drops styling and scale) —
-    /// mirrors `WinBackend::surface_draw_text_run_styled`'s `bold`-only
-    /// plus `scale_x` support, needed so
-    /// [`crate::win::multi_section_view`]'s embedded `Terminal` section
-    /// body (the one production call site that reaches this through
-    /// `RawFormSurface` rather than a live `WinBackend`) doesn't lose
-    /// bold cells or the wide-glyph advance fix by routing through
-    /// `primitives::terminal::paint`.
-    #[allow(clippy::too_many_arguments)]
-    fn surface_draw_text_run_styled(
-        &mut self,
-        rect: Rect,
-        text: &str,
-        color: crate::Color,
-        bold: bool,
-        italic: bool,
-        underline: bool,
-        scale_x: f32,
-    ) {
-        let _ = (italic, underline);
-        if (scale_x - 1.0).abs() > f32::EPSILON {
-            super::text::with_horizontal_scale(self.target, scale_x, rect.x, || {
-                let _ = self
-                    .dwrite
-                    .draw_text_styled(self.target, text, rect, color, bold);
-            });
-        } else {
-            let _ = self
-                .dwrite
-                .draw_text_styled(self.target, text, rect, color, bold);
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        from: crate::Point,
-        to: crate::Point,
-        color: crate::Color,
-        stroke_width: f32,
-    ) {
-        let _ =
-            super::text::draw_line(self.target, from.x, from.y, to.x, to.y, color, stroke_width);
-    }
-
-    fn surface_push_clip(&mut self, rect: Rect) {
-        super::text::push_clip(self.target, rect);
-    }
-
-    fn surface_pop_clip(&mut self) {
-        super::text::pop_clip(self.target);
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        crate::backend::ImagePaintResult::Unsupported
-    }
-}
-
 /// Deprecated free-function shim (#808, CLAUDE.md rule 8): this module's
 /// `draw_form` used to match every `FieldKind` directly. Painting now
 /// goes through [`crate::primitives::form::paint`] via
-/// [`RawFormSurface`]; this wrapper reproduces the old signature exactly
+/// [`super::surface::D2dSurface`]; this wrapper reproduces the old signature exactly
 /// for any external caller that held a direct `quadraui::win::draw_form`
 /// reference rather than going through [`crate::Backend::draw_form`] —
 /// the sanctioned entry point, and the one every in-tree call site
@@ -156,7 +45,7 @@ impl NativeSurface for RawFormSurface<'_> {
 /// method's doc).
 #[deprecated(
     since = "0.0.1",
-    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `RawFormSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
+    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `super::surface::D2dSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
 )]
 pub fn draw_form(
     target: &ID2D1RenderTarget,
@@ -168,7 +57,10 @@ pub fn draw_form(
     let flayout = win_form_layout(dwrite, rect, form, line_height);
     let theme = Theme::default();
     let origin = crate::Point::new(rect.x, rect.y);
-    let mut surface = RawFormSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::form::paint(form, &flayout, &mut surface, &theme, origin);
 
     for vf in &flayout.visible_fields {
@@ -374,7 +266,7 @@ mod tests {
     const LINE_HEIGHT: f32 = 14.0;
 
     /// Paint `form` via the shared [`crate::primitives::form::paint`]
-    /// through a [`RawFormSurface`] over `surface`'s headless target —
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless target —
     /// the same adapter `win::multi_section_view`'s embedded-`Form` body
     /// uses, exercised here instead of a live `WinBackend` since these
     /// tests predate #808 and only ever needed `target`/`dwrite`.
@@ -384,7 +276,10 @@ mod tests {
         let origin = crate::Point::new(rect.x, rect.y);
         surface
             .paint(|target| {
-                let mut raw = RawFormSurface { target, dwrite };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
                 crate::primitives::form::paint(form, &layout, &mut raw, &theme, origin);
             })
             .expect("paint form");

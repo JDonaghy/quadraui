@@ -15,7 +15,6 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::theme::Theme;
@@ -55,119 +54,12 @@ pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont
     })
 }
 
-/// Minimal [`NativeSurface`] adapter over a raw `(CGContextRef, &CTFont)`
-/// pair, for [`crate::primitives::form::paint`] call sites that have
-/// only those — not a live [`super::MacBackend`] — such as
-/// [`crate::macos::multi_section_view`]'s embedded-`Form` section body.
-///
-/// Frame-lifecycle / measurement-metrics verbs are unreachable from a
-/// bare `CGContextRef` (there is no backend to ask), so they panic if
-/// ever called — `paint` never calls them (it only fills, draws text,
-/// and measures text), so this is a latent contract, not a live gap.
-pub(crate) struct RawFormSurface<'a> {
-    pub(crate) ctx: CGContextRef,
-    pub(crate) font: &'a CTFont,
-}
-
-impl NativeSurface for RawFormSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawFormSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawFormSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawFormSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawFormSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawFormSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = measure_text(self.font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's
-        // paint pass — see this struct's construction sites.
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(&mut self, rect: crate::Rect, color: Color, stroke_width: f32) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_stroke_rect(self.ctx, rect, color, stroke_width as f64) };
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: Color) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe {
-            draw_text(
-                self.ctx,
-                self.font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                super::backend::ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        from: crate::Point,
-        to: crate::Point,
-        color: Color,
-        stroke_width: f32,
-    ) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe {
-            super::backend::ns_draw_line(
-                self.ctx,
-                from.x as f64,
-                from.y as f64,
-                to.x as f64,
-                to.y as f64,
-                color,
-                stroke_width as f64,
-            );
-        }
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
-    }
-
-    fn surface_pop_clip(&mut self) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_pop_clip(self.ctx) };
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        // Matches `MacBackend::draw_image`: no `NSImage` decoder wired
-        // up yet (#802).
-        crate::backend::ImagePaintResult::Unsupported
-    }
-}
-
 /// Deprecated free-function shim (#808, CLAUDE.md rule 8): this module's
 /// `draw_form` used to match every `FieldKind` directly, and matched
 /// only 10 of 14 (see the module doc). Painting now goes through
-/// [`crate::primitives::form::paint`] via [`RawFormSurface`]; this
-/// wrapper reproduces the old signature exactly for any external caller
-/// that held a direct `quadraui::macos::draw_form` reference rather than
+/// [`crate::primitives::form::paint`] via [`super::surface::CgSurface`];
+/// this wrapper reproduces the old signature exactly for any external
+/// caller that held a direct `quadraui::macos::draw_form` reference rather than
 /// going through [`crate::Backend::draw_form`] — the sanctioned entry
 /// point, and the one every in-tree call site already uses, which is
 /// why this shim has no in-repo caller left to trip the
@@ -182,7 +74,7 @@ impl NativeSurface for RawFormSurface<'_> {
 /// call.
 #[deprecated(
     since = "0.0.1",
-    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `RawFormSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
+    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `super::surface::CgSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
 )]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_form(
@@ -203,7 +95,10 @@ pub unsafe fn draw_form(
     }
 
     let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = RawFormSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
     for vf in &flayout.visible_fields {

@@ -21,7 +21,6 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::form::RawFormSurface;
     use super::super::headless::BitmapSurface;
     use super::super::text::make_font;
     use super::super::MacBackend;
@@ -92,8 +91,8 @@ mod tests {
     /// glyph (CJK) followed by vt100's blank continuation cell must have
     /// its background span both columns — the continuation cell's own
     /// (different) background must NOT paint over the second half of the
-    /// wide glyph's cell. Paints via `RawFormSurface` directly (rather
-    /// than through `MacBackend::draw_terminal`) so the test controls
+    /// wide glyph's cell. Paints via `super::surface::CgSurface` directly
+    /// (rather than through `MacBackend::draw_terminal`) so the test controls
     /// `char_width` explicitly instead of depending on Menlo's measured
     /// advance — the same reason `win::multi_section_view`'s embedded
     /// `Terminal` section body uses that adapter.
@@ -120,9 +119,9 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let theme = Theme::default();
         let f = font();
-        let mut raw = RawFormSurface {
+        let mut raw = super::super::surface::CgSurface {
             ctx: surface.context_ptr(),
-            font: &f,
+            font: Some(&f),
         };
         crate::primitives::terminal::paint(
             &term, &mut raw, &theme, 0.0, 0.0, W as f32, H as f32, LINE_H, CHAR_W, None,
@@ -167,9 +166,9 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let theme = Theme::default();
         let f = font();
-        let mut raw = RawFormSurface {
+        let mut raw = super::super::surface::CgSurface {
             ctx: surface.context_ptr(),
-            font: &f,
+            font: Some(&f),
         };
         crate::primitives::terminal::paint(
             &term, &mut raw, &theme, 0.0, 0.0, W as f32, H as f32, LINE_H, CHAR_W, None,

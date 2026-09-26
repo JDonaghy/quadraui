@@ -354,15 +354,18 @@ fn paint_body(
             // #810: painting moved to the shared
             // `crate::primitives::chart::paint`; this raw
             // `(&Context, &pango::Layout)` call site (no live
-            // `GtkBackend` on hand) uses the same `RawFormSurface`
-            // adapter `form::draw_form`'s deprecated shim uses for the
-            // same reason (#808's doc explains why the name is generic,
-            // not form-specific).
+            // `GtkBackend` on hand) uses the same shared
+            // `super::surface::CairoSurface` adapter (#1072)
+            // `form::draw_form`'s deprecated shim uses.
             layout.set_text("M");
             let char_width = layout.pixel_size().0 as f64;
             let chart_layout =
                 super::gtk_chart_layout(c, x, y, w, h, line_height, char_width.max(1.0));
-            let mut surface = super::form::RawFormSurface { cr, layout };
+            let mut surface = super::surface::CairoSurface {
+                cr,
+                layout: Some(layout),
+                translucent_fill: false,
+            };
             crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::MessageList(m) => {
@@ -387,7 +390,7 @@ fn paint_body(
 
 /// Paint an embedded [`crate::Form`] section body. #808: field-kind
 /// painting goes through the shared [`crate::primitives::form::paint`]
-/// via [`super::form::RawFormSurface`] (this call site has only a raw
+/// via [`super::surface::CairoSurface`] (this call site has only a raw
 /// `cr`/`layout`, not a live [`super::backend::GtkBackend`]) —
 /// `FieldKind::Toolbar` is painted separately below, same as
 /// `GtkBackend::draw_form`, for the same reason (see that fn's doc).
@@ -412,7 +415,11 @@ fn draw_form_body(
         crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
     });
     let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = super::form::RawFormSurface { cr, layout };
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: false,
+    };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
     for vf in &flayout.visible_fields {

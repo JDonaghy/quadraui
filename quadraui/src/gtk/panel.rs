@@ -9,14 +9,14 @@
 //! `win::panel::draw_panel` into one implementation. This module now
 //! only carries [`gtk_panel_layout`] (pure layout, still needed by
 //! `GtkBackend::panel_layout` for no-paint hit-test queries) and the
-//! deprecated [`draw_panel`] compatibility shim, mirroring
-//! `gtk::scrollbar`'s identical #811 shape.
+//! deprecated [`draw_panel`] compatibility shim over the shared
+//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawPanelSurface`).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::theme::Theme;
 
@@ -44,100 +44,6 @@ pub fn gtk_panel_layout(
     panel.layout(bounds, measure)
 }
 
-/// Minimal [`NativeSurface`] adapter over a bare Cairo context + Pango
-/// layout, used only by the deprecated [`draw_panel`] shim below — a
-/// panel's paint calls `surface_fill_rect`, `surface_measure_text` and
-/// `surface_draw_text_run`; every other method is `unreachable!()`.
-/// Mirrors `gtk::scrollbar::RawScrollbarSurface`'s identical pattern
-/// (#811).
-struct RawPanelSurface<'a> {
-    cr: &'a Context,
-    pango_layout: &'a pango::Layout,
-}
-
-impl NativeSurface for RawPanelSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawPanelSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawPanelSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawPanelSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawPanelSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawPanelSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.pango_layout.set_text(text);
-        self.pango_layout.set_attributes(None);
-        let (w, h) = self.pango_layout.pixel_size();
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        super::set_source_rgba(self.cr, color);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.fill().ok();
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Panel::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        self.pango_layout.set_text(text);
-        self.pango_layout.set_attributes(None);
-        super::set_source(self.cr, color);
-        self.cr.move_to(rect.x as f64, rect.y as f64);
-        super::painted_text::show_layout(self.cr, self.pango_layout);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Panel::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("Panel::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("Panel::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("Panel::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
 /// the pre-#859 signature exactly for any external caller that held a
 /// direct `quadraui::gtk::draw_panel` reference rather than going
@@ -162,7 +68,11 @@ pub fn draw_panel(
     line_height: f64,
 ) -> PanelLayout {
     let layout = gtk_panel_layout(panel, x, y, w, h, line_height);
-    let mut surface = RawPanelSurface { cr, pango_layout };
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
     crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, theme);
     layout
 }

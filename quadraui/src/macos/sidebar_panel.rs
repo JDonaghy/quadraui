@@ -8,14 +8,14 @@
 //! and `win::sidebar_panel::draw_sidebar_panel` into one implementation.
 //! This module now only carries [`mac_sidebar_panel_layout`] (pure
 //! layout, still needed by `MacBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries), [`RawSidebarPanelSurface`] and the
-//! deprecated [`draw_sidebar_panel`] compatibility shim over it,
-//! mirroring `macos::panel`'s identical #859 shape.
+//! no-paint hit-test queries) and the deprecated [`draw_sidebar_panel`]
+//! compatibility shim over the shared [`super::surface::CgSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawSidebarPanelSurface`).
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 use crate::theme::Theme;
@@ -41,113 +41,6 @@ pub fn mac_sidebar_panel_layout(
         SidebarPanelMeasure::new(line_height as f32, 8.0),
         |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
     )
-}
-
-/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
-/// used only by the deprecated [`draw_sidebar_panel`] shim below. The
-/// shared paint calls `surface_fill_rect`, `surface_stroke_rect`,
-/// `surface_measure_text`, `surface_draw_text_run`,
-/// `surface_draw_line` and `surface_push_clip`/`surface_pop_clip`;
-/// every other method is `unreachable!()`. Mirrors
-/// `macos::panel::RawPanelSurface`'s identical #859 pattern.
-struct RawSidebarPanelSurface<'a> {
-    ctx: CGContextRef,
-    font: &'a CTFont,
-}
-
-impl NativeSurface for RawSidebarPanelSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawSidebarPanelSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawSidebarPanelSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawSidebarPanelSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawSidebarPanelSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawSidebarPanelSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = super::text::measure_text(self.font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
-        // pass — see this struct's construction site. `ns_fill_rect`
-        // already honours `color.a` with a real alpha blend (unlike the
-        // GTK `NativeSurface::surface_fill_rect` bug quadraui#811 fixed
-        // — see this module's doc, divergence 3).
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(&mut self, rect: crate::Rect, color: crate::Color, stroke_width: f32) {
-        // SAFETY: same contract as `surface_fill_rect` above.
-        unsafe { super::backend::ns_stroke_rect(self.ctx, rect, color, stroke_width as f64) };
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        // SAFETY: `self.ctx` is the caller-supplied context passed to
-        // `draw_sidebar_panel`, valid for the duration of the shim call.
-        unsafe {
-            super::text::draw_text(
-                self.ctx,
-                self.font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                super::backend::ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        from: crate::Point,
-        to: crate::Point,
-        color: crate::Color,
-        stroke_width: f32,
-    ) {
-        // SAFETY: same contract as `surface_fill_rect` above.
-        unsafe {
-            super::backend::ns_draw_line(
-                self.ctx,
-                from.x as f64,
-                from.y as f64,
-                to.x as f64,
-                to.y as f64,
-                color,
-                stroke_width as f64,
-            );
-        }
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        // SAFETY: same contract as `surface_fill_rect` above.
-        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
-    }
-
-    fn surface_pop_clip(&mut self) {
-        // SAFETY: same contract as `surface_fill_rect` above.
-        unsafe { super::backend::ns_pop_clip(self.ctx) };
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("SidebarPanel::paint never draws an image")
-    }
 }
 
 /// Deprecated free-function shim (#862, CLAUDE.md rule 8): reproduces
@@ -182,7 +75,10 @@ pub unsafe fn draw_sidebar_panel(
     pressed_toolbar_id: Option<&WidgetId>,
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = RawSidebarPanelSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::sidebar_panel::native_surface_paint::paint(
         panel,
         &mut surface,

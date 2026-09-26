@@ -236,7 +236,11 @@ pub fn draw_data_table(
             layout.visible_rows as f32,
             line_height as f32,
         );
-        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        let mut raw = super::surface::CairoSurface {
+            cr,
+            layout: None,
+            translucent_fill: true,
+        };
         crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
     }
 
@@ -259,7 +263,11 @@ pub fn draw_data_table(
             visible_w,
             line_height as f32,
         );
-        let mut raw = super::scrollbar::RawScrollbarSurface { cr };
+        let mut raw = super::surface::CairoSurface {
+            cr,
+            layout: None,
+            translucent_fill: true,
+        };
         crate::primitives::scrollbar::native_surface_paint::paint(&hsb, &mut raw, theme);
     }
 

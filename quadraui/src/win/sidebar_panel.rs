@@ -11,9 +11,10 @@
 //! through to the embedded toolbar — preserved as-is, not fixed here).
 //! This module now only carries [`win_sidebar_panel_layout`] (pure
 //! layout, still needed by `WinBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries), [`RawSidebarPanelSurface`] and the
-//! deprecated [`draw_sidebar_panel`] compatibility shim over it,
-//! mirroring `win::panel`'s identical #859 shape.
+//! no-paint hit-test queries) and the deprecated [`draw_sidebar_panel`]
+//! compatibility shim over the shared [`super::surface::D2dSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawSidebarPanelSurface`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod sidebar_panel;` and `backend.rs`'s
@@ -25,7 +26,6 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use super::text::DWrite;
 use super::toolbar::DWriteMeasure;
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 use crate::theme::Theme;
@@ -52,84 +52,6 @@ pub fn win_sidebar_panel_layout(
     })
 }
 
-/// Minimal [`NativeSurface`] adapter over a bare `(&ID2D1RenderTarget,
-/// &DWrite)` pair, used only by the deprecated [`draw_sidebar_panel`]
-/// shim below. The shared paint calls `surface_fill_rect`,
-/// `surface_stroke_rect`, `surface_measure_text`,
-/// `surface_draw_text_run`, `surface_draw_line` and
-/// `surface_push_clip`/`surface_pop_clip`; every other method is
-/// `unreachable!()`. Mirrors `win::panel::RawPanelSurface`'s identical
-/// #859 pattern.
-pub(crate) struct RawSidebarPanelSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-    pub(crate) dwrite: &'a DWrite,
-}
-
-impl NativeSurface for RawSidebarPanelSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawSidebarPanelSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawSidebarPanelSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawSidebarPanelSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawSidebarPanelSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawSidebarPanelSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(&mut self, rect: crate::Rect, color: crate::Color, stroke_width: f32) {
-        let _ = super::text::stroke_rect(self.target, rect, color, stroke_width);
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        let _ = self.dwrite.draw_text(self.target, text, rect, color);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        from: crate::Point,
-        to: crate::Point,
-        color: crate::Color,
-        stroke_width: f32,
-    ) {
-        let _ =
-            super::text::draw_line(self.target, from.x, from.y, to.x, to.y, color, stroke_width);
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        super::text::push_clip(self.target, rect);
-    }
-
-    fn surface_pop_clip(&mut self) {
-        super::text::pop_clip(self.target);
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("SidebarPanel::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#862, CLAUDE.md rule 8): reproduces
 /// the pre-#862 signature exactly (no `Theme` param — this backend never
 /// took one for `SidebarPanel`'s embedded toolbar; see this module's
@@ -154,7 +76,10 @@ pub fn draw_sidebar_panel(
     pressed_toolbar_id: Option<&WidgetId>,
 ) -> SidebarPanelLayout {
     let theme = Theme::default();
-    let mut surface = RawSidebarPanelSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::sidebar_panel::native_surface_paint::paint(
         panel,
         &mut surface,
@@ -178,7 +103,7 @@ mod tests {
 
     /// Paint `panel` via the shared
     /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-    /// through a [`RawSidebarPanelSurface`] over `surface`'s headless
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the deprecated [`draw_sidebar_panel`]
     /// shim uses, exercised here directly so these tests don't trip the
     /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
@@ -196,7 +121,10 @@ mod tests {
         let theme = Theme::default();
         surface
             .paint(|target| {
-                let mut raw = RawSidebarPanelSurface { target, dwrite };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
                 crate::primitives::sidebar_panel::native_surface_paint::paint(
                     panel,
                     &mut raw,

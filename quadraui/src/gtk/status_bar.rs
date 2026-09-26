@@ -9,15 +9,15 @@
 //! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
 //! and `win::status_bar::draw_status_bar` into one implementation. This
 //! module now only carries the deprecated [`draw_status_bar`]
-//! compatibility shim over [`RawGtkStatusBarSurface`], mirroring
-//! `gtk::panel`'s identical #859 shape. `MIN_GAP_PX` stays put — it's
-//! still `GtkBackend::status_bar_layout`'s own no-paint measurer
-//! constant, untouched by this migration.
+//! compatibility shim over the shared [`super::surface::CairoSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawGtkStatusBarSurface`). `MIN_GAP_PX` stays put — it's still
+//! `GtkBackend::status_bar_layout`'s own no-paint measurer constant,
+//! untouched by this migration.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::status_bar::{StatusBar, StatusBarLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -28,156 +28,6 @@ use crate::types::WidgetId;
 /// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
 /// its own independent copy of the same value (see that module's doc).
 pub const MIN_GAP_PX: f32 = 16.0;
-
-/// Minimal [`NativeSurface`] adapter over a bare Cairo context + Pango
-/// layout, used only by the deprecated [`draw_status_bar`] shim below —
-/// mirrors `gtk::panel::RawPanelSurface`'s identical pattern (#859).
-struct RawGtkStatusBarSurface<'a> {
-    cr: &'a Context,
-    pango_layout: &'a pango::Layout,
-}
-
-impl NativeSurface for RawGtkStatusBarSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawGtkStatusBarSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawGtkStatusBarSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawGtkStatusBarSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawGtkStatusBarSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawGtkStatusBarSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.pango_layout.set_text(text);
-        self.pango_layout.set_attributes(None);
-        let (w, h) = self.pango_layout.pixel_size();
-        (w as f32, h as f32)
-    }
-
-    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
-        self.pango_layout.set_text(text);
-        if bold {
-            let attrs = pango::AttrList::new();
-            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
-            self.pango_layout.set_attributes(Some(&attrs));
-        } else {
-            self.pango_layout.set_attributes(None);
-        }
-        let (w, h) = self.pango_layout.pixel_size();
-        self.pango_layout.set_attributes(None);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        super::set_source_rgba(self.cr, color);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.fill().ok();
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("StatusBar::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        self.pango_layout.set_text(text);
-        self.pango_layout.set_attributes(None);
-        super::set_source(self.cr, color);
-        self.cr.move_to(rect.x as f64, rect.y as f64);
-        super::painted_text::show_layout(self.cr, self.pango_layout);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn surface_draw_text_run_styled(
-        &mut self,
-        rect: crate::Rect,
-        text: &str,
-        color: crate::Color,
-        bold: bool,
-        italic: bool,
-        underline: bool,
-        scale_x: f32,
-    ) {
-        self.pango_layout.set_text(text);
-        let attrs = pango::AttrList::new();
-        if bold {
-            attrs.insert(pango::AttrInt::new_weight(pango::Weight::Bold));
-        }
-        if italic {
-            attrs.insert(pango::AttrInt::new_style(pango::Style::Italic));
-        }
-        if underline {
-            attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
-        }
-        self.pango_layout.set_attributes(Some(&attrs));
-        super::set_source(self.cr, color);
-        if (scale_x - 1.0).abs() > f32::EPSILON {
-            self.cr.save().ok();
-            self.cr.translate(rect.x as f64, rect.y as f64);
-            self.cr.scale(scale_x as f64, 1.0);
-            self.cr.move_to(0.0, 0.0);
-            super::painted_text::show_layout(self.cr, self.pango_layout);
-            self.cr.restore().ok();
-        } else {
-            self.cr.move_to(rect.x as f64, rect.y as f64);
-            super::painted_text::show_layout(self.cr, self.pango_layout);
-        }
-        self.pango_layout.set_attributes(None);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("StatusBar::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        self.cr.save().ok();
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.clip();
-    }
-
-    fn surface_pop_clip(&mut self) {
-        self.cr.restore().ok();
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("StatusBar::paint never draws an image")
-    }
-}
 
 /// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
 /// the pre-#860 signature exactly for any external caller that held a
@@ -203,7 +53,11 @@ pub fn draw_status_bar(
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
 ) -> StatusBarLayout {
-    let mut surface = RawGtkStatusBarSurface { cr, pango_layout };
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
     crate::primitives::status_bar::native_surface_paint::paint(
         bar,
         &mut surface,
@@ -256,7 +110,7 @@ mod tests {
     /// (`gtk::backend` tests), which `status_bar_layout` had no
     /// equivalent for.
     ///
-    /// Exercises the shared paint through [`RawGtkStatusBarSurface`]
+    /// Exercises the shared paint through [`super::super::surface::CairoSurface`]
     /// directly rather than the deprecated [`draw_status_bar`] shim, so
     /// this test doesn't trip the `-D warnings`-denied `deprecated` lint
     /// (CLAUDE.md rule 3; mirrors `gtk::panel`'s identical test-migration
@@ -267,16 +121,18 @@ mod tests {
         let theme = Theme::default();
         let bar = test_bar();
 
-        let mut raw = RawGtkStatusBarSurface {
+        let mut raw = crate::gtk::surface::CairoSurface {
             cr: &cr,
-            pango_layout: &pango_layout,
+            layout: Some(&pango_layout),
+            translucent_fill: true,
         };
         let at_origin = crate::primitives::status_bar::native_surface_paint::paint(
             &bar, &mut raw, &theme, 0.0, 0.0, 100.0, 20.0, None, None,
         );
-        let mut raw = RawGtkStatusBarSurface {
+        let mut raw = crate::gtk::surface::CairoSurface {
             cr: &cr,
-            pango_layout: &pango_layout,
+            layout: Some(&pango_layout),
+            translucent_fill: true,
         };
         let shifted = crate::primitives::status_bar::native_surface_paint::paint(
             &bar, &mut raw, &theme, x as f32, y as f32, 100.0, 20.0, None, None,

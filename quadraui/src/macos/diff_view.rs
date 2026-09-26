@@ -8,9 +8,10 @@
 //! ellipsize vs. hard-clip) found while unifying
 //! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
 //! and `win::diff_view::draw_diff_view` into one implementation. This
-//! module now only carries [`RawMacDiffViewSurface`] and the deprecated
-//! [`draw_diff_view`] compatibility shim over it, mirroring
-//! `macos::status_bar::RawMacStatusBarSurface` (#860).
+//! module now only carries the deprecated [`draw_diff_view`]
+//! compatibility shim over the shared [`super::surface::CgSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawMacDiffViewSurface`).
 //!
 //! Before #737 landed, `MacBackend::draw_diff_view` painted nothing and
 //! returned `visible_rows: 0`, which silently pinned every host's scroll
@@ -19,114 +20,19 @@
 //!
 //! # Safety
 //!
-//! `unsafe` here is confined to [`RawMacDiffViewSurface`]'s trait impl,
-//! which forwards to [`super::backend::ns_fill_rect`]/[`ns_push_clip`]/
-//! [`ns_pop_clip`](super::backend::ns_pop_clip) and [`super::text::draw_text`] —
-//! each requires a valid `CGContextRef` borrowed for the duration of the
-//! call, the same contract [`RawMacDiffViewSurface`]'s constructor sites
-//! (the deprecated [`draw_diff_view`] shim, and this module's own tests)
-//! uphold.
+//! `unsafe` here is confined to [`super::surface::CgSurface`]'s trait
+//! impl, which forwards to [`super::backend::ns_fill_rect`]/
+//! [`ns_push_clip`]/[`ns_pop_clip`](super::backend::ns_pop_clip) and
+//! [`super::text::draw_text`] — each requires a valid `CGContextRef`
+//! borrowed for the duration of the call, the same contract
+//! [`super::surface::CgSurface`]'s constructor sites (the deprecated
+//! [`draw_diff_view`] shim, and this module's own tests) uphold.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::theme::Theme;
-
-/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
-/// used only by the deprecated [`draw_diff_view`] shim below — mirrors
-/// `macos::status_bar::RawMacStatusBarSurface`'s identical pattern
-/// (#860).
-struct RawMacDiffViewSurface<'a> {
-    ctx: CGContextRef,
-    font: &'a CTFont,
-}
-
-impl NativeSurface for RawMacDiffViewSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawMacDiffViewSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawMacDiffViewSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawMacDiffViewSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawMacDiffViewSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawMacDiffViewSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = super::text::measure_text(self.font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
-        // pass — see this struct's construction site.
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("DiffView::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        // SAFETY: `self.ctx` is the caller-supplied context passed to
-        // `draw_diff_view`, valid for the duration of the shim call.
-        unsafe {
-            super::text::draw_text(
-                self.ctx,
-                self.font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                super::backend::ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("DiffView::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_push_clip(self.ctx, rect) };
-    }
-
-    fn surface_pop_clip(&mut self) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe { super::backend::ns_pop_clip(self.ctx) };
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("DiffView::paint never draws an image")
-    }
-}
 
 /// Deprecated free-function shim (#866, CLAUDE.md rule 8): reproduces
 /// the pre-#866 signature exactly for any external caller that held a
@@ -157,7 +63,10 @@ pub unsafe fn draw_diff_view(
     theme: &Theme,
     line_height: f64,
 ) -> DiffViewLayout {
-    let mut surface = RawMacDiffViewSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::diff_view::native_surface_paint::paint(
         view,
         &mut surface,
