@@ -241,18 +241,7 @@ pub(crate) mod native_surface_paint {
     use super::{ScrollAxis, Scrollbar};
     use crate::native_surface::NativeSurface;
     use crate::theme::Theme;
-    use crate::types::Color;
     use crate::Rect;
-
-    /// `color` with its alpha channel replaced by `alpha` (`0.0`-`1.0`).
-    fn with_alpha(color: Color, alpha: f32) -> Color {
-        Color::rgba(
-            color.r,
-            color.g,
-            color.b,
-            (255.0 * alpha.clamp(0.0, 1.0)).round() as u8,
-        )
-    }
 
     /// Paint a [`Scrollbar`] onto `surface`: a translucent track with a
     /// brighter translucent thumb on top, both bumping alpha on
@@ -278,7 +267,7 @@ pub(crate) mod native_surface_paint {
             0.50
         };
 
-        surface.surface_fill_rect(track, with_alpha(theme.scrollbar_track, track_alpha));
+        surface.surface_fill_rect(track, theme.scrollbar_track.with_alpha(track_alpha));
 
         let thumb_rect = match scrollbar.axis {
             ScrollAxis::Vertical => Rect::new(
@@ -294,7 +283,7 @@ pub(crate) mod native_surface_paint {
                 track.height,
             ),
         };
-        surface.surface_fill_rect(thumb_rect, with_alpha(theme.scrollbar_thumb, thumb_alpha));
+        surface.surface_fill_rect(thumb_rect, theme.scrollbar_thumb.with_alpha(thumb_alpha));
     }
 
     #[cfg(test)]
@@ -302,7 +291,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::types::WidgetId;
+        use crate::types::{Color, WidgetId};
         use crate::Image;
 
         /// Records every `surface_fill_rect` call — mirrors

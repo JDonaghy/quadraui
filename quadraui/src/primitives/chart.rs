@@ -793,22 +793,6 @@ mod native_surface_paint {
             .unwrap_or(palette[idx % palette.len()])
     }
 
-    /// CPU-side alpha pre-mix — see this module's doc for why: two of
-    /// the three pixel backends' `NativeSurface::surface_fill_rect` /
-    /// `surface_draw_line` implementations don't honour `Color::a`
-    /// (mirrors the now-deleted `win::text::blend`, lifted here since
-    /// it's needed by every backend now, not just Windows).
-    fn blend(base: Color, over: Color, alpha: f32) -> Color {
-        let alpha = alpha.clamp(0.0, 1.0);
-        let mix =
-            |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
-        Color::rgb(
-            mix(base.r, over.r),
-            mix(base.g, over.g),
-            mix(base.b, over.b),
-        )
-    }
-
     /// Stroke a polyline through `points` as `points.len() - 1` separate
     /// segments — `NativeSurface::surface_draw_line` only draws one
     /// segment at a time (mirrors how `win::chart`'s pre-#810 rasteriser
@@ -1137,7 +1121,7 @@ mod native_surface_paint {
             return;
         }
 
-        let line_color = blend(theme.background, theme.muted_fg, 0.5);
+        let line_color = theme.background.blend(theme.muted_fg, 0.5);
         surface.surface_draw_line(
             crate::Point::new(screen_x, pa.y),
             crate::Point::new(screen_x, pa.y + pa.height),
@@ -1193,7 +1177,7 @@ mod native_surface_paint {
             Rect::new(sx - inner, sy - inner, inner * 2.0, inner * 2.0),
             color,
         );
-        let outer_color = blend(theme.background, color, 0.3);
+        let outer_color = theme.background.blend(color, 0.3);
         let outer = 8.0_f32;
         surface.surface_fill_rect(
             Rect::new(sx - outer, sy - outer, outer * 2.0, outer * 2.0),
@@ -1577,9 +1561,9 @@ mod native_surface_paint {
 
             let (_, _, sx, sy) = layout.data_point_positions[1];
             let series_color = SERIES_COLORS[0];
-            let expected_outer = blend(light_background, series_color, 0.3);
+            let expected_outer = light_background.blend(series_color, 0.3);
             let wrong_outer_from_default_theme =
-                blend(Theme::default().background, series_color, 0.3);
+                Theme::default().background.blend(series_color, 0.3);
             assert_ne!(
                 expected_outer, wrong_outer_from_default_theme,
                 "test fixture invalid: light and default-theme backgrounds must blend to different colours"

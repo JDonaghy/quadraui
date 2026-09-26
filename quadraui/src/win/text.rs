@@ -581,25 +581,6 @@ pub(crate) fn push_clip(target: &ID2D1RenderTarget, rect: Rect) {
     unsafe { target.PushAxisAlignedClip(&rect_f, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
 }
 
-/// Blend `over` on top of `base` at `alpha` (`0.0` = all `base`, `1.0`
-/// = all `over`) — the CPU-side stand-in for Cairo's `set_source_rgba`
-/// alpha-blended fills (`gtk::data_table`'s selection/hover tint,
-/// `gtk::editor`'s cursor/selection overlays), since [`fill_rect`] only
-/// takes an opaque colour: the render target here is created with
-/// `D2D1_ALPHA_MODE_IGNORE`/`UNKNOWN` and every rasteriser in this
-/// module paints with plain solid-colour fills, so pre-mixing the
-/// colour on the CPU is simpler than adding a second, alpha-aware fill
-/// path solely for a handful of tint overlays.
-pub(crate) fn blend(base: Color, over: Color, alpha: f32) -> Color {
-    let alpha = alpha.clamp(0.0, 1.0);
-    let mix = |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
-    Color::rgb(
-        mix(base.r, over.r),
-        mix(base.g, over.g),
-        mix(base.b, over.b),
-    )
-}
-
 /// Pop the clip most recently pushed by [`push_clip`].
 pub(crate) fn pop_clip(target: &ID2D1RenderTarget) {
     unsafe { target.PopAxisAlignedClip() };

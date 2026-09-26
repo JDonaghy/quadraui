@@ -15,14 +15,13 @@
 //! rasteriser anchors at `text_x + prefix_width` instead, which agrees with
 //! GTK for every left-aligned case and is simply correct for the other.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::*;
 use super::text::{draw_text, measure_text};
 use crate::primitives::command_line::CommandLine;
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Insert-cursor width in points. Matches the GTK rasteriser's 2px bar.
 const CURSOR_W: f64 = 2.0;
@@ -56,7 +55,7 @@ pub unsafe fn draw_command_line(
     CGContextSaveGState(ctx);
     // Clip so an over-long command (or a right-aligned string wider than
     // the bar) truncates at the bar edges instead of painting past them.
-    CGContextClipToRect(ctx, CGRect::new_xywh(x, y, width, line_height));
+    CGContextClipToRect(ctx, rect(x, y, width, line_height));
 
     fill_rect(ctx, x, y, width, line_height, theme.command_line_bg);
 
@@ -96,45 +95,6 @@ pub unsafe fn draw_command_line(
     }
 
     CGContextRestoreGState(ctx);
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

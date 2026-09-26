@@ -19,9 +19,10 @@
 //!   (`theme.foreground`) when hovered. Visual parity with GTK is
 //!   tracked separately.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
+
+use super::cg::*;
 
 use super::text::{draw_text, measure_text};
 // `TabBarHits` is `#[deprecated]` (issue #823) — `mac_tab_bar_layout`
@@ -39,7 +40,6 @@ use crate::primitives::tab_bar::{
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBar, TabBarHits};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Per-tab horizontal padding (left + right) inside the tab background fill.
 const TAB_PAD: f64 = 14.0;
@@ -656,35 +656,6 @@ pub unsafe fn draw_tab_bar_icons(
     CGContextRestoreGState(ctx);
 
     hits
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]

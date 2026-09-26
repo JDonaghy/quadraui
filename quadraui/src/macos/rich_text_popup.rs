@@ -15,14 +15,13 @@
 //!   `CTFontCreateCopyWithSymbolicTraits` or per-line CTFont swap.
 //! - **Focused-link underline** — needs `kCTUnderlineStyleAttributeName`.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::*;
 use super::text::{draw_text, measure_text};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = 8.0;
 pub const RICH_TEXT_POPUP_SB_INSET: f64 = 1.0;
@@ -66,7 +65,7 @@ pub unsafe fn draw_rich_text_popup(
     CGContextSaveGState(ctx);
     CGContextClipToRect(
         ctx,
-        CGRect::new_xywh(
+        rect(
             content.x as f64,
             content.y as f64,
             content.width as f64,
@@ -105,7 +104,7 @@ pub unsafe fn draw_rich_text_popup(
             track_y,
             sb_w,
             track_h,
-            with_alpha(theme.muted_fg, 0.3),
+            theme.muted_fg.with_alpha(0.3),
         );
         let thumb_top_off = (sb.thumb.y - sb.track.y) as f64;
         let thumb_h = sb.thumb.height as f64;
@@ -118,78 +117,6 @@ pub unsafe fn draw_rich_text_popup(
             border,
         );
     }
-}
-
-fn with_alpha(c: Color, alpha: f64) -> Color {
-    Color {
-        r: c.r,
-        g: c.g,
-        b: c.b,
-        a: (255.0 * alpha).round().clamp(0.0, 255.0) as u8,
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-unsafe fn stroke_rect(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    CGContextStrokeRect(ctx, CGRect::new_xywh(x, y, w, h));
-}
-
-trait CGRectExt {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self;
-}
-impl CGRectExt for CGRect {
-    fn new_xywh(x: f64, y: f64, w: f64, h: f64) -> Self {
-        use core_graphics::geometry::{CGPoint, CGSize};
-        CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-    }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetLineWidth(c: CGContextRef, w: core_graphics::base::CGFloat);
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
