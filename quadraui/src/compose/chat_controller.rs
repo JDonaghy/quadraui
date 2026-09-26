@@ -19,13 +19,17 @@
 //! - `Enter` — insert a newline in the input.
 //! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
 //!   whether to close the overlay.
-//! - `↑` (when cursor is on the first input line) — navigate to the
-//!   previous history entry.
-//! - `↓` (when cursor is on the last input line) — navigate to the next
-//!   history entry or restore the saved input.
+//! - The input soft-wraps long lines to fit the box (#1136), and `↑`/`↓`
+//!   move by **visual** row, not logical line — see this module's *Input
+//!   soft-wrap and auto-grow* section on [`ChatController`].
+//! - `↑` (when the cursor is on the first visual row of the whole
+//!   buffer) — navigate to the previous history entry.
+//! - `↓` (when the cursor is on the last visual row of the whole buffer)
+//!   — navigate to the next history entry or restore the saved input.
 //! - `PageUp` / `PageDown` — scroll the transcript.
-//! - `↑` / `↓` when the cursor is not on the boundary line — move the
-//!   cursor within the input.
+//! - `↑` / `↓` when the cursor is not on the first/last visual row — move
+//!   the cursor within the input (by visual row, so it can move within a
+//!   single wrapped logical line).
 //! - `Ctrl+A` — move the cursor to the beginning of the current line
 //!   (readline convention).
 //! - `Ctrl+E` — move the cursor to the end of the current line
@@ -165,6 +169,33 @@ struct ChatLayout {
 /// [`crate::compose::markdown`]) but is intentionally not used here yet;
 /// switching this call site's policy is a follow-up, not a capability
 /// gap. See issue #821.
+///
+/// # Input soft-wrap and auto-grow (#1136)
+///
+/// The input box's `TextInput` is built from the *wrapped* buffer, not the
+/// raw one: [`build_text_input`](Self::build_text_input) soft-wraps
+/// `input_buf` to [`TextInput::content_cols`] before handing it to the
+/// primitive, so long lines wrap inside the box instead of scrolling
+/// horizontally. Wrapping is exact — a visual row is always a contiguous
+/// byte range of its logical line, with no whitespace collapsed or
+/// dropped (unlike [`crate::text_util::word_wrap`]'s transcript wrapping,
+/// which *is* lossy at wrap points) — so cursor positions map losslessly
+/// between logical `(line, byte offset)` space (what `input_buf`/
+/// `input_cursor` store) and visual `(row, char column)` space (what the
+/// painted `TextInput` shows).
+///
+/// `↑`/`↓` move the cursor by **visual** row, not logical line: pressing
+/// `↑` partway through a wrapped paragraph moves to the previous visual
+/// row within it; history recall only triggers at the *first* / *last*
+/// visual row of the whole buffer (see the `Key::Named(NamedKey::Up)` /
+/// `Down` arms of [`Self::handle_key`]).
+///
+/// The input box's painted height auto-grows with content: it's the
+/// wrapped visual row count, clamped to
+/// [`input_min_rows`, `input_max_rows`](Self::set_input_height_range)
+/// (default `1..=8`). Once the row count exceeds `input_max_rows` the box
+/// stops growing and [`TextInput::layout`]'s own vertical auto-scroll
+/// keeps the cursor in view, same as any other overflowing `TextInput`.
 pub struct ChatController {
     id: WidgetId,
     // ── Per-frame data pushed by the app ──────────────────────────────
@@ -180,8 +211,6 @@ pub struct ChatController {
     input_cursor: usize,
     /// Vertical scroll offset forwarded to [`TextInput::scroll_offset`].
     input_scroll_offset: usize,
-    /// Horizontal scroll offset forwarded to [`TextInput::scroll_col`].
-    input_scroll_col: usize,
     /// Whether the input has keyboard focus (controls cursor visibility).
     input_has_focus: bool,
     // ── Input history ─────────────────────────────────────────────────
@@ -213,8 +242,15 @@ pub struct ChatController {
     /// [`render`]: Self::render
     stuck_to_bottom: bool,
     // ── Config ────────────────────────────────────────────────────────
-    /// Number of rows for the text input area. Default: `4`.
-    input_height_rows: usize,
+    /// Auto-grow floor: the input area is never shorter than this many
+    /// rows, even when empty. Default: `1`. See
+    /// [`set_input_height_range`](Self::set_input_height_range).
+    input_min_rows: usize,
+    /// Auto-grow ceiling: the input area stops growing at this many rows;
+    /// beyond it, content scrolls inside a fixed-height box instead.
+    /// Default: `8`. See
+    /// [`set_input_height_range`](Self::set_input_height_range).
+    input_max_rows: usize,
     /// Fixed scrollbar track width in surface units, or `None` to use
     /// `backend.line_height()` (same convention as `TreeController`).
     scrollbar_width: Option<f32>,
@@ -234,7 +270,6 @@ impl ChatController {
             input_buf: String::new(),
             input_cursor: 0,
             input_scroll_offset: 0,
-            input_scroll_col: 0,
             input_has_focus: true,
             history: Vec::new(),
             history_pos: None,
@@ -242,7 +277,8 @@ impl ChatController {
             transcript_scroll_top: Cell::new(0),
             transcript_drag: None,
             stuck_to_bottom: true,
-            input_height_rows: 4,
+            input_min_rows: 1,
+            input_max_rows: 8,
             scrollbar_width: None,
         }
     }
@@ -294,7 +330,6 @@ impl ChatController {
         self.input_buf.clear();
         self.input_cursor = 0;
         self.input_scroll_offset = 0;
-        self.input_scroll_col = 0;
         self.history_pos = None;
         self.saved_input = None;
     }
@@ -309,9 +344,18 @@ impl ChatController {
         self.input_has_focus = focus;
     }
 
-    /// Override the input area height (in text rows). Default: `4`.
-    pub fn set_input_height_rows(&mut self, rows: usize) {
-        self.input_height_rows = rows.max(1);
+    /// Configure the input area's auto-grow row-count clamp (#1136).
+    ///
+    /// The input box's painted height is the wrapped visual row count of
+    /// the current buffer, clamped to `[min, max]`, plus the fixed 2-row
+    /// border (see [`Self::compute_layout`]). `min` is floored to `1`
+    /// (the box never fully collapses); `max` is floored to `min`.
+    /// Default: `1..=8`.
+    pub fn set_input_height_range(&mut self, min: usize, max: usize) {
+        let min = min.max(1);
+        let max = max.max(min);
+        self.input_min_rows = min;
+        self.input_max_rows = max;
     }
 
     /// Override the scrollbar track width.
@@ -472,7 +516,8 @@ impl ChatController {
         }
 
         // ── 5. Text input ─────────────────────────────────────────────
-        let ti = self.build_text_input();
+        let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
+        let ti = self.build_text_input(col_budget);
         backend.draw_text_input(layout.input, &ti);
     }
 
@@ -568,8 +613,13 @@ impl ChatController {
     fn compute_layout(&self, backend: &dyn Backend, rect: Rect) -> ChatLayout {
         let lh = backend.line_height().max(1.0);
         let status_h = lh;
+        // Auto-grow (#1136): height tracks the wrapped visual row count of
+        // the current buffer, clamped to [input_min_rows, input_max_rows].
         // TextInput draws a 1-unit border on top and bottom plus content rows.
-        let input_h = self.input_height_rows as f32 * lh + 2.0;
+        let col_budget = TextInput::content_cols(rect.width, backend.char_width());
+        let visual_rows = wrap_input_rows(&self.input_buf, col_budget).len().max(1);
+        let input_rows = visual_rows.clamp(self.input_min_rows, self.input_max_rows);
+        let input_h = input_rows as f32 * lh + 2.0;
         let middle_h = (rect.height - status_h - input_h).max(0.0);
 
         let status = Rect::new(rect.x, rect.y, rect.width, status_h);
@@ -701,23 +751,36 @@ impl ChatController {
         rows
     }
 
-    fn build_text_input(&self) -> TextInput {
-        let lines: Vec<String> = if self.input_buf.is_empty() {
-            vec![String::new()]
-        } else {
-            self.input_buf.split('\n').map(String::from).collect()
-        };
-        let (cursor_line, cursor_col) = cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
+    /// Soft-wrap `input_buf` to `col_budget` and build the `TextInput` the
+    /// rasterisers paint (#1136) — see this struct's *Input soft-wrap and
+    /// auto-grow* doc section.
+    fn build_text_input(&self, col_budget: usize) -> TextInput {
+        let rows = wrap_input_rows(&self.input_buf, col_budget);
+        self.text_input_from_rows(&rows)
+    }
+
+    /// Build the paint-time `TextInput` from an already-wrapped `rows`
+    /// (shared by [`Self::build_text_input`] and
+    /// [`Self::handle_click`], which both need the same wrap pass — the
+    /// click handler additionally uses `rows` to map the click back to a
+    /// buffer byte offset).
+    fn text_input_from_rows(&self, rows: &[InputRow]) -> TextInput {
+        let lines: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
+        let (logical_line, logical_col) =
+            cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
+        let (visual_row, visual_col) = input_logical_to_visual(rows, logical_line, logical_col);
         let mut ti = TextInput::new(WidgetId::new(format!("{}-input", self.id.0)));
         ti.lines = lines;
-        ti.cursor_line = cursor_line;
-        ti.cursor_col = cursor_col;
+        ti.cursor_line = visual_row;
+        ti.cursor_col = visual_col;
         ti.placeholder = Some(
             "Type a message\u{2026} (Ctrl+S or Alt+Enter to send, Enter for newline, Esc to cancel)"
                 .into(),
         );
         ti.scroll_offset = self.input_scroll_offset;
-        ti.scroll_col = self.input_scroll_col;
+        // No horizontal scroll: `rows` is already wrapped to fit the box's
+        // width, so every visual row fits within `col_budget` columns.
+        ti.scroll_col = 0;
         ti.has_focus = self.input_has_focus;
         ti
     }
@@ -804,24 +867,38 @@ impl ChatController {
                 ChatControllerEvent::Consumed
             }
 
-            // ── Up: history navigation or cursor up ────────────────────
+            // ── Up: history navigation or cursor up (by VISUAL row —
+            //    #1136: a wrapped paragraph's interior rows move the
+            //    cursor; history recall only fires on the first visual
+            //    row of the whole buffer) ─────────────────────────────
             Key::Named(NamedKey::Up) => {
-                let (cursor_line, _) = cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-                if cursor_line == 0 {
+                let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
+                let rows = wrap_input_rows(&self.input_buf, col_budget);
+                let (logical_line, logical_col) =
+                    cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
+                let (row_idx, col) = input_logical_to_visual(&rows, logical_line, logical_col);
+                if row_idx == 0 {
                     self.history_prev()
                 } else {
-                    self.input_move_cursor_up();
+                    self.input_cursor =
+                        input_visual_to_byte(&self.input_buf, &rows, row_idx - 1, col);
                     ChatControllerEvent::Consumed
                 }
             }
 
-            // ── Down: history navigation or cursor down ────────────────
+            // ── Down: history navigation or cursor down (by VISUAL row —
+            //    see the `Up` arm above) ─────────────────────────────────
             Key::Named(NamedKey::Down) => {
-                let (cursor_line, _) = cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-                if cursor_line == self.input_last_line() {
+                let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
+                let rows = wrap_input_rows(&self.input_buf, col_budget);
+                let (logical_line, logical_col) =
+                    cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
+                let (row_idx, col) = input_logical_to_visual(&rows, logical_line, logical_col);
+                if row_idx + 1 >= rows.len() {
                     self.history_next()
                 } else {
-                    self.input_move_cursor_down();
+                    self.input_cursor =
+                        input_visual_to_byte(&self.input_buf, &rows, row_idx + 1, col);
                     ChatControllerEvent::Consumed
                 }
             }
@@ -955,9 +1032,13 @@ impl ChatController {
         // Input area click?
         if rect_contains(layout.input, x, y) {
             self.input_has_focus = true;
-            let ti = self.build_text_input();
+            let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
+            let rows = wrap_input_rows(&self.input_buf, col_budget);
+            let ti = self.text_input_from_rows(&rows);
             let til = backend.text_input_layout(layout.input, &ti);
             // Find the clicked visible line and update the cursor.
+            // `line_idx` here is a VISUAL row index (into `rows`), not a
+            // logical line — map it back through `rows` (#1136).
             let local_y = y - layout.input.y;
             for (r, hit) in &til.hit_regions {
                 if local_y >= r.y && local_y < r.y + r.height {
@@ -965,7 +1046,8 @@ impl ChatController {
                         let cw = backend.char_width().max(1.0);
                         let local_x = (x - layout.input.x - r.x).max(0.0);
                         let col = (local_x / cw).floor() as usize;
-                        self.input_cursor = line_col_to_byte(&self.input_buf, *line_idx, col);
+                        self.input_cursor =
+                            input_visual_to_byte(&self.input_buf, &rows, *line_idx, col);
                     }
                     break;
                 }
@@ -1047,10 +1129,6 @@ impl ChatController {
 
     // ── Input text buffer manipulation ────────────────────────────────
 
-    fn input_last_line(&self) -> usize {
-        self.input_buf.bytes().filter(|&b| b == b'\n').count()
-    }
-
     /// Insert a single character at the cursor.  Also used by `CharTyped`.
     pub fn input_insert_char(&mut self, ch: char) {
         let cursor = snap_to_char_boundary(&self.input_buf, self.input_cursor);
@@ -1103,23 +1181,6 @@ impl ChatController {
             .map(|i| self.input_cursor + i)
             .unwrap_or(self.input_buf.len());
         self.input_cursor = line_end;
-    }
-
-    fn input_move_cursor_up(&mut self) {
-        let (line, col) = cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-        if line == 0 {
-            return;
-        }
-        self.input_cursor = line_col_to_byte(&self.input_buf, line - 1, col);
-    }
-
-    fn input_move_cursor_down(&mut self) {
-        let (line, col) = cursor_byte_to_line_col(&self.input_buf, self.input_cursor);
-        let last = self.input_last_line();
-        if line >= last {
-            return;
-        }
-        self.input_cursor = line_col_to_byte(&self.input_buf, line + 1, col);
     }
 }
 
@@ -1231,6 +1292,125 @@ fn line_col_to_byte(text: &str, target_line: usize, target_col: usize) -> usize 
 
     // Target line doesn't exist — clamp to end of text.
     text.len()
+}
+
+// ── Input soft-wrap (#1136) ─────────────────────────────────────────────
+
+/// One soft-wrapped visual row of the chat input buffer.
+///
+/// Wrapping here is deliberately **exact** — a row's `text` is always a
+/// contiguous char range of its owning logical line, with no whitespace
+/// collapsed or dropped (unlike [`crate::text_util::word_wrap`]'s
+/// transcript wrapping, which *is* lossy at wrap points). Concatenating
+/// every row for a given `logical_line`, in order, reconstructs that
+/// line's text byte-for-byte. That's what lets
+/// [`input_logical_to_visual`] / [`input_visual_to_byte`] round-trip
+/// cursor positions losslessly between logical (buffer byte offset) and
+/// visual (row, char column) space.
+struct InputRow {
+    /// Index into the logical (`\n`-separated) lines of the buffer.
+    logical_line: usize,
+    /// Char-column offset into `logical_line` where this row starts.
+    col_offset: usize,
+    /// This row's text — a char-exact slice of `logical_line`.
+    text: String,
+}
+
+/// Soft-wrap `text` (the whole input buffer, `\n`-separated logical
+/// lines) to `col_budget` char columns per visual row. See [`InputRow`]
+/// for the exactness guarantee that makes cursor-position round-tripping
+/// possible.
+///
+/// Always returns at least one row per logical line (an empty logical
+/// line yields one empty row), so `rows.len() >= 1` for any input,
+/// including `""`.
+fn wrap_input_rows(text: &str, col_budget: usize) -> Vec<InputRow> {
+    let mut rows = Vec::new();
+    for (logical_line, line) in text.split('\n').enumerate() {
+        for (col_offset, row_text) in wrap_line_exact(line, col_budget) {
+            rows.push(InputRow {
+                logical_line,
+                col_offset,
+                text: row_text,
+            });
+        }
+    }
+    rows
+}
+
+/// Break one logical `line` (no `\n`) into `(col_offset, text)` visual
+/// rows of at most `col_budget` char columns, breaking after the last
+/// space at or before the budget where possible (an unbroken run longer
+/// than `col_budget` hard-breaks at the budget). Never collapses or
+/// drops characters — see [`InputRow`].
+///
+/// `col_budget == 0` or a line that already fits returns the line
+/// unmodified as a single row, matching
+/// [`crate::text_util::word_wrap`]'s convention.
+fn wrap_line_exact(line: &str, col_budget: usize) -> Vec<(usize, String)> {
+    let chars: Vec<char> = line.chars().collect();
+    if col_budget == 0 || chars.len() <= col_budget {
+        return vec![(0, line.to_string())];
+    }
+    let mut rows = Vec::new();
+    let mut start = 0usize;
+    while start < chars.len() {
+        let mut end = (start + col_budget).min(chars.len());
+        if end < chars.len() {
+            if let Some(space_rel) = chars[start..end].iter().rposition(|&c| c == ' ') {
+                let space_idx = start + space_rel;
+                if space_idx > start {
+                    // Break just after the space so it stays with this
+                    // row (matching normal word-wrap convention) rather
+                    // than becoming a leading space on the next row.
+                    end = space_idx + 1;
+                }
+            }
+        }
+        rows.push((start, chars[start..end].iter().collect()));
+        start = end;
+    }
+    rows
+}
+
+/// Map a logical `(line, char_col)` cursor position (as produced by
+/// [`cursor_byte_to_line_col`]) to `(visual_row_idx, visual_col)` within
+/// `rows` — the inverse of [`input_visual_to_byte`].
+fn input_logical_to_visual(rows: &[InputRow], line: usize, col: usize) -> (usize, usize) {
+    let mut last_for_line: Option<usize> = None;
+    for (i, r) in rows.iter().enumerate() {
+        if r.logical_line != line {
+            continue;
+        }
+        last_for_line = Some(i);
+        let len = r.text.chars().count();
+        if col >= r.col_offset && col < r.col_offset + len {
+            return (i, col - r.col_offset);
+        }
+    }
+    // `col` is at (or past) the end of the logical line — land on the end
+    // of its last visual row.
+    match last_for_line {
+        Some(i) => {
+            let r = &rows[i];
+            let len = r.text.chars().count();
+            (i, col.saturating_sub(r.col_offset).min(len))
+        }
+        None => (0, 0),
+    }
+}
+
+/// Map a `(visual_row_idx, visual_col)` position within `rows` back to a
+/// byte offset in `text` (the whole input buffer) — the inverse of
+/// [`input_logical_to_visual`]. Both indices are clamped, so this never
+/// panics on an out-of-range row or column; `rows` empty returns `0`.
+fn input_visual_to_byte(text: &str, rows: &[InputRow], row_idx: usize, col: usize) -> usize {
+    let Some(last) = rows.len().checked_sub(1) else {
+        return 0;
+    };
+    let r = &rows[row_idx.min(last)];
+    let len = r.text.chars().count();
+    line_col_to_byte(text, r.logical_line, r.col_offset + col.min(len))
 }
 
 fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
@@ -2072,6 +2252,156 @@ mod tests {
         assert_eq!(v, vec![String::new()]);
     }
 
+    // ── Input soft-wrap (#1136) ────────────────────────────────────────
+
+    #[test]
+    fn wrap_line_exact_short_line_not_split() {
+        assert_eq!(wrap_line_exact("hi", 10), vec![(0, "hi".to_string())]);
+    }
+
+    #[test]
+    fn wrap_line_exact_breaks_at_space() {
+        // "hello world" (11 chars) at budget 7 breaks after "hello " (the
+        // space stays with the first row) leaving "world" on the second.
+        assert_eq!(
+            wrap_line_exact("hello world", 7),
+            vec![(0, "hello ".to_string()), (6, "world".to_string())]
+        );
+    }
+
+    #[test]
+    fn wrap_line_exact_hard_breaks_a_single_long_word() {
+        assert_eq!(
+            wrap_line_exact("abcdefgh", 3),
+            vec![
+                (0, "abc".to_string()),
+                (3, "def".to_string()),
+                (6, "gh".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn wrap_line_exact_reconstructs_original_text() {
+        // The defining property: concatenating every row's text
+        // reconstructs the input exactly — no whitespace collapsed or
+        // dropped (unlike `word_wrap`), so cursor round-trips stay exact.
+        let line = "the quick brown fox jumps over the lazy dog";
+        for budget in 1..line.chars().count() + 2 {
+            let rows = wrap_line_exact(line, budget);
+            let joined: String = rows.iter().map(|(_, t)| t.as_str()).collect();
+            assert_eq!(joined, line, "budget={budget}");
+        }
+    }
+
+    #[test]
+    fn wrap_input_rows_one_row_per_short_logical_line() {
+        let rows = wrap_input_rows("ab\ncd", 80);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].logical_line, 0);
+        assert_eq!(rows[1].logical_line, 1);
+    }
+
+    #[test]
+    fn wrap_input_rows_empty_buffer_yields_one_empty_row() {
+        let rows = wrap_input_rows("", 80);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "");
+    }
+
+    #[test]
+    fn logical_to_visual_round_trips_through_visual_to_byte() {
+        let text = "hello world\nsecond line";
+        let rows = wrap_input_rows(text, 6); // forces "hello world" to wrap
+        assert!(rows.len() > 2, "expected wrapping to produce >2 rows");
+
+        // Cursor at byte offset 8 ("hello wo|rld...") -> logical (0, 8).
+        let (line, col) = cursor_byte_to_line_col(text, 8);
+        assert_eq!((line, col), (0, 8));
+
+        let (row_idx, visual_col) = input_logical_to_visual(&rows, line, col);
+        let byte = input_visual_to_byte(text, &rows, row_idx, visual_col);
+        assert_eq!(byte, 8, "round trip through visual space must be lossless");
+    }
+
+    #[test]
+    fn logical_to_visual_end_of_line_lands_on_last_visual_row() {
+        let text = "hello world";
+        let rows = wrap_input_rows(text, 6); // wraps into 2 rows
+        let last_row = rows.len() - 1;
+        let (line, col) = cursor_byte_to_line_col(text, text.len());
+        let (row_idx, _) = input_logical_to_visual(&rows, line, col);
+        assert_eq!(row_idx, last_row);
+    }
+
+    // ── Up/Down move by VISUAL row when wrapped (#1136) ────────────────
+
+    #[test]
+    fn up_within_wrapped_paragraph_moves_cursor_not_history() {
+        let mut cc = ChatController::new("c");
+        cc.set_input_height_range(1, 8);
+        cc.input_insert_str("hello world this wraps");
+        cc.history.push("prev".into());
+        // Narrow rect forces wrapping: content width well under the text length.
+        let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Up),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        // History must NOT have been entered — the cursor started on a
+        // later visual row of the wrapped paragraph, not the first one.
+        assert_eq!(cc.history_pos, None);
+        assert_eq!(cc.input_text(), "hello world this wraps");
+    }
+
+    #[test]
+    fn up_on_first_visual_row_of_wrapped_paragraph_enters_history() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello world this wraps");
+        cc.input_cursor = 3; // still within the first wrapped row
+        cc.history.push("prev".into());
+        let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Up),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.input_text(), "prev", "should have entered history");
+    }
+
+    #[test]
+    fn down_on_last_visual_row_of_wrapped_paragraph_enters_history_next() {
+        let mut cc = ChatController::new("c");
+        // A wrapped paragraph sitting in `saved_input`, restored once Down
+        // walks off the newest history entry.
+        cc.input_insert_str("hello world this wraps");
+        cc.history.push("first".into());
+        cc.history.push("second".into());
+        let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
+        // Drive `history_prev` directly (bypassing the Up key) to reach a
+        // deterministic "navigating the newest entry" state.
+        cc.history_prev();
+        assert_eq!(cc.input_text(), "second");
+
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Down),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let ev = cc.handle(&event, &RecordingBackend::new(), rect);
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        // "second" fits on one visual row even at width 12, so Down from
+        // its only (first==last) row walks off the newest history entry
+        // and restores the saved wrapped paragraph.
+        assert_eq!(cc.history_pos, None);
+        assert_eq!(cc.input_text(), "hello world this wraps");
+    }
+
     // ── Cursor byte conversion helpers ────────────────────────────────
 
     #[test]
@@ -2160,9 +2490,52 @@ mod tests {
     fn layout_input_at_bottom() {
         let cc = ChatController::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
-        // input_height_rows=4, lh=1, border=2 → input_h = 6
-        let expected_input_y = make_rect().height - (4.0 * 1.0 + 2.0);
+        // Auto-grow (#1136): empty input wraps to 1 visual row, clamped
+        // to the default input_min_rows=1. lh=1, border=2 → input_h = 3.
+        let expected_input_y = make_rect().height - (1.0 * 1.0 + 2.0);
         assert_eq!(layout.input.y, expected_input_y);
+    }
+
+    #[test]
+    fn layout_input_grows_with_wrapped_row_count() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("line one\nline two\nline three");
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        // 3 short logical lines, wide rect → 3 visual rows, no wrapping.
+        // lh=1, border=2 → input_h = 5.
+        let expected_input_y = make_rect().height - (3.0 * 1.0 + 2.0);
+        assert_eq!(layout.input.y, expected_input_y);
+    }
+
+    #[test]
+    fn layout_input_clamps_to_max_rows() {
+        let mut cc = ChatController::new("c");
+        for _ in 0..20 {
+            cc.input_insert_char('\n');
+        }
+        // 21 logical lines (20 newlines) would need 21 visual rows, but
+        // the default max is 8.
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        let expected_input_y = make_rect().height - (8.0 * 1.0 + 2.0);
+        assert_eq!(layout.input.y, expected_input_y);
+    }
+
+    #[test]
+    fn set_input_height_range_overrides_default_clamp() {
+        let mut cc = ChatController::new("c");
+        cc.set_input_height_range(2, 3);
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        // Empty input wraps to 1 visual row, clamped up to the new min=2.
+        let expected_input_y = make_rect().height - (2.0 * 1.0 + 2.0);
+        assert_eq!(layout.input.y, expected_input_y);
+    }
+
+    #[test]
+    fn set_input_height_range_floors_max_to_min() {
+        let mut cc = ChatController::new("c");
+        cc.set_input_height_range(5, 2); // max < min — max floored up to min.
+        assert_eq!(cc.input_min_rows, 5);
+        assert_eq!(cc.input_max_rows, 5);
     }
 
     #[test]

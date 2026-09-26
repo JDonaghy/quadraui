@@ -13,7 +13,8 @@
 //! Controls:
 //! - Type any text; press `Enter` for newlines in the input.
 //! - `Ctrl+Enter` or `Alt+Enter` — submit the message.
-//! - `↑` / `↓` — history navigation (when cursor is on the first/last line).
+//! - `↑` / `↓` — history navigation (when cursor is on the first/last
+//!   *visual* row of the wrapped, auto-growing input box — quadraui#1136).
 //! - `PageUp` / `PageDown` — scroll the transcript.
 //! - `Esc` — clear the input, or quit when the input is already empty.
 //! - `q` / `Ctrl+C` — quit immediately.
