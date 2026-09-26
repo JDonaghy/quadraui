@@ -134,6 +134,8 @@ impl AppLogic for ChatDemo {
                     text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
                     timestamp_unix: None,
                     line_scales: Vec::new(),
+                    collapsed: false,
+                    summary: None,
                 });
                 self.controller.clear_input();
                 // Queue a simulated reply (delivered after a few ticks).
@@ -188,6 +190,8 @@ impl AppLogic for ChatDemo {
                         text: StyledText::colored(reply, Color::rgb(180, 230, 180)),
                         timestamp_unix: None,
                         line_scales: Vec::new(),
+                        collapsed: false,
+                        summary: None,
                     });
                 }
             } else {
