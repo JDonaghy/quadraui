@@ -26,11 +26,20 @@ use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::build_shell_adapter;
 
 /// Run a [`ShellApp`] with AppShell chrome on the Win-GUI backend.
+///
+/// #1142: `config.app_icon` (set via [`ShellConfig::with_app_icon`])
+/// reaches [`RunConfig::app_icon`] the same way `config.title` does —
+/// cloned out before `config` moves into [`build_shell_adapter`], since
+/// `RunConfig` (not `ShellConfig`) is what [`super::run::run_with`]'s
+/// window-creation call site actually consults.
 pub fn run_with_shell<A: ShellApp + 'static>(
     app: A,
     config: ShellConfig,
 ) -> std::process::ExitCode {
-    let run_config = RunConfig::new(config.title.clone());
+    let mut run_config = RunConfig::new(config.title.clone());
+    if let Some(app_icon) = config.app_icon.clone() {
+        run_config = run_config.with_app_icon(app_icon);
+    }
     let adapter = build_shell_adapter(app, config);
     super::run::run_with(adapter, run_config)
 }

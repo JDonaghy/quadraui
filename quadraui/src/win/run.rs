@@ -158,6 +158,7 @@
 use crate::backend::Backend;
 use crate::dispatch::DragTarget;
 use crate::event::{Point, Viewport};
+use crate::primitives::image::ImageSource;
 use crate::runner::AppLogic;
 // `EventOutcome` — what the caller should do after `dispatch_event`
 // handles one event — is defined once in `crate::runtime` and shared by
@@ -510,6 +511,14 @@ pub struct RunConfig {
     /// of `title`, so a second launch of app A could find and hijack app
     /// B's window instead.
     pub single_instance: bool,
+    /// App icon applied to the window's titlebar and taskbar entry via
+    /// `WM_SETICON` (`ICON_BIG` + `ICON_SMALL`) — issue #1142. `None`
+    /// (the default) reproduces every pre-#1142 launch: no icon set,
+    /// same as before this field existed. Set via
+    /// [`Self::with_app_icon`]; a `ShellConfig`-driven consumer reaches
+    /// this through [`crate::shell::ShellConfig::with_app_icon`] via
+    /// `win::shell_runner::run_with_shell`.
+    pub app_icon: Option<ImageSource>,
 }
 
 impl RunConfig {
@@ -519,6 +528,7 @@ impl RunConfig {
         Self {
             title: title.into(),
             single_instance: false,
+            app_icon: None,
         }
     }
 
@@ -527,6 +537,13 @@ impl RunConfig {
     /// the full contract. Defaults to `false`.
     pub fn with_single_instance(mut self, single_instance: bool) -> Self {
         self.single_instance = single_instance;
+        self
+    }
+
+    /// Set the window/taskbar icon applied via `WM_SETICON` — see
+    /// [`Self::app_icon`] (#1142).
+    pub fn with_app_icon(mut self, icon: ImageSource) -> Self {
+        self.app_icon = Some(icon);
         self
     }
 }
@@ -539,6 +556,7 @@ impl Default for RunConfig {
         Self {
             title: "quadraui".to_string(),
             single_instance: false,
+            app_icon: None,
         }
     }
 }
@@ -725,12 +743,13 @@ mod win32 {
         GetClientRect, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage,
         RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
         SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, IDC_ARROW, MSG, SWP_NOACTIVATE, SWP_NOZORDER,
-        SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY,
-        WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
-        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSCHAR,
-        WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
+        SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE,
+        WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
+        WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
+        WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
     // #834: `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
@@ -746,8 +765,13 @@ mod win32 {
         smoke_clipboard_round_trip_ok, smoke_size_ok, ModalPumpDepth, SmokeConfig,
     };
     use crate::event::{classify_open_args, UiEvent};
+    use crate::primitives::image::ImageSource;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::backend::WinBackend;
+    // #1142: reuses the tray icon's WIC → `HICON` decode for the
+    // titlebar/taskbar icon — see [`decode_hicon`]'s doc for why this is
+    // a shared pipeline rather than a second decoder.
+    use crate::win::tray::decode_hicon;
     // Message → `UiEvent` translation lives in `super::events` so it can
     // be unit-tested off Windows (pure functions over already-decoded
     // ints/floats/bools) — see that module's docs.
@@ -1037,7 +1061,7 @@ mod win32 {
             return std::process::ExitCode::SUCCESS;
         }
 
-        match unsafe { run_inner(app, &config.title) } {
+        match unsafe { run_inner(app, &config.title, config.app_icon.as_ref()) } {
             // `Ok(smoke_ok)`: `smoke_ok` is `true` unless
             // `QUADRAUI_WIN_SMOKE_MS` was set *and* `run_smoke_check`
             // found a failure (#702) — see the module doc's "Headless
@@ -1075,6 +1099,7 @@ mod win32 {
     unsafe fn run_inner<A: AppLogic + 'static>(
         mut app: A,
         title: &str,
+        app_icon: Option<&ImageSource>,
     ) -> windows::core::Result<bool> {
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null())?.into() };
 
@@ -1201,6 +1226,45 @@ mod win32 {
         // so a missing call here is silent, not a visible failure.
         unsafe {
             DragAcceptFiles(hwnd, true);
+        }
+
+        // #1142: apply `RunConfig::app_icon` (from `ShellConfig::with_app_icon`)
+        // to the titlebar/taskbar via `WM_SETICON` — before `ShowWindow`
+        // below, so the icon is already in place for the window's first
+        // paint rather than flashing the generic default first. Both
+        // `ICON_BIG` (Alt-Tab switcher, taskbar) and `ICON_SMALL`
+        // (titlebar) are set from the same decoded `HICON`: unlike a
+        // `.ico` resource, `ImageSource` carries no separate small-size
+        // variant, and Windows itself scales one bitmap for both uses.
+        // A decode failure (missing file, corrupt bytes, unrecognised
+        // format) silently leaves the window with no icon — same
+        // collapse-to-nothing posture `TrayService::set_icon`'s
+        // `decode_hicon` documents — rather than failing window creation
+        // over a cosmetic detail.
+        //
+        // The `HICON` this builds is intentionally never destroyed: it is
+        // a `CreateIconIndirect` handle, not a shared system resource, and
+        // this window's icon is set exactly once at startup with no
+        // `set_app_icon` API to replace it later — same "left for the
+        // process lifetime" posture `WinBackend::registered_font_bytes`
+        // documents for DirectWrite's font-file loader.
+        if let Some(source) = app_icon {
+            if let Some(hicon) = decode_hicon(source) {
+                unsafe {
+                    SendMessageW(
+                        hwnd,
+                        WM_SETICON,
+                        Some(WPARAM(ICON_BIG as usize)),
+                        Some(LPARAM(hicon.0 as isize)),
+                    );
+                    SendMessageW(
+                        hwnd,
+                        WM_SETICON,
+                        Some(WPARAM(ICON_SMALL as usize)),
+                        Some(LPARAM(hicon.0 as isize)),
+                    );
+                }
+            }
         }
 
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
@@ -2182,6 +2246,24 @@ mod tests {
     fn with_single_instance_overrides_the_default() {
         let config = RunConfig::new("kubeui").with_single_instance(true);
         assert!(config.single_instance);
+    }
+
+    /// #1142: a fresh `RunConfig` sets no app icon — every existing
+    /// consumer keeps the pre-#1142 behaviour (no `WM_SETICON` call at
+    /// all).
+    #[test]
+    fn new_and_default_set_no_app_icon() {
+        assert_eq!(RunConfig::new("kubeui").app_icon, None);
+        assert_eq!(RunConfig::default().app_icon, None);
+    }
+
+    /// #1142: `with_app_icon` stores the source verbatim for
+    /// `run_inner`'s `WM_SETICON` call site to decode via
+    /// `win::tray::decode_hicon`.
+    #[test]
+    fn with_app_icon_sets_the_source() {
+        let config = RunConfig::new("kubeui").with_app_icon(ImageSource::Bytes(vec![0xde, 0xad]));
+        assert_eq!(config.app_icon, Some(ImageSource::Bytes(vec![0xde, 0xad])));
     }
 
     /// #957 review (non-blocking concern): round-tripping an ordinary

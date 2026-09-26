@@ -197,7 +197,13 @@ fn mouse_button_from_current_event(mtm: MainThreadMarker) -> MouseButton {
 /// failure (missing file, corrupt bytes, unrecognised format) — same
 /// collapse-to-`None`/`Unsupported` posture `super::image::decode_image`
 /// documents for the in-canvas `Image` primitive.
-fn decode_ns_image(source: &ImageSource) -> Option<Retained<NSImage>> {
+///
+/// `pub(crate)` (issue #1142): `macos::run`'s window-creation call site
+/// reuses this same decoder to build the `NSApp.applicationIconImage`
+/// (Dock/app-switcher icon) rather than hand-rolling a second one for
+/// what is exactly the same source-to-`NSImage` conversion the tray icon
+/// already needs.
+pub(crate) fn decode_ns_image(source: &ImageSource) -> Option<Retained<NSImage>> {
     match source {
         ImageSource::Bytes(bytes) => {
             let data = NSData::with_bytes(bytes);
