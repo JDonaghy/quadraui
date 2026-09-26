@@ -518,9 +518,11 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
 
 /// [`fill_rect`]'s rounded-corner twin (issue #1073) —
 /// `ID2D1RenderTarget::FillRoundedRectangle` with both radii set to
-/// `radius`, clamped to half of `rect`'s shorter side so a radius wider
-/// than the box it outlines can't produce Direct2D's own degenerate
-/// "radius bigger than the rect" shape (the same clamp
+/// `radius`, clamped to half of `rect`'s shorter side (and floored at
+/// `0.0`, so a negative radius degrades to "no rounding" rather than
+/// flowing through unclamped) so a radius wider than the box it
+/// outlines can't produce Direct2D's own degenerate "radius bigger than
+/// the rect" shape (the same clamp
 /// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]'s
 /// doc requires of every implementor).
 pub(crate) fn fill_rounded_rect(
@@ -530,7 +532,7 @@ pub(crate) fn fill_rounded_rect(
     color: Color,
 ) -> WinResult<()> {
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
-    let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
+    let r = radius.min(rect.width / 2.0).min(rect.height / 2.0).max(0.0);
     let rounded = D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
             left: rect.x,
