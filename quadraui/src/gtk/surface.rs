@@ -156,7 +156,8 @@ impl NativeSurface for CairoSurface<'_> {
         }
         let r = (radius as f64)
             .min(rect.width as f64 / 2.0)
-            .min(rect.height as f64 / 2.0);
+            .min(rect.height as f64 / 2.0)
+            .max(0.0);
         super::rounded_rect_path(
             self.cr,
             rect.x as f64,

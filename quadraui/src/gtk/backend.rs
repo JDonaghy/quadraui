@@ -5015,7 +5015,8 @@ impl NativeSurface for GtkBackend {
             .expect("GtkBackend::surface_fill_rounded_rect called outside enter_frame_scope");
         let r = (radius as f64)
             .min(rect.width as f64 / 2.0)
-            .min(rect.height as f64 / 2.0);
+            .min(rect.height as f64 / 2.0)
+            .max(0.0);
         crate::gtk::set_source_rgba(cr, color);
         crate::gtk::rounded_rect_path(
             cr,

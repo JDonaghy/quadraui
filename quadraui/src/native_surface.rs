@@ -179,17 +179,18 @@ pub(crate) trait NativeSurface {
     /// per-backend-private equivalents) and the reason none of them
     /// could move onto this trait before now (issue #1073).
     ///
-    /// `radius` is clamped to half of `rect`'s shorter side by every
-    /// implementation — a radius larger than that would overlap the
-    /// opposite corner's arc, which every one of the three native 2D
-    /// APIs this trait sits on (Cairo, CoreGraphics, Direct2D) either
-    /// refuses outright or renders as an unintended lens shape rather
-    /// than a rounded rectangle. Clamping instead of asserting keeps a
+    /// `radius` is clamped to half of `rect`'s shorter side (and floored
+    /// at `0.0`) by every implementation — a radius larger than that
+    /// would overlap the opposite corner's arc, which every one of the
+    /// three native 2D APIs this trait sits on (Cairo, CoreGraphics,
+    /// Direct2D) either refuses outright or renders as an unintended
+    /// lens shape rather than a rounded rectangle, and a negative radius
+    /// has no rounding to give. Clamping instead of asserting keeps a
     /// caller that wants "as round as this box allows" (radius >= half
     /// the shorter side, e.g. a pill-shaped badge) a one-line call
     /// instead of its own `min()` — mirrors `radius.min(rect.width /
-    /// 2.0).min(rect.height / 2.0)`, computed once per implementation
-    /// rather than once per call site.
+    /// 2.0).min(rect.height / 2.0).max(0.0)`, computed once per
+    /// implementation rather than once per call site.
     ///
     /// No default: unlike the style/measurement verbs above, there is no
     /// backend-agnostic way to approximate a rounded corner out of the
@@ -225,6 +226,18 @@ pub(crate) trait NativeSurface {
     /// theme colour that needs a one-off translucency at a single call
     /// site, without constructing a throwaway [`Color::with_alpha`]'d
     /// copy first.
+    ///
+    /// **One documented exception:** [`crate::gtk::surface::CairoSurface`]
+    /// constructed with `translucent_fill: false` (`form`, `sidebar_panel`,
+    /// `split`, `split_tree`'s adapters — see that module's own doc, "a
+    /// deliberate, documented divergence") calls Cairo's opaque-only
+    /// `set_source` from *its* [`Self::surface_fill_rect`] override, so
+    /// routing this default through one of those four adapters silently
+    /// paints fully opaque instead of blending, with no panic. No call
+    /// site does that today (those four adapters never call
+    /// `surface_fill_rect_alpha`), but a future one that does must either
+    /// pre-blend the colour itself or use a `translucent_fill: true`
+    /// adapter instead.
     fn surface_fill_rect_alpha(&mut self, rect: Rect, color: Color, alpha: f32) {
         self.surface_fill_rect(rect, color.with_alpha(alpha as f64));
     }
