@@ -170,6 +170,11 @@ mod split_tree;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod status_bar;
+/// Shared `NativeSurface` adapter over a bare `&ID2D1RenderTarget`
+/// (issue #1072). Windows-only — same gating as the per-primitive
+/// rasteriser modules above that consume it.
+#[cfg(target_os = "windows")]
+mod surface;
 /// Direct2D / DirectWrite rasteriser for [`crate::TabBar`] (#25).
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]

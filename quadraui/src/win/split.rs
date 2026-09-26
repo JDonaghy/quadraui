@@ -7,10 +7,10 @@
 //! Windows's `ID2D1SolidColorBrush` (via `super::text::fill_rect`)
 //! always honoured a translucent `theme.separator`, while pre-migration
 //! GTK did not — this module's behaviour is unchanged by the migration.
-//! This module now carries [`win_split_layout`], [`RawSplitSurface`],
-//! and the deprecated [`draw_split`] compatibility shim over the shared
-//! paint, mirroring `win::split_tree::RawSplitTreeSurface` (#863,
-//! slice 6/9).
+//! This module now carries [`win_split_layout`] and the deprecated
+//! [`draw_split`] compatibility shim over the shared
+//! [`super::surface::D2dSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawSplitSurface`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod split;` and `backend.rs`'s module
@@ -41,85 +41,6 @@ pub fn win_split_layout(rect: Rect, split: &Split) -> SplitLayout {
     split.layout(rect, SplitMeasure::new(DIVIDER_DIP))
 }
 
-/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
-/// `&ID2D1RenderTarget`, used only by the deprecated [`draw_split`] shim
-/// below — a split's paint calls exactly one verb (`surface_fill_rect`,
-/// once for the divider), so every other method is `unreachable!()`.
-/// Mirrors `win::split_tree::RawSplitTreeSurface`'s identical pattern
-/// (#863).
-pub(crate) struct RawSplitSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-}
-
-impl crate::native_surface::NativeSurface for RawSplitSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawSplitSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawSplitSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawSplitSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawSplitSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawSplitSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
-        unreachable!("RawSplitSurface has no text measurement")
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Split::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
-        unreachable!("Split::paint never draws text")
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Split::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("Split::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("Split::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("Split::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces
 /// the pre-#864 signature exactly for any external caller that held a
 /// direct `quadraui::win::draw_split` reference rather than going
@@ -134,7 +55,10 @@ impl crate::native_surface::NativeSurface for RawSplitSurface<'_> {
 pub fn draw_split(target: &ID2D1RenderTarget, rect: Rect, split: &Split) -> SplitLayout {
     let layout = win_split_layout(rect, split);
     let theme = Theme::default();
-    let mut surface = RawSplitSurface { target };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: None,
+    };
     crate::primitives::split::native_surface_paint::paint(&layout, &mut surface, &theme);
     layout
 }
@@ -161,13 +85,16 @@ mod tests {
 
     /// Paint `layout` via the shared
     /// [`crate::primitives::split::native_surface_paint::paint`] through
-    /// a [`RawSplitSurface`] over `target` — the same adapter the
-    /// deprecated [`draw_split`] shim uses, exercised here directly so
-    /// these tests don't trip the `-D warnings`-denied `deprecated`
-    /// lint (CLAUDE.md rule 3; mirrors `win::split_tree`'s identical
-    /// test-migration note).
+    /// a [`super::super::surface::D2dSurface`] over `target` — the same
+    /// adapter the deprecated [`draw_split`] shim uses, exercised here
+    /// directly so these tests don't trip the `-D warnings`-denied
+    /// `deprecated` lint (CLAUDE.md rule 3; mirrors `win::split_tree`'s
+    /// identical test-migration note).
     fn paint(target: &ID2D1RenderTarget, layout: &SplitLayout) {
-        let mut raw = RawSplitSurface { target };
+        let mut raw = super::super::surface::D2dSurface {
+            target,
+            dwrite: None,
+        };
         crate::primitives::split::native_surface_paint::paint(layout, &mut raw, &Theme::default());
     }
 

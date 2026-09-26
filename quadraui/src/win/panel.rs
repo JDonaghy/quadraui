@@ -10,8 +10,8 @@
 //! implementation. This module now only carries [`win_panel_layout`]
 //! (pure layout, still needed by `WinBackend::panel_layout` for no-paint
 //! hit-test queries) and the deprecated [`draw_panel`] compatibility
-//! shim over [`RawPanelSurface`], mirroring `win::scrollbar`'s identical
-//! #811 shape.
+//! shim over the shared [`super::surface::D2dSurface`] adapter (#1072 —
+//! consolidated from this module's own private `RawPanelSurface`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod panel;` and `backend.rs`'s module
@@ -28,7 +28,6 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::theme::Theme;
 
@@ -53,87 +52,6 @@ pub fn win_panel_layout(rect: Rect, panel: &Panel, line_height: f32) -> PanelLay
     panel.layout(rect, measure)
 }
 
-/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget` +
-/// [`DWrite`], used only by the deprecated [`draw_panel`] shim below and
-/// by this module's own tests — a panel's paint calls
-/// `surface_fill_rect`, `surface_measure_text` and
-/// `surface_draw_text_run`; every other method is `unreachable!()`.
-/// Mirrors `win::scrollbar::RawScrollbarSurface`'s identical pattern
-/// (#811).
-pub(crate) struct RawPanelSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-    pub(crate) dwrite: &'a DWrite,
-}
-
-impl NativeSurface for RawPanelSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawPanelSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawPanelSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawPanelSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawPanelSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawPanelSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Panel::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        let _ = self.dwrite.draw_text(self.target, text, rect, color);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Panel::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("Panel::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("Panel::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("Panel::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
 /// the pre-#859 signature exactly for any external caller that held a
 /// direct `quadraui::win::draw_panel` reference rather than going
@@ -154,7 +72,10 @@ pub fn draw_panel(
 ) -> PanelLayout {
     let layout = win_panel_layout(rect, panel, line_height);
     let theme = Theme::default();
-    let mut surface = RawPanelSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, &theme);
     layout
 }
@@ -187,7 +108,7 @@ mod tests {
 
     /// Paint `panel` via the shared
     /// [`crate::primitives::panel::native_surface_paint::paint`] through
-    /// a [`RawPanelSurface`] over `surface`'s headless target — the same
+    /// a [`super::super::surface::D2dSurface`] over `surface`'s headless target — the same
     /// adapter the deprecated [`draw_panel`] shim uses, exercised here
     /// directly so these tests don't trip the `-D warnings`-denied
     /// `deprecated` lint (CLAUDE.md rule 3; mirrors `win::scrollbar`'s
@@ -196,7 +117,10 @@ mod tests {
         let layout = win_panel_layout(rect, panel, LINE_HEIGHT);
         surface
             .paint(|target| {
-                let mut raw = RawPanelSurface { target, dwrite };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
                 crate::primitives::panel::native_surface_paint::paint(
                     panel,
                     &layout,

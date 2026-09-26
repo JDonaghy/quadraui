@@ -8,10 +8,10 @@
 //! `gtk::toast::draw_toast_stack`, `macos::toast::draw_toast_stack` and
 //! `win::toast::draw_toast_stack` into one implementation. This module
 //! now only carries [`mac_toast_stack_layout`] (pure layout, still needed
-//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries),
-//! [`RawMacToastSurface`], and the deprecated [`draw_toast_stack`]
-//! compatibility shim over it, mirroring `macos::form::RawFormSurface`
-//! (#808).
+//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries) and
+//! the deprecated [`draw_toast_stack`] compatibility shim over the
+//! shared [`super::surface::CgSurface`] adapter (#1072 — consolidated
+//! from this module's own private `RawMacToastSurface`).
 //!
 //! ## Scope omissions (follow-up)
 //!
@@ -23,10 +23,9 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
+use super::text::measure_text;
 use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 const TOAST_WIDTH_PX: f32 = 320.0;
 const TOAST_MARGIN_PX: f32 = 12.0;
@@ -89,93 +88,6 @@ pub fn mac_toast_stack_layout(
     )
 }
 
-/// Minimal [`crate::native_surface::NativeSurface`] adapter over a raw
-/// `(CGContextRef, &CTFont)` pair, used only by the deprecated
-/// [`draw_toast_stack`] shim below — mirrors `macos::form::RawFormSurface`'s
-/// identical pattern (#808), scoped to the three verbs a toast's paint
-/// actually uses (fill, plain text run, measure).
-pub(crate) struct RawMacToastSurface<'a> {
-    pub(crate) ctx: CGContextRef,
-    pub(crate) font: &'a CTFont,
-}
-
-impl crate::native_surface::NativeSurface for RawMacToastSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawMacToastSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawMacToastSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawMacToastSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawMacToastSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawMacToastSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = measure_text(self.font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's
-        // paint pass — see this struct's construction site.
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(&mut self, _rect: crate::Rect, _color: Color, _stroke_width: f32) {
-        unreachable!("ToastStack::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: Color) {
-        // SAFETY: see `surface_fill_rect`.
-        unsafe {
-            draw_text(
-                self.ctx,
-                self.font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                super::backend::ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("ToastStack::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("ToastStack::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("ToastStack::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("ToastStack::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
 /// the pre-#861 signature exactly for any external caller that held a
 /// direct `quadraui::macos::draw_toast_stack` reference rather than going
@@ -204,7 +116,10 @@ pub unsafe fn draw_toast_stack(
     theme: &Theme,
     line_height: f64,
 ) -> ToastStackLayout {
-    let mut surface = RawMacToastSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::toast::native_surface_paint::paint(
         stack,
         &mut surface,

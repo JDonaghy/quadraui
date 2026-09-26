@@ -18,7 +18,7 @@
 //! unchanged); [`crate::win::multi_section_view`]'s embedded `Terminal`
 //! section body — the one in-tree caller of the old free function
 //! outside `WinBackend` itself — now goes through
-//! [`super::form::RawFormSurface`] instead (see that struct's doc).
+//! [`super::surface::D2dSurface`] instead (see that struct's module doc).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod terminal;` and `backend.rs`'s
@@ -31,7 +31,6 @@ mod tests {
     use crate::terminal_style::wide_glyph_x_scale;
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
-    use crate::win::form::RawFormSurface;
     use crate::win::testing::HeadlessSurface;
     use crate::win::text::{fill_rect, DWrite};
 
@@ -62,7 +61,7 @@ mod tests {
             .0
     }
 
-    /// Paints `term` via `RawFormSurface` — the same adapter
+    /// Paints `term` via `super::surface::D2dSurface` — the same adapter
     /// `win::multi_section_view`'s embedded `Terminal` section body
     /// uses — so these tests keep controlling `char_width`/`line_height`
     /// explicitly instead of depending on a live `WinBackend`'s measured
@@ -70,7 +69,10 @@ mod tests {
     fn paint(surface: &HeadlessSurface, dwrite: &DWrite, term: &Terminal, theme: &Theme) {
         surface
             .paint(|target| {
-                let mut raw = RawFormSurface { target, dwrite };
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
                 crate::primitives::terminal::paint(
                     term, &mut raw, theme, 0.0, 0.0, W as f32, H as f32, LINE_H, CHAR_W, None,
                 );
@@ -289,9 +291,9 @@ mod tests {
         surface
             .paint(|target| {
                 let _ = fill_rect(target, Rect::new(0.0, 0.0, W as f32, H as f32), bg_sentinel);
-                let mut raw = RawFormSurface {
+                let mut raw = crate::win::surface::D2dSurface {
                     target,
-                    dwrite: &dwrite,
+                    dwrite: Some(&dwrite),
                 };
                 crate::primitives::terminal::paint(
                     &term, &mut raw, &theme, 0.0, 0.0, W as f32, pane_h, LINE_H, CHAR_W, None,
@@ -350,9 +352,9 @@ mod tests {
                     Color::rgb(0, 0, 0),
                 );
                 let dwrite = dwrite();
-                let mut raw = RawFormSurface {
+                let mut raw = crate::win::surface::D2dSurface {
                     target,
-                    dwrite: &dwrite,
+                    dwrite: Some(&dwrite),
                 };
                 crate::primitives::terminal::paint_divider(&mut raw, 50.0, 0.0, H as f32, &theme);
             })

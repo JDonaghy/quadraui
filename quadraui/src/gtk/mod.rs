@@ -62,6 +62,7 @@ mod spinner;
 mod split;
 mod split_tree;
 mod status_bar;
+mod surface;
 mod tab_bar;
 mod terminal;
 pub mod testing;

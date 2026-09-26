@@ -5,11 +5,12 @@
 //! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
 //! module doc for why the three per-backend copies were found to be
 //! already identical (no divergence). This module now carries
-//! [`mac_split_tree_layout`], [`RawSplitTreeSurface`], and the
-//! deprecated [`draw_split_tree`] compatibility shim over the shared
-//! paint, mirroring `macos::scrollbar::RawScrollbarSurface` (#811 slice
-//! 1/9). Divider thickness matches [`super::split`]'s 4 points, which in
-//! turn matches GTK, so a `SplitTree` and a plain `Split` line up.
+//! [`mac_split_tree_layout`] and the deprecated [`draw_split_tree`]
+//! compatibility shim over the shared [`super::surface::CgSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawSplitTreeSurface`). Divider thickness matches [`super::split`]'s
+//! 4 points, which in turn matches GTK, so a `SplitTree` and a plain
+//! `Split` line up.
 
 use core_graphics::sys::CGContextRef;
 
@@ -28,87 +29,6 @@ const MAC_DIVIDER_PX: f32 = 4.0;
 pub fn mac_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     tree.layout(bounds, SplitTreeMeasure::new(MAC_DIVIDER_PX))
-}
-
-/// Minimal [`crate::native_surface::NativeSurface`] adapter over a bare
-/// `CGContextRef`, used only by the deprecated [`draw_split_tree`] shim
-/// below — a split tree's paint calls exactly one verb
-/// (`surface_fill_rect`, once per divider), so every other method is
-/// `unreachable!()`. Mirrors `macos::scrollbar::RawScrollbarSurface`'s
-/// identical pattern (#811 slice 1/9).
-pub(crate) struct RawSplitTreeSurface {
-    pub(crate) ctx: CGContextRef,
-}
-
-impl crate::native_surface::NativeSurface for RawSplitTreeSurface {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawSplitTreeSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawSplitTreeSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawSplitTreeSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawSplitTreeSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawSplitTreeSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
-        unreachable!("RawSplitTreeSurface has no text measurement")
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
-        // pass — see this struct's construction site.
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("SplitTree::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
-        unreachable!("SplitTree::paint never draws text")
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("SplitTree::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("SplitTree::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("SplitTree::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("SplitTree::paint never draws an image")
-    }
 }
 
 /// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
@@ -138,7 +58,7 @@ pub unsafe fn draw_split_tree(
     theme: &Theme,
 ) -> SplitTreeLayout {
     let layout = mac_split_tree_layout(tree, x, y, w, h);
-    let mut surface = RawSplitTreeSurface { ctx };
+    let mut surface = super::surface::CgSurface { ctx, font: None };
     crate::primitives::split_tree::native_surface_paint::paint(&layout, &mut surface, theme);
     layout
 }

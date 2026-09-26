@@ -9,15 +9,14 @@
 //! `win::panel::draw_panel` into one implementation. This module now
 //! only carries [`mac_panel_layout`] (pure layout, still needed by
 //! `MacBackend::panel_layout` for no-paint hit-test queries) and the
-//! deprecated [`draw_panel`] compatibility shim over
-//! [`RawPanelSurface`], mirroring `macos::scrollbar`'s identical #811
-//! shape.
+//! deprecated [`draw_panel`] compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawPanelSurface`).
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::event::Rect as QRect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
 use crate::theme::Theme;
 
@@ -44,103 +43,6 @@ pub fn mac_panel_layout(
         content_padding: 0.0,
     };
     panel.layout(bounds, measure)
-}
-
-/// Minimal [`NativeSurface`] adapter over a bare `CGContextRef` + font,
-/// used only by the deprecated [`draw_panel`] shim below — a panel's
-/// paint calls `surface_fill_rect`, `surface_measure_text` and
-/// `surface_draw_text_run`; every other method is `unreachable!()`.
-/// Mirrors `macos::scrollbar::RawScrollbarSurface`'s identical pattern
-/// (#811).
-struct RawPanelSurface<'a> {
-    ctx: CGContextRef,
-    font: &'a CTFont,
-}
-
-impl NativeSurface for RawPanelSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawPanelSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawPanelSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawPanelSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawPanelSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawPanelSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = super::text::measure_text(self.font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // SAFETY: `ctx` is a valid `CGContextRef` for the caller's paint
-        // pass — see this struct's construction site. `ns_fill_rect`
-        // already honours `color.a` with a real alpha blend (unlike the
-        // GTK `NativeSurface::surface_fill_rect` bug quadraui#811 fixed
-        // — see this module's doc).
-        unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Panel::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        // SAFETY: `self.ctx` is the caller-supplied context passed to
-        // `draw_panel`, valid for the duration of the shim call.
-        unsafe {
-            super::text::draw_text(
-                self.ctx,
-                self.font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                super::backend::ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Panel::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("Panel::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("Panel::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("Panel::paint never draws an image")
-    }
 }
 
 /// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
@@ -172,7 +74,10 @@ pub unsafe fn draw_panel(
     line_height: f64,
 ) -> PanelLayout {
     let layout = mac_panel_layout(panel, x, y, w, h, line_height);
-    let mut surface = RawPanelSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, theme);
     layout
 }

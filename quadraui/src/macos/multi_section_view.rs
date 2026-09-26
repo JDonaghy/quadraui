@@ -372,11 +372,14 @@ unsafe fn paint_body(
             // #810: painting moved to the shared
             // `crate::primitives::chart::paint`; this raw
             // `(CGContextRef, &CTFont)` call site (no live `MacBackend`
-            // on hand) reuses `macos::form::RawFormSurface` — a generic
-            // adapter despite its name, see that struct's doc.
+            // on hand) reuses the shared `super::surface::CgSurface`
+            // adapter (#1072).
             let chart_layout =
                 super::chart::mac_chart_layout(c, bx, by, bw, bh, line_height, char_width);
-            let mut surface = super::form::RawFormSurface { ctx, font };
+            let mut surface = super::surface::CgSurface {
+                ctx,
+                font: Some(font),
+            };
             crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
         }
         SectionBody::Terminal(_) | SectionBody::MessageList(_) => {
@@ -398,7 +401,7 @@ unsafe fn paint_body(
 
 /// Paint an embedded [`crate::Form`] section body. #808: field-kind
 /// painting goes through the shared [`crate::primitives::form::paint`]
-/// via [`super::form::RawFormSurface`] (this call site has only a raw
+/// via [`super::surface::CgSurface`] (this call site has only a raw
 /// `CGContextRef`, not a live [`super::MacBackend`]) — `FieldKind::
 /// Toolbar` is painted separately below, same as
 /// `MacBackend::draw_form`, for the same reason (see that fn's doc).
@@ -417,7 +420,10 @@ unsafe fn draw_form_body(
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     let flayout = super::form::mac_form_layout(form, area, line_height, font);
     let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = super::form::RawFormSurface { ctx, font };
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
     for vf in &flayout.visible_fields {

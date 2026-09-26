@@ -6,9 +6,9 @@
 //! divergence (quadraui#791) re-verified (already fixed) while unifying
 //! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
 //! `win::scrollbar::draw_scrollbar` into one implementation. This module
-//! now only carries [`RawScrollbarSurface`] and the deprecated
-//! [`draw_scrollbar`] compatibility shim over it, mirroring
-//! `win::form::RawFormSurface` (#808).
+//! now only carries the deprecated [`draw_scrollbar`] compatibility shim
+//! over the shared [`super::surface::D2dSurface`] adapter (#1072 —
+//! consolidated from this module's own private `RawScrollbarSurface`).
 //!
 //! `super::multi_section_view`'s embedded scrollbar still uses its own
 //! CPU-premix convention — out of scope here, see that module's doc.
@@ -20,90 +20,8 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use crate::native_surface::NativeSurface;
 use crate::primitives::scrollbar::Scrollbar;
 use crate::theme::Theme;
-
-/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget`,
-/// used only by the deprecated [`draw_scrollbar`] shim below and by this
-/// module's own tests — a scrollbar's paint calls exactly one verb
-/// (`surface_fill_rect`), so every other method is `unreachable!()`.
-/// Mirrors `win::form::RawFormSurface`'s identical pattern (#808).
-pub(crate) struct RawScrollbarSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-}
-
-impl NativeSurface for RawScrollbarSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawScrollbarSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawScrollbarSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawScrollbarSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawScrollbarSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawScrollbarSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
-        unreachable!("RawScrollbarSurface has no text measurement")
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        // `win::text::fill_rect` already honours `color.a` with a real
-        // translucent `ID2D1SolidColorBrush` (the quadraui#791 fix,
-        // predating this issue — see the module doc).
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Scrollbar::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, _rect: crate::Rect, _text: &str, _color: crate::Color) {
-        unreachable!("Scrollbar::paint never draws text")
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("Scrollbar::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, _rect: crate::Rect) {
-        unreachable!("Scrollbar::paint never clips")
-    }
-
-    fn surface_pop_clip(&mut self) {
-        unreachable!("Scrollbar::paint never clips")
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("Scrollbar::paint never draws an image")
-    }
-}
 
 /// Deprecated free-function shim (#811, CLAUDE.md rule 8): reproduces
 /// the pre-#811 signature exactly for any external caller that held a
@@ -117,7 +35,10 @@ impl NativeSurface for RawScrollbarSurface<'_> {
     note = "call `Backend::draw_scrollbar` instead — this free function is a compatibility shim over the shared #811 implementation"
 )]
 pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: &Theme) {
-    let mut surface = RawScrollbarSurface { target };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: None,
+    };
     crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, &mut surface, theme);
 }
 
@@ -133,8 +54,8 @@ mod tests {
 
     /// Paint `scrollbar` via the shared
     /// [`crate::primitives::scrollbar::native_surface_paint::paint`]
-    /// through a [`RawScrollbarSurface`] over `surface`'s headless
-    /// target — the same adapter the deprecated [`draw_scrollbar`] shim
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s
+    /// headless target — the same adapter the deprecated [`draw_scrollbar`] shim
     /// uses, exercised here directly so these tests don't trip the
     /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3;
     /// mirrors `win::form`'s identical test-migration note).
@@ -150,7 +71,10 @@ mod tests {
             .expect("fill bg");
         surface
             .paint(|target| {
-                let mut raw = RawScrollbarSurface { target };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: None,
+                };
                 crate::primitives::scrollbar::native_surface_paint::paint(
                     scrollbar,
                     &mut raw,
@@ -212,7 +136,10 @@ mod tests {
             .expect("fill bg");
         surface
             .paint(|target| {
-                let mut raw = RawScrollbarSurface { target };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: None,
+                };
                 crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, &theme);
             })
             .expect("paint scrollbar");

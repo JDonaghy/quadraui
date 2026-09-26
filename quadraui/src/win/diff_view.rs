@@ -8,9 +8,10 @@
 //! ellipsize vs. hard-clip) found while unifying
 //! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
 //! and `win::diff_view::draw_diff_view` into one implementation. This
-//! module now only carries [`RawWinDiffViewSurface`] and the deprecated
-//! [`draw_diff_view`] compatibility shim over it, mirroring
-//! `win::status_bar::RawWinStatusBarSurface` (#860).
+//! module now only carries the deprecated [`draw_diff_view`]
+//! compatibility shim over the shared [`super::surface::D2dSurface`]
+//! adapter (#1072 — consolidated from this module's own private
+//! `RawWinDiffViewSurface`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod diff_view;` and `backend.rs`'s
@@ -28,91 +29,10 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{pop_clip, push_clip, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::theme::Theme;
-
-/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget` +
-/// [`DWrite`], used only by the deprecated [`draw_diff_view`] shim below
-/// and by this module's own tests — mirrors
-/// `win::status_bar::RawWinStatusBarSurface`'s identical pattern (#860),
-/// extended with clip push/pop, which this primitive's paint actually
-/// uses.
-pub(crate) struct RawWinDiffViewSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-    pub(crate) dwrite: &'a DWrite,
-}
-
-impl NativeSurface for RawWinDiffViewSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawWinDiffViewSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawWinDiffViewSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawWinDiffViewSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawWinDiffViewSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawWinDiffViewSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("DiffView::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        let _ = self.dwrite.draw_text(self.target, text, rect, color);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("DiffView::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        push_clip(self.target, rect);
-    }
-
-    fn surface_pop_clip(&mut self) {
-        pop_clip(self.target);
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("DiffView::paint never draws an image")
-    }
-}
 
 /// Deprecated free-function shim (#866, CLAUDE.md rule 8): reproduces
 /// the pre-#866 signature exactly for any external caller that held a
@@ -133,7 +53,10 @@ pub fn draw_diff_view(
     theme: &Theme,
     line_height: f32,
 ) -> DiffViewLayout {
-    let mut surface = RawWinDiffViewSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::diff_view::native_surface_paint::paint(
         view,
         &mut surface,
@@ -183,7 +106,7 @@ mod tests {
 
     /// Paint `view` via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`]
-    /// through a [`RawWinDiffViewSurface`] over `surface`'s headless
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the deprecated [`draw_diff_view`] shim
     /// uses, exercised here directly so these tests don't trip the
     /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
@@ -198,7 +121,10 @@ mod tests {
     ) -> DiffViewLayout {
         surface
             .paint(|target| {
-                let mut raw = RawWinDiffViewSurface { target, dwrite };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
                 crate::primitives::diff_view::native_surface_paint::paint(
                     view,
                     &mut raw,

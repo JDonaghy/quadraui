@@ -1,14 +1,16 @@
-//! GTK settings-chrome rasteriser for [`crate::Form`], plus
-//! [`RawFormSurface`].
+//! GTK settings-chrome rasteriser for [`crate::Form`].
 //!
 //! Field-kind *painting* moved to the shared
 //! [`crate::primitives::form::paint`] (#808, NativeSurface Phase 2a) —
 //! this module now only carries `draw_settings_chrome` (unrelated: form
-//! *body* chrome, not field painting) and `RawFormSurface`, the
-//! [`crate::native_surface::NativeSurface`] adapter over a raw
-//! `(&Context, &pango::Layout)` pair for call sites that have only
-//! those — not a live [`super::backend::GtkBackend`] — such as
-//! [`crate::gtk::multi_section_view`]'s embedded-`Form` section body.
+//! *body* chrome, not field painting) and the deprecated [`draw_form`]
+//! shim, both over the shared [`super::surface::CairoSurface`] adapter
+//! (#1072 — consolidated from this module's own private
+//! `RawFormSurface`, which also served call sites with only a raw
+//! `(&Context, &pango::Layout)` pair — not a live
+//! [`super::backend::GtkBackend`] — such as
+//! [`crate::gtk::multi_section_view`]'s embedded-`Form` section body;
+//! those now build a [`super::surface::CairoSurface`] directly).
 //!
 //! Before #808, this module's own `draw_form` painted from an ad-hoc
 //! running cursor independent of the shared [`crate::Form::layout`]
@@ -21,124 +23,14 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::cairo_rgb;
-use crate::native_surface::NativeSurface;
 use crate::theme::Theme;
 use crate::Form;
-
-/// See this module's doc.
-///
-/// Frame-lifecycle / metrics verbs are unreachable from a raw
-/// `(&Context, &pango::Layout)` pair (there is no backend to ask);
-/// `paint` never calls them (it only fills, draws text, and measures
-/// text), so they panic if ever called — a latent contract, not a live
-/// gap.
-pub(crate) struct RawFormSurface<'a> {
-    pub(crate) cr: &'a Context,
-    pub(crate) layout: &'a pango::Layout,
-}
-
-impl NativeSurface for RawFormSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawFormSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawFormSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawFormSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawFormSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawFormSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.layout.set_text(text);
-        self.layout.set_attributes(None);
-        let (w, h) = self.layout.pixel_size();
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        super::set_source(self.cr, color);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.fill().ok();
-    }
-
-    fn surface_stroke_rect(&mut self, rect: crate::Rect, color: crate::Color, stroke_width: f32) {
-        super::set_source(self.cr, color);
-        self.cr.set_line_width(stroke_width as f64);
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.stroke().ok();
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        self.layout.set_text(text);
-        self.layout.set_attributes(None);
-        super::set_source(self.cr, color);
-        self.cr.move_to(rect.x as f64, rect.y as f64);
-        super::painted_text::show_layout(self.cr, self.layout);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        from: crate::Point,
-        to: crate::Point,
-        color: crate::Color,
-        stroke_width: f32,
-    ) {
-        super::set_source(self.cr, color);
-        self.cr.set_line_width(stroke_width as f64);
-        self.cr.move_to(from.x as f64, from.y as f64);
-        self.cr.line_to(to.x as f64, to.y as f64);
-        self.cr.stroke().ok();
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        self.cr.save().ok();
-        self.cr.rectangle(
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        self.cr.clip();
-    }
-
-    fn surface_pop_clip(&mut self) {
-        self.cr.restore().ok();
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        crate::backend::ImagePaintResult::Unsupported
-    }
-}
 
 /// Deprecated free-function shim (#808, CLAUDE.md rule 8): `draw_form`
 /// used to be this module's whole reason to exist — every `FieldKind`
 /// match arm lived directly in its body. Painting now goes through
-/// [`crate::primitives::form::paint`] via [`RawFormSurface`]; this
-/// wrapper reproduces the old signature exactly (same geometry, same
+/// [`crate::primitives::form::paint`] via [`super::surface::CairoSurface`];
+/// this wrapper reproduces the old signature exactly (same geometry, same
 /// paint contract) for any external caller that held a direct
 /// `quadraui::gtk::draw_form` reference rather than going through
 /// [`crate::Backend::draw_form`] — the sanctioned entry point, and the
@@ -149,7 +41,7 @@ impl NativeSurface for RawFormSurface<'_> {
 /// reason `GtkBackend::draw_form` does (see that method's doc).
 #[deprecated(
     since = "0.0.1",
-    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `RawFormSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
+    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `super::surface::CairoSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
 )]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_form(
@@ -175,7 +67,11 @@ pub fn draw_form(
         crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
     });
     let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = RawFormSurface { cr, layout };
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: false,
+    };
     crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
 
     for vf in &flayout.visible_fields {
@@ -334,7 +230,7 @@ mod tests {
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     /// Paint `form` via the shared [`crate::primitives::form::paint`]
-    /// through a [`RawFormSurface`] over a fresh in-memory
+    /// through a [`crate::gtk::surface::CairoSurface`] over a fresh in-memory
     /// `ImageSurface` — the same adapter `gtk::multi_section_view`'s
     /// embedded-`Form` body uses. Builds its own [`crate::FormLayout`]
     /// with the shared `form_field_measure` (the same measurer
@@ -353,9 +249,10 @@ mod tests {
         let flayout = form.layout(320.0, 160.0, |i| {
             crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
         });
-        let mut raw = RawFormSurface {
+        let mut raw = crate::gtk::surface::CairoSurface {
             cr: &cr,
-            layout: &pango_layout,
+            layout: Some(&pango_layout),
+            translucent_fill: false,
         };
         crate::primitives::form::paint(
             form,
@@ -433,9 +330,10 @@ mod tests {
                     &measure,
                 )
             });
-            let mut raw = RawFormSurface {
+            let mut raw = crate::gtk::surface::CairoSurface {
                 cr: &cr,
-                layout: &pango_layout,
+                layout: Some(&pango_layout),
+                translucent_fill: false,
             };
             crate::primitives::form::paint(
                 &form,

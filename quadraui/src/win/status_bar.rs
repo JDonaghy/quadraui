@@ -11,9 +11,10 @@
 //! module now only carries [`win_status_bar_layout`] (pure layout, still
 //! needed by `WinBackend::status_bar_layout` for no-paint hit-test
 //! queries) and the deprecated [`draw_status_bar`] compatibility shim over
-//! [`RawWinStatusBarSurface`], mirroring `win::panel`'s identical #859
-//! shape. `MIN_GAP_DIP` stays put — it's still [`win_status_bar_layout`]'s
-//! own measurer constant, untouched by this migration.
+//! the shared [`super::surface::D2dSurface`] adapter (#1072 — consolidated
+//! from this module's own private `RawWinStatusBarSurface`). `MIN_GAP_DIP`
+//! stays put — it's still [`win_status_bar_layout`]'s own measurer
+//! constant, untouched by this migration.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod status_bar;` and `backend.rs`'s
@@ -31,9 +32,8 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{pop_clip, push_clip, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::native_surface::NativeSurface;
 use crate::primitives::status_bar::StatusSegmentMeasure;
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -61,109 +61,6 @@ pub fn win_status_bar_layout(dwrite: &DWrite, rect: Rect, bar: &StatusBar) -> St
     })
 }
 
-/// Minimal [`NativeSurface`] adapter over a bare `&ID2D1RenderTarget` +
-/// [`DWrite`], used only by the deprecated [`draw_status_bar`] shim below
-/// and by this module's own tests — mirrors
-/// `win::panel::RawPanelSurface`'s identical pattern (#859), extended
-/// with bold-aware measurement/drawing (`surface_measure_text_styled`/
-/// `surface_draw_text_run_styled`) and clip push/pop, both of which this
-/// primitive's paint actually uses.
-pub(crate) struct RawWinStatusBarSurface<'a> {
-    pub(crate) target: &'a ID2D1RenderTarget,
-    pub(crate) dwrite: &'a DWrite,
-}
-
-impl NativeSurface for RawWinStatusBarSurface<'_> {
-    fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {
-        unreachable!("RawWinStatusBarSurface has no backend frame lifecycle to begin")
-    }
-
-    fn surface_end_frame(&mut self) {
-        unreachable!("RawWinStatusBarSurface has no backend frame lifecycle to end")
-    }
-
-    fn surface_viewport(&self) -> crate::Viewport {
-        unreachable!("RawWinStatusBarSurface has no backend viewport")
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        unreachable!("RawWinStatusBarSurface has no backend line height")
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        unreachable!("RawWinStatusBarSurface has no backend char width")
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        self.dwrite.measure_text(text).unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
-        self.dwrite
-            .measure_text_styled(text, bold)
-            .unwrap_or((0.0, 0.0))
-    }
-
-    fn surface_fill_rect(&mut self, rect: crate::Rect, color: crate::Color) {
-        let _ = super::text::fill_rect(self.target, rect, color);
-    }
-
-    fn surface_stroke_rect(
-        &mut self,
-        _rect: crate::Rect,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("StatusBar::paint never strokes a rect")
-    }
-
-    fn surface_draw_text_run(&mut self, rect: crate::Rect, text: &str, color: crate::Color) {
-        let _ = self.dwrite.draw_text(self.target, text, rect, color);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn surface_draw_text_run_styled(
-        &mut self,
-        rect: crate::Rect,
-        text: &str,
-        color: crate::Color,
-        bold: bool,
-        _italic: bool,
-        _underline: bool,
-        _scale_x: f32,
-    ) {
-        let _ = self
-            .dwrite
-            .draw_text_styled(self.target, text, rect, color, bold);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        _from: crate::Point,
-        _to: crate::Point,
-        _color: crate::Color,
-        _stroke_width: f32,
-    ) {
-        unreachable!("StatusBar::paint never strokes a line")
-    }
-
-    fn surface_push_clip(&mut self, rect: crate::Rect) {
-        push_clip(self.target, rect);
-    }
-
-    fn surface_pop_clip(&mut self) {
-        pop_clip(self.target);
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        _rect: crate::Rect,
-        _image: &crate::Image,
-    ) -> crate::backend::ImagePaintResult {
-        unreachable!("StatusBar::paint never draws an image")
-    }
-}
-
 /// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
 /// the pre-#860 signature exactly for any external caller that held a
 /// direct `quadraui::win::draw_status_bar` reference rather than going
@@ -184,7 +81,10 @@ pub fn draw_status_bar(
     pressed_id: Option<&WidgetId>,
     theme: &Theme,
 ) -> StatusBarLayout {
-    let mut surface = RawWinStatusBarSurface { target, dwrite };
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
     crate::primitives::status_bar::native_surface_paint::paint(
         bar,
         &mut surface,
@@ -230,7 +130,7 @@ mod tests {
 
     /// Paint `bar` via the shared
     /// [`crate::primitives::status_bar::native_surface_paint::paint`]
-    /// through a [`RawWinStatusBarSurface`] over `surface`'s headless
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
     /// target — the same adapter the deprecated [`draw_status_bar`] shim
     /// uses, exercised here directly so these tests don't trip the
     /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
@@ -245,7 +145,10 @@ mod tests {
     ) -> StatusBarLayout {
         surface
             .paint(|target| {
-                let mut raw = RawWinStatusBarSurface { target, dwrite };
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
                 crate::primitives::status_bar::native_surface_paint::paint(
                     bar,
                     &mut raw,
