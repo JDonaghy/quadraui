@@ -4802,6 +4802,137 @@ fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_land
     );
 }
 
+// ─── ChatDemo (quadraui#1138): per-turn hit regions + collapsible turns ─────
+//
+// `ChatDemo::handle` wires `ChatControllerEvent::TurnClicked { row_in_turn: 0,
+// .. }` to `ChatController::toggle_turn_collapsed` (the demo's own choice —
+// the controller never toggles this itself). These drive the real
+// click → handle → render path, exercising both the mouse (click the role
+// header) and keyboard (`Tab` to focus, `Enter` to toggle) affordances the
+// module doc describes, plus the mouse/keyboard focus-sync fix.
+
+#[test]
+fn chat_click_turn_header_collapses_then_reexpands_via_click() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+    // Two deliberate, separate single clicks on the same spot — without
+    // this they'd fold into a `DoubleClick` (quadraui#592), which
+    // `ChatController::handle` doesn't special-case for the transcript.
+    driver.set_double_click_folding(false);
+
+    for c in "hello world".chars() {
+        driver.type_char(c);
+    }
+    driver.ctrl_char('s');
+    assert!(
+        driver.screen_contains("hello world"),
+        "the submitted turn's body should be visible before collapsing:\n{}",
+        driver.screen()
+    );
+
+    let (x, y) = driver
+        .find("You")
+        .expect("the submitted turn's role header should be visible");
+    let reaction = driver.click(x, y);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "clicking a turn's role header should toggle it and redraw"
+    );
+    assert!(
+        driver.screen_contains("You \u{25b8}"),
+        "the collapsed turn should paint a fold indicator next to its role \
+         header:\n{}",
+        driver.screen()
+    );
+
+    // Clicking the same header again (now bearing the fold indicator) must
+    // re-expand it.
+    let (x, y) = driver
+        .find("You \u{25b8}")
+        .expect("the collapsed header should still be clickable");
+    let reaction = driver.click(x, y);
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        !driver.screen_contains("You \u{25b8}"),
+        "a second click on the header should re-expand the turn, removing \
+         the fold indicator:\n{}",
+        driver.screen()
+    );
+    assert!(
+        driver.screen_contains("hello world"),
+        "the turn's body should be visible again once re-expanded:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn chat_click_then_enter_toggles_the_same_turn_the_mouse_focused() {
+    // Regression for the #1138 review's mouse/keyboard-sync finding: a
+    // click must move `ChatController::focused_turn` onto the clicked turn
+    // so a following `Enter` (no mouse involved) acts on it.
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "hi".chars() {
+        driver.type_char(c);
+    }
+    driver.ctrl_char('s');
+    let (x, y) = driver
+        .find("You")
+        .expect("the submitted turn's role header should be visible");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("You \u{25b8}"),
+        "the click should have collapsed the turn:\n{}",
+        driver.screen()
+    );
+
+    // `submit_on_enter` is set for this demo, so plain `Enter` would
+    // normally submit the (empty) input — but the click above left a turn
+    // focused, so `Enter` toggles that turn instead.
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Enter while a turn is focused should toggle it, not submit"
+    );
+    assert!(
+        !driver.screen_contains("You \u{25b8}"),
+        "Enter should have re-expanded the same turn the click collapsed:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn chat_tab_then_enter_toggles_focused_turn_without_a_mouse() {
+    let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
+
+    for c in "keyboard only".chars() {
+        driver.type_char(c);
+    }
+    driver.ctrl_char('s');
+    assert!(driver.screen_contains("keyboard only"));
+
+    // `Tab` from the input moves focus onto turn 0 (the just-submitted
+    // turn) — see `ChatController::focus_next_turn`'s cycle order.
+    // `ChatController::handle` reports this as `Consumed`, which
+    // `ChatDemo::handle` maps to `Reaction::Redraw`.
+    let reaction = driver.press_named(NamedKey::Tab);
+    assert_eq!(reaction, Reaction::Redraw);
+
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Enter while Tab has focused a turn should toggle it"
+    );
+    assert!(
+        driver.screen_contains("You \u{25b8}"),
+        "Tab + Enter should collapse the focused turn with no mouse \
+         involved:\n{}",
+        driver.screen()
+    );
+}
+
 // ─── SidebarPanelApp (issue #305): sidebar item click updates main panel ────
 //
 // Clicking a task row is handled by `SidebarPanelApp::handle`'s `MouseDown`

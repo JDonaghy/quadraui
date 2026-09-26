@@ -22,6 +22,9 @@
 //! - `↑` / `↓` — history navigation (when cursor is on the first/last
 //!   *visual* row of the wrapped, auto-growing input box — quadraui#1136).
 //! - `PageUp` / `PageDown` — scroll the transcript.
+//! - Click a turn's role-header row (or press `Enter` while `Tab`/
+//!   `Shift+Tab` has focused it — quadraui#1138) to collapse it to a
+//!   one-line summary card; click/`Enter` again to expand it back.
 //! - `Esc` — clear the input, or quit when the input is already empty.
 //! - `q` / `Ctrl+C` — quit immediately.
 //!
@@ -134,8 +137,6 @@ impl AppLogic for ChatDemo {
                     text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
                     timestamp_unix: None,
                     line_scales: Vec::new(),
-                    collapsed: false,
-                    summary: None,
                 });
                 self.controller.clear_input();
                 // Queue a simulated reply (delivered after a few ticks).
@@ -165,6 +166,19 @@ impl AppLogic for ChatDemo {
                 self.sync_controller();
                 Reaction::Redraw
             }
+            // quadraui#1138: clicking a turn's role-header row (row 0 of its
+            // block) toggles it between its full body and a one-line
+            // summary card. A click elsewhere in the body is ignored here —
+            // a real consumer (e.g. vimcode's tool-call cards) would resolve
+            // `row_in_turn` to a `path:line` location instead.
+            ChatControllerEvent::TurnClicked {
+                turn_idx,
+                row_in_turn: 0,
+            } => {
+                self.controller.toggle_turn_collapsed(turn_idx);
+                self.sync_controller();
+                Reaction::Redraw
+            }
             ChatControllerEvent::Consumed => Reaction::Redraw,
             _ => {
                 if matches!(event, UiEvent::WindowResized { .. }) {
@@ -190,8 +204,6 @@ impl AppLogic for ChatDemo {
                         text: StyledText::colored(reply, Color::rgb(180, 230, 180)),
                         timestamp_unix: None,
                         line_scales: Vec::new(),
-                        collapsed: false,
-                        summary: None,
                     });
                 }
             } else {

@@ -84,27 +84,47 @@
 //!
 //! # Collapsible turns and per-turn hit regions (#1138)
 //!
-//! Each [`ChatTurn`] carries a `collapsed: bool`. A collapsed turn paints
+//! Per-turn collapsed/summary state lives on **`ChatController`**, keyed by
+//! transcript index — not as fields on [`ChatTurn`] itself. Both downstream
+//! consumers construct `ChatTurn` via exhaustive struct literals, so adding
+//! public fields to that struct is a breaking change with no in-repo
+//! migration path; keeping the state on the controller instead means
+//! `ChatTurn`'s field set (and every existing constructor) is untouched by
+//! this feature. See [`is_turn_collapsed`](Self::is_turn_collapsed),
+//! [`set_turn_collapsed`](Self::set_turn_collapsed),
+//! [`toggle_turn_collapsed`](Self::toggle_turn_collapsed),
+//! [`set_turn_summary`](Self::set_turn_summary), and
+//! [`turn_summary_line`](Self::turn_summary_line). A collapsed turn paints
 //! as a one-line card — the role header (with a `▸` fold indicator) plus
-//! [`ChatTurn::summary_line`] — instead of its full body. `collapsed`
-//! defaults to `false`, so existing callers are visually unchanged.
+//! [`turn_summary_line`](Self::turn_summary_line) — instead of its full
+//! body. Every turn starts expanded, so existing callers are visually
+//! unchanged.
 //!
 //! A click anywhere in the transcript resolves to the turn and in-turn row
 //! it landed on: [`handle`](Self::handle) returns
-//! [`ChatControllerEvent::TurnClicked`]`{ turn_idx, row_in_turn }`. The
-//! controller does not itself toggle `collapsed` on click — that decision
-//! (fold the card vs. jump to a `path:line` location inside it) is
-//! app/consumer-specific — but [`toggle_turn_collapsed`](Self::toggle_turn_collapsed)
-//! /  [`set_turn_collapsed`](Self::set_turn_collapsed) are there to act on it.
+//! [`ChatControllerEvent::TurnClicked`]`{ turn_idx, row_in_turn }`, and also
+//! moves [`focused_turn`](Self::focused_turn) to `Some(turn_idx)` so a
+//! following keyboard `Enter` acts on the same turn the mouse just landed
+//! on. **Caveat:** each turn's row block ends with the blank inter-turn
+//! separator row, which is folded into the *preceding* turn — for a
+//! single-line turn, `row_in_turn == 0` is the header, `1` is the body, and
+//! `2` is that trailing blank separator, all attributed to that turn. A
+//! consumer resolving `row_in_turn > 0` to a `path:line` location should
+//! account for this rather than assume every `row_in_turn` maps to real
+//! content. The controller does not itself toggle `collapsed` on click —
+//! that decision (fold the card vs. jump to a `path:line` location inside
+//! it) is app/consumer-specific — but
+//! [`toggle_turn_collapsed`](Self::toggle_turn_collapsed) /
+//! [`set_turn_collapsed`](Self::set_turn_collapsed) are there to act on it.
 //!
 //! [`focused_turn`](Self::focused_turn) is a keyboard cursor into the
 //! transcript: `Tab` (and `Shift+Tab` / `BackTab`) cycle it through
 //! `None` (input has focus) → turn `0` → … → the last turn → back to
 //! `None`. While a turn is focused, plain `Enter` toggles that turn's
-//! `collapsed` state instead of submitting or inserting a newline — so
+//! collapsed state instead of submitting or inserting a newline — so
 //! the whole interaction works without a mouse. Typing a character (or
 //! pasting) always returns focus to the input, regardless of where `Tab`
-//! last parked the cursor.
+//! or a transcript click last parked the cursor.
 
 use crate::compose::markdown::render_markdown_to_styled;
 use crate::text_util::{
@@ -120,6 +140,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -141,6 +162,16 @@ pub enum ChatRole {
 /// [`ChatController::push_turn_markdown`]), the transcript renderer builds
 /// styled [`MessageRow`]s with per-span fg/bold/italic and per-line heading
 /// scale; otherwise it falls back to concatenating span text (the flat path).
+///
+/// **Collapsed/summary state (#1138) deliberately lives on
+/// [`ChatController`], not here.** Both downstream consumers construct
+/// `ChatTurn` via exhaustive struct literals (no `..Default::default()`),
+/// so adding fields to this struct is a hard breaking change with no
+/// migration path available from within this repo — see
+/// [`ChatController::is_turn_collapsed`], [`ChatController::set_turn_collapsed`],
+/// and [`ChatController::turn_summary_line`] for the equivalent per-turn
+/// state, keyed by transcript index instead of carried on the turn value
+/// itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub role: ChatRole,
@@ -158,40 +189,6 @@ pub struct ChatTurn {
     /// [`ChatController::set_transcript`] are visually unchanged.
     #[serde(default)]
     pub line_scales: Vec<f32>,
-    /// When `true`, the transcript renderer paints this turn as a
-    /// one-line collapsed card (role header + [`summary_line`](Self::summary_line))
-    /// instead of its full body (#1138). Default `false` — every turn
-    /// starts expanded, so existing callers are visually unchanged.
-    ///
-    /// Consumers (e.g. vimcode's chronological tool-call cards) toggle
-    /// this via [`ChatController::toggle_turn_collapsed`] /
-    /// [`ChatController::set_turn_collapsed`] in response to a
-    /// [`ChatControllerEvent::TurnClicked`] on the row, or a keyboard
-    /// `Enter` while [`ChatController::focused_turn`] points at this turn.
-    #[serde(default)]
-    pub collapsed: bool,
-    /// One-line summary painted in place of the body when `collapsed` is
-    /// `true`. `None` falls back to the turn's first non-blank content
-    /// line — see [`summary_line`](Self::summary_line).
-    #[serde(default)]
-    pub summary: Option<String>,
-}
-
-impl ChatTurn {
-    /// The line shown when this turn is [`collapsed`](Self::collapsed):
-    /// `summary` if set, otherwise the first non-blank line of the turn's
-    /// plain text (empty string if the turn has no content at all).
-    pub fn summary_line(&self) -> String {
-        if let Some(s) = &self.summary {
-            return s.clone();
-        }
-        let plain: String = self.text.spans.iter().map(|s| s.text.as_str()).collect();
-        plain
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("")
-            .to_string()
-    }
 }
 
 /// Events emitted by [`ChatController::handle`].
@@ -221,12 +218,20 @@ pub enum ChatControllerEvent {
     KeyPressed { key: String, modifiers: Modifiers },
     /// A click landed on a transcript row belonging to `turn_idx`, at
     /// `row_in_turn` rows into that turn's block (`0` = the role header
-    /// row) (#1138). The controller does not itself toggle
-    /// [`ChatTurn::collapsed`] on click — apps decide what a click means
-    /// (toggle the card when `row_in_turn == 0`, resolve a `path:line`
-    /// location elsewhere in the body, etc.) and call
+    /// row) (#1138). Also moves [`ChatController::focused_turn`] to
+    /// `Some(turn_idx)`, so a keyboard `Enter` right after the click acts on
+    /// the same turn. The controller does not itself toggle the turn's
+    /// collapsed state on click — apps decide what a click means (toggle
+    /// the card when `row_in_turn == 0`, resolve a `path:line` location
+    /// elsewhere in the body, etc.) and call
     /// [`ChatController::toggle_turn_collapsed`] /
     /// [`ChatController::set_turn_collapsed`] themselves.
+    ///
+    /// **`row_in_turn` includes the trailing blank separator row** between
+    /// this turn and the next, attributed to *this* turn (e.g. for a
+    /// 1-line turn, `0` = header, `1` = body, `2` = the blank separator) —
+    /// see this module's *Collapsible turns and per-turn hit regions*
+    /// section.
     TurnClicked { turn_idx: usize, row_in_turn: usize },
     /// Event was consumed (state changed, caller should redraw).
     Consumed,
@@ -365,11 +370,24 @@ pub struct ChatController {
     /// [`render`]: Self::render
     stuck_to_bottom: bool,
     /// Keyboard cursor into the transcript (#1138): `Some(turn_idx)` when
-    /// `Tab`/`Shift+Tab` has moved focus off the input and onto a turn, so
-    /// `Enter` toggles that turn's [`ChatTurn::collapsed`] instead of
-    /// submitting/inserting a newline. `None` means the input has focus
-    /// (the default). See [`focus_next_turn`](Self::focus_next_turn).
+    /// `Tab`/`Shift+Tab` (or a transcript click) has moved focus off the
+    /// input and onto a turn, so `Enter` toggles that turn's collapsed
+    /// state instead of submitting/inserting a newline. `None` means the
+    /// input has focus (the default). See
+    /// [`focus_next_turn`](Self::focus_next_turn).
     focused_turn: Option<usize>,
+    /// Per-turn collapsed state (#1138), keyed by transcript index —
+    /// deliberately *not* a field on [`ChatTurn`] itself; see this
+    /// struct's *Collapsible turns and per-turn hit regions* doc section
+    /// for why. Absence means expanded (the default). Entries are not
+    /// remapped when [`set_transcript`](Self::set_transcript) replaces the
+    /// transcript with turns in a different order — see
+    /// [`is_turn_collapsed`](Self::is_turn_collapsed).
+    turn_collapsed: HashSet<usize>,
+    /// Per-turn summary-line override (#1138), keyed the same way as
+    /// `turn_collapsed`. See
+    /// [`turn_summary_line`](Self::turn_summary_line).
+    turn_summary: HashMap<usize, String>,
     // ── Config ────────────────────────────────────────────────────────
     /// Auto-grow floor: the input area is never shorter than this many
     /// rows, even when empty. Default: `1`. See
@@ -415,6 +433,8 @@ impl ChatController {
             transcript_drag: None,
             stuck_to_bottom: true,
             focused_turn: None,
+            turn_collapsed: HashSet::new(),
+            turn_summary: HashMap::new(),
             input_min_rows: 1,
             input_max_rows: 8,
             scrollbar_width: None,
@@ -548,8 +568,6 @@ impl ChatController {
             text,
             timestamp_unix: None,
             line_scales: Vec::new(),
-            collapsed: false,
-            summary: None,
         });
     }
 
@@ -587,8 +605,6 @@ impl ChatController {
             text: StyledText { spans },
             timestamp_unix: None,
             line_scales,
-            collapsed: false,
-            summary: None,
         });
     }
 
@@ -612,22 +628,29 @@ impl ChatController {
     }
 
     // ── Collapsible turns (#1138) ───────────────────────────────────────
+    //
+    // Collapsed/summary state is kept on the controller (`turn_collapsed` /
+    // `turn_summary`, keyed by transcript index) rather than as fields on
+    // `ChatTurn` — see the module doc's *Collapsible turns and per-turn hit
+    // regions* section for why.
 
     /// Whether `transcript[turn_idx]` is currently rendered collapsed.
     /// `false` (including out-of-range `turn_idx`) when there is no such
     /// turn.
     pub fn is_turn_collapsed(&self, turn_idx: usize) -> bool {
-        self.transcript
-            .get(turn_idx)
-            .map(|t| t.collapsed)
-            .unwrap_or(false)
+        turn_idx < self.transcript.len() && self.turn_collapsed.contains(&turn_idx)
     }
 
     /// Set `transcript[turn_idx]`'s collapsed state directly. A no-op if
     /// `turn_idx` is out of range.
     pub fn set_turn_collapsed(&mut self, turn_idx: usize, collapsed: bool) {
-        if let Some(turn) = self.transcript.get_mut(turn_idx) {
-            turn.collapsed = collapsed;
+        if turn_idx >= self.transcript.len() {
+            return;
+        }
+        if collapsed {
+            self.turn_collapsed.insert(turn_idx);
+        } else {
+            self.turn_collapsed.remove(&turn_idx);
         }
     }
 
@@ -638,9 +661,49 @@ impl ChatController {
     /// (typically when `row_in_turn == 0`, the role header row) or to
     /// mirror the keyboard toggle described on [`focused_turn`](Self::focused_turn).
     pub fn toggle_turn_collapsed(&mut self, turn_idx: usize) {
-        if let Some(turn) = self.transcript.get_mut(turn_idx) {
-            turn.collapsed = !turn.collapsed;
+        if turn_idx >= self.transcript.len() {
+            return;
         }
+        if !self.turn_collapsed.insert(turn_idx) {
+            self.turn_collapsed.remove(&turn_idx);
+        }
+    }
+
+    /// Override `transcript[turn_idx]`'s summary line — see
+    /// [`turn_summary_line`](Self::turn_summary_line). Pass `None` to fall
+    /// back to the turn's first non-blank content line. A no-op (but not an
+    /// error) if `turn_idx` is currently out of range — e.g. an app may set
+    /// this ahead of a [`set_transcript`](Self::set_transcript) call that
+    /// grows the transcript to include it.
+    pub fn set_turn_summary(&mut self, turn_idx: usize, summary: Option<String>) {
+        match summary {
+            Some(s) => {
+                self.turn_summary.insert(turn_idx, s);
+            }
+            None => {
+                self.turn_summary.remove(&turn_idx);
+            }
+        }
+    }
+
+    /// The line shown when `transcript[turn_idx]` is
+    /// [collapsed](Self::is_turn_collapsed): the
+    /// [`set_turn_summary`](Self::set_turn_summary) override if set,
+    /// otherwise the first non-blank line of the turn's plain text. Empty
+    /// string for an out-of-range `turn_idx` or a turn with no content.
+    pub fn turn_summary_line(&self, turn_idx: usize) -> String {
+        if let Some(s) = self.turn_summary.get(&turn_idx) {
+            return s.clone();
+        }
+        let Some(turn) = self.transcript.get(turn_idx) else {
+            return String::new();
+        };
+        let plain: String = turn.text.spans.iter().map(|s| s.text.as_str()).collect();
+        plain
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .to_string()
     }
 
     /// The transcript's keyboard focus cursor (#1138): `Some(turn_idx)`
@@ -1052,7 +1115,7 @@ impl ChatController {
     fn build_transcript_rows_indexed(&self, col_budget: usize) -> (Vec<MessageRow>, Vec<usize>) {
         let mut rows = Vec::new();
         let mut turn_starts = Vec::with_capacity(self.transcript.len());
-        for turn in &self.transcript {
+        for (idx, turn) in self.transcript.iter().enumerate() {
             turn_starts.push(rows.len());
 
             let (role_label, role_fg, content_fg) = match turn.role {
@@ -1065,19 +1128,25 @@ impl ChatController {
                 ),
             };
 
+            let collapsed = self.is_turn_collapsed(idx);
+
             // Role header row (no indent). Collapsed turns (#1138) get a
             // fold indicator appended so the card reads as expandable.
-            let header = if turn.collapsed {
+            let header = if collapsed {
                 format!("{role_label} \u{25b8}")
             } else {
                 role_label.to_string()
             };
             rows.push(MessageRow::new(header, role_fg, 0.0));
 
-            if turn.collapsed {
+            if collapsed {
                 // ── Collapsed path (#1138) ───────────────────────────────
                 // Render exactly one summary row instead of the full body.
-                rows.push(MessageRow::new(turn.summary_line(), content_fg, 2.0));
+                rows.push(MessageRow::new(
+                    self.turn_summary_line(idx),
+                    content_fg,
+                    2.0,
+                ));
             } else {
                 let content_budget = col_budget.saturating_sub(2);
 
@@ -1495,6 +1564,10 @@ impl ChatController {
                         Err(i) => i.saturating_sub(1),
                     };
                     let row_in_turn = row_idx - turn_starts[turn_idx];
+                    // Move the keyboard cursor to the clicked turn so mouse
+                    // and keyboard stay in sync (#1138): a following `Enter`
+                    // acts on the same turn the click just landed on.
+                    self.set_focused_turn(Some(turn_idx));
                     ChatControllerEvent::TurnClicked {
                         turn_idx,
                         row_in_turn,
@@ -1927,8 +2000,6 @@ mod tests {
             text: StyledText::plain(text),
             timestamp_unix: None,
             line_scales: Vec::new(),
-            collapsed: false,
-            summary: None,
         }
     }
 
@@ -2146,27 +2217,12 @@ mod tests {
             text: StyledText::colored("hi there", Color::rgb(180, 230, 180)),
             timestamp_unix: Some(1_700_000_000.0),
             line_scales: Vec::new(),
-            collapsed: true,
-            summary: Some("collapsed card".to_string()),
         };
         let json = serde_json::to_string(&turn).expect("serialize ChatTurn");
         let decoded: ChatTurn = serde_json::from_str(&json).expect("deserialize ChatTurn");
         assert_eq!(decoded.role, turn.role);
         assert_eq!(decoded.text, turn.text);
         assert_eq!(decoded.timestamp_unix, turn.timestamp_unix);
-        assert_eq!(decoded.collapsed, turn.collapsed);
-        assert_eq!(decoded.summary, turn.summary);
-    }
-
-    #[test]
-    fn chat_turn_serde_legacy_json_without_collapsed_defaults_to_expanded() {
-        // Pre-#1138 wire format has no "collapsed"/"summary" fields — both
-        // must default gracefully so old serialised transcripts still load.
-        let legacy =
-            r#"{"role":"User","text":{"spans":[]},"timestamp_unix":null,"line_scales":[]}"#;
-        let turn: ChatTurn = serde_json::from_str(legacy).expect("deserialize legacy ChatTurn");
-        assert!(!turn.collapsed);
-        assert_eq!(turn.summary, None);
     }
 
     #[test]
@@ -3290,22 +3346,44 @@ mod tests {
     // ── Collapsible turns and per-turn hit regions (#1138) ──────────────
 
     #[test]
-    fn chat_turn_summary_line_defaults_to_first_nonblank_line() {
-        let turn = make_turn(ChatRole::Assistant, "\n  \nreal content\nmore");
-        assert_eq!(turn.summary_line(), "real content");
+    fn turn_summary_line_defaults_to_first_nonblank_line() {
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(vec![make_turn(
+            ChatRole::Assistant,
+            "\n  \nreal content\nmore",
+        )]);
+        assert_eq!(cc.turn_summary_line(0), "real content");
     }
 
     #[test]
-    fn chat_turn_summary_line_prefers_explicit_summary() {
-        let mut turn = make_turn(ChatRole::Assistant, "full body text");
-        turn.summary = Some("custom summary".to_string());
-        assert_eq!(turn.summary_line(), "custom summary");
+    fn turn_summary_line_prefers_explicit_summary() {
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "full body text")]);
+        cc.set_turn_summary(0, Some("custom summary".to_string()));
+        assert_eq!(cc.turn_summary_line(0), "custom summary");
     }
 
     #[test]
-    fn chat_turn_summary_line_empty_for_turn_with_no_content() {
-        let turn = make_turn(ChatRole::Assistant, "");
-        assert_eq!(turn.summary_line(), "");
+    fn turn_summary_line_empty_for_turn_with_no_content() {
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "")]);
+        assert_eq!(cc.turn_summary_line(0), "");
+    }
+
+    #[test]
+    fn turn_summary_line_empty_for_out_of_range_turn_idx() {
+        let cc = ChatController::new("c");
+        assert_eq!(cc.turn_summary_line(0), "");
+    }
+
+    #[test]
+    fn set_turn_summary_none_clears_the_override() {
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "fallback line")]);
+        cc.set_turn_summary(0, Some("override".to_string()));
+        assert_eq!(cc.turn_summary_line(0), "override");
+        cc.set_turn_summary(0, None);
+        assert_eq!(cc.turn_summary_line(0), "fallback line");
     }
 
     #[test]
@@ -3386,6 +3464,9 @@ mod tests {
                 row_in_turn: 0
             }
         );
+        // The click also moves the keyboard cursor onto the clicked turn
+        // (#1138 non-blocking finding) so mouse and keyboard stay in sync.
+        assert_eq!(cc.focused_turn(), Some(0));
     }
 
     #[test]
@@ -3407,6 +3488,32 @@ mod tests {
                 row_in_turn: 0
             }
         );
+        assert_eq!(cc.focused_turn(), Some(1));
+    }
+
+    #[test]
+    fn click_then_enter_toggles_the_clicked_turn_not_a_stale_focus() {
+        // Regression for the #1138 review's mouse/keyboard-sync finding:
+        // clicking turn 1 and then pressing `Enter` must toggle turn 1, even
+        // though `focused_turn` was never touched by `Tab` in this test.
+        let mut cc = ChatController::new("c");
+        cc.set_transcript(vec![
+            make_turn(ChatRole::User, "Hello"),
+            make_turn(ChatRole::Assistant, "Hi"),
+        ]);
+        let rect = make_rect();
+        let backend = RecordingBackend::new();
+        let t = cc.compute_layout(&backend, rect).transcript;
+
+        click_at(&mut cc, rect, t.x + 1.0, t.y + 3.5);
+        assert_eq!(cc.focused_turn(), Some(1));
+        assert!(!cc.is_turn_collapsed(1));
+
+        let enter = key_event(Key::Named(NamedKey::Enter), Modifiers::default());
+        let ev = cc.handle(&enter, &backend, rect);
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert!(cc.is_turn_collapsed(1));
+        assert!(!cc.is_turn_collapsed(0));
     }
 
     #[test]
