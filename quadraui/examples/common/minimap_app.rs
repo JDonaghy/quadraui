@@ -19,12 +19,25 @@
 //! Controls:
 //! - Up/Down       scroll the viewport (moves the highlighted band)
 //! - Click minimap seek the viewport to that fraction of the file
+//! - s             toggle `MinimapScale::One` / `MinimapScale::Two` (#1143)
 //! - q / Esc       quit
+//!
+//! The `s` toggle is this example's #1143 demonstration: `MinimapScale::Two`
+//! is a 2px wide x 4px tall cell (VS Code's own default `minimap.scale`) —
+//! large enough for GTK's atlas-blitted glyph tile to read back as an actual
+//! character shape instead of a density dot. `MinimapScale::One` (the
+//! pre-#1143 default every backend already painted at) is a 1x2 px cell —
+//! too small for a downsampled tile to carry any shape at all, so it always
+//! reads as a solid dot regardless of the character. TUI has no font to
+//! scale (braille packs 4 buffer lines x 2 columns into one cell-native dot
+//! cell, independent of `MinimapScale`), so the toggle is visually inert
+//! there — it's real on every pixel backend (GTK today; Win-GUI/macOS once
+//! their own atlas lands, issue #1143).
 
 use quadraui::{
     aggregate_spans, sample_blocks, AppLogic, Backend, Color, InteractionState, Key, Minimap,
-    MinimapGrid, MinimapHit, MinimapSpan, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    MinimapGrid, MinimapHit, MinimapScale, MinimapSpan, MouseButton, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Rows of the buffer visible in the (non-minimap) editor viewport —
@@ -44,6 +57,9 @@ const LINES_PER_ROW: usize = 4;
 pub struct MinimapApp {
     buffer: Vec<String>,
     scroll_offset: usize,
+    /// Toggled by the `s` key (#1143) — see the module doc's "Controls"
+    /// section for what each value paints.
+    scale_two: bool,
 }
 
 impl MinimapApp {
@@ -61,6 +77,15 @@ impl MinimapApp {
         Self {
             buffer,
             scroll_offset: 0,
+            scale_two: false,
+        }
+    }
+
+    fn minimap_scale(&self) -> MinimapScale {
+        if self.scale_two {
+            MinimapScale::Two
+        } else {
+            MinimapScale::One
         }
     }
 
@@ -176,17 +201,21 @@ impl MinimapApp {
     }
 
     fn status_bar(&self) -> StatusBar {
+        let scale_label = if self.scale_two { "2 (2x4)" } else { "1 (1x2)" };
         StatusBar {
             id: WidgetId::new("status"),
             left_segments: vec![StatusBarSegment {
-                text: format!(" Minimap demo — line {} ", self.scroll_offset),
+                text: format!(
+                    " Minimap demo — line {} — scale {scale_label} ",
+                    self.scroll_offset
+                ),
                 fg: Color::rgb(255, 255, 255),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " up/down=scroll click=seek q=quit ".into(),
+                text: " up/down=scroll click=seek s=scale q=quit ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -212,6 +241,7 @@ impl AppLogic for MinimapApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        backend.set_minimap_scale(self.minimap_scale());
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let minimap_rect = self.minimap_rect(backend);
@@ -249,6 +279,13 @@ impl AppLogic for MinimapApp {
                 ..
             } => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Char('s'),
+                ..
+            } => {
+                self.scale_two = !self.scale_two;
                 Reaction::Redraw
             }
             UiEvent::MouseDown {

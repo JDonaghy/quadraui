@@ -672,6 +672,15 @@ pub struct WinBackend {
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
+    /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
+    /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
+    /// to resolve the row pitch (and per-column width) a paint or layout
+    /// call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
+    /// the pre-#1143 fixed pitch, so a host that never calls
+    /// [`Backend::set_minimap_scale`] sees no behaviour change. Plain
+    /// `MinimapScale` value, no WinAPI dependency — not `target_os`-gated,
+    /// same rationale as `events` above.
+    minimap_scale: crate::primitives::minimap::MinimapScale,
     /// DPI ratio (`GetDpiForWindow(hwnd) / 96.0`). Mirrored into
     /// `viewport.scale` on every attach/resize/`WM_DPICHANGED` so
     /// `Backend::viewport()` and this field never drift. Kept as its own
@@ -928,6 +937,7 @@ impl WinBackend {
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             #[cfg(target_os = "windows")]
             dpi_scale: 1.0,
             #[cfg(target_os = "windows")]
@@ -3743,12 +3753,13 @@ impl Backend for WinBackend {
     ) -> crate::backend::MinimapPaintResult {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let layout = super::minimap::draw_minimap(
+            let layout = super::minimap::draw_minimap_scaled(
                 &surface.target,
                 dwrite,
                 rect,
                 minimap,
                 &self.current_theme,
+                self.minimap_scale,
             );
             return crate::backend::MinimapPaintResult {
                 layout,
@@ -3780,14 +3791,25 @@ impl Backend for WinBackend {
         // instead of reaching into the Windows-only `super::minimap`
         // module (issue #924). One buffer line per painted row (no
         // cross-line colour reduction), same `LINES_PER_ROW` value that
-        // module uses.
+        // module uses. `self.minimap_scale`'s own `row_pitch_px` (issue
+        // #1143) replaces the bare `ROW_PITCH_PX` constant this used
+        // before, so this pure-geometry path and `super::minimap`'s real
+        // paint path always resolve the same pitch.
         minimap.layout_with_sizing(
             rect,
             1,
             crate::primitives::minimap::MinimapSizing::FixedPitch(
-                crate::primitives::minimap::ROW_PITCH_PX as f32,
+                self.minimap_scale.row_pitch_px() as f32,
             ),
         )
+    }
+
+    fn minimap_scale(&self) -> crate::primitives::minimap::MinimapScale {
+        self.minimap_scale
+    }
+
+    fn set_minimap_scale(&mut self, scale: crate::primitives::minimap::MinimapScale) {
+        self.minimap_scale = scale;
     }
 
     /// #739: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -7339,6 +7361,42 @@ mod tests {
             result.layout, no_paint,
             "draw_minimap's returned layout must agree with minimap_layout's \
              standalone query"
+        );
+    }
+
+    /// Issue #1143: `set_minimap_scale`/`minimap_scale` must actually
+    /// change the row pitch `minimap_layout` resolves — this is the pure
+    /// no-surface-needed path (see `minimap_layout`'s own doc comment for
+    /// why it never reaches into the Windows-only `super::minimap`
+    /// module), so it's real signal on every host, not just Windows.
+    #[test]
+    fn set_minimap_scale_changes_the_resolved_row_pitch() {
+        use crate::primitives::minimap::MinimapScale;
+
+        let mut backend = WinBackend::new();
+        let minimap = sample_minimap();
+        let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
+
+        assert_eq!(backend.minimap_scale(), MinimapScale::One);
+        let default_layout = backend.minimap_layout(rect, &minimap);
+        assert_eq!(
+            default_layout.visible_lines[0].bounds.height,
+            MinimapScale::One.row_pitch_px() as f32
+        );
+
+        backend.set_minimap_scale(MinimapScale::Two);
+        assert_eq!(backend.minimap_scale(), MinimapScale::Two);
+        let scaled_layout = backend.minimap_layout(rect, &minimap);
+        assert_eq!(
+            scaled_layout.visible_lines[0].bounds.height,
+            MinimapScale::Two.row_pitch_px() as f32
+        );
+
+        let result = backend.draw_minimap(rect, &minimap);
+        assert_eq!(
+            result.layout, scaled_layout,
+            "draw_minimap's own (unpainted, no-surface) layout must also honor the \
+             backend's minimap_scale"
         );
     }
 

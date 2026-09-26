@@ -228,6 +228,13 @@ pub struct GtkBackend {
     /// same reason: the whole point is never re-shaping-and-downsampling
     /// the atlas on a later paint at the same family/scale.
     minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
+    /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
+    /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
+    /// to resolve the row pitch (and, for the atlas, per-column width) a
+    /// paint or layout call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
+    /// the pre-#1143 fixed pitch, so a host that never calls
+    /// [`Backend::set_minimap_scale`] sees no behaviour change.
+    minimap_scale: crate::primitives::minimap::MinimapScale,
     /// Per-frame Pango line height in DIPs. Set by the App in its
     /// draw closure (from font metrics) before any trait `draw_*`
     /// invocation. Every primitive that uses text metrics passes
@@ -561,6 +568,7 @@ impl GtkBackend {
             current_theme: crate::Theme::default(),
             image_cache: crate::image_cache::ImageCache::default(),
             minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
+            minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
             // Arbitrary but plausible seed (mirrors `current_char_width`
@@ -4720,6 +4728,7 @@ impl Backend for GtkBackend {
             &theme,
             &mut self.minimap_atlas_cache,
             dpi_scale,
+            self.minimap_scale,
         );
         self.register_zone(minimap.id.clone(), rect);
         crate::backend::MinimapPaintResult {
@@ -4765,13 +4774,22 @@ impl Backend for GtkBackend {
         rect: QRect,
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::primitives::minimap::MinimapLayout {
-        crate::gtk::gtk_minimap_layout(
+        crate::gtk::minimap::gtk_minimap_layout_scaled(
             minimap,
             rect.x as f64,
             rect.y as f64,
             rect.width as f64,
             rect.height as f64,
+            self.minimap_scale,
         )
+    }
+
+    fn minimap_scale(&self) -> crate::primitives::minimap::MinimapScale {
+        self.minimap_scale
+    }
+
+    fn set_minimap_scale(&mut self, scale: crate::primitives::minimap::MinimapScale) {
+        self.minimap_scale = scale;
     }
 }
 
@@ -5238,6 +5256,46 @@ mod tests {
     #[test]
     fn paint_overlays_compiles_against_gtk_backend() {
         let _: fn(&mut GtkBackend, &Palette, &ListView) = paint_overlays::<GtkBackend>;
+    }
+
+    // ── issue #1143: MinimapScale ────────────────────────────────────────
+
+    /// `set_minimap_scale`/`minimap_scale` must actually change the row
+    /// pitch `Backend::minimap_layout` resolves — no live cairo frame
+    /// needed, since `minimap_layout` is pure geometry (mirrors
+    /// `WinBackend`'s own `set_minimap_scale_changes_the_resolved_row_pitch`).
+    #[test]
+    fn set_minimap_scale_changes_the_resolved_row_pitch() {
+        use crate::primitives::minimap::{Minimap, MinimapLine, MinimapScale};
+
+        let mut backend = GtkBackend::new();
+        let minimap = Minimap {
+            id: WidgetId::new("mm"),
+            lines: vec![MinimapLine {
+                text: "fn main() {}".to_string(),
+                line_idx: 0,
+            }],
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 1,
+            total_buffer_lines: 1,
+        };
+        let rect = QRect::new(0.0, 0.0, 20.0, 100.0);
+
+        assert_eq!(backend.minimap_scale(), MinimapScale::One);
+        let default_layout = backend.minimap_layout(rect, &minimap);
+        assert_eq!(
+            default_layout.visible_lines[0].bounds.height,
+            MinimapScale::One.row_pitch_px() as f32
+        );
+
+        backend.set_minimap_scale(MinimapScale::Two);
+        assert_eq!(backend.minimap_scale(), MinimapScale::Two);
+        let scaled_layout = backend.minimap_layout(rect, &minimap);
+        assert_eq!(
+            scaled_layout.visible_lines[0].bounds.height,
+            MinimapScale::Two.row_pitch_px() as f32
+        );
     }
 
     // ── issue #1013: register_font_from_memory / app_font_registration ──

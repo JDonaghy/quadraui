@@ -247,6 +247,13 @@ pub struct MacBackend {
     /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
     /// into the bar. Mirrors `GtkBackend::focused_activity_bar` (#465).
     focused_activity_bar: Option<WidgetId>,
+    /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
+    /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
+    /// to resolve the row pitch (and per-column width) a paint or layout
+    /// call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
+    /// the pre-#1143 fixed pitch, so a host that never calls
+    /// [`Backend::set_minimap_scale`] sees no behaviour change.
+    minimap_scale: crate::primitives::minimap::MinimapScale,
     /// Top-level window handle, set once by `macos::run::run` via
     /// [`Self::set_window`]. `None` until the runner finishes
     /// constructing the window (and in unit tests, which never call
@@ -587,6 +594,7 @@ impl MacBackend {
             painted_text_recording: false,
             text_runs: Vec::new(),
             focused_activity_bar: None,
+            minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             window: None,
             pending_window_press: WindowDragArm::new(),
             nerd_fonts_enabled: false,
@@ -3312,7 +3320,16 @@ impl Backend for MacBackend {
             .expect("MacBackend::draw_minimap requires set_current_font");
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope (checked above).
-        let layout = unsafe { super::minimap::draw_minimap(ctx, font, rect, minimap, &theme) };
+        let layout = unsafe {
+            super::minimap::draw_minimap_scaled(
+                ctx,
+                font,
+                rect,
+                minimap,
+                &theme,
+                self.minimap_scale,
+            )
+        };
         crate::backend::MinimapPaintResult {
             layout,
             painted: true,
@@ -3327,7 +3344,15 @@ impl Backend for MacBackend {
         rect: Rect,
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::primitives::minimap::MinimapLayout {
-        super::minimap::mac_minimap_layout(minimap, rect)
+        super::minimap::mac_minimap_layout_scaled(minimap, rect, self.minimap_scale)
+    }
+
+    fn minimap_scale(&self) -> crate::primitives::minimap::MinimapScale {
+        self.minimap_scale
+    }
+
+    fn set_minimap_scale(&mut self, scale: crate::primitives::minimap::MinimapScale) {
+        self.minimap_scale = scale;
     }
 
     /// #662 scoped the `Image` rasteriser to GTK only for its first

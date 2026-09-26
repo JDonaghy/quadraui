@@ -92,7 +92,7 @@ use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::ListViewLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
-use crate::primitives::minimap::{Minimap, MinimapLayout};
+use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
@@ -3275,6 +3275,32 @@ pub trait Backend: sealed::Sealed {
     /// reports [`MinimapPaintResult::painted`] `true`, same as
     /// TUI/GTK/Win-GUI.
     fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
+
+    /// The [`MinimapScale`] [`Self::draw_minimap`]/[`Self::minimap_layout`]
+    /// resolve their row pitch (and, for a pixel backend, per-column
+    /// width) from (issue #1143). Default-provided, returning
+    /// [`MinimapScale::One`] — the pre-#1143 fixed pitch (#667) every
+    /// backend already painted at — so this accessor costs nothing to add
+    /// to the trait: `vimcode`'s `Backend::draw_minimap(rect, minimap)` /
+    /// `Backend::minimap_layout(rect, minimap)` call sites (both still
+    /// exactly two arguments) see no change unless a host also calls
+    /// [`Self::set_minimap_scale`]. TUI's braille rasteriser has no font
+    /// to scale and never overrides either method — see
+    /// [`crate::primitives::minimap::MinimapScale`]'s doc for why this
+    /// lives here rather than as a field on [`Minimap`] itself.
+    fn minimap_scale(&self) -> MinimapScale {
+        MinimapScale::One
+    }
+
+    /// Set the [`MinimapScale`] a later [`Self::draw_minimap`]/
+    /// [`Self::minimap_layout`] call resolves its row pitch from (issue
+    /// #1143). Default no-op: a backend that never overrides
+    /// [`Self::minimap_scale`] has nowhere to store this and nothing reads
+    /// it back. GTK, Win-GUI, and macOS override both methods to back a
+    /// real field; a host picks VS Code's own default
+    /// (`MinimapScale::Two`) once, at startup, the same way it configures
+    /// `dpi_scale` or the editor font.
+    fn set_minimap_scale(&mut self, _scale: MinimapScale) {}
 
     /// Compute [`Minimap`] layout without painting — mirrors
     /// [`Backend::chart_layout`] / [`Backend::tree_layout`]. Apps call

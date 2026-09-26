@@ -45,8 +45,8 @@ use super::text::draw_text;
 use crate::event::Rect;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
-    MinimapRenderMode, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine, COLUMN_CAPACITY,
-    ROW_PITCH_PX,
+    MinimapRenderMode, MinimapScale, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine,
+    COLUMN_CAPACITY,
 };
 use crate::theme::Theme;
 use crate::types::Color;
@@ -57,26 +57,51 @@ use crate::types::Color;
 /// packing differs).
 pub const LINES_PER_ROW: usize = 1;
 
-/// Compute the macOS point-unit layout for a [`Minimap`] without painting —
-/// the same [`Minimap::layout_with_sizing`] call GTK/Win-GUI make.
+/// Compute the macOS point-unit layout for a [`Minimap`] without painting, at
+/// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is for
+/// source compatibility with any caller reaching this free function
+/// directly; every real paint path goes through
+/// [`MacBackend::minimap_layout`]'s [`mac_minimap_layout_scaled`] instead, so
+/// it can honor [`crate::backend::Backend::minimap_scale`] (issue #1143).
+///
+/// [`MacBackend::minimap_layout`]: crate::macos::MacBackend
 pub fn mac_minimap_layout(minimap: &Minimap, rect: Rect) -> MinimapLayout {
+    mac_minimap_layout_scaled(minimap, rect, MinimapScale::One)
+}
+
+/// [`mac_minimap_layout`], but at an explicit [`MinimapScale`] (issue
+/// #1143) — what [`MacBackend::minimap_layout`] actually calls.
+///
+/// [`MacBackend::minimap_layout`]: crate::macos::MacBackend
+pub(crate) fn mac_minimap_layout_scaled(
+    minimap: &Minimap,
+    rect: Rect,
+    scale: MinimapScale,
+) -> MinimapLayout {
     minimap.layout_with_sizing(
         rect,
         LINES_PER_ROW,
-        MinimapSizing::FixedPitch(ROW_PITCH_PX as f32),
+        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
     )
 }
 
-/// Draw a [`Minimap`] into `rect` (points, target-relative) on `ctx`.
-/// Returns the resolved [`MinimapLayout`] for host click dispatch
-/// (`layout.hit_test(x, y)` -> [`crate::primitives::minimap::MinimapHit`]) —
-/// same contract as the GTK/Win-GUI/TUI twins' `draw_minimap`.
+/// Draw a [`Minimap`] into `rect` (points, target-relative) on `ctx`, at
+/// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is
+/// for source compatibility with any caller reaching this free function
+/// directly; every real paint path goes through [`MacBackend::draw_minimap`]'s
+/// [`draw_minimap_scaled`] instead, so it can honor
+/// [`crate::backend::Backend::minimap_scale`] (issue #1143). Returns the
+/// resolved [`MinimapLayout`] for host click dispatch (`layout.hit_test(x,
+/// y)` -> [`crate::primitives::minimap::MinimapHit`]) — same contract as
+/// the GTK/Win-GUI/TUI twins' `draw_minimap`.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of this
 /// call (typical: the frame-scope pointer stashed on
 /// [`super::MacBackend`]). Calling with a freed or null pointer is UB.
+///
+/// [`MacBackend::draw_minimap`]: crate::macos::MacBackend
 pub unsafe fn draw_minimap(
     ctx: CGContextRef,
     font: &CTFont,
@@ -84,7 +109,37 @@ pub unsafe fn draw_minimap(
     minimap: &Minimap,
     theme: &Theme,
 ) -> MinimapLayout {
-    let layout = mac_minimap_layout(minimap, rect);
+    draw_minimap_scaled(ctx, font, rect, minimap, theme, MinimapScale::One)
+}
+
+/// [`draw_minimap`], but at an explicit [`MinimapScale`] (issue #1143) —
+/// what [`MacBackend::draw_minimap`] actually calls. At
+/// [`MinimapScale::Two`] the row pitch clears
+/// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`], so `render_mode`
+/// resolves to [`MinimapRenderMode::Characters`] and this rasteriser paints
+/// real Core Text glyph runs via [`paint_row_glyphs`] — unlike GTK's atlas
+/// blit (#1035), this still shapes with the backend's single configured
+/// [`CTFont`] rather than a downsampled sample-sheet tile (see the module
+/// doc's divergence note); a Core Text sample-sheet atlas mirroring GTK's
+/// is left as follow-up work for a macOS-hosted session (this repo's local
+/// quality gate cannot compile-check `src/macos/` at all on a non-macOS
+/// host, so that FFI-heavy port needs to be written and verified where it
+/// can actually run).
+///
+/// # Safety
+///
+/// Same contract as [`draw_minimap`].
+///
+/// [`MacBackend::draw_minimap`]: crate::macos::MacBackend
+pub(crate) unsafe fn draw_minimap_scaled(
+    ctx: CGContextRef,
+    font: &CTFont,
+    rect: Rect,
+    minimap: &Minimap,
+    theme: &Theme,
+    scale: MinimapScale,
+) -> MinimapLayout {
+    let layout = mac_minimap_layout_scaled(minimap, rect, scale);
 
     if rect.width <= 0.0 || rect.height <= 0.0 || layout.visible_lines.is_empty() {
         return layout;
@@ -163,7 +218,7 @@ pub unsafe fn draw_minimap(
                 paint_row_glyphs(ctx, font, vline, &line.text, row_spans, theme)
             }
             MinimapRenderMode::ColumnBlocks => {
-                paint_row_blocks(ctx, vline, &line.text, row_spans, theme)
+                paint_row_blocks(ctx, vline, &line.text, row_spans, theme, scale.cell_w_px())
             }
         }
     }
@@ -215,18 +270,22 @@ fn paint_row_glyphs(
     }
 }
 
-/// `ColumnBlocks` branch: paint one 1pt-wide block per non-blank character
-/// column of `text`, each coloured by whichever span covers it — VS
-/// Code's `renderCharacters: false` look, which (unlike a single per-line
-/// bar) preserves the line's indent and internal-gap silhouette (#667 pt.
-/// 2). Stops after [`COLUMN_CAPACITY`] columns, so a pathologically long
-/// line costs no more to paint than a short one.
+/// `ColumnBlocks` branch: paint one `cell_w`-wide block per non-blank
+/// character column of `text`, each coloured by whichever span covers it —
+/// VS Code's `renderCharacters: false` look, which (unlike a single
+/// per-line bar) preserves the line's indent and internal-gap silhouette
+/// (#667 pt. 2). Stops after [`COLUMN_CAPACITY`] columns, so a
+/// pathologically long line costs no more to paint than a short one.
+/// `cell_w` is [`MinimapScale::cell_w_px`] (issue #1143) — `1.0` at the
+/// pre-#1143 default [`MinimapScale::One`], matching this function's
+/// original hardcoded block width byte for byte.
 fn paint_row_blocks(
     ctx: CGContextRef,
     vline: &VisibleMinimapLine,
     text: &str,
     row_spans: &[MinimapSpan],
     theme: &Theme,
+    cell_w: f64,
 ) {
     for (col, ch) in text.chars().enumerate().take(COLUMN_CAPACITY) {
         if ch.is_whitespace() {
@@ -238,9 +297,9 @@ fn paint_row_blocks(
         unsafe {
             fill_rect(
                 ctx,
-                vline.bounds.x as f64 + col as f64,
+                vline.bounds.x as f64 + col as f64 * cell_w,
                 vline.bounds.y as f64,
-                1.0,
+                cell_w,
                 vline.bounds.height as f64,
                 color,
             );
@@ -314,7 +373,7 @@ mod tests {
     use super::super::headless::BitmapSurface;
     use super::super::text::make_font;
     use super::*;
-    use crate::primitives::minimap::{MinimapHit, MinimapLine};
+    use crate::primitives::minimap::{MinimapHit, MinimapLine, ROW_PITCH_PX};
     use crate::types::WidgetId;
 
     const W: f32 = 200.0;
@@ -340,6 +399,55 @@ mod tests {
 
     fn test_font() -> CTFont {
         make_font("Menlo", 10.0).expect("Menlo should be installed on every macOS host")
+    }
+
+    /// #1143: `MinimapScale::Two`'s row pitch (4pt) clears
+    /// `LEGIBILITY_FLOOR_PX`, so unlike the `MinimapScale::One` default
+    /// (which never reaches it) `draw_minimap_scaled` must actually take
+    /// the `Characters` branch and paint real Core Text glyphs at this
+    /// scale, with a row pitch matching `MinimapScale::Two::row_pitch_px`.
+    #[test]
+    fn scale_two_reaches_the_characters_branch_with_a_taller_row_pitch() {
+        let surface = BitmapSurface::new(W as u32, H as u32);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let font = test_font();
+        let theme = Theme {
+            background: Color::rgb(255, 255, 255),
+            foreground: Color::rgb(0, 0, 0),
+            ..Theme::default()
+        };
+        let mm = minimap_from(vec!["fn main() {}"; 4], 4);
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = unsafe {
+            draw_minimap_scaled(
+                surface.context_ptr(),
+                &font,
+                rect,
+                &mm,
+                &theme,
+                MinimapScale::Two,
+            )
+        };
+
+        assert_eq!(
+            layout.visible_lines[0].bounds.height,
+            MinimapScale::Two.row_pitch_px() as f32
+        );
+
+        let mut painted_any = false;
+        for x in 0..W as u32 {
+            for y in 0..(MinimapScale::Two.row_pitch_px() as u32 * 4).max(8) {
+                let (r, g, b, _) = surface.pixel(x, y);
+                if (r, g, b) != (255, 255, 255) {
+                    painted_any = true;
+                }
+            }
+        }
+        assert!(
+            painted_any,
+            "expected draw_minimap_scaled at MinimapScale::Two to paint visible text"
+        );
     }
 
     /// C0 smoke: `draw_minimap` must actually paint pixels + return a
