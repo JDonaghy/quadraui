@@ -149,7 +149,23 @@ pub fn draw_multi_section_view(
 }
 
 // ── Section paint helpers ──────────────────────────────────────────────────
+//
+// #1074 (NativeSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// chrome painting moved to the shared
+// [`crate::primitives::multi_section_view::native_surface_paint`] — these
+// wrappers just build a [`super::surface::CairoSurface`] adapter and
+// forward. `paint_body` (below) stays here: `Tree`/`List`/`MessageList`
+// bodies still dispatch to this backend's own `draw_tree`/`draw_list`/
+// `draw_message_list`, which take a raw `(&Context, &pango::Layout)` pair,
+// not `&mut dyn NativeSurface`.
 
+/// #1074: GTK's header row painted at an integer-rounded `y`/`height`
+/// pre-port (`by`/`bh` were `.round()`ed; `bx`/`bw` were not) — a
+/// GTK-specific crispness tweak the shared
+/// [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
+/// doesn't itself apply (Win/macOS never rounded either). Rounding the
+/// `Rect` here, before handing it to the shared function, reproduces
+/// that exact pre-port behaviour instead of silently dropping it.
 fn paint_header(
     cr: &Context,
     layout: &pango::Layout,
@@ -158,142 +174,42 @@ fn paint_header(
     collapsed: bool,
     theme: &Theme,
 ) {
-    let bg = cairo_rgb(theme.header_bg);
-    let fg = cairo_rgb(theme.header_fg);
-    let dim = cairo_rgb(theme.muted_fg);
-
-    let bx = bounds.x as f64;
-    let by = bounds.y.round() as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height.round() as f64;
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(bx, by, bw, bh);
-    cr.fill().ok();
-
-    layout.set_attributes(None);
-    let mut left_x = bx + 4.0;
-
-    if header.show_chevron {
-        let chevron = if collapsed { "▸" } else { "▾" };
-        cr.set_source_rgb(fg.0, fg.1, fg.2);
-        layout.set_text(chevron);
-        let (cw, ch) = layout.pixel_size();
-        cr.move_to(left_x, (by + (bh - ch as f64) * 0.4).round());
-        super::painted_text::show_layout(cr, layout);
-        left_x += cw as f64 + 4.0;
-    }
-
-    // Right-aligned actions, right-to-left.
-    let mut right_x = bx + bw - 4.0;
-    for action in header.actions.iter().rev() {
-        let glyph = action.icon.fallback.as_str();
-        let action_fg = if action.enabled { fg } else { dim };
-        layout.set_text(glyph);
-        let (gw, gh) = layout.pixel_size();
-        right_x -= gw as f64;
-        if right_x < left_x {
-            break;
-        }
-        cr.set_source_rgb(action_fg.0, action_fg.1, action_fg.2);
-        cr.move_to(right_x, (by + (bh - gh as f64) * 0.4).round());
-        super::painted_text::show_layout(cr, layout);
-        right_x -= 8.0; // gap between actions
-    }
-
-    // Title text.
-    let title_text: String = header.title.spans.iter().map(|s| s.text.as_str()).collect();
-    if !title_text.is_empty() {
-        cr.set_source_rgb(fg.0, fg.1, fg.2);
-        layout.set_text(&title_text);
-        let (tw, th) = layout.pixel_size();
-        let max_w = (right_x - left_x).max(0.0);
-        if max_w > 0.0 {
-            cr.move_to(left_x, (by + (bh - th as f64) * 0.4).round());
-            // Pango clips automatically when we don't set width; sub-row
-            // truncation is handled by the user-visible row width.
-            super::painted_text::show_layout(cr, layout);
-            let mut after_title_x = left_x + (tw as f64).min(max_w);
-
-            // Badge after title.
-            if let Some(badge) = &header.badge {
-                let badge_text: String = badge.spans.iter().map(|s| s.text.as_str()).collect();
-                if !badge_text.is_empty() {
-                    after_title_x += 6.0;
-                    if after_title_x < right_x {
-                        cr.set_source_rgb(dim.0, dim.1, dim.2);
-                        layout.set_text(&badge_text);
-                        let (_, bh_text) = layout.pixel_size();
-                        cr.move_to(after_title_x, by + (bh - bh_text as f64) / 2.0);
-                        super::painted_text::show_layout(cr, layout);
-                    }
-                }
-            }
-        }
-    }
+    let rounded = QRect::new(
+        bounds.x,
+        bounds.y.round(),
+        bounds.width,
+        bounds.height.round(),
+    );
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_header(
+        &mut surface,
+        rounded,
+        header,
+        collapsed,
+        theme,
+    );
 }
 
 fn paint_aux(cr: &Context, layout: &pango::Layout, bounds: QRect, aux: &SectionAux, theme: &Theme) {
-    let bg = cairo_rgb(theme.input_bg);
-    let fg = cairo_rgb(theme.foreground);
-    let dim = cairo_rgb(theme.muted_fg);
-
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(bx, by, bw, bh);
-    cr.fill().ok();
-    layout.set_attributes(None);
-
-    match aux {
-        SectionAux::Input(input) | SectionAux::Search(input) => {
-            let display: &str = if input.text.is_empty() && !input.has_focus {
-                input.placeholder.as_deref().unwrap_or("")
-            } else {
-                input.text.as_str()
-            };
-            let text_fg = if input.text.is_empty() && !input.has_focus {
-                dim
-            } else {
-                fg
-            };
-            cr.set_source_rgb(text_fg.0, text_fg.1, text_fg.2);
-            layout.set_text(display);
-            let (_, th) = layout.pixel_size();
-            cr.move_to(bx + 4.0, by + (bh - th as f64) / 2.0);
-            super::painted_text::show_layout(cr, layout);
-
-            // Caret as a 1-cell-wide vertical bar at the caret column.
-            if input.has_focus {
-                let prefix: String = input.text.chars().take(input.caret).collect();
-                layout.set_text(&prefix);
-                let (cx_off, _) = layout.pixel_size();
-                let caret_x = bx + 4.0 + cx_off as f64;
-                cr.set_source_rgb(fg.0, fg.1, fg.2);
-                cr.rectangle(caret_x, by + 2.0, 1.0, bh - 4.0);
-                cr.fill().ok();
-            }
-        }
-        SectionAux::Toolbar(actions) => {
-            let mut x = bx + 4.0;
-            for a in actions {
-                let glyph = a.icon.fallback.as_str();
-                let action_fg = if a.enabled { fg } else { dim };
-                cr.set_source_rgb(action_fg.0, action_fg.1, action_fg.2);
-                layout.set_text(glyph);
-                let (gw, gh) = layout.pixel_size();
-                cr.move_to(x, by + (bh - gh as f64) / 2.0);
-                super::painted_text::show_layout(cr, layout);
-                x += gw as f64 + 8.0;
-            }
-        }
-        SectionAux::Custom(_) => {
-            // Host paints; we cleared the bg already.
-        }
-    }
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    // `caret_visible: true` — GTK has no caret-blink timer for MSV aux
+    // inputs (unlike macOS's #188), so the caret always paints while
+    // focused, matching this rasteriser's pre-port behaviour exactly.
+    crate::primitives::multi_section_view::native_surface_paint::paint_aux(
+        &mut surface,
+        bounds,
+        aux,
+        theme,
+        true,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -473,26 +389,19 @@ fn paint_text_lines(
     theme: &Theme,
     line_height: f64,
 ) {
-    let bg = cairo_rgb(theme.background);
-    let fg = cairo_rgb(theme.foreground);
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-    cr.set_source_rgb(fg.0, fg.1, fg.2);
-    layout.set_attributes(None);
-
-    let mut row_y = y;
-    for line in lines {
-        if row_y + line_height > y + h {
-            break;
-        }
-        let text: String = line.spans.iter().map(|s| s.text.as_str()).collect();
-        layout.set_text(&text);
-        let (_, th) = layout.pixel_size();
-        cr.move_to(x + 4.0, row_y + (line_height - th as f64) / 2.0);
-        super::painted_text::show_layout(cr, layout);
-        row_y += line_height;
-    }
+    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_text_lines(
+        &mut surface,
+        bounds,
+        lines,
+        theme,
+        line_height as f32,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -507,85 +416,39 @@ fn paint_empty_body(
     theme: &Theme,
     line_height: f64,
 ) {
-    let bg = cairo_rgb(theme.background);
-    let fg = cairo_rgb(theme.foreground);
-    let dim = cairo_rgb(theme.muted_fg);
-    let accent = cairo_rgb(theme.accent_fg);
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-    layout.set_attributes(None);
-
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-
-    let mut blocks: Vec<(String, (f64, f64, f64))> = Vec::new();
-    if let Some(icon) = &empty.icon {
-        blocks.push((icon.fallback.clone(), fg));
-    }
-    let primary: String = empty.text.spans.iter().map(|s| s.text.as_str()).collect();
-    if !primary.is_empty() {
-        blocks.push((primary, fg));
-    }
-    if let Some(hint) = &empty.hint {
-        let hint_str: String = hint.spans.iter().map(|s| s.text.as_str()).collect();
-        if !hint_str.is_empty() {
-            blocks.push((hint_str, dim));
-        }
-    }
-    if let Some(action) = &empty.action {
-        let label = action
-            .tooltip
-            .clone()
-            .unwrap_or_else(|| action.icon.fallback.clone());
-        blocks.push((format!("[ {label} ]"), accent));
-    }
-
-    if blocks.is_empty() {
-        return;
-    }
-
-    let total_h = blocks.len() as f64 * line_height;
-    let mut block_y = y + (h - total_h).max(0.0) / 2.0;
-    for (text, color) in &blocks {
-        layout.set_text(text);
-        let (tw, th) = layout.pixel_size();
-        let block_x = x + (w - tw as f64).max(0.0) / 2.0;
-        cr.set_source_rgb(color.0, color.1, color.2);
-        cr.move_to(block_x, block_y + (line_height - th as f64) / 2.0);
-        super::painted_text::show_layout(cr, layout);
-        block_y += line_height;
-    }
+    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_empty_body(
+        &mut surface,
+        bounds,
+        empty,
+        theme,
+        line_height as f32,
+    );
 }
 
 fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
-    let track = cairo_rgb(theme.scrollbar_track);
-    let thumb = cairo_rgb(theme.scrollbar_thumb);
-
-    let bx = gutter.x as f64;
-    let by = gutter.y as f64;
-    let bw = gutter.width as f64;
-    let bh = gutter.height as f64;
-
-    cr.set_source_rgba(track.0, track.1, track.2, 0.5);
-    cr.rectangle(bx, by, bw, bh);
-    cr.fill().ok();
-
     // Thumb at the layout-computed position when the body's scroll
     // state was introspectable (`Tree`, `List`). Falls back to a
     // 20%-tall top-anchored thumb for overflowing bodies without
     // row-based scroll — visual continuity with pre-#9. Per
     // *Primitive Authoring Rule #6*: thumb position is state-derived
     // and lives on the layout, not the rasteriser.
-    let (ty, th) = match thumb_bounds {
-        Some(t) => (t.y as f64, (t.height as f64).max(1.0)),
-        None => (by, (bh * 0.2).max(20.0).min(bh)),
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: None,
+        translucent_fill: true,
     };
-    cr.set_source_rgba(thumb.0, thumb.1, thumb.2, 0.9);
-    cr.rectangle(bx, ty, bw, th);
-    cr.fill().ok();
+    crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar(
+        &mut surface,
+        gutter,
+        thumb_bounds,
+        theme,
+    );
 }
 
 /// Panel-level scrollbar. Paints the track, then the thumb at
@@ -606,40 +469,30 @@ fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, the
 /// [`paint_scrollbar`]'s (per-section) pattern of consuming
 /// pre-computed bounds instead of re-deriving them.
 fn paint_panel_scrollbar(cr: &Context, bounds: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
-    let track = cairo_rgb(theme.scrollbar_track);
-    let thumb = cairo_rgb(theme.scrollbar_thumb);
-
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-    if bh <= 0.0 {
-        return;
-    }
-
-    cr.set_source_rgb(track.0, track.1, track.2);
-    cr.rectangle(bx, by, bw, bh);
-    cr.fill().ok();
-
-    let (thumb_y, thumb_h) = match thumb_bounds {
-        Some(t) => (t.y as f64, (t.height as f64).max(1.0)),
-        None => (by, bh),
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: None,
+        translucent_fill: true,
     };
-    cr.set_source_rgb(thumb.0, thumb.1, thumb.2);
-    cr.rectangle(bx, thumb_y, bw, thumb_h);
-    cr.fill().ok();
+    crate::primitives::multi_section_view::native_surface_paint::paint_panel_scrollbar(
+        &mut surface,
+        bounds,
+        thumb_bounds,
+        theme,
+    );
 }
 
 fn paint_divider(cr: &Context, bounds: QRect, theme: &Theme) {
-    let sep = cairo_rgb(theme.separator);
-    cr.set_source_rgb(sep.0, sep.1, sep.2);
-    cr.rectangle(
-        bounds.x as f64,
-        bounds.y as f64,
-        bounds.width as f64,
-        bounds.height as f64,
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: None,
+        translucent_fill: true,
+    };
+    crate::primitives::multi_section_view::native_surface_paint::paint_divider(
+        &mut surface,
+        bounds,
+        theme,
     );
-    cr.fill().ok();
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -1299,5 +1152,55 @@ mod tests {
     #[test]
     fn header_hit_round_trip_at_nonzero_origin() {
         header_hit_round_trip_at(7.0, 13.0);
+    }
+
+    /// Regression for #1074's drift note: pre-port, GTK's `paint_header`
+    /// never clipped the title paint, unlike Win/macOS — a title wider
+    /// than its title/badge region bled ink straight past the header's
+    /// own right margin. This section has no chevron and no actions, so
+    /// the only thing that can ever legitimately paint in the header's
+    /// last 4px (the margin `push_header_hits`/`paint_header` both
+    /// reserve at the trailing edge, see `right_x`'s initial value) is
+    /// an unclipped title overrunning its bounds.
+    #[test]
+    fn gtk_header_clips_long_title_before_right_margin() {
+        let section = Section {
+            id: "s".into(),
+            header: SectionHeader {
+                icon: None,
+                title: StyledText::plain("W".repeat(200)),
+                badge: None,
+                actions: vec![],
+                show_chevron: false,
+            },
+            body: SectionBody::Empty(EmptyBody {
+                text: StyledText::plain(""),
+                ..Default::default()
+            }),
+            aux: None,
+            size: SectionSize::EqualShare,
+            collapsed: false,
+            min_size: None,
+            max_size: None,
+        };
+        let v = view_with(vec![section]);
+        let (mut surface, layout) = paint_then_layout(&v);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        let hdr = layout.sections[0].header_bounds;
+        // 2px inside the header's reserved trailing margin — well clear
+        // of the clip boundary's own antialiased edge on one side and
+        // the header's true right edge on the other.
+        let probe_x = (hdr.x + hdr.width - 2.0) as i32;
+        let probe_y = (hdr.y + hdr.height / 2.0) as i32;
+        let (r, g, b) = pixel(&data, stride, probe_x, probe_y);
+        let bg = Theme::default().header_bg;
+        assert_eq!(
+            (r, g, b),
+            (bg.r, bg.g, bg.b),
+            "an overlong title must not bleed ink into the header's trailing margin \
+             at ({probe_x}, {probe_y}); got ({r}, {g}, {b}), expected header_bg {bg:?}",
+        );
     }
 }
