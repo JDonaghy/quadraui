@@ -3655,6 +3655,10 @@ impl NativeSurface for ChromeSurface<'_> {
         self.backend.surface_fill_rect(rect, color)
     }
 
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        self.backend.surface_fill_rounded_rect(rect, radius, color)
+    }
+
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
         self.backend.surface_stroke_rect(rect, color, stroke_width)
     }
@@ -3787,6 +3791,16 @@ impl NativeSurface for MacBackend {
         unsafe { ns_fill_rect(ctx, rect, color) };
     }
 
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_fill_rounded_rect called outside enter_frame_scope",
+        );
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { ns_fill_rounded_rect(ctx, rect, radius, color) };
+    }
+
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -3860,6 +3874,58 @@ impl NativeSurface for MacBackend {
                 ns_color_to_cg(color),
             );
         }
+    }
+
+    /// #1073: overrides the default (which ignores `role`) — `chrome_font`
+    /// and `current_font` are already genuinely different `CTFont`s on
+    /// this backend (see `chrome_font`'s field doc), so a `dyn
+    /// NativeSurface` caller holding a live `MacBackend` can now paint
+    /// either without a separate [`ChromeSurface`] wrapper. `italic` is
+    /// dropped, matching [`Self::surface_draw_text_run_styled`]'s own
+    /// documented "not rendered yet" posture — adding real italic
+    /// support is out of this issue's scope.
+    fn surface_draw_text_run_with_role(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Color,
+        role: crate::FontRole,
+        italic: bool,
+    ) {
+        let _ = italic;
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::surface_draw_text_run_with_role called outside enter_frame_scope",
+        );
+        let font = match role {
+            crate::FontRole::Chrome => &self.chrome_font,
+            crate::FontRole::Editor => self.current_font.as_ref().expect(
+                "MacBackend::surface_draw_text_run_with_role requires set_current_font \
+                         for FontRole::Editor",
+            ),
+        };
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text(
+                ctx,
+                font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    /// #1073: overrides the default only to document why it needn't
+    /// change anything — [`Self::set_current_font`]/[`Self::set_chrome_font`]
+    /// already re-apply [`Self::set_nerd_font_fallback`]'s cascade to
+    /// both `current_font` and `chrome_font` (see those methods' docs),
+    /// so [`Self::surface_draw_text_run`] already resolves an icon
+    /// glyph the same way this verb would.
+    fn surface_draw_icon_glyph(&mut self, rect: Rect, text: &str, color: Color) {
+        self.surface_draw_text_run(rect, text, color)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -3938,6 +4004,52 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
     let (r, g, b, a) = ns_color_to_cg(c);
     CGContextSetRGBFillColor(ctx, r, g, b, a);
     CGContextFillRect(ctx, ns_cg_rect(rect));
+}
+
+/// [`ns_fill_rect`]'s rounded-corner twin (issue #1073). Builds the
+/// rounded-rect path with the classic `CGContextAddArcToPoint`
+/// tangent-arc technique (four straight edges, each corner rounded by
+/// one arc of `radius`) rather than `CGPathCreateWithRoundedRect` —
+/// that constructor returns an owned `CGPathRef` the caller must
+/// `CFRelease`, which this file's raw-FFI `extern "C"` block (see its
+/// own doc) has no safe place to do automatically; `AddArcToPoint`
+/// builds directly on `ctx`'s existing path with no extra object to
+/// manage, mirroring `crate::gtk::rounded_rect_path`'s `cr.arc` recipe
+/// one level lower (arc-to-point instead of four full arcs) since
+/// CoreGraphics has no `cr.arc`-style "arc with explicit start/end
+/// angle" primitive as convenient to chain as Cairo's.
+///
+/// `radius` is clamped to half of `rect`'s shorter side — see
+/// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]'s
+/// doc for why every implementation of that verb does this.
+///
+/// # Safety
+/// Same contract as [`ns_fill_rect`].
+pub(crate) unsafe fn ns_fill_rounded_rect(ctx: CGContextRef, rect: Rect, radius: f32, c: Color) {
+    let r = (radius as f64)
+        .min(rect.width as f64 / 2.0)
+        .min(rect.height as f64 / 2.0)
+        .max(0.0);
+    let (x, y, w, h) = (
+        rect.x as f64,
+        rect.y as f64,
+        rect.width as f64,
+        rect.height as f64,
+    );
+    let (r0, g0, b0, a0) = ns_color_to_cg(c);
+    CGContextSetRGBFillColor(ctx, r0, g0, b0, a0);
+    CGContextBeginPath(ctx);
+    CGContextMoveToPoint(ctx, x + r, y);
+    CGContextAddLineToPoint(ctx, x + w - r, y);
+    CGContextAddArcToPoint(ctx, x + w, y, x + w, y + r, r);
+    CGContextAddLineToPoint(ctx, x + w, y + h - r);
+    CGContextAddArcToPoint(ctx, x + w, y + h, x + w - r, y + h, r);
+    CGContextAddLineToPoint(ctx, x + r, y + h);
+    CGContextAddArcToPoint(ctx, x, y + h, x, y + h - r, r);
+    CGContextAddLineToPoint(ctx, x, y + r);
+    CGContextAddArcToPoint(ctx, x, y, x + r, y, r);
+    CGContextClosePath(ctx);
+    CGContextFillPath(ctx);
 }
 
 /// # Safety
@@ -4019,6 +4131,18 @@ extern "C" {
     fn CGContextMoveToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
     fn CGContextAddLineToPoint(c: CGContextRef, x: CGFloat, y: CGFloat);
     fn CGContextStrokePath(c: CGContextRef);
+    // #1073, `ns_fill_rounded_rect`'s tangent-arc rounded-rect path.
+    fn CGContextBeginPath(c: CGContextRef);
+    fn CGContextAddArcToPoint(
+        c: CGContextRef,
+        x1: CGFloat,
+        y1: CGFloat,
+        x2: CGFloat,
+        y2: CGFloat,
+        radius: CGFloat,
+    );
+    fn CGContextClosePath(c: CGContextRef);
+    fn CGContextFillPath(c: CGContextRef);
 }
 
 #[cfg(test)]
@@ -5601,6 +5725,208 @@ mod tests {
         });
 
         backend.surface_end_frame();
+    }
+
+    // ── #1073: surface_fill_rounded_rect / surface_fill_rect_alpha /
+    //    surface_draw_text_run_with_role / surface_draw_icon_glyph ──────
+
+    /// A corner pixel well inside the fillet radius must stay untouched
+    /// while the box's centre paints solid — the `ns_fill_rounded_rect`
+    /// twin of `mac_backend_native_surface_fill_rect_paints_solid_color`
+    /// above.
+    #[test]
+    fn mac_backend_native_surface_fill_rounded_rect_clips_the_corners() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+
+        let red = Color::rgb(200, 20, 20);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.surface_fill_rounded_rect(Rect::new(0.0, 0.0, W as f32, H as f32), 15.0, red);
+        });
+        backend.end_frame();
+
+        let (r, g, b, _a) = surface.pixel(20, 20);
+        assert_eq!(
+            (r, g, b),
+            (red.r, red.g, red.b),
+            "surface_fill_rounded_rect must paint the solid color at the box's centre"
+        );
+        let (r, g, b, _a) = surface.pixel(1, 1);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 0),
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
+             untouched — otherwise this is just `surface_fill_rect` under a new name"
+        );
+    }
+
+    /// A translucent `surface_fill_rect_alpha` fill over an opaque
+    /// background must land a real alpha composite — neither the fill
+    /// colour verbatim nor the background untouched.
+    #[test]
+    fn mac_backend_native_surface_fill_rect_alpha_blends_with_the_background() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+
+        let white = Color::rgb(255, 255, 255);
+        let red = Color::rgb(200, 20, 20);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), white);
+            b.surface_fill_rect_alpha(Rect::new(0.0, 0.0, W as f32, H as f32), red, 0.5);
+        });
+        backend.end_frame();
+
+        let (r, g, b, _a) = surface.pixel(20, 20);
+        assert!(
+            (r, g, b) != (white.r, white.g, white.b) && (r, g, b) != (red.r, red.g, red.b),
+            "a 50%-alpha fill over an opaque background must land a real blend, \
+             not the background or the fill colour verbatim: got ({r}, {g}, {b})"
+        );
+        assert!(
+            (200..245).contains(&r),
+            "red channel should sit between the fill's 200 and white's 255: got {r}"
+        );
+        assert!(
+            (100..160).contains(&g) && (100..160).contains(&b),
+            "green/blue channels should sit roughly halfway between the fill's 20 \
+             and white's 255: got ({g}, {b})"
+        );
+    }
+
+    /// `role` must select a genuinely different live font — proven by a
+    /// huge chrome-font size versus a tiny editor-font size painting
+    /// visibly different amounts of ink for the same glyph.
+    #[test]
+    fn mac_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        fn ink_pixel_count(surface: &BitmapSurface) -> u32 {
+            let mut count = 0;
+            for y in 0..80 {
+                for x in 0..80 {
+                    let (r, g, b, _a) = surface.pixel(x, y);
+                    if r as u32 + g as u32 + b as u32 > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        const W: u32 = 80;
+        const H: u32 = 80;
+        let white = Color::rgb(255, 255, 255);
+
+        let chrome_surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(
+            super::super::text::make_font("Menlo", 6.0).expect("Menlo installed"),
+        );
+        backend.set_chrome_font(
+            super::super::text::make_font("Menlo", 48.0).expect("Menlo installed"),
+        );
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(chrome_surface.context_ptr(), |b| {
+            b.surface_draw_text_run_with_role(
+                Rect::new(2.0, 2.0, 76.0, 76.0),
+                "A",
+                white,
+                crate::FontRole::Chrome,
+                false,
+            );
+        });
+        backend.end_frame();
+        let chrome_ink = ink_pixel_count(&chrome_surface);
+
+        let editor_surface = BitmapSurface::new(W, H);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(editor_surface.context_ptr(), |b| {
+            b.surface_draw_text_run_with_role(
+                Rect::new(2.0, 2.0, 76.0, 76.0),
+                "A",
+                white,
+                crate::FontRole::Editor,
+                false,
+            );
+        });
+        backend.end_frame();
+        let editor_ink = ink_pixel_count(&editor_surface);
+
+        assert!(
+            chrome_ink > 0 && editor_ink > 0,
+            "both roles must paint real ink: chrome={chrome_ink}, editor={editor_ink}"
+        );
+        assert!(
+            chrome_ink > editor_ink * 3,
+            "a 48pt chrome font must paint far more ink than a 6pt editor font for the \
+             same glyph if `role` really selects a different live font: \
+             chrome={chrome_ink}, editor={editor_ink}"
+        );
+
+        // #1073: italic must not panic.
+        let italic_surface = BitmapSurface::new(W, H);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(italic_surface.context_ptr(), |b| {
+            b.surface_draw_text_run_with_role(
+                Rect::new(2.0, 2.0, 76.0, 76.0),
+                "A",
+                white,
+                crate::FontRole::Chrome,
+                true,
+            );
+        });
+        backend.end_frame();
+    }
+
+    /// `surface_draw_icon_glyph` must reach real CoreGraphics painting,
+    /// not silently drop the call.
+    #[test]
+    fn mac_backend_native_surface_draw_icon_glyph_paints_real_ink() {
+        use super::super::headless::BitmapSurface;
+        use crate::types::Color;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+
+        let white = Color::rgb(255, 255, 255);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.surface_draw_icon_glyph(Rect::new(2.0, 2.0, 30.0, 30.0), "i", white);
+        });
+        backend.end_frame();
+
+        let mut ink = 0u32;
+        for y in 0..H {
+            for x in 0..W {
+                let (r, g, b, _a) = surface.pixel(x, y);
+                ink += r as u32 + g as u32 + b as u32;
+            }
+        }
+        assert!(
+            ink > 0,
+            "surface_draw_icon_glyph must paint real ink, not silently no-op"
+        );
     }
 
     // ── Form (#808, NativeSurface Phase 2a) ──────────────────────────

@@ -171,6 +171,77 @@ pub(crate) trait NativeSurface {
     /// Fill `rect` with a solid `color`.
     fn surface_fill_rect(&mut self, rect: Rect, color: Color);
 
+    /// Fill `rect` with `color`, corners rounded to `radius` — the shape
+    /// every chrome background/border rasteriser not yet ported onto
+    /// `NativeSurface` needs (dialogs, context menus, buttons, the
+    /// bordered `ListView`/command-center panels — see
+    /// `crate::gtk::rounded_rect_path`'s call sites for the current,
+    /// per-backend-private equivalents) and the reason none of them
+    /// could move onto this trait before now (issue #1073).
+    ///
+    /// `radius` is clamped to half of `rect`'s shorter side (and floored
+    /// at `0.0`) by every implementation — a radius larger than that
+    /// would overlap the opposite corner's arc, which every one of the
+    /// three native 2D APIs this trait sits on (Cairo, CoreGraphics,
+    /// Direct2D) either refuses outright or renders as an unintended
+    /// lens shape rather than a rounded rectangle, and a negative radius
+    /// has no rounding to give. Clamping instead of asserting keeps a
+    /// caller that wants "as round as this box allows" (radius >= half
+    /// the shorter side, e.g. a pill-shaped badge) a one-line call
+    /// instead of its own `min()` — mirrors `radius.min(rect.width /
+    /// 2.0).min(rect.height / 2.0).max(0.0)`, computed once per
+    /// implementation rather than once per call site.
+    ///
+    /// No default: unlike the style/measurement verbs above, there is no
+    /// backend-agnostic way to approximate a rounded corner out of the
+    /// other verbs on this trait (`surface_fill_rect` is axis-aligned
+    /// only, and there is no arc/path verb to build one from) — every
+    /// implementor draws a real rounded rect, honouring `color.a` the
+    /// same way [`Self::surface_fill_rect`] already does on every
+    /// backend.
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color);
+
+    /// [`Self::surface_fill_rect`] with `color`'s own alpha channel
+    /// overridden by `alpha` (`0.0`..=`1.0`, clamped) — the explicit,
+    /// discoverable "fill translucently" entry point every large
+    /// primitive not yet ported onto `NativeSurface` needs (issue
+    /// #1073; see `primitives::chart`'s module doc, "The crosshair" and
+    /// "The grid line color", for two spots that pre-#1073 approximated
+    /// this with a CPU-side [`Color::blend`] against a hardcoded
+    /// destination colour instead of a real alpha composite, because
+    /// this verb didn't exist to reach for).
+    ///
+    /// Provided as a default rather than requiring an override: every
+    /// [`Self::surface_fill_rect`] implementation on every one of the
+    /// three pixel backends already honours `color.a` with a real,
+    /// native alpha blend against whatever is already on the target
+    /// (Cairo's `set_source_rgba`, CoreGraphics' `CGContextSetRGBFillColor`,
+    /// Direct2D's `CreateSolidColorBrush` — see `crate::gtk::set_source_rgba`'s
+    /// doc for the one of the three that needed a dedicated fix,
+    /// issue #811, before that was true everywhere), so there is no
+    /// backend-specific behaviour left to add here beyond overriding
+    /// `color`'s own alpha with `alpha`. A caller that already has an
+    /// alpha-carrying `Color` can call [`Self::surface_fill_rect`]
+    /// directly; this exists for the (more common) case of an opaque
+    /// theme colour that needs a one-off translucency at a single call
+    /// site, without constructing a throwaway [`Color::with_alpha`]'d
+    /// copy first.
+    ///
+    /// **One documented exception:** [`crate::gtk::surface::CairoSurface`]
+    /// constructed with `translucent_fill: false` (`form`, `sidebar_panel`,
+    /// `split`, `split_tree`'s adapters — see that module's own doc, "a
+    /// deliberate, documented divergence") calls Cairo's opaque-only
+    /// `set_source` from *its* [`Self::surface_fill_rect`] override, so
+    /// routing this default through one of those four adapters silently
+    /// paints fully opaque instead of blending, with no panic. No call
+    /// site does that today (those four adapters never call
+    /// `surface_fill_rect_alpha`), but a future one that does must either
+    /// pre-blend the colour itself or use a `translucent_fill: true`
+    /// adapter instead.
+    fn surface_fill_rect_alpha(&mut self, rect: Rect, color: Color, alpha: f32) {
+        self.surface_fill_rect(rect, color.with_alpha(alpha as f64));
+    }
+
     /// Stroke the outline of `rect` in `color` at `stroke_width`. Every
     /// backend's underlying primitive insets the stroke so it lands
     /// fully inside `rect` rather than straddling its boundary — see the
@@ -222,6 +293,84 @@ pub(crate) trait NativeSurface {
     ) {
         let _ = (bold, italic, underline, scale_x);
         self.surface_draw_text_run(rect, text, color);
+    }
+
+    /// [`Self::surface_draw_text_run_styled`] with an explicit
+    /// [`crate::FontRole`] instead of "this surface's current font" —
+    /// the last prerequisite (issue #1073, alongside
+    /// [`Self::surface_fill_rounded_rect`]/[`Self::surface_fill_rect_alpha`])
+    /// blocking the remaining chrome paint code from moving onto this
+    /// trait. Before this verb, a primitive migrated to take
+    /// `&mut dyn NativeSurface` could not paint one label in the chrome
+    /// font and another in the editor font from the same call site —
+    /// the concrete backends resolve that today only by handing a
+    /// *different, backend-specific* adapter to each caller (e.g.
+    /// [`crate::macos::backend::ChromeSurface`] vs `&mut MacBackend`
+    /// itself; [`crate::win::backend::WinBackend`] has an unused
+    /// `chrome_dwrite` `IDWriteTextFormat` sitting idle because nothing
+    /// selects it — see that field's own doc), which only works because
+    /// every existing caller already knows which role it wants at
+    /// construction time, not per draw call.
+    ///
+    /// Defaults to ignoring `role` and forwarding to
+    /// [`Self::surface_draw_text_run_styled`] with `bold`/`underline`
+    /// left off and `scale_x` at `1.0` — correct only for a surface that
+    /// has exactly one font to offer regardless of which role is asked
+    /// for (every primitive-generic adapter: [`crate::gtk::surface::CairoSurface`],
+    /// [`crate::macos::surface::CgSurface`], [`crate::win::surface::D2dSurface`] —
+    /// each is already constructed against one specific, caller-chosen
+    /// font, so "which role" is answered before this verb is ever
+    /// reached). [`crate::gtk::backend::GtkBackend`],
+    /// [`crate::macos::backend::MacBackend`] and
+    /// [`crate::win::backend::WinBackend`] all override this for real —
+    /// see each backend's own impl for how it resolves `role` against
+    /// its live chrome/editor font state.
+    fn surface_draw_text_run_with_role(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Color,
+        role: crate::FontRole,
+        italic: bool,
+    ) {
+        let _ = role;
+        self.surface_draw_text_run_styled(rect, text, color, false, italic, false, 1.0)
+    }
+
+    /// Paint `text` (conventionally one glyph from an icon font's
+    /// Private-Use-Area range, e.g. a Nerd Font codepoint) at `rect`'s
+    /// top-left corner in `color`, resolving through this surface's
+    /// icon-glyph fallback family — [`crate::Backend::set_nerd_font_fallback`]
+    /// (issue #929) — rather than whatever font
+    /// [`Self::surface_draw_text_run`] would otherwise use alone.
+    ///
+    /// Defaults to forwarding straight to [`Self::surface_draw_text_run`]
+    /// — correct exactly when the surface's current font already
+    /// resolves the fallback family itself, which is true for every
+    /// primitive-generic adapter (see [`Self::surface_draw_text_run_with_role`]'s
+    /// doc: each is constructed against a caller-chosen font, and it is
+    /// that constructor's responsibility to have already applied a
+    /// fallback-aware description if the primitive paints icon glyphs)
+    /// and, on two of the three real backends, already true of their
+    /// live font state too:
+    /// [`crate::macos::backend::MacBackend::set_current_font`]/`set_chrome_font`
+    /// re-apply [`crate::macos::backend::MacBackend::set_nerd_font_fallback`]'s
+    /// cascade to `current_font`/`chrome_font` themselves, and Win-GUI's
+    /// `DWrite::new` bakes the equivalent `IDWriteFontFallback` into
+    /// every `IDWriteTextFormat` it builds — so [`crate::macos::backend::MacBackend`]
+    /// and [`crate::win::backend::WinBackend`] both override this
+    /// verb only to document that the default already does the right
+    /// thing for them, not to change its behaviour.
+    /// [`crate::gtk::backend::GtkBackend`] is the one real exception: its
+    /// per-frame editor `pango::Layout` (built fresh every frame from
+    /// `editor_font_pango_string`, see `gtk/run.rs::render_frame`) never
+    /// gets [`crate::gtk::with_nerd_font_fallback`] applied — only
+    /// individual chrome call sites wrap their *own* one-off
+    /// `FontDescription` with it today — so `GtkBackend` overrides this
+    /// verb for real, temporarily swapping in a fallback-wrapped
+    /// description for the one glyph being painted.
+    fn surface_draw_icon_glyph(&mut self, rect: Rect, text: &str, color: Color) {
+        self.surface_draw_text_run(rect, text, color)
     }
 
     /// Stroke a line segment from `from` to `to` in `color` at

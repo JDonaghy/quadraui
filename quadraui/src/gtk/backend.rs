@@ -5003,6 +5003,32 @@ impl NativeSurface for GtkBackend {
         cr.fill().ok();
     }
 
+    /// #1073: `crate::gtk::rounded_rect_path` was already private plumbing
+    /// for the context menu / `ListView` / command-center rasterisers —
+    /// this is the first `NativeSurface` verb to expose it. `radius` is
+    /// clamped to half of `rect`'s shorter side, matching this trait
+    /// method's own doc for why (an unclamped radius overlaps the
+    /// opposite corner's arc on every one of the three native path APIs).
+    fn surface_fill_rounded_rect(&mut self, rect: QRect, radius: f32, color: Color) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_fill_rounded_rect called outside enter_frame_scope");
+        let r = (radius as f64)
+            .min(rect.width as f64 / 2.0)
+            .min(rect.height as f64 / 2.0)
+            .max(0.0);
+        crate::gtk::set_source_rgba(cr, color);
+        crate::gtk::rounded_rect_path(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            r,
+        );
+        cr.fill().ok();
+    }
+
     fn surface_stroke_rect(&mut self, rect: QRect, color: Color, stroke_width: f32) {
         let (cr, _layout) = self
             .current_frame_refs()
@@ -5072,6 +5098,78 @@ impl NativeSurface for GtkBackend {
             super::painted_text::show_layout(cr, layout);
         }
         layout.set_attributes(None);
+    }
+
+    /// #1073: overrides the default (which ignores `role`) — this is the
+    /// one real backend where chrome and editor text already resolve to
+    /// two genuinely different `pango::FontDescription`s
+    /// (`crate::gtk::chrome_font_description(&self.ui_font)` vs
+    /// `self.editor_font_pango_string()`), so a `dyn NativeSurface`
+    /// caller that only held the trait default could never reach the
+    /// chrome one. Saves and restores the layout's font description
+    /// around the call, mirroring the save/restore recipe every
+    /// `chrome_font_desc`-swapping `draw_*` method in this file already
+    /// repeats by hand (e.g. `draw_tree`).
+    fn surface_draw_text_run_with_role(
+        &mut self,
+        rect: QRect,
+        text: &str,
+        color: Color,
+        role: crate::FontRole,
+        italic: bool,
+    ) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_draw_text_run_with_role called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let desc = match role {
+            crate::FontRole::Chrome => crate::gtk::chrome_font_description(&self.ui_font),
+            crate::FontRole::Editor => {
+                pango::FontDescription::from_string(&self.editor_font_pango_string())
+            }
+        };
+        layout.set_font_description(Some(&desc));
+        layout.set_text(text);
+        if italic {
+            let attrs = pango::AttrList::new();
+            attrs.insert(pango::AttrInt::new_style(pango::Style::Italic));
+            layout.set_attributes(Some(&attrs));
+        } else {
+            layout.set_attributes(None);
+        }
+        crate::gtk::set_source(cr, color);
+        cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(cr, layout);
+        layout.set_attributes(None);
+        layout.set_font_description(saved.as_ref());
+    }
+
+    /// #1073: overrides the default (which assumes the current font
+    /// already resolves the fallback family) — `GtkBackend`'s per-frame
+    /// editor `pango::Layout` (built fresh every frame by
+    /// `gtk/run.rs::render_frame` from `editor_font_pango_string`, with
+    /// no fallback appended) is the one real backend where that
+    /// assumption is false; see this trait method's own doc for why
+    /// macOS/Win-GUI take the default instead. Temporarily wraps the
+    /// layout's current font description with
+    /// [`crate::gtk::with_nerd_font_fallback`] so `text`'s glyph (e.g. a
+    /// Nerd Font Private-Use-Area codepoint) resolves even when the
+    /// primary family can't cover it, then restores the unwrapped
+    /// description.
+    fn surface_draw_icon_glyph(&mut self, rect: QRect, text: &str, color: Color) {
+        let (cr, layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_draw_icon_glyph called outside enter_frame_scope");
+        let saved = layout.font_description();
+        let base = saved.clone().unwrap_or_default();
+        let with_fallback = crate::gtk::with_nerd_font_fallback(&base);
+        layout.set_font_description(Some(&with_fallback));
+        layout.set_text(text);
+        layout.set_attributes(None);
+        crate::gtk::set_source(cr, color);
+        cr.move_to(rect.x as f64, rect.y as f64);
+        super::painted_text::show_layout(cr, layout);
+        layout.set_font_description(saved.as_ref());
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -8884,6 +8982,224 @@ mod tests {
         });
 
         backend.surface_end_frame();
+    }
+
+    // ── #1073: surface_fill_rounded_rect / surface_fill_rect_alpha /
+    //    surface_draw_text_run_with_role / surface_draw_icon_glyph ──────
+
+    /// A corner pixel well inside the fillet radius must stay untouched
+    /// while the box's centre paints solid — proving the corners are
+    /// genuinely rounded, not just a rectangle with a misleading name.
+    #[test]
+    fn gtk_backend_native_surface_fill_rounded_rect_clips_the_corners() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let red = Color::rgb(200, 20, 20);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_fill_rounded_rect(QRect::new(0.0, 0.0, 40.0, 40.0), 15.0, red);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 20, 20),
+            (red.r, red.g, red.b),
+            "surface_fill_rounded_rect must paint the solid color at the box's centre"
+        );
+        assert_eq!(
+            probe_pixel_417(&data, stride, 1, 1),
+            (0, 0, 0),
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
+             untouched — otherwise this is just `surface_fill_rect` under a new name"
+        );
+    }
+
+    /// A translucent `surface_fill_rect_alpha` fill over an opaque
+    /// background must land a real alpha composite — neither the fill
+    /// colour verbatim nor the background untouched.
+    #[test]
+    fn gtk_backend_native_surface_fill_rect_alpha_blends_with_the_background() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let white = Color::rgb(255, 255, 255);
+        let red = Color::rgb(200, 20, 20);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_fill_rect(QRect::new(0.0, 0.0, 40.0, 40.0), white);
+                b.surface_fill_rect_alpha(QRect::new(0.0, 0.0, 40.0, 40.0), red, 0.5);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, g, b) = probe_pixel_417(&data, stride, 20, 20);
+        assert!(
+            (r, g, b) != (white.r, white.g, white.b) && (r, g, b) != (red.r, red.g, red.b),
+            "a 50%-alpha fill over an opaque background must land a real blend, \
+             not the background or the fill colour verbatim: got ({r}, {g}, {b})"
+        );
+        // Real source-over compositing of 50%-alpha red onto opaque white
+        // lands roughly halfway between the two on every channel.
+        assert!(
+            (200..245).contains(&r),
+            "red channel should sit between the fill's 200 and white's 255: got {r}"
+        );
+        assert!(
+            (100..160).contains(&g) && (100..160).contains(&b),
+            "green/blue channels should sit roughly halfway between the fill's 20 \
+             and white's 255: got ({g}, {b})"
+        );
+    }
+
+    /// `role` must select a genuinely different live font, not just a
+    /// documented no-op — proven here by a huge chrome-font size versus
+    /// a tiny editor-font size painting visibly different amounts of ink
+    /// for the same glyph.
+    #[test]
+    fn gtk_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        fn ink_pixel_count(surface: &mut ImageSurface) -> usize {
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let mut count = 0;
+            for y in 0..80 {
+                for x in 0..80 {
+                    let (r, g, b) = probe_pixel_417(&data, stride, x, y);
+                    if r as u32 + g as u32 + b as u32 > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        let white = Color::rgb(255, 255, 255);
+
+        let mut chrome_surface =
+            ImageSurface::create(Format::ARgb32, 80, 80).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_ui_font("Sans 48");
+        backend.set_editor_font("Monospace", 6.0);
+        {
+            let cr = Context::new(&chrome_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_text_run_with_role(
+                    QRect::new(2.0, 2.0, 76.0, 76.0),
+                    "A",
+                    white,
+                    crate::FontRole::Chrome,
+                    false,
+                );
+            });
+        }
+        let chrome_ink = ink_pixel_count(&mut chrome_surface);
+
+        let mut editor_surface =
+            ImageSurface::create(Format::ARgb32, 80, 80).expect("create ImageSurface");
+        {
+            let cr = Context::new(&editor_surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_text_run_with_role(
+                    QRect::new(2.0, 2.0, 76.0, 76.0),
+                    "A",
+                    white,
+                    crate::FontRole::Editor,
+                    false,
+                );
+            });
+        }
+        let editor_ink = ink_pixel_count(&mut editor_surface);
+
+        assert!(
+            chrome_ink > 0 && editor_ink > 0,
+            "both roles must paint real ink: chrome={chrome_ink}, editor={editor_ink}"
+        );
+        assert!(
+            chrome_ink > editor_ink * 3,
+            "a 48pt chrome font must paint far more ink than a 6pt editor font for the \
+             same glyph if `role` really selects a different live font: \
+             chrome={chrome_ink}, editor={editor_ink}"
+        );
+
+        // #1073: italic must not panic even though this backend paints it
+        // via the same `pango::AttrList` recipe `surface_draw_text_run_styled`
+        // already uses.
+        let italic_surface =
+            ImageSurface::create(Format::ARgb32, 80, 80).expect("create ImageSurface");
+        let cr = Context::new(&italic_surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            b.surface_draw_text_run_with_role(
+                QRect::new(2.0, 2.0, 76.0, 76.0),
+                "A",
+                white,
+                crate::FontRole::Chrome,
+                true,
+            );
+        });
+    }
+
+    /// `surface_draw_icon_glyph` must reach real Cairo painting (through
+    /// the fallback-wrapped font description) rather than silently
+    /// dropping the call.
+    #[test]
+    fn gtk_backend_native_surface_draw_icon_glyph_paints_real_ink() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        let white = Color::rgb(255, 255, 255);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            let pango_layout = pango::Layout::new(&pango_ctx);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.surface_draw_icon_glyph(QRect::new(2.0, 2.0, 30.0, 30.0), "i", white);
+            });
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let mut ink = 0u32;
+        for y in 0..40 {
+            for x in 0..40 {
+                let (r, g, b) = probe_pixel_417(&data, stride, x, y);
+                ink += r as u32 + g as u32 + b as u32;
+            }
+        }
+        assert!(
+            ink > 0,
+            "surface_draw_icon_glyph must paint real ink through the fallback-wrapped \
+             font description, not silently no-op"
+        );
     }
 
     // ── find_replace (#809, `NativeSurface` Phase 2b) ──────────────────

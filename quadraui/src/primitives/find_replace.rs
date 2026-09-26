@@ -801,6 +801,15 @@ mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
+            /// #1073: test-only recorder — `paint` never calls this verb
+            /// (see this module's own doc for why no primitive here has been
+            /// migrated onto it yet); this exists only so `RecordingSurface`
+            /// satisfies the trait. Records into the same `fills` list as
+            /// `surface_fill_rect` (radius dropped) — no test asserts on it
+            /// today.
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
             fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
                 self.strokes.push((rect, color, stroke_width));
             }

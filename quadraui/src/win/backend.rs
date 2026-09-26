@@ -4879,6 +4879,20 @@ impl NativeSurface for WinBackend {
         let _ = (rect, color);
     }
 
+    /// #1073: `super::text::fill_rounded_rect` is the
+    /// `FillRoundedRectangle` twin of `fill_rect` above — same
+    /// no-surface degrade as every other verb here (issue #924).
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: crate::Color) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            let _ = super::text::fill_rounded_rect(&surface.target, rect, radius, color);
+            return;
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
+        let _ = (rect, radius, color);
+    }
+
     fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
@@ -4935,6 +4949,53 @@ impl NativeSurface for WinBackend {
         // See `WinBackend::draw_tree`'s doc for why this degrades to a
         // no-op instead of panicking (issue #924).
         let _ = (rect, text, color, bold, scale_x);
+    }
+
+    /// #1073: overrides the default (which ignores `role`) — `chrome_dwrite`
+    /// (built by [`Self::attach_headless`]/the live-surface setup path
+    /// alongside the editor `dwrite` handle) has sat unused since it was
+    /// added; this is the first call site that actually selects it.
+    /// `italic` is dropped, matching [`Self::surface_draw_text_run_styled`]'s
+    /// own documented pre-#810 limitation ("DWrite has no italic text
+    /// format ... wired up today") — adding one is out of this issue's
+    /// scope.
+    fn surface_draw_text_run_with_role(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: crate::Color,
+        role: crate::FontRole,
+        italic: bool,
+    ) {
+        let _ = italic;
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            // Chrome text falls back to the editor `dwrite` handle if no
+            // live chrome one exists yet — same "degrade, don't panic"
+            // convention as `WinBackend::draw_tree`'s doc describes.
+            let dwrite = match role {
+                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
+                crate::FontRole::Editor => self.dwrite.as_ref(),
+            };
+            if let Some(dwrite) = dwrite {
+                let _ = dwrite.draw_text(&surface.target, text, rect, color);
+                return;
+            }
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
+        let _ = (rect, text, color, role);
+    }
+
+    /// #1073: overrides the default only to document why it needn't
+    /// change anything — `DWrite::new` already bakes
+    /// [`Self::set_nerd_font_fallback`]'s `IDWriteFontFallback` into
+    /// every `IDWriteTextFormat` it builds (editor and chrome alike) via
+    /// `IDWriteTextFormat1::SetFontFallback`, so
+    /// [`Self::surface_draw_text_run`] already resolves an icon glyph
+    /// the same way this verb would.
+    fn surface_draw_icon_glyph(&mut self, rect: Rect, text: &str, color: crate::Color) {
+        self.surface_draw_text_run(rect, text, color)
     }
 
     fn surface_draw_line(
@@ -6131,12 +6192,322 @@ mod tests {
         );
     }
 
+    /// The colour an *unpainted* pixel carries after
+    /// [`Backend::begin_frame`] on a freshly-attached [`HeadlessSurface`]
+    /// — read back from an empty frame rather than hardcoded.
+    ///
+    /// Win-GUI's `begin_frame` issues a `Clear` with its placeholder
+    /// background (`0.117` grey today, the app's real `Theme` background
+    /// once that's wired through), so "untouched" on this backend is
+    /// **not** `(0, 0, 0)` the way it is for the GTK twins of the tests
+    /// below — those probe a zeroed `cairo::ImageSurface` that nothing
+    /// clears. Copying GTK's literal black is what reddened the
+    /// `windows-latest` leg on #1073's first push; resolving it from a
+    /// live empty frame instead keeps these assertions honest whichever
+    /// colour that clear grows into.
+    ///
+    /// Reads one pixel because the clear covers the whole target —
+    /// `win_backend_begin_frame_clears_the_whole_surface_uniformly`
+    /// below is the test that keeps that premise true.
+    #[cfg(target_os = "windows")]
+    fn cleared_frame_background(width: u32, height: u32) -> (u8, u8, u8) {
+        use crate::win::testing::HeadlessSurface;
+
+        let surface = HeadlessSurface::new(width, height).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), width, height)
+            .expect("attach headless surface");
+        backend.begin_frame(Viewport::new(width as f32, height as f32, 1.0));
+        backend.end_frame();
+        let px = surface.pixel_at(0, 0);
+        (px.r, px.g, px.b)
+    }
+
+    /// [`cleared_frame_background`] samples a single pixel as "the
+    /// background every other headless test compares against"; this is
+    /// the test that proves one pixel is enough, i.e. that
+    /// [`Backend::begin_frame`]'s `Clear` really covers the whole render
+    /// target rather than some sub-rect.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_begin_frame_clears_the_whole_surface_uniformly() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 16;
+        const H: u32 = 16;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.end_frame();
+
+        let expected = cleared_frame_background(W, H);
+        for y in 0..H {
+            for x in 0..W {
+                let px = surface.pixel_at(x, y);
+                assert_eq!(
+                    (px.r, px.g, px.b),
+                    expected,
+                    "begin_frame's Clear must cover every pixel — ({x}, {y}) differs, so \
+                     sampling one pixel as 'the background' would be wrong"
+                );
+            }
+        }
+    }
+
+    /// #1073: real `FillRoundedRectangle` execution, mirroring
+    /// `gtk_backend_native_surface_fill_rounded_rect_clips_the_corners` —
+    /// a centre pixel must land the fill colour, and a corner pixel well
+    /// inside a generous radius must stay at [`begin_frame`](Backend::begin_frame)'s
+    /// clear colour (see [`cleared_frame_background`] for why that isn't
+    /// black here, unlike the GTK twin), or this would just be
+    /// `surface_fill_rect` under a new name.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_native_surface_fill_rounded_rect_clips_the_corners() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let red = Color::rgb(200, 20, 20);
+        assert_ne!(
+            background,
+            (red.r, red.g, red.b),
+            "the fill colour must differ from the frame's clear colour, or \
+             'this corner stayed untouched' is unprovable"
+        );
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_fill_rounded_rect(Rect::new(0.0, 0.0, W as f32, H as f32), 15.0, red);
+        backend.end_frame();
+
+        let centre = surface.pixel_at(20, 20);
+        assert_eq!(
+            (centre.r, centre.g, centre.b),
+            (red.r, red.g, red.b),
+            "surface_fill_rounded_rect must paint the solid color at the box's centre"
+        );
+        let corner = surface.pixel_at(1, 1);
+        assert_eq!(
+            (corner.r, corner.g, corner.b),
+            background,
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay at \
+             the frame's clear colour — otherwise this is just `surface_fill_rect` \
+             under a new name"
+        );
+    }
+
+    /// #1073: `surface_fill_rect_alpha` has no `WinBackend` override —
+    /// it inherits `NativeSurface`'s default, which forwards to
+    /// `surface_fill_rect` with `color.a` replaced. This proves that
+    /// default genuinely blends on Direct2D's own compositing pipeline
+    /// (not merely that the Rust dispatch is correct), the Win-GUI twin
+    /// of `gtk_backend_native_surface_fill_rect_alpha_blends_with_the_background`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_native_surface_fill_rect_alpha_blends_with_the_background() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let white = Color::rgb(255, 255, 255);
+        let red = Color::rgb(200, 20, 20);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), white);
+        backend.surface_fill_rect_alpha(Rect::new(0.0, 0.0, W as f32, H as f32), red, 0.5);
+        backend.end_frame();
+
+        let px = surface.pixel_at(20, 20);
+        assert!(
+            (px.r, px.g, px.b) != (white.r, white.g, white.b)
+                && (px.r, px.g, px.b) != (red.r, red.g, red.b),
+            "a 50%-alpha fill over an opaque background must land a real blend, not the \
+             background or the fill colour verbatim: got ({}, {}, {})",
+            px.r,
+            px.g,
+            px.b
+        );
+        // Real source-over compositing of 50%-alpha red onto opaque white
+        // lands roughly halfway between the two on every channel. The
+        // bands are deliberately generous rather than exact: which colour
+        // space Direct2D blends in (gamma-encoded for this target's
+        // non-`_SRGB` `DXGI_FORMAT_B8G8R8A8_UNORM`, linear for an `_SRGB`
+        // one) shifts the midpoint without changing what's being asserted
+        // — that a blend happened at all, and towards the right end of
+        // each channel.
+        assert!(
+            (200..=245).contains(&px.r),
+            "red channel should sit between the fill's 200 and white's 255: got {}",
+            px.r
+        );
+        assert!(
+            (100..=200).contains(&px.g) && (100..=200).contains(&px.b),
+            "green/blue channels should sit between the fill's 20 and white's 255: \
+             got ({}, {})",
+            px.g,
+            px.b
+        );
+    }
+
+    /// #1073: `role` must select a genuinely different live `IDWriteTextFormat`
+    /// (the previously-unused `chrome_dwrite` handle vs the editor
+    /// `dwrite` one), not a documented no-op — proven by a huge chrome
+    /// font size versus a tiny editor font size painting visibly
+    /// different amounts of ink for the same glyph. Win-GUI twin of
+    /// `gtk_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 80;
+        const H: u32 = 80;
+
+        // "Ink" is any pixel the glyph moved off `begin_frame`'s clear
+        // colour — not "any pixel brighter than black", which on this
+        // backend counts the whole cleared surface (see
+        // `cleared_frame_background`).
+        fn ink_pixel_count(surface: &HeadlessSurface, background: (u8, u8, u8)) -> u32 {
+            let mut count = 0;
+            for y in 0..H {
+                for x in 0..W {
+                    let px = surface.pixel_at(x, y);
+                    if (px.r, px.g, px.b) != background {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        let background = cleared_frame_background(W, H);
+        let white = Color::rgb(255, 255, 255);
+
+        // `set_editor_font`/`set_ui_font` must precede `attach_headless`
+        // — that's where the `IDWriteTextFormat` pair is built from these
+        // fields (see `set_editor_font`'s doc).
+        let chrome_surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, 6.0);
+        backend.set_ui_font(&format!("{DEFAULT_UI_FONT_FAMILY} 60"));
+        backend
+            .attach_headless(chrome_surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_draw_text_run_with_role(
+            Rect::new(2.0, 2.0, 76.0, 76.0),
+            "A",
+            white,
+            crate::FontRole::Chrome,
+            false,
+        );
+        backend.end_frame();
+        let chrome_ink = ink_pixel_count(&chrome_surface, background);
+
+        let editor_surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        backend
+            .attach_headless(editor_surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_draw_text_run_with_role(
+            Rect::new(2.0, 2.0, 76.0, 76.0),
+            "A",
+            white,
+            crate::FontRole::Editor,
+            false,
+        );
+        backend.end_frame();
+        let editor_ink = ink_pixel_count(&editor_surface, background);
+
+        assert!(
+            chrome_ink > editor_ink * 4,
+            "FontRole::Chrome (60pt) must paint far more ink than FontRole::Editor \
+             (6pt) for the same glyph: chrome={chrome_ink}, editor={editor_ink}"
+        );
+        assert!(editor_ink > 0, "FontRole::Editor must still paint real ink");
+    }
+
+    /// #1073: `surface_draw_icon_glyph` forwards to `surface_draw_text_run`
+    /// on this backend (DirectWrite's font-fallback cascade is already
+    /// baked into every `IDWriteTextFormat` — see the trait override's
+    /// doc) — this proves that forward actually paints real ink rather
+    /// than silently no-opping. Win-GUI twin of
+    /// `gtk_backend_native_surface_draw_icon_glyph_paints_real_ink`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_native_surface_draw_icon_glyph_paints_real_ink() {
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+
+        let background = cleared_frame_background(W, H);
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let white = Color::rgb(255, 255, 255);
+        assert_ne!(
+            background,
+            (white.r, white.g, white.b),
+            "the glyph colour must differ from the frame's clear colour, or \
+             'it painted ink' is unprovable"
+        );
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_draw_icon_glyph(Rect::new(2.0, 2.0, 30.0, 30.0), "i", white);
+        backend.end_frame();
+
+        // Pixels the glyph moved off `begin_frame`'s clear colour — not a
+        // channel sum against black, which every cleared pixel would pass
+        // (see `cleared_frame_background`).
+        let mut ink = 0u32;
+        for y in 0..H {
+            for x in 0..W {
+                let px = surface.pixel_at(x, y);
+                if (px.r, px.g, px.b) != background {
+                    ink += 1;
+                }
+            }
+        }
+        assert!(
+            ink > 0,
+            "surface_draw_icon_glyph must paint real ink through the fallback-baked \
+             DirectWrite text format, not silently no-op"
+        );
+    }
+
     /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
-    /// above) — this exercises every remaining `NativeSurface` method at
-    /// least once end-to-end (frame lifecycle, measurement, stroke, line,
-    /// clip push/pop, text run, image) so an implementation bug (wrong arg
-    /// order, a missing surface guard, a panic inside the `todo!()` split)
-    /// fails a test instead of shipping silently.
+    /// above, and the dedicated #1073 rounded-rect/alpha/role/icon tests
+    /// above it) — this exercises every remaining `NativeSurface` method
+    /// at least once end-to-end (frame lifecycle, measurement, stroke,
+    /// line, clip push/pop, text run, rounded rect, alpha fill, role text,
+    /// icon glyph, image) so an implementation bug (wrong arg order, a
+    /// missing surface guard, a panic inside the `todo!()` split) fails a
+    /// test instead of shipping silently.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_native_surface_verbs_do_not_panic() {
@@ -6172,6 +6543,18 @@ mod tests {
         backend.surface_push_clip(Rect::new(0.0, 0.0, 40.0, 40.0));
         backend.surface_draw_text_run(Rect::new(2.0, 2.0, 30.0, 10.0), "hi", white);
         backend.surface_pop_clip();
+        // #1073: the four new verbs, exercised here too (pixel-precision
+        // coverage of each lives in the dedicated tests above).
+        backend.surface_fill_rounded_rect(Rect::new(44.0, 0.0, 16.0, 16.0), 4.0, blue);
+        backend.surface_fill_rect_alpha(Rect::new(44.0, 20.0, 16.0, 16.0), blue, 0.5);
+        backend.surface_draw_text_run_with_role(
+            Rect::new(2.0, 14.0, 30.0, 10.0),
+            "hi",
+            white,
+            crate::FontRole::Chrome,
+            false,
+        );
+        backend.surface_draw_icon_glyph(Rect::new(2.0, 26.0, 10.0, 10.0), "i", white);
 
         let (w, h) = backend.surface_measure_text("hi");
         assert!(
