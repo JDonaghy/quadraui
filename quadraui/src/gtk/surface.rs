@@ -145,6 +145,29 @@ impl NativeSurface for CairoSurface<'_> {
         self.cr.fill().ok();
     }
 
+    /// #1073: same clamp/fill recipe as `GtkBackend`'s own override,
+    /// honouring [`Self::translucent_fill`] the same way
+    /// [`Self::surface_fill_rect`] above does.
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        if self.translucent_fill {
+            super::set_source_rgba(self.cr, color);
+        } else {
+            super::set_source(self.cr, color);
+        }
+        let r = (radius as f64)
+            .min(rect.width as f64 / 2.0)
+            .min(rect.height as f64 / 2.0);
+        super::rounded_rect_path(
+            self.cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            r,
+        );
+        self.cr.fill().ok();
+    }
+
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
         super::set_source(self.cr, color);
         self.cr.set_line_width(stroke_width as f64);
@@ -230,5 +253,53 @@ impl NativeSurface for CairoSurface<'_> {
 
     fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
         ImagePaintResult::Unsupported
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    fn probe_pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// #1073: `CairoSurface::surface_fill_rounded_rect` must reach the
+    /// same real rounded-corner Cairo path `GtkBackend`'s own override
+    /// does (`gtk_backend_native_surface_fill_rounded_rect_clips_the_corners`'s
+    /// twin, at the adapter level) — proven by a corner staying
+    /// untouched while the box's centre paints solid.
+    #[test]
+    fn cairo_surface_fill_rounded_rect_clips_the_corners() {
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+        let red = Color::rgb(200, 20, 20);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let mut adapter = CairoSurface {
+                cr: &cr,
+                layout: None,
+                translucent_fill: true,
+            };
+            adapter.surface_fill_rounded_rect(Rect::new(0.0, 0.0, 40.0, 40.0), 15.0, red);
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel(&data, stride, 20, 20),
+            (red.r, red.g, red.b),
+            "surface_fill_rounded_rect must paint the solid color at the box's centre"
+        );
+        assert_eq!(
+            probe_pixel(&data, stride, 1, 1),
+            (0, 0, 0),
+            "a corner pixel well inside a radius-15 fillet on a 40x40 box must stay \
+             untouched"
+        );
     }
 }

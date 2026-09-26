@@ -107,6 +107,13 @@ impl NativeSurface for CgSurface<'_> {
         unsafe { super::backend::ns_fill_rect(self.ctx, rect, color) };
     }
 
+    /// #1073: `ns_fill_rounded_rect`'s twin of [`Self::surface_fill_rect`]
+    /// above — same SAFETY contract.
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { super::backend::ns_fill_rounded_rect(self.ctx, rect, radius, color) };
+    }
+
     fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
         // SAFETY: see `surface_fill_rect`.
         unsafe { super::backend::ns_stroke_rect(self.ctx, rect, color, stroke_width as f64) };

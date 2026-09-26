@@ -22,6 +22,7 @@ use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
     ID2D1RenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection,
@@ -512,6 +513,35 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
         bottom: rect.y + rect.height,
     };
     unsafe { target.FillRectangle(&rect_f, &brush) };
+    Ok(())
+}
+
+/// [`fill_rect`]'s rounded-corner twin (issue #1073) —
+/// `ID2D1RenderTarget::FillRoundedRectangle` with both radii set to
+/// `radius`, clamped to half of `rect`'s shorter side so a radius wider
+/// than the box it outlines can't produce Direct2D's own degenerate
+/// "radius bigger than the rect" shape (the same clamp
+/// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]'s
+/// doc requires of every implementor).
+pub(crate) fn fill_rounded_rect(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    radius: f32,
+    color: Color,
+) -> WinResult<()> {
+    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
+    let rounded = D2D1_ROUNDED_RECT {
+        rect: D2D_RECT_F {
+            left: rect.x,
+            top: rect.y,
+            right: rect.x + rect.width,
+            bottom: rect.y + rect.height,
+        },
+        radiusX: r,
+        radiusY: r,
+    };
+    unsafe { target.FillRoundedRectangle(&rounded, &brush) };
     Ok(())
 }
 
