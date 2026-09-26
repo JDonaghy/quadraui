@@ -5,9 +5,13 @@
 //! (#1075, `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc
 //! for what's shared and what stays per-backend. This module still owns
 //! the [`ListView::bordered`] frame itself: a plain (square-cornered)
-//! 1-DIP rectangle border painted around the shared content paint (see
+//! 1-DIP rectangle border painted *after* the shared content paint (see
 //! *Scope for #26* below for why it's square rather than GTK's rounded
-//! stroke).
+//! stroke). Painting the border after, not before, matters: the shared
+//! `paint` unconditionally fills the whole rect with `base_bg` as its
+//! first operation, which would erase a border drawn beforehand — an
+//! ordering bug this module briefly had (#1075 review fix) before
+//! matching `gtk::list::draw_list`'s post-content border stroke.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod list;` and `backend.rs`'s module
@@ -100,6 +104,34 @@ pub fn draw_list(
     let theme = Theme::default();
     let layout = win_list_layout(list, rect, line_height);
 
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::list::native_surface_paint::paint(
+        list,
+        rect,
+        &layout,
+        line_height,
+        // Nerd-Font icon glyphs: this rasteriser has never distinguished
+        // `Icon::glyph` from `Icon::fallback` (unlike `win::tree`, wired
+        // in #804) — extending it is separate, unstarted scope (see this
+        // module's doc). `false` preserves that exactly.
+        /* nerd_fonts_enabled */
+        false,
+        /* supports_border */ true,
+        /* supports_hscrollbar */ false,
+        &mut surface,
+        &theme,
+    );
+
+    // The `bordered` frame is drawn *after* the shared content paint so it
+    // isn't erased by `native_surface_paint::paint`'s own initial
+    // full-`rect` background fill (`surface_fill_rect(area, base_bg)`,
+    // `primitives/list.rs`) — mirroring `gtk::list::draw_list`, which
+    // strokes its border after `cr.restore()` for the same reason (#1075
+    // review fix: this order used to be reversed here, so a bordered
+    // Win-GUI list silently lost its border).
     if list.bordered {
         let br = theme.border_fg;
         let _ = fill_rect(
@@ -134,27 +166,6 @@ pub fn draw_list(
         );
     }
 
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::list::native_surface_paint::paint(
-        list,
-        rect,
-        &layout,
-        line_height,
-        // Nerd-Font icon glyphs: this rasteriser has never distinguished
-        // `Icon::glyph` from `Icon::fallback` (unlike `win::tree`, wired
-        // in #804) — extending it is separate, unstarted scope (see this
-        // module's doc). `false` preserves that exactly.
-        /* nerd_fonts_enabled */
-        false,
-        /* supports_border */ true,
-        /* supports_hscrollbar */ false,
-        &mut surface,
-        &theme,
-    );
-
     layout
 }
 
@@ -187,6 +198,21 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
             bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        }
+    }
+
+    fn make_bordered_list(items: Vec<ListItem>) -> ListView {
+        ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items,
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: true,
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
@@ -314,5 +340,52 @@ mod tests {
             "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
              (non-background) — the #1075 regression this test guards"
         );
+    }
+
+    /// #1075 review fix: the `native_surface_paint::paint` migration
+    /// briefly drew the `ListView::bordered` frame *before* the shared
+    /// content paint, which unconditionally fills the whole `rect` with
+    /// `base_bg` as its first paint operation — silently erasing the
+    /// border. Paints a bordered list and probes all four edges,
+    /// asserting they still carry `theme.border_fg` after the shared
+    /// paint has run.
+    #[test]
+    fn bordered_frame_survives_shared_content_paint() {
+        let list = make_bordered_list(vec![item("alpha"), item("beta"), item("gamma")]);
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        surface
+            .paint(|target| {
+                draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+            })
+            .expect("paint list");
+
+        let theme = Theme::default();
+        let border = (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b);
+        let mid_x = (W / 2.0) as u32;
+        let mid_y = (H / 2.0) as u32;
+
+        let top = surface.pixel_at(mid_x, 0);
+        let bottom = surface.pixel_at(mid_x, H as u32 - 1);
+        let left = surface.pixel_at(0, mid_y);
+        let right = surface.pixel_at(W as u32 - 1, mid_y);
+
+        for (label, px) in [
+            ("top", top),
+            ("bottom", bottom),
+            ("left", left),
+            ("right", right),
+        ] {
+            assert_eq!(
+                (px.r, px.g, px.b),
+                border,
+                "{label} border edge should still be theme.border_fg after the shared \
+                 content paint ran (#1075 review regression: the border was being \
+                 painted before, then erased by native_surface_paint::paint's initial \
+                 full-rect background fill)"
+            );
+        }
     }
 }
