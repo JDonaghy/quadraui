@@ -108,6 +108,12 @@ mod c0;
 mod c2;
 #[path = "conformance/caps.rs"]
 mod caps;
+// Selection column-range conformance (quadraui#1082) — pure
+// `EditorSelection::cols_on` matrix, no backend feature required (see
+// this module's doc for why it isn't gated behind `tui`/`gtk` like the
+// rest of this file).
+#[path = "conformance/editor.rs"]
+mod editor;
 #[path = "conformance/fixtures.rs"]
 mod fixtures;
 #[path = "conformance/runner.rs"]

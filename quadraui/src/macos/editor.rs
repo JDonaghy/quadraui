@@ -263,7 +263,10 @@ fn char_byte_offset(s: &str, col: usize) -> usize {
 /// `extra_selections`, or `yank_highlight` — they share a shape) across
 /// `lines`. Port of `crate::gtk::editor::draw_visual_selection`, using
 /// Core Text glyph-run measurement in place of Pango's
-/// `index_to_pos`/`pixel_size`.
+/// `index_to_pos`/`pixel_size`. Column math — including
+/// ghost-continuation / diff-padding row skipping and wrapped-segment
+/// offsetting — comes from [`EditorSelection::cols_on`] (#1082); this
+/// function only converts the returned columns to pixel positions.
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_visual_selection(
     ctx: CGContextRef,
@@ -279,13 +282,9 @@ unsafe fn draw_visual_selection(
     alpha: f64,
 ) {
     for (view_idx, rl) in lines.iter().enumerate() {
-        if rl.is_ghost_continuation || rl.diff_status == Some(DiffLine::Padding) {
+        let Some(cols) = sel.cols_on(rl) else {
             continue;
-        }
-        let line_idx = rl.line_idx;
-        if line_idx < sel.start_line || line_idx > sel.end_line {
-            continue;
-        }
+        };
         let line_y = y + view_idx as f64 * line_height;
 
         if sel.kind == SelectionKind::Line {
@@ -302,38 +301,11 @@ unsafe fn draw_visual_selection(
             continue;
         }
 
-        // Char / Block: both resolve to a per-line [start_col, end_col]
-        // range — Char narrows it to the selection's own start/end line,
-        // Block applies the same column range to every covered line.
-        let sco = rl.segment_col_offset;
-        let seg_chars = rl.raw_text.chars().count();
-        let (sel_start, sel_end) = if sel.kind == SelectionKind::Char {
-            let s = if line_idx == sel.start_line {
-                sel.start_col
-            } else {
-                0
-            };
-            let e = if line_idx == sel.end_line {
-                sel.end_col + 1
-            } else {
-                usize::MAX
-            };
-            (s, e)
-        } else {
-            (sel.start_col, sel.end_col + 1)
-        };
-
-        let hi_start = sel_start.max(sco).saturating_sub(sco);
-        let hi_end = sel_end.min(sco + seg_chars).saturating_sub(sco);
-        if hi_start >= hi_end {
-            continue;
-        }
-
-        let start_byte = char_byte_offset(&rl.raw_text, hi_start);
+        let start_byte = char_byte_offset(&rl.raw_text, cols.start);
         let (prefix_w, _) = measure_text(font, &rl.raw_text[..start_byte]);
         let start_x = text_x_offset + prefix_w;
 
-        let width = if hi_end >= seg_chars && sel_end > sco + seg_chars {
+        let width = if cols.extends_beyond {
             // Selection runs past this visual segment's text — extend
             // the highlight to the end of the rendered line content
             // (matches GTK's use of the Pango layout's full pixel
@@ -341,7 +313,7 @@ unsafe fn draw_visual_selection(
             let (line_w, _) = measure_text(font, &rl.raw_text);
             (text_x_offset + line_w - start_x).max(0.0)
         } else {
-            let end_byte = char_byte_offset(&rl.raw_text, hi_end);
+            let end_byte = char_byte_offset(&rl.raw_text, cols.end);
             let (end_w, _) = measure_text(font, &rl.raw_text[..end_byte]);
             (text_x_offset + end_w - start_x).max(0.0)
         };
