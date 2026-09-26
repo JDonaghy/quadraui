@@ -11,10 +11,16 @@
 //!   consumer sets it today. The flat header+rows path is fully
 //!   supported; this rasteriser passes `supports_border: false` to the
 //!   shared paint, so it always takes the flat title/inset path
-//!   regardless of [`crate::ListView::bordered`] (only the background
-//!   colour choice honours it — matching the pre-migration behaviour
-//!   exactly). Add the rounded-rect frame + overlay title when a
-//!   consumer needs it.
+//!   regardless of [`crate::ListView::bordered`]. The shared paint's
+//!   `base_bg` pick (`surface_bg` when `bordered`, else `background`)
+//!   is *not* gated on `supports_border`, so it still honours
+//!   [`crate::ListView::bordered`] here even though nothing else does —
+//!   unlike the pre-migration `draw_list`, which ignored `bordered`
+//!   entirely and always painted `theme.background`. No consumer sets
+//!   `bordered: true` on macOS today, so this is currently invisible;
+//!   flagged so a future consumer doesn't assume the background colour
+//!   is pinned to pre-migration behaviour. Add the rounded-rect frame +
+//!   overlay title when a consumer needs full `bordered` support.
 
 use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
@@ -423,6 +429,100 @@ mod tests {
              last row bottom = {}, viewport H = {H}, line_height = {}",
             last.bounds.y + last.bounds.height,
             backend.line_height(),
+        );
+    }
+
+    /// #1075 review fix: `gtk::list` and `win::list` each gained a
+    /// driver-tier regression test proving `ListView::show_v_scrollbar`
+    /// is actually painted (it wasn't, on any of the three backends,
+    /// pre-migration); `macos::list` had none. Paints through the real
+    /// `MacBackend::draw_list` with 30 rows in a viewport that can only
+    /// fit a handful, and probes a pixel inside the track rect
+    /// `Backend::list_vscrollbar` resolves — this would fail (background
+    /// colour, nothing painted) against a `draw_list` that never called
+    /// the shared scrollbar paint.
+    #[test]
+    fn paints_vertical_scrollbar_track_when_enabled() {
+        let mut list = ListView {
+            title: None,
+            items: (0..30)
+                .map(|i| sample_item(&format!("row-{i}"), Color::rgb(10, 20, 30)))
+                .collect(),
+            show_v_scrollbar: true,
+            ..sample_list()
+        };
+        list.selected_idx = 0;
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let expected = backend
+            .list_vscrollbar(rect, &list)
+            .expect("30 rows in a small viewport must need a v-scrollbar");
+
+        let (surface, _layout) = paint_via_backend(&list);
+        let theme = Theme::default();
+        let probe_x = (expected.track.x + expected.track.width / 2.0) as u32;
+        let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(probe_x.min(W - 1), probe_y.min(H - 1));
+        assert_ne!(
+            (r, g, b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
+             (non-background) — the #1075 regression this test guards"
+        );
+    }
+
+    /// #1075 review fix: before this migration, `macos::list::draw_list`
+    /// never painted `ListItem::icon` at all — a real omission called out
+    /// in this module's own doc comment, but left uncovered by any test.
+    /// Compares the inked (non-background) pixel width of a row's band
+    /// with vs. without an icon set; the icon-bearing row must paint
+    /// strictly more ink, proving the shared paint's icon branch actually
+    /// ran through `MacBackend::draw_list`.
+    #[test]
+    fn paints_item_icon_when_present() {
+        use crate::types::Icon;
+
+        let inked_width = |icon: Option<Icon>| -> u32 {
+            let list = ListView {
+                title: None,
+                items: vec![ListItem {
+                    text: StyledText::plain("x"),
+                    icon,
+                    detail: None,
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: usize::MAX, // no row selected
+                ..sample_list()
+            };
+            let (surface, layout) = paint_via_backend(&list);
+            let row = layout.visible_items.first().expect("row painted");
+            let mid_y = (row.bounds.y + row.bounds.height / 2.0) as u32;
+            let theme = Theme::default();
+            let bg = (theme.background.r, theme.background.g, theme.background.b);
+            let mut left = None;
+            let mut right = None;
+            for x in row.bounds.x as u32..(row.bounds.x + row.bounds.width) as u32 {
+                let (r, g, b, _) = surface.pixel(x.min(W - 1), mid_y.min(H - 1));
+                if (r, g, b) != bg {
+                    left.get_or_insert(x);
+                    right = Some(x);
+                }
+            }
+            match (left, right) {
+                (Some(l), Some(r)) => r - l + 1,
+                _ => 0,
+            }
+        };
+
+        let without_icon = inked_width(None);
+        let with_icon = inked_width(Some(Icon::new("WWWW", "WWWW")));
+        assert!(
+            with_icon > without_icon,
+            "a row with an icon should paint strictly more ink ({with_icon}px) than \
+             the same row without one ({without_icon}px) — the #1075 icon-paint \
+             regression this test guards"
         );
     }
 }
