@@ -84,7 +84,7 @@ mod tests {
     use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
-    use crate::event::Viewport;
+    use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::panel::{PanelAction, PanelHit};
     use crate::types::{StyledText, WidgetId};
     use crate::Backend;
