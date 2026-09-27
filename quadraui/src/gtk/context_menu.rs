@@ -1,9 +1,11 @@
 //! GTK rasteriser for [`crate::ContextMenu`].
 //!
-//! Cairo + Pango equivalent of `quadraui::tui::draw_context_menu`.
-//! Draws a rounded rectangle (3px corner radius, bg fill + 1 px stroke), then
-//! per-item rows (selection bg for the focused item, separator as a
-//! thin horizontal line, optional right-aligned shortcut text).
+//! Content painting (background, separators, selection highlight,
+//! labels + shortcut text, border) moved to the shared
+//! [`crate::primitives::context_menu::native_surface_paint::paint`]
+//! (#1077, `NativeSurface` Phase 4 slice 4/8) — see that fn's module
+//! doc for the two small drifts it resolved (box corner rounding,
+//! separator stroke weight).
 //!
 //! Returns per-clickable-item hit rectangles `(x, y, w, h, WidgetId)`
 //! so the caller's click handler can resolve mouse events without
@@ -12,24 +14,10 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::{cairo_rgb, rounded_rect_path};
-use crate::accelerator::{render_accelerator, Platform};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
+use crate::accelerator::Platform;
+use crate::primitives::context_menu::{native_surface_paint, ContextMenu, ContextMenuLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
-
-/// Right-aligned shortcut text — sourced from `item.detail` (preferred,
-/// back-compat) or rendered from `item.key_equivalent`. Returns `None`
-/// if neither is set.
-fn shortcut_text(item: &ContextMenuItem, platform: Platform) -> Option<String> {
-    if let Some(ref det) = item.detail {
-        let s: String = det.spans.iter().map(|sp| sp.text.as_str()).collect();
-        return Some(s);
-    }
-    item.key_equivalent
-        .as_ref()
-        .map(|acc| render_accelerator(acc, platform))
-}
 
 /// Draw a [`ContextMenu`] popup. Returns the per-clickable-item hit
 /// rectangles in target-surface pixels.
@@ -43,113 +31,72 @@ pub fn draw_context_menu(
     theme: &Theme,
 ) -> Vec<(f64, f64, f64, f64, WidgetId)> {
     let _ = line_height;
-    let bounds = menu_layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return Vec::new();
+
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    let hits = native_surface_paint::paint(menu, menu_layout, Platform::Linux, &mut surface, theme);
+    layout.set_attributes(None);
+
+    hits.into_iter()
+        .map(|(r, id)| (r.x as f64, r.y as f64, r.width as f64, r.height as f64, id))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Rect;
+    use crate::primitives::context_menu::{
+        ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure,
+    };
+    use crate::types::StyledText;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    fn action(id: &str) -> ContextMenuItem {
+        ContextMenuItem {
+            id: Some(WidgetId::new(id)),
+            label: StyledText::plain(id),
+            ..Default::default()
+        }
     }
 
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    let bg = menu
-        .bg
-        .map(cairo_rgb)
-        .unwrap_or_else(|| cairo_rgb(theme.hover_bg));
-    let border = cairo_rgb(theme.hover_border);
-    let fg = cairo_rgb(theme.foreground);
-    let sel = cairo_rgb(theme.selected_bg);
-    let dim = cairo_rgb(theme.muted_fg);
-
-    let radius = 3.0;
-    rounded_rect_path(cr, bx, by, bw, bh, radius);
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.fill().ok();
-
-    let mut rects: Vec<(f64, f64, f64, f64, WidgetId)> = Vec::new();
-
-    // Pass 1: backgrounds (separators + selection highlights).
-    // Drawn first so no highlight can overwrite previously rendered text.
-    for vis in &menu_layout.visible_items {
-        let row_x = vis.bounds.x as f64;
-        let row_y = vis.bounds.y as f64;
-        let row_w = vis.bounds.width as f64;
-        let row_h = vis.bounds.height as f64;
-
-        if vis.is_separator {
-            cr.set_source_rgb(dim.0, dim.1, dim.2);
-            cr.set_line_width(0.5);
-            let sep_y = row_y + row_h * 0.5;
-            cr.move_to(row_x + 4.0, sep_y);
-            cr.line_to(row_x + row_w - 4.0, sep_y);
-            cr.stroke().ok();
-            continue;
+    fn menu() -> ContextMenu {
+        ContextMenu {
+            id: WidgetId::new("m"),
+            items: vec![action("cut"), ContextMenuItem::default(), action("paste")],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
         }
+    }
 
-        let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
-        if is_selected {
-            cr.set_source_rgb(sel.0, sel.1, sel.2);
-            cr.rectangle(row_x + 1.0, row_y, row_w - 2.0, row_h);
-            cr.fill().ok();
-        }
+    #[test]
+    fn draw_context_menu_returns_hits_for_clickable_items_only() {
+        let surface = ImageSurface::create(Format::ARgb32, 200, 120).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
 
-        if vis.clickable {
-            if let Some(ref id) = menu.items[vis.item_idx].id {
-                rects.push((row_x, row_y, row_w, row_h, id.clone()));
+        let m = menu();
+        let viewport = Rect::new(0.0, 0.0, 200.0, 120.0);
+        let layout = m.layout(10.0, 10.0, viewport, 120.0, |i| {
+            if m.items[i].is_separator() {
+                ContextMenuItemMeasure::new(6.0)
+            } else {
+                ContextMenuItemMeasure::new(20.0)
             }
-        }
+        });
+
+        let hits = draw_context_menu(&cr, &pango_layout, &m, &layout, 20.0, &Theme::default());
+        assert_eq!(hits.len(), 2, "cut + paste are clickable, separator is not");
+        assert_eq!(hits[0].4, WidgetId::new("cut"));
+        assert_eq!(hits[1].4, WidgetId::new("paste"));
+
+        // hit_test agrees with what was painted.
+        let (x, y, _, _, _) = hits[0];
+        let hit = layout.hit_test(x as f32 + 4.0, y as f32 + 2.0);
+        assert_eq!(hit, ContextMenuHit::Item(WidgetId::new("cut")));
     }
-
-    // Pass 2: text (labels + detail/shortcut).
-    // Rendered on top of all backgrounds so descenders are never clipped.
-    for vis in &menu_layout.visible_items {
-        if vis.is_separator {
-            continue;
-        }
-
-        let item = &menu.items[vis.item_idx];
-        let row_x = vis.bounds.x as f64;
-        let row_y = vis.bounds.y as f64;
-        let row_w = vis.bounds.width as f64;
-        let row_h = vis.bounds.height as f64;
-
-        // Prefix the label with a check glyph when `checked` is set.
-        // `Some(false)` reserves the slot with spaces so a column of
-        // mixed checked/unchecked items aligns.
-        let prefix = match item.checked {
-            Some(true) => "✓ ",
-            Some(false) => "  ",
-            None => "",
-        };
-        let label_text: String = std::iter::once(prefix.to_string())
-            .chain(item.label.spans.iter().map(|s| s.text.clone()))
-            .collect();
-        let label_fg = if vis.clickable { fg } else { dim };
-        cr.set_source_rgb(label_fg.0, label_fg.1, label_fg.2);
-        layout.set_text(&label_text);
-        layout.set_attributes(None);
-        let (_, lh) = layout.pixel_size();
-        let text_y = row_y + (row_h - lh as f64) * 0.5;
-        cr.move_to(row_x + 8.0, text_y);
-        super::painted_text::show_layout(cr, layout);
-
-        if let Some(shortcut) = shortcut_text(item, Platform::Linux) {
-            if !shortcut.is_empty() {
-                layout.set_text(&shortcut);
-                let (sw, _) = layout.pixel_size();
-                cr.set_source_rgb(dim.0, dim.1, dim.2);
-                cr.move_to(row_x + row_w - sw as f64 - 8.0, text_y);
-                super::painted_text::show_layout(cr, layout);
-            }
-        }
-    }
-
-    // Pass 3: border on top so selection bg never obscures edges.
-    rounded_rect_path(cr, bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0, radius);
-    cr.set_source_rgb(border.0, border.1, border.2);
-    cr.set_line_width(1.0);
-    cr.stroke().ok();
-
-    rects
 }
