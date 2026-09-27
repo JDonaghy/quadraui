@@ -66,11 +66,10 @@
 //!   `UiEvent::WindowClose`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{
     Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape, ServiceResult,
     WindowControl,
@@ -126,12 +125,18 @@ use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Key, ListView, Modifiers, Palette,
-    ParsedBinding, StatusBar, TabBar, TabBarLayout, Terminal, TextDisplay, TooltipChrome, TreeView,
-    UserPayload,
+    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar, TabBar,
+    TabBarLayout, Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
 };
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
+// `AcceleratorScope` is only referenced by `#[cfg(test)]` code below —
+// `register_accelerator`/`match_keypress` moved their bodies into
+// `crate::backend_core::BackendCore` (#1090), so this file's non-test
+// code no longer names it directly. Gate the import so a non-test build
+// doesn't flag it as unused.
+#[cfg(test)]
+use crate::AcceleratorScope;
 
 use super::services::WinPlatformServices;
 
@@ -454,12 +459,12 @@ pub struct WinBackend {
     /// per-poll batch. Mirrors `MacBackend::double_click`; deliberately
     /// *not* a new `WM_*BUTTONDBLCLK` translator — see that issue for why.
     double_click: DoubleClickDetector,
-    accelerators: HashMap<AcceleratorId, Accelerator>,
-    /// Parsed form of every registered `Global`-scope-eligible
-    /// accelerator, kept in registration order so [`Self::match_keypress`]
-    /// is a linear scan — same shape as `TuiBackend`/`GtkBackend`/
-    /// `MacBackend`'s `parsed_accelerators` (quadraui#707).
-    parsed_accelerators: Vec<(ParsedBinding, AcceleratorId)>,
+    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
+    /// formerly Win-local `accelerators`/`parsed_accelerators` fields
+    /// verbatim, plus (below) the formerly separate `text_selection`
+    /// field.
+    core: crate::backend_core::BackendCore,
     /// `WidgetId` of the [`ActivityBar`] that declared
     /// `is_keyboard_focused = true` during the most recent
     /// [`Backend::draw_activity_bar`] call, or `None` if no bar is
@@ -701,14 +706,6 @@ pub struct WinBackend {
     /// mirrors `MacBackend::text_runs`'s lifecycle. Not `target_os`-gated
     /// for the same reason as `painted_text_recording` above.
     text_runs: Vec<crate::testing::TextRun>,
-    /// Region registry + active-selection state shared by every
-    /// `text_selection: true` backend (#741) — see
-    /// [`crate::text_selection::TextSelectionState`]'s doc. Not
-    /// `target_os`-gated: the state machine itself has no WinAPI
-    /// dependency, only [`Self::apply_selection_highlight`]'s actual paint
-    /// call does (mirrors `painted_text_recording`/`current_pointer_shape`
-    /// above).
-    text_selection: crate::text_selection::TextSelectionState,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     /// / `MacBackend::nerd_fonts_enabled` (issue #683, extended to
     /// Win-GUI by #804). Picks `Icon::glyph` vs `Icon::fallback` in
@@ -749,8 +746,7 @@ impl WinBackend {
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
             double_click: DoubleClickDetector::with_radius(WIN_DOUBLE_CLICK_RADIUS),
-            accelerators: HashMap::new(),
-            parsed_accelerators: Vec::new(),
+            core: crate::backend_core::BackendCore::default(),
             focused_activity_bar: None,
             events: Rc::new(RefCell::new(VecDeque::new())),
             services: WinPlatformServices::new(),
@@ -793,7 +789,6 @@ impl WinBackend {
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
             text_runs: Vec::new(),
-            text_selection: crate::text_selection::TextSelectionState::default(),
             nerd_fonts_enabled: false,
             last_error: None,
             focus: crate::focus::FocusManager::new(),
@@ -1153,48 +1148,26 @@ impl WinBackend {
     }
 
     // ── Accelerator matching (#707) ───────────────────────────────────
+    //
+    // The registry itself lives in [`crate::backend_core::BackendCore`]
+    // (#1090) — both methods below are thin delegations.
 
     /// Look up a registered `Global`-scope accelerator for a
-    /// `(key, modifiers)` pair. Mirrors `TuiBackend::match_keypress` /
-    /// `GtkBackend::match_keypress` / `MacBackend::match_keypress` —
-    /// non-Global entries are skipped because this backend doesn't own
-    /// focus/mode context the way a scoped `KeyMap` resolver does. Not
-    /// `target_os`-gated for the same reason as `focused_activity_bar_id`
-    /// above.
+    /// `(key, modifiers)` pair. Not `target_os`-gated for the same reason
+    /// as `focused_activity_bar_id` above.
     pub(crate) fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
-        let key_name = key_to_binding_name(key);
-        for (parsed, id) in &self.parsed_accelerators {
-            if parsed.modifiers == modifiers && parsed.key == key_name {
-                if let Some(acc) = self.accelerators.get(id) {
-                    if matches!(acc.scope, AcceleratorScope::Global) {
-                        return Some(id.clone());
-                    }
-                }
-            }
-        }
-        None
+        self.core.match_keypress(key, modifiers)
     }
 
     /// Rewrite matching `KeyPressed` events to `UiEvent::Accelerator` in
     /// place — the `docs/BACKEND.md` "Event poll / wait" step 3, run by
     /// [`Backend::poll_events`]/[`Backend::wait_events`] (#806) over
-    /// whatever this call drained from [`Self::events`]. Mirrors
-    /// `GtkBackend::apply_accelerators` exactly (down to the early-return
-    /// when nothing is registered); `win::run::dispatch_event`'s
-    /// synchronous per-message path calls [`Self::match_keypress`]
-    /// directly instead of going through this, since it already has one
-    /// event at a time rather than a batch.
+    /// whatever this call drained from [`Self::events`].
+    /// `win::run::dispatch_event`'s synchronous per-message path calls
+    /// [`Self::match_keypress`] directly instead of going through this,
+    /// since it already has one event at a time rather than a batch.
     pub(crate) fn apply_accelerators(&self, events: &mut [UiEvent]) {
-        if self.parsed_accelerators.is_empty() {
-            return;
-        }
-        for ev in events.iter_mut() {
-            if let UiEvent::KeyPressed { key, modifiers, .. } = ev {
-                if let Some(id) = self.match_keypress(key, *modifiers) {
-                    *ev = UiEvent::Accelerator(id, *modifiers);
-                }
-            }
-        }
+        self.core.apply_accelerators(events);
     }
 
     // ── Event queue adapter (#806) ──────────────────────────────────────
@@ -1266,13 +1239,13 @@ impl WinBackend {
 
     // ── Text selection (#741) ────────────────────────────────────────────
     //
-    // The region registry + active-selection state machine lives in
-    // [`crate::text_selection::TextSelectionState`] — the same shared
-    // implementation `GtkBackend`/`TuiBackend` embed. Every method below
+    // The region registry + active-selection state machine, plus the
+    // accelerator registry alongside it, live in
+    // [`crate::backend_core::BackendCore`] (#1090) — every method below
     // except [`Self::apply_selection_highlight`]/[`Self::extract_selection_text`]
     // (Direct2D painting / `TextRegion::lines` extraction, this backend's
     // own — mirrors `GtkBackend`'s pixel-based twins via the shared
-    // `crate::text_selection::pixel_selection_ranges`/`extract_lines_pixel`
+    // `BackendCore::selection_highlight_rects`/`extract_selection_text_pixel`
     // helpers) is a thin delegation.
 
     /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
@@ -1285,14 +1258,14 @@ impl WinBackend {
     pub(crate) fn text_selection_state_mut(
         &mut self,
     ) -> &mut crate::text_selection::TextSelectionState {
-        &mut self.text_selection
+        &mut self.core.text_selection
     }
 
     /// Return the current active text selection, if any.
     pub(crate) fn active_text_selection(
         &self,
     ) -> Option<&crate::text_selection::ActiveTextSelection> {
-        self.text_selection.active_text_selection()
+        self.core.active_text_selection()
     }
 
     /// Update (or start) the active text selection. Called by
@@ -1304,8 +1277,7 @@ impl WinBackend {
         anchor: crate::event::Point,
         focus: crate::event::Point,
     ) {
-        self.text_selection
-            .set_active_text_selection(region, anchor, focus);
+        self.core.set_active_text_selection(region, anchor, focus);
     }
 
     /// Clear the active text selection highlight only (does NOT end an
@@ -1313,7 +1285,7 @@ impl WinBackend {
     /// mouse-down so the old highlight disappears without interrupting the
     /// drag that is about to start. Mirrors `GtkBackend::clear_selection_display`.
     pub(crate) fn clear_selection_display(&mut self) {
-        self.text_selection.clear_selection_display();
+        self.core.clear_selection_display();
     }
 
     /// Clear the active text selection and end any in-progress
@@ -1321,7 +1293,7 @@ impl WinBackend {
     /// on a plain click outside any text region.
     pub(crate) fn clear_text_selection(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        self.text_selection.clear_text_selection(&mut drag);
+        self.core.clear_text_selection(&mut drag);
     }
 
     /// End any in-progress `TextSelection` drag without clearing the
@@ -1332,7 +1304,7 @@ impl WinBackend {
     /// `TuiBackend::cancel_text_selection_drag_impl`.
     fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        self.text_selection.cancel_text_selection_drag(&mut drag);
+        self.core.cancel_text_selection_drag(&mut drag);
     }
 
     /// Set the active selection to cover the entire visible content of the
@@ -1340,7 +1312,7 @@ impl WinBackend {
     /// [`crate::text_selection::TextSelectionState::select_all_text_region`]
     /// for the resolution order and the viewport-only limitation.
     pub(crate) fn select_all_text_region(&mut self) -> bool {
-        self.text_selection.select_all_text_region()
+        self.core.select_all_text_region()
     }
 
     /// Extract the selected text from the active selection's `TextRegion`
@@ -1349,19 +1321,8 @@ impl WinBackend {
     /// the region isn't registered this frame, or it has no `lines`
     /// content.
     pub(crate) fn extract_selection_text(&self) -> String {
-        let Some(sel) = self.text_selection.active_text_selection() else {
-            return String::new();
-        };
-        let Some(region) = self.text_selection.find_region(&sel.region) else {
-            return String::new();
-        };
-        crate::text_selection::extract_lines_pixel(
-            region,
-            sel.anchor,
-            sel.focus,
-            self.current_line_height,
-            self.current_char_width,
-        )
+        self.core
+            .extract_selection_text_pixel(self.current_line_height, self.current_char_width)
     }
 
     /// Paint the active text-selection highlight on top of the frame's
@@ -1374,47 +1335,29 @@ impl WinBackend {
     /// no active selection, the region isn't registered this frame, metrics
     /// aren't known yet, or (off Windows / before a surface is attached)
     /// there is nothing to paint into.
+    ///
+    /// The rect resolution is
+    /// [`crate::backend_core::BackendCore::selection_highlight_rects`] —
+    /// shared with `GtkBackend`/`MacBackend`'s twins (#1090); only the
+    /// `super::text::fill_rect` Direct2D calls below are Win-GUI-specific
+    /// real toolkit code.
     pub(crate) fn apply_selection_highlight(&self) {
-        let Some(sel) = self.text_selection.active_text_selection() else {
-            return;
-        };
-        let Some(region) = self.text_selection.find_region(&sel.region) else {
-            return;
-        };
-        let Some(ranges) = crate::text_selection::pixel_selection_ranges(
-            region.bounds,
-            sel.anchor,
-            sel.focus,
-            self.current_line_height,
-            self.current_char_width,
-        ) else {
+        let Some(rects) = self
+            .core
+            .selection_highlight_rects(self.current_line_height, self.current_char_width)
+        else {
             return;
         };
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
-            let char_w = self.current_char_width;
-            let line_h = self.current_line_height;
-            // Same translucent-blue highlight `GtkBackend::apply_selection_highlight`
-            // paints (`rgba(0.39, 0.58, 1.0, 0.30)`), converted to `Color`'s
-            // 0-255 channels.
-            let highlight = crate::Color::rgba(100, 148, 255, 77);
-            for (row_cell, col_start, col_end) in ranges {
-                let width = col_end - col_start;
-                if width <= 0.0 {
-                    continue;
-                }
-                let rect = crate::event::Rect::new(
-                    region.bounds.x + col_start * char_w,
-                    region.bounds.y + row_cell as f32 * line_h,
-                    width * char_w,
-                    line_h,
-                );
+            let highlight = self.current_theme.text_selection_highlight();
+            for rect in rects {
                 let _ = super::text::fill_rect(&surface.target, rect, highlight);
             }
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = ranges;
+            let _ = rects;
         }
     }
 }
@@ -1555,7 +1498,7 @@ impl Backend for WinBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`'s
         // identical `begin_frame` clear (#741).
-        self.text_selection.begin_frame();
+        self.core.begin_frame();
         // Install the shared paint-time text-run recording sink for the
         // duration of this frame — drained into `self.text_runs` by
         // `end_frame` below. Mirrors `MacBackend::enter_frame_scope`'s
@@ -1929,22 +1872,11 @@ impl Backend for WinBackend {
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
-        self.accelerators.insert(acc.id.clone(), acc.clone());
-        // Keep `parsed_accelerators` in sync so `Self::match_keypress`
-        // (read by `win::run::dispatch_event`, quadraui#707) actually
-        // sees this registration — mirrors `GtkBackend`/`TuiBackend`/
-        // `MacBackend::register_accelerator`. Before this, an entry only
-        // ever landed in `self.accelerators`, which nothing in `win/`
-        // read back.
-        self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
-        if let Some(parsed) = parse_binding(&acc.binding) {
-            self.parsed_accelerators.push((parsed, acc.id.clone()));
-        }
+        self.core.register_accelerator(acc);
     }
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
-        self.accelerators.remove(id);
-        self.parsed_accelerators.retain(|(_, eid)| eid != id);
+        self.core.unregister_accelerator(id);
     }
 
     // ─── Text selection (#741) ──────────────────────────────────────────
@@ -1952,7 +1884,7 @@ impl Backend for WinBackend {
     /// Overrides the trait's no-op default — see [`Self::text_regions`]
     /// and `crate::text_selection::TextSelectionState`.
     fn register_text_region(&mut self, region: TextRegion) {
-        self.text_selection.register_text_region(region);
+        self.core.register_text_region(region);
     }
 
     /// Overrides the trait's no-op default — see
@@ -5213,16 +5145,24 @@ mod tests {
         }
     }
 
+    /// The registry itself now lives in `BackendCore` (#1090) — its
+    /// `contains_key`/`len()` aren't reachable from here anymore, so this
+    /// observes the same round trip behaviourally via `match_keypress`.
     #[test]
     fn register_and_unregister_accelerator_round_trip() {
         let mut b = WinBackend::new();
         let a = acc("save", "<C-s>");
         b.register_accelerator(&a);
-        assert!(b.accelerators.contains_key(&AcceleratorId::new("save")));
-        assert_eq!(b.parsed_accelerators.len(), 1);
+        let ctrl_s = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            b.match_keypress(&Key::Char('s'), ctrl_s),
+            Some(AcceleratorId::new("save"))
+        );
         b.unregister_accelerator(&AcceleratorId::new("save"));
-        assert!(!b.accelerators.contains_key(&AcceleratorId::new("save")));
-        assert!(b.parsed_accelerators.is_empty());
+        assert_eq!(b.match_keypress(&Key::Char('s'), ctrl_s), None);
     }
 
     #[test]
@@ -5278,7 +5218,6 @@ mod tests {
         let mut b = WinBackend::new();
         b.register_accelerator(&acc("save", "<C-s>"));
         b.register_accelerator(&acc("save", "<C-S-s>"));
-        assert_eq!(b.parsed_accelerators.len(), 1);
         assert_eq!(
             b.match_keypress(
                 &Key::Char('s'),

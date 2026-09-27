@@ -32,7 +32,7 @@
 //! rather than going through the queue.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,7 +50,6 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
-use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{
     Backend, BackendError, EditorPaintResult, PointerShape, ResizeEdge, ServiceResult,
     WindowControl,
@@ -100,9 +99,9 @@ use crate::testing::{TextRun, ZoneRec};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, FieldKind, Form, Key, ListView,
-    Modifiers, Palette, ParsedBinding, PlatformServices, StatusBar, TabBar, TabBarLayout, Terminal,
-    TextDisplay, Theme, TreeView,
+    Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
+    ParsedBinding, PlatformServices, StatusBar, TabBar, TabBarLayout, Terminal, TextDisplay, Theme,
+    TreeView,
 };
 
 use super::services::MacPlatformServices;
@@ -113,10 +112,11 @@ use super::services::MacPlatformServices;
 /// - `viewport` — width × height in points, scale = `backingScaleFactor`.
 ///   Updated each frame from the active `QuadraView`'s bounds.
 /// - `modal_stack` — pushed by hosts on modal open, popped on close.
-/// - `accelerators` / `parsed_accelerators` — registered keybindings and
-///   their parsed form; [`Self::match_keypress`] resolves a native
-///   keypress against them (#486). [`run`][super::run]'s `handle`
-///   closure rewrites a matching `KeyPressed` into `Accelerator` before
+/// - `core` — registered keybindings + text-selection bookkeeping,
+///   consolidated into [`crate::backend_core::BackendCore`] (#1090).
+///   [`Self::match_keypress`] resolves a native keypress against the
+///   registered bindings (#486). [`run`][super::run]'s `handle` closure
+///   rewrites a matching `KeyPressed` into `Accelerator` before
 ///   `AppLogic::handle` sees it.
 /// - `double_click` — folds a `MouseDown` into `DoubleClick` (#486); see
 ///   [`Self::fold_double_click`].
@@ -141,13 +141,12 @@ pub struct MacBackend {
     modal_stack: Rc<RefCell<ModalStack>>,
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
-    accelerators: HashMap<AcceleratorId, Accelerator>,
-    /// Parsed form of `accelerators`, kept in sync by
-    /// `register_accelerator` / `unregister_accelerator`. Mirrors
-    /// `TuiBackend::parsed_accelerators` / `GtkBackend::parsed_accelerators`
-    /// — a `Vec` rather than a map because match order matters (first
-    /// registered wins on an accidental duplicate binding).
-    parsed_accelerators: Vec<(ParsedBinding, AcceleratorId)>,
+    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
+    /// formerly macOS-local `accelerators`/`parsed_accelerators` fields
+    /// verbatim, plus (below) the formerly separate `text_selection`
+    /// field.
+    core: crate::backend_core::BackendCore,
     /// Folds a `MouseDown` `NSEvent` into `DoubleClick` when it lands
     /// within the time/position window of the previous click (#486).
     /// `macos::run` dispatches synchronously per `NSEvent`, so this
@@ -289,14 +288,6 @@ pub struct MacBackend {
     /// [`Backend::set_nerd_fonts`]; defaults to `false` — see that
     /// method's doc for why every backend now agrees on this default.
     nerd_fonts_enabled: bool,
-    /// Region registry + active-selection state shared by every
-    /// `text_selection: true` backend (#741, adopted here in #803) — see
-    /// [`crate::text_selection::TextSelectionState`]'s doc. Mirrors
-    /// `GtkBackend`/`WinBackend`'s identically-named field; only the
-    /// paint call ([`Self::apply_selection_highlight`], via
-    /// [`super::text_selection::draw_selection_highlight`]) and text
-    /// extraction ([`Self::extract_selection_text`]) are backend-owned.
-    text_selection: crate::text_selection::TextSelectionState,
     /// Single owner of keyboard focus (issue #830) — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
@@ -598,8 +589,7 @@ impl MacBackend {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
-            accelerators: HashMap::new(),
-            parsed_accelerators: Vec::new(),
+            core: crate::backend_core::BackendCore::default(),
             double_click: DoubleClickDetector::with_radius(MAC_DOUBLE_CLICK_RADIUS),
             events: Rc::new(std::cell::RefCell::new(VecDeque::new())),
             services: MacPlatformServices::new(),
@@ -628,7 +618,6 @@ impl MacBackend {
             window: None,
             pending_window_press: WindowDragArm::new(),
             nerd_fonts_enabled: false,
-            text_selection: crate::text_selection::TextSelectionState::default(),
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback: Arc::new(std::sync::OnceLock::new()),
@@ -894,23 +883,14 @@ impl MacBackend {
     ///
     /// Native Cmd keypresses (`ns_modifier_flags_to_quadraui` maps a real
     /// Cmd into `Modifiers { cmd: true, .. }`) compare directly against
-    /// `parsed_accelerators`, which already stores universal bindings
-    /// with Cmd instead of Ctrl — see
+    /// `BackendCore`'s parsed-binding list, which already stores
+    /// universal bindings with Cmd instead of Ctrl — see
     /// [`macos_universal_binding_modifiers`], applied once at
-    /// `register_accelerator` time so this lookup stays a plain
-    /// equality check.
+    /// `register_accelerator` time (via
+    /// [`crate::backend_core::BackendCore::register_accelerator_with`])
+    /// so this lookup stays a plain equality check.
     pub(crate) fn match_keypress(&self, key: &Key, modifiers: Modifiers) -> Option<AcceleratorId> {
-        let key_name = key_to_binding_name(key);
-        for (parsed, id) in &self.parsed_accelerators {
-            if parsed.modifiers == modifiers && parsed.key == key_name {
-                if let Some(acc) = self.accelerators.get(id) {
-                    if matches!(acc.scope, AcceleratorScope::Global) {
-                        return Some(id.clone());
-                    }
-                }
-            }
-        }
-        None
+        self.core.match_keypress(key, modifiers)
     }
 
     // ── Double-click folding (#486) ──────────────────────────────────
@@ -947,7 +927,7 @@ impl MacBackend {
     /// [`Self::text_selection_state_mut`] instead.
     #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
-        &self.text_selection.text_regions
+        &self.core.text_selection.text_regions
     }
 
     /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
@@ -958,14 +938,14 @@ impl MacBackend {
     pub(crate) fn text_selection_state_mut(
         &mut self,
     ) -> &mut crate::text_selection::TextSelectionState {
-        &mut self.text_selection
+        &mut self.core.text_selection
     }
 
     /// Return the current active text selection, if any.
     pub(crate) fn active_text_selection(
         &self,
     ) -> Option<&crate::text_selection::ActiveTextSelection> {
-        self.text_selection.active_text_selection()
+        self.core.active_text_selection()
     }
 
     /// Update (or start) the active text selection. Called by
@@ -977,8 +957,7 @@ impl MacBackend {
         anchor: crate::event::Point,
         focus: crate::event::Point,
     ) {
-        self.text_selection
-            .set_active_text_selection(region, anchor, focus);
+        self.core.set_active_text_selection(region, anchor, focus);
     }
 
     /// Clear the active text selection highlight only (does NOT end an
@@ -986,7 +965,7 @@ impl MacBackend {
     /// mouse-down so the old highlight disappears without interrupting the
     /// drag that is about to start. Mirrors `GtkBackend::clear_selection_display`.
     pub(crate) fn clear_selection_display(&mut self) {
-        self.text_selection.clear_selection_display();
+        self.core.clear_selection_display();
     }
 
     /// Clear the active text selection and end any in-progress
@@ -994,7 +973,7 @@ impl MacBackend {
     /// on a plain click outside any text region.
     pub(crate) fn clear_text_selection(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        self.text_selection.clear_text_selection(&mut drag);
+        self.core.clear_text_selection(&mut drag);
     }
 
     /// End any in-progress `TextSelection` drag without clearing the
@@ -1005,7 +984,7 @@ impl MacBackend {
     /// `WinBackend`'s identically-named method.
     fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        self.text_selection.cancel_text_selection_drag(&mut drag);
+        self.core.cancel_text_selection_drag(&mut drag);
     }
 
     /// Set the active selection to cover the entire visible content of the
@@ -1013,7 +992,7 @@ impl MacBackend {
     /// [`crate::text_selection::TextSelectionState::select_all_text_region`]
     /// for the resolution order and the viewport-only limitation.
     pub(crate) fn select_all_text_region(&mut self) -> bool {
-        self.text_selection.select_all_text_region()
+        self.core.select_all_text_region()
     }
 
     /// Extract the selected text from the active selection's `TextRegion`
@@ -1022,16 +1001,7 @@ impl MacBackend {
     /// selection, the region isn't registered this frame, or it has no
     /// `lines` content.
     pub(crate) fn extract_selection_text(&self) -> String {
-        let Some(sel) = self.text_selection.active_text_selection() else {
-            return String::new();
-        };
-        let Some(region) = self.text_selection.find_region(&sel.region) else {
-            return String::new();
-        };
-        crate::text_selection::extract_lines_pixel(
-            region,
-            sel.anchor,
-            sel.focus,
+        self.core.extract_selection_text_pixel(
             self.current_line_height as f32,
             self.current_char_width as f32,
         )
@@ -1045,22 +1015,17 @@ impl MacBackend {
     /// Cairo twin and `WinBackend::apply_selection_highlight`'s Direct2D
     /// twin. No-op when there is no active selection, the region isn't
     /// registered this frame, or metrics aren't known yet.
+    ///
+    /// The rect resolution is
+    /// [`crate::backend_core::BackendCore::selection_highlight_rects`] —
+    /// shared with `GtkBackend`/`WinBackend`'s twins (#1090); only the
+    /// real `CGContextFillRect` calls in
+    /// [`super::text_selection::draw_selection_highlight`] are macOS-
+    /// specific real toolkit code.
     pub(crate) fn apply_selection_highlight(&self) {
-        let Some(sel) = self.text_selection.active_text_selection() else {
-            return;
-        };
-        let Some(region) = self.text_selection.find_region(&sel.region) else {
-            return;
-        };
         let char_w = self.current_char_width as f32;
         let line_h = self.current_line_height as f32;
-        let Some(ranges) = crate::text_selection::pixel_selection_ranges(
-            region.bounds,
-            sel.anchor,
-            sel.focus,
-            line_h,
-            char_w,
-        ) else {
+        let Some(rects) = self.core.selection_highlight_rects(line_h, char_w) else {
             return;
         };
         let ctx = self.current_cg();
@@ -1068,18 +1033,13 @@ impl MacBackend {
             !ctx.is_null(),
             "MacBackend::apply_selection_highlight called outside enter_frame_scope",
         );
+        let color = self.current_theme.text_selection_highlight();
         // SAFETY: ctx is non-null inside the frame scope (see the
         // debug_assert above — a null ctx here means a caller ran this
         // outside `enter_frame_scope`, same contract every other draw_*
         // method on this backend relies on).
         unsafe {
-            super::text_selection::draw_selection_highlight(
-                ctx,
-                region.bounds,
-                &ranges,
-                char_w as f64,
-                line_h as f64,
-            );
+            super::text_selection::draw_selection_highlight(ctx, &rects, color);
         }
     }
 }
@@ -1166,7 +1126,7 @@ impl Backend for MacBackend {
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
         // `WinBackend`'s identical `begin_frame` clear (#741, #803).
-        self.text_selection.begin_frame();
+        self.core.begin_frame();
     }
 
     fn end_frame(&mut self) {
@@ -1408,22 +1368,21 @@ impl Backend for MacBackend {
         });
     }
 
+    /// Unlike every other backend, macOS's universal bindings (`Save`,
+    /// `Copy`, …) map onto Cmd instead of Ctrl — this override applies
+    /// that translation once here, via
+    /// [`crate::backend_core::BackendCore::register_accelerator_with`]'s
+    /// transform hook, so [`Self::match_keypress`] stays a plain equality
+    /// check against a native Cmd keypress.
     fn register_accelerator(&mut self, acc: &Accelerator) {
-        // Re-registration replaces the prior entry — both in the map and
-        // the parsed list, otherwise a stale binding would shadow the
-        // new one in `match_keypress`. Mirrors
-        // `TuiBackend::register_accelerator` / `GtkBackend`'s equivalent.
-        self.accelerators.insert(acc.id.clone(), acc.clone());
-        self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
-        if let Some(parsed) = parse_binding(&acc.binding) {
-            let parsed = macos_universal_binding_modifiers(&acc.binding, parsed);
-            self.parsed_accelerators.push((parsed, acc.id.clone()));
-        }
+        let binding = acc.binding.clone();
+        self.core.register_accelerator_with(acc, |parsed| {
+            macos_universal_binding_modifiers(&binding, parsed)
+        });
     }
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
-        self.accelerators.remove(id);
-        self.parsed_accelerators.retain(|(_, eid)| eid != id);
+        self.core.unregister_accelerator(id);
     }
 
     /// Issue #930: this used to `.expect()` the `MainThreadMarker`, which
@@ -1502,7 +1461,7 @@ impl Backend for MacBackend {
     /// and `crate::text_selection::TextSelectionState`. Mirrors
     /// `GtkBackend`/`WinBackend`'s identical override.
     fn register_text_region(&mut self, region: TextRegion) {
-        self.text_selection.register_text_region(region);
+        self.core.register_text_region(region);
     }
 
     /// Overrides the trait's no-op default — see
@@ -4421,14 +4380,24 @@ mod tests {
         assert_eq!(b.char_width(), 8.0);
     }
 
+    /// The registry itself now lives in `BackendCore` (#1090) — its
+    /// `contains_key` isn't reachable from here anymore, so this observes
+    /// the same round trip behaviourally via `match_keypress`.
     #[test]
     fn register_and_unregister_accelerator_round_trip() {
         let mut b = MacBackend::new();
         let a = acc("save", "<C-s>");
         b.register_accelerator(&a);
-        assert!(b.accelerators.contains_key(&AcceleratorId::new("save")));
+        let ctrl_s = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            b.match_keypress(&Key::Char('s'), ctrl_s),
+            Some(AcceleratorId::new("save"))
+        );
         b.unregister_accelerator(&AcceleratorId::new("save"));
-        assert!(!b.accelerators.contains_key(&AcceleratorId::new("save")));
+        assert_eq!(b.match_keypress(&Key::Char('s'), ctrl_s), None);
     }
 
     // ── Accelerator matching (#486) ──────────────────────────────────

@@ -360,6 +360,19 @@ mod desktop;
 ))]
 mod text_selection;
 
+// `BackendCore` (#1090): the accelerator registry + `text_selection`
+// embedding every one of the four backends above needs, consolidated
+// into one place. Gated identically to `text_selection` just above —
+// same rationale (no consumer, hard `dead_code` error under `-D
+// warnings` otherwise).
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+mod backend_core;
+
 pub use a11y::A11yInfo;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
