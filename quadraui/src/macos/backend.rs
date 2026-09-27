@@ -2595,25 +2595,38 @@ impl Backend for MacBackend {
             self.current_char_width,
         )
     }
+    /// #1093: was a layout-only stub — no background, text, or cursor
+    /// ever painted. Now builds the layout via
+    /// [`super::text_input::mac_text_input_layout`] and hands it to the
+    /// shared [`crate::primitives::text_input::paint`] through this
+    /// backend's own [`NativeSurface`] impl below, mirroring
+    /// `draw_text_display`'s / `draw_form`'s shape.
     fn draw_text_input(
         &mut self,
         rect: Rect,
         ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
-        // macOS TextInput rasteriser: future work. Return layout only.
-        ti.layout(
-            rect,
-            crate::primitives::text_input::TextInputMeasure::from_metrics(&self.measure()),
-        )
+        debug_assert!(
+            !self.current_cg().is_null(),
+            "MacBackend::draw_text_input called outside enter_frame_scope",
+        );
+        let theme = self.current_theme;
+        let line_height = self.current_line_height as f32;
+        let char_width = self.current_char_width as f32;
+        let layout = super::text_input::mac_text_input_layout(ti, rect, line_height, char_width);
+        crate::primitives::text_input::paint(ti, &layout, self, &theme);
+        layout
     }
     fn text_input_layout(
         &self,
         rect: Rect,
         ti: &crate::primitives::text_input::TextInput,
     ) -> crate::primitives::text_input::TextInputLayout {
-        ti.layout(
+        super::text_input::mac_text_input_layout(
+            ti,
             rect,
-            crate::primitives::text_input::TextInputMeasure::from_metrics(&self.measure()),
+            self.current_line_height as f32,
+            self.current_char_width as f32,
         )
     }
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
@@ -6381,6 +6394,84 @@ mod tests {
             );
         });
         backend.end_frame();
+    }
+
+    // ── #1093: draw_text_input real-pixel driver test ────────────────────
+    //
+    // Regression for #1093: pre-fix, `MacBackend::draw_text_input` was a
+    // bare layout-only stub — `ti.layout(..)` and nothing else — so a
+    // text input was completely invisible on macOS: no background, no
+    // value, no cursor, and no `BackendCaps` flag said so. Confirmed to
+    // reproduce (both assertions below fail) against the unfixed stub.
+    // `draw_text_input` now routes through the shared
+    // `primitives::text_input::paint` via this backend's own
+    // `NativeSurface` impl — this drives that real Core Text/CoreGraphics
+    // path end to end, the same "acceptance bar" shape
+    // `mac_backend_draw_find_replace_paints_popup_background` and
+    // `mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop`
+    // use above.
+    #[test]
+    fn mac_backend_draw_text_input_paints_value_and_cursor() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::text_input::TextInput;
+
+        const W: u32 = 200;
+        const H: u32 = 40;
+
+        let surface = BitmapSurface::new(W, H);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let mut ti = TextInput::new(WidgetId::new("regression-1093"));
+        ti.lines = vec!["hello".to_string()];
+        ti.cursor_line = 0;
+        ti.cursor_col = 3;
+        ti.has_focus = true;
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let layout_cell = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_text_input(rect, &ti);
+            *layout_cell.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        let layout = layout_cell.into_inner().expect("draw_text_input ran");
+
+        let theme = Theme::default();
+        let bg = (theme.background.r, theme.background.g, theme.background.b);
+
+        // "text_ok": some non-background pixel painted inside the
+        // content area — proves Core Text actually ran, not just the
+        // background/border.
+        let cb = layout.content_bounds;
+        let mut painted_any = false;
+        'scan: for y in (cb.y as u32)..(((cb.y + cb.height) as u32).min(H)) {
+            for x in (cb.x as u32)..(((cb.x + 30.0) as u32).min(W)) {
+                let (r, g, b, _a) = surface.pixel(x, y);
+                if (r, g, b) != bg {
+                    painted_any = true;
+                    break 'scan;
+                }
+            }
+        }
+        assert!(
+            painted_any,
+            "expected draw_text_input to paint the value's glyphs, not just \
+             background/border — this is exactly #1093's silent-stub bug",
+        );
+
+        // The insert cursor must paint at exactly `cursor_bounds` — the
+        // same rect a host reads back for IME/caret placement.
+        let cb2 = layout.cursor_bounds.expect("cursor visible when has_focus");
+        let px = (cb2.x + 1.0) as u32;
+        let py = (cb2.y + cb2.height / 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(px, py);
+        assert_eq!(
+            (r, g, b),
+            (theme.cursor.r, theme.cursor.g, theme.cursor.b),
+            "expected the insert cursor to paint at cursor_bounds in theme.cursor",
+        );
     }
 
     // ── #810: draw_chart real-pixel driver tests ────────────────────────

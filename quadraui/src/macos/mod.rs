@@ -70,6 +70,7 @@ pub mod terminal;
 pub mod testing;
 pub mod text;
 pub mod text_display;
+pub mod text_input;
 // Text-selection highlight painting (#803) — the CoreGraphics twin of
 // `gtk::backend`'s Cairo `fill()` / `win::backend`'s Direct2D
 // `FillRectangle` call. `pub(crate)`, not `pub`: only `MacBackend::

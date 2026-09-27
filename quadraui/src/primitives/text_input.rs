@@ -983,6 +983,258 @@ impl TextInput {
     }
 }
 
+// ── NativeSurface paint (#1093) ─────────────────────────────────────────
+//
+// macOS's `draw_text_input` used to be a bare layout-only stub (issue
+// #1093: "paints nothing and no `BackendCaps` flag says so") — unlike
+// `TextDisplay`/`Form`/`FindReplacePanel`, GTK and Windows already carry
+// their own working (and already-tested) per-backend `draw_text_input`
+// rasterisers, so this module does *not* replace either of those the way
+// #808/#809/#810 did. It exists solely so `MacBackend::draw_text_input`
+// has a real implementation to call, built once against the portable
+// `NativeSurface` verbs rather than a fourth bespoke per-backend copy.
+//
+// Shape mirrors `win::text_input::draw_text_input` (the simplest of the
+// three existing twins — no selection-range painting, since `TextInput`
+// itself carries none; see this module's own doc, "Selection is
+// therefore readable via `TextEditor::selection_range`..."): fill the
+// background, stroke a focus-aware border, paint the placeholder or each
+// visible (post-h-scroll) line, then — only when focused — a 2-unit-wide
+// cursor bar at `TextInputLayout::cursor_bounds`, the exact rect
+// `text_input_layout` already hands a host for click routing and IME
+// placement. No geometry is re-derived here — the whole point of taking
+// an already-resolved `&TextInputLayout` rather than laying out `ti`
+// itself.
+#[cfg(all(feature = "macos", target_os = "macos"))]
+#[allow(dead_code)]
+mod native_surface_paint {
+    use super::{TextInput, TextInputLayout};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+
+    /// Insert-cursor width in surface-native units. Matches
+    /// `win::text_input::CURSOR_W_DIP` / `gtk::text_input`'s cursor bar.
+    const CURSOR_W: f32 = 2.0;
+
+    /// Slice `line` at char offset `off`, returning the tail (the part
+    /// visible given horizontal scroll) — same idiom every existing
+    /// `draw_text_input` twin uses independently.
+    fn slice_from(line: &str, off: usize) -> String {
+        if off == 0 {
+            line.to_string()
+        } else {
+            line.chars().skip(off).collect()
+        }
+    }
+
+    /// Paint `ti` using `layout` (must be the same layout the caller
+    /// hit-tests against — typically `ti.layout(rect, measure)`'s own
+    /// return value) via `surface`'s [`NativeSurface`] verbs.
+    pub(crate) fn paint(
+        ti: &TextInput,
+        layout: &TextInputLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        let rect = layout.bounds;
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+
+        surface.surface_fill_rect(rect, theme.background);
+        let border_color = if ti.has_focus {
+            theme.accent_fg
+        } else {
+            theme.border_fg
+        };
+        surface.surface_stroke_rect(rect, border_color, 1.0);
+
+        let h_scroll = layout.resolved_scroll_col;
+
+        if layout.placeholder_active {
+            if let (Some(text), Some(first)) =
+                (ti.placeholder.as_ref(), layout.visible_lines.first())
+            {
+                surface.surface_draw_text_run(first.bounds, text, theme.muted_fg);
+            }
+        } else {
+            for vis in &layout.visible_lines {
+                let full = ti.lines.get(vis.line_idx).map(String::as_str).unwrap_or("");
+                let visible = slice_from(full, h_scroll);
+                if visible.is_empty() {
+                    continue;
+                }
+                surface.surface_draw_text_run(vis.bounds, &visible, theme.foreground);
+            }
+        }
+
+        if ti.has_focus {
+            if let Some(cb) = layout.cursor_bounds {
+                let cursor_rect = Rect::new(cb.x, cb.y, CURSOR_W, cb.height);
+                surface.surface_fill_rect(cursor_rect, theme.cursor);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::primitives::text_input::TextInputMeasure;
+        use crate::types::{Color, WidgetId};
+        use crate::{Image, Point, Viewport};
+
+        /// Records every `NativeSurface` verb `paint` calls, without a
+        /// real pixel backend — the same fake shape
+        /// `find_replace::native_surface_paint::tests::RecordingSurface`
+        /// and `form::native_surface_paint::tests::RecordingSurface`
+        /// already use.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color, f32)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(0.0, 0.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: Point,
+                _to: Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample(lines: Vec<&str>, cursor_line: usize, cursor_col: usize) -> TextInput {
+            let mut ti = TextInput::new(WidgetId::new("ti"));
+            ti.lines = lines.into_iter().map(String::from).collect();
+            ti.cursor_line = cursor_line;
+            ti.cursor_col = cursor_col;
+            ti.has_focus = true;
+            ti
+        }
+
+        /// #1093's acceptance bar: a text input's value and cursor must
+        /// both appear in the recorded paint. Pre-fix, `MacBackend::
+        /// draw_text_input` never called anything that could paint at
+        /// all, so this fails red against the un-fixed stub.
+        #[test]
+        fn value_and_cursor_both_paint() {
+            let ti = sample(vec!["hello"], 0, 3);
+            let rect = Rect::new(0.0, 0.0, 200.0, 20.0);
+            let layout = ti.layout(rect, TextInputMeasure::new(16.0, 8.0));
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+
+            paint(&ti, &layout, &mut surface, &theme);
+
+            assert!(
+                surface.text_runs.iter().any(|(_, t, _)| t == "hello"),
+                "expected the input's value to be drawn as a text run, text runs were {:?}",
+                surface.text_runs,
+            );
+            let cb = layout.cursor_bounds.expect("cursor visible");
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *c == theme.cursor && (r.x - cb.x).abs() < 0.01),
+                "expected a cursor-colored fill at cursor_bounds.x, fills were {:?}",
+                surface.fills,
+            );
+        }
+
+        #[test]
+        fn unfocused_input_paints_no_cursor() {
+            let mut ti = sample(vec!["hello"], 0, 3);
+            ti.has_focus = false;
+            let rect = Rect::new(0.0, 0.0, 200.0, 20.0);
+            let layout = ti.layout(rect, TextInputMeasure::new(16.0, 8.0));
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+
+            paint(&ti, &layout, &mut surface, &theme);
+
+            assert!(
+                !surface.fills.iter().any(|(_, c)| *c == theme.cursor),
+                "unfocused input must not paint a cursor, fills were {:?}",
+                surface.fills,
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "hello"));
+        }
+
+        #[test]
+        fn placeholder_paints_in_muted_fg_when_empty() {
+            let mut ti = TextInput::new(WidgetId::new("ti"));
+            ti.placeholder = Some("type here".into());
+            ti.has_focus = false;
+            let rect = Rect::new(0.0, 0.0, 200.0, 20.0);
+            let layout = ti.layout(rect, TextInputMeasure::new(16.0, 8.0));
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+
+            paint(&ti, &layout, &mut surface, &theme);
+
+            assert!(surface
+                .text_runs
+                .iter()
+                .any(|(_, t, c)| t == "type here" && *c == theme.muted_fg));
+        }
+
+        #[test]
+        fn zero_size_rect_is_a_no_op() {
+            let ti = sample(vec!["hello"], 0, 0);
+            let rect = Rect::new(0.0, 0.0, 0.0, 20.0);
+            let layout = ti.layout(rect, TextInputMeasure::new(16.0, 8.0));
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+
+            paint(&ti, &layout, &mut surface, &theme);
+
+            assert!(surface.fills.is_empty());
+            assert!(surface.strokes.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+    }
+}
+
+#[cfg(all(feature = "macos", target_os = "macos"))]
+pub(crate) use native_surface_paint::paint;
+
 #[cfg(test)]
 mod tests {
     use super::*;
