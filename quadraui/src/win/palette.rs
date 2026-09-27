@@ -1,295 +1,87 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::Palette`] (issue #28).
 //!
-//! Mirrors `gtk::palette`'s structure: [`Palette::layout`] (the D6
-//! layout API) does the vertical positioning (title / query / item rows
-//! / create row / preview pane); this module supplies a uniform
-//! per-item row height (`line_height`, same shortcut `gtk::draw_palette`
-//! takes — real per-item width doesn't affect layout, only row count)
-//! and paints the resolved layout.
-//!
-//! Per-item `match_positions` (byte offsets into the item's concatenated
-//! span text) are highlighted by splitting the label into contiguous
-//! highlighted/non-highlighted runs and painting each run in
-//! [`Theme::match_fg`] or the row's normal foreground — the DirectWrite
-//! equivalent of `gtk::palette`'s per-character Pango `AttrColor` spans
-//! (DirectWrite has no ready analogue to a Pango `AttrList`, so runs are
-//! painted as separate `DrawText` calls instead of one attributed run).
+//! Content painting (background, border, title/query/item rows,
+//! scrollbar, create row, preview pane) moved to the shared
+//! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
+//! `NativeSurface` Phase 4 slice 3/8) — see that fn's module doc for
+//! what's shared, including the three-way geometry drift it fixes and
+//! the per-backend feature gaps it closes. Windows already had
+//! match-position highlighting (its own `matched_runs`/
+//! `draw_matched_text` run-splitter, ported into the shared `paint` for
+//! every backend to use); it gains icon rendering, a query cursor, and
+//! `PaletteMode::Input` handling for the first time (it already had
+//! this last one; kept).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod palette;` and `backend.rs`'s
 //! module docs.
 
-use std::collections::HashSet;
-
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, stroke_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::palette::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
-use crate::theme::Theme;
-use crate::types::Color;
+use crate::primitives::palette::{native_surface_paint, Palette, PaletteLayout};
 
 /// Compute a [`Palette`]'s layout at `(rect.x, rect.y)` without
-/// painting. `Palette::layout` keeps the selected row visible
-/// internally (see #711) — no backend-side scroll clamp needed here.
+/// painting. Thin wrapper over
+/// [`crate::primitives::palette::native_surface_paint::layout`] (#1076)
+/// — the canonical geometry formula every backend now shares. See that
+/// fn's doc for the three-way drift this closes (`query_height`, row
+/// flooring, scrollbar width). `Palette::layout` keeps the selected row
+/// visible internally (see #711) — no backend-side scroll clamp needed
+/// here.
 pub fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> PaletteLayout {
-    let title_h = if !palette.title.is_empty() {
-        line_height
-    } else {
-        0.0
-    };
-    let query_h = if palette.show_query { line_height } else { 0.0 };
-
-    palette.layout(rect.width, rect.height, title_h, query_h, 6.0, 8.0, |_| {
-        PaletteItemMeasure::new(line_height)
-    })
-}
-
-/// Split `text` into contiguous `(run, highlighted)` chunks based on
-/// `match_positions` (byte offsets, one per highlighted character).
-fn matched_runs(text: &str, match_positions: &[usize]) -> Vec<(String, bool)> {
-    if match_positions.is_empty() {
-        return vec![(text.to_string(), false)];
-    }
-    let matches: HashSet<usize> = match_positions.iter().copied().collect();
-    let mut runs: Vec<(String, bool)> = Vec::new();
-    let mut cur = String::new();
-    let mut cur_hi = false;
-    let mut first = true;
-    for (byte_idx, ch) in text.char_indices() {
-        let hi = matches.contains(&byte_idx);
-        if first {
-            cur_hi = hi;
-            first = false;
-        } else if hi != cur_hi {
-            runs.push((std::mem::take(&mut cur), cur_hi));
-            cur_hi = hi;
-        }
-        cur.push(ch);
-    }
-    if !cur.is_empty() {
-        runs.push((cur, cur_hi));
-    }
-    runs
-}
-
-/// Paint `text` starting at `row.x, row.y` (single line, `row.height`
-/// tall), colouring highlighted runs (per [`matched_runs`]) in
-/// `match_fg` and the rest in `fg`. Returns the total painted width
-/// (DIPs).
-fn draw_matched_text(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    text: &str,
-    match_positions: &[usize],
-    row: Rect,
-    fg: Color,
-    match_fg: Color,
-) -> f32 {
-    let mut cursor_x = row.x;
-    for (run, hi) in matched_runs(text, match_positions) {
-        if run.is_empty() {
-            continue;
-        }
-        let (w, _) = dwrite.measure_text(&run).unwrap_or((0.0, 0.0));
-        let rect = Rect::new(cursor_x, row.y, w.max(1.0), row.height);
-        let color = if hi { match_fg } else { fg };
-        let _ = dwrite.draw_text(target, &run, rect, color);
-        cursor_x += w;
-    }
-    cursor_x - row.x
+    native_surface_paint::layout(rect.width, rect.height, palette, line_height).0
 }
 
 /// Draw a [`Palette`] modal into `rect`. Backend-internal layout (see
 /// [`win_palette_layout`]) — `Palette` has no layout-passthrough trait
 /// method (unlike `ContextMenu`/`Dialog`), matching
 /// [`crate::Backend::draw_palette`]'s signature.
+///
+/// `nerd_fonts_enabled` selects between item icons' Nerd-Font glyph and
+/// ASCII fallback (issue #804), matching every other backend's
+/// `draw_palette`. Colours come from `Theme::default()` rather than a
+/// live `WinBackend` theme field — same convention `win::status_bar`
+/// and every other pre-`NativeSurface` Win-GUI rasteriser use.
 pub fn draw_palette(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
     rect: Rect,
     palette: &Palette,
     line_height: f32,
+    nerd_fonts_enabled: bool,
 ) {
     if rect.width < 20.0 || rect.height < line_height * 4.0 {
         return;
     }
 
-    let theme = Theme::default();
-    let bg = theme.surface_bg;
-    let fg = theme.surface_fg;
-    let border = theme.border_fg;
-    let title_fg = theme.title_fg;
-    let query_fg = theme.query_fg;
-    let match_fg = theme.match_fg;
-    let sel = theme.selected_bg;
-    let dim = theme.muted_fg;
-    let accent = theme.accent_fg;
+    let theme = crate::theme::Theme::default();
+    let (palette_layout, rows_h) =
+        native_surface_paint::layout(rect.width, rect.height, palette, line_height);
 
-    let _ = fill_rect(target, rect, bg);
-    let _ = stroke_rect(target, rect, border, 1.0);
-
-    let layout = win_palette_layout(rect, palette, line_height);
-
-    // `Palette::layout` returns bounds relative to a `(0, 0)` origin
-    // (see its doc) — offset every layout-derived rect by `rect.x` /
-    // `rect.y` before painting, mirroring `gtk::draw_palette`'s
-    // `x + title_bounds.x` / `y + title_bounds.y` treatment.
-    let off = |r: Rect| Rect::new(rect.x + r.x, rect.y + r.y, r.width, r.height);
-
-    if let Some(tb) = layout.title_bounds.map(off) {
-        let title_text = if palette.total_count > 0 {
-            format!(
-                " {}  {}/{} ",
-                palette.title,
-                palette.items.len(),
-                palette.total_count
-            )
-        } else {
-            format!(" {} ", palette.title)
-        };
-        let _ = dwrite.draw_text(target, &title_text, tb, title_fg);
-    }
-
-    if let Some(qb) = layout.query_bounds.map(off) {
-        let prompt = "> ";
-        let (prompt_w, _) = dwrite.measure_text(prompt).unwrap_or((0.0, 0.0));
-        let prompt_rect = Rect::new(qb.x + 8.0, qb.y, prompt_w.max(1.0), qb.height);
-        let _ = dwrite.draw_text(target, prompt, prompt_rect, query_fg);
-        let query_rect = Rect::new(
-            qb.x + 8.0 + prompt_w,
-            qb.y,
-            (qb.width - 8.0 - prompt_w).max(1.0),
-            qb.height,
-        );
-        let _ = dwrite.draw_text(target, &palette.query, query_rect, query_fg);
-    }
-
-    if palette.mode == PaletteMode::Input {
-        return;
-    }
-
-    for vis in &layout.visible_items {
-        let bounds = off(vis.bounds);
-        let item = &palette.items[vis.item_idx];
-        let is_selected = vis.item_idx == palette.selected_idx && palette.has_focus;
-        if is_selected {
-            let _ = fill_rect(target, bounds, sel);
-        }
-
-        let full_text: String = item.text.spans.iter().map(|s| s.text.as_str()).collect();
-        let prefix = if is_selected { "\u{25b6} " } else { "  " };
-        let (prefix_w, _) = dwrite.measure_text(prefix).unwrap_or((0.0, 0.0));
-        let prefix_rect = Rect::new(bounds.x + 8.0, bounds.y, prefix_w.max(1.0), bounds.height);
-        let _ = dwrite.draw_text(target, prefix, prefix_rect, fg);
-
-        let text_x = bounds.x + 8.0 + prefix_w;
-        let text_row = Rect::new(
-            text_x,
-            bounds.y,
-            (bounds.width - (text_x - bounds.x)).max(1.0),
-            bounds.height,
-        );
-        let _ = draw_matched_text(
-            target,
-            dwrite,
-            &full_text,
-            &item.match_positions,
-            text_row,
-            fg,
-            match_fg,
-        );
-
-        if let Some(ref detail) = item.detail {
-            let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
-            let (dw, _) = dwrite.measure_text(&detail_text).unwrap_or((0.0, 0.0));
-            let dx = bounds.x + bounds.width - dw - 8.0;
-            let detail_rect = Rect::new(dx, bounds.y, dw.max(1.0), bounds.height);
-            let _ = dwrite.draw_text(target, &detail_text, detail_rect, dim);
-        }
-    }
-
-    if let Some(sb) = layout.scrollbar {
-        let _ = fill_rect(
-            target,
-            Rect::new(
-                rect.x + sb.track.x,
-                rect.y + sb.track.y,
-                sb.track.width,
-                sb.track.height,
-            ),
-            Color::rgb(
-                (bg.r as f32 * 0.7) as u8,
-                (bg.g as f32 * 0.7) as u8,
-                (bg.b as f32 * 0.7) as u8,
-            ),
-        );
-        let _ = fill_rect(
-            target,
-            Rect::new(
-                rect.x + sb.thumb.x,
-                rect.y + sb.thumb.y,
-                sb.thumb.width,
-                sb.thumb.height,
-            ),
-            border,
-        );
-    }
-
-    if let (Some(cb), Some(label)) = (layout.create_bounds, palette.create_label.as_ref()) {
-        let prefix_rect = Rect::new(rect.x + cb.x + 8.0, rect.y + cb.y, 20.0, cb.height);
-        let _ = dwrite.draw_text(target, "+ ", prefix_rect, accent);
-        let label_rect = Rect::new(
-            rect.x + cb.x + 28.0,
-            rect.y + cb.y,
-            (cb.width - 28.0).max(1.0),
-            cb.height,
-        );
-        let _ = dwrite.draw_text(target, label, label_rect, accent);
-    }
-
-    if let (Some(pb), Some(preview)) = (layout.preview_bounds, palette.preview.as_ref()) {
-        let preview_rect = Rect::new(rect.x + pb.x, rect.y + pb.y, pb.width, pb.height);
-        let mut row_y = preview_rect.y;
-        if let Some(ref title) = preview.title {
-            let tr = Rect::new(
-                preview_rect.x + 8.0,
-                row_y,
-                (pb.width - 8.0).max(1.0),
-                line_height,
-            );
-            let _ = dwrite.draw_text(target, title, tr, dim);
-            row_y += line_height;
-        }
-        for (vi, line) in preview.lines.iter().skip(preview.scroll_offset).enumerate() {
-            let ly = row_y + vi as f32 * line_height;
-            if ly + line_height > preview_rect.y + preview_rect.height {
-                break;
-            }
-            let line_idx = preview.scroll_offset + vi;
-            if preview.highlight_line == Some(line_idx) {
-                let _ = fill_rect(
-                    target,
-                    Rect::new(preview_rect.x, ly, pb.width, line_height),
-                    sel,
-                );
-            }
-            let text: String = line.spans.iter().map(|s| s.text.as_str()).collect();
-            let lr = Rect::new(
-                preview_rect.x + 8.0,
-                ly,
-                (pb.width - 8.0).max(1.0),
-                line_height,
-            );
-            let _ = dwrite.draw_text(target, &text, lr, fg);
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    native_surface_paint::paint(
+        palette,
+        rect,
+        &palette_layout,
+        rows_h,
+        line_height,
+        nerd_fonts_enabled,
+        &mut surface,
+        &theme,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{StyledText, WidgetId};
+    use crate::primitives::palette::PaletteMode;
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
     fn item(text: &str, match_positions: Vec<usize>) -> crate::primitives::palette::PaletteItem {
@@ -332,7 +124,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_palette(target, &dwrite, rect, &p, line_height);
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
             })
             .expect("paint palette");
 
@@ -369,6 +161,57 @@ mod tests {
         );
     }
 
+    /// Regression for #1076: pre-migration, `win::palette::draw_palette`
+    /// never painted a query cursor at all (this module's own doc used
+    /// to name it directly, contrasting with GTK/macOS's block cursor).
+    /// The shared `paint` now fills a cursor block in `query_fg` on
+    /// every backend, including Windows.
+    #[test]
+    fn query_row_paints_a_cursor_block() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let p = palette();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let layout = win_palette_layout(rect, &p, line_height);
+        let qb = layout.query_bounds.expect("query bounds present");
+        let theme = Theme::default();
+        // A cursor is a *solid fill* spanning the row's full height —
+        // unlike glyph ink (which never covers a whole text-row column
+        // solidly, since real fonts leave leading above ascenders and
+        // below descenders), so scan for the column with the highest
+        // fraction of query_fg-near pixels and require it to be nearly
+        // fully covered. Plain "> op" text alone (the pre-#1076
+        // behaviour) never produces a column this solid.
+        let dist2 = |px: Color, c: Color| {
+            let dr = px.r as i32 - c.r as i32;
+            let dg = px.g as i32 - c.g as i32;
+            let db = px.b as i32 - c.b as i32;
+            dr * dr + dg * dg + db * db
+        };
+        let rows: Vec<u32> = (qb.y as u32..(qb.y + qb.height) as u32).collect();
+        let best_coverage = (qb.x as u32..(qb.x + qb.width) as u32)
+            .map(|x| {
+                let covered = rows
+                    .iter()
+                    .filter(|&&y| dist2(surface.pixel_at(x, y), theme.query_fg) < 400)
+                    .count();
+                covered as f32 / rows.len().max(1) as f32
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            best_coverage > 0.9,
+            "expected a full-row-height query_fg cursor block; best column coverage was {best_coverage}"
+        );
+    }
+
     #[test]
     fn selected_row_paints_selection_bg() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
@@ -379,7 +222,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_palette(target, &dwrite, rect, &p, line_height);
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
             })
             .expect("paint palette");
 

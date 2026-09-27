@@ -475,6 +475,521 @@ impl Palette {
     }
 }
 
+// ── NativeSurface paint (#1076, NativeSurface Phase 4 slice 3/8) ───────────
+//
+// Before this, `gtk::draw_palette` (Cairo), `macos::palette::draw_palette`
+// (Core Graphics) and `win::palette::draw_palette` (Direct2D) each
+// independently painted the same title/query/item/scrollbar/preview
+// content with their own drawing API, and — worse — each independently
+// re-derived the *geometry* those verbs used, which had drifted three
+// ways (issue #1076):
+//
+// - **`query_height`**: GTK reserved `line_height + 1.0` (baking the
+//   query/list separator stroke into the layout call, per D-007's
+//   "Palette: deferred, not missed" §2 fix); macOS/Windows both passed
+//   plain `line_height`, so their `PaletteLayout::query_bounds` was 1px
+//   short of where the separator (and hence the first item row) should
+//   start — the exact class of bug D-007 fixed for GTK alone.
+// - **Row flooring**: GTK computed `visible_rows` by flooring available
+//   height / `line_height` and fed `Palette::layout` a *reduced*
+//   `viewport_height` so the item list never shows a partial last row;
+//   macOS/Windows fed `Palette::layout` the full popup height, so
+//   `Palette::layout`'s own per-row clamp (`height.min(remaining)`)
+//   could hand back a clipped, partial-height last row.
+// - **Scrollbar width**: GTK/Windows agreed on `(6.0, 8.0)`
+//   (`scrollbar_width`, `min_thumb_len`); macOS alone used `(8.0, 8.0)`.
+//
+// `layout` below is the one shared geometry function (GTK's own
+// pre-#1076 formula, since it already matched two of the three fixes
+// above); `gtk_palette_layout`/`mac_palette_layout`/`win_palette_layout`
+// become thin unit-converting wrappers over it, so no per-backend
+// geometry copy is left to drift again.
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::tree::native_surface_paint` for the same
+// pattern applied one primitive earlier. Feature gaps found while
+// unifying (adopted the richer/majority behaviour rather than silently
+// picking one, per that migration's convention):
+//
+// - **Match-position highlighting** (`PaletteItem::match_positions`):
+//   GTK had it (per-character Pango `AttrColor` spans); Windows had it
+//   (its own `matched_runs`/`draw_matched_text` run-splitter, ported
+//   below); macOS had none at all (its module doc's "Scope omissions" —
+//   items rendered in plain fg). `paint` carries Windows's run-splitter
+//   for every backend now.
+// - **Icon rendering** (`PaletteItem::icon`): GTK painted it (with the
+//   Nerd-Font-fallback swap #416 documents); macOS/Windows never did.
+//   `paint` paints it for every backend via
+//   [`crate::native_surface::NativeSurface::surface_draw_icon_glyph`],
+//   which already carries the fallback swap per-backend where needed.
+// - **Query cursor**: GTK/macOS both painted a filled cursor block
+//   (inverting the character underneath, terminal-style); Windows drew
+//   no cursor at all. `paint` carries the block-cursor treatment for
+//   every backend.
+// - **`PaletteMode::Input` suppression**: GTK and Windows both hide the
+//   item list in `Input` mode; macOS did not (its module doc did not
+//   mention `PaletteMode` at all — items rendered regardless of mode).
+//   `paint` suppresses the item list for every backend.
+// - **Preview line colour**: GTK painted each preview line span in its
+//   own `span.fg` (falling back to `fg`); macOS/Windows always painted
+//   preview lines in a single flat colour, ignoring `StyledText::spans`'
+//   per-span colour entirely. `paint` carries GTK's per-span treatment.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
+    use crate::native_surface::NativeSurface;
+    use crate::text_util::safe_prefix;
+    use crate::theme::Theme;
+    use crate::Rect;
+    use std::collections::HashSet;
+
+    /// Scrollbar track width, shared by [`layout`] and [`paint`] so the
+    /// two can't disagree on it — the `(6.0, 8.0)` pair GTK and Windows
+    /// already agreed on pre-#1076 (see this module's doc for why
+    /// macOS's pre-#1076 `(8.0, 8.0)` lost the tie).
+    pub(crate) const SB_W: f32 = 6.0;
+    /// Minimum scrollbar thumb length, shared by [`layout`] and [`paint`].
+    pub(crate) const MIN_THUMB_LEN: f32 = 8.0;
+    /// Breathing room reserved below the item list before the popup's
+    /// own bottom edge (there is no bottom border row the way TUI has
+    /// one — this is purely visual padding).
+    const BOTTOM_INSET: f32 = 4.0;
+
+    /// Compute the shared [`Palette`] layout — the one geometry `paint`
+    /// paints from and every backend's `Backend::palette_layout` (#818)
+    /// exposes for hit-testing, so paint/hit-test/backend can't drift
+    /// three ways again (see this module's doc for the drift #1076
+    /// found and fixed here).
+    ///
+    /// Returns the layout alongside `rows_h` (the item area's full row
+    /// capacity in `surface`-native units, already floored to a whole
+    /// number of rows) — `paint` needs it for the scrollbar-track /
+    /// preview-pane / create-row positions that sit below the last
+    /// item, which aren't otherwise exposed as a single [`PaletteLayout`]
+    /// field.
+    ///
+    /// Coordinate frame: **LOCAL** — `(0, 0)` is the popup's own
+    /// top-left corner, matching [`Palette::layout`]'s native contract.
+    pub(crate) fn layout(
+        w: f32,
+        h: f32,
+        palette: &Palette,
+        line_height: f32,
+    ) -> (PaletteLayout, f32) {
+        let title_h = line_height;
+        let query_h = if palette.show_query {
+            line_height + 1.0
+        } else {
+            0.0
+        };
+        let has_create = palette.create_label.is_some();
+        let create_reserved = if has_create { line_height } else { 0.0 };
+        let items_top = title_h + query_h;
+        let raw_items_h = (h - items_top - BOTTOM_INSET - create_reserved).max(0.0);
+        let visible_rows = (raw_items_h / line_height) as usize;
+        let rows_h = visible_rows as f32 * line_height;
+        let viewport_h = items_top + rows_h + create_reserved;
+
+        let resolved = palette.layout(w, viewport_h, title_h, query_h, SB_W, MIN_THUMB_LEN, |_| {
+            PaletteItemMeasure::new(line_height)
+        });
+        (resolved, rows_h)
+    }
+
+    /// Split `text` into contiguous `(run, highlighted)` chunks based on
+    /// `match_positions` (byte offsets, one per highlighted character).
+    /// Ported from `win::palette`'s pre-#1076 `matched_runs` — the
+    /// DirectWrite-shaped answer to GTK's per-character Pango
+    /// `AttrColor` spans, and the only one of the three pre-#1076
+    /// implementations that had match highlighting at all outside GTK.
+    fn matched_runs(text: &str, match_positions: &[usize]) -> Vec<(String, bool)> {
+        if match_positions.is_empty() {
+            return vec![(text.to_string(), false)];
+        }
+        let matches: HashSet<usize> = match_positions.iter().copied().collect();
+        let mut runs: Vec<(String, bool)> = Vec::new();
+        let mut cur = String::new();
+        let mut cur_hi = false;
+        let mut first = true;
+        for (byte_idx, ch) in text.char_indices() {
+            let hi = matches.contains(&byte_idx);
+            if first {
+                cur_hi = hi;
+                first = false;
+            } else if hi != cur_hi {
+                runs.push((std::mem::take(&mut cur), cur_hi));
+                cur_hi = hi;
+            }
+            cur.push(ch);
+        }
+        if !cur.is_empty() {
+            runs.push((cur, cur_hi));
+        }
+        runs
+    }
+
+    /// Paint `text` starting at `row.x, row.y` (single line, `row.height`
+    /// tall), colouring highlighted runs (per [`matched_runs`]) in
+    /// `match_fg` and the rest in `fg`. Returns the total painted width.
+    fn draw_matched_text(
+        surface: &mut dyn NativeSurface,
+        text: &str,
+        match_positions: &[usize],
+        row: Rect,
+        fg: crate::Color,
+        match_fg: crate::Color,
+    ) -> f32 {
+        let mut cursor_x = row.x;
+        for (run, hi) in matched_runs(text, match_positions) {
+            if run.is_empty() {
+                continue;
+            }
+            let (w, h) = surface.surface_measure_text(&run);
+            let color = if hi { match_fg } else { fg };
+            surface.surface_draw_text_run(
+                Rect::new(cursor_x, row.y + (row.height - h) / 2.0, w.max(1.0), h),
+                &run,
+                color,
+            );
+            cursor_x += w;
+        }
+        cursor_x - row.x
+    }
+
+    /// Paint a [`Palette`] modal — background, border, title, query
+    /// input (with cursor), item list (selection/icon/match-highlight/
+    /// detail), scrollbar, pinned create row, and preview pane — onto
+    /// `surface` at `area`.
+    ///
+    /// `palette_layout`/`rows_h` must be [`layout`]'s own return value
+    /// for this exact `(area.width, area.height, palette, line_height)`
+    /// so paint and hit-test can never disagree. `nerd_fonts_enabled`
+    /// selects `Icon::glyph` vs. `Icon::fallback`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint(
+        palette: &Palette,
+        area: Rect,
+        palette_layout: &PaletteLayout,
+        rows_h: f32,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        if area.width < 20.0 || area.height < line_height * 4.0 {
+            return;
+        }
+
+        surface.surface_push_clip(area);
+        surface.surface_fill_rect(area, theme.surface_bg);
+        surface.surface_stroke_rect(area, theme.border_fg, 1.0);
+
+        // ── Title row ───────────────────────────────────────────────
+        if let Some(tb) = palette_layout.title_bounds {
+            let title_text = if palette.total_count > 0 {
+                format!(
+                    " {}  {}/{} ",
+                    palette.title,
+                    palette.items.len(),
+                    palette.total_count
+                )
+            } else {
+                format!(" {} ", palette.title)
+            };
+            let (_, th) = surface.surface_measure_text(&title_text);
+            surface.surface_draw_text_run(
+                Rect::new(
+                    area.x + tb.x + 8.0,
+                    area.y + tb.y + (tb.height - th) / 2.0,
+                    tb.width - 8.0,
+                    th,
+                ),
+                &title_text,
+                theme.title_fg,
+            );
+        }
+
+        // ── Query row + cursor ──────────────────────────────────────
+        if let Some(qb) = palette_layout.query_bounds {
+            let qx = area.x + qb.x;
+            let qy = area.y + qb.y;
+            let prompt = "> ";
+            let (pw, ph) = surface.surface_measure_text(prompt);
+            surface.surface_draw_text_run(
+                Rect::new(qx + 8.0, qy + (qb.height - ph) / 2.0, pw, ph),
+                prompt,
+                theme.query_fg,
+            );
+
+            let query_text_x = qx + 8.0 + pw;
+            let (_, qh) = surface.surface_measure_text(&palette.query);
+            surface.surface_draw_text_run(
+                Rect::new(query_text_x, qy + (qb.height - qh) / 2.0, qb.width, qh),
+                &palette.query,
+                theme.query_fg,
+            );
+
+            let cursor_prefix = safe_prefix(&palette.query, palette.query_cursor);
+            let (cursor_prefix_w, _) = surface.surface_measure_text(cursor_prefix);
+            let cursor_x = query_text_x + cursor_prefix_w;
+            let cursor_char: String = palette
+                .query
+                .get(palette.query_cursor..)
+                .and_then(|s| s.chars().next())
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let (cursor_w, _) = surface.surface_measure_text(&cursor_char);
+            let cursor_w = cursor_w.max(line_height * 0.45);
+            surface.surface_fill_rect(Rect::new(cursor_x, qy, cursor_w, qb.height), theme.query_fg);
+            if !cursor_char.trim().is_empty() {
+                let (_, ch) = surface.surface_measure_text(&cursor_char);
+                surface.surface_draw_text_run(
+                    Rect::new(cursor_x, qy + (qb.height - ch) / 2.0, cursor_w, ch),
+                    &cursor_char,
+                    theme.surface_bg,
+                );
+            }
+        }
+
+        // ── Separator row ────────────────────────────────────────────
+        // No separator in Input mode — there is no item list below it.
+        if palette.show_query && palette.mode != PaletteMode::Input {
+            if let Some(qb) = palette_layout.query_bounds {
+                let sep_y = area.y + qb.y + qb.height;
+                surface
+                    .surface_fill_rect(Rect::new(area.x, sep_y, area.width, 1.0), theme.border_fg);
+            }
+        }
+
+        // ── Result rows ──────────────────────────────────────────────
+        // Input mode suppresses the item list entirely — the query
+        // field is the only interaction target.
+        if palette.mode == PaletteMode::Input {
+            surface.surface_pop_clip();
+            return;
+        }
+
+        let items_top = palette_layout
+            .query_bounds
+            .map(|b| b.y + b.height)
+            .or_else(|| palette_layout.title_bounds.map(|b| b.y + b.height))
+            .unwrap_or(0.0);
+        let rows_y = area.y + items_top;
+        let content_w = palette_layout.item_list_width
+            - if palette_layout.scrollbar.is_some() {
+                SB_W
+            } else {
+                0.0
+            };
+
+        surface.surface_push_clip(Rect::new(area.x, rows_y, content_w, rows_h));
+        for vis in &palette_layout.visible_items {
+            let item = &palette.items[vis.item_idx];
+            let row_x = area.x + vis.bounds.x;
+            let row_y = area.y + vis.bounds.y;
+            let row_w = vis.bounds.width;
+            let row_h = vis.bounds.height;
+            let is_selected = vis.item_idx == palette.selected_idx && palette.has_focus;
+
+            if is_selected {
+                surface.surface_fill_rect(Rect::new(row_x, row_y, row_w, row_h), theme.selected_bg);
+            }
+
+            let mut cursor_x = row_x + 8.0;
+
+            let prefix = if is_selected { "\u{25b6} " } else { "  " };
+            let (pw, ph) = surface.surface_measure_text(prefix);
+            surface.surface_draw_text_run(
+                Rect::new(cursor_x, row_y + (row_h - ph) / 2.0, pw, ph),
+                prefix,
+                theme.surface_fg,
+            );
+            cursor_x += pw;
+
+            if let Some(ref icon) = item.icon {
+                let glyph = if nerd_fonts_enabled {
+                    icon.glyph.as_str()
+                } else {
+                    icon.fallback.as_str()
+                };
+                let (iw, ih) = surface.surface_measure_text(glyph);
+                surface.surface_draw_icon_glyph(
+                    Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
+                    glyph,
+                    theme.surface_fg,
+                );
+                cursor_x += iw + 6.0;
+            }
+
+            let detail_info = item.detail.as_ref().map(|detail| {
+                let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
+                let (dw, _) = surface.surface_measure_text(&detail_text);
+                (detail_text, dw)
+            });
+            let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
+            let text_right_limit = row_x + row_w - detail_reserve - 4.0;
+
+            let full_text: String = item.text.spans.iter().map(|s| s.text.as_str()).collect();
+            draw_matched_text(
+                surface,
+                &full_text,
+                &item.match_positions,
+                Rect::new(
+                    cursor_x,
+                    row_y,
+                    (text_right_limit - cursor_x).max(0.0),
+                    row_h,
+                ),
+                theme.surface_fg,
+                theme.match_fg,
+            );
+
+            if let Some((detail_text, dw)) = detail_info {
+                let dx = row_x + row_w - dw - 8.0;
+                if dx > cursor_x {
+                    let (_, dh) = surface.surface_measure_text(&detail_text);
+                    surface.surface_draw_text_run(
+                        Rect::new(dx, row_y + (row_h - dh) / 2.0, dw, dh),
+                        &detail_text,
+                        theme.muted_fg,
+                    );
+                }
+            }
+        }
+        surface.surface_pop_clip();
+
+        // ── Scrollbar ─────────────────────────────────────────────────
+        if let Some(sb) = &palette_layout.scrollbar {
+            let track = Rect::new(
+                area.x + sb.track.x,
+                area.y + sb.track.y,
+                sb.track.width,
+                sb.track.height,
+            );
+            surface.surface_fill_rect(track, theme.scrollbar_track.with_alpha(0.4));
+            let thumb = Rect::new(
+                area.x + sb.thumb.x + 1.0,
+                area.y + sb.thumb.y,
+                (sb.thumb.width - 2.0).max(0.0),
+                sb.thumb.height,
+            );
+            surface.surface_fill_rect(thumb, theme.scrollbar_thumb.with_alpha(0.8));
+        }
+
+        // ── Create action row (pinned below items) ─────────────────────
+        if let Some(ref label) = palette.create_label {
+            let create_y = rows_y + rows_h;
+            surface.surface_fill_rect(
+                Rect::new(
+                    area.x,
+                    create_y,
+                    palette_layout.item_list_width,
+                    line_height,
+                ),
+                theme.hover_bg,
+            );
+            let prefix = "+ ";
+            let (pw, ph) = surface.surface_measure_text(prefix);
+            surface.surface_draw_text_run(
+                Rect::new(area.x + 8.0, create_y + (line_height - ph) / 2.0, pw, ph),
+                prefix,
+                theme.accent_fg,
+            );
+            let (lw, lh) = surface.surface_measure_text(label);
+            surface.surface_draw_text_run(
+                Rect::new(
+                    area.x + 8.0 + pw,
+                    create_y + (line_height - lh) / 2.0,
+                    lw,
+                    lh,
+                ),
+                label,
+                theme.accent_fg,
+            );
+        }
+
+        // ── Preview pane ────────────────────────────────────────────────
+        if let (Some(pb), Some(preview)) = (palette_layout.preview_bounds, palette.preview.as_ref())
+        {
+            let preview_x = area.x + pb.x;
+            let preview_y = area.y + pb.y;
+            let preview_w = pb.width;
+            let preview_h = pb.height;
+
+            surface.surface_draw_line(
+                crate::Point::new(preview_x, preview_y),
+                crate::Point::new(preview_x, preview_y + preview_h),
+                theme.border_fg,
+                1.0,
+            );
+
+            surface.surface_push_clip(Rect::new(preview_x, preview_y, preview_w, preview_h));
+            let content_x = preview_x + 8.0;
+            let content_right = preview_x + preview_w - 8.0;
+            let mut cursor_y = preview_y;
+
+            if let Some(ref title) = preview.title {
+                let (_, th) = surface.surface_measure_text(title);
+                surface.surface_draw_text_run(
+                    Rect::new(
+                        content_x,
+                        cursor_y + (line_height - th) / 2.0,
+                        content_right - content_x,
+                        th,
+                    ),
+                    title,
+                    theme.muted_fg,
+                );
+                cursor_y += line_height;
+            }
+
+            let preview_visible =
+                ((preview_y + preview_h - cursor_y) / line_height).max(0.0) as usize;
+            for (vi, line_idx) in (preview.scroll_offset..).take(preview_visible).enumerate() {
+                let row_y = cursor_y + vi as f32 * line_height;
+                if row_y + line_height > preview_y + preview_h + 0.5 {
+                    break;
+                }
+                if line_idx >= preview.lines.len() {
+                    break;
+                }
+
+                if preview.highlight_line == Some(line_idx) {
+                    surface.surface_fill_rect(
+                        Rect::new(preview_x, row_y, preview_w, line_height),
+                        theme.selected_bg,
+                    );
+                }
+
+                let line = &preview.lines[line_idx];
+                let mut cx = content_x;
+                for span in &line.spans {
+                    if cx > content_right {
+                        break;
+                    }
+                    let span_fg = span.fg.unwrap_or(theme.foreground);
+                    let (sw, sh) = surface.surface_measure_text(&span.text);
+                    surface.surface_draw_text_run(
+                        Rect::new(cx, row_y + (line_height - sh) / 2.0, sw, sh),
+                        &span.text,
+                        span_fg,
+                    );
+                    cx += sw;
+                }
+            }
+            surface.surface_pop_clip();
+        }
+
+        surface.surface_pop_clip();
+    }
+}
+
 /// Events a `Palette` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaletteEvent {
