@@ -394,6 +394,19 @@ impl StatusBarLayout {
     }
 }
 
+/// Outer edge inset (surface-native units — px on every pixel backend)
+/// reserved between the bar's own left/right edges and its outermost
+/// segments, VS Code-like (issue #1155). Pixel backends (GTK/Win/macOS)
+/// pass this to [`StatusBar::layout_padded`]. TUI's char-cell bar has no
+/// use for a sub-cell inset and keeps calling plain [`StatusBar::layout`]
+/// (equivalent to `layout_padded` with `edge_inset = 0.0`).
+pub const PIXEL_EDGE_INSET: f32 = 10.0;
+
+/// Per-segment horizontal padding (surface-native units — px on every
+/// pixel backend), added to *both* sides of each segment's measured text
+/// width, VS Code-like (issue #1155). See [`PIXEL_EDGE_INSET`]'s doc.
+pub const PIXEL_SEGMENT_PADDING: f32 = 5.0;
+
 impl StatusBar {
     /// Compute the full rendering + hit-test layout for this status bar.
     ///
@@ -416,6 +429,13 @@ impl StatusBar {
     /// All numeric arguments share the same unit; the primitive itself is
     /// unit-agnostic. See [`quadraui::TabBar::layout`] for TUI/pixel
     /// examples.
+    ///
+    /// Equivalent to [`Self::layout_padded`] with `edge_inset = 0.0` and
+    /// `segment_padding = 0.0` — no outer inset, no per-segment padding.
+    /// This is what TUI's char-cell bar wants (issue #1155): a monospace
+    /// cell grid has no sub-cell pixels to spend on padding, and its
+    /// callers already reserve visual breathing room with literal space
+    /// characters inside segment text.
     pub fn layout<F>(
         &self,
         bar_width: f32,
@@ -426,13 +446,55 @@ impl StatusBar {
     where
         F: Fn(&StatusBarSegment) -> StatusSegmentMeasure,
     {
+        self.layout_padded(bar_width, bar_height, min_gap, 0.0, 0.0, measure)
+    }
+
+    /// [`Self::layout`] plus a pixel-space outer edge inset and
+    /// per-segment horizontal padding (issue #1155) — what pixel backends
+    /// (GTK/Win/macOS) should call instead of `layout` so the right-most
+    /// segment doesn't touch the window edge and adjacent segments get a
+    /// visible gap without relying on the consumer's literal space
+    /// characters (font-dependent, and often invisible on proportional
+    /// fonts — quadraui#963).
+    ///
+    /// # Arguments
+    ///
+    /// - `edge_inset` — space reserved between the bar's own left/right
+    ///   edges and its outermost segments. [`PIXEL_EDGE_INSET`] is the
+    ///   recommended value for pixel backends (`10.0`, VS Code-like).
+    /// - `segment_padding` — extra width added to *both* sides of every
+    ///   segment's measured text width — i.e. each segment's `bounds`
+    ///   grows by `2 * segment_padding` versus its raw text measurement.
+    ///   [`PIXEL_SEGMENT_PADDING`] is the recommended value (`5.0`).
+    ///   Hit-test regions cover the padded bounds, matching VS Code's
+    ///   item hit boxes. Painting the segment's *text* inset within that
+    ///   wider box (rather than flush to its left edge) is the paint
+    ///   caller's job — see
+    ///   [`native_surface_paint::paint`]
+    ///   for the pixel-backend reference implementation.
+    ///
+    /// `min_gap` still reserves a gap between the left and right groups
+    /// on top of both insets — unchanged from `layout`.
+    pub fn layout_padded<F>(
+        &self,
+        bar_width: f32,
+        bar_height: f32,
+        min_gap: f32,
+        edge_inset: f32,
+        segment_padding: f32,
+        measure: F,
+    ) -> StatusBarLayout
+    where
+        F: Fn(&StatusBarSegment) -> StatusSegmentMeasure,
+    {
+        let pad = 2.0 * segment_padding;
         let mut visible_segments: Vec<VisibleStatusSegment> = Vec::new();
         let mut hit_regions: Vec<(Rect, StatusBarHit)> = Vec::new();
 
-        // ── Left segments, left-to-right from column 0 ─────────────────
-        let mut cursor = 0.0_f32;
+        // ── Left segments, left-to-right from the inset edge ───────────
+        let mut cursor = edge_inset;
         for (i, seg) in self.left_segments.iter().enumerate() {
-            let w = measure(seg).width;
+            let w = measure(seg).width + pad;
             let bounds = Rect::new(cursor, 0.0, w, bar_height);
             let clickable = seg.action_id.is_some();
             visible_segments.push(VisibleStatusSegment {
@@ -455,10 +517,10 @@ impl StatusBar {
         let right_widths: Vec<f32> = self
             .right_segments
             .iter()
-            .map(|s| measure(s).width)
+            .map(|s| measure(s).width + pad)
             .collect();
         let total_right: f32 = right_widths.iter().sum();
-        let max_right = (bar_width - left_w - min_gap).max(0.0);
+        let max_right = (bar_width - left_w - min_gap - edge_inset).max(0.0);
 
         let resolved_right_start =
             if self.right_segments.is_empty() || total_right <= max_right + f32::EPSILON {
@@ -484,13 +546,14 @@ impl StatusBar {
                 found
             };
 
-        // Right segments right-aligned inside `bar_width`. Rendered in the
-        // natural `right_segments[start..]` order; first visible segment
-        // is leftmost of the right group.
+        // Right segments right-aligned inside `bar_width`, inset from the
+        // bar's own right edge by `edge_inset`. Rendered in the natural
+        // `right_segments[start..]` order; first visible segment is
+        // leftmost of the right group.
         let visible_right = &self.right_segments[resolved_right_start..];
         let visible_right_widths = &right_widths[resolved_right_start..];
         let total_visible: f32 = visible_right_widths.iter().sum();
-        let mut cursor = (bar_width - total_visible).max(0.0);
+        let mut cursor = (bar_width - edge_inset - total_visible).max(0.0);
         for (offset, seg) in visible_right.iter().enumerate() {
             let seg_idx = resolved_right_start + offset;
             let w = visible_right_widths[offset];
@@ -565,6 +628,27 @@ impl StatusBar {
 //    it's what #791 already established as the correct shape for the
 //    other two backends.
 //
+// 3. **`find_bounds` semantics now genuinely differ per backend (#1155).**
+//    Each backend's testing driver locates a painted segment's label by
+//    recording where text actually got drawn — but "where text got
+//    drawn" means different rects on different backends, and this PR is
+//    the first change that makes the difference numerically observable.
+//    `GtkBackend::draw_status_bar_interactive` explicitly re-records
+//    `seg.bounds` (the full padded fill rect this `paint` computes) over
+//    whatever Pango recorded, per that call site's own comment — so
+//    `GtkDriver::find_bounds` returns the *segment's padded box*,
+//    starting at `PIXEL_EDGE_INSET` for the lone left segment. macOS and
+//    Windows have no such override: `MacDriver`/`WinDriver::find_bounds`
+//    is backed purely by the glyph draw position this `paint` computes
+//    below (`text_rect`, inset a further `PIXEL_SEGMENT_PADDING` past the
+//    fill rect) — so it returns `PIXEL_EDGE_INSET + PIXEL_SEGMENT_PADDING`
+//    for the same segment. Before this change both conventions happened
+//    to agree (`0.0` either way, no inset or padding existed to diverge
+//    on). Not introduced by this PR — the asymmetry is pre-existing
+//    backend-testing-helper divergence — but worth flagging so a future
+//    change doesn't assume `find_bounds` means the same rect across
+//    `GtkDriver`/`MacDriver`/`WinDriver`.
+//
 // `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
 // — only *called* once a real pixel backend is compiled in, exercised by
 // each backend's own `Backend::draw_status_bar` call site plus this
@@ -577,7 +661,10 @@ impl StatusBar {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{StatusBar, StatusBarLayout, StatusSegmentMeasure, StatusSegmentSide};
+    use super::{
+        StatusBar, StatusBarLayout, StatusSegmentMeasure, StatusSegmentSide, PIXEL_EDGE_INSET,
+        PIXEL_SEGMENT_PADDING,
+    };
     use crate::event::Rect;
     use crate::native_surface::NativeSurface;
     use crate::theme::Theme;
@@ -621,9 +708,14 @@ pub(crate) mod native_surface_paint {
         pressed_id: Option<&WidgetId>,
     ) -> StatusBarLayout {
         if width <= 0.0 || line_height <= 0.0 {
-            return bar.layout(width.max(0.0), line_height.max(0.0), MIN_GAP, |_| {
-                StatusSegmentMeasure::new(0.0)
-            });
+            return bar.layout_padded(
+                width.max(0.0),
+                line_height.max(0.0),
+                MIN_GAP,
+                PIXEL_EDGE_INSET,
+                PIXEL_SEGMENT_PADDING,
+                |_| StatusSegmentMeasure::new(0.0),
+            );
         }
 
         let rect = Rect::new(x, y, width, line_height);
@@ -642,10 +734,25 @@ pub(crate) mod native_surface_paint {
         // See this module's doc, divergence 1: bold-aware measurement is
         // per-backend (`surface_measure_text_styled`'s default/override
         // split), not decided here.
-        let bar_layout = bar.layout(width, line_height, MIN_GAP, |seg| {
-            let (w, _) = surface.surface_measure_text_styled(&seg.text, seg.bold);
-            StatusSegmentMeasure::new(w)
-        });
+        //
+        // `layout_padded` (issue #1155) reserves `PIXEL_EDGE_INSET` at
+        // both bar edges and `PIXEL_SEGMENT_PADDING` on both sides of
+        // every segment's measured text — VS Code-like outer/per-item
+        // padding so the right-most segment doesn't touch the window
+        // edge. The text draw below insets by the same padding so the
+        // label sits centred in its (wider) segment box rather than
+        // flush against its left edge.
+        let bar_layout = bar.layout_padded(
+            width,
+            line_height,
+            MIN_GAP,
+            PIXEL_EDGE_INSET,
+            PIXEL_SEGMENT_PADDING,
+            |seg| {
+                let (w, _) = surface.surface_measure_text_styled(&seg.text, seg.bold);
+                StatusSegmentMeasure::new(w)
+            },
+        );
 
         for vs in &bar_layout.visible_segments {
             let seg = match vs.side {
@@ -680,8 +787,18 @@ pub(crate) mod native_surface_paint {
                 seg.bg
             };
             surface.surface_fill_rect(seg_rect, effective_bg);
+            // Text sits inset within the padded segment box (issue #1155)
+            // rather than flush against `seg_rect`'s left edge — the fill
+            // above still covers the full padded bounds, matching the hit
+            // region VS Code-style.
+            let text_rect = Rect::new(
+                seg_rect.x + PIXEL_SEGMENT_PADDING,
+                seg_rect.y,
+                (seg_rect.width - 2.0 * PIXEL_SEGMENT_PADDING).max(0.0),
+                seg_rect.height,
+            );
             surface.surface_draw_text_run_styled(
-                seg_rect, &seg.text, seg.fg, seg.bold, false, false, 1.0,
+                text_rect, &seg.text, seg.fg, seg.bold, false, false, 1.0,
             );
         }
 
@@ -1037,6 +1154,103 @@ pub(crate) mod native_surface_paint {
                 .expect("cursor segment visible");
             let hit = layout.hit_test(cursor.bounds.x + 1.0, cursor.bounds.y + 1.0);
             assert_eq!(hit, StatusBarHit::Segment(WidgetId::new("sb:cursor")));
+        }
+
+        /// Issue #1155: on every pixel backend (this shared `paint` is
+        /// GTK/Win/macOS's rasteriser) the right-most segment must not
+        /// touch the bar's own right edge, and the left-most segment
+        /// must not touch the left edge — both get `PIXEL_EDGE_INSET`'s
+        /// worth of outer margin.
+        #[test]
+        fn paint_reserves_pixel_edge_inset_at_both_bar_edges() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                400.0,
+                20.0,
+                None,
+                None,
+            );
+
+            let left = layout
+                .visible_segments
+                .iter()
+                .find(|vs| vs.side == StatusSegmentSide::Left)
+                .expect("left segment visible");
+            assert_eq!(
+                left.bounds.x, PIXEL_EDGE_INSET,
+                "left-most segment should start `PIXEL_EDGE_INSET` in from x=0, \
+                 not flush at the bar's own left edge"
+            );
+
+            let right = layout
+                .visible_segments
+                .iter()
+                .find(|vs| vs.side == StatusSegmentSide::Right)
+                .expect("right segment visible");
+            assert_eq!(
+                right.bounds.x + right.bounds.width,
+                400.0 - PIXEL_EDGE_INSET,
+                "right-most segment should end `PIXEL_EDGE_INSET` short of the \
+                 bar's own right edge, not touching it"
+            );
+        }
+
+        /// Issue #1155: the segment's background fill covers the full
+        /// padded box (so hover/press tint and hit region agree), but the
+        /// text itself is drawn inset by `PIXEL_SEGMENT_PADDING` rather
+        /// than flush against the fill's left edge.
+        #[test]
+        fn paint_insets_text_within_the_padded_segment_box_but_fills_the_whole_box() {
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &bar,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                400.0,
+                20.0,
+                None,
+                None,
+            );
+
+            let left = layout
+                .visible_segments
+                .iter()
+                .find(|vs| vs.side == StatusSegmentSide::Left)
+                .expect("left segment visible");
+            let (fill_rect, _) = surface
+                .fills
+                .iter()
+                .find(|(r, _)| *r == left.bounds)
+                .expect("segment background filled across its full padded bounds");
+            let (text_rect, _, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _, _)| t == "NORMAL")
+                .expect("left segment text drawn");
+            assert_eq!(
+                text_rect.x,
+                fill_rect.x + PIXEL_SEGMENT_PADDING,
+                "text should be inset by `PIXEL_SEGMENT_PADDING` from the \
+                 filled segment box's own left edge"
+            );
+            assert!(
+                text_rect.width < fill_rect.width,
+                "text draw rect ({}) should be narrower than the filled \
+                 segment box ({}) it sits inside",
+                text_rect.width,
+                fill_rect.width
+            );
         }
     }
 }
@@ -1449,5 +1663,83 @@ mod tests {
             r.is_some(),
             "last segment should survive even when too wide"
         );
+    }
+
+    // ── issue #1155: outer edge inset + per-segment padding ────────────
+
+    #[test]
+    fn layout_padded_insets_left_segment_from_the_bar_edge() {
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg("NORMAL", Some("mode"), false)],
+            right_segments: vec![],
+        };
+        let layout = bar.layout_padded(200.0, 20.0, 16.0, 10.0, 5.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32 * 8.0)
+        });
+        let mode = &layout.visible_segments[0];
+        // Starts `edge_inset` in from the bar's own left edge, not at 0.0.
+        assert_eq!(mode.bounds.x, 10.0);
+        // Width grows by `2 * segment_padding` over the raw measured width.
+        assert_eq!(mode.bounds.width, 6.0 * 8.0 + 2.0 * 5.0);
+    }
+
+    #[test]
+    fn layout_padded_insets_right_segment_from_the_bar_edge() {
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![],
+            right_segments: vec![make_status_seg("Ln 1, Col 1", Some("cursor"), false)],
+        };
+        let measured_w = "Ln 1, Col 1".chars().count() as f32 * 8.0;
+        let layout = bar.layout_padded(200.0, 20.0, 16.0, 10.0, 5.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32 * 8.0)
+        });
+        let cursor = &layout.visible_segments[0];
+        let padded_w = measured_w + 2.0 * 5.0;
+        // Right-aligned `edge_inset` in from the bar's own right edge —
+        // the segment's right edge must land at `bar_width - edge_inset`,
+        // not flush at `bar_width` (the vimcode "Ln 59, Col 2 touches the
+        // window edge" regression this issue reports).
+        assert_eq!(cursor.bounds.x + cursor.bounds.width, 200.0 - 10.0);
+        assert_eq!(cursor.bounds.width, padded_w);
+    }
+
+    #[test]
+    fn layout_padded_hit_region_covers_the_padded_bounds_not_just_the_text() {
+        // "Hit-test regions must cover the padded item" per this issue's
+        // fix description — a click in the padding (not on the glyphs
+        // themselves) must still resolve to the segment.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg("X", Some("mode"), false)],
+            right_segments: vec![],
+        };
+        let layout = bar.layout_padded(200.0, 20.0, 16.0, 10.0, 5.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32 * 8.0)
+        });
+        // bounds.x = 10.0 (edge_inset), width = 8.0 + 10.0 (padding) = 18.0.
+        // Click right at the padded left edge (still inside the padding,
+        // left of where the glyph itself starts).
+        match layout.hit_test(11.0, 5.0) {
+            StatusBarHit::Segment(id) => assert_eq!(id.as_str(), "mode"),
+            other => panic!("expected the padding to be part of the hit region, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layout_with_zero_inset_and_padding_matches_plain_layout() {
+        // `layout` is documented as `layout_padded` with both new
+        // parameters at `0.0` — pin that equivalence directly so a future
+        // change to one can't silently diverge from the other.
+        let bar = StatusBar {
+            id: WidgetId::new("t"),
+            left_segments: vec![make_status_seg(" NORMAL ", Some("mode"), true)],
+            right_segments: vec![make_status_seg(" Ln 1, Col 1 ", Some("cursor"), false)],
+        };
+        let measure = |seg: &StatusBarSegment| StatusSegmentMeasure::new(seg.text.len() as f32);
+        let via_layout = bar.layout(80.0, 1.0, 2.0, measure);
+        let via_padded = bar.layout_padded(80.0, 1.0, 2.0, 0.0, 0.0, measure);
+        assert_eq!(via_layout, via_padded);
     }
 }

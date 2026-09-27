@@ -38,7 +38,9 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::status_bar::StatusSegmentMeasure;
+use crate::primitives::status_bar::{
+    StatusSegmentMeasure, PIXEL_EDGE_INSET, PIXEL_SEGMENT_PADDING,
+};
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
 #[cfg(target_os = "windows")]
@@ -82,9 +84,17 @@ pub fn win_status_bar_layout(
     rect: Rect,
     bar: &StatusBar,
 ) -> StatusBarLayout {
-    bar.layout(rect.width, rect.height, MIN_GAP_DIP, |seg| {
-        StatusSegmentMeasure::new(measure.width_of(&seg.text, seg.bold))
-    })
+    // #1155: `layout_padded` (not plain `layout`) so this no-paint twin
+    // agrees with the shared `native_surface_paint::paint`'s outer edge
+    // inset + per-segment padding — see that fn's doc.
+    bar.layout_padded(
+        rect.width,
+        rect.height,
+        MIN_GAP_DIP,
+        PIXEL_EDGE_INSET,
+        PIXEL_SEGMENT_PADDING,
+        |seg| StatusSegmentMeasure::new(measure.width_of(&seg.text, seg.bold)),
+    )
 }
 
 /// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
@@ -123,6 +133,156 @@ pub fn draw_status_bar(
         hovered_id,
         pressed_id,
     )
+}
+
+// #1155: pins `win_status_bar_layout`'s outer-edge-inset + per-segment
+// padding numerically, the same way `gtk::testing`'s
+// `find_locates_status_bar_segment_by_text` and
+// `primitives::status_bar`'s own unit tests do — see this issue's
+// non-blocking review note that Windows had no test asserting the actual
+// inset numbers, relying entirely on the shared `layout_padded` unit
+// tests. Unlike the `#[cfg(target_os = "windows")]`-gated `mod tests`
+// below (which needs a real `DWrite`), this measures through a trivial
+// fake `StatusMeasure` — `win_status_bar_layout` is pure geometry (see
+// this module's doc, "Issue #1078") — so it runs on every host, including
+// this Linux sandbox's `cargo test --features win`.
+#[cfg(test)]
+mod layout_padding_tests {
+    use super::{win_status_bar_layout, StatusMeasure, MIN_GAP_DIP};
+    use crate::event::Rect;
+    use crate::primitives::status_bar::{
+        StatusBarSegment, PIXEL_EDGE_INSET, PIXEL_SEGMENT_PADDING,
+    };
+    use crate::types::{Color, WidgetId};
+    use crate::StatusBar;
+
+    /// Fixed-width-per-character fake — no real font metrics needed, just
+    /// something deterministic to measure `layout_padded`'s inset/padding
+    /// arithmetic against.
+    struct FixedWidthMeasure {
+        px_per_char: f32,
+    }
+
+    impl StatusMeasure for FixedWidthMeasure {
+        fn width_of(&self, text: &str, _bold: bool) -> f32 {
+            text.chars().count() as f32 * self.px_per_char
+        }
+    }
+
+    fn segment(text: &str) -> StatusBarSegment {
+        StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(0, 0, 0),
+            bg: Color::rgb(10, 20, 30),
+            bold: false,
+            action_id: None,
+        }
+    }
+
+    /// A lone left segment must start `PIXEL_EDGE_INSET` in from the
+    /// bar's own left edge (issue #1155), not flush at x=0.
+    #[test]
+    fn lone_left_segment_starts_after_edge_inset() {
+        let measure = FixedWidthMeasure { px_per_char: 8.0 };
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![segment("hi")],
+            right_segments: vec![],
+        };
+        let layout = win_status_bar_layout(&measure, Rect::new(0.0, 0.0, 400.0, 20.0), &bar);
+
+        let left = layout
+            .visible_segments
+            .first()
+            .expect("left segment visible");
+        assert_eq!(
+            left.bounds.x, PIXEL_EDGE_INSET,
+            "left-most segment should start `PIXEL_EDGE_INSET` in from x=0"
+        );
+    }
+
+    /// A lone right segment must end `PIXEL_EDGE_INSET` short of the
+    /// bar's own right edge (issue #1155), not flush against it.
+    #[test]
+    fn lone_right_segment_ends_before_edge_inset() {
+        let measure = FixedWidthMeasure { px_per_char: 8.0 };
+        let bar_width = 400.0;
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![],
+            right_segments: vec![segment("bye")],
+        };
+        let layout = win_status_bar_layout(&measure, Rect::new(0.0, 0.0, bar_width, 20.0), &bar);
+
+        let right = layout
+            .visible_segments
+            .first()
+            .expect("right segment visible");
+        assert_eq!(
+            right.bounds.x + right.bounds.width,
+            bar_width - PIXEL_EDGE_INSET,
+            "right-most segment should end `PIXEL_EDGE_INSET` short of the bar's right edge"
+        );
+    }
+
+    /// Each segment's measured text reserves `PIXEL_SEGMENT_PADDING` on
+    /// both sides — its bounds are wider than the raw measured text
+    /// width by `2 * PIXEL_SEGMENT_PADDING`.
+    #[test]
+    fn segment_bounds_add_padding_on_both_sides_of_measured_text() {
+        let px_per_char = 8.0;
+        let measure = FixedWidthMeasure { px_per_char };
+        let text = "hi";
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![segment(text)],
+            right_segments: vec![],
+        };
+        let layout = win_status_bar_layout(&measure, Rect::new(0.0, 0.0, 400.0, 20.0), &bar);
+
+        let left = layout
+            .visible_segments
+            .first()
+            .expect("left segment visible");
+        let measured_width = text.chars().count() as f32 * px_per_char;
+        assert_eq!(
+            left.bounds.width,
+            measured_width + 2.0 * PIXEL_SEGMENT_PADDING,
+            "segment bounds should be the measured text width plus \
+             `PIXEL_SEGMENT_PADDING` on both sides"
+        );
+    }
+
+    /// Sanity: `MIN_GAP_DIP` is still reserved between left and right
+    /// groups on top of the new edge inset/padding, i.e. this change
+    /// composes with the pre-existing gap rather than replacing it.
+    #[test]
+    fn min_gap_still_reserved_between_groups() {
+        let measure = FixedWidthMeasure { px_per_char: 8.0 };
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![segment("L")],
+            right_segments: vec![segment("R")],
+        };
+        // Bar just wide enough for both groups plus insets/padding, with
+        // exactly `MIN_GAP_DIP` of slack between them.
+        let left_w = 1.0 * 8.0 + 2.0 * PIXEL_SEGMENT_PADDING;
+        let right_w = 1.0 * 8.0 + 2.0 * PIXEL_SEGMENT_PADDING;
+        let width = 2.0 * PIXEL_EDGE_INSET + left_w + right_w + MIN_GAP_DIP;
+        let layout = win_status_bar_layout(&measure, Rect::new(0.0, 0.0, width, 20.0), &bar);
+
+        assert_eq!(
+            layout.visible_segments.len(),
+            2,
+            "both segments should still fit with exactly MIN_GAP_DIP of slack"
+        );
+        let left = &layout.visible_segments[0];
+        let right = &layout.visible_segments[1];
+        assert!(
+            (right.bounds.x - (left.bounds.x + left.bounds.width) - MIN_GAP_DIP).abs() < 0.01,
+            "gap between groups should be exactly MIN_GAP_DIP"
+        );
+    }
 }
 
 // #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
@@ -236,8 +396,9 @@ mod tests {
 
         let layout = paint(&surface, &dwrite, rect, &bar, None, None);
 
-        // The left segment starts at bar-local x=0 — its fill colour must
-        // be visible somewhere across its own bounds.
+        // Since issue #1155 the left segment starts at bar-local
+        // x=`PIXEL_EDGE_INSET`, not at x=0 — its fill colour must be
+        // visible somewhere across its own bounds.
         let mid_y = (H / 2.0) as u32;
         let left_vs = layout
             .visible_segments
@@ -255,10 +416,26 @@ mod tests {
             "left segment's bg should be painted at its own bounds"
         );
 
-        let left_hit = layout.hit_test(1.0, H / 2.0);
+        // Hit-test the left segment at its own painted centre rather than
+        // a hardcoded `x = 1.0`: issue #1155 reserves `PIXEL_EDGE_INSET`
+        // between the bar's left edge and its left-most segment, so x=1.0
+        // now lands in that inset (correctly `Empty`), which made this a
+        // stale assertion rather than a real regression.
+        let left_cx = left_vs.bounds.x + left_vs.bounds.width / 2.0;
+        let left_hit = layout.hit_test(left_cx, H / 2.0);
         assert_eq!(
             left_hit,
             StatusBarHit::Segment(WidgetId::new("status:mode"))
+        );
+
+        // …and the reserved outer inset itself is *not* clickable — the
+        // positive half of the same #1155 claim, pinned here on the paint
+        // path (the pure-layout twin is `layout_padding_tests` above).
+        assert_eq!(
+            layout.hit_test(PIXEL_EDGE_INSET / 2.0, H / 2.0),
+            StatusBarHit::Empty,
+            "the `PIXEL_EDGE_INSET` strip left of the first segment should \
+             not hit any segment (issue #1155)"
         );
 
         // Right segment is right-aligned; its hit-test centre must resolve
