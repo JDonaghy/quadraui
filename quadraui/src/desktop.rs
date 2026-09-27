@@ -352,8 +352,11 @@ impl Drop for ModalPumpGuard<'_> {
 /// no backend-specific variation left to hand-write. See
 /// [`crate::backend::PlatformServices::move_to_trash`]'s doc for why
 /// that means TUI gets this exact function too, instead of the
-/// `Err(BackendError::Unsupported)` degrade its other desktop-shell
-/// methods (`reveal_in_file_manager`, native dialogs, …) fall back to.
+/// `Err(BackendError::Unsupported)` degrade TUI's remaining
+/// desktop-shell-flavoured methods (native dialogs, notably) still fall
+/// back to — [`reveal_in_file_manager`] below (issue #1092) is the other
+/// one that has since earned a real, best-effort implementation instead
+/// of that placeholder.
 ///
 /// `#[cfg]`-gated on every adopting feature (mirroring this module's own
 /// "why every item is gated" note) — `win`'s production call site is
@@ -969,6 +972,428 @@ mod open_with_default_tests {
                 None => std::env::remove_var("PATH"),
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// reveal_in_file_manager (issue #1092)
+// ─────────────────────────────────────────────────────────────────────
+
+/// The TUI degrade for `PlatformServices::reveal_in_file_manager` (issue
+/// #1092). Before this, `TuiPlatformServices::reveal_in_file_manager` was
+/// an unconditional `Err(BackendError::Unsupported)` — per this crate's
+/// *Cross-backend portability commitment*, that was never earned: a
+/// terminal session on a desktop can reveal a file in its file manager
+/// exactly as readily as it can launch a browser
+/// ([`open_with_default`]/[`try_open_with_default`], issue #969's
+/// `open_url_result`), so `Unsupported` there was a placeholder, not a
+/// structural fact.
+///
+/// Tries, per platform:
+/// - **Windows**: [`windows_explorer_select`] —
+///   `ShellExecuteW(NULL, "open", "explorer.exe", "/select,\"<path>\"",
+///   NULL, SW_SHOWNORMAL)`, the same minimal hand-written FFI declaration
+///   [`windows_shell_execute_open_code`] uses, pointed at `explorer.exe`
+///   with an explicit `/select,` switch instead of handing `path`
+///   straight to the registered "open" handler.
+/// - **macOS**: [`macos_reveal_in_file_manager_command`] — `open -R
+///   <path>`, the CLI front end to the same
+///   `NSWorkspace::activateFileViewerSelectingURLs` call
+///   `macos::services::MacPlatformServices::reveal_in_file_manager` makes
+///   directly; TUI has no AppKit to link against, so this reaches for the
+///   command-line door into the identical native call instead.
+/// - **Linux/BSD**: [`linux_show_items_via_dbus`] —
+///   `org.freedesktop.FileManager1.ShowItems` over the session D-Bus, the
+///   same standard method
+///   `gtk::services::GtkPlatformServices::reveal_in_file_manager` drives
+///   through a linked `gio::DBusConnection::call_sync`; TUI has no `gio`
+///   (a `gtk`-feature-only dependency), so this drives the identical
+///   well-known method through the `dbus-send` CLI tool instead — the
+///   same "reach for the CLI door onto a native facility instead of
+///   linking a client library" trade [`write_clipboard_via_native_tool`]
+///   (`tui::services`, issue #398) already makes for the system
+///   clipboard. Falls back to [`try_open_with_default`] on `path`'s
+///   *parent directory* when that call fails (no `FileManager1` listener
+///   — a headless container, a minimal window manager with no file
+///   manager running): not a perfect "reveal, selected" experience, but
+///   a real file-manager window opened at the right place, on a desktop
+///   session that plainly has one, instead of a blanket `Unsupported`.
+///
+/// Best-effort throughout, matching every other `ServiceResult`-returning
+/// TUI degrade in this crate (`open_url_result`, `open_path`): a
+/// successful spawn/D-Bus call reports `Ok(())` even though the launched
+/// file manager may itself fail to open a window with no way for this
+/// call to observe it.
+#[cfg(feature = "tui")]
+pub(crate) fn reveal_in_file_manager(path: &std::path::Path) -> crate::backend::ServiceResult<()> {
+    if try_reveal_in_file_manager(path) {
+        Ok(())
+    } else {
+        Err(crate::backend::BackendError::Unsupported)
+    }
+}
+
+/// The raw "did anything launch" half of [`reveal_in_file_manager`],
+/// split out (mirroring [`try_open_with_default`]'s own split from
+/// [`open_with_default`]) purely so tests can exercise the per-platform
+/// dispatch without wrapping every assertion in a `ServiceResult`.
+#[cfg(feature = "tui")]
+fn try_reveal_in_file_manager(path: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        windows_explorer_select(path)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_reveal_in_file_manager_command(path).spawn().is_ok()
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if linux_show_items_via_dbus(path) {
+            return true;
+        }
+        match path.parent() {
+            Some(parent) => try_open_with_default(parent.as_os_str()),
+            None => false,
+        }
+    }
+}
+
+/// macOS opener command, not yet spawned — `open -R <path>` ("Reveal in
+/// Finder" from the command line). Factored out so a test can assert on
+/// the program name and arguments a real call would spawn without
+/// actually launching anything, the same shape
+/// [`unix_open_with_default_command`] uses.
+#[cfg(all(target_os = "macos", feature = "tui"))]
+fn macos_reveal_in_file_manager_command(path: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg("-R")
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
+/// Windows opener: `ShellExecuteW`, pointed at `explorer.exe` with an
+/// explicit `/select,"<path>"` parameter — see [`reveal_in_file_manager`]'s
+/// doc for why. Returns whether `ShellExecuteW` reports success, per
+/// [`shell_execute_reports_success`]'s `> 32` rule, the same predicate
+/// [`windows_shell_execute_open`] already uses.
+#[cfg(all(windows, feature = "tui"))]
+fn windows_explorer_select(path: &std::path::Path) -> bool {
+    shell_execute_reports_success(windows_explorer_select_code(path))
+}
+
+/// The raw `ShellExecuteW(NULL, "open", "explorer.exe",
+/// "/select,\"<path>\"", NULL, SW_SHOWNORMAL)` return value. Split from
+/// [`windows_explorer_select`] so a test can assert on the actual
+/// documented `SE_ERR_*` code a given path produces on a real host —
+/// same split [`windows_shell_execute_open_code`] has from
+/// [`windows_shell_execute_open`]. `path.display()` is safe to embed
+/// unquoted-of-inner-quotes here: Windows' filesystem itself forbids `"`
+/// in a path, so there is no in-band way for `path` to break out of the
+/// `/select,"..."` quoting this builds.
+#[cfg(all(windows, feature = "tui"))]
+fn windows_explorer_select_code(path: &std::path::Path) -> isize {
+    // SAFETY: see `windows_shell_execute_open_code`'s identical SAFETY
+    // note — both wide-string buffers below are nul-terminated and kept
+    // alive for the duration of the call.
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show_cmd: i32,
+        ) -> isize;
+    }
+    const SW_SHOWNORMAL: i32 = 1;
+
+    let operation = wide_nul_terminated("open");
+    let file = wide_nul_terminated("explorer.exe");
+    let parameters = wide_nul_terminated(&windows_explorer_select_parameters(path));
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            parameters.as_ptr(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    }
+}
+
+/// Build the `/select,"<path>"` parameter string
+/// [`windows_explorer_select_code`] hands `explorer.exe`, split out (pure
+/// string formatting, no WinAPI) so it is unit-testable on every host —
+/// the FFI call itself is not. Mirrors
+/// [`shell_execute_reports_success`]'s "no WinAPI, so it runs everywhere"
+/// posture: unconditionally compiled under `feature = "tui"` rather than
+/// `cfg(windows)`-gated, so `ci.yml`'s ubuntu-leg `cargo test --features
+/// tui` exercises it too.
+///
+/// `#[cfg_attr(not(windows), allow(dead_code))]` for the same reason
+/// [`wide_nul_terminated`] carries one: its only non-test caller
+/// ([`windows_explorer_select_code`]) is Windows-only.
+#[cfg(feature = "tui")]
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_explorer_select_parameters(path: &std::path::Path) -> String {
+    format!("/select,\"{}\"", path.display())
+}
+
+/// Build the `dbus-send` invocation for
+/// `org.freedesktop.FileManager1.ShowItems` (issue #1092) — not yet
+/// spawned, so a test can assert on the constructed command without a
+/// live D-Bus session. Drives the same standard method
+/// `gtk::services::GtkPlatformServices::reveal_in_file_manager` reaches
+/// through a linked `gio::DBusConnection::call_sync`, at the CLI-tool
+/// level instead — see [`reveal_in_file_manager`]'s doc for why TUI can't
+/// link `gio` directly.
+#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
+fn linux_show_items_via_dbus_command(path: &std::path::Path) -> std::process::Command {
+    let uri = path_to_file_uri(path);
+    let mut cmd = std::process::Command::new("dbus-send");
+    cmd.args([
+        "--session",
+        "--dest=org.freedesktop.FileManager1",
+        "--type=method_call",
+        "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1.ShowItems",
+    ])
+    .arg(format!("array:string:{uri}"))
+    .arg("string:")
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+    cmd
+}
+
+/// Run [`linux_show_items_via_dbus_command`], reporting whether
+/// `dbus-send` itself exited successfully — `dbus-send` reports a
+/// non-zero exit for a D-Bus-level failure (no session bus, no
+/// `FileManager1` listener) exactly the way a failed native
+/// `gio::DBusConnection::call_sync` would, so an exit-status check is
+/// enough; there is no reply payload this call needs to read back.
+#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
+fn linux_show_items_via_dbus(path: &std::path::Path) -> bool {
+    linux_show_items_via_dbus_command(path)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Percent-encode `path` into a `file://` URI: every byte outside RFC
+/// 3986's unreserved set (`ALPHA` / `DIGIT` / `-._~`) plus the path
+/// separator `/` is escaped as `%XX`. Good enough for
+/// `ShowItems`'s `as` (array-of-strings) argument — not a full RFC 3986
+/// implementation — but in particular escapes `,` (which would otherwise
+/// be misread as a `dbus-send` `array:string:` element separator) and
+/// whitespace, both of which a real filesystem path can easily contain.
+/// [`gtk::services::GtkPlatformServices::reveal_in_file_manager`] gets
+/// the same encoding for free from `gio::File::for_path(path).uri()`;
+/// TUI has no `gio` to call, so this is the minimal hand-rolled
+/// equivalent.
+#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
+fn path_to_file_uri(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut out = String::from("file://");
+    for byte in path.as_os_str().as_bytes() {
+        let b = *byte;
+        let is_unreserved =
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/');
+        if is_unreserved {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod reveal_in_file_manager_tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_reveal_in_file_manager_command_uses_open_dash_r() {
+        let cmd = macos_reveal_in_file_manager_command(std::path::Path::new("/tmp/quadraui1092"));
+        assert_eq!(cmd.get_program(), "open");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["-R", "/tmp/quadraui1092"]
+        );
+    }
+
+    /// Pure string formatting, no WinAPI — runs on every host, including
+    /// `ci.yml`'s ubuntu-leg `cargo test --features tui`, same posture
+    /// [`shell_execute_reports_success_tests`]'s own doc explains.
+    /// `Path::new(r"C:\a b\c.txt")` renders identically via `.display()`
+    /// on Unix (one opaque path component, backslashes preserved as
+    /// literal bytes) and on Windows (a real backslash-separated path),
+    /// so the expected output is the same on either host.
+    #[test]
+    fn windows_explorer_select_parameters_quotes_the_path() {
+        assert_eq!(
+            windows_explorer_select_parameters(std::path::Path::new(r"C:\a b\c.txt")),
+            r#"/select,"C:\a b\c.txt""#
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn linux_show_items_via_dbus_command_targets_file_manager1() {
+        let cmd = linux_show_items_via_dbus_command(std::path::Path::new("/tmp/quadraui 1092"));
+        assert_eq!(cmd.get_program(), "dbus-send");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            [
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                "array:string:file:///tmp/quadraui%201092",
+                "string:",
+            ]
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn path_to_file_uri_percent_encodes_spaces_and_commas() {
+        assert_eq!(
+            path_to_file_uri(std::path::Path::new("/tmp/a,b c/d.txt")),
+            "file:///tmp/a%2Cb%20c/d.txt"
+        );
+    }
+
+    /// #1092 acceptance bar: when neither the D-Bus leg nor the
+    /// `xdg-open`-the-parent fallback can reach anything (`$PATH`
+    /// redirected to an empty directory, same technique
+    /// `try_open_with_default_returns_false_when_the_opener_is_missing`
+    /// uses), `reveal_in_file_manager` honestly reports `Unsupported`
+    /// rather than a false `Ok(())`. Doesn't exercise the D-Bus leg for
+    /// real (that needs a live session bus this test environment may not
+    /// have) — only pins the "both legs failed" outcome via the `$PATH`
+    /// stub, which is the fallback this crate can actually control in a
+    /// test.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn reveal_in_file_manager_reports_unsupported_when_every_leg_fails() {
+        let _guard = PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(std::env::var_os("PATH"));
+        let empty_dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        let target = std::env::temp_dir().join("quadraui-1092-no-such-file.txt");
+        // `dbus-send` itself is very unlikely to be on an empty `$PATH`
+        // (it's the binary this leg spawns), so this exercises the "not
+        // even `dbus-send` present" corner of the D-Bus leg alongside the
+        // `xdg-open`-the-parent fallback's own missing-opener leg.
+        assert_eq!(
+            reveal_in_file_manager(&target),
+            Err(crate::backend::BackendError::Unsupported)
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// display_notification_script (issues #955, #1092)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Escape `"` and `\` so a string can be embedded inside an AppleScript
+/// double-quoted string literal. Shared by [`display_notification_script`]
+/// below — `macos::services::MacPlatformServices::send_notification`'s
+/// own private helper until issue #1092 gave `tui::services` a second
+/// `osascript` call site (the TUI degrade's macOS notification fallback
+/// leg) that needed byte-for-byte the same escaping.
+#[cfg(all(target_os = "macos", any(feature = "macos", feature = "tui")))]
+pub(crate) fn applescript_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Build the `osascript -e` argument an AppleScript `display
+/// notification` call spawns (issue #955, shared with `tui::services` by
+/// issue #1092). `display notification` needs an explicit `sound name`
+/// clause to make *any* sound — omitting it entirely (this function's
+/// pre-#955 behaviour, and what `silent: true` still produces) is
+/// silent, not the system default. So `silent: false` (the default — a
+/// caller that never calls `Notification::with_silent` gets a
+/// notification that actually makes a sound, matching ordinary
+/// desktop-notification expectations) adds `sound name ""`, which plays
+/// the system default notification sound.
+#[cfg(all(target_os = "macos", any(feature = "macos", feature = "tui")))]
+pub(crate) fn display_notification_script(title: &str, body: &str, silent: bool) -> String {
+    let mut script = format!(
+        "display notification \"{body}\" with title \"{title}\"",
+        body = applescript_escape(body),
+        title = applescript_escape(title),
+    );
+    if !silent {
+        script.push_str(" sound name \"\"");
+    }
+    script
+}
+
+#[cfg(all(test, target_os = "macos", any(feature = "macos", feature = "tui")))]
+mod display_notification_script_tests {
+    use super::*;
+
+    #[test]
+    fn applescript_escape_handles_quotes_and_backslashes() {
+        // Empty + pass-through.
+        assert_eq!(applescript_escape(""), "");
+        assert_eq!(applescript_escape("plain text"), "plain text");
+        // Single-character escapes.
+        assert_eq!(applescript_escape("a\"b"), "a\\\"b");
+        assert_eq!(applescript_escape("c\\d"), "c\\\\d");
+        // Combined. Backslash MUST be escaped first so the subsequent
+        // quote-escape's added backslashes aren't re-escaped.
+        assert_eq!(applescript_escape("e\"f\\g"), "e\\\"f\\\\g");
+        // Order check: a backslash followed by a quote in input should
+        // produce `\\\"` (escaped slash + escaped quote), not `\\\\\"`
+        // (double-escaped slash + quote).
+        assert_eq!(applescript_escape("\\\""), "\\\\\\\"");
+    }
+
+    #[test]
+    fn display_notification_script_not_silent_adds_default_sound_clause() {
+        let script = display_notification_script("t", "b", false);
+        assert_eq!(
+            script,
+            "display notification \"b\" with title \"t\" sound name \"\""
+        );
+    }
+
+    #[test]
+    fn display_notification_script_silent_omits_sound_clause() {
+        let script = display_notification_script("t", "b", true);
+        assert_eq!(script, "display notification \"b\" with title \"t\"");
+        assert!(!script.contains("sound"));
+    }
+
+    #[test]
+    fn display_notification_script_escapes_title_and_body() {
+        let script = display_notification_script("t\"itle", "b\\ody", true);
+        assert_eq!(
+            script,
+            "display notification \"b\\\\ody\" with title \"t\\\"itle\""
+        );
     }
 }
 

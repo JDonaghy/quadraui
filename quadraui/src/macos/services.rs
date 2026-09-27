@@ -29,7 +29,12 @@
 //!   without a live macOS host to build/verify it against — tracked as
 //!   follow-up, not silently faked; `osascript` stays the fallback for
 //!   whichever host lands it, matching this issue's own "keep osascript
-//!   as the unbundled fallback" note.
+//!   as the unbundled fallback" note. The AppleScript-building helpers
+//!   ([`crate::desktop::display_notification_script`]/
+//!   `crate::desktop::applescript_escape`) moved into `crate::desktop`
+//!   by issue #1092, which gave `tui::services` a second `osascript`
+//!   call site (TUI's own macOS notification fallback leg) needing the
+//!   identical logic.
 //! - **`open_url`/`open_url_result`** → `open <url>` via
 //!   [`crate::desktop::open_with_default`] (issue #1087) — the
 //!   crate-wide opener shared with `tui::services`/`win::services`.
@@ -197,13 +202,15 @@ impl PlatformServices for MacPlatformServices {
 
     /// See the module doc's "Notifications" section for why only
     /// `n.is_silent()` (of #955's four new `Notification` fields) has
-    /// anywhere to go here. [`display_notification_script`] is the pure
-    /// half, split out the same way `hig_button_order`/
+    /// anywhere to go here. [`crate::desktop::display_notification_script`]
+    /// is the pure half, split out the same way `hig_button_order`/
     /// `system_theme_from_gtk_settings` are in their own backends' sibling
     /// modules — so the AppleScript text itself is unit-testable without
-    /// a live mac; only the `Command::spawn` below needs one.
+    /// a live mac; only the `Command::spawn` below needs one. Shared with
+    /// `tui::services` since issue #1092, which needed the identical
+    /// `osascript` call for its own macOS notification fallback leg.
     fn send_notification(&self, n: Notification) {
-        let script = display_notification_script(&n.title, &n.body, n.is_silent());
+        let script = crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
         let _ = Command::new("osascript").arg("-e").arg(&script).spawn();
     }
 
@@ -461,32 +468,13 @@ unsafe fn url_to_path(url: Option<&NSURL>) -> Option<PathBuf> {
     Some(PathBuf::from(path.to_string()))
 }
 
-/// Escape `"` and `\` so a string can be embedded inside an
-/// AppleScript double-quoted string literal.
-fn applescript_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Build the `osascript -e` argument [`MacPlatformServices::send_notification`]
-/// spawns (issue #955). `display notification` needs an explicit `sound
-/// name` clause to make *any* sound — omitting it entirely (this
-/// function's pre-#955 behaviour, and what `silent: true` still
-/// produces) is silent, not the system default. So `silent: false`
-/// (the default — a caller that never calls `Notification::with_silent`
-/// gets a notification that actually makes a sound, matching ordinary
-/// desktop-notification expectations) adds `sound name ""`, which plays
-/// the system default notification sound.
-fn display_notification_script(title: &str, body: &str, silent: bool) -> String {
-    let mut script = format!(
-        "display notification \"{body}\" with title \"{title}\"",
-        body = applescript_escape(body),
-        title = applescript_escape(title),
-    );
-    if !silent {
-        script.push_str(" sound name \"\"");
-    }
-    script
-}
+// `applescript_escape`/`display_notification_script` used to live here as
+// this module's own private helpers (issue #955). Issue #1092 gave
+// `tui::services` a second `osascript` call site — the TUI degrade's
+// macOS notification fallback leg — that needed byte-for-byte the same
+// AppleScript-building logic, so both are now shared out of
+// `crate::desktop` (see that module's "display_notification_script"
+// section) instead of `tui::services` growing its own copy.
 
 /// Order `buttons` for `NSAlert::addButtonWithTitle:` (quadraui#936):
 /// `NSAlert` lays out the first-added button trailing/rightmost (its own
@@ -847,49 +835,9 @@ mod tests {
         assert_eq!(cb.read_text(), None);
     }
 
-    #[test]
-    fn applescript_escape_handles_quotes_and_backslashes() {
-        // Empty + pass-through.
-        assert_eq!(applescript_escape(""), "");
-        assert_eq!(applescript_escape("plain text"), "plain text");
-        // Single-character escapes.
-        assert_eq!(applescript_escape("a\"b"), "a\\\"b");
-        assert_eq!(applescript_escape("c\\d"), "c\\\\d");
-        // Combined. Backslash MUST be escaped first so the subsequent
-        // quote-escape's added backslashes aren't re-escaped.
-        assert_eq!(applescript_escape("e\"f\\g"), "e\\\"f\\\\g");
-        // Order check: a backslash followed by a quote in input
-        // should produce `\\\"` (escaped slash + escaped quote),
-        // not `\\\\\"` (double-escaped slash + quote).
-        assert_eq!(applescript_escape("\\\""), "\\\\\\\"");
-    }
-
-    // ── display_notification_script (issue #955) ────────────────────────
-
-    #[test]
-    fn display_notification_script_not_silent_adds_default_sound_clause() {
-        let script = display_notification_script("t", "b", false);
-        assert_eq!(
-            script,
-            "display notification \"b\" with title \"t\" sound name \"\""
-        );
-    }
-
-    #[test]
-    fn display_notification_script_silent_omits_sound_clause() {
-        let script = display_notification_script("t", "b", true);
-        assert_eq!(script, "display notification \"b\" with title \"t\"");
-        assert!(!script.contains("sound"));
-    }
-
-    #[test]
-    fn display_notification_script_escapes_title_and_body() {
-        let script = display_notification_script("t\"itle", "b\\ody", true);
-        assert_eq!(
-            script,
-            "display notification \"b\\\\ody\" with title \"t\\\"itle\""
-        );
-    }
+    // `applescript_escape`/`display_notification_script` tests moved to
+    // `crate::desktop::display_notification_script_tests` alongside the
+    // functions themselves (issue #1092).
 
     // ── system_theme_from_mac_appearance / unit_to_u8 (quadraui#952) ────
 
