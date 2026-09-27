@@ -111,6 +111,26 @@
 //! (#498) — extracted here first (#427) and generalised because AppKit's
 //! `runModal` and Win32's `IFileOpenDialog::Show` have the identical
 //! nested-pump re-entrancy hazard.
+//!
+//! ## Native-dialog CSS theming (issue #1091)
+//!
+//! `gtk4::FileDialog`'s fallback widgets — the places sidebar, the
+//! scrollbars, and popover-hosted content (the filter dropdown, the
+//! "create folder" popover) — are real GTK chrome this crate doesn't
+//! rasterise itself, so they only ever pick up the desktop's own GTK
+//! theme. Every GTK consumer used to have to ship its own CSS + display
+//! provider purely to make those widgets match the app's [`crate::Theme`]
+//! (vimcode's `PlatformCssProvider`, ~216 lines, reloaded by hand on
+//! every colourscheme change). [`GtkPlatformServices`] now owns that
+//! provider itself: [`GtkPlatformServices::set_theme`] rebuilds
+//! [`dialog_css`] from the current `Theme` and reloads it into
+//! [`GtkPlatformServices::css_provider`], so every GTK consumer's native
+//! dialogs stay in sync with the app's colours with zero per-consumer
+//! CSS. See [`dialog_css`]'s own doc for exactly which `Theme` fields
+//! back which rule, and [`GtkPlatformServices::ensure_css_provider_attached`]
+//! for why attaching the provider to a live `gdk::Display` is decoupled
+//! from loading its CSS (theme and window can each arrive first,
+//! depending on the consumer's startup order).
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -174,6 +194,37 @@ pub struct GtkPlatformServices {
     /// for `ActionMap::lookup_action` on every call once it's
     /// registered.
     action_registered: Cell<bool>,
+    /// Display-level CSS provider theming quadraui's own native-dialog
+    /// fallback widgets (issue #1091) — see the module doc's "Native-dialog
+    /// CSS theming" section and [`dialog_css`]'s doc for the full
+    /// rationale. Reloaded from scratch on every [`Self::set_theme`] call
+    /// rather than diffed, mirroring how cheaply every other backend
+    /// re-derives its whole per-frame `current_theme` cache.
+    ///
+    /// `None` until the first [`Self::set_theme`] call that runs with GTK
+    /// already initialized — `gtk4::CssProvider::new()` itself asserts a
+    /// live main-thread GTK runtime (`assert_initialized_main_thread!`),
+    /// which a bare `GtkPlatformServices::new()` (every unit test in this
+    /// module, and any consumer that constructs one before `gtk4::init()`
+    /// runs) deliberately does not have — see this file's own doc for why
+    /// that must keep working. Lazily constructed instead of eagerly in
+    /// [`Self::new`] for exactly that reason.
+    css_provider: RefCell<Option<gtk4::CssProvider>>,
+    /// Whether [`Self::css_provider`] has already been attached to a live
+    /// `gdk::Display` (see [`Self::ensure_css_provider_attached`]).
+    /// `gtk4::style_context_add_provider_for_display` has no "already
+    /// attached" no-op of its own — calling it twice on the same display
+    /// just stacks the same rules twice — so this guards against that
+    /// instead of relying on GTK to dedupe it.
+    css_provider_attached: Cell<bool>,
+    /// The CSS string most recently loaded into [`Self::css_provider`] —
+    /// `gtk4::CssProvider` keeps no getter back to its own loaded source,
+    /// so this is kept alongside it purely so [`Self::set_theme`]'s effect
+    /// is assertable (by [`Self::dialog_css_for_test`]) without a live
+    /// `gdk::Display`. `set_theme` is a user-triggered colourscheme
+    /// change, not a per-frame call, so the extra `String` isn't on any
+    /// hot path.
+    last_dialog_css: RefCell<String>,
 }
 
 impl GtkPlatformServices {
@@ -184,14 +235,25 @@ impl GtkPlatformServices {
             pumping: ModalPumpDepth::new(),
             events: Rc::new(RefCell::new(None)),
             action_registered: Cell::new(false),
+            css_provider: RefCell::new(None),
+            css_provider_attached: Cell::new(false),
+            last_dialog_css: RefCell::new(String::new()),
         }
     }
 
     /// Store the top-level window handle so file dialogs can be parented
     /// to it. Called once by `GtkBackend::set_window` right after the
     /// window is constructed.
+    ///
+    /// Also gives [`Self::ensure_css_provider_attached`] another chance to
+    /// run (issue #1091): a consumer that calls `Backend::set_theme`
+    /// before the window/display exists yet (theme-then-window ordering)
+    /// otherwise never gets its dialog CSS attached, since
+    /// [`Self::set_theme`]'s own attach attempt would have found no
+    /// display and given up.
     pub(crate) fn set_window(&self, window: gtk4::ApplicationWindow) {
         *self.window.borrow_mut() = Some(window);
+        self.ensure_css_provider_attached();
     }
 
     /// Share the backend's event queue so a notification-action
@@ -264,6 +326,84 @@ impl GtkPlatformServices {
     #[cfg(test)]
     pub(crate) fn gtk_clipboard(&self) -> &GtkClipboard {
         &self.clipboard
+    }
+
+    /// Issue #1091: rebuild [`Self::css_provider`]'s rules from `theme`
+    /// and (re)load them. Called from `GtkBackend::set_theme` — the GTK
+    /// impl of `Backend::set_theme` — every time the app changes its
+    /// [`crate::Theme`], mirroring `push_native_theme_preference`'s own
+    /// "recompute from scratch every call" posture right next to it in
+    /// `gtk::backend`.
+    ///
+    /// [`dialog_css`] itself is a pure string builder that needs no live
+    /// GTK object, so it always runs and always updates
+    /// [`Self::last_dialog_css`] — including in a headless unit test with
+    /// no `gtk4::init()` at all. Only the GTK-object half
+    /// ([`Self::css_provider`]'s lazy construction + `load_from_data`)
+    /// is gated on GTK actually being initialized, via the same
+    /// `gtk4::is_initialized_main_thread()` guard
+    /// `push_native_theme_preference` uses for the identical reason (see
+    /// that method's doc).
+    pub(crate) fn set_theme(&self, theme: &crate::Theme) {
+        let css = dialog_css(theme);
+        *self.last_dialog_css.borrow_mut() = css.clone();
+
+        if !gtk4::is_initialized_main_thread() {
+            return;
+        }
+        {
+            let mut provider = self.css_provider.borrow_mut();
+            // `load_from_string` needs gtk4-rs's `v4_12` feature, which
+            // this crate doesn't enable (only `v4_10` — see Cargo.toml);
+            // `load_from_data` is the always-available equivalent (only
+            // `#[deprecated]` under `v4_12`, so no lint fires here).
+            provider
+                .get_or_insert_with(gtk4::CssProvider::new)
+                .load_from_data(&css);
+        }
+        self.ensure_css_provider_attached();
+    }
+
+    /// Attach [`Self::css_provider`] to whichever `gdk::Display` is
+    /// reachable right now — the parented window's own display once
+    /// [`Self::set_window`] has run, falling back to
+    /// [`gtk4::gdk::Display::default`] otherwise, the same fallback chain
+    /// [`Self::beep`]/[`Self::displays`] use. A no-op when the provider
+    /// hasn't been created yet ([`Self::set_theme`] never called), when
+    /// it's already attached, or when neither display source exists yet
+    /// (headless CI, or a call that races the window/theme the other way
+    /// — see [`Self::set_window`]'s doc for how both orderings still end
+    /// up attached).
+    fn ensure_css_provider_attached(&self) {
+        if self.css_provider_attached.get() {
+            return;
+        }
+        let Some(provider) = self.css_provider.borrow().clone() else {
+            return;
+        };
+        let display = match self.window.borrow().as_ref() {
+            Some(w) => Some(WidgetExt::display(w)),
+            None => gtk4::gdk::Display::default(),
+        };
+        if let Some(display) = display {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+            self.css_provider_attached.set(true);
+        }
+    }
+
+    /// The CSS string most recently loaded via [`Self::set_theme`] —
+    /// test-only window onto [`Self::last_dialog_css`], since
+    /// `gtk4::CssProvider` itself keeps no getter back to its loaded
+    /// source (issue #1091 acceptance: "a GTK test asserting the
+    /// provider's CSS reflects a changed `Theme` background after
+    /// `set_theme`").
+    #[cfg(test)]
+    pub(crate) fn dialog_css_for_test(&self) -> String {
+        self.last_dialog_css.borrow().clone()
     }
 }
 
@@ -706,6 +846,54 @@ fn system_theme_from_gtk_settings(dark: bool, theme_name: Option<&str>) -> Syste
         accent: None,
         high_contrast,
     }
+}
+
+// ── Native-dialog CSS theming (issue #1091) ──────────────────────────────
+
+/// CSS rules [`GtkPlatformServices::set_theme`] loads into
+/// [`GtkPlatformServices::css_provider`] to theme the real GTK chrome
+/// this crate's own fallback dialogs pull in but never rasterises
+/// itself: `gtk4::FileDialog`'s places sidebar (`.sidebar`), its
+/// scrollbars, and popover-hosted content — the filter dropdown, the
+/// "create folder" popover (`popover contents`). See the module doc's
+/// "Native-dialog CSS theming" section for why this exists at all
+/// (previously every GTK consumer, e.g. vimcode, had to ship this by
+/// hand).
+///
+/// Colour choices are deliberately the same pairing this crate's other
+/// bordered-surface primitives use ([`crate::Theme::surface_bg`]/
+/// [`crate::Theme::surface_fg`]) for the sidebar and popover
+/// backgrounds/text, plus [`crate::Theme::muted_fg`] — a dim,
+/// non-content colour — for the scrollbar slider. Pure and
+/// GTK-object-free, so it's unit-testable (and always kept current via
+/// [`GtkPlatformServices::last_dialog_css`]) with no live display needed,
+/// mirroring `hig_button_order`/`system_theme_from_gtk_settings` above.
+fn dialog_css(theme: &crate::Theme) -> String {
+    let surface_bg = css_hex(theme.surface_bg);
+    let surface_fg = css_hex(theme.surface_fg);
+    let slider = css_hex(theme.muted_fg);
+    format!(
+        "\
+.sidebar {{
+    background-color: {surface_bg};
+    color: {surface_fg};
+}}
+scrollbar slider {{
+    background-color: {slider};
+}}
+popover contents {{
+    background-color: {surface_bg};
+    color: {surface_fg};
+}}
+"
+    )
+}
+
+/// `"#rrggbb"` — none of [`dialog_css`]'s three rules need alpha, so
+/// [`crate::types::Color::a`] is dropped rather than emitted as an
+/// `#rrggbbaa` GTK CSS never asked for.
+fn css_hex(color: crate::types::Color) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
 }
 
 /// Build a `gtk4::FileDialog` from the backend-agnostic
@@ -1381,6 +1569,71 @@ mod tests {
     #[test]
     fn system_theme_from_gtk_settings_no_theme_name_is_not_high_contrast() {
         assert!(!system_theme_from_gtk_settings(true, None).high_contrast);
+    }
+
+    // ── Native-dialog CSS theming (issue #1091) ──────────────────────────
+
+    /// [`dialog_css`] is a pure string builder — needs no `gtk4::init()`
+    /// — so it's tested directly for the exact colours/selectors the
+    /// module doc promises: `.sidebar` and `popover contents` both track
+    /// `surface_bg`/`surface_fg`, `scrollbar slider` tracks `muted_fg`.
+    #[test]
+    fn dialog_css_reflects_theme_surface_and_muted_colors() {
+        let theme = crate::Theme {
+            surface_bg: crate::types::Color::rgb(0x11, 0x22, 0x33),
+            surface_fg: crate::types::Color::rgb(0xaa, 0xbb, 0xcc),
+            muted_fg: crate::types::Color::rgb(0x44, 0x55, 0x66),
+            ..crate::Theme::default()
+        };
+        let css = dialog_css(&theme);
+        assert!(css.contains(".sidebar"));
+        assert!(css.contains("scrollbar slider"));
+        assert!(css.contains("popover contents"));
+        assert!(
+            css.contains("#112233"),
+            "sidebar/popover bg should be surface_bg: {css}"
+        );
+        assert!(
+            css.contains("#aabbcc"),
+            "sidebar/popover fg should be surface_fg: {css}"
+        );
+        assert!(
+            css.contains("#445566"),
+            "scrollbar slider should be muted_fg: {css}"
+        );
+    }
+
+    /// Acceptance bar for #1091: a GTK test asserting the provider's CSS
+    /// reflects a changed `Theme` background after `set_theme`. Runs with
+    /// no `gtk4::init()` at all — [`GtkPlatformServices::set_theme`]
+    /// always refreshes [`GtkPlatformServices::last_dialog_css`]
+    /// regardless of whether a live GTK runtime exists to actually
+    /// attach the `CssProvider` to a display (see that method's doc) —
+    /// so this covers every consumer's headless test suite too, not just
+    /// a live-display CI leg.
+    #[test]
+    fn set_theme_updates_the_dialog_css_provider_when_theme_background_changes() {
+        let services = GtkPlatformServices::new();
+
+        let dark = crate::Theme {
+            surface_bg: crate::types::Color::rgb(0x10, 0x10, 0x10),
+            ..crate::Theme::default()
+        };
+        services.set_theme(&dark);
+        let dark_css = services.dialog_css_for_test();
+        assert!(dark_css.contains("#101010"));
+
+        let light = crate::Theme {
+            surface_bg: crate::types::Color::rgb(0xf0, 0xf0, 0xf0),
+            ..crate::Theme::default()
+        };
+        services.set_theme(&light);
+        let light_css = services.dialog_css_for_test();
+        assert!(light_css.contains("#f0f0f0"));
+        assert!(
+            !light_css.contains("#101010"),
+            "stale CSS from the previous theme must not linger: {light_css}"
+        );
     }
 
     // ── Notification target encode/decode + icon decode (issue #955) ────

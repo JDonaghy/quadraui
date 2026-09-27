@@ -1691,6 +1691,11 @@ impl Backend for GtkBackend {
     fn set_theme(&mut self, theme: crate::Theme) {
         self.set_current_theme(theme);
         self.push_native_theme_preference(theme);
+        // Issue #1091: keep the native-dialog CSS provider (sidebar,
+        // scrollbars, popover content on quadraui's own `gtk4::FileDialog`
+        // fallback) in sync with every theme change — see
+        // `GtkPlatformServices::set_theme`'s doc.
+        self.services.set_theme(&theme);
     }
 
     fn set_nerd_fonts(&mut self, enabled: bool) {
