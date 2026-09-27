@@ -1,11 +1,21 @@
 //! macOS rasteriser for [`crate::ActivityBar`].
 //!
-//! Vertical strip of icon rows. Top items render from the top edge
-//! downward at `ACTIVITY_ROW_PX` per row; bottom items pin to the
-//! bottom edge upward. Mirrors [`crate::gtk::activity_bar`] in
-//! geometry, but uses the backend's active `CTFont` directly for
-//! icon rendering instead of GTK's hardcoded "Symbols Nerd Font" —
-//! apps that want Nerd-Font icons install a glyph-bearing font via
+//! Vertical strip of icon rows. Layout (row positions, top-vs-bottom
+//! placement) is the shared [`crate::primitives::activity_bar::ActivityBar::layout`]
+//! (matching `gtk::activity_bar` / `win::activity_bar`, since #1081 — see
+//! below). Content painting moved to the shared
+//! [`crate::primitives::activity_bar::native_surface_paint::paint`]
+//! (#1081, `NativeSurface` Phase 4 slice 5/8) — see that fn's module doc
+//! for the drift it resolved, including two real gaps this backend used
+//! to have (no keyboard-selection highlight at all, and a private
+//! `row_plan` helper that ordered `visible_items` differently from GTK/
+//! Windows — this module's own doc used to flag that as a "known
+//! divergence, deliberately left alone"; unifying onto one `paint`
+//! finally resolves it rather than parking it again).
+//!
+//! Uses the backend's active `CTFont` directly for icon rendering
+//! instead of GTK's hardcoded "Symbols Nerd Font" — apps that want
+//! Nerd-Font icons install a glyph-bearing font via
 //! [`super::MacBackend::set_current_font`] in `setup()`.
 //!
 //! Returns per-row [`ActivityBarRowHit`]s so callers can route clicks
@@ -30,57 +40,18 @@
 //! mirroring `GtkBackend::draw_activity_bar`'s `cr.translate(rect.x,
 //! rect.y)` — this module itself needed no change, since bar-relative paint
 //! is exactly what a translated context wants.
-//!
-//! Known divergence, deliberately left alone: this rasteriser emits **top
-//! items first, then bottom-pinned**, whereas the TUI and GTK rasterisers
-//! follow `ActivityBarLayout::visible_items`, which is bottom-pinned first.
-//! The flat index a backend derives from its own list is what
-//! `hovered_idx` is compared against, so each backend is self-consistent —
-//! but a host that hardcoded an index across backends would disagree. Out
-//! of scope for the coordinate-space fix; flagged here so it isn't
-//! rediscovered from scratch.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
 use crate::primitives::activity_bar::{
-    ActivityBar, ActivityBarRowHit, ActivityBarStyle, ActivityItem,
+    native_surface_paint, ActivityBar, ActivityBarRowHit, ActivityBarStyle,
 };
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Fixed row height in points. Matches `crate::gtk::activity_bar::ACTIVITY_ROW_PX`
 /// (= the vimcode native-button height baked into the GTK CSS).
 pub const ACTIVITY_ROW_PX: f64 = 48.0;
-
-/// The rows this bar actually renders, in emission order, as
-/// `(y_top, item)` pairs.
-///
-/// Top items first (from `y = 0` downward), then bottom-pinned items
-/// from the bottom edge upward — the ordering divergence documented in
-/// the module header. Both [`draw_activity_bar`] and
-/// [`mac_activity_bar_layout`] walk this, so the painted rows and the
-/// returned hit spans cannot drift apart.
-fn row_plan(height: f64, bar: &ActivityBar) -> Vec<(f64, &ActivityItem)> {
-    let rows_total = ((height / ACTIVITY_ROW_PX).floor() as usize).max(1);
-    let bottom_count = bar.bottom_items.len().min(rows_total);
-    let top_capacity = rows_total.saturating_sub(bottom_count);
-
-    let mut plan: Vec<(f64, &ActivityItem)> = Vec::new();
-    for (row_idx, item) in bar.top_items.iter().take(top_capacity).enumerate() {
-        plan.push((row_idx as f64 * ACTIVITY_ROW_PX, item));
-    }
-    for (k, item) in bar.bottom_items.iter().rev().take(bottom_count).enumerate() {
-        let y = height - (k + 1) as f64 * ACTIVITY_ROW_PX;
-        if y < 0.0 {
-            break;
-        }
-        plan.push((y, item));
-    }
-    plan
-}
 
 /// Compute the per-row hit spans [`draw_activity_bar`] would produce for
 /// `bar` in a `width` × `height` strip, without painting.
@@ -88,20 +59,33 @@ fn row_plan(height: f64, bar: &ActivityBar) -> Vec<(f64, &ActivityItem)> {
 /// No-paint twin backing [`crate::Backend::activity_bar_layout`]. Spans
 /// are **bar-relative** — `y_start` / `y_end` measured from the top edge
 /// of the bar, first row at `0.0` — exactly as the trait requires
-/// (quadraui#552). `width` is accepted for signature symmetry with the
-/// rasteriser; row geometry does not depend on it.
+/// (quadraui#552). Delegates to the shared
+/// [`crate::primitives::activity_bar::ActivityBar::layout`] (#1081) —
+/// same call `draw_activity_bar` makes internally, so the two can't
+/// drift apart, and `visible_items` order now matches
+/// `gtk::activity_bar` / `win::activity_bar` (bottom-pinned items
+/// first) instead of this module's old top-first `row_plan`.
 pub fn mac_activity_bar_layout(
-    _width: f64,
+    width: f64,
     height: f64,
     bar: &ActivityBar,
 ) -> Vec<ActivityBarRowHit> {
-    row_plan(height, bar)
+    bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32)
+        .visible_items
         .into_iter()
-        .map(|(y, item)| ActivityBarRowHit {
-            y_start: y as f32,
-            y_end: (y + ACTIVITY_ROW_PX) as f32,
-            id: item.id.clone(),
-            tooltip: item.tooltip.clone(),
+        .map(|vi| {
+            let item = match vi.side {
+                crate::primitives::activity_bar::ActivitySide::Top => &bar.top_items[vi.item_idx],
+                crate::primitives::activity_bar::ActivitySide::Bottom => {
+                    &bar.bottom_items[vi.item_idx]
+                }
+            };
+            ActivityBarRowHit {
+                y_start: vi.bounds.y,
+                y_end: vi.bounds.y + vi.bounds.height,
+                id: item.id.clone(),
+                tooltip: item.tooltip.clone(),
+            }
         })
         .collect()
 }
@@ -171,106 +155,28 @@ pub unsafe fn draw_activity_bar_with_style(
 ) -> Vec<ActivityBarRowHit> {
     CGContextSaveGState(ctx);
 
-    // Background.
-    fill_rect(ctx, 0.0, 0.0, width, height, theme.tab_bar_bg);
-    // Right-edge separator (1 point).
-    fill_rect(ctx, width - 1.0, 0.0, 1.0, height, theme.separator);
-
-    // #658: no theme fallback for either knob — `None` genuinely means
-    // "don't paint this" for both the accent line and the row fill.
-    let accent_col = bar.active_accent;
-    let inactive_fg = theme.inactive_fg;
-    let active_fg = theme.foreground;
-    let hover_bg = theme.tab_bar_bg.lighten(0.10);
-
-    let mut regions: Vec<ActivityBarRowHit> = Vec::new();
-
-    let draw_row = |y: f64, item: &ActivityItem, row_idx: usize, regions: &mut Vec<_>| {
-        let is_hovered = hovered_idx == Some(row_idx);
-
-        // Active-row fill (VS Code style). Lowest-priority layer — painted
-        // first so the hover tint below still takes visual precedence over
-        // it when it also applies to this row. `None` (the default) paints
-        // nothing here (#658).
-        if item.is_active {
-            if let Some(bgc) = style.active_bg {
-                fill_rect(ctx, 0.0, y, width, ACTIVITY_ROW_PX, bgc);
-            }
-        }
-        if is_hovered {
-            fill_rect(ctx, 0.0, y, width, ACTIVITY_ROW_PX, hover_bg);
-        }
-        // Left-edge accent line — only when the bar opts in via
-        // `active_accent`. `None` paints zero accent-line pixels (#658).
-        if item.is_active {
-            if let Some(ac) = accent_col {
-                fill_rect(ctx, 0.0, y, 2.0, ACTIVITY_ROW_PX, ac);
-            }
-        }
-
-        let icon_str = if nerd_fonts_enabled {
-            item.icon.glyph.as_str()
-        } else {
-            item.icon.fallback.as_str()
-        };
-        let (iw, ih) = measure_text(font, icon_str);
-        let fg = if item.is_active || is_hovered {
-            active_fg
-        } else {
-            inactive_fg
-        };
-        draw_text(
-            ctx,
-            font,
-            icon_str,
-            (width - iw) / 2.0,
-            y + (ACTIVITY_ROW_PX - ih) / 2.0,
-            color_to_cg(fg),
-        );
-
-        regions.push(ActivityBarRowHit {
-            y_start: y as f32,
-            y_end: (y + ACTIVITY_ROW_PX) as f32,
-            id: item.id.clone(),
-            tooltip: item.tooltip.clone(),
-        });
+    let layout = bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32);
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
     };
-
-    for (row_idx, (y, item)) in row_plan(height, bar).into_iter().enumerate() {
-        draw_row(y, item, row_idx, &mut regions);
-    }
+    let regions = native_surface_paint::paint(
+        bar,
+        &layout,
+        style,
+        &mut surface,
+        theme,
+        hovered_idx,
+        nerd_fonts_enabled,
+    );
 
     CGContextRestoreGState(ctx);
     regions
 }
 
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
 extern "C" {
     fn CGContextSaveGState(c: CGContextRef);
     fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -467,22 +373,29 @@ mod tests {
         // Round-trip: returned regions must point at where the icon
         // was painted. Verify each region's y-span matches the
         // ACTIVITY_ROW_PX grid AND its id matches the item.
+        //
+        // #1081: `visible_items` order is now bottom-pinned-first (the
+        // shared `ActivityBar::layout`'s order — matching
+        // `gtk::activity_bar` / `win::activity_bar`), not this module's
+        // old top-first `row_plan` order. Only the *order* of these
+        // assertions changed; the y-spans themselves are unchanged.
         let bar = sample_bar();
         let (_surface, regions) = paint_via_backend(&bar, None);
         // 2 top + 1 bottom = 3 visible rows.
         assert_eq!(regions.len(), 3);
-        assert_eq!(regions[0].y_start, 0.0);
-        assert_eq!(regions[0].y_end, ACTIVITY_ROW_PX as f32);
-        assert_eq!(regions[0].id, WidgetId::new("activity:explorer"));
 
-        assert_eq!(regions[1].y_start, ACTIVITY_ROW_PX as f32);
-        assert_eq!(regions[1].y_end, 2.0 * ACTIVITY_ROW_PX as f32);
-        assert_eq!(regions[1].id, WidgetId::new("activity:search"));
+        // Bottom-pinned item comes first.
+        assert_eq!(regions[0].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[0].y_end, H as f32);
+        assert_eq!(regions[0].id, WidgetId::new("activity:settings"));
 
-        // Bottom-pinned item.
-        assert_eq!(regions[2].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
-        assert_eq!(regions[2].y_end, H as f32);
-        assert_eq!(regions[2].id, WidgetId::new("activity:settings"));
+        assert_eq!(regions[1].y_start, 0.0);
+        assert_eq!(regions[1].y_end, ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[1].id, WidgetId::new("activity:explorer"));
+
+        assert_eq!(regions[2].y_start, ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[2].y_end, 2.0 * ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[2].id, WidgetId::new("activity:search"));
     }
 
     #[test]
@@ -494,6 +407,34 @@ mod tests {
         assert_eq!(
             (r, g, b),
             (theme.separator.r, theme.separator.g, theme.separator.b),
+        );
+    }
+
+    /// #1081 regression: pre-migration macOS's `draw_row` closure had no
+    /// `is_keyboard_selected` branch at all — arrow-key navigation was
+    /// completely invisible on this backend (`ActivityItem::is_keyboard_selected`'s
+    /// own doc already admitted "Both the TUI and GTK rasterizers honour
+    /// this flag", i.e. not macOS). The shared
+    /// `native_surface_paint::paint` now fills `bar.selection_bg` (or the
+    /// `lighten(0.20)` default) for a selected row, same as GTK/Windows.
+    #[test]
+    fn keyboard_selected_row_paints_selection_bg() {
+        let mut bar = sample_bar();
+        // Search (top_items[1], not active) is the keyboard-selected row.
+        bar.top_items[1].is_keyboard_selected = true;
+        let (surface, _) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let expected = theme.tab_bar_bg.lighten(0.20);
+
+        // Search paints at y ∈ [48, 96) — probe deep in the row, away
+        // from the glyph and the (unrelated) accent strip.
+        let probe_y = ACTIVITY_ROW_PX as u32 + ACTIVITY_ROW_PX as u32 / 2;
+        let (r, g, b, _) = surface.pixel(W - 6, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "keyboard-selected row should paint the selection background \
+             (quadraui#1081 — this used to be a no-op on macOS)",
         );
     }
 
@@ -518,8 +459,12 @@ mod tests {
     #[test]
     fn hover_lightens_row_background() {
         let bar = sample_bar();
-        // Hover second row (index 1) — currently non-active so hover
-        // tint is the only thing painting bg there.
+        // Hover `visible_items[1]` — the explorer row (`ActivityBar::layout`
+        // orders bottom-pinned items first as of #1081, so index 1 is the
+        // first top item, not `search` as it was under this module's old
+        // top-first `row_plan`). Hover paints unconditionally regardless of
+        // `is_active`, and the default style has no `active_bg`, so the
+        // probed pixel is still the plain hover tint either way.
         let (surface, _) = paint_via_backend(&bar, Some(1));
         let theme = Theme::default();
         let expected = theme.tab_bar_bg.lighten(0.10);

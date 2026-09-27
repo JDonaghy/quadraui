@@ -477,6 +477,172 @@ pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     }
 }
 
+// ── NativeSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::toolbar::native_surface_paint` for the
+// same pattern applied one primitive earlier in this issue.
+//
+// Pre-migration, `gtk::activity_bar`, `macos::activity_bar` and
+// `win::activity_bar` agreed on background, right-edge separator (except
+// where noted), active-row fill / accent-line (#658), hover tint, and
+// per-state foreground colouring — but diverged in ways deeper than a
+// cosmetic corner radius:
+//
+// - **Row ordering / the layout twin.** GTK and Windows both derive
+//   `visible_items` from the shared
+//   [`ActivityBar::layout`] (bottom-pinned items first, then top —
+//   see that method's doc), and their own no-paint layout functions
+//   (`gtk_toolbar_layout`'s twin `bar.layout(...)` call, `win_activity_bar_layout`)
+//   call the exact same method, so paint and hit-test can't drift
+//   apart. **macOS instead had a private `row_plan` helper** that
+//   walked top-then-bottom — geometrically identical `y` positions, but
+//   a different `visible_items` order, and thus a different meaning for
+//   the flat index `hovered_idx` is compared against (macOS's own
+//   module doc called this out explicitly as a "known divergence,
+//   deliberately left alone"). Unifying onto one `paint` forces one
+//   `visible_items` order for all three; adopting the GTK/Windows order
+//   is what finally resolves that flagged-but-parked divergence rather
+//   than parking it again. `macos::activity_bar::mac_activity_bar_layout`
+//   now calls [`ActivityBar::layout`] directly too, so paint and layout
+//   stay in lock-step exactly like the other two backends.
+// - **Keyboard-selection highlight.** [`ActivityItem::is_keyboard_selected`]'s
+//   own doc says "Both the TUI and GTK rasterizers honour this flag" —
+//   an admission, not a design choice, that macOS never did: pre-migration
+//   `macos::activity_bar::draw_row` had no `is_keyboard_selected` branch
+//   at all, so keyboard-arrow navigation was invisible on macOS, and its
+//   foreground-colour decision didn't brighten for a selected-but-not-
+//   active/hovered row either (`item.is_active || is_hovered` — GTK/Win's
+//   equivalent OR's in `is_keyboard_selected` too). `paint` adds both,
+//   closing the gap rather than leaving a third of the three backends
+//   without the feature at all.
+// - **Right-edge separator.** GTK and macOS both painted a 1px
+//   `theme.separator` column at the bar's right edge; **Windows did
+//   not** — no doc comment explains why, so this reads as an
+//   oversight rather than a deliberate omission. Adopted for all three.
+//
+// Every other pixel (background fill, active-row fill/accent-line
+// priority order, hover tint, icon glyph selection via
+// `nerd_fonts_enabled`) was already identical in intent across the
+// three, differing only in which native API painted it.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{
+        ActivityBar, ActivityBarLayout, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
+    };
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+
+    /// Paint an [`ActivityBar`] at its caller-resolved `layout` onto
+    /// `surface`. Returns per-row hit spans, **bar-relative** (see
+    /// [`ActivityBarRowHit`]'s own doc) — callers add the bar's origin
+    /// before hit-testing a click.
+    ///
+    /// `hovered_idx` indexes into `layout.visible_items` (bottom-pinned
+    /// items first, then top — see [`ActivityBar::layout`]'s doc).
+    /// `nerd_fonts_enabled` selects `item.icon.glyph` vs
+    /// `item.icon.fallback` (issue #683).
+    pub(crate) fn paint(
+        bar: &ActivityBar,
+        layout: &ActivityBarLayout,
+        style: &ActivityBarStyle,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        hovered_idx: Option<usize>,
+        nerd_fonts_enabled: bool,
+    ) -> Vec<ActivityBarRowHit> {
+        let width = layout.viewport_width;
+        let height = layout.viewport_height;
+
+        surface.surface_fill_rect(Rect::new(0.0, 0.0, width, height), theme.tab_bar_bg);
+        surface.surface_fill_rect(Rect::new(width - 1.0, 0.0, 1.0, height), theme.separator);
+
+        let hover_bg = theme.tab_bar_bg.lighten(0.10);
+
+        let mut regions: Vec<ActivityBarRowHit> = Vec::new();
+
+        for (flat_idx, vi) in layout.visible_items.iter().enumerate() {
+            let y = vi.bounds.y;
+            let row_h = vi.bounds.height;
+            let item = match vi.side {
+                ActivitySide::Top => &bar.top_items[vi.item_idx],
+                ActivitySide::Bottom => &bar.bottom_items[vi.item_idx],
+            };
+            let is_hovered = hovered_idx == Some(flat_idx);
+
+            // Active-row fill (VS Code style, #658) — lowest priority,
+            // painted first so hover/selection tints below still win.
+            if item.is_active {
+                if let Some(bg) = style.active_bg {
+                    surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), bg);
+                }
+            }
+
+            // Hover tint — painted before selection so the brighter
+            // selection tint always wins when a row is both hovered and
+            // keyboard-selected.
+            if is_hovered {
+                surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), hover_bg);
+            }
+
+            // Keyboard-selection highlight — closes macOS's pre-#1081
+            // gap (see module doc).
+            if item.is_keyboard_selected {
+                let sel_bg = bar
+                    .selection_bg
+                    .unwrap_or_else(|| theme.tab_bar_bg.lighten(0.20));
+                surface.surface_fill_rect(Rect::new(0.0, y, width, row_h), sel_bg);
+            }
+
+            // Left-edge accent line — only when the bar opts in via
+            // `active_accent`; `None` paints zero accent pixels (#658).
+            if item.is_active {
+                if let Some(accent) = bar.active_accent {
+                    surface.surface_fill_rect(Rect::new(0.0, y, 2.0, row_h), accent);
+                }
+            }
+
+            let icon_str = if nerd_fonts_enabled {
+                item.icon.glyph.as_str()
+            } else {
+                item.icon.fallback.as_str()
+            };
+            let (iw, ih) = surface.surface_measure_text(icon_str);
+            let fg = if item.is_active || is_hovered || item.is_keyboard_selected {
+                theme.foreground
+            } else {
+                theme.inactive_fg
+            };
+            surface.surface_draw_text_run(
+                Rect::new(
+                    (width - iw) / 2.0,
+                    y + (row_h - ih) / 2.0,
+                    iw.max(0.0),
+                    ih.max(0.0),
+                ),
+                icon_str,
+                fg,
+            );
+
+            regions.push(ActivityBarRowHit {
+                y_start: y,
+                y_end: y + row_h,
+                id: item.id.clone(),
+                tooltip: item.tooltip.clone(),
+            });
+        }
+
+        regions
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
