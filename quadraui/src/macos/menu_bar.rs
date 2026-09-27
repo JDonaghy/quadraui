@@ -199,41 +199,60 @@ mod tests {
     /// path instead of a synthetic `RecordingSurface`, so it actually
     /// proves the macOS backend now paints the pixel, not just that the
     /// shared `native_surface_paint::paint` fn computes the right rect.
+    ///
+    /// Deliberately does **not** recompute `text_x`/`text_y` via its own
+    /// `measure_text(&font(), ..)` call — that assumes the test's font
+    /// matches whatever the backend actually painted with, which drifted
+    /// after per-backend platform font defaults (#1156) started
+    /// overriding `set_current_font`. Instead it scans directly inside
+    /// the item's *layout* bounds (which the real paint call already
+    /// resolved) for a horizontal run of contiguous `tab_active_fg`
+    /// pixels in the lower half of the item. The underline is a solid
+    /// filled rect (`native_surface_paint::paint`'s `UNDERLINE_HEIGHT`
+    /// bar), so it always yields a long contiguous run of matching
+    /// pixels; individual glyph strokes (same colour) don't — "F"'s
+    /// vertical stem is only 2-3px wide, and its horizontal bars sit in
+    /// the upper half of the glyph, above the baseline the underline
+    /// sits under.
     #[test]
     fn open_item_paints_alt_underline_beneath_activation_char() {
         let bar = sample_bar();
         let (surface, layout) = paint_via_backend(&bar);
         let theme = Theme::default();
-        let f = font();
 
-        // File ("&File") is the open item — underline sits under 'F'
-        // (char index 0, no prefix offset) in `theme.tab_active_fg`.
-        // Reproduce `native_surface_paint::paint`'s own measurements
-        // (same font, same text) rather than assuming pixel rows.
+        // File ("&File") is the open item.
         let file = &layout.visible_items[0];
-        let (text_w, text_h) = measure_text(&f, "File");
-        let (char_w, _) = measure_text(&f, "F");
-        let text_x = file.bounds.x + (file.bounds.width - text_w as f32) / 2.0;
-        let text_y = file.bounds.y + (file.bounds.height - text_h as f32) / 2.0;
-        let underline_top = (text_y + text_h as f32 - 2.0).floor() as u32;
-        let scan_x_from = text_x.floor() as u32;
-        let scan_x_to = scan_x_from + (char_w.max(1.0) as u32) + 1;
+        let x0 = file.bounds.x.floor() as u32;
+        let x1 = ((file.bounds.x + file.bounds.width).ceil() as u32).min(W);
+        let y_mid = (file.bounds.y + file.bounds.height / 2.0).floor() as u32;
+        let y1 = ((file.bounds.y + file.bounds.height).ceil() as u32).min(H);
 
-        let found = (underline_top..underline_top + 2).any(|row| {
-            (scan_x_from..scan_x_to).any(|x| {
+        const MIN_RUN: u32 = 3;
+        let target = (
+            theme.tab_active_fg.r,
+            theme.tab_active_fg.g,
+            theme.tab_active_fg.b,
+        );
+
+        let mut best_run = 0u32;
+        for row in y_mid..y1 {
+            let mut run = 0u32;
+            for x in x0..x1 {
                 let (r, g, b, _) = surface.pixel(x, row);
-                (r, g, b)
-                    == (
-                        theme.tab_active_fg.r,
-                        theme.tab_active_fg.g,
-                        theme.tab_active_fg.b,
-                    )
-            })
-        });
+                if (r, g, b) == target {
+                    run += 1;
+                    best_run = best_run.max(run);
+                } else {
+                    run = 0;
+                }
+            }
+        }
+
         assert!(
-            found,
-            "expected a painted underline pixel near rows {underline_top}..{}, columns {scan_x_from}..{scan_x_to}",
-            underline_top + 2,
+            best_run >= MIN_RUN,
+            "expected a contiguous run of >= {MIN_RUN} {target:?} pixels in the lower half \
+             of the File item (columns {x0}..{x1}, rows {y_mid}..{y1}); found longest run \
+             of {best_run}",
         );
     }
 
