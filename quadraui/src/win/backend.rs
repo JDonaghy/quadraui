@@ -6350,6 +6350,130 @@ mod tests {
         assert!(editor_ink > 0, "FontRole::Editor must still paint real ink");
     }
 
+    /// #1077 "Font role" drift: pre-migration Windows painted the whole
+    /// dialog (including body text) through the one editor `dwrite`
+    /// handle — `chrome_dwrite` sat unused, exactly like
+    /// `surface_draw_text_run_with_role` before #1073. `WinBackend::
+    /// draw_dialog` (see its own doc) now passes `chrome_dwrite`
+    /// instead, so body text should render at the *chrome* font's size,
+    /// not the editor's.
+    ///
+    /// The editor font size is held **fixed** across both runs — only
+    /// the chrome (ui) font size varies. `native_surface_paint::paint`'s
+    /// per-row rect height comes from `WinBackend::current_line_height`,
+    /// which is always seeded from the *editor* font's own metrics (see
+    /// `attach_headless`'s doc: "those are always resolved from the
+    /// editor font"), regardless of which `DWrite` handle actually
+    /// paints the glyphs — so varying the editor size too would change
+    /// the row's clip box and confound the comparison. With the editor
+    /// (and therefore the row geometry) held constant, any ink
+    /// difference between the two runs can only come from the chrome
+    /// font size — proving body text is painted through `chrome_dwrite`.
+    /// If it were still painted through the editor `dwrite` handle (the
+    /// pre-migration behaviour), both runs would paint identical ink
+    /// regardless of the chrome size.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size() {
+        use crate::primitives::dialog::DialogMeasure;
+        use crate::primitives::toolbar::ToolbarItemMeasure;
+        use crate::theme::Theme;
+        use crate::types::{StyledText, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 100;
+        const EDITOR_SIZE_PT: f32 = 14.0;
+
+        fn body_only_dialog() -> Dialog {
+            Dialog {
+                id: WidgetId::new("d"),
+                title: StyledText::plain(""),
+                body: vec![StyledText::plain("A")],
+                buttons: vec![],
+                severity: None,
+                vertical_buttons: false,
+                table: None,
+                input: None,
+            }
+        }
+
+        fn body_layout() -> DialogLayout {
+            let dialog = body_only_dialog();
+            let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
+            let measure = DialogMeasure {
+                width: W as f32,
+                title_height: 0.0,
+                body_height: 90.0,
+                table_height: 0.0,
+                input_height: 0.0,
+                button_row_height: 0.0,
+                button_width: 0.0,
+                button_gap: 0.0,
+                padding: 4.0,
+            };
+            dialog.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0))
+        }
+
+        /// Rightmost ink column within `body_bounds` that differs from
+        /// `theme.surface_bg` — i.e. the right edge of the body text's
+        /// glyph ink, relative to `body_bounds.x`. Horizontal extent,
+        /// not pixel *count*: `body_bounds`' row height is always the
+        /// (fixed, in this test) editor font's line height — see this
+        /// test's own doc — so a much taller chrome glyph gets vertically
+        /// clipped by `D2D1_DRAW_TEXT_OPTIONS_CLIP` regardless of its
+        /// point size, making a raw ink-pixel *count* comparison weak.
+        /// Its *width* is never clipped (the row is far wider than one
+        /// glyph), and a larger font paints a strictly wider glyph for
+        /// any real typeface.
+        fn body_ink_right_edge(surface: &HeadlessSurface, body_bounds: Rect) -> i32 {
+            let bg = Theme::default().surface_bg;
+            let mut last = 0i32;
+            for y in body_bounds.y as u32..(body_bounds.y + body_bounds.height) as u32 {
+                for x in body_bounds.x as u32..(body_bounds.x + body_bounds.width) as u32 {
+                    let px = surface.pixel_at(x, y);
+                    if (px.r, px.g, px.b) != (bg.r, bg.g, bg.b) {
+                        last = last.max(x as i32 - body_bounds.x as i32);
+                    }
+                }
+            }
+            last
+        }
+
+        fn paint_with_chrome_size(chrome_size_pt: f32, layout: &DialogLayout) -> i32 {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, EDITOR_SIZE_PT);
+            backend.set_ui_font(&format!("{DEFAULT_UI_FONT_FAMILY} {chrome_size_pt}"));
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let _ = Backend::draw_dialog(&mut backend, &body_only_dialog(), layout);
+            backend.end_frame();
+            body_ink_right_edge(&surface, layout.body_bounds)
+        }
+
+        let layout = body_layout();
+
+        let right_tiny_chrome = paint_with_chrome_size(6.0, &layout);
+        let right_huge_chrome = paint_with_chrome_size(40.0, &layout);
+
+        assert!(
+            right_huge_chrome > right_tiny_chrome * 2,
+            "with the editor font size held fixed at {EDITOR_SIZE_PT}pt, only varying \
+             the chrome font size (6pt vs 40pt), the dialog body's glyph should paint \
+             far wider at the larger chrome size — proves draw_dialog paints body text \
+             via chrome_dwrite, not the (unchanged) editor dwrite handle \
+             (right_tiny_chrome={right_tiny_chrome}, right_huge_chrome={right_huge_chrome})"
+        );
+        assert!(
+            right_tiny_chrome > 0,
+            "the tiny-chrome run must still paint some real ink, or this comparison \
+             proves nothing"
+        );
+    }
+
     /// #1073: `surface_draw_icon_glyph` forwards to `surface_draw_text_run`
     /// on this backend (DirectWrite's font-fallback cascade is already
     /// baked into every `IDWriteTextFormat` — see the trait override's
