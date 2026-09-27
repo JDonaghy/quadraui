@@ -277,9 +277,27 @@ mod tests {
             "highlight corner pixel should NOT be filled — rounded corner (quadraui#1081), not square",
         );
 
-        // The inset rect's centre must still be filled solid in the
-        // highlight colour — proves this isn't just "nothing painted".
-        let cx = (item.bounds.x + item.bounds.width / 2.0) as u32;
+        // The inset rect must still be filled solid in the highlight
+        // colour somewhere away from the corners — proves this isn't
+        // just "nothing painted". Deliberately NOT the button's exact
+        // geometric centre: that's also where the "On" label's own
+        // text is centred (`tx = item.x + (item.width - tw) / 2`), and
+        // on a real macOS host CoreText's font smoothing anti-aliases
+        // glyph ink into the surrounding highlight fill, so the centre
+        // pixel is a blend of `theme.foreground` and `theme.selected_bg`
+        // — not pure `theme.selected_bg` (quadraui#1081 smoke-test
+        // fixup: this exact assertion previously read `(195, 196, 201)`
+        // instead of `theme.selected_bg`'s `(50, 60, 90)` on a real Mac).
+        // `measure_button`'s `ACTION_H_PAD = 8.0` guarantees the text
+        // always starts `item.x + 8` regardless of font/glyph metrics
+        // (`item.width == text_width + 2 * ACTION_H_PAD`, so
+        // `tx == item.x + ACTION_H_PAD`), so the strip
+        // `[item.x + 2, item.x + 8)` — between the inset's left edge
+        // and where the label starts — is always text-free. `+ 5.0`
+        // sits in the middle of that strip; the y stays at mid-height,
+        // comfortably clear of the top/bottom corner arcs (radius 4 on
+        // a 40px-tall bar).
+        let cx = (item.bounds.x + 5.0) as u32;
         let cy = (item.bounds.y + item.bounds.height / 2.0) as u32;
         let (r, g, b, _) = surface.pixel(cx, cy);
         assert_eq!(
@@ -289,7 +307,7 @@ mod tests {
                 theme.selected_bg.g,
                 theme.selected_bg.b
             ),
-            "highlight centre pixel should be filled solid",
+            "highlight fill should be solid away from the corners and the label text",
         );
     }
 }
