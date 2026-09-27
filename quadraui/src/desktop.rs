@@ -1420,7 +1420,23 @@ pub(crate) fn tui_notify_send_command(title: &str, body: &str) -> std::process::
     cmd
 }
 
-#[cfg(all(test, feature = "tui"))]
+/// `unix`-gated as a whole, not per-test: both command builders this
+/// module covers ([`tui_macos_notify_command`],
+/// [`tui_notify_send_command`]) are themselves `cfg(unix)` — Windows has
+/// no native command-line notifier leg at all (OSC 9 is natively
+/// supported by Windows Terminal, so `tui::services`'s escape leg covers
+/// it alone; see that module's "Notifications (issue #1092)" doc). A
+/// `#[cfg(all(test, feature = "tui"))]` module with only `cfg(unix)` and
+/// `cfg(target_os = "macos")` tests inside compiles to an *empty* module
+/// on Windows, whose `use super::*` is then an `unused_imports` warning —
+/// and `ci.yml`'s windows-latest "Test (tui feature)" step runs under
+/// `RUSTFLAGS: -D warnings`, so that warning is a hard build failure
+/// there (and only there: the "Build (tui feature)" step above it sets no
+/// such flag, which is why this surfaced as a test-step-only red).
+/// Windows-side coverage of `send_notification` lives in
+/// `tui::services`'s `notification_osc_tests` instead, which is exactly
+/// the whole method on that platform.
+#[cfg(all(test, unix, feature = "tui"))]
 mod tui_send_notification_command_tests {
     use super::*;
 
