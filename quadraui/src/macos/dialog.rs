@@ -1,134 +1,26 @@
 //! macOS rasteriser for [`crate::Dialog`].
 //!
-//! Mirrors [`crate::gtk::dialog::draw_dialog`]: bordered box, title
-//! row, body lines, optional input row, button row at the bottom.
+//! Content painting moved to the shared
+//! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
+//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! drift it resolved. macOS's own font-role behaviour (the whole dialog
+//! paints in `self.chrome_font`, per issue #1003) is unchanged by this
+//! migration — it was already the answer the shared `paint` adopted for
+//! every backend.
+//!
+//! `DialogInput::Toolbar` still renders through
+//! [`super::toolbar::draw_toolbar`] after the shared `paint` returns,
+//! using the same `font` (chrome) as before — unchanged.
+//!
 //! Returns the per-button bounds as `Vec<Rect>` so the caller's click
 //! handler can resolve button hits without re-running layout.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
-use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout, DialogTable};
+use crate::primitives::dialog::{native_surface_paint, Dialog, DialogInput, DialogLayout};
 use crate::theme::Theme;
-use crate::types::{Color, StyledText};
-
-fn flatten(text: &StyledText) -> String {
-    text.spans.iter().map(|s| s.text.as_str()).collect()
-}
-
-/// Draw a [`DialogTable`] at `(table_x, table_y)` using Core Text.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the call.
-// Mirrors `gtk::dialog::draw_table_gtk`, which carries the same allow: a
-// rasteriser signature is context (ctx, font) + geometry + palette, and
-// bundling those into a struct would diverge the two backends' shapes for
-// no reader benefit.
-#[allow(clippy::too_many_arguments)]
-unsafe fn draw_table_macos(
-    ctx: CGContextRef,
-    font: &CTFont,
-    table: &DialogTable,
-    table_x: f64,
-    table_y: f64,
-    line_height: f64,
-    fg: Color,
-    border_color: Color,
-) {
-    let ncols = table.num_cols();
-    if ncols == 0 {
-        return;
-    }
-
-    // Measure column widths.
-    let mut col_widths_px = vec![0.0f64; ncols];
-    if let Some(headers) = &table.headers {
-        for (j, h) in headers.iter().enumerate() {
-            if j < ncols {
-                let (w, _) = measure_text(font, h);
-                if w > col_widths_px[j] {
-                    col_widths_px[j] = w;
-                }
-            }
-        }
-    }
-    for row in &table.rows {
-        for (j, cell) in row.iter().enumerate() {
-            if j < ncols {
-                let (w, _) = measure_text(font, cell);
-                if w > col_widths_px[j] {
-                    col_widths_px[j] = w;
-                }
-            }
-        }
-    }
-
-    // Honour explicit column_widths as minimums (char-cell → pixel
-    // approximation via line_height × 0.6, matching the GTK path).
-    if let Some(explicit) = &table.column_widths {
-        for (j, &w) in explicit.iter().enumerate() {
-            if j < ncols {
-                let px = w as f64 * (line_height * 0.6);
-                if px > col_widths_px[j] {
-                    col_widths_px[j] = px;
-                }
-            }
-        }
-    }
-
-    let (sep_w, _) = measure_text(font, " │ ");
-    let mut col_x = vec![0.0f64; ncols];
-    let mut cursor_x = table_x;
-    for j in 0..ncols {
-        col_x[j] = cursor_x;
-        cursor_x += col_widths_px[j];
-        if j + 1 < ncols {
-            cursor_x += sep_w;
-        }
-    }
-
-    let fg_cg = color_to_cg(fg);
-    let border_cg = color_to_cg(border_color);
-    let mut row_y = table_y;
-
-    if let Some(headers) = &table.headers {
-        for (j, h) in headers.iter().enumerate() {
-            if j < ncols {
-                draw_text(ctx, font, h, col_x[j], row_y, fg_cg);
-            }
-        }
-        for j in 0..ncols.saturating_sub(1) {
-            let sep_x = col_x[j] + col_widths_px[j];
-            draw_text(ctx, font, " │ ", sep_x, row_y, border_cg);
-        }
-        row_y += line_height;
-
-        // Separator row: ─────
-        let total_w = col_x[ncols - 1] + col_widths_px[ncols - 1] - table_x;
-        let char_w = line_height * 0.6;
-        let dash_count = (total_w / char_w).ceil() as usize + 4;
-        let dash_str: String = "─".repeat(dash_count);
-        draw_text(ctx, font, &dash_str, table_x, row_y, border_cg);
-        row_y += line_height;
-    }
-
-    for row in &table.rows {
-        for (j, cell) in row.iter().enumerate() {
-            if j < ncols {
-                draw_text(ctx, font, cell, col_x[j], row_y, fg_cg);
-            }
-        }
-        for j in 0..ncols.saturating_sub(1) {
-            let sep_x = col_x[j] + col_widths_px[j];
-            draw_text(ctx, font, " │ ", sep_x, row_y, border_cg);
-        }
-        row_y += line_height;
-    }
-}
 
 /// Draw a [`Dialog`] at its resolved layout. Returns per-button bounds.
 ///
@@ -136,7 +28,6 @@ unsafe fn draw_table_macos(
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
-#[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_dialog(
     ctx: CGContextRef,
     font: &CTFont,
@@ -145,175 +36,54 @@ pub unsafe fn draw_dialog(
     line_height: f64,
     theme: &Theme,
 ) -> Vec<QRect> {
-    let bounds = dialog_layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return Vec::new();
-    }
-
-    fill_rect(
+    let mut surface = super::surface::CgSurface {
         ctx,
-        bounds.x as f64,
-        bounds.y as f64,
-        bounds.width as f64,
-        bounds.height as f64,
-        theme.surface_bg,
-    );
-    stroke_rect(
-        ctx,
-        bounds.x as f64,
-        bounds.y as f64,
-        bounds.width as f64,
-        bounds.height as f64,
-        theme.border_fg,
-        1.0,
+        font: Some(font),
+    };
+    let button_rects = native_surface_paint::paint(
+        dialog,
+        dialog_layout,
+        line_height as f32,
+        &mut surface,
+        theme,
     );
 
-    if let Some(title_rect) = dialog_layout.title_bounds {
-        draw_text(
-            ctx,
-            font,
-            &flatten(&dialog.title),
-            title_rect.x as f64,
-            title_rect.y as f64,
-            color_to_cg(theme.title_fg),
-        );
-    }
-
-    let body_b = dialog_layout.body_bounds;
-    for (i, line) in dialog.body.iter().enumerate() {
-        let row_y = body_b.y as f64 + i as f64 * line_height;
-        if row_y + line_height > body_b.y as f64 + body_b.height as f64 {
-            break;
-        }
-        draw_text(
-            ctx,
-            font,
-            &flatten(line),
-            body_b.x as f64,
-            row_y,
-            color_to_cg(theme.surface_fg),
-        );
-    }
-
-    // Optional table slot.
-    if let (Some(table_b), Some(table)) = (dialog_layout.table_bounds, dialog.table.as_ref()) {
-        draw_table_macos(
-            ctx,
-            font,
-            table,
-            table_b.x as f64,
-            table_b.y as f64,
-            line_height,
-            theme.surface_fg,
-            theme.border_fg,
-        );
-    }
-
-    if let (Some(input_b), Some(input_kind)) = (dialog_layout.input_bounds, dialog.input.as_ref()) {
-        match input_kind {
-            DialogInput::TextInput(input) => {
-                fill_rect(
-                    ctx,
-                    input_b.x as f64,
-                    input_b.y as f64,
-                    input_b.width as f64,
-                    input_b.height as f64,
-                    theme.input_bg,
-                );
-                stroke_rect(
-                    ctx,
-                    input_b.x as f64,
-                    input_b.y as f64,
-                    input_b.width as f64,
-                    input_b.height as f64,
-                    theme.border_fg,
-                    1.0,
-                );
-                let display = if input.value.is_empty() {
-                    format!(" {}", input.placeholder)
-                } else {
-                    format!(" {}", input.value)
-                };
-                let (_, lh) = measure_text(font, &display);
-                draw_text(
-                    ctx,
-                    font,
-                    &display,
-                    input_b.x as f64 + 2.0,
-                    input_b.y as f64 + (input_b.height as f64 - lh) / 2.0,
-                    color_to_cg(theme.surface_fg),
-                );
-            }
-            DialogInput::Toolbar(toolbar) => {
-                // Render the embedded toolbar using the macOS toolbar
-                // rasteriser.
-                super::toolbar::draw_toolbar(
-                    ctx,
-                    font,
-                    input_b.x as f64,
-                    input_b.y as f64,
-                    input_b.width as f64,
-                    input_b.height as f64,
-                    toolbar,
-                    theme,
-                    None,
-                    None,
-                );
-            }
-        }
-    }
-
-    let mut rects: Vec<QRect> = Vec::with_capacity(dialog_layout.visible_buttons.len());
-    for vis in &dialog_layout.visible_buttons {
-        let btn = &dialog.buttons[vis.button_idx];
-        rects.push(vis.bounds);
-
-        if btn.is_default {
-            fill_rect(
+    // DialogInput::Toolbar isn't painted by the shared `paint` — see
+    // that fn's module doc — so render it here, exactly as before this
+    // migration.
+    if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
+        (dialog_layout.input_bounds, dialog.input.as_ref())
+    {
+        // SAFETY: `ctx` validity is this function's own caller contract,
+        // forwarded unchanged.
+        unsafe {
+            super::toolbar::draw_toolbar(
                 ctx,
-                vis.bounds.x as f64,
-                vis.bounds.y as f64,
-                vis.bounds.width as f64,
-                vis.bounds.height as f64,
-                theme.selected_bg,
+                font,
+                input_b.x as f64,
+                input_b.y as f64,
+                input_b.width as f64,
+                input_b.height as f64,
+                toolbar,
+                theme,
+                None,
+                None,
             );
         }
-
-        let label = if dialog.vertical_buttons {
-            let prefix = if btn.is_default { "▸ " } else { "  " };
-            format!("{}{}", prefix, btn.label)
-        } else {
-            format!("  {}  ", btn.label)
-        };
-        let (lw, lh) = measure_text(font, &label);
-        let label_x = if dialog.vertical_buttons {
-            vis.bounds.x as f64 + 4.0
-        } else {
-            vis.bounds.x as f64 + (vis.bounds.width as f64 - lw) / 2.0
-        };
-        let label_y = vis.bounds.y as f64 + (vis.bounds.height as f64 - lh) / 2.0;
-        draw_text(
-            ctx,
-            font,
-            &label,
-            label_x,
-            label_y,
-            color_to_cg(theme.surface_fg),
-        );
     }
 
-    rects
+    button_rects
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::headless::BitmapSurface;
-    use super::super::text::make_font;
+    use super::super::text::{make_font, measure_text};
     use super::super::MacBackend;
     use super::*;
     use crate::event::Viewport;
     use crate::primitives::dialog::{DialogButton, DialogMeasure};
-    use crate::types::WidgetId;
+    use crate::types::{Color, StyledText, WidgetId};
     use crate::Backend;
 
     const W: u32 = 320;
@@ -453,5 +223,70 @@ mod tests {
         let layout = layout_for(&dialog, viewport, 16.0);
         let (_surface, rects) = paint_via_backend(&dialog, &layout);
         assert_eq!(rects.len(), 2);
+    }
+
+    /// #1077: every button now gets a stroked border, not just the
+    /// default button's selected-bg fill — pre-migration macOS drew no
+    /// button border at all (this test would have failed against the
+    /// old per-backend rasteriser: the edge pixel equalled the plain
+    /// surface bg).
+    #[test]
+    fn every_button_paints_a_border_stroke() {
+        let dialog = sample_dialog();
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = layout_for(&dialog, viewport, 16.0);
+        let (surface, _) = paint_via_backend(&dialog, &layout);
+        let theme = Theme::default();
+        // Cancel (button_idx 0) is NOT the default button, so its
+        // interior is plain surface_bg — its top edge should still
+        // differ (border ink) from a point 3px further in.
+        let btn = layout
+            .visible_buttons
+            .iter()
+            .find(|v| v.button_idx == 0)
+            .expect("cancel button visible");
+        let edge = surface.pixel(
+            (btn.bounds.x + btn.bounds.width / 2.0) as u32,
+            btn.bounds.y as u32,
+        );
+        let inner = surface.pixel(
+            (btn.bounds.x + btn.bounds.width / 2.0) as u32,
+            (btn.bounds.y + 3.0) as u32,
+        );
+        assert_ne!(
+            edge, inner,
+            "button top edge should show border ink, distinct from the button's own \
+             interior (edge={edge:?}, inner={inner:?})"
+        );
+    }
+
+    /// #1077: `DialogButton::tint` is now honoured on every backend —
+    /// pre-migration macOS always painted every label in
+    /// `theme.surface_fg`, silently dropping a caller's tint (the field's
+    /// own doc says it's for destructive-action colouring, e.g. "Delete").
+    #[test]
+    fn tinted_button_label_paints_in_the_tint_colour() {
+        let mut dialog = sample_dialog();
+        let tint = Color::rgb(220, 40, 40);
+        dialog.buttons[1].tint = Some(tint); // "Delete" — the default button
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = layout_for(&dialog, viewport, 16.0);
+        let (surface, _) = paint_via_backend(&dialog, &layout);
+        let btn = layout
+            .visible_buttons
+            .iter()
+            .find(|v| v.button_idx == 1)
+            .expect("default button visible");
+        // Scan the button row for the tint colour — the label is
+        // centred, so a fixed-x probe risks landing between glyphs.
+        let y = (btn.bounds.y + btn.bounds.height / 2.0) as u32;
+        let found = (btn.bounds.x as u32..(btn.bounds.x + btn.bounds.width) as u32)
+            .map(|x| surface.pixel(x, y))
+            .any(|(r, g, b, _)| (r, g, b) == (tint.r, tint.g, tint.b));
+        assert!(
+            found,
+            "tinted button label should paint at least one pixel in the tint colour \
+             somewhere in its row"
+        );
     }
 }
