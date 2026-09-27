@@ -212,6 +212,105 @@ mod tests {
         );
     }
 
+    /// Regression for #1076's **query_height** geometry drift: pre-#1076
+    /// `win_palette_layout` reserved a bare `line_height` for the query
+    /// row; GTK alone added `+ 1.0` for the separator stroke drawn
+    /// immediately below it (D-007 §2). `native_surface_paint::layout`
+    /// now uses GTK's `+ 1.0` formula for every backend, so the
+    /// separator — and hence the first item row — sits one pixel lower
+    /// than the pre-#1076 Windows geometry did. Paints through the real
+    /// Direct2D `HeadlessSurface` path and checks the separator's ink
+    /// lands at the corrected row, not the drifted one.
+    #[test]
+    fn separator_paints_at_corrected_row_not_drifted_one() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let p = palette();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let theme = Theme::default();
+        let title_h = line_height; // native_surface_paint::layout: title_h = line_height
+        let drifted_sep_y = (title_h + line_height) as u32; // pre-#1076 formula
+        let fixed_sep_y = (title_h + line_height + 1.0) as u32; // corrected formula
+        let probe_x = 150_u32;
+
+        let px_fixed = surface.pixel_at(probe_x, fixed_sep_y);
+        let px_drifted = surface.pixel_at(probe_x, drifted_sep_y);
+        assert_eq!(
+            (px_fixed.r, px_fixed.g, px_fixed.b),
+            (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b),
+            "expected separator ink at the corrected row {fixed_sep_y}",
+        );
+        assert_ne!(
+            (px_drifted.r, px_drifted.g, px_drifted.b),
+            (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b),
+            "separator painted at the pre-#1076 drifted row {drifted_sep_y} — \
+             query_bounds.height must be line_height + 1.0, not line_height",
+        );
+    }
+
+    /// Regression for #1076's **row-flooring** geometry drift: pre-#1076
+    /// `win_palette_layout` fed `Palette::layout` the full popup height,
+    /// so its per-row clamp (`height.min(remaining)`) could hand back a
+    /// clipped, partial-height last row whenever the available item-list
+    /// height wasn't an exact multiple of `line_height`. GTK's pre-#1076
+    /// formula floored the row count and fed a reduced `viewport_height`
+    /// instead; `native_surface_paint::layout` now does that for every
+    /// backend. The rect height (200) and `line_height` (18) are chosen
+    /// so the available item area (159px after title/query/bottom-inset)
+    /// is *not* an exact multiple of 18 — the exact condition that
+    /// produced a partial last row pre-#1076.
+    #[test]
+    fn item_list_never_shows_a_partial_last_row() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let mut p = palette();
+        p.items = (0..40)
+            .map(|i| item(&format!("item {i}"), vec![]))
+            .collect();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let layout = win_palette_layout(rect, &p, line_height);
+        let last = layout
+            .visible_items
+            .last()
+            .expect("some items should be visible");
+        assert_eq!(
+            last.bounds.height, line_height,
+            "last visible row must be full height — a partial row means the \
+             pre-#1076 unfloored-viewport drift regressed",
+        );
+
+        // Driver-tier: paint through the real Direct2D backend and
+        // confirm no ink bleeds into the row immediately below the
+        // floored boundary — a partial 9th row would have painted glyph
+        // ink there.
+        let theme = Theme::default();
+        let boundary_y = (last.bounds.y + last.bounds.height + 1.0) as u32;
+        let probe_x = (last.bounds.x + 4.0) as u32;
+        let px = surface.pixel_at(probe_x, boundary_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+            "expected plain surface_bg just below the floored last row, not a \
+             partially-clipped row's content",
+        );
+    }
+
     #[test]
     fn selected_row_paints_selection_bg() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
