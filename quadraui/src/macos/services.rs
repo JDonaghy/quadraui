@@ -30,11 +30,16 @@
 //!   follow-up, not silently faked; `osascript` stays the fallback for
 //!   whichever host lands it, matching this issue's own "keep osascript
 //!   as the unbundled fallback" note.
-//! - **`open_url`** → `open <url>`. Equivalent to
-//!   `NSWorkspace.open(_:)` without needing AppKit initialisation.
+//! - **`open_url`/`open_url_result`** → `open <url>` via
+//!   [`crate::desktop::open_with_default`] (issue #1087) — the
+//!   crate-wide opener shared with `tui::services`/`win::services`.
+//!   Equivalent to `NSWorkspace.open(_:)` without needing AppKit
+//!   initialisation. `open_url_result` overrides the trait's `Ok(())`
+//!   default and reports whether `open` genuinely spawned instead of
+//!   `open_url`'s discarded outcome.
 //! - **`shell.*` parity (issue #956)** → `reveal_in_file_manager` uses
 //!   `NSWorkspace::activateFileViewerSelectingURLs`; `open_path` reuses
-//!   the same `open <path>` shell-out `open_url` makes; `move_to_trash`
+//!   the same `open_with_default` call `open_url_result` makes; `move_to_trash`
 //!   delegates to [`crate::desktop::move_to_trash`] — the cross-platform
 //!   `trash` crate, not a hand-rolled `NSFileManager
 //!   -trashItemAtURL:resultingItemURL:error:` — see that function's doc
@@ -203,7 +208,19 @@ impl PlatformServices for MacPlatformServices {
     }
 
     fn open_url(&self, url: &str) {
-        let _ = Command::new("open").arg(url).spawn();
+        let _ = self.open_url_result(url);
+    }
+
+    /// Fallible twin of [`Self::open_url`] (issue #1087), via
+    /// [`crate::desktop::open_with_default`] — reports whether `open`
+    /// genuinely spawned instead of `open_url`'s discarded outcome.
+    /// Before this override, `open_url_result` fell to
+    /// [`crate::backend::PlatformServices::open_url_result`]'s default
+    /// (`open_url` then always `Ok(())`), so a `Command::spawn` failure
+    /// (e.g. `open` missing from `$PATH`) was silently reported as
+    /// success.
+    fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        crate::desktop::open_with_default(std::ffi::OsStr::new(url))
     }
 
     /// `NSWorkspace::activateFileViewerSelectingURLs` on `path`'s
@@ -225,19 +242,14 @@ impl PlatformServices for MacPlatformServices {
         Ok(())
     }
 
-    /// `open <path>` (issue #956) — the same shell-out [`Self::open_url`]
-    /// makes; macOS's `open(1)` already accepts a filesystem path exactly
-    /// as readily as a URL (it's the command-line front end to
+    /// `open <path>` (issue #956) via [`crate::desktop::open_with_default`]
+    /// (issue #1087) — the same call [`Self::open_url_result`] makes;
+    /// macOS's `open(1)` already accepts a filesystem path exactly as
+    /// readily as a URL (it's the command-line front end to
     /// `NSWorkspace.open(_:)`), so there is nothing path-specific to add
     /// beyond handing it a path instead of a URL string.
     fn open_path(&self, path: &Path) -> ServiceResult<()> {
-        Command::new("open")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| BackendError::PlatformFailure {
-                context: format!("open: {e}"),
-            })
+        crate::desktop::open_with_default(path.as_os_str())
     }
 
     /// [`crate::desktop::move_to_trash`] (issue #956) — see that
@@ -580,18 +592,11 @@ impl MacClipboard {
 const NO_PASTEBOARD_CONTEXT: &str = "arboard::Clipboard::new (no NSPasteboard session)";
 
 /// Map an `arboard::Error` from a named native call into a
-/// [`BackendError::PlatformFailure`] (issue #954). `arboard::Error` has
-/// no "unsupported" variant of its own — every arm here (including
-/// `ContentNotAvailable`, e.g. "clipboard has no image right now") is a
-/// real outcome of a call this backend *does* implement, so
-/// `PlatformFailure` — not `BackendError::Unsupported` — is the honest
-/// mapping; see `BackendError::Unsupported`'s own doc for why that
-/// variant is reserved for "this backend has no implementation" instead.
-fn map_arboard_error(call: &str, err: arboard::Error) -> BackendError {
-    BackendError::PlatformFailure {
-        context: format!("{call}: {err}"),
-    }
-}
+/// [`BackendError::PlatformFailure`] (issue #954) — the one
+/// implementation shared with `gtk::services` (issue #1087); see
+/// [`crate::desktop::map_arboard_error`]'s own doc for the full
+/// rationale.
+use crate::desktop::map_arboard_error;
 
 impl Clipboard for MacClipboard {
     fn read_text(&self) -> Option<String> {
@@ -712,6 +717,38 @@ mod tests {
     fn cursor_screen_point_reports_a_point() {
         let svc = MacPlatformServices::new();
         assert!(svc.cursor_screen_point().is_ok());
+    }
+
+    /// #1087 acceptance bar: `open_url_result` reports a real failure
+    /// when the platform opener can't even launch, instead of the
+    /// pre-#1087 capability lie (`open_url`'s `Command::spawn` discarded
+    /// its outcome; `open_url_result` fell to the trait's `Ok(())`
+    /// default). `$PATH` is temporarily redirected (guarded by
+    /// [`crate::desktop::PATH_OVERRIDE_TEST_LOCK`], and always restored
+    /// via a drop guard even on panic) to a directory containing no
+    /// `open` binary at all, so the real `Command::new("open").spawn()`
+    /// genuinely fails (`ENOENT`) rather than launching anything.
+    #[test]
+    fn open_url_result_reports_failure_when_the_opener_is_missing() {
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path);
+        let empty_dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        let svc = MacPlatformServices::new();
+        assert!(svc.open_url_result("https://example.com/1087").is_err());
     }
 
     // ── Clipboard image/html/file-list/clear (#954) ────────────────────

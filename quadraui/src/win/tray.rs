@@ -321,18 +321,11 @@ fn append_hmenu_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetI
     }
 }
 
-/// Local `str` → NUL-terminated UTF-16 helper — this module's own copy
-/// of the same two-line conversion `super::backend`/`super::services`
-/// each already carry privately (`win_wide_nul_terminated`/
-/// `wide_nul_terminated`); mirrors those files' existing choice to
-/// duplicate rather than share a one-liner across module-privacy
-/// boundaries.
+/// `str` → NUL-terminated UTF-16 helper — the one implementation shared
+/// crate-wide (issue #1087); this module used to carry its own copy of
+/// the same two-line conversion, as did `super::backend`/`super::services`.
 #[cfg(target_os = "windows")]
-fn win_wide_nul_terminated(text: &str) -> Vec<u16> {
-    let mut wide: Vec<u16> = text.encode_utf16().collect();
-    wide.push(0);
-    wide
-}
+use crate::desktop::wide_nul_terminated as win_wide_nul_terminated;
 
 /// Decode `source`'s encoded bytes into a `HICON`, or `None` on any
 /// failure (missing file, corrupt bytes, unrecognised format, GDI
