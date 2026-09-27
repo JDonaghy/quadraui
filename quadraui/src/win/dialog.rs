@@ -209,19 +209,34 @@ mod tests {
 
         surface
             .paint(|target| {
+                // Aliased text: every glyph pixel is either untouched or
+                // painted at full brush coverage. Under the default
+                // (ClearType / grayscale) antialiasing, a 10-DIP "OK"'s
+                // ~1-DIP stems land on fractional x positions and blend
+                // with the button's `selected_bg` fill, so no pixel is
+                // guaranteed to hit the tint colour exactly — this
+                // test's exact-match probe failed on real Windows CI.
+                let rt: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = target;
+                unsafe {
+                    rt.SetTextAntialiasMode(
+                        windows::Win32::Graphics::Direct2D::D2D1_TEXT_ANTIALIAS_MODE_ALIASED,
+                    )
+                };
                 let _ = draw_dialog(target, &dwrite, &d, &layout, 16.0);
             })
             .expect("paint dialog");
 
         let btn = layout.visible_buttons[0].bounds;
-        let y = (btn.y + btn.height / 2.0) as u32;
-        let found = (btn.x as u32..(btn.x + btn.width) as u32)
-            .map(|x| surface.pixel_at(x, y))
+        // Scan the whole button, not one row: which rows the cap-height
+        // glyphs cover depends on DirectWrite's line metrics.
+        let found = (btn.y as u32..(btn.y + btn.height) as u32)
+            .flat_map(|y| (btn.x as u32..(btn.x + btn.width) as u32).map(move |x| (x, y)))
+            .map(|(x, y)| surface.pixel_at(x, y))
             .any(|px| (px.r, px.g, px.b) == (tint.r, tint.g, tint.b));
         assert!(
             found,
             "tinted button label should paint at least one pixel in the tint colour \
-             somewhere in its row"
+             somewhere within its bounds"
         );
     }
 
