@@ -3130,16 +3130,27 @@ impl Backend for WinBackend {
     /// it and returns the per-button hit rectangles in
     /// `layout.visible_buttons` order. See [`Self::draw_status_bar`]'s
     /// doc for the "surface not attached yet" fallback posture.
+    ///
+    /// #1077: `Dialog` is `ChromePrimitive::Dialog` (whole primitive,
+    /// matching macOS's existing #1003 fix) — see `draw_tree`'s comment
+    /// for the font swap. Passes `chrome_dwrite`, falling back to the
+    /// editor `dwrite` handle if no live chrome one exists yet, same
+    /// "degrade, don't panic" convention as
+    /// `surface_draw_text_run_with_role`'s Windows override — this is
+    /// `chrome_dwrite`'s first real caller (see that field's own doc).
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::dialog::draw_dialog(
-                &surface.target,
-                dwrite,
-                dialog,
-                layout,
-                self.current_line_height,
-            );
+        if let Some(surface) = &self.surface {
+            let dwrite = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref());
+            if let Some(dwrite) = dwrite {
+                return super::dialog::draw_dialog(
+                    &surface.target,
+                    dwrite,
+                    dialog,
+                    layout,
+                    self.current_line_height,
+                );
+            }
         }
         // `layout` is already fully resolved (see this fn's doc) — the
         // per-button hit rects are a pure extraction from

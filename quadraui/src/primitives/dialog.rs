@@ -534,6 +534,303 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
     })
 }
 
+// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::tooltip::native_surface_paint` for the
+// same pattern applied one primitive earlier in this slice (#1077, part
+// 2/4). Unlike Palette/ContextMenu/Tooltip, Dialog's three per-backend
+// copies had **real, substantive** drift, not just a cosmetic pixel or
+// two — each resolved below by picking one and documenting why, per this
+// migration's established convention, rather than silently:
+//
+// - **Font role.** [`crate::font_role::ChromePrimitive::Dialog`]
+//   classifies the *whole* primitive as chrome — one font for the whole
+//   box, same as `Tree`/`List`/`MenuBar`. Pre-migration, only macOS
+//   actually did that (issue #1003 passed `self.chrome_font` for the
+//   entire `draw_dialog` call). GTK swapped fonts mid-paint: title +
+//   buttons in the chrome/UI `pango::FontDescription`, but body/table/
+//   input in the editor's monospace layout font. Windows used its one
+//   editor `DWrite` handle for everything, leaving `WinBackend::chrome_dwrite`
+//   (built at attach time, see that field's own doc) completely unused.
+//   `paint` takes a single `surface` already constructed against the
+//   chrome font by its caller — see each backend wrapper — so the whole
+//   dialog now renders in chrome, matching macOS exactly and closing the
+//   gap on GTK (body/table/input move off the editor font) and Windows
+//   (`chrome_dwrite` gets its first real caller). A `DialogInput::Toolbar`
+//   slot is the one exception: `paint` does not render it at all (see
+//   below), so the toolbar rasteriser's own font choice is unaffected by
+//   this decision except through the ambient font state each backend
+//   wrapper leaves behind (GTK: now chrome, previously editor — see
+//   `gtk::dialog::draw_dialog`'s doc for why that's a welcome side effect
+//   rather than a second deliberate change).
+// - **Per-button border stroke.** Windows alone stroked
+//   `theme.border_fg` around every button; GTK/macOS filled the default
+//   button's selected-bg but never stroked a border on any button.
+//   `paint` strokes every button now — cheap, and gives every button a
+//   visible boundary instead of relying on the default button's fill
+//   alone to read as "a button."
+// - **`DialogButton::tint`.** That field's own doc says it's "Override
+//   colour for destructive actions" — Windows was the only backend that
+//   actually read it; GTK/macOS always painted every label in
+//   `theme.surface_fg`, silently dropping a caller's tint. `paint` reads
+//   it on every backend now.
+// - **Button label vertical centring.** GTK/macOS centre each label
+//   inside its button row using the label's own measured height;
+//   Windows passed the button's full row rect and relied on
+//   `IDWriteTextFormat`'s default (top/`NEAR`) paragraph alignment,
+//   i.e. the label sat at the top of a tall button instead of centred.
+//   `paint` centres on every backend — the majority behaviour, and the
+//   same convention every other already-migrated primitive
+//   (`palette`, `context_menu`, `tooltip`) already uses.
+// - **`DialogTextInput` vertical centring.** Same drift, one level
+//   down: GTK/macOS centred the display text in the input box; Windows
+//   passed the box's full height uncentred.
+// - **`DialogTable` explicit `column_widths`.** GTK/macOS honour
+//   `table.column_widths` as a per-column *minimum* width (converted
+//   from the char-cell hint via `line_height * 0.6`, an approximate
+//   monospace char width); Windows's table painter never read the
+//   field at all, so an explicit width hint was silently ignored on
+//   that backend alone.
+// - **`DialogTable` header-separator dash count.** GTK/macOS divide the
+//   table's total content width by the same `line_height * 0.6`
+//   approximate char width to size the `───` separator row under the
+//   header; Windows divided by plain `line_height` (i.e. assumed a
+//   character nearly twice as wide), so its separator row undershot the
+//   table's actual content width. `paint` uses the `* 0.6` approximation
+//   everywhere.
+//
+// `DialogInput::Toolbar` is **not** painted by `paint` at all — the
+// embedded toolbar still renders through each backend's own
+// `super::toolbar::draw_toolbar` (GTK/macOS) or inline Direct2D code
+// (Windows), called by the wrapper *after* `paint` returns, exactly as
+// before this migration. `src/{gtk,macos,win}/toolbar.rs` are not part
+// of this issue's file list — porting the toolbar rasteriser itself onto
+// `NativeSurface` is a separate, future slice, and folding it in here
+// would mean either duplicating its considerably richer layout logic
+// (icons, key hints, per-state colouring) into this file or leaving it
+// half-migrated. Skipping it here changes nothing a caller can observe:
+// every backend's `dialog_layout.input_bounds` position is unaffected,
+// and the toolbar itself paints exactly as it did pre-migration.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{Dialog, DialogInput, DialogLayout, DialogTable};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::Rect;
+
+    /// Approximate monospace character width used to convert a
+    /// [`DialogTable::column_widths`] char-cell hint to pixels, and to
+    /// size the header separator's dash count — the one formula GTK and
+    /// macOS already agreed on pre-migration (see this module's doc for
+    /// the Windows drift this fixes).
+    const APPROX_CHAR_WIDTH_RATIO: f32 = 0.6;
+
+    /// Paint a [`DialogTable`] at `(bounds.x, bounds.y)`, top-left
+    /// anchored. Column widths are auto-computed from content via
+    /// [`NativeSurface::surface_measure_text`], honouring
+    /// `table.column_widths` as a per-column minimum. A header row
+    /// (when present) is followed by a plain dash separator row — no
+    /// `┼` junction, matching every backend's pre-migration
+    /// simplification.
+    fn draw_table(
+        surface: &mut dyn NativeSurface,
+        table: &DialogTable,
+        bounds: Rect,
+        line_height: f32,
+        fg: crate::Color,
+        border: crate::Color,
+    ) {
+        let ncols = table.num_cols();
+        if ncols == 0 {
+            return;
+        }
+
+        let measure_w = |surface: &dyn NativeSurface, s: &str| surface.surface_measure_text(s).0;
+
+        let mut col_w = vec![0.0f32; ncols];
+        if let Some(headers) = &table.headers {
+            for (j, h) in headers.iter().enumerate().take(ncols) {
+                col_w[j] = col_w[j].max(measure_w(surface, h));
+            }
+        }
+        for row in &table.rows {
+            for (j, cell) in row.iter().enumerate().take(ncols) {
+                col_w[j] = col_w[j].max(measure_w(surface, cell));
+            }
+        }
+
+        if let Some(explicit) = &table.column_widths {
+            for (j, &w) in explicit.iter().enumerate() {
+                if j < ncols {
+                    let px = w as f32 * (line_height * APPROX_CHAR_WIDTH_RATIO);
+                    col_w[j] = col_w[j].max(px);
+                }
+            }
+        }
+
+        let sep_w = measure_w(surface, " │ ");
+        let mut col_x = vec![0.0f32; ncols];
+        let mut cursor_x = bounds.x;
+        for j in 0..ncols {
+            col_x[j] = cursor_x;
+            cursor_x += col_w[j];
+            if j + 1 < ncols {
+                cursor_x += sep_w;
+            }
+        }
+
+        let mut row_y = bounds.y;
+        let row_rect = |x: f32, y: f32, w: f32| Rect::new(x, y, w.max(1.0), line_height);
+
+        if let Some(headers) = &table.headers {
+            for (j, h) in headers.iter().enumerate().take(ncols) {
+                surface.surface_draw_text_run(row_rect(col_x[j], row_y, col_w[j]), h, fg);
+            }
+            for j in 0..ncols.saturating_sub(1) {
+                let sep_x = col_x[j] + col_w[j];
+                surface.surface_draw_text_run(row_rect(sep_x, row_y, sep_w), " │ ", border);
+            }
+            row_y += line_height;
+
+            let total_w = col_x[ncols - 1] + col_w[ncols - 1] - bounds.x;
+            let char_w = line_height * APPROX_CHAR_WIDTH_RATIO;
+            let dash_count = ((total_w / char_w.max(1.0)).ceil() as usize + 4).max(1);
+            let dash_str: String = "─".repeat(dash_count);
+            surface.surface_draw_text_run(row_rect(bounds.x, row_y, total_w), &dash_str, border);
+            row_y += line_height;
+        }
+
+        for row in &table.rows {
+            for (j, cell) in row.iter().enumerate().take(ncols) {
+                surface.surface_draw_text_run(row_rect(col_x[j], row_y, col_w[j]), cell, fg);
+            }
+            for j in 0..ncols.saturating_sub(1) {
+                let sep_x = col_x[j] + col_w[j];
+                surface.surface_draw_text_run(row_rect(sep_x, row_y, sep_w), " │ ", border);
+            }
+            row_y += line_height;
+        }
+    }
+
+    /// Paint a [`Dialog`] at its resolved `dialog_layout` onto `surface`
+    /// — background, border, title, body, optional table, optional
+    /// [`DialogInput::TextInput`] slot, and buttons (selected-bg fill +
+    /// border stroke + tint-aware label). Returns the per-button hit
+    /// rectangles in `dialog_layout.visible_buttons` order, matching
+    /// [`crate::Backend::draw_dialog`]'s contract.
+    ///
+    /// `surface` must already be constructed against the **chrome**
+    /// font — see this module's doc for why the whole dialog paints in
+    /// one font now. `DialogInput::Toolbar` is deliberately not painted
+    /// here; see the module doc.
+    pub(crate) fn paint(
+        dialog: &Dialog,
+        dialog_layout: &DialogLayout,
+        line_height: f32,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) -> Vec<Rect> {
+        let bounds = dialog_layout.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return Vec::new();
+        }
+
+        surface.surface_fill_rect(bounds, theme.surface_bg);
+        surface.surface_stroke_rect(bounds, theme.border_fg, 1.0);
+
+        if let Some(title_rect) = dialog_layout.title_bounds {
+            surface.surface_draw_text_run(
+                title_rect,
+                &super::flatten(&dialog.title),
+                theme.title_fg,
+            );
+        }
+
+        let body_b = dialog_layout.body_bounds;
+        for (i, line) in dialog.body.iter().enumerate() {
+            let row_y = body_b.y + i as f32 * line_height;
+            if row_y + line_height > body_b.y + body_b.height {
+                break;
+            }
+            let row_rect = Rect::new(body_b.x, row_y, body_b.width, line_height);
+            surface.surface_draw_text_run(row_rect, &super::flatten(line), theme.surface_fg);
+        }
+
+        if let (Some(table_b), Some(table)) = (dialog_layout.table_bounds, dialog.table.as_ref()) {
+            draw_table(
+                surface,
+                table,
+                table_b,
+                line_height,
+                theme.surface_fg,
+                theme.border_fg,
+            );
+        }
+
+        if let (Some(input_b), Some(DialogInput::TextInput(input))) =
+            (dialog_layout.input_bounds, dialog.input.as_ref())
+        {
+            surface.surface_fill_rect(input_b, theme.input_bg);
+            surface.surface_stroke_rect(input_b, theme.border_fg, 1.0);
+            let display = if input.value.is_empty() {
+                format!(" {}", input.placeholder)
+            } else {
+                format!(" {}", input.value)
+            };
+            let (_, ih) = surface.surface_measure_text(&display);
+            let text_rect = Rect::new(
+                input_b.x + 2.0,
+                input_b.y + (input_b.height - ih) / 2.0,
+                (input_b.width - 2.0).max(0.0),
+                ih.max(1.0),
+            );
+            surface.surface_draw_text_run(text_rect, &display, theme.surface_fg);
+        }
+        // DialogInput::Toolbar is intentionally not painted here — see
+        // this module's doc.
+
+        let mut rects = Vec::with_capacity(dialog_layout.visible_buttons.len());
+        for vis in &dialog_layout.visible_buttons {
+            let btn = &dialog.buttons[vis.button_idx];
+            rects.push(vis.bounds);
+
+            if btn.is_default {
+                surface.surface_fill_rect(vis.bounds, theme.selected_bg);
+            }
+            surface.surface_stroke_rect(vis.bounds, theme.border_fg, 1.0);
+
+            let label = if dialog.vertical_buttons {
+                let prefix = if btn.is_default { "▸ " } else { "  " };
+                format!("{prefix}{}", btn.label)
+            } else {
+                format!("  {}  ", btn.label)
+            };
+            let label_fg = btn.tint.unwrap_or(theme.surface_fg);
+            let (lw, lh) = surface.surface_measure_text(&label);
+            let label_x = if dialog.vertical_buttons {
+                vis.bounds.x + 4.0
+            } else {
+                vis.bounds.x + (vis.bounds.width - lw) / 2.0
+            };
+            let label_y = vis.bounds.y + (vis.bounds.height - lh) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(label_x, label_y, lw.max(1.0), lh.max(1.0)),
+                &label,
+                label_fg,
+            );
+        }
+
+        rects
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
