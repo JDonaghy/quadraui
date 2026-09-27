@@ -1,30 +1,27 @@
 //! macOS rasteriser for [`crate::primitives::toolbar::Toolbar`].
 //!
-//! Paints a horizontal strip of clickable action buttons using Core
-//! Graphics + Core Text. Mirrors the TUI / GTK rasterisers' look:
-//! enabled actions render in `theme.foreground`, disabled in
-//! `theme.muted_fg`, hovered actions get a `theme.hover_bg` tint,
-//! active / pressed actions get `theme.selected_bg`, and
-//! keyboard-focused actions (via `Toolbar::focused_index`) receive a
-//! `theme.accent_fg`-coloured rounded-rect focus ring. Separators
-//! draw as a thin vertical line; labels paint as plain text.
-//!
-//! Priority (highest first): pressed → hovered → focused → is_active → enabled.
-//!
+//! `mac_toolbar_layout` stays here — it needs Core Text's own
+//! measurement to size each item. Content painting moved to the shared
+//! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
+//! `NativeSurface` Phase 4 slice 5/8), which also **closes this
+//! backend's own square-corner gap**: pre-migration macOS painted the
+//! hover/pressed/active highlight as a plain rectangle (Core Graphics
+//! has no rounded-rect-fill convenience this file used to reach for).
+//! The shared `paint` now fills a real rounded pill via
+//! [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+//! (#1073) — see that fn's module doc for the full drift it resolved.
 //! Per D6: layout policy lives in [`crate::primitives::toolbar::Toolbar::layout`];
-//! this rasteriser paints what that returns and provides the
-//! [`ToolbarLayout`] for click dispatch.
+//! this rasteriser now only builds the [`super::surface::CgSurface`]
+//! adapter and delegates paint.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
 use crate::primitives::toolbar::{
-    action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
+    measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
 };
 use crate::theme::Theme;
-use crate::types::{Color, WidgetId};
+use crate::types::WidgetId;
 
 /// Compute the macOS pixel-unit layout for a [`Toolbar`] without
 /// painting. `font` is required for accurate text measurement — it's a
@@ -71,160 +68,23 @@ pub unsafe fn draw_toolbar(
         return layout;
     }
 
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, cgrect(x, y, w, h));
+    // `ns_push_clip`/`ns_pop_clip` bracket a `CGContextSaveGState`/
+    // `CGContextClipToRect`/`CGContextRestoreGState` triple — see their
+    // own docs. Matches this fn's pre-migration single save/clip/restore
+    // exactly.
+    super::backend::ns_push_clip(
+        ctx,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
+    );
 
-    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
-    fill_rect(ctx, x, y, w, h, bar_bg);
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    native_surface_paint::paint(bar, &layout, &mut surface, theme, hovered_id, pressed_id);
 
-    for vis in &layout.visible_items {
-        let item_x = vis.bounds.x as f64;
-        let item_y = vis.bounds.y as f64;
-        let item_w = vis.bounds.width as f64;
-        let item_h = vis.bounds.height as f64;
-        if item_w <= 0.0 || item_h <= 0.0 {
-            continue;
-        }
-        let btn = &bar.buttons[vis.item_idx];
-        match btn {
-            ToolbarButton::Action {
-                id,
-                label,
-                icon,
-                key_hint,
-                enabled,
-                is_active,
-                ..
-            } => {
-                let is_hovered = *enabled && hovered_id == Some(id);
-                let is_pressed = *enabled && pressed_id == Some(id);
-                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
-
-                // Background fill: pressed/active > hovered > no fill.
-                if is_pressed || *is_active {
-                    fill_rect(
-                        ctx,
-                        item_x + 2.0,
-                        item_y + 2.0,
-                        item_w - 4.0,
-                        item_h - 4.0,
-                        theme.selected_bg,
-                    );
-                } else if is_hovered {
-                    fill_rect(
-                        ctx,
-                        item_x + 2.0,
-                        item_y + 2.0,
-                        item_w - 4.0,
-                        item_h - 4.0,
-                        theme.hover_bg,
-                    );
-                }
-
-                // Focus ring: drawn when focused and not already
-                // dominated by hover / pressed highlight.
-                if is_focused && !is_hovered && !is_pressed && !*is_active {
-                    set_stroke_color(ctx, theme.accent_fg);
-                    CGContextSetLineWidth(ctx, 1.0);
-                    // Simple rectangle focus ring (2 px inset on each side).
-                    CGContextStrokeRect(
-                        ctx,
-                        cgrect(item_x + 2.0, item_y + 2.0, item_w - 4.0, item_h - 4.0),
-                    );
-                }
-
-                let text = action_text(label, icon.as_deref(), key_hint.as_deref());
-                let (tw, th) = measure_text(font, &text);
-                let tx = item_x + (item_w - tw) / 2.0;
-                let ty = item_y + (item_h - th) / 2.0;
-                let fg = if !*enabled {
-                    theme.muted_fg
-                } else if is_hovered {
-                    theme.hover_fg
-                } else {
-                    theme.foreground
-                };
-                draw_text(ctx, font, &text, tx, ty, color_to_cg(fg));
-            }
-            ToolbarButton::Separator => {
-                let mid_x = item_x + item_w / 2.0;
-                let pad_y = (item_h * 0.2).max(2.0);
-                set_stroke_color(ctx, theme.muted_fg);
-                CGContextSetLineWidth(ctx, 1.0);
-                CGContextMoveToPoint(ctx, mid_x, item_y + pad_y);
-                CGContextAddLineToPoint(ctx, mid_x, item_y + item_h - pad_y);
-                CGContextStrokePath(ctx);
-            }
-            ToolbarButton::Label { text, fg } => {
-                let color = fg.unwrap_or(theme.muted_fg);
-                let (_, th) = measure_text(font, text);
-                let ty = item_y + (item_h - th) / 2.0;
-                draw_text(ctx, font, text, item_x, ty, color_to_cg(color));
-            }
-        }
-    }
-
-    CGContextRestoreGState(ctx);
+    super::backend::ns_pop_clip(ctx);
     layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, cgrect(x, y, w, h));
-}
-
-unsafe fn set_stroke_color(ctx: CGContextRef, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-}
-
-fn cgrect(x: f64, y: f64, w: f64, h: f64) -> CGRect {
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetLineWidth(c: CGContextRef, width: core_graphics::base::CGFloat);
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    fn CGContextMoveToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    fn CGContextAddLineToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    fn CGContextStrokePath(c: CGContextRef);
-    fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -234,7 +94,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::toolbar::ToolbarHit;
+    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit};
     use crate::types::WidgetId;
     use crate::Backend;
 
@@ -371,6 +231,65 @@ mod tests {
             hit,
             ToolbarHit::Button(WidgetId::new("tb:refine")),
             "expected Refine button hit at non-zero origin",
+        );
+    }
+
+    /// #1081 regression: pre-migration macOS painted the hover/pressed/
+    /// active highlight as a plain square rect (Core Graphics had no
+    /// rounded-fill convenience this file reached for) — the shared
+    /// `native_surface_paint::paint` now fills a real rounded pill via
+    /// `surface_fill_rounded_rect`. A square fill would paint the inset
+    /// rect's own extreme corner pixel; a rounded one (radius 4) leaves
+    /// it unpainted, since that pixel sits outside the corner arc.
+    #[test]
+    fn active_button_highlight_has_rounded_corners_not_square() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:on"),
+                label: "On".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: true,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+        let (surface, layout) = paint_via_backend(&bar);
+        let theme = Theme::default();
+        let item = &layout.visible_items[0];
+
+        // The inset highlight rect starts at (item.x + 2, item.y + 2);
+        // its very corner pixel sits outside a 4px-radius rounded
+        // corner arc.
+        let corner_x = (item.bounds.x + 2.0) as u32;
+        let corner_y = (item.bounds.y + 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(corner_x, corner_y);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "highlight corner pixel should NOT be filled — rounded corner (quadraui#1081), not square",
+        );
+
+        // The inset rect's centre must still be filled solid in the
+        // highlight colour — proves this isn't just "nothing painted".
+        let cx = (item.bounds.x + item.bounds.width / 2.0) as u32;
+        let cy = (item.bounds.y + item.bounds.height / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(cx, cy);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "highlight centre pixel should be filled solid",
         );
     }
 }
