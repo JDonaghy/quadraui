@@ -1,34 +1,21 @@
 //! macOS rasteriser for [`crate::ContextMenu`].
 //!
-//! Mirrors [`crate::gtk::context_menu::draw_context_menu`]: bordered
-//! rectangle, per-item rows with selected-bg highlight, separator
-//! lines, optional right-aligned detail text. Returns per-clickable
-//! hit rectangles as `Vec<(Rect, WidgetId)>` so the caller's click
-//! handler can resolve menu clicks without re-running layout.
+//! Content painting moved to the shared
+//! [`crate::primitives::context_menu::native_surface_paint::paint`]
+//! (#1077, `NativeSurface` Phase 4 slice 4/8) — see that fn's module
+//! doc for the two small drifts it resolved (box corner rounding,
+//! separator stroke weight). Returns per-clickable hit rectangles as
+//! `Vec<(Rect, WidgetId)>` so the caller's click handler can resolve
+//! menu clicks without re-running layout.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-use super::text::{draw_text, measure_text};
-use crate::accelerator::{render_accelerator, Platform};
+use crate::accelerator::Platform;
 use crate::event::Rect as QRect;
-use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
+use crate::primitives::context_menu::{native_surface_paint, ContextMenu, ContextMenuLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
-
-/// Right-aligned shortcut text for `item` — sourced from `item.detail`
-/// (preferred, back-compat) or rendered from `item.key_equivalent`
-/// using `Platform::Macos` so `⌘S` appears instead of `Ctrl+S`.
-fn shortcut_text(item: &ContextMenuItem) -> Option<String> {
-    if let Some(ref det) = item.detail {
-        let s: String = det.spans.iter().map(|sp| sp.text.as_str()).collect();
-        return Some(s);
-    }
-    item.key_equivalent
-        .as_ref()
-        .map(|acc| render_accelerator(acc, Platform::Macos))
-}
 
 /// Draw a [`ContextMenu`] popup. Returns per-clickable hit
 /// rectangles paired with their item IDs.
@@ -37,7 +24,6 @@ fn shortcut_text(item: &ContextMenuItem) -> Option<String> {
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
-#[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_context_menu(
     ctx: CGContextRef,
     font: &CTFont,
@@ -45,118 +31,11 @@ pub unsafe fn draw_context_menu(
     menu_layout: &ContextMenuLayout,
     theme: &Theme,
 ) -> Vec<(QRect, WidgetId)> {
-    let bounds = menu_layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return Vec::new();
-    }
-
-    let bg = menu.bg.unwrap_or(theme.hover_bg);
-    fill_rect(
+    let mut surface = super::surface::CgSurface {
         ctx,
-        bounds.x as f64,
-        bounds.y as f64,
-        bounds.width as f64,
-        bounds.height as f64,
-        bg,
-    );
-    stroke_rect(
-        ctx,
-        bounds.x as f64 + 0.5,
-        bounds.y as f64 + 0.5,
-        bounds.width as f64 - 1.0,
-        bounds.height as f64 - 1.0,
-        theme.hover_border,
-        1.0,
-    );
-
-    let mut hits: Vec<(QRect, WidgetId)> = Vec::new();
-
-    // Pass 1: backgrounds (separator lines + selection highlights).
-    for vis in &menu_layout.visible_items {
-        let row_x = vis.bounds.x as f64;
-        let row_y = vis.bounds.y as f64;
-        let row_w = vis.bounds.width as f64;
-        let row_h = vis.bounds.height as f64;
-
-        if vis.is_separator {
-            let sep_y = row_y + row_h * 0.5;
-            fill_rect(ctx, row_x + 4.0, sep_y, row_w - 8.0, 1.0, theme.muted_fg);
-            continue;
-        }
-
-        let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
-        if is_selected {
-            fill_rect(
-                ctx,
-                row_x + 1.0,
-                row_y,
-                row_w - 2.0,
-                row_h,
-                theme.selected_bg,
-            );
-        }
-
-        if vis.clickable {
-            if let Some(ref id) = menu.items[vis.item_idx].id {
-                hits.push((vis.bounds, id.clone()));
-            }
-        }
-    }
-
-    // Pass 2: labels + detail text on top of backgrounds.
-    for vis in &menu_layout.visible_items {
-        if vis.is_separator {
-            continue;
-        }
-        let item = &menu.items[vis.item_idx];
-        let row_x = vis.bounds.x as f64;
-        let row_y = vis.bounds.y as f64;
-        let row_w = vis.bounds.width as f64;
-        let row_h = vis.bounds.height as f64;
-
-        // Prefix the label with a check glyph when `checked` is set.
-        // `Some(false)` reserves the slot with spaces so a column of
-        // mixed checked/unchecked items aligns.
-        let prefix = match item.checked {
-            Some(true) => "✓ ",
-            Some(false) => "  ",
-            None => "",
-        };
-        let label_text: String = std::iter::once(prefix.to_string())
-            .chain(item.label.spans.iter().map(|s| s.text.clone()))
-            .collect();
-        let label_fg = if vis.clickable {
-            theme.foreground
-        } else {
-            theme.muted_fg
-        };
-        let (_, lh) = measure_text(font, &label_text);
-        let text_y = row_y + (row_h - lh) * 0.5;
-        draw_text(
-            ctx,
-            font,
-            &label_text,
-            row_x + 8.0,
-            text_y,
-            color_to_cg(label_fg),
-        );
-
-        if let Some(shortcut) = shortcut_text(item) {
-            if !shortcut.is_empty() {
-                let (sw, _) = measure_text(font, &shortcut);
-                draw_text(
-                    ctx,
-                    font,
-                    &shortcut,
-                    row_x + row_w - sw - 8.0,
-                    text_y,
-                    color_to_cg(theme.muted_fg),
-                );
-            }
-        }
-    }
-
-    hits
+        font: Some(font),
+    };
+    native_surface_paint::paint(menu, menu_layout, Platform::Macos, &mut surface, theme)
 }
 
 #[cfg(test)]
@@ -275,22 +154,19 @@ mod tests {
     #[test]
     fn key_equivalent_renders_via_platform_macos() {
         // macOS renders KeyBinding::Save as ⌘S (vs Ctrl+S elsewhere).
-        // Sanity-check the helper directly — the rasteriser routes
-        // through `shortcut_text` and asserting on bitmap pixels for
-        // a multi-codepoint glyph like ⌘ is brittle.
-        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
-        let item = ContextMenuItem {
-            id: Some(WidgetId::new("save")),
-            label: StyledText::plain("Save"),
-            key_equivalent: Some(Accelerator {
-                id: AcceleratorId::new("editor.save"),
-                binding: KeyBinding::Save,
-                scope: AcceleratorScope::Global,
-                label: None,
-            }),
-            ..Default::default()
+        // Sanity-check the shared helper directly through its module
+        // path — asserting on bitmap pixels for a multi-codepoint glyph
+        // like ⌘ is brittle.
+        use crate::accelerator::{
+            render_accelerator, Accelerator, AcceleratorId, AcceleratorScope, KeyBinding, Platform,
         };
-        let shortcut = super::shortcut_text(&item).expect("key_equivalent produces a string");
+        let acc = Accelerator {
+            id: AcceleratorId::new("editor.save"),
+            binding: KeyBinding::Save,
+            scope: AcceleratorScope::Global,
+            label: None,
+        };
+        let shortcut = render_accelerator(&acc, Platform::Macos);
         assert!(
             shortcut.contains('⌘'),
             "macOS shortcut should contain ⌘, got {shortcut:?}",
@@ -299,25 +175,6 @@ mod tests {
             shortcut.contains('S'),
             "macOS shortcut should contain S, got {shortcut:?}",
         );
-    }
-
-    #[test]
-    fn detail_wins_over_key_equivalent() {
-        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
-        let item = ContextMenuItem {
-            id: Some(WidgetId::new("save")),
-            label: StyledText::plain("Save"),
-            detail: Some(StyledText::plain("legacy-string")),
-            key_equivalent: Some(Accelerator {
-                id: AcceleratorId::new("editor.save"),
-                binding: KeyBinding::Save,
-                scope: AcceleratorScope::Global,
-                label: None,
-            }),
-            ..Default::default()
-        };
-        let shortcut = super::shortcut_text(&item).expect("detail wins");
-        assert_eq!(shortcut, "legacy-string");
     }
 
     #[test]

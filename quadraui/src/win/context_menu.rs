@@ -1,11 +1,11 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::ContextMenu`] (issue #28).
 //!
-//! Mirrors `gtk::context_menu`'s structure: the layout (row bounds,
-//! separators, clickability) is fully resolved upstream by the host —
-//! see `crate::compose::menu_system` — and passed in as a
-//! [`ContextMenuLayout`]; this module only paints it and collects the
-//! per-clickable-item hit rectangles the [`crate::Backend::draw_context_menu`]
-//! contract asks for.
+//! Content painting moved to the shared
+//! [`crate::primitives::context_menu::native_surface_paint::paint`]
+//! (#1077, `NativeSurface` Phase 4 slice 4/8) — see that fn's module
+//! doc for the two small drifts it resolved (box corner rounding,
+//! separator stroke weight). This module only builds the
+//! [`crate::win::surface::D2dSurface`] adapter and delegates.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod context_menu;` and `backend.rs`'s
@@ -13,23 +13,12 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{draw_line, fill_rect, stroke_rect, DWrite};
-use crate::accelerator::{render_accelerator, Platform};
+use super::text::DWrite;
+use crate::accelerator::Platform;
 use crate::event::Rect;
-use crate::primitives::context_menu::{ContextMenu, ContextMenuItem, ContextMenuLayout};
+use crate::primitives::context_menu::{native_surface_paint, ContextMenu, ContextMenuLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
-
-/// Right-aligned shortcut text — `item.detail` (preferred, back-compat)
-/// or rendered from `item.key_equivalent`. `None` if neither is set.
-fn shortcut_text(item: &ContextMenuItem) -> Option<String> {
-    if let Some(ref det) = item.detail {
-        return Some(det.spans.iter().map(|sp| sp.text.as_str()).collect());
-    }
-    item.key_equivalent
-        .as_ref()
-        .map(|acc| render_accelerator(acc, Platform::Windows))
-}
 
 /// Draw a [`ContextMenu`] popup at its resolved `menu_layout`. Returns
 /// the per-clickable-item hit rectangles (bar-local — same bounds the
@@ -42,105 +31,18 @@ pub fn draw_context_menu(
     menu_layout: &ContextMenuLayout,
     theme: &Theme,
 ) -> Vec<(Rect, WidgetId)> {
-    let bounds = menu_layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return Vec::new();
-    }
-
-    let bg = menu.bg.unwrap_or(theme.hover_bg);
-    let border = theme.hover_border;
-    let fg = theme.foreground;
-    let sel = theme.selected_bg;
-    let dim = theme.muted_fg;
-
-    let _ = fill_rect(target, bounds, bg);
-
-    let mut rects: Vec<(Rect, WidgetId)> = Vec::new();
-
-    // Pass 1: backgrounds (separators + selection highlight).
-    for vis in &menu_layout.visible_items {
-        if vis.is_separator {
-            let sep_y = vis.bounds.y + vis.bounds.height * 0.5;
-            let _ = draw_line(
-                target,
-                vis.bounds.x + 4.0,
-                sep_y,
-                vis.bounds.x + vis.bounds.width - 4.0,
-                sep_y,
-                dim,
-                1.0,
-            );
-            continue;
-        }
-
-        let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
-        if is_selected {
-            let sel_rect = Rect::new(
-                vis.bounds.x + 1.0,
-                vis.bounds.y,
-                (vis.bounds.width - 2.0).max(0.0),
-                vis.bounds.height,
-            );
-            let _ = fill_rect(target, sel_rect, sel);
-        }
-
-        if vis.clickable {
-            if let Some(ref id) = menu.items[vis.item_idx].id {
-                rects.push((vis.bounds, id.clone()));
-            }
-        }
-    }
-
-    // Pass 2: text (labels + detail/shortcut) — on top of every
-    // background so descenders are never clipped.
-    for vis in &menu_layout.visible_items {
-        if vis.is_separator {
-            continue;
-        }
-        let item = &menu.items[vis.item_idx];
-
-        let prefix = match item.checked {
-            Some(true) => "\u{2713} ",
-            Some(false) => "  ",
-            None => "",
-        };
-        let label_text: String = std::iter::once(prefix.to_string())
-            .chain(item.label.spans.iter().map(|s| s.text.clone()))
-            .collect();
-        let label_fg = if vis.clickable { fg } else { dim };
-        let label_rect = Rect::new(
-            vis.bounds.x + 8.0,
-            vis.bounds.y,
-            (vis.bounds.width - 8.0).max(0.0),
-            vis.bounds.height,
-        );
-        let _ = dwrite.draw_text(target, &label_text, label_rect, label_fg);
-
-        if let Some(shortcut) = shortcut_text(item) {
-            if !shortcut.is_empty() {
-                let (sw, _) = dwrite.measure_text(&shortcut).unwrap_or((0.0, 0.0));
-                let sc_rect = Rect::new(
-                    vis.bounds.x + vis.bounds.width - sw - 8.0,
-                    vis.bounds.y,
-                    sw.max(1.0),
-                    vis.bounds.height,
-                );
-                let _ = dwrite.draw_text(target, &shortcut, sc_rect, dim);
-            }
-        }
-    }
-
-    // Border on top so the selection bg never obscures the edges.
-    let _ = stroke_rect(target, bounds, border, 1.0);
-
-    rects
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    native_surface_paint::paint(menu, menu_layout, Platform::Windows, &mut surface, theme)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::context_menu::{
-        ContextMenuHit, ContextMenuItemMeasure, ContextMenuPlacement,
+        ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
     };
     use crate::types::StyledText;
     use crate::win::testing::HeadlessSurface;

@@ -423,6 +423,173 @@ impl ContextMenu {
     }
 }
 
+// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::palette::native_surface_paint` for the
+// same pattern applied one primitive earlier (#1076, slice 3/8).
+//
+// Pre-migration, `gtk::context_menu`, `macos::context_menu` and
+// `win::context_menu` were near-identical (all three: bg fill, pass 1
+// separators + selection highlight, pass 2 label + right-aligned
+// shortcut text, border stroke on top) with two small drifts, resolved
+// here rather than silently picked:
+//
+// - **Box corner rounding.** GTK alone drew a 3px-radius rounded
+//   rectangle (both the bg fill and the border stroke) via
+//   `rounded_rect_path`; macOS/Windows both used a plain square rect.
+//   `paint` adopts the majority (square) — [`NativeSurface`] has a
+//   [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+//   verb but no rounded-stroke equivalent, so keeping GTK's rounding
+//   would mean a rounded fill under a square border stroke, a visible
+//   seam at the corners worse than just picking one. Low real-world
+//   impact (3px radius on a small chrome popup).
+// - **Separator stroke weight.** GTK stroked at `0.5` width; macOS
+//   filled a `1.0`-tall rect; Windows drew a `1.0`-width line. `paint`
+//   uses [`NativeSurface::surface_draw_line`] at `1.0` — the 2-of-3
+//   majority.
+//
+// Every other pixel (bg colour, selection highlight inset, text
+// baseline centring, `checked` prefix, shortcut right-alignment) was
+// already byte-identical across all three backends, so nothing else
+// changes.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{ContextMenu, ContextMenuItem, ContextMenuLayout};
+    use crate::accelerator::{render_accelerator, Platform};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+    use crate::{Point, Rect};
+
+    /// Right-aligned shortcut text — sourced from `item.detail`
+    /// (preferred, back-compat) or rendered from `item.key_equivalent`
+    /// for `platform` (`⌘S` on macOS, `Ctrl+S` elsewhere). Returns
+    /// `None` if neither is set.
+    pub(super) fn shortcut_text(item: &ContextMenuItem, platform: Platform) -> Option<String> {
+        if let Some(ref det) = item.detail {
+            return Some(det.spans.iter().map(|sp| sp.text.as_str()).collect());
+        }
+        item.key_equivalent
+            .as_ref()
+            .map(|acc| render_accelerator(acc, platform))
+    }
+
+    /// Paint a [`ContextMenu`] popup at its caller-resolved
+    /// `menu_layout` onto `surface`. Returns the per-clickable-item hit
+    /// rectangles + their [`WidgetId`]s so the caller's click handler
+    /// can resolve mouse events without re-running layout — mirrors
+    /// [`crate::Backend::draw_context_menu`]'s own return contract.
+    ///
+    /// `platform` selects the key-equivalent render form (`⌘S` vs.
+    /// `Ctrl+S`) — see [`shortcut_text`].
+    pub(crate) fn paint(
+        menu: &ContextMenu,
+        menu_layout: &ContextMenuLayout,
+        platform: Platform,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) -> Vec<(Rect, WidgetId)> {
+        let bounds = menu_layout.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return Vec::new();
+        }
+
+        let bg = menu.bg.unwrap_or(theme.hover_bg);
+        surface.surface_fill_rect(bounds, bg);
+
+        let mut rects: Vec<(Rect, WidgetId)> = Vec::new();
+
+        // Pass 1: backgrounds (separators + selection highlights).
+        // Drawn first so no highlight can overwrite previously
+        // rendered text.
+        for vis in &menu_layout.visible_items {
+            let row = vis.bounds;
+
+            if vis.is_separator {
+                let sep_y = row.y + row.height * 0.5;
+                surface.surface_draw_line(
+                    Point::new(row.x + 4.0, sep_y),
+                    Point::new(row.x + row.width - 4.0, sep_y),
+                    theme.muted_fg,
+                    1.0,
+                );
+                continue;
+            }
+
+            let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
+            if is_selected {
+                let sel_rect =
+                    Rect::new(row.x + 1.0, row.y, (row.width - 2.0).max(0.0), row.height);
+                surface.surface_fill_rect(sel_rect, theme.selected_bg);
+            }
+
+            if vis.clickable {
+                if let Some(ref id) = menu.items[vis.item_idx].id {
+                    rects.push((row, id.clone()));
+                }
+            }
+        }
+
+        // Pass 2: text (labels + detail/shortcut). Rendered on top of
+        // all backgrounds so descenders are never clipped.
+        for vis in &menu_layout.visible_items {
+            if vis.is_separator {
+                continue;
+            }
+
+            let item = &menu.items[vis.item_idx];
+            let row = vis.bounds;
+
+            // Prefix the label with a check glyph when `checked` is
+            // set. `Some(false)` reserves the slot with spaces so a
+            // column of mixed checked/unchecked items aligns.
+            let prefix = match item.checked {
+                Some(true) => "\u{2713} ",
+                Some(false) => "  ",
+                None => "",
+            };
+            let label_text: String = std::iter::once(prefix.to_string())
+                .chain(item.label.spans.iter().map(|s| s.text.clone()))
+                .collect();
+            let label_fg = if vis.clickable {
+                theme.foreground
+            } else {
+                theme.muted_fg
+            };
+            let (_, lh) = surface.surface_measure_text(&label_text);
+            let text_y = row.y + (row.height - lh) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(row.x + 8.0, text_y, (row.width - 8.0).max(0.0), lh),
+                &label_text,
+                label_fg,
+            );
+
+            if let Some(shortcut) = shortcut_text(item, platform) {
+                if !shortcut.is_empty() {
+                    let (sw, sh) = surface.surface_measure_text(&shortcut);
+                    surface.surface_draw_text_run(
+                        Rect::new(row.x + row.width - sw - 8.0, text_y, sw.max(1.0), sh),
+                        &shortcut,
+                        theme.muted_fg,
+                    );
+                }
+            }
+        }
+
+        // Pass 3: border on top so selection bg never obscures edges.
+        surface.surface_stroke_rect(bounds, theme.hover_border, 1.0);
+
+        rects
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,5 +907,61 @@ mod tests {
         assert!(!layout.visible_items[0].clickable);
         // Click on disabled item → Inert, not Item.
         assert_eq!(layout.hit_test(50.0, 15.0), ContextMenuHit::Inert);
+    }
+
+    // ── native_surface_paint::shortcut_text (#1077) ───────────────────────
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn shortcut_text_detail_wins_over_key_equivalent() {
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
+        let item = ContextMenuItem {
+            id: Some(WidgetId::new("save")),
+            label: StyledText::plain("Save"),
+            detail: Some(StyledText::plain("legacy-string")),
+            key_equivalent: Some(Accelerator {
+                id: AcceleratorId::new("editor.save"),
+                binding: KeyBinding::Save,
+                scope: AcceleratorScope::Global,
+                label: None,
+            }),
+            ..Default::default()
+        };
+        let shortcut =
+            super::native_surface_paint::shortcut_text(&item, crate::accelerator::Platform::Linux)
+                .expect("detail wins");
+        assert_eq!(shortcut, "legacy-string");
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn shortcut_text_falls_back_to_key_equivalent_per_platform() {
+        use crate::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
+        let item = ContextMenuItem {
+            id: Some(WidgetId::new("save")),
+            label: StyledText::plain("Save"),
+            key_equivalent: Some(Accelerator {
+                id: AcceleratorId::new("editor.save"),
+                binding: KeyBinding::Save,
+                scope: AcceleratorScope::Global,
+                label: None,
+            }),
+            ..Default::default()
+        };
+        let shortcut =
+            super::native_surface_paint::shortcut_text(&item, crate::accelerator::Platform::Macos)
+                .expect("key_equivalent produces a string");
+        assert!(
+            shortcut.contains('⌘'),
+            "macOS shortcut should contain ⌘, got {shortcut:?}",
+        );
     }
 }
