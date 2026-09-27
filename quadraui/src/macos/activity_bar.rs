@@ -468,8 +468,12 @@ mod tests {
         let (surface, _) = paint_via_backend(&bar, Some(1));
         let theme = Theme::default();
         let expected = theme.tab_bar_bg.lighten(0.10);
-        // Probe deep into row 1, away from glyph centre.
-        let (r, g, b, _) = surface.pixel(W - 6, (ACTIVITY_ROW_PX as u32) + 4);
+        // Explorer paints at y ∈ [0, 48) — probe deep into that row,
+        // away from the glyph centre. (Not `ACTIVITY_ROW_PX + 4`: that
+        // offset would land in `search`'s row, which the #1081 reorder
+        // moved out from under `hovered_idx == Some(1)` — see the
+        // comment above.)
+        let (r, g, b, _) = surface.pixel(W - 6, 4);
         assert_eq!(
             (r, g, b),
             (expected.r, expected.g, expected.b),
@@ -478,8 +482,8 @@ mod tests {
     }
 
     /// `Backend::activity_bar_layout` must return exactly what
-    /// `draw_activity_bar` painted — both walk the same `row_plan`, and
-    /// this pins that (quadraui#484).
+    /// `draw_activity_bar` painted — both walk the same
+    /// `ActivityBar::layout`, and this pins that (quadraui#484).
     #[test]
     fn layout_twin_matches_the_painted_rows() {
         let bar = sample_bar();
@@ -498,8 +502,8 @@ mod tests {
         }
     }
 
-    /// Spans are bar-relative: the first row starts at `0.0` regardless
-    /// of where the bar sits, and the no-paint twin agrees
+    /// Spans are bar-relative: every row's `y_start` is unchanged
+    /// regardless of where the bar sits, and the no-paint twin agrees
     /// (quadraui#552).
     #[test]
     fn layout_twin_spans_are_bar_relative_at_a_nonzero_origin() {
@@ -510,7 +514,11 @@ mod tests {
         let moved = backend.activity_bar_layout(QRect::new(23.0, 41.0, W as f32, H as f32), &bar);
 
         assert_eq!(at_origin.len(), moved.len());
-        assert!((at_origin[0].y_start - 0.0).abs() < 0.001);
+        // `at_origin[0]` is the bottom-pinned `settings` item since
+        // #1081 (`ActivityBar::layout` orders bottom-pinned items
+        // first — see `row_hits_cover_painted_rows` above), so its
+        // bar-relative `y_start` is `H - ACTIVITY_ROW_PX`, not `0.0`.
+        assert!((at_origin[0].y_start - (H as f32 - ACTIVITY_ROW_PX as f32)).abs() < 0.001);
         for (a, m) in at_origin.iter().zip(moved.iter()) {
             assert!(
                 (a.y_start - m.y_start).abs() < 0.001,
@@ -572,6 +580,12 @@ mod tests {
 
         // Hit regions stay bar-relative (issue #552's audited contract) —
         // the CTM translate must not leak into the returned spans.
-        assert_eq!(regions[0].y_start, 0.0);
+        // `regions[0]` is the bottom-pinned `settings` item since #1081
+        // (`ActivityBar::layout` orders bottom-pinned items first — see
+        // `row_hits_cover_painted_rows` above), so its bar-relative
+        // `y_start` is `H - ACTIVITY_ROW_PX`, not `0.0`; if the CTM
+        // translate had leaked into the returned span it would read
+        // `H - ACTIVITY_ROW_PX + ORIGIN_Y` instead.
+        assert_eq!(regions[0].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
     }
 }
