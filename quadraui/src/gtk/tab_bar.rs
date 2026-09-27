@@ -10,6 +10,17 @@
 //! [`TabBarLayout`] itself, whose bar-relative `visible_tabs` /
 //! `close_bounds` geometry is what `GtkBackend::draw_tab_bar` caches per
 //! `WidgetId` for `GtkDriver::tab_center`/`tab_close_center` (quadraui#594).
+//!
+//! **Still a per-backend paint loop (#1081 did NOT migrate `TabBar`).**
+//! Unlike `gtk::menu_bar` / `gtk::toolbar` / `gtk::activity_bar`, which
+//! `NativeSurface` Phase 4 slice 5/8 collapsed into
+//! `primitives::<name>::native_surface_paint::paint`, every pixel this
+//! module paints is still Cairo-specific and still triplicated with
+//! `macos::tab_bar` / `win::tab_bar`. See
+//! [`crate::primitives::tab_bar`]'s "`NativeSurface` migration status"
+//! section for the drift table between the three copies, the macOS
+//! `close_bounds`-convention prerequisite that blocks the move, and why
+//! #1081 stays open rather than closing as complete.
 
 use gtk4::cairo::Context;
 use gtk4::pango;

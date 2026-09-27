@@ -18,6 +18,25 @@
 //!   uses a simpler approach for #38: tint the close glyph itself
 //!   (`theme.foreground`) when hovered. Visual parity with GTK is
 //!   tracked separately.
+//!
+//! ## Still a per-backend paint loop (#1081 did NOT migrate `TabBar`)
+//!
+//! Unlike `macos::menu_bar` / `macos::toolbar` / `macos::activity_bar`,
+//! which `NativeSurface` Phase 4 slice 5/8 collapsed into
+//! `primitives::<name>::native_surface_paint::paint`, every pixel this
+//! module paints is still Core Graphics-specific and still triplicated
+//! with `gtk::tab_bar` / `win::tab_bar` — the two "Scope omissions"
+//! above are two of the five live drifts between those copies. **This
+//! backend is the blocker**: `mac_tab_bar_layout_icons` /
+//! `mac_tab_bar_native_layout_icons` below still derive geometry
+//! themselves instead of going through the shared
+//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] that
+//! `gtk::tab_bar` and `win::tab_bar` already use, and they size
+//! `close_bounds` by a different convention (`CLOSE_PAD` around the
+//! glyph, rather than `tab_inner_gap + close_glyph_w` before it). See
+//! [`crate::primitives::tab_bar`]'s "`NativeSurface` migration status"
+//! section for the full drift table and why #1081 stays open rather than
+//! closing as complete.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
