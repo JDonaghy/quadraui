@@ -56,12 +56,18 @@ use crate::native_surface::NativeSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
-    CommandLine, DragState, FieldKind, Form, GenericFamily, KeyBinding, ListView, MenuBar,
-    ModalStack, Palette, ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge,
-    Split, StatusBar, TabBar, TabBarLayout, TabChrome, Terminal as TerminalPrim, TextDisplay,
-    TreeView, UiEvent, UserPayload, Viewport,
+    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, Form,
+    GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
+    Rect as QRect, ResizeEdge, Split, StatusBar, TabBar, TabBarLayout, TabChrome,
+    Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
+// `AcceleratorScope`/`KeyBinding` are only referenced by `#[cfg(test)]`
+// code below — `register_accelerator`/`match_keypress` moved their
+// bodies into `crate::backend_core::BackendCore` (#1090), so this file's
+// non-test code no longer names either type directly. Gate the import
+// so a non-test build doesn't flag it as unused.
+#[cfg(test)]
+use crate::{AcceleratorScope, KeyBinding};
 
 use super::services::GtkPlatformServices;
 
@@ -167,7 +173,8 @@ fn wake_callback_for(id: WakeId) -> Option<Rc<dyn Fn()>> {
 /// - `drag_state` — at most one in-flight scrollbar drag. Set on
 ///   click-down on a scrollbar, read each drag-update, cleared on
 ///   mouse-up.
-/// - `accelerators` / `parsed_accelerators` — registered keybindings;
+/// - `core` — registered keybindings + text-selection bookkeeping,
+///   consolidated into [`crate::backend_core::BackendCore`] (#1090).
 ///   `apply_accelerators` rewrites matching `KeyPressed` events to
 ///   `UiEvent::Accelerator(id, mods)` before they reach the app.
 /// - `events` — adapter queue between GTK signal callbacks and the
@@ -195,12 +202,12 @@ pub struct GtkBackend {
     dpi_scale: f32,
     modal_stack: Rc<std::cell::RefCell<ModalStack>>,
     drag_state: Rc<std::cell::RefCell<DragState>>,
-    accelerators: HashMap<AcceleratorId, Accelerator>,
-    /// Pre-parsed bindings, kept in lock-step with `accelerators`.
-    /// `apply_accelerators` walks this list to rewrite `KeyPressed`
-    /// events into `Accelerator` events. First-match-wins, insertion
-    /// order. Same shape as `TuiBackend`'s `parsed_accelerators`.
-    parsed_accelerators: Vec<(ParsedBinding, AcceleratorId)>,
+    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
+    /// formerly GTK-local `accelerators`/`parsed_accelerators` fields
+    /// verbatim, plus (below) the formerly separate `text_selection`
+    /// field.
+    core: crate::backend_core::BackendCore,
     /// Adapter queue between GTK callbacks (producers) and
     /// `wait_events` / `poll_events` (consumers). Stage 4 wires the
     /// producers.
@@ -313,15 +320,6 @@ pub struct GtkBackend {
     /// `String` per painted text run per frame.
     /// [`super::testing::GtkDriver`] turns it on.
     painted_text_recording: bool,
-    /// Region registry + active-selection state shared by every
-    /// `text_selection: true` backend (#741) — see
-    /// [`crate::text_selection::TextSelectionState`]'s doc. Replaces the
-    /// formerly GTK-local `text_regions`/`active_selection`/
-    /// `last_text_region_id` fields verbatim; `gtk/run.rs::connect_pressed`
-    /// (a `MouseDown` starting a `DragTarget::TextSelection` drag) is the
-    /// other call site that updates it, via [`crate::dispatch::route_pointer`]
-    /// (issue #1088) and [`Self::text_selection_state_mut`].
-    text_selection: crate::text_selection::TextSelectionState,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
     /// during the most recent render pass. Cleared by `begin_frame` and
     /// re-set by `draw_activity_bar`. The GTK runner reads this in the
@@ -560,8 +558,7 @@ impl GtkBackend {
             dpi_scale: 1.0,
             modal_stack: Rc::new(std::cell::RefCell::new(ModalStack::new())),
             drag_state: Rc::new(std::cell::RefCell::new(DragState::new())),
-            accelerators: HashMap::new(),
-            parsed_accelerators: Vec::new(),
+            core: crate::backend_core::BackendCore::default(),
             events,
             services,
             current_cr_ptr: Cell::new(std::ptr::null()),
@@ -587,7 +584,6 @@ impl GtkBackend {
             zones: Vec::new(),
             painted_text: Vec::new(),
             painted_text_recording: false,
-            text_selection: crate::text_selection::TextSelectionState::default(),
             focused_activity_bar: None,
             window: None,
             pending_window_press: None,
@@ -1196,15 +1192,17 @@ impl GtkBackend {
 
     // ── Text selection ─────────────────────────────────────────────────────
     //
-    // The region registry + active-selection state machine itself lives in
-    // [`crate::text_selection::TextSelectionState`] (#741) — every method
-    // below is a thin delegation, kept as inherent methods (rather than
-    // inlining `self.text_selection.foo()` at every call site) so
+    // The region registry + active-selection state machine, plus the
+    // accelerator registry alongside it, live in
+    // [`crate::backend_core::BackendCore`] (#1090) — every method below
+    // is a thin delegation, kept as inherent methods (rather than
+    // inlining `self.core.text_selection.foo()` at every call site) so
     // `gtk/run.rs` and this file's own tests don't need to know the field
     // exists. `apply_selection_highlight`/`extract_selection_text` stay
     // GTK-specific bodies below (Cairo painting / lines-based extraction,
-    // shared with Win-GUI via [`crate::text_selection::pixel_selection_ranges`]/
-    // [`crate::text_selection::extract_lines_pixel`]).
+    // sharing [`crate::backend_core::BackendCore::selection_highlight_rects`]/
+    // [`crate::backend_core::BackendCore::extract_selection_text_pixel`]
+    // with Win-GUI and macOS).
 
     /// Every `TextRegion` registered so far this frame. Test-only since
     /// #1088: `gtk::run`/`GtkDriver` used to read this (and
@@ -1214,7 +1212,7 @@ impl GtkBackend {
     /// outside this file's own tests needs the narrower accessor anymore.
     #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
-        &self.text_selection.text_regions
+        &self.core.text_selection.text_regions
     }
 
     /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
@@ -1224,14 +1222,14 @@ impl GtkBackend {
     pub(crate) fn text_selection_state_mut(
         &mut self,
     ) -> &mut crate::text_selection::TextSelectionState {
-        &mut self.text_selection
+        &mut self.core.text_selection
     }
 
     /// Return the current active text selection, if any.
     pub(crate) fn active_text_selection(
         &self,
     ) -> Option<&crate::text_selection::ActiveTextSelection> {
-        self.text_selection.active_text_selection()
+        self.core.active_text_selection()
     }
 
     /// Update (or start) the active text selection. Called by the runner
@@ -1243,8 +1241,7 @@ impl GtkBackend {
         anchor: Point,
         focus: Point,
     ) {
-        self.text_selection
-            .set_active_text_selection(region, anchor, focus);
+        self.core.set_active_text_selection(region, anchor, focus);
     }
 
     /// Clear the active text selection highlight only (does NOT end an
@@ -1252,7 +1249,7 @@ impl GtkBackend {
     /// mouse-down so the old highlight disappears without interrupting the
     /// drag that is about to start.
     pub(crate) fn clear_selection_display(&mut self) {
-        self.text_selection.clear_selection_display();
+        self.core.clear_selection_display();
     }
 
     /// Clear the active text selection and end any in-progress
@@ -1260,7 +1257,7 @@ impl GtkBackend {
     /// on a plain click outside any text region.
     pub(crate) fn clear_text_selection(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        self.text_selection.clear_text_selection(&mut drag);
+        self.core.clear_text_selection(&mut drag);
     }
 
     /// End any in-progress `TextSelection` drag without clearing the
@@ -1274,7 +1271,7 @@ impl GtkBackend {
     /// mirrors.
     pub(crate) fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
-        self.text_selection.cancel_text_selection_drag(&mut drag);
+        self.core.cancel_text_selection_drag(&mut drag);
     }
 
     /// Record one painted label into [`Self::painted_text`] — the
@@ -1309,52 +1306,31 @@ impl GtkBackend {
 
     /// Paint the active text selection highlight onto `cr`. Must be called
     /// after `app.render` (so the highlight sits on top of the rendered
-    /// content). Converts the pixel-based anchor/focus into cell-index space
-    /// using `line_height` and `char_width`, calls
-    /// `text_selection_line_range`, then converts back to pixel rectangles.
+    /// content).
     ///
-    /// Paints a semi-transparent blue rectangle over each selected row
-    /// segment — the standard GTK-app selection look. No-op when there is
-    /// no active selection or the region id is not registered this frame.
+    /// The row/column → pixel-rect resolution is
+    /// [`crate::backend_core::BackendCore::selection_highlight_rects`] —
+    /// shared with `MacBackend`/`WinBackend`'s twins (#1090); only the
+    /// actual `cr.rectangle`/`cr.fill()` Cairo calls below are GTK-specific
+    /// real toolkit code. No-op when there is no active selection or the
+    /// region id is not registered this frame.
     pub(crate) fn apply_selection_highlight(&self, cr: &Context) {
-        let sel = match self.text_selection.active_text_selection() {
-            Some(s) => s,
-            None => return,
-        };
-        let region = match self.text_selection.find_region(&sel.region) {
-            Some(r) => r,
-            None => return,
-        };
-
         let line_h = self.current_line_height as f32;
         let char_w = self.current_char_width as f32;
-        let Some(ranges) = crate::text_selection::pixel_selection_ranges(
-            region.bounds,
-            sel.anchor,
-            sel.focus,
-            line_h,
-            char_w,
-        ) else {
+        let Some(rects) = self.core.selection_highlight_rects(line_h, char_w) else {
             return;
         };
-        if ranges.is_empty() {
-            return;
-        }
 
-        let bx = region.bounds.x;
-        let by = region.bounds.y;
-
-        // Paint each selected row segment.
+        let color = self.current_theme.text_selection_highlight();
         cr.save().ok();
-        cr.set_source_rgba(0.39, 0.58, 1.0, 0.30);
-        for (row_cell, col_start, col_end) in ranges {
-            let px = bx as f64 + col_start as f64 * char_w as f64;
-            let py = by as f64 + row_cell as f64 * line_h as f64;
-            let pw = (col_end - col_start) as f64 * char_w as f64;
-            let ph = line_h as f64;
-            if pw > 0.0 {
-                cr.rectangle(px, py, pw, ph);
-            }
+        crate::gtk::set_source_rgba(cr, color);
+        for rect in rects {
+            cr.rectangle(
+                rect.x as f64,
+                rect.y as f64,
+                rect.width as f64,
+                rect.height as f64,
+            );
         }
         cr.fill().ok();
         cr.restore().ok();
@@ -1363,23 +1339,11 @@ impl GtkBackend {
     /// Extract the selected text from the `TextRegion`'s stored lines using
     /// the current pixel anchor/focus. Returns an empty string when there is
     /// no active selection, the region is not registered this frame, or the
-    /// region has no `lines` content.
-    ///
-    /// Converts pixel coordinates to row/column indices via `line_height` /
-    /// `char_width`, then slices the stored `lines` accordingly.
+    /// region has no `lines` content. See
+    /// [`crate::backend_core::BackendCore::extract_selection_text_pixel`] —
+    /// shared with `MacBackend`/`WinBackend`'s identically-shaped twins.
     pub(crate) fn extract_selection_text(&self) -> String {
-        let sel = match self.text_selection.active_text_selection() {
-            Some(s) => s,
-            None => return String::new(),
-        };
-        let region = match self.text_selection.find_region(&sel.region) {
-            Some(r) => r,
-            None => return String::new(),
-        };
-        crate::text_selection::extract_lines_pixel(
-            region,
-            sel.anchor,
-            sel.focus,
+        self.core.extract_selection_text_pixel(
             self.current_line_height as f32,
             self.current_char_width as f32,
         )
@@ -1410,7 +1374,7 @@ impl GtkBackend {
     // total-content rows; for now this selects only the visible
     // viewport (bounds).
     pub(crate) fn select_all_text_region(&mut self) -> bool {
-        self.text_selection.select_all_text_region()
+        self.core.select_all_text_region()
     }
 
     // ── Double-click folding (#813) ───────────────────────────────────────
@@ -1440,23 +1404,20 @@ impl GtkBackend {
     }
 
     // ── Accelerators ────────────────────────────────────────────────────────
+    //
+    // The registry itself lives in [`crate::backend_core::BackendCore`]
+    // (#1090) — see that type's doc. Both methods below are thin
+    // delegations, kept as inherent methods (rather than requiring every
+    // call site to spell `self.core.foo()`) since the GTK key callback
+    // (synchronous dispatch) and this file's own tests call
+    // [`Self::match_keypress`] directly.
 
-    /// Apply registered accelerators to a slice of UiEvents. Mirrors
-    /// `TuiBackend::apply_accelerators`. Replaces matching
-    /// `UiEvent::KeyPressed` events with `UiEvent::Accelerator(id, mods)`.
-    /// Stage 6 wires this into the event-queue drain path.
+    /// Apply registered accelerators to a slice of UiEvents. Replaces
+    /// matching `UiEvent::KeyPressed` events with
+    /// `UiEvent::Accelerator(id, mods)`.
     #[allow(dead_code)]
     pub fn apply_accelerators(&self, events: &mut [UiEvent]) {
-        if self.parsed_accelerators.is_empty() {
-            return;
-        }
-        for ev in events.iter_mut() {
-            if let UiEvent::KeyPressed { key, modifiers, .. } = ev {
-                if let Some(id) = self.match_keypress(key, *modifiers) {
-                    *ev = UiEvent::Accelerator(id, *modifiers);
-                }
-            }
-        }
+        self.core.apply_accelerators(events);
     }
 
     /// Look up a registered Global accelerator for a `(key, modifiers)`
@@ -1469,26 +1430,7 @@ impl GtkBackend {
         key: &crate::Key,
         modifiers: crate::Modifiers,
     ) -> Option<AcceleratorId> {
-        let key_name = match key {
-            crate::Key::Char(c) => {
-                if c.is_ascii() {
-                    c.to_ascii_lowercase().to_string()
-                } else {
-                    c.to_string()
-                }
-            }
-            crate::Key::Named(named) => named_key_to_binding_name(*named).to_string(),
-        };
-        for (parsed, id) in &self.parsed_accelerators {
-            if parsed.modifiers == modifiers && parsed.key == key_name {
-                if let Some(acc) = self.accelerators.get(id) {
-                    if matches!(acc.scope, AcceleratorScope::Global) {
-                        return Some(id.clone());
-                    }
-                }
-            }
-        }
-        None
+        self.core.match_keypress(key, modifiers)
     }
 }
 
@@ -1598,69 +1540,6 @@ impl crate::runtime::PreprocessBackend for GtkBackend {
     }
 }
 
-/// Parse a `KeyBinding` (any variant) into a `ParsedBinding`. Mirrors
-/// the same helper in `tui_main/backend.rs` — universal arms map to
-/// the canonical vim-style strings vimcode already uses elsewhere.
-fn parse_binding(b: &KeyBinding) -> Option<ParsedBinding> {
-    match b {
-        KeyBinding::Literal(s) if s.is_empty() => None,
-        KeyBinding::Literal(s) => parse_key_binding(s),
-        KeyBinding::Save => parse_key_binding("<C-s>"),
-        KeyBinding::Open => parse_key_binding("<C-o>"),
-        KeyBinding::New => parse_key_binding("<C-n>"),
-        KeyBinding::Close => parse_key_binding("<C-w>"),
-        KeyBinding::Copy => parse_key_binding("<C-c>"),
-        KeyBinding::Cut => parse_key_binding("<C-x>"),
-        KeyBinding::Paste => parse_key_binding("<C-v>"),
-        KeyBinding::Undo => parse_key_binding("<C-z>"),
-        KeyBinding::Redo => parse_key_binding("<C-S-z>"),
-        KeyBinding::SelectAll => parse_key_binding("<C-a>"),
-        KeyBinding::Find => parse_key_binding("<C-f>"),
-        KeyBinding::Replace => parse_key_binding("<C-h>"),
-        KeyBinding::Quit => parse_key_binding("<C-q>"),
-    }
-}
-
-/// Map a `crate::NamedKey` to the canonical name `parse_key_binding`
-/// produces. Same mapping as TuiBackend uses.
-fn named_key_to_binding_name(named: crate::NamedKey) -> &'static str {
-    use crate::NamedKey::*;
-    match named {
-        Escape => "Escape",
-        Tab => "Tab",
-        BackTab => "BackTab",
-        Enter => "Enter",
-        Backspace => "Backspace",
-        Delete => "Delete",
-        Insert => "Insert",
-        Home => "Home",
-        End => "End",
-        PageUp => "PageUp",
-        PageDown => "PageDown",
-        Up => "Up",
-        Down => "Down",
-        Left => "Left",
-        Right => "Right",
-        F(1) => "F1",
-        F(2) => "F2",
-        F(3) => "F3",
-        F(4) => "F4",
-        F(5) => "F5",
-        F(6) => "F6",
-        F(7) => "F7",
-        F(8) => "F8",
-        F(9) => "F9",
-        F(10) => "F10",
-        F(11) => "F11",
-        F(12) => "F12",
-        F(_) => "",
-        CapsLock => "CapsLock",
-        NumLock => "NumLock",
-        ScrollLock => "ScrollLock",
-        Menu => "Menu",
-    }
-}
-
 /// Map a portable [`ResizeEdge`] to GDK's native `SurfaceEdge`, the
 /// argument `gdk4::Toplevel::begin_resize` requires (#406). 1:1 mapping —
 /// `ResizeEdge` was deliberately named to mirror `SurfaceEdge`'s variants.
@@ -1762,7 +1641,7 @@ impl Backend for GtkBackend {
         self.frame_counter = self.frame_counter.wrapping_add(1);
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors TuiBackend::begin_frame.
-        self.text_selection.begin_frame();
+        self.core.begin_frame();
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
@@ -1782,7 +1661,7 @@ impl Backend for GtkBackend {
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
-        self.text_selection.register_text_region(region);
+        self.core.register_text_region(region);
     }
 
     fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
@@ -1980,16 +1859,11 @@ impl Backend for GtkBackend {
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
-        self.accelerators.insert(acc.id.clone(), acc.clone());
-        self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
-        if let Some(parsed) = parse_binding(&acc.binding) {
-            self.parsed_accelerators.push((parsed, acc.id.clone()));
-        }
+        self.core.register_accelerator(acc);
     }
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
-        self.accelerators.remove(id);
-        self.parsed_accelerators.retain(|(_, eid)| eid != id);
+        self.core.unregister_accelerator(id);
     }
 
     fn modal_stack_handle(&self) -> Rc<std::cell::RefCell<ModalStack>> {
@@ -5731,6 +5605,10 @@ mod tests {
         }
     }
 
+    /// The registry itself now lives in `BackendCore` (#1090) — its
+    /// `len()`s aren't reachable from here anymore, so this observes the
+    /// same round trip behaviourally: registering makes the binding
+    /// match, unregistering makes it stop matching.
     #[test]
     fn gtk_backend_register_accelerator_round_trip() {
         let mut backend = GtkBackend::new();
@@ -5740,11 +5618,27 @@ mod tests {
             scope: AcceleratorScope::Global,
             label: None,
         });
-        assert_eq!(backend.accelerators.len(), 1);
-        assert_eq!(backend.parsed_accelerators.len(), 1);
+        assert_eq!(
+            backend.match_keypress(
+                &crate::Key::Char('s'),
+                crate::Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                }
+            ),
+            Some(AcceleratorId::new("test.save"))
+        );
         backend.unregister_accelerator(&AcceleratorId::new("test.save"));
-        assert!(backend.accelerators.is_empty());
-        assert!(backend.parsed_accelerators.is_empty());
+        assert_eq!(
+            backend.match_keypress(
+                &crate::Key::Char('s'),
+                crate::Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                }
+            ),
+            None
+        );
     }
 
     /// Regression test for B5b.2: parse_key_binding correctness for the
@@ -6290,6 +6184,91 @@ mod tests {
             (px_w - 48.0).abs() < 0.5,
             "pixel width should be 48 (6 cols × 8px), got {px_w}"
         );
+    }
+
+    /// `apply_selection_highlight`'s real Cairo paint, checked against a
+    /// headless `ImageSurface` — the pixel-level counterpart to
+    /// `gtk_selection_highlight_geometry_single_row`'s pure-math version,
+    /// and GTK's twin of `macos::backend::tests::mac_apply_selection_highlight_paints_over_the_background`
+    /// (#1090: this method now resolves its rects via
+    /// `BackendCore::selection_highlight_rects` and its colour via
+    /// `Theme::text_selection_highlight`, rather than a hard-coded Cairo
+    /// literal — this test is what proves that consolidation painted the
+    /// exact same pixels as before).
+    #[test]
+    fn gtk_apply_selection_highlight_paints_over_the_background() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 100;
+        // Two rows tall so there's an unselected row below the selected
+        // one to probe as a "must stay untouched" control.
+        const H: i32 = 40;
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(20.0);
+        backend.set_current_char_width(10.0);
+        backend.register_text_region(TextRegion {
+            id: WidgetId::new("body"),
+            bounds: QRect::new(0.0, 0.0, W as f32, H as f32),
+            lines: vec!["hello world".to_string()],
+        });
+        // Anchor/focus both land in row 0 (y < 20) — only the top row is
+        // selected.
+        backend.set_active_text_selection(
+            WidgetId::new("body"),
+            Point::new(0.0, 0.0),
+            Point::new(50.0, 1.0),
+        );
+
+        let mut surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            // Flat, glyph-free background fill so any probe pixel is
+            // unambiguous — mirrors the macOS twin's `BG` fill.
+            cr.set_source_rgb(10.0 / 255.0, 10.0 / 255.0, 10.0 / 255.0);
+            cr.paint().ok();
+        }
+        surface.flush();
+
+        let before = pixel_argb(&mut surface, 5, 5);
+        assert_eq!(
+            before,
+            (10, 10, 10),
+            "the probe pixel must sit on the flat background fill before painting"
+        );
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            backend.apply_selection_highlight(&cr);
+        }
+        surface.flush();
+
+        let after = pixel_argb(&mut surface, 5, 5);
+        assert_ne!(
+            before, after,
+            "apply_selection_highlight must paint over the background at a selected pixel"
+        );
+        // The highlight is translucent blue (`Theme::text_selection_highlight`)
+        // — blue must rise noticeably.
+        assert!(
+            after.2 > before.2 + 15,
+            "blue channel must rise noticeably after painting the highlight, before={before:?} after={after:?}"
+        );
+
+        let outside = pixel_argb(&mut surface, 5, 25);
+        assert_eq!(
+            outside, before,
+            "a pixel in the unselected second row must stay untouched"
+        );
+    }
+
+    /// ARGB32 is little-endian `B, G, R, A` per Cairo's own convention
+    /// (matches every other `surface.data()` probe in this module).
+    fn pixel_argb(surface: &mut pangocairo::cairo::ImageSurface, x: i32, y: i32) -> (u8, u8, u8) {
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
     }
 
     /// #407 established that `menu_bar_layout` must prefer the

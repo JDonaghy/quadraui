@@ -47,23 +47,24 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::accelerator::{key_to_binding_name, parse_binding};
 use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, ColorDepth};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, Color, CommandLine,
-    DragState, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
-    Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame,
-    Terminal as TerminalPrim, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
+    ListView, MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split,
+    StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim,
+    TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
-// `KeyBinding`/`DragTarget` are only referenced by `#[cfg(test)]` code below
-// — `route_pointer` (issue #1088) absorbed `apply_dispatch`'s own
-// `DragTarget::TextSelection` match, so this file's non-test code no longer
-// names the type directly. Gate the import so a non-test build doesn't flag
-// it as unused.
+// `KeyBinding`/`DragTarget`/`AcceleratorScope` are only referenced by
+// `#[cfg(test)]` code below — `route_pointer` (issue #1088) absorbed
+// `apply_dispatch`'s own `DragTarget::TextSelection` match, and
+// `register_accelerator`/`match_keypress` moved their `AcceleratorScope`
+// check into `BackendCore` (#1090) — so this file's non-test code no
+// longer names either type directly. Gate the import so a non-test
+// build doesn't flag it as unused.
 #[cfg(test)]
-use crate::{DragTarget, KeyBinding};
+use crate::{AcceleratorScope, DragTarget, KeyBinding};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
@@ -95,12 +96,12 @@ pub struct TuiBackend {
     modal_stack: Rc<RefCell<ModalStack>>,
     /// See `modal_stack`'s doc comment — same rationale.
     drag_state: Rc<RefCell<DragState>>,
-    accelerators: HashMap<AcceleratorId, Accelerator>,
-    /// Pre-parsed bindings, kept in lock-step with `accelerators`. Stage 6
-    /// uses this for the `wait_events`/`poll_events` matcher to avoid
-    /// re-parsing on every keystroke. First-match-wins iteration order
-    /// matches insertion order (`Vec`, not `HashMap`).
-    parsed_accelerators: Vec<(ParsedBinding, AcceleratorId)>,
+    /// Accelerator registry + text-selection bookkeeping (#1090) — see
+    /// [`crate::backend_core::BackendCore`]'s module doc. Replaces the
+    /// formerly TUI-local `accelerators`/`parsed_accelerators` fields
+    /// verbatim, plus (below) the formerly separate `text_selection`
+    /// field.
+    core: crate::backend_core::BackendCore,
     services: TuiPlatformServices,
     /// Type-erased `&mut Frame<'_>` pointer; non-null only inside
     /// [`Self::enter_frame_scope`]. `Cell` (not `RefCell`) because
@@ -137,14 +138,6 @@ pub struct TuiBackend {
     /// [`crate::tui::testing::TuiDriver::inventory`] to populate
     /// [`crate::testing::FrameInventory::zones`] (quadraui#490).
     zones: Vec<ZoneRec>,
-    /// Region registry + active-selection state shared by every
-    /// `text_selection: true` backend (#741) — see
-    /// [`crate::text_selection::TextSelectionState`]'s doc. Replaces the
-    /// formerly TUI-local `text_regions`/`active_selection`/
-    /// `last_text_region_id` fields verbatim; [`Self::apply_dispatch`] (a
-    /// `MouseDown` starting a `DragTarget::TextSelection` drag) is the
-    /// other call site that updates it, via `track_focused_text_region`.
-    text_selection: crate::text_selection::TextSelectionState,
     /// Text extracted from the last rendered buffer for the active
     /// selection. Populated by `apply_selection_highlight` (which has
     /// access to the live buffer inside `terminal.draw`). After the
@@ -318,8 +311,7 @@ impl TuiBackend {
             viewport: Viewport::default(),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
             drag_state: Rc::new(RefCell::new(DragState::new())),
-            accelerators: HashMap::new(),
-            parsed_accelerators: Vec::new(),
+            core: crate::backend_core::BackendCore::default(),
             services: TuiPlatformServices::new(),
             current_frame_ptr: Cell::new(std::ptr::null_mut()),
             current_theme: crate::Theme::default(),
@@ -327,7 +319,6 @@ impl TuiBackend {
             double_click: super::events::DoubleClickDetector::new(),
             double_click_folding: true,
             zones: Vec::new(),
-            text_selection: crate::text_selection::TextSelectionState::default(),
             cached_selection_text: String::new(),
             focused_activity_bar: None,
             last_cursor_position: None,
@@ -605,26 +596,28 @@ impl TuiBackend {
 
     // ── Text selection ─────────────────────────────────────────────────────
     //
-    // The region registry + active-selection state machine itself lives in
-    // [`crate::text_selection::TextSelectionState`] (#741) — every method
-    // below except `apply_selection_highlight`/`extract_selection_text`
-    // (live-ratatui-buffer extraction, TUI-only — see the module doc on
-    // `crate::text_selection`) is a thin delegation.
+    // The region registry + active-selection state machine, plus the
+    // accelerator registry alongside it, live in
+    // [`crate::backend_core::BackendCore`] (#1090, was `#741`'s
+    // TUI-local `text_selection` field before that). Every method below
+    // except `apply_selection_highlight`/`extract_selection_text`
+    // (live-ratatui-buffer extraction, TUI-only — see that module's doc)
+    // is a thin delegation.
 
     /// Every `TextRegion` registered so far this frame. Test-only: unlike
     /// `GtkBackend`'s twin (read by `gtk::run`/`GtkDriver`), nothing in the
     /// live TUI runner needs this outside `self` — [`Self::apply_dispatch`]
-    /// reads `self.text_selection.text_regions` directly.
+    /// reads `self.core.text_selection.text_regions` directly.
     #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
-        &self.text_selection.text_regions
+        &self.core.text_selection.text_regions
     }
 
     /// Return the current active text selection, if any.
     pub(crate) fn active_text_selection(
         &self,
     ) -> Option<&crate::text_selection::ActiveTextSelection> {
-        self.text_selection.active_text_selection()
+        self.core.active_text_selection()
     }
 
     /// Update (or start) the active text selection. Called by the runner
@@ -636,8 +629,7 @@ impl TuiBackend {
         anchor: Point,
         focus: Point,
     ) {
-        self.text_selection
-            .set_active_text_selection(region, anchor, focus);
+        self.core.set_active_text_selection(region, anchor, focus);
     }
 
     /// Clear the active text selection and, if a `TextSelection` drag is
@@ -645,14 +637,14 @@ impl TuiBackend {
     /// Ctrl-C copies the selection.
     pub(crate) fn clear_text_selection(&mut self) {
         let mut drag_state = self.drag_state.borrow_mut();
-        self.text_selection.clear_text_selection(&mut drag_state);
+        self.core.clear_text_selection(&mut drag_state);
     }
 
     /// Clear only the displayed selection highlight without touching drag
     /// state. Used by the run loop on `MouseDown` so that the drag just
     /// initiated by `dispatch_click` is not immediately cancelled.
     pub(crate) fn clear_selection_display(&mut self) {
-        self.text_selection.clear_selection_display();
+        self.core.clear_selection_display();
     }
 
     /// End any in-progress `TextSelection` drag without clearing the
@@ -663,8 +655,7 @@ impl TuiBackend {
     /// previously finalised selection highlight on screen.
     fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag_state = self.drag_state.borrow_mut();
-        self.text_selection
-            .cancel_text_selection_drag(&mut drag_state);
+        self.core.cancel_text_selection_drag(&mut drag_state);
     }
 
     /// Invert (highlight) the cells in the ratatui buffer that fall
@@ -676,11 +667,11 @@ impl TuiBackend {
     /// double-buffer after `draw` returns, so `terminal.current_buffer_mut()`
     /// would return an empty buffer by the time Ctrl-C fires.
     pub(crate) fn apply_selection_highlight(&mut self, buf: &mut ratatui::buffer::Buffer) {
-        let sel = match self.text_selection.active_text_selection() {
+        let sel = match self.core.text_selection.active_text_selection() {
             Some(s) => s,
             None => return,
         };
-        let region = match self.text_selection.find_region(&sel.region) {
+        let region = match self.core.text_selection.find_region(&sel.region) {
             Some(r) => r,
             None => return,
         };
@@ -778,7 +769,7 @@ impl TuiBackend {
     // total-content rows; for now this selects only the visible
     // viewport (bounds).
     pub(crate) fn select_all_text_region(&mut self) -> bool {
-        self.text_selection.select_all_text_region()
+        self.core.select_all_text_region()
     }
 
     /// `WidgetId` of the `ActivityBar` that declared
@@ -806,11 +797,11 @@ impl TuiBackend {
     /// `terminal.draw` swaps ratatui's double-buffer).
     #[cfg(test)]
     pub(crate) fn extract_selection_text(&self, buf: &ratatui::buffer::Buffer) -> String {
-        let sel = match self.text_selection.active_text_selection() {
+        let sel = match self.core.text_selection.active_text_selection() {
             Some(s) => s,
             None => return String::new(),
         };
-        let region = match self.text_selection.find_region(&sel.region) {
+        let region = match self.core.text_selection.find_region(&sel.region) {
             Some(r) => r,
             None => return String::new(),
         };
@@ -884,7 +875,7 @@ impl TuiBackend {
                     out.extend(crate::dispatch::route_pointer(
                         &modal_stack,
                         &mut drag_state,
-                        &mut self.text_selection,
+                        &mut self.core.text_selection,
                         event,
                     ));
                 }
@@ -949,37 +940,19 @@ impl TuiBackend {
         self.double_click_folding = enabled;
     }
 
+    /// Rewrite matching `UiEvent::KeyPressed` events as
+    /// `UiEvent::Accelerator`. See [`crate::backend_core::BackendCore::apply_accelerators`].
     fn apply_accelerators(&self, events: &mut [UiEvent]) {
-        if self.parsed_accelerators.is_empty() {
-            return;
-        }
-        for ev in events.iter_mut() {
-            if let UiEvent::KeyPressed { key, modifiers, .. } = ev {
-                if let Some(id) = self.match_keypress(key, *modifiers) {
-                    *ev = UiEvent::Accelerator(id, *modifiers);
-                }
-            }
-        }
+        self.core.apply_accelerators(events);
     }
 
+    /// See [`crate::backend_core::BackendCore::match_keypress`].
     fn match_keypress(
         &self,
         key: &crate::Key,
         modifiers: crate::Modifiers,
     ) -> Option<AcceleratorId> {
-        let key_name = key_to_binding_name(key);
-        for (parsed, id) in &self.parsed_accelerators {
-            if parsed.modifiers == modifiers && parsed.key == key_name {
-                // Skip non-Global-scope entries — the backend doesn't
-                // own focus/mode context.
-                if let Some(acc) = self.accelerators.get(id) {
-                    if matches!(acc.scope, AcceleratorScope::Global) {
-                        return Some(id.clone());
-                    }
-                }
-            }
-        }
-        None
+        self.core.match_keypress(key, modifiers)
     }
 }
 
@@ -1333,7 +1306,7 @@ impl Backend for TuiBackend {
         self.viewport = viewport;
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger.
-        self.text_selection.begin_frame();
+        self.core.begin_frame();
         // Clear per-frame widget zones for the same reason. Same
         // lifecycle as text_regions.
         self.zones.clear();
@@ -1355,7 +1328,7 @@ impl Backend for TuiBackend {
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
-        self.text_selection.register_text_region(region);
+        self.core.register_text_region(region);
     }
 
     fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
@@ -1520,19 +1493,11 @@ impl Backend for TuiBackend {
     }
 
     fn register_accelerator(&mut self, acc: &Accelerator) {
-        // Re-registration replaces the prior entry — both in the map and
-        // the parsed list, otherwise stale bindings would shadow the new
-        // one in `match_accelerator`.
-        self.accelerators.insert(acc.id.clone(), acc.clone());
-        self.parsed_accelerators.retain(|(_, id)| id != &acc.id);
-        if let Some(parsed) = parse_binding(&acc.binding) {
-            self.parsed_accelerators.push((parsed, acc.id.clone()));
-        }
+        self.core.register_accelerator(acc);
     }
 
     fn unregister_accelerator(&mut self, id: &AcceleratorId) {
-        self.accelerators.remove(id);
-        self.parsed_accelerators.retain(|(_, eid)| eid != id);
+        self.core.unregister_accelerator(id);
     }
 
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {

@@ -746,6 +746,39 @@ impl Theme {
     pub fn chart_series(&self) -> [Color; 6] {
         CHART_SERIES
     }
+
+    // ── Text-selection highlight lift (quadraui#1090) ───────────────────
+
+    /// Translucent-blue fill painted over the active drag-selected range
+    /// of a [`crate::dispatch::TextRegion`] — the generic, cross-widget
+    /// text-selection mechanism every `text_selection: true` backend
+    /// embeds via `crate::text_selection::TextSelectionState` (#741,
+    /// #803). **Not** the same concept as [`Self::selection`]/
+    /// [`Self::selection_alpha`], which tint the *editor primitive's own*
+    /// in-buffer selection — the two were already visually distinct
+    /// before this method existed and stay that way here.
+    ///
+    /// Before #1090, `GtkBackend::apply_selection_highlight`,
+    /// `MacBackend`'s `draw_selection_highlight`, and
+    /// `WinBackend::apply_selection_highlight` each hard-coded this exact
+    /// colour independently (`rgba(0.39, 0.58, 1.0, 0.30)` on GTK/macOS;
+    /// `Color::rgba(100, 148, 255, 77)` — a one-off-rounded approximation
+    /// — on Win-GUI). This method reproduces the more precise float
+    /// conversion (`round(0.39*255)=99`, `round(0.58*255)=148`,
+    /// `round(0.30*255)=77`) as the one shared value; the ~1/255 shift
+    /// from Win-GUI's old literal is visually immaterial (its own
+    /// pixel-readback tests assert a blend-direction threshold, not an
+    /// exact channel value — see `win_backend_native_surface_fill_rect_*`
+    /// and the mirrored macOS test).
+    ///
+    /// **A method, not a `Theme` field, on purpose** — same reasoning as
+    /// [`Self::find_active_bg`] above: purely additive, so it costs
+    /// nothing in `coord-tui`'s exhaustive palette literals. Promote to a
+    /// real field only if a consumer asks to theme this independently —
+    /// rule 8's "if it must break" path.
+    pub fn text_selection_highlight(&self) -> Color {
+        Color::rgba(99, 148, 255, 77)
+    }
 }
 
 impl Default for Theme {
@@ -1148,5 +1181,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── Text-selection highlight lift (quadraui#1090) ───────────────────
+
+    /// Reproduces the exact pre-#1090 literal — GTK/macOS painted
+    /// `rgba(0.39, 0.58, 1.0, 0.30)` (float, `round(x*255)` per channel);
+    /// this is the one value every backend now reads instead of three
+    /// independently hard-coded copies.
+    #[test]
+    fn text_selection_highlight_matches_the_pre_shared_literal() {
+        assert_eq!(
+            Theme::default().text_selection_highlight(),
+            Color::rgba(99, 148, 255, 77)
+        );
+    }
+
+    /// Translucent, like every other adopter of this shared look — a
+    /// fully opaque highlight would hide the selected text underneath.
+    #[test]
+    fn text_selection_highlight_is_translucent() {
+        let a = Theme::default().text_selection_highlight().a;
+        assert!(a > 0 && a < 255);
+    }
+
+    /// A method, not a field (see the doc comment) — reachable off any
+    /// `Theme` value, not just the default one, same shape as
+    /// [`chart_series_is_reachable_off_a_non_default_theme`].
+    #[test]
+    fn text_selection_highlight_is_reachable_off_a_non_default_theme() {
+        let themed = Theme {
+            background: Color::rgb(250, 250, 250),
+            foreground: Color::rgb(10, 10, 10),
+            ..Theme::default()
+        };
+        assert_eq!(
+            themed.text_selection_highlight(),
+            Theme::default().text_selection_highlight()
+        );
     }
 }
