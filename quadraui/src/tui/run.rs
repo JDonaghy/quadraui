@@ -485,12 +485,7 @@ where
     // tracking isn't touched by it), so it's safe to keep it ahead of
     // the `terminal.draw` call even though `begin_frame` itself moved
     // inside that closure below (#1040).
-    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
-        app.tab_stops(A::AreaId::default())
-            .into_iter()
-            .find(|(stop_id, _)| *stop_id == id)
-            .map(|(_, rect)| rect)
-    });
+    let focus_ring_rect = crate::runtime::focused_stop_rect(backend, app, A::AreaId::default());
     terminal
         .draw(|frame| {
             // #1040: derive the layout-sizing viewport from the *actual*

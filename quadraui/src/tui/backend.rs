@@ -53,16 +53,17 @@ use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend, Color, CommandLine,
-    DragState, DragTarget, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding,
-    PlatformServices, Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome,
-    TabFrame, Terminal as TerminalPrim, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport,
-    WidgetId,
+    DragState, Form, ListView, MenuBar, ModalStack, Palette, ParsedBinding, PlatformServices,
+    Point, Rect as QRect, Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame,
+    Terminal as TerminalPrim, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
-// `KeyBinding` is only referenced by `#[cfg(test)]` code below (the rest of
-// this file matches already-parsed `Accelerator`s) — gate the import the
-// same way so a non-test build doesn't flag it as unused.
+// `KeyBinding`/`DragTarget` are only referenced by `#[cfg(test)]` code below
+// — `route_pointer` (issue #1088) absorbed `apply_dispatch`'s own
+// `DragTarget::TextSelection` match, so this file's non-test code no longer
+// names the type directly. Gate the import so a non-test build doesn't flag
+// it as unused.
 #[cfg(test)]
-use crate::KeyBinding;
+use crate::{DragTarget, KeyBinding};
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
@@ -855,11 +856,17 @@ impl TuiBackend {
     /// `MouseDown` on a text region begins a `TextSelection` drag and
     /// `MouseMoved` (with button held) emits `TextSelectionChanged`.
     ///
+    /// `MouseDown`/`MouseMoved`/`MouseUp` all route through
+    /// [`crate::dispatch::route_pointer`] (issue #1088) — the same one
+    /// pointer-routing sequence `gtk::run`/`macos::run`/`win::run` use, so
+    /// this is no longer a fourth from-scratch copy.
+    ///
     /// # TODO: scrollbar dispatch
     ///
     /// Scroll-surface arbitration is not wired here yet — scroll surfaces
-    /// are not registered per-frame by `TuiBackend`. Passing an empty slice
-    /// to `dispatch_click` means text regions work correctly today and
+    /// are not registered per-frame by `TuiBackend`. `route_pointer` always
+    /// passes an empty slice to `dispatch_click`'s `scroll_surfaces` param
+    /// (see that function's doc), so text regions work correctly today and
     /// scrollbar drags are unaffected (they continue to be handled by
     /// app-side hit-tests as before). The consequence is that the
     /// "scrollbar wins over an overlapping text region" acceptance
@@ -869,48 +876,16 @@ impl TuiBackend {
         let mut out = Vec::with_capacity(raw.len());
         for event in raw {
             match event {
-                UiEvent::MouseDown {
-                    button,
-                    position,
-                    modifiers,
-                    ..
-                } => {
+                UiEvent::MouseDown { .. }
+                | UiEvent::MouseMoved { .. }
+                | UiEvent::MouseUp { .. } => {
                     let modal_stack = self.modal_stack.borrow();
                     let mut drag_state = self.drag_state.borrow_mut();
-                    out.extend(crate::dispatch::dispatch_click(
-                        &modal_stack,
-                        &[],
-                        &self.text_selection.text_regions,
-                        &mut drag_state,
-                        position,
-                        button,
-                        modifiers,
-                    ));
-                    // Track which region was clicked so Ctrl-A can target
-                    // the right region even before the first drag move.
-                    if let Some(DragTarget::TextSelection { region, .. }) = drag_state.target() {
-                        self.text_selection
-                            .track_focused_text_region(region.clone());
-                    }
-                }
-                UiEvent::MouseMoved { position, buttons } => {
-                    let drag_state = self.drag_state.borrow();
-                    out.extend(crate::dispatch::dispatch_mouse_drag(
-                        &drag_state,
-                        position,
-                        buttons,
-                    ));
-                }
-                UiEvent::MouseUp {
-                    button, position, ..
-                } => {
-                    let modal_stack = self.modal_stack.borrow();
-                    let mut drag_state = self.drag_state.borrow_mut();
-                    out.extend(crate::dispatch::dispatch_mouse_up(
+                    out.extend(crate::dispatch::route_pointer(
                         &modal_stack,
                         &mut drag_state,
-                        position,
-                        button,
+                        &mut self.text_selection,
+                        event,
                     ));
                 }
                 // When an ActivityBar has `is_keyboard_focused`, redirect

@@ -319,7 +319,8 @@ pub struct GtkBackend {
     /// formerly GTK-local `text_regions`/`active_selection`/
     /// `last_text_region_id` fields verbatim; `gtk/run.rs::connect_pressed`
     /// (a `MouseDown` starting a `DragTarget::TextSelection` drag) is the
-    /// other call site that updates it, via [`Self::track_focused_text_region`].
+    /// other call site that updates it, via [`crate::dispatch::route_pointer`]
+    /// (issue #1088) and [`Self::text_selection_state_mut`].
     text_selection: crate::text_selection::TextSelectionState,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
     /// during the most recent render pass. Cleared by `begin_frame` and
@@ -1205,9 +1206,25 @@ impl GtkBackend {
     // shared with Win-GUI via [`crate::text_selection::pixel_selection_ranges`]/
     // [`crate::text_selection::extract_lines_pixel`]).
 
-    /// Every `TextRegion` registered so far this frame.
+    /// Every `TextRegion` registered so far this frame. Test-only since
+    /// #1088: `gtk::run`/`GtkDriver` used to read this (and
+    /// `track_focused_text_region` below) as two separate accessor calls
+    /// before a `dispatch_click` call they built inline; both now go
+    /// through [`Self::text_selection_state_mut`] instead, so nothing
+    /// outside this file's own tests needs the narrower accessor anymore.
+    #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
         &self.text_selection.text_regions
+    }
+
+    /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
+    /// — the shape [`crate::dispatch::route_pointer`] (issue #1088) needs
+    /// to both read `text_regions` and call `track_focused_text_region`
+    /// without two separate accessor calls.
+    pub(crate) fn text_selection_state_mut(
+        &mut self,
+    ) -> &mut crate::text_selection::TextSelectionState {
+        &mut self.text_selection
     }
 
     /// Return the current active text selection, if any.
@@ -1258,15 +1275,6 @@ impl GtkBackend {
     pub(crate) fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
         self.text_selection.cancel_text_selection_drag(&mut drag);
-    }
-
-    /// Record that `id` is the most-recently focused/clicked `TextRegion`.
-    /// Called by the runner's `connect_pressed` callback after
-    /// `dispatch_click` starts a `DragTarget::TextSelection` drag so that
-    /// [`Self::select_all_text_region`] can resolve the correct target even
-    /// before the first drag-move fires a `TextSelectionChanged` event.
-    pub(crate) fn track_focused_text_region(&mut self, id: WidgetId) {
-        self.text_selection.track_focused_text_region(id);
     }
 
     /// Record one painted label into [`Self::painted_text`] — the

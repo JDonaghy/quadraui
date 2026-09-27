@@ -842,6 +842,84 @@ pub fn dispatch_click(
     }]
 }
 
+// ─── One-shot pointer routing (issue #1088) ────────────────────────────────
+
+/// The `MouseDown` / `MouseMoved` / `MouseUp` routing sequence every
+/// runner (`gtk::run`, `gtk::testing`, `macos::run`, `win::run`,
+/// `tui::backend`) carried inline as its own copy: call the matching
+/// `dispatch_*` function above, and — on `MouseDown` — additionally track
+/// the newly-focused text region so Ctrl-A can resolve it even before the
+/// first drag-move fires a `TextSelectionChanged` event. Any other
+/// `UiEvent` variant passes straight through unchanged (a one-element
+/// vec), so a caller can route every event through this function
+/// unconditionally instead of matching the variant itself first.
+///
+/// `widget` on the incoming `MouseDown`/`MouseUp` is ignored — every
+/// `dispatch_*` function recomputes it from `stack`/the registered
+/// regions, exactly as the 7 inlined copies this replaces did (none of
+/// them read the field either).
+///
+/// # Scroll surfaces (issue #1088)
+///
+/// Always passes `&[]` for [`dispatch_click`]'s `scroll_surfaces` — every
+/// one of the 7 copies did the same, because none of the four runners
+/// (GTK, macOS, Windows, TUI) register a [`ScrollSurface`] anywhere in
+/// the tree today. That makes the scrollbar-click arbitration above
+/// (`ScrollSurface`/[`SurfaceScrollbar`]) unreachable *from quadraui's own
+/// runners* — but not dead: `vimcode` (this crate's primary consumer)
+/// calls [`dispatch_click`] directly with its own non-empty
+/// `scroll_surfaces` list (`src/app.rs`), bypassing quadraui's runners
+/// entirely, so the parameter is load-bearing for that caller even though
+/// no in-tree caller populates it. Wiring per-frame `ScrollSurface`
+/// registration into the four runners (so `dispatch_click`'s scrollbar
+/// path becomes reachable in-tree too) is a real per-backend feature, not
+/// a dedup — left as follow-up work, not folded into this consolidation.
+///
+/// `#[cfg(...)]`-gated to mirror `crate::text_selection`'s own gate — this
+/// module is compiled unconditionally (`dispatch` has no toolkit
+/// dependency of its own) but `TextSelectionState` only exists when at
+/// least one backend that embeds it is being built.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn route_pointer(
+    stack: &ModalStack,
+    drag: &mut DragState,
+    text_state: &mut crate::text_selection::TextSelectionState,
+    event: UiEvent,
+) -> Vec<UiEvent> {
+    match event {
+        UiEvent::MouseDown {
+            button,
+            position,
+            modifiers,
+            ..
+        } => {
+            let events = dispatch_click(
+                stack,
+                &[],
+                &text_state.text_regions,
+                drag,
+                position,
+                button,
+                modifiers,
+            );
+            if let Some(DragTarget::TextSelection { region, .. }) = drag.target() {
+                text_state.track_focused_text_region(region.clone());
+            }
+            events
+        }
+        UiEvent::MouseMoved { position, buttons } => dispatch_mouse_drag(drag, position, buttons),
+        UiEvent::MouseUp {
+            button, position, ..
+        } => dispatch_mouse_up(stack, drag, position, button),
+        other => vec![other],
+    }
+}
+
 // ─── Double-click synthesis ────────────────────────────────────────────────
 //
 // Backend-agnostic: relocated here from `tui::events` (issue #486) so

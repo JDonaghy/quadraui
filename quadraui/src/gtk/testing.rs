@@ -21,9 +21,9 @@
 //! so the test path paints and pre-processes events (ActivityBar focus
 //! intercept, accelerators, Ctrl-C/V/A, text selection) identically to
 //! production. [`Self::click`] / [`Self::drag`] route through the same
-//! [`crate::dispatch::dispatch_click`] / `dispatch_mouse_drag` /
-//! `dispatch_mouse_up` the live click/motion/release handlers use, so
-//! text-region and scrollbar drags behave the same under test.
+//! [`crate::dispatch::route_pointer`] (issue #1088) the live click/motion/
+//! release handlers use, so text-region and scrollbar drags behave the
+//! same under test.
 //!
 //! ## Limitations
 //!
@@ -47,7 +47,7 @@
 use pangocairo::cairo::{Context, Format, ImageSurface};
 
 use crate::backend::Backend;
-use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
+use crate::dispatch::route_pointer;
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
 use crate::testing::driver_core::DriverCore;
@@ -228,7 +228,7 @@ impl<A: AppLogic> GtkDriver<A> {
     }
 
     /// Left-click at surface coordinates `(x, y)` (pixels), routed
-    /// through the same [`dispatch_click`] the live click handler uses —
+    /// through the same [`route_pointer`] the live click handler uses —
     /// so a click on a registered text region or scrollbar begins a drag
     /// exactly as it would live.
     pub fn click(&mut self, x: f32, y: f32) -> Reaction {
@@ -245,19 +245,17 @@ impl<A: AppLogic> GtkDriver<A> {
             let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
-            let evs = dispatch_click(
+            route_pointer(
                 &stack,
-                &[], // scroll surfaces not tracked by the driver — mirrors gtk::run
-                backend.text_regions(),
                 &mut drag,
-                position,
-                MouseButton::Left,
-                Modifiers::default(),
-            );
-            if let Some(crate::dispatch::DragTarget::TextSelection { region, .. }) = drag.target() {
-                backend.track_focused_text_region(region.clone());
-            }
-            evs
+                backend.text_selection_state_mut(),
+                UiEvent::MouseDown {
+                    widget: None,
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                },
+            )
         };
         self.dispatch_all(events)
     }
@@ -269,14 +267,21 @@ impl<A: AppLogic> GtkDriver<A> {
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Reaction {
         let position = Point::new(x, y);
         let events = {
-            let drag_rc = self.core.backend().drag_state_handle();
-            let drag = drag_rc.borrow();
-            dispatch_mouse_drag(
-                &drag,
-                position,
-                ButtonMask {
-                    left: true,
-                    ..ButtonMask::default()
+            let backend = self.core.backend_mut();
+            let stack_rc = backend.modal_stack_handle();
+            let drag_rc = backend.drag_state_handle();
+            let stack = stack_rc.borrow();
+            let mut drag = drag_rc.borrow_mut();
+            route_pointer(
+                &stack,
+                &mut drag,
+                backend.text_selection_state_mut(),
+                UiEvent::MouseMoved {
+                    position,
+                    buttons: ButtonMask {
+                        left: true,
+                        ..ButtonMask::default()
+                    },
                 },
             )
         };
@@ -287,12 +292,21 @@ impl<A: AppLogic> GtkDriver<A> {
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Reaction {
         let position = Point::new(x, y);
         let events = {
-            let backend = self.core.backend();
+            let backend = self.core.backend_mut();
             let stack_rc = backend.modal_stack_handle();
             let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
-            dispatch_mouse_up(&stack, &mut drag, position, MouseButton::Left)
+            route_pointer(
+                &stack,
+                &mut drag,
+                backend.text_selection_state_mut(),
+                UiEvent::MouseUp {
+                    widget: None,
+                    button: MouseButton::Left,
+                    position,
+                },
+            )
         };
         self.dispatch_all(events)
     }

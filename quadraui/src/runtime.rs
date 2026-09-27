@@ -594,6 +594,41 @@ where
     }
 }
 
+/// The screen [`Rect`] of whichever tab stop currently has focus, or
+/// `None` — the per-frame lookup every runner (`gtk::run`, `macos::run`,
+/// `win::run`, `tui::run`) ran just before painting the focus-ring
+/// convention (issue #830), copied identically four times before issue
+/// #1088 consolidated it here: `backend.focus_manager().focused()` for
+/// the focused id, then a linear scan of `app.tab_stops(area)` for the
+/// matching rect.
+///
+/// Returns `None` both when nothing is focused and when the focused id
+/// isn't among this frame's tab stops (e.g. it scrolled out of view) —
+/// callers treat both the same way: skip `Backend::draw_focus_ring` for
+/// this frame.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn focused_stop_rect<B, A>(
+    backend: &B,
+    app: &A,
+    area: A::AreaId,
+) -> Option<crate::event::Rect>
+where
+    B: crate::Backend,
+    A: AppLogic,
+{
+    backend.focus_manager().focused().cloned().and_then(|id| {
+        app.tab_stops(area)
+            .into_iter()
+            .find(|(stop_id, _)| *stop_id == id)
+            .map(|(_, rect)| rect)
+    })
+}
+
 /// Trailing-edge debounce settle window for `WindowResized` dispatch
 /// (quadraui#437).
 ///
