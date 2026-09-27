@@ -375,19 +375,6 @@ mod native_surface_paint {
         content_y: f32,
     }
 
-    /// Convert a **char** offset into `text` (the unit `cursor` /
-    /// `sel_anchor` are stored in) to a byte offset safe to slice at.
-    /// Out-of-range offsets clamp to `text.len()` — always a valid
-    /// slice point — rather than panicking, mirroring the identical
-    /// `char_indices().nth(..)` idiom every deleted per-backend copy
-    /// used independently.
-    fn char_to_byte(text: &str, char_idx: usize) -> usize {
-        text.char_indices()
-            .nth(char_idx)
-            .map(|(i, _)| i)
-            .unwrap_or(text.len())
-    }
-
     /// A hit-region's bounds in `surface`-absolute coordinates: `col`/
     /// `row` are char-cell offsets from the panel's content corner,
     /// `width` is in char cells. Width is floored to 1 device unit so a
@@ -513,8 +500,8 @@ mod native_surface_paint {
         } else {
             let anchor = sel_anchor.expect("has_sel implies sel_anchor is Some");
             let (lo, hi) = (anchor.min(cursor), anchor.max(cursor));
-            let lo_b = char_to_byte(text, lo);
-            let hi_b = char_to_byte(text, hi);
+            let lo_b = crate::text_util::char_to_byte_idx(text, lo);
+            let hi_b = crate::text_util::char_to_byte_idx(text, hi);
             let prefix = &text[..lo_b];
             let selected = &text[lo_b..hi_b];
             let suffix = &text[hi_b..];
@@ -549,7 +536,7 @@ mod native_surface_paint {
 
         // Cursor: a 2-device-unit-wide bar at the char offset, inset 2
         // top/bottom — same shape all three deleted copies drew.
-        let cursor_b = char_to_byte(text, cursor);
+        let cursor_b = crate::text_util::char_to_byte_idx(text, cursor);
         let (cursor_px, _) = surface.surface_measure_text(&text[..cursor_b]);
         surface.surface_fill_rect(
             Rect::new(text_x + cursor_px, rect.y + 2.0, 2.0, (m.lh - 4.0).max(1.0)),

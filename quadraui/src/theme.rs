@@ -322,63 +322,6 @@ pub(crate) const CHART_SERIES: [Color; 6] = [
     Color::rgb(240, 100, 180),
 ];
 
-/// Strip `//` and `/* */` comments from JSON-with-comments (JSONC), as
-/// used by VS Code theme files. Preserves newlines inside block comments
-/// so that any later parse-error line/column reporting on the stripped
-/// string still lines up with the original file.
-///
-/// Lifted from vimcode's `render::strip_json_comments` (#775) — a pure
-/// text transform with nothing editor-specific about it.
-fn strip_json_comments(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'"' {
-            // String literal — copy verbatim until the closing quote, so a
-            // `//` or `/*` inside a JSON string value is never mistaken
-            // for a comment.
-            out.push('"');
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push(bytes[i] as char);
-                    out.push(bytes[i + 1] as char);
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    out.push('"');
-                    i += 1;
-                    break;
-                } else {
-                    out.push(bytes[i] as char);
-                    i += 1;
-                }
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            // Line comment — skip until newline.
-            i += 2;
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            // Block comment — skip until `*/`, preserving newlines.
-            i += 2;
-            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                if bytes[i] == b'\n' {
-                    out.push('\n');
-                }
-                i += 1;
-            }
-            i += 2; // skip `*/`
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    out
-}
-
 impl Theme {
     /// Parse a VS Code theme JSON (or JSONC — VS Code theme files commonly
     /// carry `//` / `/* */` comments) file and map its `colors` object
@@ -403,7 +346,7 @@ impl Theme {
     /// still gets the intended blended colour.
     pub fn from_vscode_json(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        let data = strip_json_comments(&data);
+        let data = crate::text_util::strip_json_comments(&data);
         let val: serde_json::Value = serde_json::from_str(&data).ok()?;
         let colors = val.get("colors");
 
@@ -884,14 +827,8 @@ mod tests {
         path
     }
 
-    #[test]
-    fn strip_json_comments_removes_line_and_block_comments() {
-        let input = "{\n  // a line comment\n  \"a\": 1, /* inline block */\n  \"b\": \"has // not a comment\"\n}";
-        let stripped = strip_json_comments(input);
-        let val: serde_json::Value = serde_json::from_str(&stripped).unwrap();
-        assert_eq!(val["a"], 1);
-        assert_eq!(val["b"], "has // not a comment");
-    }
+    // `strip_json_comments` moved to `crate::text_util` (issue #1094); its
+    // unit tests moved with it.
 
     #[test]
     fn from_vscode_json_maps_colors_onto_theme_fields() {

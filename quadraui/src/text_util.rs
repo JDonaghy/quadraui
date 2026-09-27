@@ -55,6 +55,20 @@
 //! (`markdown::render_markdown_to_styled_wrapped`,
 //! `chat_controller::build_transcript_rows`) call [`wrap_spans`]
 //! directly.
+//!
+//! [`char_to_byte_idx`], [`char_col_to_visual`] and
+//! [`strip_json_comments`] close the gap tracked by issue #1094: vimcode
+//! carried byte-identical copies of all three because they were private
+//! to `theme.rs` / `tui/editor.rs` (and, for the char→byte helper,
+//! `primitives/find_replace.rs`'s paint closure). They're unified here so
+//! downstream hosts reach `quadraui::text_util::*` instead of copying the
+//! logic. Moving [`strip_json_comments`] also fixed a latent bug: the
+//! original byte-indexed implementation pushed `bytes[i] as char` for
+//! every byte, including the continuation bytes of a multi-byte UTF-8
+//! sequence — which corrupts (not merely mis-measures) any non-ASCII
+//! content, in or out of a JSON string. The version here walks whole
+//! `char`s instead of raw bytes, so multi-byte input round-trips intact;
+//! see [`strip_json_comments`]'s tests.
 
 use crate::types::StyledSpan;
 
@@ -126,6 +140,123 @@ pub fn safe_slice(s: &str, lo: usize, hi: usize) -> &str {
     let lo = snap_to_char_boundary(s, lo);
     let hi = snap_to_char_boundary(s, hi);
     &s[lo..hi]
+}
+
+/// Convert a **char** offset into `text` to a byte offset safe to slice
+/// at. Out-of-range offsets clamp to `text.len()` — always a valid slice
+/// point — rather than panicking.
+///
+/// Use this when a caller stores a cursor/selection boundary as a
+/// character count (the natural unit for column arithmetic) but needs a
+/// byte offset to slice or index the underlying `&str`. Formerly
+/// duplicated as private `char_to_byte` closures/functions in
+/// `primitives/find_replace.rs` and the `gtk`/`win` `rich_text_popup`
+/// rasterisers (issue #1094); this is the shared implementation.
+pub fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len())
+}
+
+/// Convert a character-index column into a visual column, expanding tabs
+/// to the next tab stop (`tabstop`, floored to 1). Stops at the first
+/// `\n`/`\r` in `raw_text` or at `char_col`, whichever comes first — a
+/// column past the end of the line's content simply measures the whole
+/// line.
+///
+/// Every non-tab character advances the visual column by exactly one
+/// cell (this does *not* account for double-width CJK/emoji glyphs —
+/// callers that need display-width-aware measurement should use
+/// [`display_width`] instead). Mirrors `vimcode::tui_main::render_impl
+/// ::char_col_to_visual`; formerly private to `tui::editor` (issue
+/// #1094).
+pub fn char_col_to_visual(raw_text: &str, char_col: usize, tabstop: usize) -> usize {
+    let tabstop = tabstop.max(1);
+    let mut vis = 0usize;
+    for (i, ch) in raw_text.chars().enumerate() {
+        if ch == '\n' || ch == '\r' {
+            break;
+        }
+        if i >= char_col {
+            break;
+        }
+        if ch == '\t' {
+            vis = ((vis / tabstop) + 1) * tabstop;
+        } else {
+            vis += 1;
+        }
+    }
+    vis
+}
+
+/// Strip `//` and `/* */` comments from JSON-with-comments (JSONC), as
+/// used by VS Code theme files. Preserves newlines inside block comments
+/// so that any later parse-error line/column reporting on the stripped
+/// string still lines up with the original file.
+///
+/// Walks whole `char`s (not raw bytes), so multi-byte UTF-8 content —
+/// inside a string literal or in bare JSON text — round-trips intact.
+/// Lifted from vimcode's `render::strip_json_comments` (#775) — a pure
+/// text transform with nothing editor-specific about it — and moved here
+/// from a private `theme.rs` helper (issue #1094).
+pub fn strip_json_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    // Byte length of the UTF-8 char starting at byte offset `at` (`at`
+    // must be on a char boundary, which every branch below maintains).
+    let char_len_at =
+        |at: usize| -> usize { input[at..].chars().next().map_or(1, |c| c.len_utf8()) };
+    while i < len {
+        if bytes[i] == b'"' {
+            // String literal — copy verbatim until the closing quote, so a
+            // `//` or `/*` inside a JSON string value is never mistaken
+            // for a comment.
+            out.push('"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    // JSON escape sequences (`\n`, `\"`, `\uXXXX`, ...) are
+                    // always a backslash followed by one ASCII char, but
+                    // copy by char width regardless for symmetry.
+                    let esc_len = char_len_at(i + 1);
+                    out.push_str(&input[i..i + 1 + esc_len]);
+                    i += 1 + esc_len;
+                } else if bytes[i] == b'"' {
+                    out.push('"');
+                    i += 1;
+                    break;
+                } else {
+                    let n = char_len_at(i);
+                    out.push_str(&input[i..i + n]);
+                    i += n;
+                }
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            // Line comment — skip until newline.
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            // Block comment — skip until `*/`, preserving newlines.
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                if bytes[i] == b'\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            i += 2; // skip `*/`
+        } else {
+            let n = char_len_at(i);
+            out.push_str(&input[i..i + n]);
+            i += n;
+        }
+    }
+    out
 }
 
 /// Terminal cell width of a single character (0, 1, or 2).
@@ -626,6 +757,122 @@ mod tests {
     fn safe_slice_on_boundaries_matches_manual_slice() {
         let s = "héllo world";
         assert_eq!(safe_slice(s, 0, 3), &s[0..3]);
+    }
+
+    // ── char_to_byte_idx ───────────────────────────────────────────────
+
+    #[test]
+    fn char_to_byte_idx_ascii_matches_index() {
+        assert_eq!(char_to_byte_idx("abcde", 0), 0);
+        assert_eq!(char_to_byte_idx("abcde", 3), 3);
+    }
+
+    #[test]
+    fn char_to_byte_idx_multibyte_input() {
+        let s = "héllo"; // 'é' is 2 bytes at char index 1, byte offset 1.
+        assert_eq!(char_to_byte_idx(s, 0), 0);
+        assert_eq!(char_to_byte_idx(s, 1), 1);
+        // char index 2 ('l') starts at byte 3, after the 2-byte 'é'.
+        assert_eq!(char_to_byte_idx(s, 2), 3);
+    }
+
+    #[test]
+    fn char_to_byte_idx_cjk_and_emoji() {
+        let s = "中文🎉end";
+        let byte_offsets: Vec<usize> = s.char_indices().map(|(b, _)| b).collect();
+        for (char_idx, &expected_byte) in byte_offsets.iter().enumerate() {
+            assert_eq!(char_to_byte_idx(s, char_idx), expected_byte);
+        }
+    }
+
+    #[test]
+    fn char_to_byte_idx_past_end_clamps_to_len() {
+        let s = "héllo";
+        assert_eq!(char_to_byte_idx(s, 999), s.len());
+    }
+
+    // ── char_col_to_visual ────────────────────────────────────────────
+
+    #[test]
+    fn char_col_to_visual_no_tabs_is_identity() {
+        assert_eq!(char_col_to_visual("hello", 3, 4), 3);
+        assert_eq!(char_col_to_visual("hello", 0, 4), 0);
+    }
+
+    #[test]
+    fn char_col_to_visual_expands_tabs_to_tabstop() {
+        // "\t" at col 0 expands to the next tab stop (4); a second char
+        // after it lands at column 5.
+        assert_eq!(char_col_to_visual("\tx", 1, 4), 4);
+        assert_eq!(char_col_to_visual("\tx", 2, 4), 5);
+    }
+
+    #[test]
+    fn char_col_to_visual_stops_at_newline() {
+        // Content after a newline doesn't count toward the visual column,
+        // even if char_col points past it.
+        assert_eq!(char_col_to_visual("ab\ncd", 5, 4), 2);
+    }
+
+    #[test]
+    fn char_col_to_visual_multibyte_chars_count_as_one_cell_each() {
+        // char_col_to_visual counts *characters*, not display width — a
+        // CJK char still advances the visual column by 1 here (unlike
+        // display_width, which would count 2).
+        let s = "中x";
+        assert_eq!(char_col_to_visual(s, 1, 4), 1);
+        assert_eq!(char_col_to_visual(s, 2, 4), 2);
+    }
+
+    #[test]
+    fn char_col_to_visual_zero_tabstop_treated_as_one() {
+        assert_eq!(char_col_to_visual("\tx", 1, 0), 1);
+    }
+
+    // ── strip_json_comments ─────────────────────────────────────────────
+
+    #[test]
+    fn strip_json_comments_removes_line_and_block_comments() {
+        let input = "{\n  // a line comment\n  \"a\": 1, /* inline block */\n  \"b\": \"has // not a comment\"\n}";
+        let stripped = strip_json_comments(input);
+        let val: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(val["a"], 1);
+        assert_eq!(val["b"], "has // not a comment");
+    }
+
+    #[test]
+    fn strip_json_comments_preserves_newlines_in_block_comments() {
+        let input = "{\n/* line1\nline2\nline3 */\n\"a\": 1\n}";
+        let stripped = strip_json_comments(input);
+        // Same number of lines, so a parse error's line number on the
+        // stripped string still maps to the original file.
+        assert_eq!(stripped.lines().count(), input.lines().count());
+        let val: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(val["a"], 1);
+    }
+
+    #[test]
+    fn strip_json_comments_multibyte_content_round_trips() {
+        // RED against the original byte-indexed implementation, which
+        // pushed `bytes[i] as char` per byte and corrupted any multi-byte
+        // UTF-8 sequence, in or out of a string literal (issue #1094).
+        let input = r#"{"a": "日本語 🎉", "b": "héllo"}"#;
+        let stripped = strip_json_comments(input);
+        assert_eq!(
+            stripped, input,
+            "no comments present, must round-trip exactly"
+        );
+        let val: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(val["a"], "日本語 🎉");
+        assert_eq!(val["b"], "héllo");
+    }
+
+    #[test]
+    fn strip_json_comments_multibyte_around_comments() {
+        let input = "{\n  // 日本語 comment\n  \"a\": \"héllo 🎉\" /* 中文 block */\n}";
+        let stripped = strip_json_comments(input);
+        let val: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+        assert_eq!(val["a"], "héllo 🎉");
     }
 
     // ── char_cell_width / display_width ────────────────────────────────
