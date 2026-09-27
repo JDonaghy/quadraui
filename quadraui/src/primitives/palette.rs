@@ -498,6 +498,17 @@ impl Palette {
 //   could hand back a clipped, partial-height last row.
 // - **Scrollbar width**: GTK/Windows agreed on `(6.0, 8.0)`
 //   (`scrollbar_width`, `min_thumb_len`); macOS alone used `(8.0, 8.0)`.
+// - **Title row reservation**: GTK/macOS both always reserved
+//   `line_height` for the title row regardless of whether `Palette.title`
+//   was empty; `win::palette::win_palette_layout` special-cased
+//   `title_h = 0.0` when `palette.title.is_empty()`, dropping the title
+//   row (and shifting everything below it up by one row) for empty-title
+//   popups. `layout` below always reserves `line_height` for the title —
+//   GTK/macOS's 2-vs-1 majority — so Windows's empty-title popups now
+//   carry an always-blank title row rather than omitting it. Low
+//   real-world impact (`Palette.title` is essentially always populated
+//   in practice), but named here for the same "don't silently pick one"
+//   reason as the three geometry drifts above.
 //
 // `layout` below is the one shared geometry function (GTK's own
 // pre-#1076 formula, since it already matched two of the three fixes
@@ -513,11 +524,22 @@ impl Palette {
 // picking one, per that migration's convention):
 //
 // - **Match-position highlighting** (`PaletteItem::match_positions`):
-//   GTK had it (per-character Pango `AttrColor` spans); Windows had it
-//   (its own `matched_runs`/`draw_matched_text` run-splitter, ported
-//   below); macOS had none at all (its module doc's "Scope omissions" —
-//   items rendered in plain fg). `paint` carries Windows's run-splitter
-//   for every backend now.
+//   GTK had it (per-character Pango `AttrColor` spans — one shaped text
+//   run for the whole label, with per-glyph colour attributes layered on
+//   top); Windows had it (its own `matched_runs`/`draw_matched_text`
+//   run-splitter, ported below, which instead paints each
+//   highlighted/non-highlighted run as a *separate*
+//   `surface_draw_text_run` call); macOS had none at all (its module
+//   doc's "Scope omissions" — items rendered in plain fg). `paint`
+//   carries Windows's run-splitter for every backend now, which means
+//   GTK's item labels move from one Pango-shaped run to N adjacent runs
+//   at match/non-match boundaries — a subtle text-shaping change (glyph
+//   advance/kerning at those boundaries can differ fractionally from
+//   whole-string shaping) rather than a pure colour change. Likely
+//   visually negligible for the short, mostly-ASCII labels palettes
+//   render, but not covered by a shaping-sensitive test in either
+//   direction — flagging it here rather than silently.
+
 // - **Icon rendering** (`PaletteItem::icon`): GTK painted it (with the
 //   Nerd-Font-fallback swap #416 documents); macOS/Windows never did.
 //   `paint` paints it for every backend via
@@ -535,6 +557,23 @@ impl Palette {
 //   own `span.fg` (falling back to `fg`); macOS/Windows always painted
 //   preview lines in a single flat colour, ignoring `StyledText::spans`'
 //   per-span colour entirely. `paint` carries GTK's per-span treatment.
+// - **Scrollbar colour**: GTK and Windows both painted the track as
+//   `theme.surface_bg * 0.7` and the thumb in flat `theme.border_fg`
+//   (both fully opaque); macOS alone used
+//   `theme.scrollbar_track.with_alpha(0.4)` /
+//   `theme.scrollbar_thumb.with_alpha(0.8)`. `paint` adopts macOS's
+//   scheme — the minority, not majority, pick — because it is the only
+//   one of the three that uses the theme's dedicated
+//   `scrollbar_track`/`scrollbar_thumb` fields at all; GTK/Windows's
+//   `surface_bg`/`border_fg` reuse looks like an accident of not having
+//   those fields available at the time they were written, not a
+//   deliberate design choice worth preserving. Net visible effect on
+//   GTK/Windows: the thumb goes from `border_fg` (blue-ish,
+//   `rgb(120,160,200)` in the default theme) to `scrollbar_thumb`
+//   (neutral grey, `rgb(110,115,130)`) at 0.8 alpha. Not pinned by a
+//   test either direction (no consumer currently themes the scrollbar
+//   distinctly from its default), but called out here per this
+//   migration's own "pick one, document why" rule.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
