@@ -320,6 +320,156 @@ mod tests {
         );
     }
 
+    /// Regression for #1076's **query_height** geometry drift: pre-#1076
+    /// `mac_palette_layout` reserved a bare `line_height` for the query
+    /// row; GTK alone added `+ 1.0` for the separator stroke drawn
+    /// immediately below it (D-007 §2). `native_surface_paint::layout`
+    /// now uses GTK's `+ 1.0` formula for every backend, so the
+    /// separator — and hence the first item row — sits one pixel lower
+    /// than the pre-#1076 macOS geometry did. Paints through the real
+    /// `MacBackend`/Core Graphics path and checks the separator's ink
+    /// lands at the corrected row, not the drifted one.
+    #[test]
+    fn separator_paints_at_corrected_row_not_drifted_one() {
+        let p = sample_palette();
+        let surface = paint_via_backend(&p);
+        let theme = Theme::default();
+        // `MacBackend::current_line_height` defaults to 16.0 and
+        // `paint_via_backend` never overrides it.
+        let line_height = 16.0_f32;
+        let title_h = line_height; // native_surface_paint::layout: title_h = line_height
+        let drifted_sep_y = (title_h + line_height) as u32; // pre-#1076 macOS formula
+        let fixed_sep_y = (title_h + line_height + 1.0) as u32; // corrected formula
+
+        let is_border = |x: u32, y: u32| {
+            let (r, g, b, _) = surface.pixel(x, y);
+            (r, g, b) == (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b)
+        };
+        let probe_x = W / 2;
+        assert!(
+            is_border(probe_x, fixed_sep_y),
+            "expected separator ink at the corrected row {fixed_sep_y}",
+        );
+        assert!(
+            !is_border(probe_x, drifted_sep_y),
+            "separator painted at the pre-#1076 drifted row {drifted_sep_y} — \
+             query_bounds.height must be line_height + 1.0, not line_height",
+        );
+    }
+
+    fn many_items(n: usize) -> Vec<PaletteItem> {
+        (0..n)
+            .map(|i| PaletteItem {
+                text: StyledText::plain(format!("item {i}")),
+                detail: None,
+                icon: None,
+                match_positions: vec![],
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            })
+            .collect()
+    }
+
+    /// Regression for #1076's **row-flooring** geometry drift: pre-#1076
+    /// `mac_palette_layout` fed `Palette::layout` the full popup height,
+    /// so its per-row clamp (`height.min(remaining)`) could hand back a
+    /// clipped, partial-height last row whenever the available item-list
+    /// height wasn't an exact multiple of `line_height`. GTK's pre-#1076
+    /// formula floored the row count and fed a reduced `viewport_height`
+    /// instead; `native_surface_paint::layout` now does that for every
+    /// backend. `H` (240) and `line_height` (16) are chosen so the
+    /// available item area (203px after title/query/bottom-inset) is
+    /// *not* an exact multiple of 16 — the exact condition that produced
+    /// a partial last row pre-#1076.
+    #[test]
+    fn item_list_never_shows_a_partial_last_row() {
+        let mut p = sample_palette();
+        p.items = many_items(40);
+        p.selected_idx = 0;
+        let line_height = 16.0_f32;
+        let layout = mac_palette_layout(&p, 0.0, 0.0, W as f64, H as f64, line_height as f64);
+        let last = layout
+            .visible_items
+            .last()
+            .expect("some items should be visible");
+        assert_eq!(
+            last.bounds.height, line_height,
+            "last visible row must be full height — a partial row means the \
+             pre-#1076 unfloored-viewport drift regressed",
+        );
+
+        // Driver-tier: paint through the real backend and confirm no ink
+        // bleeds into the row immediately below the floored boundary —
+        // a partial 13th row would have painted glyph ink there.
+        let surface = paint_via_backend(&p);
+        let theme = Theme::default();
+        let boundary_y = (last.bounds.y + last.bounds.height + 1.0) as u32;
+        let probe_x = (last.bounds.x + 4.0) as u32;
+        let (r, g, b, _) = surface.pixel(probe_x, boundary_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+            "expected plain surface_bg just below the floored last row, not a \
+             partially-clipped row's content",
+        );
+    }
+
+    /// Regression for #1076's **scrollbar width** geometry drift:
+    /// pre-#1076 macOS's own `mac_palette_layout` used `(8.0, 8.0)` for
+    /// `(scrollbar_width, min_thumb_len)`; GTK and Windows had already
+    /// agreed on `(6.0, 8.0)`. `native_surface_paint` adopts the
+    /// GTK/Windows majority value for every backend, narrowing macOS's
+    /// scrollbar track from 8px to 6px.
+    #[test]
+    fn scrollbar_track_width_is_six_px_not_eight() {
+        let mut p = sample_palette();
+        p.items = many_items(40);
+        let line_height = 16.0_f64;
+        let layout = mac_palette_layout(&p, 0.0, 0.0, W as f64, H as f64, line_height);
+        let sb = layout
+            .scrollbar
+            .as_ref()
+            .expect("scrollbar present when items overflow the viewport");
+        assert_eq!(
+            sb.track.width, 6.0,
+            "scrollbar track width must be 6.0px (GTK/Windows pre-#1076 value), \
+             not macOS's pre-#1076 8.0px",
+        );
+
+        // Driver-tier: paint through the real backend and find where the
+        // track's ink visually begins by scanning leftward from the
+        // popup's right edge, comparing each column against a baseline
+        // sampled well inside the item content area (away from either a
+        // 6px or 8px track). The boundary must land at `sb.track.x`
+        // (item_list_width - 6), not 2px further left as an 8px track
+        // would place it.
+        let surface = paint_via_backend(&p);
+        let track_y = (sb.track.y + sb.track.height / 2.0) as u32;
+        let dist2 = |a: (u8, u8, u8), b: (u8, u8, u8)| {
+            let dr = a.0 as i32 - b.0 as i32;
+            let dg = a.1 as i32 - b.1 as i32;
+            let db = a.2 as i32 - b.2 as i32;
+            dr * dr + dg * dg + db * db
+        };
+        let baseline_x = sb.track.x as u32 - 15;
+        let (br, bg, bb, _) = surface.pixel(baseline_x, track_y);
+        let baseline = (br, bg, bb);
+        let boundary_x = ((sb.track.x as u32 - 12)..=(sb.track.x as u32 + 1))
+            .find(|&x| {
+                let (r, g, b, _) = surface.pixel(x, track_y);
+                dist2((r, g, b), baseline) > 100
+            })
+            .expect("expected the track's ink to start somewhere in the scanned range");
+        assert!(
+            (boundary_x as i32 - sb.track.x as i32).abs() <= 1,
+            "expected track ink to start at x={} (item_list_width - 6), found it \
+             starting at x={boundary_x} instead — scrollbar track width has drifted \
+             from the shared 6.0px value",
+            sb.track.x,
+        );
+    }
+
     #[test]
     fn hit_test_resolves_query_row() {
         let p = sample_palette();
