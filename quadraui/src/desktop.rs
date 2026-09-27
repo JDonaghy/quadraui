@@ -649,8 +649,24 @@ fn windows_shell_execute_open(target: &std::ffi::OsStr) -> bool {
 /// `cargo test --features macos` (which never run in the same process,
 /// per `CLAUDE.md`'s per-backend CI legs, but might in a future combined
 /// local run) can't race each other either.
+///
+/// **`unix`-gated, deliberately** — every test that takes this lock is a
+/// `$PATH`-override test, and the `$PATH`-stub technique only applies to
+/// [`unix_open_with_default_command`]'s arm: Windows' opener
+/// ([`windows_shell_execute_open`]) is a direct `ShellExecuteW` FFI call
+/// with no `$PATH`-resolved binary to intercept, so no Windows test has
+/// any reason to hold this. Without the `unix` here, a
+/// `cargo test --features tui` on a Windows host compiles a lock with
+/// zero call sites — `dead_code`, which `ci.yml`'s workflow-wide
+/// `RUSTFLAGS: -D warnings` promotes to a hard error on the
+/// `windows-latest` leg of the `tui` job alone, while every Linux and
+/// macOS build of the identical source stays green (the same
+/// cfg-asymmetry trap `emit_osc8_hyperlink_to_tty`'s `unused_mut`
+/// already cost this crate once — see `tui::services`'s
+/// `emit_osc8_hyperlink_to_tty_reports_false_without_a_dev_tty`).
 #[cfg(all(
     test,
+    unix,
     any(feature = "tui", all(feature = "macos", target_os = "macos"))
 ))]
 pub(crate) static PATH_OVERRIDE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
