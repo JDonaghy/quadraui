@@ -217,7 +217,7 @@ use windows::core::Result as WinResult;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_UNKNOWN, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_UNKNOWN, D2D1_PIXEL_FORMAT, D2D_SIZE_U,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
@@ -1516,16 +1516,12 @@ impl Backend for WinBackend {
             unsafe {
                 surface.target.BeginDraw();
             }
-            // Placeholder clear color until #20+ wires the app's real
-            // `Theme` background through. Rasterisers land per-primitive
-            // in later issues; this bootstrap only needs a cleared
-            // surface (issue #19's acceptance criterion).
-            let clear_color = D2D1_COLOR_F {
-                r: 0.117,
-                g: 0.117,
-                b: 0.117,
-                a: 1.0,
-            };
+            // #1179: was a hard-coded placeholder dark clear colour left
+            // over from issue #19's bootstrap. Unpainted areas — e.g.
+            // the gap a status bar used to leave when it painted short
+            // of `rect.height` — must show the theme's background, not
+            // a fixed dark shade, on light themes too.
+            let clear_color = super::text::color_to_d2d(self.current_theme.background);
             unsafe {
                 surface.target.Clear(Some(&clear_color));
             }

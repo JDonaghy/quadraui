@@ -918,18 +918,24 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
     );
 }
 
-// ─── draw_solid_fill: the #996 root-cause mechanism ─────────────────────
+// ─── draw_solid_fill vs draw_status_bar_interactive: the #996 root-cause
+//     mechanism, fixed for real by #1179 ─────────────────────────────────
 //
 // `AppShellDemo`'s own line height happens to make `Backend::line_height()`
 // and the fill height `draw_status_bar_interactive` actually uses agree, so
 // the end-to-end `appshell_demo_resize_divider_is_solid_with_no_gaps` test
-// above can't by itself demonstrate the mechanism issue #996 describes: a
-// caller that hands `draw_status_bar_interactive` a row rect taller than
-// the backend's `current_line_height` silently gets back a shorter fill,
-// with no way to notice. This probe reproduces that mechanism directly —
-// pinning why `AppShell` had to stop depending on it for its divider, and
-// proving `Backend::draw_solid_fill` (the replacement) doesn't share the
-// defect.
+// above can't by itself demonstrate the mechanism issue #996 originally
+// described: a caller that hands `draw_status_bar_interactive` a row rect
+// taller than the backend's `current_line_height` used to silently get
+// back a shorter fill, with no way to notice — GTK's flavour of the same
+// bug #1179 fixed on macOS (a hard-coded clear colour and a status bar
+// that ignored `rect.height` both showed through the leftover strip).
+// This probe reproduces that mechanism directly: it still pins why
+// `AppShell` stops depending on `draw_status_bar_interactive` for its
+// divider (a plain solid fill is cheaper and carries no segment/text
+// layout at all — see `app_shell.rs`'s own #996 comment), and proves
+// `Backend::draw_solid_fill` (the replacement) never depended on the fix
+// either way.
 
 /// Paints one rect, taller than the backend's default line height, with
 /// each of the two candidate primitives — `draw_status_bar_interactive`
@@ -975,27 +981,27 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
     }
 }
 
-/// `draw_status_bar_interactive` fills only `current_line_height`
-/// regardless of the row rect's own height (`quadraui::gtk::backend`'s
-/// `GtkBackend::draw_status_bar_interactive` measures its fill from
-/// `self.current_line_height`, never `rect.height`) — this is exactly the
-/// mechanism issue #996 identifies as unsafe for a caller that wants a
-/// tall, single-color rect. Sampling near the bottom of a
-/// `PROBE_RECT_HEIGHT`-tall rect must land outside the fill.
+/// #1179 flipped this from a defect pin to a positive assertion:
+/// `GtkBackend::draw_status_bar_interactive` used to fill only
+/// `current_line_height` regardless of the row rect's own height — the
+/// mechanism issue #996 identified as unsafe for a caller that wants a
+/// tall, single-color rect, and the same class of bug #1179 reports for
+/// macOS (a caller-supplied `rect` taller than the chrome font's own
+/// line height left an unpainted strip showing the frame's clear colour
+/// instead of the bar's own fill). It now measures its fill from
+/// `rect.height`, matching `draw_solid_fill` below. Sampling near the
+/// bottom of a `PROBE_RECT_HEIGHT`-tall rect must land on the fill.
 #[test]
-fn draw_status_bar_interactive_does_not_fill_a_rect_taller_than_line_height() {
+fn draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely() {
     let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
     let near_bottom_y = (PROBE_RECT_HEIGHT - 4.0) as i32;
 
-    assert_ne!(
+    assert_eq!(
         driver.pixel(20, near_bottom_y),
         (PROBE_FILL_COLOR.r, PROBE_FILL_COLOR.g, PROBE_FILL_COLOR.b),
-        "draw_status_bar_interactive should NOT have filled all the way to \
-         the bottom of a rect taller than current_line_height — if this \
-         starts failing, GtkBackend::draw_status_bar_interactive now \
-         honors rect.height and issue #996's secondary question is \
-         resolved (update this test to match, it's no longer pinning a \
-         defect)",
+        "draw_status_bar_interactive must fill all the way to the bottom of a \
+         rect taller than current_line_height (#1179) — a caller-supplied rect \
+         taller than the chrome line height must not leave an unpainted strip",
     );
 }
 

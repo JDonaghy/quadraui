@@ -371,9 +371,12 @@ mod tests {
 
         let s = BitmapSurface::new(W, H);
 
-        // Dark grey background — matches `QuadraView::drawRect:`
-        // so the visual output reads like the live runner.
-        s.fill(0.12, 0.12, 0.14, 1.0);
+        // #1179: matches `QuadraView::drawRect:`'s theme-background
+        // fill (was a hard-coded dark literal) so the visual output
+        // reads like the live runner under the default theme.
+        let bg = crate::theme::Theme::default().background;
+        let (r, g, b, a) = super::super::cg::color_to_cg(bg);
+        s.fill(r, g, b, a);
 
         // Four corner quadrants, 40×40 each, anchored to the four
         // corners. Distinct colours so orientation regressions are
