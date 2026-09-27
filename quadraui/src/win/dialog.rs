@@ -197,6 +197,20 @@ mod tests {
     /// Windows already implemented this pre-migration (it was the one
     /// backend that did), and this test pins it against a regression now
     /// that the label paint moved into the shared `paint`.
+    ///
+    /// Scans the whole button box, not one row: real Direct2D's default
+    /// (ClearType/grayscale) text antialiasing only gives a handful of
+    /// rows within a 10-DIP "OK" full-brush-coverage pixels — which rows
+    /// depends on where the glyphs' vertical stems happen to land, not
+    /// the button's arithmetic vertical center — so a single-row probe
+    /// is flaky by construction on real hardware even though the label
+    /// paints correctly. (`DWrite::new`'s `DWRITE_WORD_WRAPPING_NO_WRAP`
+    /// is what makes the label paint *at all*: left at the default
+    /// wrapping, this exact box — sized to `measure_text`'s own returned
+    /// width, which is a hair wider than the `f32`-rounded
+    /// `layout_rect.right` `draw_text` builds from it — reflows "  OK  "
+    /// onto a second line that `D2D1_DRAW_TEXT_OPTIONS_CLIP` crops away
+    /// entirely, painting zero pixels anywhere in the box.)
     #[test]
     fn tinted_button_label_paints_in_the_tint_colour() {
         let surface = HeadlessSurface::new(300, 300).expect("create surface");
@@ -209,26 +223,11 @@ mod tests {
 
         surface
             .paint(|target| {
-                // Aliased text: every glyph pixel is either untouched or
-                // painted at full brush coverage. Under the default
-                // (ClearType / grayscale) antialiasing, a 10-DIP "OK"'s
-                // ~1-DIP stems land on fractional x positions and blend
-                // with the button's `selected_bg` fill, so no pixel is
-                // guaranteed to hit the tint colour exactly — this
-                // test's exact-match probe failed on real Windows CI.
-                let rt: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = target;
-                unsafe {
-                    rt.SetTextAntialiasMode(
-                        windows::Win32::Graphics::Direct2D::D2D1_TEXT_ANTIALIAS_MODE_ALIASED,
-                    )
-                };
                 let _ = draw_dialog(target, &dwrite, &d, &layout, 16.0);
             })
             .expect("paint dialog");
 
         let btn = layout.visible_buttons[0].bounds;
-        // Scan the whole button, not one row: which rows the cap-height
-        // glyphs cover depends on DirectWrite's line metrics.
         let found = (btn.y as u32..(btn.y + btn.height) as u32)
             .flat_map(|y| (btn.x as u32..(btn.x + btn.width) as u32).map(move |x| (x, y)))
             .map(|(x, y)| surface.pixel_at(x, y))

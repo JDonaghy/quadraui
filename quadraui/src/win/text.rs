@@ -30,7 +30,7 @@ use windows::Win32::Graphics::DirectWrite::{
     IDWriteTextFormat, IDWriteTextFormat1, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
     DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_UNICODE_RANGE,
+    DWRITE_UNICODE_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows_numerics::Vector2;
 
@@ -114,6 +114,24 @@ impl DWrite {
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_NORMAL)?;
         let bold_text_format =
             create_text_format(&factory, family, size_dip, DWRITE_FONT_WEIGHT_BOLD)?;
+        // #1077: every rasteriser that paints multi-line content already
+        // does its own line-splitting before calling `draw_text`/
+        // `DrawText` (see `primitives::text_display::paint` and
+        // `primitives::dialog::paint`'s per-line `row_rect`s, both of
+        // which draw one already-split line per call) — none of them
+        // rely on DirectWrite's own word-wrap. Left at the default
+        // `DWRITE_WORD_WRAPPING_WRAP`, `draw_text`'s `layout_rect` (whose
+        // `right`/`bottom` are computed as `x + width`/`y + height` in
+        // `f32`, a fraction of a DIP narrower than the width
+        // `measure_text` returned for the very same string — float
+        // rounding, not antialiasing) can wrap a label exactly as wide as
+        // its measured box onto a second line, which
+        // `D2D1_DRAW_TEXT_OPTIONS_CLIP` then crops entirely, painting
+        // zero pixels for it. `NO_WRAP` makes `draw_text`'s rect-sized
+        // labels immune to that off-by-a-float-epsilon: overflow simply
+        // clips at the right edge instead of reflowing.
+        unsafe { text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+        unsafe { bold_text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         if let Some(fallback) = fallback {
             // Font fallback is a "nice to have that beats tofu," not a
             // hard requirement (issue #929 review) — degrade to no
@@ -817,5 +835,58 @@ mod tests {
                 });
             })
             .expect("paint");
+    }
+
+    /// #1077 regression: `draw_text` must paint a label into a box sized
+    /// to exactly its own measured width — the shared
+    /// `primitives::dialog`/`primitives::text_display` paints do exactly
+    /// this (`row_rect`/`text_rect` widths come straight from
+    /// `surface_measure_text`), so a caller-visible failure here reads as
+    /// "the button label silently doesn't paint."
+    ///
+    /// This reproduces the exact measurements from the first shared-paint
+    /// caller to hit it (a "  OK  " dialog button label at `x =
+    /// 129.45442`): `layout_rect.right = x + width` loses a fraction of a
+    /// DIP to `f32` rounding versus the `width` `measure_text` returned
+    /// for the same string (`25.091144562` vs `25.091140747` in `f64`),
+    /// so the box is a hair narrower than the text it's sized to. Under
+    /// the default `DWRITE_WORD_WRAPPING_WRAP`, DirectWrite reflows the
+    /// trailing `"  "` onto a second line, which
+    /// `D2D1_DRAW_TEXT_OPTIONS_CLIP` then crops away entirely — zero
+    /// pixels painted, even though the box is (up to float noise) exactly
+    /// the text's own width. `DWrite::new` sets
+    /// `DWRITE_WORD_WRAPPING_NO_WRAP` precisely so this can't happen: an
+    /// exact-width box always paints on one line, overflow (if any)
+    /// clips at the right edge instead of reflowing.
+    #[test]
+    fn draw_text_paints_a_label_sized_to_its_own_measured_width() {
+        const BG: Color = Color::rgb(10, 20, 30);
+        const FG: Color = Color::rgb(220, 40, 40);
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let text = "  OK  ";
+        let (width, height) = dwrite.measure_text(text).expect("measure_text");
+
+        let x = 129.454_42_f32;
+        let rect = Rect::new(x, 4.0, width, height.max(1.0));
+
+        let surface = HeadlessSurface::new(220, 40).expect("create surface");
+        surface
+            .paint(|target| {
+                let _ = fill_rect(target, Rect::new(0.0, 0.0, 220.0, 40.0), BG);
+                dwrite.draw_text(target, text, rect, FG).expect("draw_text");
+            })
+            .expect("paint");
+
+        let bg = (BG.r, BG.g, BG.b);
+        let found = (rect.y as u32..(rect.y + rect.height) as u32)
+            .flat_map(|y| (rect.x as u32..(rect.x + rect.width) as u32).map(move |x| (x, y)))
+            .map(|(x, y)| surface.pixel_at(x, y))
+            .any(|px| (px.r, px.g, px.b) != bg);
+        assert!(
+            found,
+            "a label box sized to exactly its own measured width must still paint at \
+             least one non-background pixel"
+        );
     }
 }
