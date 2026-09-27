@@ -446,6 +446,431 @@ mod move_to_trash_tests {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// wide_nul_terminated (issue #1087)
+// ─────────────────────────────────────────────────────────────────────
+
+/// UTF-16, NUL-terminated — the framing every wide (`W`-suffixed) Win32
+/// API expects (`ShellExecuteW`'s `operation`/`file`, `CF_UNICODETEXT`'s
+/// clipboard payload, `NOTIFYICONDATAW`'s fixed-size fields, a context
+/// menu item's label). The single implementation shared by
+/// `win::services`, `win::tray`, `win::backend`, and this module's own
+/// [`windows_shell_execute_open`] (issue #1087) — before this, each of
+/// the first three modules carried its own private copy of this exact
+/// two-line conversion (`win::services::wide_nul_terminated`,
+/// `win::tray::win_wide_nul_terminated`,
+/// `win::backend::win_wide_nul_terminated`), and [`windows_shell_execute_open`]
+/// needed a fourth.
+///
+/// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]`: every
+/// real caller only exists under `target_os = "windows"` (the WinAPI
+/// call sites this feeds, and this module's own Windows-only opener), so
+/// on any other host this is unreachable dead code the moment it
+/// compiles at all under `--features win` alone — the same posture
+/// `win::services`'s pre-#1087 copy of this function already carried.
+#[cfg(any(feature = "tui", feature = "win"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn wide_nul_terminated(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(all(test, any(feature = "tui", feature = "win")))]
+mod wide_nul_terminated_tests {
+    use super::*;
+
+    #[test]
+    fn encodes_utf16_and_appends_a_nul() {
+        assert_eq!(
+            wide_nul_terminated("ab"),
+            vec!['a' as u16, 'b' as u16, 0u16]
+        );
+        assert_eq!(wide_nul_terminated(""), vec![0u16]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// open_with_default (issue #1087)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Open `target` (a URL string or a filesystem path, carried as `&OsStr`
+/// so a non-UTF-8 path need not be lossily converted before the call) —
+/// the single opener implementation shared by `tui::services`
+/// (`TuiPlatformServices::open_url_result`'s opener step, via
+/// [`try_open_with_default`]), `macos::services` (`open_url`/`open_path`/
+/// `open_url_result`), and `win::services` (`open_url`/`open_path`/
+/// `open_url_result`).
+///
+/// Before this issue, each backend wrote its own copy: `tui` via
+/// `build_url_opener_command`/`try_platform_opener`/a hand-written
+/// `ShellExecuteW` FFI declaration, `macos` via an inline
+/// `Command::new("open").arg(url).spawn()` whose result was discarded,
+/// `win` via a `windows`-crate `ShellExecuteW` call whose result
+/// `open_url` also discarded — the "capability lie" this issue's own
+/// title names: `open_url_result`'s default (`Backend::open_url_result`)
+/// calls `open_url` and always answers `Ok(())`, so a GUI backend could
+/// never actually report "the browser didn't open" even though the
+/// underlying spawn/`ShellExecuteW` call already knew.
+///
+/// Unix: spawns `open` (macOS) / `xdg-open` (other Unix), detached
+/// (stdout/stderr nulled so a slow or chatty opener can't wedge the
+/// caller's own streams — matters most for `tui`, which shares stdout
+/// with the terminal UI) and never through a shell — `execve`, so
+/// `target` is never re-parsed for shell metacharacters. Windows:
+/// `ShellExecuteW(NULL, "open", target, NULL, NULL, SW_SHOWNORMAL)`
+/// through a **minimal, hand-written FFI declaration**, not the
+/// `windows` crate — `windows` is `optional`, pulled in only by the
+/// `win` feature's `dep:windows` (see `Cargo.toml`), so it is not a
+/// dependency of a bare `--features tui` build, and this must compile
+/// there too. Never goes through `cmd.exe`: the original vimcode-derived
+/// `cmd /c start "" <url>` approach this crate briefly carried (issue
+/// #969 review) is a CWE-78 command-injection hole, since `cmd.exe`
+/// re-parses its own command-line text for `&`/`|`/`^`/`%` regardless of
+/// how the argument was quoted for `CreateProcess`.
+#[cfg(any(
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
+))]
+pub(crate) fn open_with_default(target: &std::ffi::OsStr) -> crate::backend::ServiceResult<()> {
+    if try_open_with_default(target) {
+        Ok(())
+    } else {
+        Err(crate::backend::BackendError::PlatformFailure {
+            context: format!("open_with_default: no opener launched for {target:?}"),
+        })
+    }
+}
+
+/// The "did the platform opener genuinely launch" step [`open_with_default`]
+/// wraps into a [`crate::backend::ServiceResult`], exposed separately
+/// (`pub(crate)`, not folded into `open_with_default` itself) because
+/// `tui::services`'s `open_url_via` needs the raw bool to chain its own
+/// OSC 8 hyperlink fallback when this returns `false` —
+/// `open_with_default`'s `Err` shape has nowhere to carry that extra
+/// step.
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
+))]
+pub(crate) fn try_open_with_default(target: &std::ffi::OsStr) -> bool {
+    #[cfg(windows)]
+    {
+        windows_shell_execute_open(target)
+    }
+    #[cfg(not(windows))]
+    {
+        unix_open_with_default_command(target).spawn().is_ok()
+    }
+}
+
+/// macOS opener command, not yet spawned — factored out so a test can
+/// assert on the program name and arguments a real call would spawn
+/// without actually launching anything. See the Linux/BSD overload of
+/// this same function (below) for the shared shape and doc; lifted from
+/// `tui::services`'s pre-#1087 `build_url_opener_command`.
+#[cfg(all(target_os = "macos", any(feature = "tui", feature = "macos")))]
+pub(crate) fn unix_open_with_default_command(target: &std::ffi::OsStr) -> std::process::Command {
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
+/// Linux/BSD opener command. See the macOS overload of this same
+/// function (above) for the shared doc.
+#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
+pub(crate) fn unix_open_with_default_command(target: &std::ffi::OsStr) -> std::process::Command {
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
+/// Windows opener: `ShellExecuteW`, called through a minimal hand-written
+/// FFI declaration rather than the `windows` crate — see
+/// [`open_with_default`]'s doc for why. Returns whether `ShellExecuteW`
+/// reports success: per its own docs, any return value greater than 32
+/// is success; the low range `0..=32` is a documented failure code (e.g.
+/// `SE_ERR_FNF = 2`, `SE_ERR_NOASSOC = 31`, the latter being the
+/// deterministic way this module's own tests provoke a real failure —
+/// see `open_with_default_tests` below).
+#[cfg(all(windows, any(feature = "tui", feature = "win")))]
+fn windows_shell_execute_open(target: &std::ffi::OsStr) -> bool {
+    // SAFETY: `ShellExecuteW` is a well-known, stable Win32 API. Both
+    // wide-string buffers passed below are nul-terminated and kept alive
+    // (as local `Vec<u16>`s) for the duration of the call; the remaining
+    // arguments are the documented "no window handle / no extra
+    // parameters / no explicit working directory" null pointers.
+    //
+    // `#[link(name = "shell32")]`: `ShellExecuteW` lives in
+    // `shell32.dll`/`shell32.lib` — unlike the `kernel32`/`user32`
+    // imports the MSVC CRT startup pulls in implicitly, this one needs an
+    // explicit link directive since nothing else in a bare `tui`-feature
+    // build references `shell32` at all.
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show_cmd: i32,
+        ) -> isize;
+    }
+    const SW_SHOWNORMAL: i32 = 1;
+
+    let operation = wide_nul_terminated("open");
+    let file = wide_nul_terminated(&target.to_string_lossy());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result > 32
+}
+
+/// Process-wide `$PATH` is shared, mutable global state — every test
+/// below (and `macos::services`'s `open_url_result` failure test, issue
+/// #1087) that temporarily redirects it to prove a real "opener missing"
+/// failure must serialize against every *other* such test in the same
+/// process, or a concurrently-running test can observe (or clobber) the
+/// override. One crate-wide lock rather than a per-module copy so
+/// `cargo test --features tui` (this module's own tests) and
+/// `cargo test --features macos` (which never run in the same process,
+/// per `CLAUDE.md`'s per-backend CI legs, but might in a future combined
+/// local run) can't race each other either.
+#[cfg(all(
+    test,
+    any(feature = "tui", all(feature = "macos", target_os = "macos"))
+))]
+pub(crate) static PATH_OVERRIDE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(
+    test,
+    any(
+        feature = "tui",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )
+))]
+mod open_with_default_tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unix_open_with_default_command_uses_macos_open() {
+        let cmd = unix_open_with_default_command(std::ffi::OsStr::new("https://example.com/1087"));
+        assert_eq!(cmd.get_program(), "open");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["https://example.com/1087"]
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn unix_open_with_default_command_uses_xdg_open() {
+        let cmd = unix_open_with_default_command(std::ffi::OsStr::new("https://example.com/1087"));
+        assert_eq!(cmd.get_program(), "xdg-open");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["https://example.com/1087"]
+        );
+    }
+
+    /// [`windows_shell_execute_open`] never builds a `std::process::Command`
+    /// (that's the whole point — no `cmd.exe`/shell in the loop at all),
+    /// so there is no command to assert on without actually invoking
+    /// `ShellExecuteW`. What *is* checkable without a live desktop
+    /// session: it never panics on a target containing the exact
+    /// metacharacters (`&`, `|`, `^`, `%`) that made the original `cmd
+    /// /c start` approach exploitable (issue #969 review) — a bare FFI
+    /// call has no command-line text for those bytes to land in.
+    /// Best-effort on `ShellExecuteW`'s actual verdict: some CI Windows
+    /// runners have no registered "open" handler at all, so this doesn't
+    /// assert on the boolean result, only that the call completes.
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_execute_open_does_not_panic_on_shell_metacharacters() {
+        let _ = windows_shell_execute_open(std::ffi::OsStr::new(
+            "https://example.com/search?q=foo&run=bar|calc.exe^%1",
+        ));
+    }
+
+    /// #1087 acceptance bar: `try_open_with_default`/`open_with_default`
+    /// through a real delegation — the same `$PATH`-override stub
+    /// technique issue #969's own `tui`-only test used, generalised here
+    /// since the opener itself is now shared. Safe to do without
+    /// launching a real browser only because `$PATH` is temporarily
+    /// redirected (guarded by [`PATH_OVERRIDE_TEST_LOCK`], and always
+    /// restored via a drop guard even on panic) to a directory containing
+    /// a stub executable under the exact name
+    /// [`unix_open_with_default_command`] looks up on this platform
+    /// (`open` on macOS, `xdg-open` elsewhere on Unix) that exits `0`
+    /// immediately.
+    ///
+    /// **Unix only** — Windows' opener ([`windows_shell_execute_open`])
+    /// is a direct `ShellExecuteW` FFI call with no `$PATH`-resolved
+    /// binary to intercept this way; see
+    /// `windows_shell_execute_open_does_not_panic_on_shell_metacharacters`
+    /// above for that platform's own coverage of the real function, and
+    /// `win::services::open_url_result_reports_failure_for_an_unregistered_scheme`
+    /// for its `ServiceResult`-level failure coverage.
+    #[cfg(unix)]
+    #[test]
+    fn try_open_with_default_returns_true_through_a_real_delegation() {
+        let _guard = PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        #[cfg(target_os = "macos")]
+        const OPENER_NAME: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER_NAME: &str = "xdg-open";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub_path = tmp.path().join(OPENER_NAME);
+        std::fs::write(&stub_path, b"#!/bin/sh\nexit 0\n").expect("write stub opener");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x stub opener");
+        }
+        let _restore = RestorePath::capture();
+        std::env::set_var("PATH", tmp.path());
+
+        assert!(try_open_with_default(std::ffi::OsStr::new(
+            "https://example.com/1087"
+        )));
+    }
+
+    /// The other half of #1087's acceptance bar: with `$PATH` redirected
+    /// to a directory containing *no* opener binary at all, the real
+    /// spawn genuinely fails (`ENOENT`) and `try_open_with_default`
+    /// honestly reports `false`. RED before this issue (`open_url_result`'s
+    /// default just called the infallible `open_url` and always answered
+    /// `Ok(())`). See `open_with_default_reports_err_when_the_opener_is_missing`
+    /// below (macOS/`win` only, since `open_with_default` itself isn't
+    /// compiled for a bare `--features tui` build — `tui::services` calls
+    /// `try_open_with_default` directly instead, so it can chain its own
+    /// OSC 8 fallback) for the `ServiceResult`-level half of this.
+    #[cfg(unix)]
+    #[test]
+    fn try_open_with_default_returns_false_when_the_opener_is_missing() {
+        let _guard = PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _restore = RestorePath::capture();
+        let empty_dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        assert!(!try_open_with_default(std::ffi::OsStr::new(
+            "https://example.com/1087"
+        )));
+    }
+
+    /// `open_with_default`'s own `ServiceResult` wrapping, via the `$PATH`
+    /// stub technique — macOS only: this technique needs a `$PATH`-resolved
+    /// binary to intercept, which only applies to `open_with_default`'s
+    /// Unix arm. `win::services`'s own `ServiceResult`-level coverage
+    /// (`open_url_result_reports_failure_for_an_unregistered_scheme`) uses
+    /// a real `ShellExecuteW` call instead, since Windows' opener has no
+    /// `$PATH`-resolved binary to intercept this way at all.
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    #[test]
+    fn open_with_default_reports_err_when_the_opener_is_missing() {
+        let _guard = PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _restore = RestorePath::capture();
+        let empty_dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        assert_eq!(
+            open_with_default(std::ffi::OsStr::new("https://example.com/1087")),
+            Err(crate::backend::BackendError::PlatformFailure {
+                context: "open_with_default: no opener launched for \"https://example.com/1087\""
+                    .to_string(),
+            })
+        );
+    }
+
+    /// RAII guard restoring the process-wide `$PATH` this test module
+    /// temporarily overrides, even on an early return or panic-unwind —
+    /// same "always restore, drop-guard" posture
+    /// [`crate::desktop::ModalPumpGuard`] and this crate's other
+    /// global-state test helpers use.
+    #[cfg(unix)]
+    struct RestorePath(Option<std::ffi::OsString>);
+
+    #[cfg(unix)]
+    impl RestorePath {
+        fn capture() -> Self {
+            Self(std::env::var_os("PATH"))
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for RestorePath {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// map_arboard_error (issue #1087)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Map an `arboard::Error` from a named native call into a
+/// [`crate::backend::BackendError::PlatformFailure`] (issue #954,
+/// consolidated to one implementation by #1087 — `gtk::services` and
+/// `macos::services` each carried an identical copy). `arboard::Error`
+/// has no "unsupported" variant of its own — every arm this maps
+/// (including `ContentNotAvailable`, e.g. "clipboard has no image right
+/// now") is a real outcome of a call the calling backend *does*
+/// implement, so `PlatformFailure` — not
+/// [`crate::backend::BackendError::Unsupported`] — is the honest
+/// mapping; see `BackendError::Unsupported`'s own doc for why that
+/// variant is reserved for "this backend has no implementation" instead.
+#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
+pub(crate) fn map_arboard_error(call: &str, err: arboard::Error) -> crate::backend::BackendError {
+    crate::backend::BackendError::PlatformFailure {
+        context: format!("{call}: {err}"),
+    }
+}
+
+#[cfg(all(
+    test,
+    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
+))]
+mod map_arboard_error_tests {
+    use super::*;
+
+    #[test]
+    fn wraps_the_call_name_and_error_into_a_platform_failure() {
+        let err = map_arboard_error("arboard::get_image", arboard::Error::ContentNotAvailable);
+        match err {
+            crate::backend::BackendError::PlatformFailure { context } => {
+                assert!(context.contains("arboard::get_image"));
+                assert!(context.contains(&arboard::Error::ContentNotAvailable.to_string()));
+            }
+            other => panic!("expected PlatformFailure, got {other:?}"),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Headless smoke-mode config + predicates
 // ─────────────────────────────────────────────────────────────────────
 

@@ -428,8 +428,22 @@ impl PlatformServices for GtkPlatformServices {
     }
 
     fn open_url(&self, url: &str) {
-        let _ =
-            gtk4::gio::AppInfo::launch_default_for_uri(url, None::<&gtk4::gio::AppLaunchContext>);
+        let _ = self.open_url_result(url);
+    }
+
+    /// Fallible twin of [`Self::open_url`] (issue #1087): reports
+    /// `gio::AppInfo::launch_default_for_uri`'s real outcome instead of
+    /// `open_url`'s discarded one — before this override,
+    /// `open_url_result` fell to
+    /// [`crate::backend::PlatformServices::open_url_result`]'s default
+    /// (`open_url` then always `Ok(())`), so a URL scheme with no
+    /// registered handler (or no session D-Bus at all) was silently
+    /// reported as success.
+    fn open_url_result(&self, url: &str) -> ServiceResult<()> {
+        gtk4::gio::AppInfo::launch_default_for_uri(url, None::<&gtk4::gio::AppLaunchContext>)
+            .map_err(|e| BackendError::PlatformFailure {
+                context: format!("gio::AppInfo::launch_default_for_uri: {e}"),
+            })
     }
 
     /// `org.freedesktop.FileManager1.ShowItems` over the session D-Bus
@@ -1003,18 +1017,11 @@ impl Clipboard for GtkClipboard {
 const NO_ARBOARD_HANDLE_CONTEXT: &str = "arboard::Clipboard::new (no clipboard available)";
 
 /// Map an `arboard::Error` from a named native call into a
-/// [`BackendError::PlatformFailure`] (issue #954). `arboard::Error` has
-/// no "unsupported" variant of its own — every arm here (including
-/// `ContentNotAvailable`, e.g. "clipboard has no image right now") is a
-/// real outcome of a call this backend *does* implement, so
-/// `PlatformFailure` — not `BackendError::Unsupported` — is the honest
-/// mapping; see `BackendError::Unsupported`'s own doc for why that
-/// variant is reserved for "this backend has no implementation" instead.
-fn map_arboard_error(call: &str, err: arboard::Error) -> BackendError {
-    BackendError::PlatformFailure {
-        context: format!("{call}: {err}"),
-    }
-}
+/// [`BackendError::PlatformFailure`] (issue #954) — the one
+/// implementation shared with `macos::services` (issue #1087); see
+/// [`crate::desktop::map_arboard_error`]'s own doc for the full
+/// rationale.
+use crate::desktop::map_arboard_error;
 
 #[cfg(test)]
 mod tests {
@@ -1250,6 +1257,24 @@ mod tests {
             services.cursor_screen_point(),
             Err(BackendError::Unsupported)
         );
+    }
+
+    /// #1087 acceptance bar: `open_url_result` reports a real failure
+    /// when there's no registered handler for the URL's scheme, instead
+    /// of the pre-#1087 capability lie (`open_url` discarded
+    /// `gio::AppInfo::launch_default_for_uri`'s outcome;
+    /// `open_url_result` fell to the trait's `Ok(())` default). A made-up
+    /// scheme no desktop registers a handler for is the deterministic way
+    /// to provoke this without any live display/session — GIO's
+    /// `AppInfo` scheme lookup doesn't need `gtk4::init()` (no widget
+    /// toolkit involved), so this runs unconditionally, unlike
+    /// `build_file_dialog_behaviors`'s `require_gtk()`-guarded tests.
+    #[test]
+    fn open_url_result_reports_failure_for_an_unregistered_scheme() {
+        let services = GtkPlatformServices::new();
+        assert!(services
+            .open_url_result("quadraui-1087-nonexistent-scheme://x")
+            .is_err());
     }
 
     // Regression test for #427 ("depth counter stays positive until the
