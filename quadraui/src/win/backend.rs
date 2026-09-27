@@ -3327,16 +3327,26 @@ impl Backend for WinBackend {
     /// link hit-testing query `popup.layout(...).hit_test(...)` directly).
     /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
     /// yet" fallback posture.
+    /// #1077: `RichTextPopup` is `ChromePrimitive::RichTextPopup` (whole
+    /// primitive, matching macOS's existing #1003 fix — see `draw_tree`'s
+    /// comment for the font swap). Passes `chrome_dwrite`, falling back
+    /// to the editor `dwrite` handle if no live chrome one exists yet,
+    /// same "degrade, don't panic" convention as
+    /// `surface_draw_text_run_with_role`'s Windows override — this was
+    /// still reaching for the editor `dwrite` handle pre-#1077.
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let _ = super::rich_text_popup::draw_rich_text_popup(
-                &surface.target,
-                dwrite,
-                popup,
-                layout,
-            );
-            return;
+        if let Some(surface) = &self.surface {
+            let dwrite = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref());
+            if let Some(dwrite) = dwrite {
+                let _ = super::rich_text_popup::draw_rich_text_popup(
+                    &surface.target,
+                    dwrite,
+                    popup,
+                    layout,
+                );
+                return;
+            }
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
         // of panicking (issue #924).

@@ -1,33 +1,38 @@
 //! macOS rasteriser for [`crate::RichTextPopup`].
 //!
-//! Mirrors [`crate::gtk::rich_text_popup::draw_rich_text_popup`]:
-//! bordered popup, per-line styled-text rendering (per-span fg via
-//! `draw_text` calls), focused-link underline, optional scrollbar.
+//! Content painting moved to the shared
+//! [`crate::primitives::rich_text_popup::native_surface_paint::paint`]
+//! (#1077, `NativeSurface` Phase 4 slice 4/8 — GTK is deliberately not
+//! part of this migration, see that fn's module doc). macOS gains
+//! several capabilities its own pre-migration "Scope omissions" doc
+//! (kept below for the historical record) listed as missing: selection
+//! background + inverted fg, a focused-link underline, and
+//! content-area clipping. Bold span styling is still not rendered here
+//! — `CgSurface::surface_draw_text_run_styled` takes the trait's
+//! default, which drops style entirely (see that default's own doc) —
+//! so this is a real gap that stays a gap, not a claimed fix.
 //!
-//! ## Scope omissions (follow-up)
+//! ## Scope omissions (historical, pre-#1077; superseded above except
+//! ## where noted)
 //!
-//! - **Selection bg + inverted fg** — the GTK rasteriser paints a
-//!   single Cairo rect under selected characters then inverts fg
-//!   per-character via Pango attrs. macOS deferred with the unified
-//!   text-attribute pass.
-//! - **Bold / italic span attributes** — same as above.
 //! - **Per-line font scale** (markdown heading rows) — needs
-//!   `CTFontCreateCopyWithSymbolicTraits` or per-line CTFont swap.
-//! - **Focused-link underline** — needs `kCTUnderlineStyleAttributeName`.
+//!   `CTFontCreateCopyWithSymbolicTraits` or per-line CTFont swap. Still
+//!   not supported; see the shared `paint`'s module doc.
+//! - **Bold / italic span attributes** — bold still isn't rendered
+//!   (see above); italic was never supported and remains unsupported.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-use super::text::{draw_text, measure_text};
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
+use crate::primitives::rich_text_popup::{
+    native_surface_paint, RichTextPopup, RichTextPopupLayout,
+};
 use crate::theme::Theme;
 
-pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = 8.0;
-pub const RICH_TEXT_POPUP_SB_INSET: f64 = 1.0;
+pub const RICH_TEXT_POPUP_SB_WIDTH: f64 = native_surface_paint::SB_WIDTH as f64;
+pub const RICH_TEXT_POPUP_SB_INSET: f64 = native_surface_paint::SB_INSET as f64;
 
-/// Draw a [`RichTextPopup`] at its resolved layout. Returns per-link
-/// hit regions as `(rect, url)` tuples.
+/// Draw a [`RichTextPopup`] at its resolved layout.
 ///
 /// # Safety
 ///
@@ -40,83 +45,11 @@ pub unsafe fn draw_rich_text_popup(
     layout: &RichTextPopupLayout,
     theme: &Theme,
 ) {
-    let bounds = layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    let bg = popup.bg.unwrap_or(theme.hover_bg);
-    let fg = popup.fg.unwrap_or(theme.hover_fg);
-    let border = if popup.has_focus {
-        theme.link_fg
-    } else {
-        theme.hover_border
-    };
-
-    fill_rect(ctx, bx, by, bw, bh, bg);
-    stroke_rect(ctx, bx, by, bw, bh, border, 1.0);
-
-    let content = layout.content_bounds;
-
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(
+    let mut surface = super::surface::CgSurface {
         ctx,
-        rect(
-            content.x as f64,
-            content.y as f64,
-            content.width as f64,
-            content.height as f64,
-        ),
-    );
-
-    for vis in &layout.visible_lines {
-        let row_y = vis.bounds.y as f64;
-        let line_x = vis.bounds.x as f64;
-        let Some(styled) = popup.lines.get(vis.line_idx) else {
-            continue;
-        };
-        // Per-span sequential render. Each span draws at its measured
-        // x-offset using its own fg.
-        let mut span_x = line_x;
-        for span in &styled.spans {
-            let span_fg = span.fg.unwrap_or(fg);
-            draw_text(ctx, font, &span.text, span_x, row_y, color_to_cg(span_fg));
-            let (sw, _) = measure_text(font, &span.text);
-            span_x += sw;
-        }
-    }
-
-    CGContextRestoreGState(ctx);
-
-    // Scrollbar — track + thumb.
-    if let Some(sb) = layout.scrollbar {
-        let sb_w = RICH_TEXT_POPUP_SB_WIDTH;
-        let sb_x = bx + bw - sb_w - RICH_TEXT_POPUP_SB_INSET;
-        let track_y = sb.track.y as f64;
-        let track_h = sb.track.height as f64;
-        fill_rect(
-            ctx,
-            sb_x,
-            track_y,
-            sb_w,
-            track_h,
-            theme.muted_fg.with_alpha(0.3),
-        );
-        let thumb_top_off = (sb.thumb.y - sb.track.y) as f64;
-        let thumb_h = sb.thumb.height as f64;
-        fill_rect(
-            ctx,
-            sb_x + 1.0,
-            track_y + thumb_top_off,
-            sb_w - 2.0,
-            thumb_h,
-            border,
-        );
-    }
+        font: Some(font),
+    };
+    let _ = native_surface_paint::paint(popup, layout, &mut surface, theme);
 }
 
 #[cfg(test)]
@@ -236,6 +169,38 @@ mod tests {
             (pu.0, pu.1, pu.2),
             (pf.0, pf.1, pf.2),
             "focused vs unfocused border should paint different colours",
+        );
+    }
+
+    /// #1077: selection background is now painted on macOS — pre-migration
+    /// this backend's own doc listed it as a "Scope omission." Regression:
+    /// a selected character's row must contain at least one pixel in the
+    /// popup's own foreground colour (the selection-bg fill), which no
+    /// unselected popup ever paints.
+    #[test]
+    fn selection_paints_a_background_fill() {
+        use crate::primitives::rich_text_popup::TextSelection;
+
+        let mut popup = sample_popup();
+        popup.selection = Some(TextSelection {
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 5,
+        });
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let layout = layout_for(&popup, viewport, 16.0, 8.4);
+        let surface = paint(&popup, &layout);
+        let theme = Theme::default();
+        let row = layout.visible_lines[0].bounds;
+        let sel_fg = popup.fg.unwrap_or(theme.foreground);
+        let y = (row.y + row.height / 2.0) as u32;
+        let found = (row.x as u32..(row.x + 60.0) as u32)
+            .map(|x| surface.pixel(x, y))
+            .any(|(r, g, b, _)| (r, g, b) == (sel_fg.r, sel_fg.g, sel_fg.b));
+        assert!(
+            found,
+            "selected row should paint at least one pixel in the selection-bg colour"
         );
     }
 }
