@@ -6996,6 +6996,13 @@ mod tests {
         let defaults = Backend::default_fonts(&b);
         assert_eq!(defaults.editor_family, "Menlo");
         assert_eq!(defaults.editor_size_pt, 12.0);
+        assert_eq!(
+            defaults.ui_family,
+            super::super::text::system_ui_font(13.0).family_name(),
+            "ui_family is computed via a live system_ui_font() call, not a \
+             literal — it's the field most worth re-checking after a prior \
+             set_editor_font/set_ui_font override"
+        );
         assert_eq!(defaults.ui_size_pt, 13.0);
     }
 

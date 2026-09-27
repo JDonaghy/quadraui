@@ -5030,6 +5030,26 @@ mod tests {
         assert_eq!(defaults.ui_size_pt, 13.0);
     }
 
+    /// A prior `set_editor_font`/`set_ui_font` call must not perturb
+    /// `default_fonts()` — it reports a static platform fact, not this
+    /// instance's current, possibly-overridden state (see
+    /// `PlatformFontDefaults`'s doc). Cross-platform: `set_editor_font`/
+    /// `set_ui_font` are real, stateful implementations here (unlike
+    /// TUI's no-ops), so this is worth checking even off `target_os =
+    /// "windows"`, same rationale as
+    /// `win_backend_default_fonts_reports_platform_convention` above.
+    #[test]
+    fn win_backend_default_fonts_is_unaffected_by_set_editor_font_and_set_ui_font() {
+        let mut backend = WinBackend::new();
+        Backend::set_editor_font(&mut backend, "Fira Code", 40.0);
+        Backend::set_ui_font(&mut backend, "Cantarell 30");
+        let defaults = Backend::default_fonts(&backend);
+        assert_eq!(defaults.editor_family, "Consolas");
+        assert_eq!(defaults.editor_size_pt, 14.0);
+        assert_eq!(defaults.ui_family, "Segoe UI");
+        assert_eq!(defaults.ui_size_pt, 13.0);
+    }
+
     /// #1043 / #623: a host-set `TreeStyle::row_height` must be honored
     /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
     /// it — not silently ignored in favor of `line_height`.

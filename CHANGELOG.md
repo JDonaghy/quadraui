@@ -55,6 +55,22 @@ release time.
 
 ### Added
 
+- `Backend::default_fonts() -> PlatformFontDefaults` (issue #1156) — each
+  backend's platform-native font defaults for the editor and UI (chrome)
+  roles (`Menlo 12` / system-UI 13pt on macOS, `Consolas 14` / `Segoe UI`
+  13pt on Windows, `Monospace 14` / `Sans` 13pt on GTK, an all-sentinel
+  empty-family/`0.0`-size value on TUI, matching its no-op
+  `set_editor_font`/`set_ui_font`), so a consumer can seed its own font
+  settings from the running platform's convention instead of hardcoding
+  one OS's defaults everywhere and branching on `cfg!(target_os)` to fix
+  it up. `default_fonts()` always reports the static platform default,
+  unaffected by any prior `set_editor_font`/`set_ui_font` call, so a
+  consumer can compare its own setting against it to tell "still the
+  platform default" from "user override" across a future backend change.
+  New required `Backend` trait method with no default body (rule 7: safe
+  because `Backend` is sealed, so this cannot break either downstream
+  consumer) — all six in-tree `impl Backend` blocks (Tui, Gtk, Mac, Win,
+  `RecordingBackend`, both `MockBackend` test doubles) implement it.
 - `SidebarPanelChrome::Search { .. }` and `SidebarPanelChrome::StatusBars(Vec<StatusBar>)`
   (issue #1061) — two chrome shapes `draw_settings_chrome` couldn't
   express: a search-only row with no header above it (vimcode's
