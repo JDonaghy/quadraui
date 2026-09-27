@@ -25,14 +25,12 @@ use core_text::font::CTFont;
 use super::cg::*;
 
 use super::text::{draw_text, measure_text};
-// `TabBarHits` is `#[deprecated]` (issue #823) — `mac_tab_bar_layout`
-// still constructs it directly rather than narrowing it down from a
-// `TabBarLayout`, per #504's original audit — so the import needs the
-// same allow every use site below does. Issue #919 added
-// `mac_tab_bar_native_layout`, a *second*, independently-computed
-// function that builds the real `TabBarLayout` `Backend::resolve_tab_bar_layout`
-// exposes; see that function's doc for why it duplicates rather than
-// shares `mac_tab_bar_layout`'s measurement code.
+// `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
+// still converting a computed `TabBarLayout` into one per paint/no-paint
+// call (see `mac_tab_bar_layout_icons`'s doc — issue #1080 made it derive
+// from `mac_tab_bar_native_layout_icons` instead of independently
+// recomputing the same geometry, per #504's original audit), so the
+// import needs the same allow every use site below does.
 use crate::event::Rect;
 use crate::primitives::tab_bar::{
     tab_icon_at, TabBarHit, TabBarLayout, TabIcon, VisibleSegment, VisibleTab,
@@ -140,10 +138,23 @@ pub fn mac_tab_bar_layout(font: &CTFont, width: f64, bar: &TabBar) -> TabBarHits
 /// `i`, a `None` or missing entry means "no icon", and `&[]` reproduces
 /// [`mac_tab_bar_layout`] point for point. Each decorated tab reserves
 /// [`mac_tab_icon_extras`]' width ahead of its label, which shifts that
-/// tab's label *and* its close-glyph hit box right by the same amount —
-/// the reason the reservation has to live here, in the one measurement
-/// path [`draw_tab_bar_icons`] paints from, rather than in the paint loop
-/// alone.
+/// tab's label *and* its close-glyph hit box right by the same amount.
+///
+/// # Issue #1080: derived from [`mac_tab_bar_native_layout_icons`]
+///
+/// Before #1080 this function independently recomputed every slot/
+/// close-box expression [`mac_tab_bar_native_layout_icons`] also
+/// computes, the second of macOS's two near-identical composition copies
+/// this issue's "~9 near-identical copies" count includes. Since both
+/// functions build the *exact same* geometry (the pre-#1080
+/// `native_layout_agrees_with_hits_layout` test pinned that equivalence
+/// byte-for-byte), this now derives its `TabBarHits` directly from the
+/// canonical `TabBarLayout` composition via
+/// [`crate::backend::tab_bar_hits_from_layout`], instead of maintaining
+/// a second copy of the same arithmetic. `height` only feeds
+/// `TabBarLayout::visible_tabs[].bounds.height`, never the x-geometry
+/// `tab_bar_hits_from_layout` reads, so a nominal value is safe to pass
+/// here where no real row height is available.
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn mac_tab_bar_layout_icons(
     font: &CTFont,
@@ -151,135 +162,49 @@ pub fn mac_tab_bar_layout_icons(
     bar: &TabBar,
     icons: &[Option<TabIcon>],
 ) -> TabBarHits {
-    let tab_pad = if bar.compact { 2.0 } else { TAB_PAD };
-    let tab_inner_gap = if bar.compact { 4.0 } else { TAB_INNER_GAP };
-    let tab_outer_gap = if bar.compact { 0.0 } else { TAB_OUTER_GAP };
+    let native = mac_tab_bar_native_layout_icons(font, width, 1.0, bar, icons);
+    let mut hits = crate::backend::tab_bar_hits_from_layout(&native, bar);
+    // `mac_tab_bar_native_layout_icons`'s `resolved_scroll_offset` is the
+    // same "engine feedback" value this function used to compute
+    // independently (see that function's own scroll-offset comment: it's
+    // never applied to *this* frame's `visible_tabs`, only reported back).
+    hits.correct_scroll_offset = native.resolved_scroll_offset;
 
-    // ── Right-segment widths (reserved before tabs get their budget) ──
-    let right_widths: Vec<f64> = bar
+    // Cell-width estimation: 15-char sample width / 15 → average glyph
+    // advance. Matches the GTK/Windows convention so app-level char-col
+    // math doesn't diverge across backends.
+    let right_widths: f64 = bar
         .right_segments
         .iter()
         .map(|seg| measure_text(font, &seg.text).0)
-        .collect();
-    let reserved_px: f64 = right_widths.iter().sum();
-    let effective_tab_area = (width - reserved_px).max(0.0);
-
-    // Close-glyph width measured once — individual tabs use it
-    // conditionally based on `bar.show_tab_close && tab.is_closable`. The
-    // `●` dirty variant is the same width in Menlo and most monospace
-    // fonts.
-    let close_w = if bar.show_tab_close {
-        measure_text(font, "×").0
-    } else {
-        0.0
-    };
-    let close_extra_for = |tab_idx: usize| -> f64 {
-        if bar.show_tab_close && bar.tabs[tab_idx].is_closable {
-            tab_inner_gap + close_w
-        } else {
-            0.0
-        }
-    };
-
-    // #926's CoreText icon-width pass. Measured once here and reused by
-    // every width/x expression below, so a decorated tab's label, close
-    // box and slot edge all shift by the same amount.
-    let icon_extras = mac_tab_icon_extras(font, bar.tabs.len(), icons);
-
-    // Pre-measure every tab's full slot width — used for scroll-offset
-    // resolution.
-    let tab_slot_widths: Vec<f64> = bar
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, tab)| {
-            let (name_w, _) = measure_text(font, &tab.label);
-            tab_pad + icon_extras[i] + name_w + close_extra_for(i) + tab_pad + tab_outer_gap
-        })
-        .collect();
-
-    let active_idx = bar.tabs.iter().position(|t| t.is_active);
-    let correct_scroll_offset = if let Some(active) = active_idx {
-        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
-            tab_slot_widths[i] as usize
-        })
-    } else {
-        bar.scroll_offset
-    };
-
-    // ── Slot geometry ────────────────────────────────────────────────
-    let mut slot_positions: Vec<(f64, f64)> = Vec::with_capacity(bar.tabs.len());
-    let mut close_bounds: Vec<Option<(f64, f64)>> = Vec::with_capacity(bar.tabs.len());
-    for _ in 0..bar.scroll_offset.min(bar.tabs.len()) {
-        slot_positions.push((0.0, 0.0));
-        close_bounds.push(None);
-    }
-
-    let mut x = 0.0_f64;
-    for (tab_idx, tab) in bar.tabs.iter().enumerate().skip(bar.scroll_offset) {
-        let (tab_name_w, _) = measure_text(font, &tab.label);
-        let icon_extra = icon_extras[tab_idx];
-        let tab_content_w = tab_pad + icon_extra + tab_name_w + close_extra_for(tab_idx) + tab_pad;
-        let slot_w = tab_content_w + tab_outer_gap;
-        if x + slot_w > effective_tab_area {
-            break;
-        }
-        slot_positions.push((x, x + slot_w));
-
-        if bar.show_tab_close && tab.is_closable {
-            let close_x = x + tab_pad + icon_extra + tab_name_w + tab_inner_gap;
-            close_bounds.push(Some((close_x - CLOSE_PAD, close_x + close_w + CLOSE_PAD)));
-        } else {
-            close_bounds.push(None);
-        }
-
-        x += slot_w;
-    }
-
-    // ── Right segments ───────────────────────────────────────────────
-    let mut right_segment_bounds: Vec<(f64, f64)> = Vec::with_capacity(right_widths.len());
-    let mut sx = width - reserved_px;
-    for seg_w in &right_widths {
-        right_segment_bounds.push((sx, sx + seg_w));
-        sx += seg_w;
-    }
-
-    // Cell-width estimation: 15-char sample width / 15 → average glyph
-    // advance. Matches the GTK convention so app-level char-col math
-    // doesn't diverge across backends.
+        .sum();
+    let effective_tab_area = (width - right_widths).max(0.0);
     let (sample_px, _) = measure_text(font, CELL_WIDTH_SAMPLE);
     let char_w = (sample_px / CELL_WIDTH_SAMPLE.chars().count() as f64).max(1.0);
-    let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
+    hits.available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
 
-    TabBarHits {
-        slot_positions,
-        close_bounds,
-        right_segment_bounds,
-        available_cols,
-        correct_scroll_offset,
-    }
+    hits
 }
 
 /// Compute the [`TabBarLayout`] [`draw_tab_bar`] paints, without
 /// painting — issue #919's `TabBarLayout`-returning counterpart to
 /// [`mac_tab_bar_layout`], backing [`crate::Backend::resolve_tab_bar_layout`].
 ///
-/// # Why this duplicates `mac_tab_bar_layout` instead of sharing it
+/// # This is the canonical composition — `mac_tab_bar_layout` derives from it
 ///
 /// Every other backend derives its `TabBarHits` by calling
 /// [`crate::TabBar::layout`] (the shared D6 layout API) and narrowing the
 /// resulting `TabBarLayout` down via
 /// [`crate::backend::tab_bar_hits_from_layout`]. macOS never adopted that
-/// path (#504's audit) — `mac_tab_bar_layout` above measures and
-/// positions tabs by hand, one `f64` tuple at a time, with no
-/// intermediate `TabBarLayout` to source native `Rect` coordinates from.
-/// Retrofitting `mac_tab_bar_layout` onto the shared layout API is real,
-/// independent rasteriser work (out of scope for this additive-only
-/// issue — see its "Scope" section), so this function instead mirrors
-/// `mac_tab_bar_layout`'s measurement expressions line-for-line and
-/// builds a `TabBarLayout` directly. `native_layout_agrees_with_hits_layout`
-/// (below) pins the two against each other so they cannot silently
-/// drift apart.
+/// path either (#504's audit noted it measures and positions tabs by
+/// hand, one `f64` tuple at a time) — but as of #1080,
+/// [`mac_tab_bar_layout_icons`] no longer keeps its own independent copy
+/// of this arithmetic: it calls this function and narrows the result via
+/// [`crate::backend::tab_bar_hits_from_layout`], the same pattern
+/// `gtk`/`win` use. `native_layout_agrees_with_hits_layout` (below), which
+/// used to pin two independently-computed geometries against each other,
+/// now pins a derived value against its own source — still worth keeping
+/// as a regression guard on the derivation itself.
 ///
 /// # Coordinate space — bar-relative, matching `mac_tab_bar_layout`
 ///

@@ -59,8 +59,8 @@ use crate::{
     parse_key_binding, Accelerator, AcceleratorId, AcceleratorScope, ActivityBar, Backend,
     CommandLine, DragState, FieldKind, Form, GenericFamily, KeyBinding, ListView, MenuBar,
     ModalStack, Palette, ParsedBinding, PlatformServices, PointerShape, Rect as QRect, ResizeEdge,
-    Split, StatusBar, TabBar, TabBarLayout, TabChrome, TabFrame, Terminal as TerminalPrim,
-    TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
+    Split, StatusBar, TabBar, TabBarLayout, TabChrome, Terminal as TerminalPrim, TextDisplay,
+    TreeView, UiEvent, UserPayload, Viewport,
 };
 
 use super::services::GtkPlatformServices;
@@ -2984,89 +2984,39 @@ impl Backend for GtkBackend {
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
-        let close_glyph_w = if bar.show_tab_close {
-            self.pango_str_width(&pango_layout, "×", char_w)
-        } else {
-            0.0
-        };
-
         let tab_name_widths: Vec<f32> = bar
             .tabs
             .iter()
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
 
-        let layout = bar.layout(
-            rect.width,
-            rect.height,
-            0.0, // no scroll arrows — matches the draw path
-            |i| {
-                // Respect per-tab `is_closable`: only reserve close-button
-                // space for tabs that will actually render a × glyph.
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let tab_close_extra = if has_close {
-                    tab_inner_gap + close_glyph_w
-                } else {
-                    0.0
-                };
-                let total = tab_pad
-                    + icon_extras[i]
-                    + tab_name_widths[i]
-                    + tab_close_extra
-                    + tab_pad
-                    + tab_outer_gap;
-                let close_w = if has_close {
-                    tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap
-                } else {
-                    0.0
-                };
-                crate::TabMeasure::new(total, close_w)
-            },
-            |i| {
-                let text_w =
-                    self.pango_str_width(&pango_layout, &bar.right_segments[i].text, char_w);
-                crate::SegmentMeasure::new(text_w)
-            },
-        );
+        // Issue #1080: single shared composition (close-button geometry,
+        // right-segment widths, corrected scroll offset, available_cols)
+        // instead of this function's own hand-rolled copy.
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
+        };
+        let (layout, corrected_scroll_offset, available_cols) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                bar,
+                rect.width,
+                rect.height,
+                tab_pad,
+                tab_inner_gap,
+                tab_outer_gap,
+                &tab_name_widths,
+                &icon_extras,
+                &TabChrome::default(),
+                &measure,
+            );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
         // Match `draw_tab_bar` (gtk/tab_bar.rs), which shifts by the same
         // origin: `TabBarHits` are target-surface coordinates. Issue #552.
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-
-        let active_idx = bar.tabs.iter().position(|t| t.is_active);
-        let reserved_px: f32 = bar
-            .right_segments
-            .iter()
-            .map(|seg| self.pango_str_width(&pango_layout, &seg.text, char_w))
-            .sum();
-        let effective_tab_area = (rect.width - reserved_px).max(0.0);
-
-        hits.correct_scroll_offset = if let Some(active) = active_idx {
-            // Use per-tab close_extra for the scroll fit calculation too.
-            TabBar::fit_active_scroll_offset(
-                active,
-                bar.tabs.len(),
-                effective_tab_area as usize,
-                |i| {
-                    let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                    let tab_close_extra = if has_close {
-                        tab_inner_gap + close_glyph_w
-                    } else {
-                        0.0
-                    };
-                    (tab_pad
-                        + icon_extras[i]
-                        + tab_name_widths[i]
-                        + tab_close_extra
-                        + tab_pad
-                        + tab_outer_gap)
-                        .ceil() as usize
-                },
-            )
-        } else {
-            bar.scroll_offset
-        };
+        hits.correct_scroll_offset = corrected_scroll_offset;
+        hits.available_cols = available_cols;
 
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -3131,48 +3081,30 @@ impl Backend for GtkBackend {
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
 
-        let close_glyph_w = if bar.show_tab_close {
-            self.pango_str_width(&pango_layout, "×", char_w)
-        } else {
-            0.0
-        };
-
         let tab_name_widths: Vec<f32> = bar
             .tabs
             .iter()
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
 
-        let layout = bar.layout(
-            rect.width,
-            rect.height,
-            0.0, // no scroll arrows — matches the draw path
-            |i| {
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let tab_close_extra = if has_close {
-                    tab_inner_gap + close_glyph_w
-                } else {
-                    0.0
-                };
-                let total = tab_pad
-                    + icon_extras[i]
-                    + tab_name_widths[i]
-                    + tab_close_extra
-                    + tab_pad
-                    + tab_outer_gap;
-                let close_w = if has_close {
-                    tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap
-                } else {
-                    0.0
-                };
-                crate::TabMeasure::new(total, close_w)
-            },
-            |i| {
-                let text_w =
-                    self.pango_str_width(&pango_layout, &bar.right_segments[i].text, char_w);
-                crate::SegmentMeasure::new(text_w)
-            },
-        );
+        // Issue #1080: single shared composition — see `tab_bar_layout_icons`.
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
+        };
+        let (layout, _corrected_scroll_offset, _available_cols) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                bar,
+                rect.width,
+                rect.height,
+                tab_pad,
+                tab_inner_gap,
+                tab_outer_gap,
+                &tab_name_widths,
+                &icon_extras,
+                &TabChrome::default(),
+                &measure,
+            );
 
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -3208,93 +3140,44 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        let (bracket_open_w, bracket_close_w): (f32, f32) = if brackets {
-            (
-                self.pango_str_width(&pango_layout, "[", char_w),
-                self.pango_str_width(&pango_layout, "]", char_w),
-            )
-        } else {
-            (0.0, 0.0)
-        };
-
         let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
-
-        let close_glyph_w = if bar.show_tab_close {
-            self.pango_str_width(&pango_layout, "×", char_w)
-        } else {
-            0.0
-        };
 
         let tab_name_widths: Vec<f32> = bar
             .tabs
             .iter()
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
+        // No icon sidecar on this path (icons + chrome together go through
+        // `draw_tab_bar_icons_with_chrome`'s own `TabBarLayout`-caching, not
+        // this no-paint twin) — a zero-width reservation per tab reproduces
+        // the pre-#1080 behaviour exactly.
+        let icon_extras = vec![0.0_f32; bar.tabs.len()];
 
-        // Mirrors `gtk::tab_bar::draw_tab_bar_icons_with_chrome`'s
-        // `measure_tab` exactly — the no-paint twin must reserve the same
-        // pixels the paint path did, or a click on the bracket-widened
-        // active tab lands on the wrong slot.
-        let measure = |i: usize| -> crate::TabMeasure {
-            let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-            let is_bracket = brackets && bar.tabs[i].is_active;
-            let tab_close_extra = if has_close {
-                tab_inner_gap + close_glyph_w
-            } else {
-                0.0
-            };
-            let bracket_extra = if is_bracket {
-                bracket_open_w + bracket_close_w
-            } else {
-                0.0
-            };
-            let total = tab_pad
-                + bracket_extra
-                + tab_name_widths[i]
-                + tab_close_extra
-                + tab_pad
-                + tab_outer_gap;
-            if is_bracket && has_close {
-                let close_w = tab_inner_gap + close_glyph_w;
-                let trailing_w = bracket_close_w + tab_pad + tab_outer_gap;
-                crate::TabMeasure::new(total, close_w).with_trailing(trailing_w)
-            } else if has_close {
-                let close_w = tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap;
-                crate::TabMeasure::new(total, close_w)
-            } else {
-                crate::TabMeasure::new(total, 0.0)
-            }
+        // Issue #1080: single shared composition — see `tab_bar_layout_icons`.
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
         };
-
-        let layout = bar.layout(rect.width, rect.height, 0.0, measure, |i| {
-            let text_w = self.pango_str_width(&pango_layout, &bar.right_segments[i].text, char_w);
-            crate::SegmentMeasure::new(text_w)
-        });
+        let (layout, corrected_scroll_offset, available_cols) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                bar,
+                rect.width,
+                rect.height,
+                tab_pad,
+                tab_inner_gap,
+                tab_outer_gap,
+                &tab_name_widths,
+                &icon_extras,
+                chrome,
+                &measure,
+            );
 
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-
-        let active_idx = bar.tabs.iter().position(|t| t.is_active);
-        let reserved_px: f32 = bar
-            .right_segments
-            .iter()
-            .map(|seg| self.pango_str_width(&pango_layout, &seg.text, char_w))
-            .sum();
-        let effective_tab_area = (rect.width - reserved_px).max(0.0);
-
-        hits.correct_scroll_offset = if let Some(active) = active_idx {
-            TabBar::fit_active_scroll_offset(
-                active,
-                bar.tabs.len(),
-                effective_tab_area as usize,
-                |i| measure(i).total_width.ceil() as usize,
-            )
-        } else {
-            bar.scroll_offset
-        };
+        hits.correct_scroll_offset = corrected_scroll_offset;
+        hits.available_cols = available_cols;
 
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -3329,67 +3212,34 @@ impl Backend for GtkBackend {
             pl.set_font_description(Some(&ui_font_desc));
         }
 
-        let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-        let (bracket_open_w, bracket_close_w): (f32, f32) = if brackets {
-            (
-                self.pango_str_width(&pango_layout, "[", char_w),
-                self.pango_str_width(&pango_layout, "]", char_w),
-            )
-        } else {
-            (0.0, 0.0)
-        };
-
         let tab_pad: f32 = if bar.compact { 2.0 } else { 14.0 };
         let tab_inner_gap: f32 = if bar.compact { 4.0 } else { 10.0 };
         let tab_outer_gap: f32 = if bar.compact { 0.0 } else { 1.0 };
-
-        let close_glyph_w = if bar.show_tab_close {
-            self.pango_str_width(&pango_layout, "×", char_w)
-        } else {
-            0.0
-        };
 
         let tab_name_widths: Vec<f32> = bar
             .tabs
             .iter()
             .map(|t| self.pango_str_width(&pango_layout, &t.label, char_w))
             .collect();
+        let icon_extras = vec![0.0_f32; bar.tabs.len()];
 
-        let measure = |i: usize| -> crate::TabMeasure {
-            let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-            let is_bracket = brackets && bar.tabs[i].is_active;
-            let tab_close_extra = if has_close {
-                tab_inner_gap + close_glyph_w
-            } else {
-                0.0
-            };
-            let bracket_extra = if is_bracket {
-                bracket_open_w + bracket_close_w
-            } else {
-                0.0
-            };
-            let total = tab_pad
-                + bracket_extra
-                + tab_name_widths[i]
-                + tab_close_extra
-                + tab_pad
-                + tab_outer_gap;
-            if is_bracket && has_close {
-                let close_w = tab_inner_gap + close_glyph_w;
-                let trailing_w = bracket_close_w + tab_pad + tab_outer_gap;
-                crate::TabMeasure::new(total, close_w).with_trailing(trailing_w)
-            } else if has_close {
-                let close_w = tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap;
-                crate::TabMeasure::new(total, close_w)
-            } else {
-                crate::TabMeasure::new(total, 0.0)
-            }
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
         };
-
-        let layout = bar.layout(rect.width, rect.height, 0.0, measure, |i| {
-            let text_w = self.pango_str_width(&pango_layout, &bar.right_segments[i].text, char_w);
-            crate::SegmentMeasure::new(text_w)
-        });
+        let (layout, _corrected_scroll_offset, _available_cols) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+                bar,
+                rect.width,
+                rect.height,
+                tab_pad,
+                tab_inner_gap,
+                tab_outer_gap,
+                &tab_name_widths,
+                &icon_extras,
+                chrome,
+                &measure,
+            );
 
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -8646,6 +8496,51 @@ mod tests {
             "an undecorated tab must keep byte-identical width: {:?} vs {:?}",
             from_layout.slot_positions[1],
             plain_layout.slot_positions[1]
+        );
+    }
+
+    /// Issue #1080 regression: `tab_bar_layout_with_chrome` — the one
+    /// no-paint twin the reviewer caught discarding `pixel_tab_bar_layout`'s
+    /// third tuple element as `_available_cols` instead of assigning it —
+    /// must actually populate `TabBarHits::available_cols` with the shared
+    /// helper's estimate, not leave it at `tab_bar_hits_from_layout`'s old
+    /// `bar_width`-in-pixels placeholder. RED before the fix: with an
+    /// 80px-wide bar the placeholder is 80 (raw pixel width truncated to
+    /// `usize`), which happens to be nonzero, so a bare `> 0` assertion
+    /// would not have caught the bug — this compares against the known-good
+    /// value from `tab_bar_layout` (equivalent inputs: no icons, default
+    /// chrome) instead.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn gtk_backend_tab_bar_layout_with_chrome_populates_available_cols() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        let bar = audit_bar();
+        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
+
+        let (from_chrome, from_plain) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let chrome = b.tab_bar_layout_with_chrome(rect, &bar, &TabChrome::default());
+            let plain = b.tab_bar_layout(rect, &bar);
+            (chrome, plain)
+        });
+
+        assert!(
+            from_chrome.available_cols > 0,
+            "sanity: an 800px-wide surface must yield a nonzero character-column estimate"
+        );
+        assert_eq!(
+            from_chrome.available_cols, from_plain.available_cols,
+            "`tab_bar_layout_with_chrome` (default chrome, no icons) must \
+             report the same `available_cols` as `tab_bar_layout` — both \
+             route through the shared `pixel_tab_bar_layout` with \
+             equivalent inputs, so a divergence means one of them still \
+             discards the shared estimate instead of assigning it"
         );
     }
 

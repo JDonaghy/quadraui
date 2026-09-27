@@ -16,13 +16,12 @@ use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
 use crate::backend::tab_bar_hits_from_layout;
+use crate::primitives::layout_metrics::TextMeasure;
 // `TabBarHits` is `#[deprecated]` (issue #823) — this whole module's job is
 // still converting a computed `TabBarLayout` into one per paint. See that
 // struct's doc for the replacement plan.
 #[allow(deprecated)]
-use crate::primitives::tab_bar::{
-    SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame, TabMeasure,
-};
+use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarLayout, TabChrome, TabFrame};
 use crate::theme::Theme;
 
 /// Per-tab padding (left + right) inside the tab background fill.
@@ -42,6 +41,26 @@ const TAB_ACTIVE_BORDER_TOP_PX: f64 = 1.0;
 const TAB_CHIP_INSET_Y: f64 = 4.0;
 /// Corner radius (px) of the active-tab chip, all four corners (#646).
 const TAB_CHIP_RADIUS: f64 = 4.0;
+
+/// Adapts a live `pango::Layout` to the shared
+/// [`crate::primitives::layout_metrics::TextMeasure`] trait so
+/// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] never has
+/// to name a Pango type (issue #1080). Unlike `gtk::backend`'s
+/// `PangoTextMeasure`, this always has a live layout — `draw_tab_bar_*`
+/// paints through a real Cairo context, never headless — so there is no
+/// char-width fallback to carry. Measures in whatever font is currently
+/// set on `layout`; callers set the desired font before invoking
+/// [`Self::width_of`] (via the shared fn calling it).
+struct PangoTabMeasure<'a> {
+    layout: &'a pango::Layout,
+}
+
+impl TextMeasure for PangoTabMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        self.layout.set_text(text);
+        self.layout.pixel_size().0 as f32
+    }
+}
 
 /// The Nerd-Font-swapped variant of the tab bar's label font, used to
 /// measure and paint [`crate::TabIcon`] glyphs (#620). Icon glyphs share
@@ -369,77 +388,45 @@ pub fn draw_tab_bar_icons_with_chrome(
     let icon_font = tab_icon_font(&normal_font);
     let tab_icon_extras = tab_icon_extras(pango_layout, &icon_font, bar.tabs.len(), icons);
 
-    // ── Pre-measure bracket glyphs (#631) ───────────────────────────
-    // Only needed when chrome requests `TabFrame::Brackets`; measured via
-    // Pango like every other glyph here so the reservation always matches
-    // what actually paints, on any font.
+    // #631: bracket glyph width, needed below only for the paint loop's
+    // `content_pad` (where the label starts once a leading `[` is
+    // painted). The shared layout fn below remeasures both bracket
+    // glyphs itself via the same `measure` adapter, so paint and layout
+    // can never disagree about their width.
     let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
-    let (bracket_open_w, bracket_close_w) = if brackets {
-        pango_layout.set_font_description(Some(&normal_font));
+    pango_layout.set_font_description(Some(&normal_font));
+    let bracket_open_w = if brackets {
         pango_layout.set_text("[");
-        let (ow, _) = pango_layout.pixel_size();
-        pango_layout.set_text("]");
-        let (cw, _) = pango_layout.pixel_size();
-        (ow as f64, cw as f64)
+        pango_layout.pixel_size().0 as f64
     } else {
-        (0.0, 0.0)
+        0.0
     };
 
-    let measure_tab = |i: usize| -> TabMeasure {
-        let name_w = tab_name_widths[i] as f32;
-        let icon_extra = tab_icon_extras[i] as f32;
-        // Per-tab closability: only reserve space for the × glyph when both
-        // `show_tab_close` (bar-level) and `is_closable` (tab-level) are set.
-        let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-        // #631: the active tab's bracket frame, if requested.
-        let is_bracket = brackets && bar.tabs[i].is_active;
-        let tab_close_extra = if has_close {
-            tab_inner_gap + close_glyph_w
-        } else {
-            0.0
-        };
-        let bracket_extra = if is_bracket {
-            bracket_open_w + bracket_close_w
-        } else {
-            0.0
-        };
-        let total = tab_pad as f32
-            + bracket_extra as f32
-            + icon_extra
-            + name_w
-            + tab_close_extra as f32
-            + tab_pad as f32
-            + tab_outer_gap as f32;
-        if is_bracket && has_close {
-            // The close region covers just the glyph (no trailing
-            // padding/gap) so `close_bounds` lands on `×`, not the `]`
-            // and margin that follow it.
-            let close_w = (tab_inner_gap + close_glyph_w) as f32;
-            let trailing_w = (bracket_close_w + tab_pad + tab_outer_gap) as f32;
-            TabMeasure::new(total, close_w).with_trailing(trailing_w)
-        } else if has_close {
-            let close_w = (tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap) as f32;
-            TabMeasure::new(total, close_w)
-        } else {
-            TabMeasure::new(total, 0.0)
-        }
+    // ── Compute layout — single source of truth (issue #1080) ──────
+    // `PangoTabMeasure` measures in whatever font is currently set on
+    // `pango_layout` — reset to the (non-italic, non-icon) label font
+    // before handing it to the shared fn, since every glyph it measures
+    // itself (×, [, ], right-segment labels, the char-width sample) is
+    // single-font.
+    pango_layout.set_font_description(Some(&normal_font));
+    let measure = PangoTabMeasure {
+        layout: pango_layout,
     };
-
-    let measure_segment = |i: usize| -> SegmentMeasure {
-        pango_layout.set_font_description(Some(&normal_font));
-        pango_layout.set_text(&bar.right_segments[i].text);
-        let (w, _) = pango_layout.pixel_size();
-        SegmentMeasure::new(w as f32)
-    };
-
-    // ── Compute layout — single source of truth ─────────────────────
-    let layout = bar.layout(
-        width as f32,
-        row_height as f32,
-        0.0, // no scroll arrows in GTK
-        measure_tab,
-        measure_segment,
-    );
+    let tab_name_widths_f32: Vec<f32> = tab_name_widths.iter().map(|&w| w as f32).collect();
+    let tab_icon_extras_f32: Vec<f32> = tab_icon_extras.iter().map(|&w| w as f32).collect();
+    let (layout, corrected_scroll_offset, available_cols) =
+        crate::primitives::layout_metrics::pixel_tab_bar_layout(
+            bar,
+            width as f32,
+            row_height as f32,
+            tab_pad as f32,
+            tab_inner_gap as f32,
+            tab_outer_gap as f32,
+            &tab_name_widths_f32,
+            &tab_icon_extras_f32,
+            chrome,
+            &measure,
+        );
 
     // ── Paint tabs from layout ──────────────────────────────────────
     for vt in &layout.visible_tabs {
@@ -627,52 +614,6 @@ pub fn draw_tab_bar_icons_with_chrome(
         super::painted_text::show_layout(cr, pango_layout);
     }
 
-    // ── Correct scroll offset (engine feedback) ─────────────────────
-    let active_idx = bar.tabs.iter().position(|t| t.is_active);
-    let seg_widths: Vec<f64> = bar
-        .right_segments
-        .iter()
-        .map(|seg| {
-            pango_layout.set_font_description(Some(&normal_font));
-            pango_layout.set_text(&seg.text);
-            let (w, _) = pango_layout.pixel_size();
-            w as f64
-        })
-        .collect();
-    let reserved_px: f64 = seg_widths.iter().sum();
-    let effective_tab_area = (width - reserved_px).max(0.0);
-
-    let correct_scroll_offset = if let Some(active) = active_idx {
-        let tab_slot_widths: Vec<f64> = (0..bar.tabs.len())
-            .map(|i| {
-                // Use per-tab close_extra to match the measurement in measure_tab.
-                let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                let per_tab_close_extra = if has_close {
-                    tab_inner_gap + close_glyph_w
-                } else {
-                    0.0
-                };
-                tab_name_widths[i]
-                    + tab_icon_extras[i]
-                    + tab_pad * 2.0
-                    + per_tab_close_extra
-                    + tab_outer_gap
-            })
-            .collect();
-        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), effective_tab_area as usize, |i| {
-            tab_slot_widths[i] as usize
-        })
-    } else {
-        bar.scroll_offset
-    };
-
-    // ── Sample measurement for char-col estimation ──────────────────
-    pango_layout.set_font_description(Some(&normal_font));
-    pango_layout.set_text("ABCDabcd0123.:_");
-    let (sample_px, _) = pango_layout.pixel_size();
-    let char_w = (sample_px as f64 / 15.0).max(1.0);
-    let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
-
     // Restore caller's font.
     pango_layout.set_font_description(Some(&saved_font));
 
@@ -684,7 +625,10 @@ pub fn draw_tab_bar_icons_with_chrome(
     // Shared with `Backend::tab_bar_layout` so the paint and no-paint
     // paths cannot drift apart again (issue #552).
     crate::backend::shift_tab_bar_hits(&mut hits, x_offset);
-    hits.correct_scroll_offset = correct_scroll_offset;
+    // `corrected_scroll_offset`/`available_cols` are the "engine feedback"
+    // half of `pixel_tab_bar_layout`'s tuple return (issue #1080) — same
+    // values this block used to recompute independently.
+    hits.correct_scroll_offset = corrected_scroll_offset;
     hits.available_cols = available_cols;
     (hits, layout)
 }
@@ -1094,22 +1038,29 @@ mod tests {
         let chrome_close = chrome_layout.visible_tabs[0]
             .close_bounds
             .expect("bracket-framed tab should still report close bounds");
-        // The plain close region bundles the trailing padding + outer gap
-        // (it's flush against the tab's right edge); the bracket-framed
-        // region excludes that trailing chrome via `TabMeasure::trailing_width`
-        // instead, so it's narrower by exactly `TAB_PAD + TAB_OUTER_GAP`.
+        // #1080: since the plain close region is now *also* tight (just the
+        // glyph + its leading gap, via `TabMeasure::trailing_width` — the
+        // same mechanism the bracket path already used), the two close
+        // regions are the same width; only their trailing chrome differs
+        // (the bracket path additionally reserves room for `]`).
         assert!(
-            (plain_close.width - chrome_close.width - (TAB_PAD as f32 + TAB_OUTER_GAP as f32))
-                .abs()
-                < 0.01,
-            "bracket close region should be narrower than the plain one by exactly the \
-             trailing pad + outer gap it no longer bundles: plain={}, chrome={}",
+            (plain_close.width - chrome_close.width).abs() < 0.01,
+            "post-#1080, the plain and bracket-framed close regions should be \
+             the same tight width (glyph + leading gap only): plain={}, chrome={}",
             plain_close.width,
             chrome_close.width
         );
         assert!(
             chrome_close.x > plain_close.x,
             "close region should shift right to make room for the leading bracket"
+        );
+        let plain_tab_end =
+            plain_layout.visible_tabs[0].bounds.x + plain_layout.visible_tabs[0].bounds.width;
+        assert!(
+            plain_close.x + plain_close.width < plain_tab_end,
+            "#1080: the plain close bounds must also stop before the tab's own \
+             right edge — a click in the trailing pad/gap must not resolve to \
+             TabClose"
         );
         let chrome_tab_end =
             chrome_layout.visible_tabs[0].bounds.x + chrome_layout.visible_tabs[0].bounds.width;
@@ -1430,6 +1381,66 @@ mod tests {
                 "inactive tab should fill its full row_height with bar background, \
                  unrestricted by the chip's inset, at y={y}"
             );
+        }
+    }
+
+    /// Issue #1080's acceptance test through the real paint path: a click
+    /// in the dead space just inside the tab's right edge — the trailing
+    /// `tab_pad + tab_outer_gap` the old per-backend measure bundled into
+    /// the close region — must resolve to `Tab`, not `TabClose`. RED
+    /// before #1080 (the old `close_bounds` ran flush to the tab's right
+    /// edge, so this exact probe point resolved to `TabClose`).
+    #[test]
+    fn close_region_excludes_trailing_padding_via_draw_tab_bar() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        // `make_bar` disables `show_tab_close`, so build a closable variant
+        // instead — same shape, close button on.
+        let mut bar = make_bar();
+        bar.show_tab_close = true;
+        let theme = make_theme();
+        let surface = ImageSurface::create(Format::ARgb32, W, ROW_H).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+
+        let (_, layout) = draw_tab_bar(
+            &cr,
+            &pango_layout,
+            0.0,
+            W as f64,
+            LINE_H,
+            0.0,
+            ROW_H as f64,
+            &bar,
+            &theme,
+            None,
+        );
+
+        let vt = &layout.visible_tabs[0];
+        let close = vt
+            .close_bounds
+            .expect("closable tab must report close bounds");
+        let tab_right_edge = vt.bounds.x + vt.bounds.width;
+        let probe_y = vt.bounds.y + vt.bounds.height / 2.0;
+
+        assert!(
+            close.x + close.width < tab_right_edge,
+            "close region must stop before the tab's right edge: close ends at {}, \
+             tab ends at {tab_right_edge}",
+            close.x + close.width,
+        );
+        match layout.hit_test(tab_right_edge - 1.0, probe_y) {
+            TabBarHit::Tab(0) => {}
+            other => panic!(
+                "click 1px inside the tab's right edge (old dead padding) \
+                 expected Tab(0), got {other:?}"
+            ),
+        }
+        match layout.hit_test(close.x + close.width / 2.0, probe_y) {
+            TabBarHit::TabClose(0) => {}
+            other => {
+                panic!("click at the close region's centre expected TabClose(0), got {other:?}")
+            }
         }
     }
 }

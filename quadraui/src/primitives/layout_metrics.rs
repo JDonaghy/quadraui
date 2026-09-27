@@ -37,6 +37,9 @@ use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, Pipelin
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::tab_bar::{
+    SegmentMeasure, TabBar, TabBarLayout, TabChrome, TabFrame, TabMeasure,
+};
 use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::types::Decoration;
@@ -118,6 +121,26 @@ pub mod pixel {
     /// cross-line colour reduction — see [`crate::MinimapGrid`]'s doc for
     /// why TUI's braille packing differs).
     pub const MINIMAP_LINES_PER_ROW: usize = 1;
+
+    /// [`crate::TabBar`] non-compact per-tab horizontal padding (left +
+    /// right) inside the tab background fill. `gtk::tab_bar::TAB_PAD`,
+    /// `macos::tab_bar::TAB_PAD`, and `win::tab_bar::TAB_PAD_DIP` were all
+    /// `14.0` independently (issue #1080).
+    pub const TAB_PAD: f32 = 14.0;
+    /// [`crate::TabBar`] gap between a tab's label and its close glyph.
+    pub const TAB_INNER_GAP: f32 = 10.0;
+    /// [`crate::TabBar`] gap between adjacent tabs.
+    pub const TAB_OUTER_GAP: f32 = 1.0;
+    /// [`crate::TabBar`] gap between a tab's icon glyph
+    /// ([`crate::TabIcon`]) and its label.
+    pub const TAB_ICON_GAP: f32 = 6.0;
+    /// 15-glyph sample string every pixel backend measures once per frame
+    /// to estimate an average glyph advance for
+    /// [`super::pixel_tab_bar_layout`]'s `available_cols` — proportional
+    /// fonts have no single "char width", so this is the same estimate
+    /// convention `gtk`/`macos` already used independently before #1080
+    /// (`win` gained one for the first time).
+    pub const TAB_CELL_WIDTH_SAMPLE: &str = "ABCDabcd0123.:_";
 }
 
 // ── Tree ─────────────────────────────────────────────────────────────
@@ -725,6 +748,153 @@ pub fn pixel_minimap_layout_scaled(
     )
 }
 
+// ── TabBar ───────────────────────────────────────────────────────────
+
+/// Compute a [`TabBar`]'s pixel-unit layout — the composition every pixel
+/// backend (`gtk`, `macos`, `win`) duplicated independently, once per
+/// paint/no-paint twin (issue #1080: ~9 near-identical copies of this
+/// exact arithmetic across `gtk::tab_bar`, `gtk::backend`,
+/// `macos::tab_bar`, and `win::tab_bar`).
+///
+/// Backends still do their own **text measurement** — Pango / Core Text /
+/// DirectWrite each need to switch fonts mid-tab (italic for a preview
+/// label, a Nerd-Font family swap for an icon glyph), which a single
+/// `&dyn TextMeasure` call can't express — so `tab_name_widths` and
+/// `tab_icon_extras` are that backend-specific pass, precomputed by the
+/// caller and handed in as parallel arrays indexed like `bar.tabs`
+/// (`0.0` for a tab with no icon). Everything else is single-font and
+/// lives here: close-button geometry, bracket framing (#631),
+/// right-segment widths, the "corrected scroll offset" engine-feedback
+/// signal, and `available_cols`.
+///
+/// `tab_pad` / `tab_inner_gap` / `tab_outer_gap` are the caller-resolved
+/// values for this bar — pass the compact variant when `bar.compact` is
+/// set, matching every backend's existing convention.
+///
+/// # The #1080 close-button fix
+///
+/// Every backend used to size the close-button hit region as
+/// `tab_inner_gap + close_glyph_w + tab_pad + tab_outer_gap` — bundling
+/// in the *trailing* chrome (the tab's own right padding and the gap to
+/// the next tab) that paints nowhere near the × glyph. A click in that
+/// dead space still resolved to [`crate::TabBarHit::TabClose`] instead of
+/// [`crate::TabBarHit::Tab`]. This function reserves only
+/// `tab_inner_gap + close_glyph_w` for the close region and pushes the
+/// trailing chrome into [`TabMeasure::trailing_width`] instead (the same
+/// mechanism #631 already used for bracket framing) — the close box now
+/// covers just the glyph plus its leading gap, on every backend, bracket
+/// framing or not.
+///
+/// # Returns
+///
+/// `(layout, corrected_scroll_offset, available_cols)`.
+///
+/// - `layout` — the resolved [`TabBarLayout`]; iterate `visible_tabs` /
+///   `visible_segments` to paint, call `hit_test` for clicks. Computed
+///   with `scroll_arrow_width: 0.0` (no backend using this fn paints
+///   scroll arrows), so `layout.resolved_scroll_offset` is `bar
+///   .scroll_offset` clamped to a valid index, not corrected — see
+///   `corrected_scroll_offset` below for that.
+/// - `corrected_scroll_offset` — the scroll offset that would keep the
+///   active tab visible under *this frame's real measurements*. Callers
+///   write this back to their stored scroll state for the next frame
+///   (the "two-pass paint" pattern [`TabBar::layout`]'s doc describes).
+/// - `available_cols` — the tab area's width in character-columns,
+///   estimated from a [`pixel::TAB_CELL_WIDTH_SAMPLE`] sample measured
+///   through `measure`. Hosts that budget tab visibility in cell units
+///   even on a proportional-font backend (e.g. vimcode's
+///   `Engine::set_tab_visible_count`) use this instead of a raw pixel
+///   width.
+#[allow(clippy::too_many_arguments)]
+pub fn pixel_tab_bar_layout(
+    bar: &TabBar,
+    width: f32,
+    height: f32,
+    tab_pad: f32,
+    tab_inner_gap: f32,
+    tab_outer_gap: f32,
+    tab_name_widths: &[f32],
+    tab_icon_extras: &[f32],
+    chrome: &TabChrome,
+    measure: &dyn TextMeasure,
+) -> (TabBarLayout, usize, usize) {
+    let close_glyph_w = if bar.show_tab_close {
+        measure.width_of("×")
+    } else {
+        0.0
+    };
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let (bracket_open_w, bracket_close_w) = if brackets {
+        (measure.width_of("["), measure.width_of("]"))
+    } else {
+        (0.0, 0.0)
+    };
+
+    let measure_tab = |i: usize| -> TabMeasure {
+        let name_w = tab_name_widths[i];
+        let icon_extra = tab_icon_extras[i];
+        let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
+        let is_bracket = brackets && bar.tabs[i].is_active;
+        let close_extra = if has_close {
+            tab_inner_gap + close_glyph_w
+        } else {
+            0.0
+        };
+        let bracket_extra = if is_bracket {
+            bracket_open_w + bracket_close_w
+        } else {
+            0.0
+        };
+        let total =
+            tab_pad + bracket_extra + icon_extra + name_w + close_extra + tab_pad + tab_outer_gap;
+        if has_close {
+            // #1080: tight close region — just the glyph and its leading
+            // gap. Everything painted after it (the tab's own trailing
+            // pad + outer gap, plus a closing bracket glyph when this is
+            // the bracket-framed active tab) is `trailing_width`, not
+            // part of the clickable close box.
+            let close_w = tab_inner_gap + close_glyph_w;
+            let trailing = tab_pad + tab_outer_gap + if is_bracket { bracket_close_w } else { 0.0 };
+            TabMeasure::new(total, close_w).with_trailing(trailing)
+        } else {
+            TabMeasure::new(total, 0.0)
+        }
+    };
+    let tab_measures: Vec<TabMeasure> = (0..bar.tabs.len()).map(&measure_tab).collect();
+
+    let seg_widths: Vec<f32> = (0..bar.right_segments.len())
+        .map(|i| measure.width_of(&bar.right_segments[i].text))
+        .collect();
+
+    let layout = bar.layout(
+        width,
+        height,
+        0.0, // no scroll arrows — every pixel backend defers scroll to this fn
+        |i| tab_measures[i],
+        |i| SegmentMeasure::new(seg_widths[i]),
+    );
+
+    let reserved_px: f32 = seg_widths.iter().sum();
+    let effective_tab_area = (width - reserved_px).max(0.0);
+
+    let active_idx = bar.tabs.iter().position(|t| t.is_active);
+    let corrected_scroll_offset = match active_idx {
+        Some(active) => TabBar::fit_active_scroll_offset(
+            active,
+            bar.tabs.len(),
+            effective_tab_area as usize,
+            |i| tab_measures[i].total_width.ceil() as usize,
+        ),
+        None => bar.scroll_offset,
+    };
+
+    let sample_w = measure.width_of(pixel::TAB_CELL_WIDTH_SAMPLE);
+    let char_w = (sample_w / pixel::TAB_CELL_WIDTH_SAMPLE.chars().count() as f32).max(1.0);
+    let available_cols = (effective_tab_area / char_w).floor().max(0.0) as usize;
+
+    (layout, corrected_scroll_offset, available_cols)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1143,5 +1313,205 @@ mod tests {
         assert_eq!(tree_row_pitch(&tree, 16.0), 42.0);
         // And it must NOT vary with `line_height` once set.
         assert_eq!(tree_row_pitch(&tree, 100.0), 42.0);
+    }
+
+    // ── #1080 pixel_tab_bar_layout ────────────────────────────────────
+
+    /// Fixed-width stand-in for a proportional font: every glyph measures
+    /// `6.0` px, matching `FakeMeasure` above but named locally so this
+    /// section reads standalone.
+    struct FakeTabMeasure;
+    impl TextMeasure for FakeTabMeasure {
+        fn width_of(&self, text: &str) -> f32 {
+            text.chars().count() as f32 * 6.0
+        }
+    }
+
+    fn tab_bar_with(tabs: Vec<crate::primitives::tab_bar::TabItem>) -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs,
+            scroll_offset: 0,
+            right_segments: vec![],
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    fn closable_tab(label: &str, is_active: bool) -> crate::primitives::tab_bar::TabItem {
+        crate::primitives::tab_bar::TabItem {
+            label: label.to_string(),
+            is_active,
+            is_dirty: false,
+            is_preview: false,
+            is_closable: true,
+        }
+    }
+
+    #[test]
+    fn pixel_tab_bar_layout_populates_available_cols() {
+        let bar = tab_bar_with(vec![closable_tab("main.rs", true)]);
+        let name_widths = [bar.tabs[0].label.chars().count() as f32 * 6.0];
+        let icon_extras = [0.0_f32];
+        let (_, _, available_cols) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        assert!(
+            available_cols > 0,
+            "a 400px bar with a single short tab should report a non-zero \
+             available_cols, got {available_cols}"
+        );
+    }
+
+    /// The issue #1080 acceptance test: a click in the dead space the old
+    /// per-backend measure used to bundle into the close region — between
+    /// the × glyph and the tab's own right edge (`tab_pad + tab_outer_gap`
+    /// of trailing chrome) — must resolve to `Tab`, not `TabClose`. RED
+    /// before this fix on every backend that called
+    /// `TabMeasure::new(total, tab_inner_gap + close_w + tab_pad +
+    /// tab_outer_gap)` instead of reserving `trailing_width` for that
+    /// chrome.
+    #[test]
+    fn pixel_tab_bar_layout_close_region_excludes_trailing_padding() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        let bar = tab_bar_with(vec![closable_tab("main.rs", true)]);
+        let name_widths = [bar.tabs[0].label.chars().count() as f32 * 6.0];
+        let icon_extras = [0.0_f32];
+        let (layout, _, _) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+
+        let vt = &layout.visible_tabs[0];
+        let close = vt
+            .close_bounds
+            .expect("closable tab must report close bounds");
+        let tab_right_edge = vt.bounds.x + vt.bounds.width;
+
+        // The old (buggy) close region ran all the way to the tab's right
+        // edge. The fixed region must stop short of it, leaving the
+        // trailing `tab_pad + tab_outer_gap` as dead space that belongs to
+        // the tab body, not the close button.
+        assert!(
+            close.x + close.width < tab_right_edge,
+            "close region [{}, {}) must stop before the tab's right edge {}",
+            close.x,
+            close.x + close.width,
+            tab_right_edge,
+        );
+
+        // A click just inside that trailing dead space — 1px short of the
+        // tab's right edge — must resolve to `Tab`, not `TabClose`.
+        let probe_x = tab_right_edge - 1.0;
+        assert!(
+            probe_x >= close.x + close.width,
+            "test fixture's probe point must actually fall in the trailing \
+             gap, past the close region's own right edge"
+        );
+        match layout.hit_test(probe_x, vt.bounds.y + vt.bounds.height / 2.0) {
+            TabBarHit::Tab(0) => {}
+            other => panic!(
+                "click at x={probe_x} (old padding, now outside the close glyph) \
+                 expected Tab(0), got {other:?}"
+            ),
+        }
+
+        // And a click at the close region's own centre must still resolve
+        // to `TabClose` — the fix must not shrink the box past the glyph
+        // itself.
+        let (cx, cy) = (
+            close.x + close.width / 2.0,
+            vt.bounds.y + vt.bounds.height / 2.0,
+        );
+        assert_eq!(layout.hit_test(cx, cy), TabBarHit::TabClose(0));
+    }
+
+    #[test]
+    fn pixel_tab_bar_layout_corrected_scroll_offset_keeps_active_tab_visible() {
+        let tabs: Vec<_> = (0..10)
+            .map(|i| closable_tab(&format!("t{i}"), i == 9))
+            .collect();
+        let mut bar = tab_bar_with(tabs);
+        bar.scroll_offset = 0; // stale — active tab (9) is not visible at offset 0
+        let name_widths = vec![6.0_f32; bar.tabs.len()]; // "t0".."t9" — 2 chars * 6px
+        let icon_extras = vec![0.0_f32; bar.tabs.len()];
+        let (_, corrected_scroll_offset, _) = pixel_tab_bar_layout(
+            &bar,
+            120.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &TabChrome::default(),
+            &FakeTabMeasure,
+        );
+        assert!(
+            corrected_scroll_offset > 0,
+            "active tab 9 isn't visible at the stale scroll_offset 0; the \
+             corrected offset must be non-zero"
+        );
+    }
+
+    #[test]
+    fn pixel_tab_bar_layout_bracket_chrome_still_excludes_trailing_padding() {
+        // #631 bracket framing must not regress the #1080 tight-close-box
+        // fix: the close region still excludes the trailing pad/gap (now
+        // plus the closing bracket glyph), matching the plain path.
+        use crate::primitives::tab_bar::{TabBarHit, TabFrame};
+
+        let bar = tab_bar_with(vec![closable_tab("main.rs", true)]);
+        let name_widths = [bar.tabs[0].label.chars().count() as f32 * 6.0];
+        let icon_extras = [0.0_f32];
+        let chrome = TabChrome::new(TabFrame::Brackets);
+        let (layout, _, _) = pixel_tab_bar_layout(
+            &bar,
+            400.0,
+            22.0,
+            pixel::TAB_PAD,
+            pixel::TAB_INNER_GAP,
+            pixel::TAB_OUTER_GAP,
+            &name_widths,
+            &icon_extras,
+            &chrome,
+            &FakeTabMeasure,
+        );
+
+        let vt = &layout.visible_tabs[0];
+        let close = vt
+            .close_bounds
+            .expect("closable tab must report close bounds");
+        let tab_right_edge = vt.bounds.x + vt.bounds.width;
+        assert!(
+            close.x + close.width < tab_right_edge,
+            "bracket-framed close region must still stop before the tab's \
+             right edge (now with room for the closing bracket too)"
+        );
+        match layout.hit_test(tab_right_edge - 1.0, vt.bounds.y + vt.bounds.height / 2.0) {
+            TabBarHit::Tab(0) => {}
+            other => {
+                panic!("click in the trailing bracket+padding gap expected Tab(0), got {other:?}")
+            }
+        }
     }
 }
