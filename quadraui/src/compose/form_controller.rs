@@ -20,7 +20,8 @@
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
 };
-use crate::{Backend, ButtonMask, MouseButton, Rect, Scrollbar, UiEvent, WidgetId};
+use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
+use crate::{Backend, ButtonMask, MouseButton, Point, Rect, Scrollbar, UiEvent, WidgetId};
 
 /// What happened after [`FormController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,19 +36,12 @@ pub enum FormControllerEvent {
     Ignored,
 }
 
-struct ScrollDrag {
-    origin_y: f32,
-    origin_offset: usize,
-    travel: f32,
-    max_offset: usize,
-}
-
 pub struct FormController {
     id: String,
     form: Option<Form>,
     scroll_offset: usize,
     has_focus: bool,
-    scroll_drag: Option<ScrollDrag>,
+    scroll_drag: Option<ThumbDrag>,
     cached_lh: Option<f32>,
 }
 
@@ -176,11 +170,8 @@ impl FormController {
     // ── Scroll primitives (pub for SidebarSystem reuse) ──────────────
 
     pub fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
-        let total = self.field_count();
-        let max = total.saturating_sub(viewport_rows) as isize;
-        let cur = self.scroll_offset as isize;
-        let new = (cur + delta).max(0).min(max) as usize;
-        self.scroll_offset = new;
+        let max = self.field_count().saturating_sub(viewport_rows);
+        self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
     }
 
     pub fn page_scroll(&mut self, delta: isize, viewport_rows: usize) {
@@ -275,18 +266,18 @@ impl FormController {
         lh: f32,
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
-        if !rect_contains(rect, x, y) {
+        if !rect.contains(Point::new(x, y)) {
             return FormControllerEvent::Ignored;
         }
         let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
 
         if let Some(sb_rect) = sb_rect {
-            if rect_contains(sb_rect, x, y) {
+            if sb_rect.contains(Point::new(x, y)) {
                 return self.click_scrollbar_lh(lh, form_rect, sb_rect, y);
             }
         }
 
-        if rect_contains(form_rect, x, y) {
+        if form_rect.contains(Point::new(x, y)) {
             let form = self.build_form(form_rect);
             let layout = if let Some(be) = backend {
                 be.form_layout(form_rect, &form)
@@ -330,24 +321,25 @@ impl FormController {
             lh,
             sb_rect,
         );
-        let thumb_top = sb_rect.y + sb.thumb_start;
-        let thumb_bottom = thumb_top + sb.thumb_len;
 
-        if y >= thumb_top && y < thumb_bottom {
-            let travel = (sb_rect.height - sb.thumb_len).max(0.0);
-            self.scroll_drag = Some(ScrollDrag {
-                origin_y: y,
-                origin_offset: self.scroll_offset,
-                travel,
-                max_offset,
-            });
-            FormControllerEvent::ScrollChanged
-        } else if y < thumb_top {
-            self.page_scroll(-(vr as isize), vr);
-            FormControllerEvent::ScrollChanged
-        } else {
-            self.page_scroll(vr as isize, vr);
-            FormControllerEvent::ScrollChanged
+        match sb.press_zone(y) {
+            PressZone::Thumb => {
+                self.scroll_drag = Some(ThumbDrag::begin(
+                    y,
+                    self.scroll_offset as f32,
+                    sb.travel(),
+                    max_offset as f32,
+                ));
+                FormControllerEvent::ScrollChanged
+            }
+            PressZone::Before => {
+                self.page_scroll(-(vr as isize), vr);
+                FormControllerEvent::ScrollChanged
+            }
+            PressZone::After => {
+                self.page_scroll(vr as isize, vr);
+                FormControllerEvent::ScrollChanged
+            }
         }
     }
 
@@ -355,14 +347,10 @@ impl FormController {
         let Some(drag) = &self.scroll_drag else {
             return FormControllerEvent::Ignored;
         };
-        if drag.travel <= 0.0 || drag.max_offset == 0 {
+        let Some(new) = drag.offset_at(y) else {
             return FormControllerEvent::Ignored;
-        }
-        let dy = y - drag.origin_y;
-        let drow = dy / drag.travel * drag.max_offset as f32;
-        let new = (drag.origin_offset as f32 + drow).round() as i32;
-        let new = new.max(0) as usize;
-        let new = new.min(drag.max_offset);
+        };
+        let new = new.round() as usize;
         if new == self.scroll_offset {
             return FormControllerEvent::Ignored;
         }
@@ -574,10 +562,6 @@ fn form_field_measure(
         }
         _ => FormFieldMeasure::new(row_h),
     }
-}
-
-fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
 #[cfg(test)]

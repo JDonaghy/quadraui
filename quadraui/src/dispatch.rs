@@ -708,26 +708,16 @@ pub fn dispatch_click(
 
     // Case 3–5: no modals. Hit-test scroll surfaces (last-to-first).
     for surface in scroll_surfaces.iter().rev() {
-        let in_bounds = position.x >= surface.bounds.x
-            && position.x < surface.bounds.x + surface.bounds.width
-            && position.y >= surface.bounds.y
-            && position.y < surface.bounds.y + surface.bounds.height;
-        if !in_bounds {
+        if !surface.bounds.contains(position) {
             continue;
         }
 
         // Check scrollbar regions first (if present).
         if let Some(ref sb) = surface.scrollbar {
-            let in_track = position.x >= sb.track_bounds.x
-                && position.x < sb.track_bounds.x + sb.track_bounds.width
-                && position.y >= sb.track_bounds.y
-                && position.y < sb.track_bounds.y + sb.track_bounds.height;
+            let in_track = sb.track_bounds.contains(position);
 
             if in_track {
-                let in_thumb = position.x >= sb.thumb_bounds.x
-                    && position.x < sb.thumb_bounds.x + sb.thumb_bounds.width
-                    && position.y >= sb.thumb_bounds.y
-                    && position.y < sb.thumb_bounds.y + sb.thumb_bounds.height;
+                let in_thumb = sb.thumb_bounds.contains(position);
 
                 if in_thumb {
                     let max_scroll = sb.total_items.saturating_sub(sb.visible_items);
