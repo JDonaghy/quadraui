@@ -798,9 +798,22 @@ pub(crate) mod native_surface_paint {
 
         // ── Separator row ────────────────────────────────────────────
         // No separator in Input mode — there is no item list below it.
+        //
+        // The separator lives in the **last pixel of `query_bounds`**, not
+        // at `query_bounds.y + query_bounds.height`. That extra pixel is
+        // exactly what [`layout`]'s `query_h = line_height + 1.0` reserves
+        // it (GTK's pre-#1076 formula, D-007 §2): the query *text* occupies
+        // `line_height`, the stroke occupies the `+ 1.0`, and
+        // `query_bounds.y + query_bounds.height` is therefore already the
+        // first **item** row. Painting at `+ height` instead stole that
+        // row's top pixel and — because item rows are painted after the
+        // separator — was silently overwritten by the first row's
+        // selection fill whenever row 0 was the selected one, so the
+        // separator vanished entirely (quadraui#1076 CI: Windows
+        // `separator_paints_at_corrected_row_not_drifted_one`).
         if palette.show_query && palette.mode != PaletteMode::Input {
             if let Some(qb) = palette_layout.query_bounds {
-                let sep_y = area.y + qb.y + qb.height;
+                let sep_y = area.y + qb.y + (qb.height - 1.0).max(0.0);
                 surface
                     .surface_fill_rect(Rect::new(area.x, sep_y, area.width, 1.0), theme.border_fg);
             }
@@ -1026,6 +1039,202 @@ pub(crate) mod native_surface_paint {
         }
 
         surface.surface_pop_clip();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Viewport};
+        use crate::primitives::palette::PaletteItem;
+        use crate::types::{Color, StyledText, WidgetId};
+        use crate::Image;
+
+        /// Records every fill + text-run call — mirrors
+        /// `primitives::tree::native_surface_paint`'s `RecordingSurface`
+        /// test double, scoped to the verbs this primitive uses, so these
+        /// tests run on any host without Cairo/Core Graphics/Direct2D.
+        ///
+        /// Fills are recorded **in paint order**, which is what lets
+        /// [`separator_sits_in_the_reserved_query_pixel_not_the_item_row`]
+        /// below assert the separator isn't merely *emitted* at the right
+        /// place but also isn't overpainted by a later row fill.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            texts: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 120.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        const LINE_HEIGHT: f32 = 16.0;
+        const AREA: Rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+
+        fn item(label: &str) -> PaletteItem {
+            PaletteItem {
+                text: StyledText::plain(label.to_string()),
+                detail: None,
+                icon: None,
+                match_positions: vec![],
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            }
+        }
+
+        fn sample() -> Palette {
+            Palette {
+                id: WidgetId::new("pal"),
+                title: "Commands".into(),
+                query: "op".into(),
+                query_cursor: 2,
+                items: vec![item("open file"), item("close"), item("quit")],
+                selected_idx: 0,
+                scroll_offset: 0,
+                total_count: 0,
+                has_focus: true,
+                show_query: true,
+                create_label: None,
+                preview: None,
+                mode: PaletteMode::List,
+            }
+        }
+
+        fn paint_sample(palette: &Palette) -> (RecordingSurface, PaletteLayout) {
+            let (palette_layout, rows_h) = layout(AREA.width, AREA.height, palette, LINE_HEIGHT);
+            let mut surface = RecordingSurface::default();
+            paint(
+                palette,
+                AREA,
+                &palette_layout,
+                rows_h,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+            );
+            (surface, palette_layout)
+        }
+
+        /// The query band reserves `line_height + 1.0` (GTK's pre-#1076
+        /// formula, adopted for every backend by #1076) — `line_height`
+        /// for the text, `+ 1.0` for the query/list separator stroke — so
+        /// `query_bounds.y + query_bounds.height` is already the first
+        /// *item* row, not the separator's row.
+        #[test]
+        fn query_band_reserves_one_extra_pixel_for_the_separator() {
+            let p = sample();
+            let (palette_layout, _) = layout(AREA.width, AREA.height, &p, LINE_HEIGHT);
+            let qb = palette_layout.query_bounds.expect("query bounds present");
+            assert_eq!(qb.height, LINE_HEIGHT + 1.0);
+            assert_eq!(qb.y + qb.height, LINE_HEIGHT * 2.0 + 1.0);
+        }
+
+        /// Regression for the quadraui#1076 CI failure on `windows-latest`
+        /// (`win::palette::tests::separator_paints_at_corrected_row_not_drifted_one`):
+        /// `paint` used to stroke the separator at
+        /// `query_bounds.y + query_bounds.height`, i.e. on the **first item
+        /// row's top pixel** rather than in the pixel the query band
+        /// reserves for it. Because item rows are painted *after* the
+        /// separator, the first row's selection fill then overpainted it
+        /// and the separator disappeared entirely whenever row 0 was
+        /// selected — invisible to GTK/macOS's own tests only because
+        /// their fixtures don't select row 0.
+        #[test]
+        fn separator_sits_in_the_reserved_query_pixel_not_the_item_row() {
+            let p = sample();
+            let (surface, palette_layout) = paint_sample(&p);
+            let theme = Theme::default();
+            let qb = palette_layout.query_bounds.expect("query bounds present");
+            let first_row = palette_layout.visible_items[0].bounds;
+
+            let sep_idx = surface
+                .fills
+                .iter()
+                .position(|(r, c)| {
+                    *c == theme.border_fg && r.height == 1.0 && r.width == AREA.width
+                })
+                .expect("separator fill emitted");
+            let sep = surface.fills[sep_idx].0;
+
+            assert_eq!(
+                sep.y,
+                qb.y + qb.height - 1.0,
+                "separator must occupy the last pixel of the query band"
+            );
+            assert_eq!(
+                first_row.y,
+                qb.y + qb.height,
+                "first item row starts immediately below the query band"
+            );
+            assert!(
+                sep.y + sep.height <= first_row.y,
+                "separator ({sep:?}) must not overlap the first item row ({first_row:?})"
+            );
+
+            // Selection fill for row 0 is emitted after the separator — if
+            // the two overlapped, the separator would be invisible.
+            let sel = surface
+                .fills
+                .iter()
+                .skip(sep_idx)
+                .find(|(_, c)| *c == theme.selected_bg)
+                .map(|(r, _)| *r)
+                .expect("selected row fill emitted after the separator");
+            assert_eq!(sel.y, first_row.y);
+            assert!(
+                sel.y >= sep.y + sep.height,
+                "row 0's selection fill ({sel:?}) overpaints the separator ({sep:?})"
+            );
+        }
+
+        /// `PaletteMode::Input` hides the item list, so there is nothing
+        /// for a separator to separate — none is painted.
+        #[test]
+        fn input_mode_paints_no_separator() {
+            let mut p = sample();
+            p.mode = PaletteMode::Input;
+            let (surface, _) = paint_sample(&p);
+            let theme = Theme::default();
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| *c == theme.border_fg && r.height == 1.0),
+                "Input mode must not paint a query/list separator"
+            );
+        }
     }
 }
 
