@@ -167,6 +167,16 @@ mod tests {
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
+        // `set_current_font` derives `current_line_height` from the real
+        // CTFont metrics (Menlo 14pt's ascent+descent+leading), which is
+        // *not* exactly `MacBackend::new()`'s 16.0 default. The
+        // pixel-exact drift-regression tests below
+        // (`separator_paints_at_corrected_row_not_drifted_one`,
+        // `scrollbar_track_width_is_six_px_not_eight`) compute their
+        // expected geometry from a literal `16.0` — pin
+        // `current_line_height` back to that value so what those tests
+        // predict is what `draw_palette` actually paints with.
+        backend.set_current_line_height(16.0);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.draw_palette(QRect::new(0.0, 0.0, W as f32, H as f32), palette);
