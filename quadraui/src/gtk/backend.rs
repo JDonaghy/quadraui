@@ -3160,7 +3160,7 @@ impl Backend for GtkBackend {
             layout: &pango_layout,
             char_w,
         };
-        let (layout, corrected_scroll_offset, _available_cols) =
+        let (layout, corrected_scroll_offset, available_cols) =
             crate::primitives::layout_metrics::pixel_tab_bar_layout(
                 bar,
                 rect.width,
@@ -3177,6 +3177,7 @@ impl Backend for GtkBackend {
         let mut hits = tab_bar_hits_from_layout(&layout, bar);
         crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
         hits.correct_scroll_offset = corrected_scroll_offset;
+        hits.available_cols = available_cols;
 
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -8495,6 +8496,51 @@ mod tests {
             "an undecorated tab must keep byte-identical width: {:?} vs {:?}",
             from_layout.slot_positions[1],
             plain_layout.slot_positions[1]
+        );
+    }
+
+    /// Issue #1080 regression: `tab_bar_layout_with_chrome` — the one
+    /// no-paint twin the reviewer caught discarding `pixel_tab_bar_layout`'s
+    /// third tuple element as `_available_cols` instead of assigning it —
+    /// must actually populate `TabBarHits::available_cols` with the shared
+    /// helper's estimate, not leave it at `tab_bar_hits_from_layout`'s old
+    /// `bar_width`-in-pixels placeholder. RED before the fix: with an
+    /// 80px-wide bar the placeholder is 80 (raw pixel width truncated to
+    /// `usize`), which happens to be nonzero, so a bare `> 0` assertion
+    /// would not have caught the bug — this compares against the known-good
+    /// value from `tab_bar_layout` (equivalent inputs: no icons, default
+    /// chrome) instead.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn gtk_backend_tab_bar_layout_with_chrome_populates_available_cols() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let surface = ImageSurface::create(Format::ARgb32, 800, 40).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        let bar = audit_bar();
+        let rect = QRect::new(0.0, 0.0, 400.0, 30.0);
+
+        let (from_chrome, from_plain) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let chrome = b.tab_bar_layout_with_chrome(rect, &bar, &TabChrome::default());
+            let plain = b.tab_bar_layout(rect, &bar);
+            (chrome, plain)
+        });
+
+        assert!(
+            from_chrome.available_cols > 0,
+            "sanity: an 800px-wide surface must yield a nonzero character-column estimate"
+        );
+        assert_eq!(
+            from_chrome.available_cols, from_plain.available_cols,
+            "`tab_bar_layout_with_chrome` (default chrome, no icons) must \
+             report the same `available_cols` as `tab_bar_layout` — both \
+             route through the shared `pixel_tab_bar_layout` with \
+             equivalent inputs, so a divergence means one of them still \
+             discards the shared estimate instead of assigning it"
         );
     }
 
