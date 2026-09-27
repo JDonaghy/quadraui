@@ -190,6 +190,53 @@ mod tests {
         );
     }
 
+    /// Regression guard for #1081: pre-migration macOS painted **no**
+    /// Alt-key underline at all (see this module's doc comment above —
+    /// Core Text's attributed-string underline plumbing never existed
+    /// here). Mirrors `gtk::menu_bar::tests::
+    /// draw_menu_bar_paints_alt_underline_beneath_activation_char`, but
+    /// runs through the real `draw_menu_bar` → `CgSurface` → CGContext
+    /// path instead of a synthetic `RecordingSurface`, so it actually
+    /// proves the macOS backend now paints the pixel, not just that the
+    /// shared `native_surface_paint::paint` fn computes the right rect.
+    #[test]
+    fn open_item_paints_alt_underline_beneath_activation_char() {
+        let bar = sample_bar();
+        let (surface, layout) = paint_via_backend(&bar);
+        let theme = Theme::default();
+        let f = font();
+
+        // File ("&File") is the open item — underline sits under 'F'
+        // (char index 0, no prefix offset) in `theme.tab_active_fg`.
+        // Reproduce `native_surface_paint::paint`'s own measurements
+        // (same font, same text) rather than assuming pixel rows.
+        let file = &layout.visible_items[0];
+        let (text_w, text_h) = measure_text(&f, "File");
+        let (char_w, _) = measure_text(&f, "F");
+        let text_x = file.bounds.x + (file.bounds.width - text_w as f32) / 2.0;
+        let text_y = file.bounds.y + (file.bounds.height - text_h as f32) / 2.0;
+        let underline_top = (text_y + text_h as f32 - 2.0).floor() as u32;
+        let scan_x_from = text_x.floor() as u32;
+        let scan_x_to = scan_x_from + (char_w.max(1.0) as u32) + 1;
+
+        let found = (underline_top..underline_top + 2).any(|row| {
+            (scan_x_from..scan_x_to).any(|x| {
+                let (r, g, b, _) = surface.pixel(x, row);
+                (r, g, b)
+                    == (
+                        theme.tab_active_fg.r,
+                        theme.tab_active_fg.g,
+                        theme.tab_active_fg.b,
+                    )
+            })
+        });
+        assert!(
+            found,
+            "expected a painted underline pixel near rows {underline_top}..{}, columns {scan_x_from}..{scan_x_to}",
+            underline_top + 2,
+        );
+    }
+
     /// `cargo test -p quadraui --features macos -- --ignored --nocapture macos::menu_bar::tests::dump_smoke_ppm`
     ///
     /// Paints the sample bar (File / Edit / View, File open) into a
