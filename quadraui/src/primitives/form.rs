@@ -567,7 +567,14 @@ mod native_surface_paint {
             let is_header = matches!(field.kind, FieldKind::Label);
 
             let (default_fg, row_bg) = if is_focused {
-                (theme.foreground, theme.selected_bg)
+                // quadraui#1180: `theme.foreground` (the editor-body text
+                // colour) has no guaranteed contrast against
+                // `selected_bg` — on `vscode-light` both are near-black
+                // on mid-blue and the focused row goes unreadable.
+                // `header_fg` is `Theme`'s documented on-selection
+                // foreground (see its doc comment); `Tree` already pairs
+                // it with `selected_bg` the same way for its focused row.
+                (theme.header_fg, theme.selected_bg)
             } else if is_header {
                 (theme.header_fg, theme.header_bg)
             } else {
@@ -723,11 +730,13 @@ mod native_surface_paint {
                     let ix = if no_label { label_x } else { input_right - w };
                     if no_label || ix > label_right + 8.0 {
                         let iy = row_rect.y + (row_h - h) / 2.0;
-                        surface.surface_draw_text_run(
-                            Rect::new(ix, iy, w, h),
-                            &text,
-                            theme.muted_fg,
-                        );
+                        // quadraui#1180: was unconditionally `theme.muted_fg`,
+                        // so a focused (`selected_bg`) `ReadOnly` row painted
+                        // its value in the same dim colour as an unfocused
+                        // one — unreadable on `selected_bg`, unlike every
+                        // other field kind here, which derives its value
+                        // colour from `field_fg` (focus/disabled-aware).
+                        surface.surface_draw_text_run(Rect::new(ix, iy, w, h), &text, field_fg);
                     }
                 }
                 FieldKind::Slider {
@@ -1025,6 +1034,13 @@ mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
+            /// `(rect, text, color)` for every `surface_draw_text_run`
+            /// call. Added for quadraui#1180 so tests can assert a
+            /// focused row's label/value colour, not just its fill —
+            /// the colour bug that issue reports (`theme.foreground` /
+            /// `theme.muted_fg` on `selected_bg`) is invisible to a
+            /// fills-only recorder.
+            text_runs: Vec<(Rect, String, Color)>,
         }
 
         /// 6 units per character — same fixed-width stand-in the
@@ -1065,7 +1081,9 @@ mod native_surface_paint {
                 self.fills.push((rect, color));
             }
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
-            fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
             fn surface_draw_line(
                 &mut self,
                 _from: crate::Point,
@@ -1222,6 +1240,56 @@ mod native_surface_paint {
                 "no segment should paint hover_bg — nothing is hovered; \
                  fills were {:?}",
                 surface.fills,
+            );
+        }
+
+        /// quadraui#1180: a focused row painted its label in
+        /// `theme.foreground` — no guaranteed contrast against
+        /// `selected_bg` (both near-black on mid-blue under
+        /// `vscode-light`) — while `Tree`'s equivalent focused row
+        /// already used `theme.header_fg`. Also covers the `ReadOnly`
+        /// field kind, whose value was unconditionally painted in
+        /// `theme.muted_fg` regardless of focus — the second half of
+        /// the issue's "value is unreadable" report.
+        #[test]
+        fn focused_row_paints_label_and_value_in_header_fg_not_foreground_or_muted_fg() {
+            let mut form = one_field_form(
+                "note",
+                FieldKind::ReadOnly {
+                    value: StyledText::plain("hello"),
+                },
+            );
+            form.fields[0].label = StyledText::plain("Note");
+            form.focused_field = Some(WidgetId::new("note"));
+            form.has_focus = true;
+
+            let (surface, _flayout) = paint_recorded(&form);
+            let theme = Theme::default();
+
+            let (_, _, label_fg) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Note")
+                .expect("label text run recorded");
+            assert_eq!(
+                *label_fg, theme.header_fg,
+                "focused row's label must use theme.header_fg (Tree's \
+                 on-selection convention), not theme.foreground; text runs \
+                 were {:?}",
+                surface.text_runs,
+            );
+
+            let (_, _, value_fg) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "hello")
+                .expect("value text run recorded");
+            assert_eq!(
+                *value_fg, theme.header_fg,
+                "a focused ReadOnly row's value must track the row's \
+                 on-selection foreground, not an unconditional \
+                 theme.muted_fg; text runs were {:?}",
+                surface.text_runs,
             );
         }
 

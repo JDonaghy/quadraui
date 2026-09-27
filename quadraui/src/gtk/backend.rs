@@ -1698,6 +1698,10 @@ impl Backend for GtkBackend {
         self.services.set_theme(&theme);
     }
 
+    fn theme(&self) -> crate::Theme {
+        self.current_theme
+    }
+
     fn set_nerd_fonts(&mut self, enabled: bool) {
         self.nerd_fonts_enabled = enabled;
     }

@@ -113,6 +113,15 @@ pub struct Theme {
     /// Background of a flat (non-bordered) header strip.
     pub header_bg: Color,
     /// Foreground of a flat (non-bordered) header strip.
+    ///
+    /// Doubles as the **on-selection foreground**: the text colour
+    /// paired with `selected_bg` for a focused row, in any primitive
+    /// (`Tree`, `Form`, …). There is no separate `selected_fg` field —
+    /// `theme.foreground` has no guaranteed contrast against
+    /// `selected_bg` (quadraui#1180: both are near-black on `selected_bg`
+    /// mid-blue under `vscode-light`), so every primitive's focused-row
+    /// paint should pair `(header_fg, selected_bg)` the same way, not
+    /// `(foreground, selected_bg)`.
     pub header_fg: Color,
     /// Dim / muted foreground for less-important text (line numbers,
     /// detail columns, `Decoration::Muted`).

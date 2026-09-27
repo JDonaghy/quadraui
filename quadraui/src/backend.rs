@@ -1116,6 +1116,23 @@ pub trait Backend: sealed::Sealed {
     /// `draw_*` calls consume the updated palette.
     fn set_theme(&mut self, _theme: crate::Theme) {}
 
+    /// Read back the backend's currently active [`crate::Theme`] — the
+    /// last value passed to [`Self::set_theme`], or the backend's own
+    /// default if it was never called.
+    ///
+    /// Lets shared compose code (e.g. `AppShell::render`, quadraui#1180)
+    /// source its chrome colours from the same palette every `draw_*`
+    /// call already paints with, instead of hardcoding literals — without
+    /// needing a `Theme` threaded through every call site that only has a
+    /// `&dyn Backend` in scope.
+    ///
+    /// Default: [`crate::Theme::default()`]. Backends that carry a
+    /// `current_theme` field (TUI, GTK, macOS, Win) override this to
+    /// return it — the same field `set_theme` writes.
+    fn theme(&self) -> crate::Theme {
+        crate::Theme::default()
+    }
+
     /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
     /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
