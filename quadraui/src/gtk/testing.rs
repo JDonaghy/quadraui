@@ -680,8 +680,9 @@ mod tests {
             .expect("find_bounds should locate the painted segment");
         assert_eq!(
             (bounds.x, bounds.y),
-            (0.0, 0.0),
-            "the only segment should start at the bar's origin"
+            (crate::primitives::status_bar::PIXEL_EDGE_INSET, 0.0),
+            "the only segment should start `PIXEL_EDGE_INSET` in from the bar's \
+             own left edge (issue #1155), not flush at its origin"
         );
 
         let (x, y) = driver

@@ -34,7 +34,9 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::primitives::status_bar::StatusSegmentMeasure;
+use crate::primitives::status_bar::{
+    StatusSegmentMeasure, PIXEL_EDGE_INSET, PIXEL_SEGMENT_PADDING,
+};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 use crate::{StatusBar, StatusBarLayout};
@@ -63,10 +65,12 @@ pub fn mac_status_bar_layout(
     // Degenerate rect: reproduce exactly what the shared `paint` returns
     // so the paint and no-paint paths never disagree.
     if width <= 0.0 || line_height <= 0.0 {
-        return bar.layout(
+        return bar.layout_padded(
             width.max(0.0) as f32,
             line_height.max(0.0) as f32,
             MIN_GAP_PX,
+            PIXEL_EDGE_INSET,
+            PIXEL_SEGMENT_PADDING,
             |_| StatusSegmentMeasure::new(0.0),
         );
     }
@@ -76,7 +80,17 @@ pub fn mac_status_bar_layout(
         let (w, _) = super::text::measure_text(font, &seg.text);
         StatusSegmentMeasure::new(w as f32)
     };
-    bar.layout(width as f32, line_height as f32, MIN_GAP_PX, measure)
+    // #1155: `layout_padded` (not plain `layout`) so this no-paint twin
+    // agrees with the shared `native_surface_paint::paint`'s outer edge
+    // inset + per-segment padding — see that fn's doc.
+    bar.layout_padded(
+        width as f32,
+        line_height as f32,
+        MIN_GAP_PX,
+        PIXEL_EDGE_INSET,
+        PIXEL_SEGMENT_PADDING,
+        measure,
+    )
 }
 
 /// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces

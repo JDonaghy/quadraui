@@ -38,7 +38,9 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::status_bar::StatusSegmentMeasure;
+use crate::primitives::status_bar::{
+    StatusSegmentMeasure, PIXEL_EDGE_INSET, PIXEL_SEGMENT_PADDING,
+};
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
 #[cfg(target_os = "windows")]
@@ -82,9 +84,17 @@ pub fn win_status_bar_layout(
     rect: Rect,
     bar: &StatusBar,
 ) -> StatusBarLayout {
-    bar.layout(rect.width, rect.height, MIN_GAP_DIP, |seg| {
-        StatusSegmentMeasure::new(measure.width_of(&seg.text, seg.bold))
-    })
+    // #1155: `layout_padded` (not plain `layout`) so this no-paint twin
+    // agrees with the shared `native_surface_paint::paint`'s outer edge
+    // inset + per-segment padding — see that fn's doc.
+    bar.layout_padded(
+        rect.width,
+        rect.height,
+        MIN_GAP_DIP,
+        PIXEL_EDGE_INSET,
+        PIXEL_SEGMENT_PADDING,
+        |seg| StatusSegmentMeasure::new(measure.width_of(&seg.text, seg.bold)),
+    )
 }
 
 /// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces

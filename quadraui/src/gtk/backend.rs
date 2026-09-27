@@ -2902,10 +2902,20 @@ impl Backend for GtkBackend {
         if let Some(pl) = &pango_layout {
             pl.set_font_description(Some(&ui_font_desc));
         }
-        let result = bar.layout(rect.width, lh, crate::gtk::MIN_GAP_PX, |seg| {
-            let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
-            crate::StatusSegmentMeasure::new(text_w)
-        });
+        // #1155: `layout_padded` (not plain `layout`) so this no-paint
+        // twin agrees with the shared `native_surface_paint::paint`'s
+        // outer edge inset + per-segment padding — see that fn's doc.
+        let result = bar.layout_padded(
+            rect.width,
+            lh,
+            crate::gtk::MIN_GAP_PX,
+            crate::primitives::status_bar::PIXEL_EDGE_INSET,
+            crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
+            |seg| {
+                let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
+                crate::StatusSegmentMeasure::new(text_w)
+            },
+        );
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
         }
