@@ -1,17 +1,19 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`]
 //! (issue #28).
 //!
-//! Mirrors `gtk::rich_text_popup`'s structure: `layout` is fully
-//! resolved upstream (host calls
-//! [`crate::primitives::rich_text_popup::RichTextPopup::layout`]); this
-//! module paints it — background, border (accent when `popup.has_focus`),
-//! per-visible-line styled spans, a selection-bg fill, the focused
-//! link's underline, and the scrollbar when present — and returns the
-//! per-link hit rectangles `(Rect, url)` computed from real
-//! `DWrite::measure_text` glyph widths, mirroring `gtk::draw_rich_text_popup`'s
-//! `index_to_pos`-derived link rects (more accurate than the primitive's
-//! own `layout.link_hit_regions`, whose widths come from the host's
-//! measure closure rather than this backend's actual glyph advances).
+//! Content painting moved to the shared
+//! [`crate::primitives::rich_text_popup::native_surface_paint::paint`]
+//! (#1077, `NativeSurface` Phase 4 slice 4/8 — GTK is deliberately not
+//! part of this migration, see that fn's module doc). This backend was
+//! already the richest of the three pre-migration (selection bg, bold,
+//! focused-link underline, link hit regions); the shared `paint` closes
+//! two gaps found while consolidating: content-area clipping (this
+//! rasteriser never clipped an overlong line to the popup's own
+//! border), and the scrollbar's paint geometry (this rasteriser painted
+//! [`crate::primitives::rich_text_popup::RichTextPopupLayout::scrollbar`]'s
+//! bare 1-unit track/thumb verbatim, at fully opaque `theme.muted_fg`,
+//! instead of the wider, translucent bar GTK/macOS both paint — see the
+//! shared `paint`'s module doc for why that's the adopted geometry now).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod rich_text_popup;` and
@@ -19,40 +21,12 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, stroke_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout, TextSelection};
+use crate::primitives::rich_text_popup::{
+    native_surface_paint, RichTextPopup, RichTextPopupLayout,
+};
 use crate::theme::Theme;
-
-/// Translate a `TextSelection` (char columns) into the byte range this
-/// line contributes to the selection. Returns `(0, 0)` when the line is
-/// outside the selection. Verbatim port of `gtk::rich_text_popup`'s
-/// private helper of the same name.
-fn selection_byte_range(sel: TextSelection, line_idx: usize, line_text: &str) -> (usize, usize) {
-    if line_idx < sel.start_line || line_idx > sel.end_line {
-        return (0, 0);
-    }
-    let char_to_byte = |col: usize| -> usize {
-        line_text
-            .char_indices()
-            .nth(col)
-            .map(|(b, _)| b)
-            .unwrap_or(line_text.len())
-    };
-    let (start_col, end_col) = if sel.start_line == sel.end_line {
-        (sel.start_col, sel.end_col)
-    } else if line_idx == sel.start_line {
-        (sel.start_col, line_text.chars().count())
-    } else if line_idx == sel.end_line {
-        (0, sel.end_col)
-    } else {
-        (0, line_text.chars().count())
-    };
-    if end_col <= start_col {
-        return (0, 0);
-    }
-    (char_to_byte(start_col), char_to_byte(end_col))
-}
 
 /// Draw a [`RichTextPopup`] at its resolved `layout`. Returns per-link
 /// hit regions `(Rect, url)`.
@@ -62,130 +36,12 @@ pub fn draw_rich_text_popup(
     popup: &RichTextPopup,
     layout: &RichTextPopupLayout,
 ) -> Vec<(Rect, String)> {
-    let bounds = layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return Vec::new();
-    }
-
     let theme = Theme::default();
-    let bg = popup.bg.unwrap_or(theme.hover_bg);
-    let fg = popup.fg.unwrap_or(theme.hover_fg);
-    let border = if popup.has_focus {
-        theme.link_fg
-    } else {
-        theme.hover_border
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
     };
-
-    let _ = fill_rect(target, bounds, bg);
-    let _ = stroke_rect(target, bounds, border, 1.0);
-
-    let mut link_rects: Vec<(Rect, String)> = Vec::new();
-
-    for vis in &layout.visible_lines {
-        let line_idx = vis.line_idx;
-        let raw_text = popup
-            .line_text
-            .get(line_idx)
-            .map(String::as_str)
-            .unwrap_or("");
-        let Some(styled) = popup.lines.get(line_idx) else {
-            continue;
-        };
-
-        let (sel_start, sel_end) = popup
-            .selection
-            .map(|sel| selection_byte_range(sel, line_idx, raw_text))
-            .unwrap_or((0, 0));
-        if sel_end > sel_start {
-            // Selection bg is painted as a single rect spanning the byte
-            // range's measured width, ahead of the text itself.
-            let pre_w = dwrite
-                .measure_text(&raw_text[..sel_start])
-                .map(|(w, _)| w)
-                .unwrap_or(0.0);
-            let sel_w = dwrite
-                .measure_text(&raw_text[sel_start..sel_end])
-                .map(|(w, _)| w)
-                .unwrap_or(0.0);
-            let sel_rect = Rect::new(
-                vis.bounds.x + pre_w,
-                vis.bounds.y,
-                sel_w.max(1.0),
-                vis.bounds.height,
-            );
-            let _ = fill_rect(target, sel_rect, popup.fg.unwrap_or(theme.foreground));
-        }
-
-        let focused_underline_range = if popup.has_focus {
-            popup.focused_link.and_then(|idx| {
-                popup
-                    .links
-                    .get(idx)
-                    .filter(|link| link.line == line_idx)
-                    .map(|link| (link.start_byte, link.end_byte))
-            })
-        } else {
-            None
-        };
-
-        let mut byte_pos = 0usize;
-        let mut x = vis.bounds.x;
-        for span in &styled.spans {
-            let start = byte_pos;
-            let end = byte_pos + span.text.len();
-            let in_selection = sel_end > sel_start && start >= sel_start && end <= sel_end;
-            let color = if in_selection {
-                popup.bg.unwrap_or(theme.background)
-            } else {
-                span.fg.unwrap_or(fg)
-            };
-            let (w, _) = dwrite.measure_text(&span.text).unwrap_or((0.0, 0.0));
-            let rect = Rect::new(x, vis.bounds.y, w.max(1.0), vis.bounds.height);
-            let _ = dwrite.draw_text_styled(target, &span.text, rect, color, span.bold);
-
-            // Underline the whole span when it overlaps the focused
-            // link's byte range. Coarser than GTK's per-substring
-            // underline (which uses Pango's `index_to_pos` to underline
-            // exactly the link's own characters within a mixed span),
-            // but avoids re-slicing `span.text` at arbitrary byte
-            // offsets that aren't guaranteed to land on this span's own
-            // char boundaries.
-            if let Some((us, ue)) = focused_underline_range {
-                if start < ue && end > us {
-                    let uy = vis.bounds.y + vis.bounds.height - 2.0;
-                    let _ = super::text::draw_line(target, x, uy, x + w, uy, border, 1.0);
-                }
-            }
-
-            x += w;
-            byte_pos = end;
-        }
-
-        for link in popup.links.iter().filter(|l| l.line == line_idx) {
-            let pre_w = dwrite
-                .measure_text(&raw_text[..link.start_byte])
-                .map(|(w, _)| w)
-                .unwrap_or(0.0);
-            let span_w = dwrite
-                .measure_text(&raw_text[link.start_byte..link.end_byte])
-                .map(|(w, _)| w)
-                .unwrap_or(0.0);
-            let rect = Rect::new(
-                vis.bounds.x + pre_w,
-                vis.bounds.y,
-                span_w.max(1.0),
-                vis.bounds.height,
-            );
-            link_rects.push((rect, link.url.clone()));
-        }
-    }
-
-    if let Some(sb) = layout.scrollbar {
-        let _ = fill_rect(target, sb.track, theme.muted_fg);
-        let _ = fill_rect(target, sb.thumb, border);
-    }
-
-    link_rects
+    native_surface_paint::paint(popup, layout, &mut surface, &theme)
 }
 
 #[cfg(test)]
@@ -244,6 +100,65 @@ mod tests {
         assert_eq!(
             (inner.r, inner.g, inner.b),
             (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b)
+        );
+    }
+
+    /// #1077: the scrollbar now paints the same wider,
+    /// [`native_surface_paint::SB_WIDTH`]-wide translucent bar GTK/macOS
+    /// paint — pre-migration this rasteriser painted the primitive's
+    /// bare 1-unit `layout.scrollbar.track` verbatim, fully opaque.
+    #[test]
+    fn scrollbar_track_paints_wider_than_the_layouts_bare_track() {
+        let surface = HeadlessSurface::new(300, 300).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        // Many short lines force a scrollbar (max_visible_rows < total).
+        let p = RichTextPopup {
+            id: WidgetId::new("rtp"),
+            lines: (0..30)
+                .map(|i| StyledText::plain(format!("l{i}")))
+                .collect(),
+            line_text: (0..30).map(|i| format!("l{i}")).collect(),
+            line_scales: vec![],
+            scroll_top: 0,
+            max_visible_rows: 5,
+            has_focus: false,
+            selection: None,
+            links: vec![],
+            focused_link: None,
+            placement: PopupPlacement::Below,
+            padding: 2.0,
+            fg: None,
+            bg: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 300.0, 300.0);
+        let measure = RichTextPopupMeasure::new(100.0, 16.0);
+        let layout = p.layout(20.0, 20.0, viewport, measure, |_, s, e| (e - s) as f32);
+        let sb = layout
+            .scrollbar
+            .expect("scrollbar present for overflowing content");
+
+        surface
+            .paint(|target| {
+                let _ = draw_rich_text_popup(target, &dwrite, &p, &layout);
+            })
+            .expect("paint rich text popup");
+
+        let theme = Theme::default();
+        // The bare `layout.scrollbar.track` is only 1 unit wide, sitting
+        // flush against the popup's right border. The painted (wider)
+        // bar starts `SB_WIDTH + SB_INSET` in from that edge — probe a
+        // point inside the wider bar but well outside the bare 1-unit
+        // track to confirm the painted geometry is really wider.
+        let wide_x = (sb.track.x - native_surface_paint::SB_WIDTH / 2.0) as u32;
+        let y = (sb.track.y + 2.0) as u32;
+        let px = surface.pixel_at(wide_x, y);
+        // Translucent muted_fg over the popup bg — must differ from
+        // plain hover_bg (i.e. the track actually painted something
+        // here, not just background).
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
+            "scrollbar track should paint wider than the layout's bare 1-unit track"
         );
     }
 }

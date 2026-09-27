@@ -16,7 +16,11 @@
 //! `CGContextStrokePath` extern decls it alone used) was removed in #1077
 //! once its only caller, `macos::tooltip`'s `TooltipBorder::Sides` arm,
 //! moved onto `NativeSurface::surface_draw_line` (`CgSurface` →
-//! `super::backend::ns_draw_line`) instead.
+//! `super::backend::ns_draw_line`) instead. `stroke_rect` (and the
+//! `CGContextSetRGBStrokeColor`/`CGContextSetLineWidth`/`CGContextStrokeRect`
+//! extern decls it alone used) was removed the same way once its last
+//! caller, `macos::rich_text_popup`, moved onto
+//! `NativeSurface::surface_stroke_rect` instead.
 //!
 //! Not every `src/macos/` file that touches CoreGraphics draws through
 //! here — `backend.rs`, `board.rs`, `headless.rs`, `image.rs`,
@@ -59,16 +63,7 @@ extern "C" {
         blue: core_graphics::base::CGFloat,
         alpha: core_graphics::base::CGFloat,
     );
-    pub(crate) fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    pub(crate) fn CGContextSetLineWidth(c: CGContextRef, width: core_graphics::base::CGFloat);
     pub(crate) fn CGContextFillRect(c: CGContextRef, rect: CGRect);
-    pub(crate) fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
 }
 
 /// Build a `CGRect` from `(x, y, w, h)` — replaces the `CGRectExt::new_xywh`
@@ -125,25 +120,4 @@ pub(crate) unsafe fn fill_rect_alpha(
     let (r, g, b, _) = color_to_cg(c);
     CGContextSetRGBFillColor(ctx, r, g, b, alpha);
     CGContextFillRect(ctx, rect(x, y, w, h));
-}
-
-/// Stroke the rect `(x, y, w, h)`'s outline with `c` at `line_width`.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-pub(crate) unsafe fn stroke_rect(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    CGContextStrokeRect(ctx, rect(x, y, w, h));
 }

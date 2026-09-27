@@ -465,6 +465,312 @@ impl RichTextPopup {
     }
 }
 
+// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+//
+// `paint` below is shared by the **macOS and Windows** rasterisers only
+// — `gtk::rich_text_popup::draw_rich_text_popup` is **not** migrated,
+// and stays a full, bespoke Cairo + Pango implementation. This is a
+// deliberate exception to this issue's "no per-backend paint loop left"
+// acceptance bar, not an oversight — see that module's own doc for the
+// full reasoning, summarised here:
+//
+// GTK renders each visible line with a **single** Pango call carrying a
+// per-character `AttrList` (fg/bold/italic ranges, selection-inverted
+// fg, focused-link underline, font-scale), specifically *because* an
+// earlier per-span "measure each span, advance x by its width" approach
+// (the same shape `paint` below uses) was found to drift from Pango's
+// real shaped-line glyph positions for proportional fonts (issue #214:
+// "the per-span manual-advance bug where proportional Pango widths
+// drift from monospace char_width * char_count math"). Adjacent runs
+// shaped separately and summed can differ from the same text shaped as
+// one line (kerning/ligatures aren't strictly compositional) — GTK's
+// fix was to stop manually advancing at all and let Pango shape+position
+// the whole line, using `index_to_pos` afterward only to *locate* spans
+// it already painted.
+//
+// `NativeSurface` has no verb for "shape one line with N attribute
+// ranges, then ask where each range landed" — only single-color/single-
+// style runs (`surface_draw_text_run(_styled)`). Migrating GTK onto
+// `paint` below would mean going back to the per-span manual-advance
+// shape #214 fixed, i.e. deliberately reintroducing a previously-fixed
+// bug, or extending `NativeSurface` with a new attributed-line verb —
+// a real, separate design decision outside this issue's scope (#1073's
+// verb set), not a mechanical "move the code" migration. Per this
+// issue's own "do not tranche silently" instruction: this is that call,
+// made explicitly rather than by quietly skipping the primitive.
+//
+// macOS and Windows never had that problem — both already rendered
+// per-span with manual x-advance (the same shape `paint` below takes),
+// so consolidating *their* two copies carries no such risk. Doing so
+// closes real gaps between them, resolved by adopting the richer side
+// (2-of-3 majority pattern already established by
+// `crate::primitives::palette::native_surface_paint`,
+// `crate::primitives::tooltip::native_surface_paint`,
+// `crate::primitives::dialog::native_surface_paint`):
+//
+// - **Selection background + inverted fg.** Windows already painted a
+//   solid selection-bg rect and swapped a selected span's colour to the
+//   popup bg; macOS's own module doc listed this as a "Scope omission."
+//   `paint` carries it for both now.
+// - **Bold span styling.** Windows already read `span.bold`; macOS's
+//   doc listed this as a scope omission too. `paint` reads it uniformly
+//   via `NativeSurface::surface_draw_text_run_styled` — macOS's own
+//   adapter (`CgSurface`) takes that verb's *default*, which drops
+//   style entirely (see that default's own doc), so this is inert on
+//   macOS: no visual regression, but no new bold rendering there either,
+//   matching every other primitive this default has ever applied to.
+// - **Focused-link underline.** Windows already underlined the whole
+//   span overlapping the focused link's byte range (coarser than GTK's
+//   exact-substring underline, which needs `index_to_pos` — out of
+//   reach here for the same reason as above); macOS's doc listed no
+//   underline at all as a scope omission. `paint` carries Windows's
+//   whole-span approximation for both now.
+// - **Content-area clipping.** GTK and macOS both clip line/selection
+//   painting to `layout.content_bounds` so an overlong line can't bleed
+//   past the popup's own border; Windows painted unclipped. `paint`
+//   clips on every backend now.
+// - **Scrollbar width + track opacity.** GTK and macOS both paint a
+//   [`SB_WIDTH`]-wide, [`SB_INSET`]-inset bar (wider than the
+//   primitive's own `layout.scrollbar` geometry, which is a bare 1-unit
+//   track — see that field's own doc — "wide enough to paint and click
+//   easily" is a rasteriser-level choice layered on top) at
+//   `theme.muted_fg` translucent at `0.3` alpha for the track; Windows
+//   painted `layout.scrollbar.track`/`.thumb` verbatim (the primitive's
+//   thin 1-unit geometry) at fully opaque `theme.muted_fg`. `paint`
+//   adopts the wider, translucent-track treatment for every backend.
+//   (This does not change hit-testing: `RichTextPopupLayout::hit_test`
+//   already only recognises the primitive's own 1-unit
+//   `layout.scrollbar` geometry on every backend, GTK included — a
+//   pre-existing paint/click geometry mismatch this migration doesn't
+//   introduce or fix, out of scope here.)
+//
+// Not carried over on macOS/Windows, matching GTK's own capability
+// gap for the same reason: per-line font scale (`RichTextPopup::line_scales`,
+// markdown heading rows) needs a per-row font swap
+// (`CTFontCreateCopyWithSymbolicTraits` / a scaled `IDWriteTextFormat`)
+// that neither backend's adapter can do mid-line without becoming a
+// live-backend-only capability like `Dialog`'s `FontRole` — a bigger
+// change than this slice attempts. `RichTextPopup::layout` still
+// reserves the taller row height on any backend advertising
+// `scale_rows`; only the *glyph* stays regular-sized.
+#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::{Point, Rect};
+
+    /// Visible width of the rich-text-popup scrollbar, shared by
+    /// [`paint`] and each backend's own hit-testing constant of the
+    /// same value (`gtk`/`macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`)
+    /// — wider than [`RichTextPopupLayout::scrollbar`]'s bare 1-unit
+    /// track so the bar is paint+click-friendly. See this module's doc
+    /// for the drift this closes on Windows.
+    pub(crate) const SB_WIDTH: f32 = 8.0;
+    /// Inset between the scrollbar's right edge and the popup's own
+    /// right border. See [`SB_WIDTH`]'s doc.
+    pub(crate) const SB_INSET: f32 = 1.0;
+
+    /// Translate a `TextSelection` (char columns) into the byte range
+    /// this line contributes to the selection. Returns `(0, 0)` when
+    /// the line is outside the selection. Ported verbatim from
+    /// `gtk::rich_text_popup`'s (and `win::rich_text_popup`'s identical
+    /// copy of the) private helper of the same name.
+    fn selection_byte_range(
+        sel: TextSelection,
+        line_idx: usize,
+        line_text: &str,
+    ) -> (usize, usize) {
+        if line_idx < sel.start_line || line_idx > sel.end_line {
+            return (0, 0);
+        }
+        let char_to_byte = |col: usize| -> usize {
+            line_text
+                .char_indices()
+                .nth(col)
+                .map(|(b, _)| b)
+                .unwrap_or(line_text.len())
+        };
+        let (start_col, end_col) = if sel.start_line == sel.end_line {
+            (sel.start_col, sel.end_col)
+        } else if line_idx == sel.start_line {
+            (sel.start_col, line_text.chars().count())
+        } else if line_idx == sel.end_line {
+            (0, sel.end_col)
+        } else {
+            (0, line_text.chars().count())
+        };
+        if end_col <= start_col {
+            return (0, 0);
+        }
+        (char_to_byte(start_col), char_to_byte(end_col))
+    }
+
+    /// Paint a [`RichTextPopup`] at its resolved `layout` onto
+    /// `surface` — background, border (accent when `popup.has_focus`),
+    /// per-visible-line styled spans (selection-bg + inverted fg,
+    /// bold, focused-link underline), and the scrollbar when present.
+    /// Returns the per-link hit rectangles `(Rect, url)` computed from
+    /// `surface`'s own glyph measurements — more accurate than
+    /// `layout.link_hit_regions`, whose widths come from the host's
+    /// `link_widths` measure closure rather than this backend's actual
+    /// glyph advances (mirrors `gtk::draw_rich_text_popup`'s
+    /// `index_to_pos`-derived link rects for the same reason).
+    ///
+    /// See this module's doc for why `gtk::rich_text_popup` does not
+    /// call this — GTK's own paint is not migrated.
+    pub(crate) fn paint(
+        popup: &RichTextPopup,
+        layout: &RichTextPopupLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) -> Vec<(Rect, String)> {
+        let bounds = layout.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return Vec::new();
+        }
+
+        let bg = popup.bg.unwrap_or(theme.hover_bg);
+        let fg = popup.fg.unwrap_or(theme.hover_fg);
+        let border = if popup.has_focus {
+            theme.link_fg
+        } else {
+            theme.hover_border
+        };
+
+        surface.surface_fill_rect(bounds, bg);
+        surface.surface_stroke_rect(bounds, border, 1.0);
+
+        let content = layout.content_bounds;
+        surface.surface_push_clip(content);
+
+        let mut link_rects: Vec<(Rect, String)> = Vec::new();
+
+        for vis in &layout.visible_lines {
+            let line_idx = vis.line_idx;
+            let raw_text = popup
+                .line_text
+                .get(line_idx)
+                .map(String::as_str)
+                .unwrap_or("");
+            let Some(styled) = popup.lines.get(line_idx) else {
+                continue;
+            };
+
+            let (sel_start, sel_end) = popup
+                .selection
+                .map(|sel| selection_byte_range(sel, line_idx, raw_text))
+                .unwrap_or((0, 0));
+            if sel_end > sel_start {
+                // Selection bg is painted as a single rect spanning the
+                // byte range's measured width, ahead of the text itself.
+                let pre_w = surface.surface_measure_text(&raw_text[..sel_start]).0;
+                let sel_w = surface
+                    .surface_measure_text(&raw_text[sel_start..sel_end])
+                    .0;
+                let sel_rect = Rect::new(
+                    vis.bounds.x + pre_w,
+                    vis.bounds.y,
+                    sel_w.max(1.0),
+                    vis.bounds.height,
+                );
+                surface.surface_fill_rect(sel_rect, popup.fg.unwrap_or(theme.foreground));
+            }
+
+            let focused_underline_range = if popup.has_focus {
+                popup.focused_link.and_then(|idx| {
+                    popup
+                        .links
+                        .get(idx)
+                        .filter(|link| link.line == line_idx)
+                        .map(|link| (link.start_byte, link.end_byte))
+                })
+            } else {
+                None
+            };
+
+            let mut byte_pos = 0usize;
+            let mut x = vis.bounds.x;
+            for span in &styled.spans {
+                let start = byte_pos;
+                let end = byte_pos + span.text.len();
+                let in_selection = sel_end > sel_start && start >= sel_start && end <= sel_end;
+                let color = if in_selection {
+                    popup.bg.unwrap_or(theme.background)
+                } else {
+                    span.fg.unwrap_or(fg)
+                };
+                let (w, _) = surface.surface_measure_text_styled(&span.text, span.bold);
+                let rect = Rect::new(x, vis.bounds.y, w.max(1.0), vis.bounds.height);
+                surface.surface_draw_text_run_styled(
+                    rect,
+                    &span.text,
+                    color,
+                    span.bold,
+                    span.italic,
+                    false,
+                    1.0,
+                );
+
+                // Underline the whole span when it overlaps the focused
+                // link's byte range. Coarser than GTK's per-substring
+                // underline (which uses Pango's `index_to_pos` to
+                // underline exactly the link's own characters within a
+                // mixed span), but avoids re-slicing `span.text` at
+                // arbitrary byte offsets that aren't guaranteed to land
+                // on this span's own char boundaries.
+                if let Some((us, ue)) = focused_underline_range {
+                    if start < ue && end > us {
+                        let uy = vis.bounds.y + vis.bounds.height - 2.0;
+                        surface.surface_draw_line(
+                            Point::new(x, uy),
+                            Point::new(x + w, uy),
+                            border,
+                            1.0,
+                        );
+                    }
+                }
+
+                x += w;
+                byte_pos = end;
+            }
+
+            for link in popup.links.iter().filter(|l| l.line == line_idx) {
+                let pre_w = surface.surface_measure_text(&raw_text[..link.start_byte]).0;
+                let span_w = surface
+                    .surface_measure_text(&raw_text[link.start_byte..link.end_byte])
+                    .0;
+                let rect = Rect::new(
+                    vis.bounds.x + pre_w,
+                    vis.bounds.y,
+                    span_w.max(1.0),
+                    vis.bounds.height,
+                );
+                link_rects.push((rect, link.url.clone()));
+            }
+        }
+
+        surface.surface_pop_clip();
+
+        if let Some(sb) = layout.scrollbar {
+            let sb_x = bounds.x + bounds.width - SB_WIDTH - SB_INSET;
+            let track = Rect::new(sb_x, sb.track.y, SB_WIDTH, sb.track.height);
+            surface.surface_fill_rect(track, theme.muted_fg.with_alpha(0.3));
+            let thumb_top_off = sb.thumb.y - sb.track.y;
+            let thumb = Rect::new(
+                sb_x + 1.0,
+                sb.track.y + thumb_top_off,
+                SB_WIDTH - 2.0,
+                sb.thumb.height,
+            );
+            surface.surface_fill_rect(thumb, border);
+        }
+
+        link_rects
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
