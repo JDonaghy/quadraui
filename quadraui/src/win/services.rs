@@ -39,14 +39,19 @@
 //!   needs no [`crate::desktop::ModalPumpGuard`] of its own either — see
 //!   this module's `#702` audit note below, which applies identically
 //!   here.
-//! - **`open_url`** — `ShellExecuteW(NULL, "open", url, ...)`.
+//! - **`open_url`/`open_url_result`** — `ShellExecuteW(NULL, "open", url,
+//!   ...)` via [`crate::desktop::open_with_default`] (issue #1087) — the
+//!   crate-wide opener shared with `tui::services`/`macos::services`.
+//!   `open_url_result` now overrides the trait's `Ok(())` default and
+//!   reports the call's real outcome; `open_url` itself stays the
+//!   infallible fire-and-forget wrapper.
 //! - **`shell.*` parity (#956)** — `reveal_in_file_manager`
 //!   (`SHOpenFolderAndSelectItems`, see `win_reveal_in_file_manager`'s own
 //!   doc for the PIDL dance it takes), `open_path` (the same
-//!   `ShellExecuteW` call `open_url` makes, factored into
-//!   `win_shell_execute_open` and shared by both), `move_to_trash`
-//!   (delegates to [`crate::desktop::move_to_trash`] — the cross-platform
-//!   `trash` crate, not a hand-rolled `SHFileOperationW`, see that
+//!   `ShellExecuteW` call `open_url_result` makes, via
+//!   `crate::desktop::open_with_default` and shared by both),
+//!   `move_to_trash` (delegates to [`crate::desktop::move_to_trash`] — the
+//!   cross-platform `trash` crate, not a hand-rolled `SHFileOperationW`, see that
 //!   function's doc for why), and `beep` (`MessageBeep(MB_OK)`).
 //! - **Displays (#959)** — `displays` uses `EnumDisplayMonitors` +
 //!   `GetMonitorInfoW` (`rcMonitor`/`rcWork`/`MONITORINFOF_PRIMARY`) and
@@ -141,14 +146,14 @@ use windows::Win32::UI::Shell::Common::{COMDLG_FILTERSPEC, ITEMIDLIST};
 use windows::Win32::UI::Shell::{
     DragQueryFileW, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog,
     ILClone, ILCreateFromPathW, ILFindLastID, ILFree, ILRemoveLastID, IShellItem,
-    SHCreateItemFromParsingName, SHOpenFolderAndSelectItems, ShellExecuteW, Shell_NotifyIconW,
-    FOS_PICKFOLDERS, HDROP, NIF_ICON, NIF_INFO, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND, NIM_ADD,
-    NIM_DELETE, NOTIFYICONDATAW, SIGDN_FILESYSPATH,
+    SHCreateItemFromParsingName, SHOpenFolderAndSelectItems, Shell_NotifyIconW, FOS_PICKFOLDERS,
+    HDROP, NIF_ICON, NIF_INFO, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE,
+    NOTIFYICONDATAW, SIGDN_FILESYSPATH,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, LoadIconW, HICON, IDI_ERROR, IDI_INFORMATION, MB_OK, MONITORINFOF_PRIMARY,
-    SW_SHOWNORMAL, USER_DEFAULT_SCREEN_DPI,
+    USER_DEFAULT_SCREEN_DPI,
 };
 // WinRT (not Win32) — `system_theme` (quadraui#952). `UISettings` is the
 // same class the issue names (`UISettings::GetColorValue`); `AccessibilitySettings`
@@ -358,13 +363,26 @@ impl PlatformServices for WinPlatformServices {
     }
 
     fn open_url(&self, url: &str) {
+        let _ = self.open_url_result(url);
+    }
+
+    /// Fallible twin of [`Self::open_url`] (issue #1087): reports
+    /// `ShellExecuteW`'s real outcome via
+    /// [`crate::desktop::open_with_default`] instead of `open_url`'s
+    /// discarded one — before this override, `open_url_result` fell to
+    /// [`crate::backend::PlatformServices::open_url_result`]'s default
+    /// (`open_url` then always `Ok(())`), so a failed `ShellExecuteW` call
+    /// (e.g. `SE_ERR_NOASSOC` — no handler registered for the URL's
+    /// scheme) was silently reported as success.
+    fn open_url_result(&self, url: &str) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
-            win_open_url(url);
+            crate::desktop::open_with_default(std::ffi::OsStr::new(url))
         }
         #[cfg(not(target_os = "windows"))]
         {
             let _ = url;
+            Err(BackendError::Unsupported)
         }
     }
 
@@ -383,16 +401,15 @@ impl PlatformServices for WinPlatformServices {
         }
     }
 
-    /// `ShellExecuteW(NULL, "open", path, ...)` (issue #956) — the exact
-    /// same call [`Self::open_url`] makes above, just fed a filesystem
-    /// path instead of a URL string; `ShellExecuteW`'s `"open"` verb
-    /// already accepts either. See [`win_shell_execute_open`]'s doc for
-    /// why this method, unlike `open_url`, surfaces the call's real
-    /// success/failure instead of discarding it.
+    /// `ShellExecuteW(NULL, "open", path, ...)` (issue #956) via
+    /// [`crate::desktop::open_with_default`] (issue #1087) — the exact
+    /// same call [`Self::open_url_result`] makes above, just fed a
+    /// filesystem path instead of a URL string; `ShellExecuteW`'s
+    /// `"open"` verb already accepts either.
     fn open_path(&self, path: &Path) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
-            win_shell_execute_open(&path.to_string_lossy())
+            crate::desktop::open_with_default(path.as_os_str())
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -483,19 +500,11 @@ impl PlatformServices for WinPlatformServices {
 
 /// Encode `text` as a NUL-terminated UTF-16 buffer — the shape every
 /// wide-string Win32 API below expects (`CF_UNICODETEXT`'s clipboard
-/// payload, `NOTIFYICONDATAW`'s fixed-size fields).
-///
-/// Only called from `cfg(target_os = "windows")` code (plus this module's
-/// own `#[cfg(test)]` block, which exercises it on every host) — `allow`
-/// rather than `cfg`-gating the definition itself, same as `win::msg`'s
-/// helpers, so a plain `cargo check --features win` on Linux still
-/// type-checks the body instead of skipping it outright.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn wide_nul_terminated(text: &str) -> Vec<u16> {
-    let mut wide: Vec<u16> = text.encode_utf16().collect();
-    wide.push(0);
-    wide
-}
+/// payload, `NOTIFYICONDATAW`'s fixed-size fields). The one
+/// implementation shared crate-wide (issue #1087) — see
+/// [`crate::desktop::wide_nul_terminated`]'s own doc for why it's
+/// `allow`-gated rather than `cfg`-gated.
+use crate::desktop::wide_nul_terminated;
 
 /// Decode a UTF-16 slice back to a `String`, stopping at the first NUL
 /// (or the slice's end, whichever comes first) — the inverse framing of
@@ -1054,46 +1063,15 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
     }
 }
 
-// ─── open_url (#23) / open_path (#956) ───────────────────────────────────
-
-/// `ShellExecuteW(NULL, "open", target, ...)` — shared by [`win_open_url`]
-/// (a URL string) and [`PlatformServices::open_path`]'s Windows arm (a
-/// filesystem path): the `"open"` verb accepts either, so there is
-/// nothing target-kind-specific left to branch on. Unlike `win_open_url`
-/// (which predates issue #956's fallible `open_path` and keeps its
-/// original fire-and-forget `void` shape for that reason — `open_url`'s
-/// own signature is infallible, so its call site simply discards this
-/// function's `Result`), this reports `ShellExecuteW`'s real outcome:
-/// per its own docs, success is any return value greater than 32; the
-/// low range 0..=32 is a documented failure code (e.g. `SE_ERR_FNF` = 2,
-/// `SE_ERR_NOASSOC` = 31).
-#[cfg(target_os = "windows")]
-fn win_shell_execute_open(target: &str) -> ServiceResult<()> {
-    let operation = wide_nul_terminated("open");
-    let file = wide_nul_terminated(target);
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR::from_raw(operation.as_ptr()),
-            PCWSTR::from_raw(file.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if (result.0 as isize) > 32 {
-        Ok(())
-    } else {
-        Err(BackendError::PlatformFailure {
-            context: format!("ShellExecuteW returned {}", result.0 as isize),
-        })
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn win_open_url(url: &str) {
-    let _ = win_shell_execute_open(url);
-}
+// ─── open_url (#23) / open_path (#956) / open_url_result (#1087) ─────────
+//
+// Both go through `crate::desktop::open_with_default` (issue #1087) — the
+// crate-wide opener shared with `tui::services`/`macos::services` — rather
+// than a Win-local `ShellExecuteW` call: it hands `"open"` + `target` to
+// `ShellExecuteW` through the same minimal hand-written FFI declaration on
+// every backend, so there is nothing Win-specific left to write here. See
+// that function's doc for why it's a hand-written FFI call rather than the
+// `windows` crate's own `ShellExecuteW` binding.
 
 // ─── reveal_in_file_manager (issue #956) ─────────────────────────────────
 
@@ -1504,6 +1482,14 @@ mod tests {
             })
             .is_none());
         svc.open_url("https://example.com");
+        // #1087: `open_url_result` now genuinely overrides the trait's
+        // `Ok(())` default (`open_url` then always succeed) — off Windows
+        // it honestly reports `Unsupported` rather than silently lying
+        // about a launch that never happened.
+        assert_eq!(
+            svc.open_url_result("https://example.com"),
+            Err(BackendError::Unsupported)
+        );
         assert_eq!(svc.system_theme(), Err(BackendError::Unsupported));
         // #956: every one of these four *is* fully implemented on real
         // Windows (unlike `open_url` above, which stays a fire-and-forget
@@ -1522,6 +1508,26 @@ mod tests {
         // off it.
         assert_eq!(svc.displays(), Err(BackendError::Unsupported));
         assert_eq!(svc.cursor_screen_point(), Err(BackendError::Unsupported));
+    }
+
+    /// #1087 acceptance bar: `open_url_result` reports a real failure when
+    /// `ShellExecuteW` itself fails, instead of the pre-#1087 capability
+    /// lie (`open_url` discarded the outcome; `open_url_result` fell to
+    /// the trait's `Ok(())` default). A URL scheme Windows has no
+    /// registered handler for (`SE_ERR_NOASSOC`) is the deterministic way
+    /// to make a real `ShellExecuteW` call fail without needing network
+    /// access or a live desktop session beyond the one `cargo test`
+    /// already runs under. Runs only on the `windows-latest` CI leg (see
+    /// `ci.yml`'s "Test (win feature, real Windows)" step) — `cargo test
+    /// --features win` on `ubuntu-latest` never compiles this `#[cfg]`
+    /// arm at all.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn open_url_result_reports_failure_for_an_unregistered_scheme() {
+        let svc = WinPlatformServices::new();
+        assert!(svc
+            .open_url_result("quadraui-1087-nonexistent-scheme://x")
+            .is_err());
     }
 
     /// `assign_button_ids` is pure id-assignment logic, host-independent

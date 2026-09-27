@@ -4651,13 +4651,11 @@ impl WinBackend {
 }
 
 /// UTF-16, NUL-terminated — the framing every `PCWSTR`-taking Win32 call
-/// in this backend needs. Mirrors `win::services::wide_nul_terminated`
-/// (private to that module, so not reused directly rather than exposed
-/// just for this one cross-module call).
+/// in this backend needs. The one implementation shared crate-wide
+/// (issue #1087) — this module used to carry its own copy, as did
+/// `super::services`/`super::tray`.
 #[cfg(target_os = "windows")]
-fn win_wide_nul_terminated(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
-}
+use crate::desktop::wide_nul_terminated as win_wide_nul_terminated;
 
 /// The nearest monitor's full rect (not the work area — `set_fullscreen`
 /// wants to cover the taskbar too) for the monitor `hwnd` is currently

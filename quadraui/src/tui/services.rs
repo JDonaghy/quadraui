@@ -120,35 +120,28 @@
 //!
 //! [`TuiPlatformServices::open_url_result`] now tries, in order:
 //!
-//! 1. **The platform opener** ([`try_platform_opener`]), reached without
-//!    ever going through a shell:
-//!    - **macOS/Linux/BSD**: [`build_url_opener_command`] shells out
-//!      directly and detached (stdout/stderr nulled so it can't wedge the
-//!      TUI's own streams) to `open` / `xdg-open` — `execve`, never a
-//!      shell, so the URL is never re-parsed for metacharacters. Lifted
-//!      from vimcode's `open_url_in_browser` (`src/core/engine/mod.rs`)
-//!      per this issue rather than reinvented, since vimcode#945 deletes
-//!      that hand-rolled copy once this fix lands. `build_url_opener_command`
-//!      is factored out purely so a test can assert on the program name
-//!      and arguments a call *would* spawn without actually launching a
-//!      browser.
-//!    - **Windows**: [`win_shell_execute_open`] calls `ShellExecuteW`
-//!      directly via a minimal hand-written FFI declaration — **not**
-//!      vimcode's `cmd /c start "" <url>`, and not a `std::process::Command`
-//!      at all. A first pass of this fix lifted vimcode's `cmd /c start`
-//!      leg verbatim; review caught that `cmd.exe`, once spawned, re-parses
-//!      its own command-line text and treats `&`/`|`/`^`/`%` as
-//!      metacharacters regardless of how the argument was quoted for
-//!      `CreateProcess` — an ordinary URL with a query string
-//!      (`?q=foo&run=bar`) or a crafted one can split into multiple
-//!      commands (CWE-78). `ShellExecuteW` hands the string straight to
-//!      the registered "open" handler with no shell in between, matching
-//!      the pattern [`crate::win::services`] already uses for the Win-GUI
-//!      backend's own `open_url`/`open_path` — that function isn't
-//!      reachable from here (it lives in the `win`-feature-gated module,
-//!      while this one must compile under a bare `--features tui` on a
-//!      Windows host), so this is a small, deliberate duplicate rather
-//!      than a shared helper.
+//! 1. **The platform opener** ([`crate::desktop::try_open_with_default`],
+//!    issue #1087 — originally this module's own `try_platform_opener`,
+//!    `build_url_opener_command`, and hand-written `ShellExecuteW` FFI
+//!    declaration, now the one implementation shared with
+//!    `macos::services`/`win::services`), reached without ever going
+//!    through a shell: `open`/`xdg-open` on macOS/Linux/BSD (`execve`,
+//!    never a shell, so the URL is never re-parsed for metacharacters —
+//!    lifted from vimcode's `open_url_in_browser`,
+//!    `src/core/engine/mod.rs`, per this issue rather than reinvented,
+//!    since vimcode#945 deletes that hand-rolled copy once this fix
+//!    lands), or `ShellExecuteW` directly via a minimal hand-written FFI
+//!    declaration on Windows — **not** vimcode's `cmd /c start "" <url>`,
+//!    and not a `std::process::Command` at all. A first pass of this fix
+//!    lifted vimcode's `cmd /c start` leg verbatim; review caught that
+//!    `cmd.exe`, once spawned, re-parses its own command-line text and
+//!    treats `&`/`|`/`^`/`%` as metacharacters regardless of how the
+//!    argument was quoted for `CreateProcess` — an ordinary URL with a
+//!    query string (`?q=foo&run=bar`) or a crafted one can split into
+//!    multiple commands (CWE-78). `ShellExecuteW` hands the string
+//!    straight to the registered "open" handler with no shell in
+//!    between. See [`crate::desktop::open_with_default`]'s own doc for
+//!    the full rationale.
 //! 2. **An OSC 8 hyperlink** ([`emit_osc8_hyperlink`]), when the opener
 //!    itself fails to spawn/execute (headless box, no desktop session,
 //!    opener binary missing) — written to both stdout and (Unix)
@@ -370,8 +363,9 @@ fn emit_osc8_hyperlink(url: &str) -> bool {
 }
 
 /// The `/dev/tty` half of [`emit_osc8_hyperlink`], as a `cfg`-overloaded
-/// pair (the same shape [`try_platform_opener`] below uses) rather than a
-/// `#[cfg(unix)]` statement inside the caller: an inline `#[cfg(unix)]`
+/// pair (the same shape [`crate::desktop::unix_open_with_default_command`]
+/// uses) rather than a `#[cfg(unix)]` statement inside the caller: an
+/// inline `#[cfg(unix)]`
 /// block forces the accumulator above to be `let mut`, which is then an
 /// `unused_mut` **error** on Windows under CI's workspace-wide
 /// `RUSTFLAGS: -D warnings` — a `cfg`-only failure invisible to a Unix
@@ -395,137 +389,14 @@ fn emit_osc8_hyperlink_to_tty(_url: &str) -> bool {
     false
 }
 
-// ── URL opener command (#969) ────────────────────────────────────────────────
-
-/// macOS opener: `open <url>`, without spawning it — factored out purely
-/// so tests can assert on the program name and arguments a real call
-/// would spawn, rather than actually launching a browser. Detached:
-/// stdout/stderr are nulled so a slow or chatty opener process can't
-/// wedge the TUI's own streams.
-///
-/// Lifted from vimcode's `open_url_in_browser` (`src/core/engine/mod.rs`)
-/// — the macOS/Linux split already proven there. **Unix only**: Windows
-/// has no `build_url_opener_command` at all — see
-/// [`win_shell_execute_open`] below for why that leg calls `ShellExecuteW`
-/// directly instead of building a `Command` (issue #969 review: the
-/// original `cmd /c start "" <url>` this crate briefly lifted alongside
-/// the Unix legs is a CWE-78 command-injection hole, since `cmd.exe`
-/// re-parses its own command line for `&`/`|`/`^`/`%` regardless of how
-/// the argument was quoted for `CreateProcess`).
-#[cfg(target_os = "macos")]
-fn build_url_opener_command(url: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new("open");
-    cmd.arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd
-}
-
-/// Linux/BSD opener: `xdg-open <url>`. See the macOS overload of this same
-/// function (above) for the shared shape and doc.
-#[cfg(all(unix, not(target_os = "macos")))]
-fn build_url_opener_command(url: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new("xdg-open");
-    cmd.arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd
-}
-
-/// UTF-16, nul-terminated — the string form every wide (`W`-suffixed)
-/// WinAPI call needs. Hoisted out of [`win_shell_execute_open`] purely so
-/// a test can pin the encoding independent of the real, side-effecting
-/// `ShellExecuteW` call.
-#[cfg(target_os = "windows")]
-fn wide_nul_terminated(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-/// Windows opener (issue #969): `ShellExecuteW(NULL, "open", url, NULL,
-/// NULL, SW_SHOWNORMAL)`, called through a **minimal, hand-written FFI
-/// declaration** — not the `windows` crate. `windows` is `optional`,
-/// pulled in only by `dep:windows` on this crate's `win` feature (see
-/// `Cargo.toml`), so it is not a dependency of a bare `--features tui`
-/// build; this function must compile whenever `target_os = "windows"`
-/// alone, the same gate [`build_url_opener_command`]'s macOS/Unix arms
-/// above use, regardless of whether `win` is also enabled.
-///
-/// Never goes through `cmd.exe` (or any shell) at all — `ShellExecuteW`
-/// hands `url` straight to `CreateProcess`/the registered "open" handler,
-/// with nothing in between to re-parse `&`/`|`/`^`/`%` as metacharacters.
-/// That sidesteps the CWE-78 class of bug the original `cmd /c start ""
-/// <url>` approach (lifted from vimcode, then caught at review) was
-/// exposed to: a URL with an unescaped `&` in its query string — or a
-/// crafted `https://x&calc.exe&` — would land unquoted on `cmd.exe`'s own
-/// command line (Rust only quotes an argument that contains whitespace)
-/// and get split into multiple commands.
-///
-/// Mirrors `crate::win::services`'s own `ShellExecuteW`-based
-/// `open_url`/`open_path` for the Win-GUI backend — that function isn't
-/// reachable from here (it lives in the `win`-feature-gated module), so
-/// this is a small, deliberate duplicate kept independent of that
-/// feature, not a shared helper.
-///
-/// Returns whether `ShellExecuteW` reports success: per its own docs, any
-/// return value greater than 32 is success; the low range `0..=32` is a
-/// documented failure code (e.g. `SE_ERR_FNF = 2`, `SE_ERR_NOASSOC = 31`).
-#[cfg(target_os = "windows")]
-fn win_shell_execute_open(url: &str) -> bool {
-    // SAFETY: `ShellExecuteW` is a well-known, stable Win32 API. Both
-    // wide-string buffers passed below are nul-terminated and kept alive
-    // (as local `Vec<u16>`s) for the duration of the call; the remaining
-    // arguments are the documented "no window handle / no extra
-    // parameters / no explicit working directory" null pointers.
-    //
-    // `#[link(name = "shell32")]`: `ShellExecuteW` lives in
-    // `shell32.dll`/`shell32.lib` — unlike the `kernel32`/`user32`
-    // imports the MSVC CRT startup pulls in implicitly, this one needs an
-    // explicit link directive since nothing else in a bare `tui`-feature
-    // build references `shell32` at all.
-    #[link(name = "shell32")]
-    unsafe extern "system" {
-        fn ShellExecuteW(
-            hwnd: *mut core::ffi::c_void,
-            operation: *const u16,
-            file: *const u16,
-            parameters: *const u16,
-            directory: *const u16,
-            show_cmd: i32,
-        ) -> isize;
-    }
-    const SW_SHOWNORMAL: i32 = 1;
-
-    let operation = wide_nul_terminated("open");
-    let file = wide_nul_terminated(url);
-    let result = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            operation.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    result > 32
-}
-
-/// The single "try the platform opener" step [`open_url_via`] runs first
-/// (issue #969): spawns [`build_url_opener_command`]'s `Command` on
-/// macOS/Linux/BSD, or calls [`win_shell_execute_open`] directly on
-/// Windows — no `Command`/shell involved on that leg at all. Returns
-/// whether the platform opener genuinely launched.
-#[cfg(target_os = "windows")]
-fn try_platform_opener(url: &str) -> bool {
-    win_shell_execute_open(url)
-}
-
-/// See the Windows overload of this same function (above) for the shared
-/// doc.
-#[cfg(not(target_os = "windows"))]
-fn try_platform_opener(url: &str) -> bool {
-    build_url_opener_command(url).spawn().is_ok()
-}
+// ── URL opener (#969, consolidated into crate::desktop by #1087) ───────────────
+//
+// This module used to carry its own macOS/Linux `Command` builder, its own
+// hand-written `ShellExecuteW` FFI declaration, and its own
+// `wide_nul_terminated` — one of each, duplicated again in `macos::services`
+// and `win::services`. All three now live once in `crate::desktop`
+// ([`crate::desktop::try_open_with_default`]) and are shared by every
+// backend's opener.
 
 /// The three-step "opener, then OSC 8, then honestly `Unsupported`" logic
 /// [`TuiPlatformServices::open_url_result`] runs (issue #969), factored
@@ -951,82 +822,20 @@ mod open_url_tests {
         assert!(emit_osc8_hyperlink("https://example.com/969"));
     }
 
-    /// Per-platform opener command shape, asserted on the *command that
-    /// would be spawned* — program name and arguments — never on an
-    /// actual spawn. **Unix only** (macOS/Linux-BSD): Windows has no
-    /// `build_url_opener_command` to assert on any more — see
-    /// [`win_shell_execute_open`]'s own doc, and
-    /// `wide_nul_terminated_encodes_utf16_and_appends_a_nul` /
-    /// `win_shell_execute_open_does_not_panic_on_shell_metacharacters`
-    /// below for that leg's coverage instead. Exactly one of these two compiles for any given
-    /// Unix target, mirroring [`build_url_opener_command`]'s own `cfg`
-    /// split, so CI exercises whichever branch matches the host it's
-    /// actually running on rather than assuming one platform.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn build_url_opener_command_uses_macos_open() {
-        let cmd = build_url_opener_command("https://example.com/969");
-        assert_eq!(cmd.get_program(), "open");
-        assert_eq!(
-            cmd.get_args().collect::<Vec<_>>(),
-            ["https://example.com/969"]
-        );
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn build_url_opener_command_uses_xdg_open() {
-        let cmd = build_url_opener_command("https://example.com/969");
-        assert_eq!(cmd.get_program(), "xdg-open");
-        assert_eq!(
-            cmd.get_args().collect::<Vec<_>>(),
-            ["https://example.com/969"]
-        );
-    }
-
-    /// Pins [`wide_nul_terminated`]'s encoding independent of the real,
-    /// side-effecting `ShellExecuteW` call — UTF-16 code units followed
-    /// by exactly one trailing `0`.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn wide_nul_terminated_encodes_utf16_and_appends_a_nul() {
-        assert_eq!(
-            wide_nul_terminated("ab"),
-            vec!['a' as u16, 'b' as u16, 0u16]
-        );
-        assert_eq!(wide_nul_terminated(""), vec![0u16]);
-    }
-
-    /// [`win_shell_execute_open`] never builds a `std::process::Command`
-    /// (that's the whole point — no `cmd.exe`/shell in the loop at all),
-    /// so unlike the Unix opener tests above there is no command to
-    /// assert on without actually invoking `ShellExecuteW`. What *is*
-    /// checkable without a live desktop session: it never panics on a
-    /// URL containing the exact metacharacters (`&`, `|`, `^`, `%`) that
-    /// made the original `cmd /c start` approach exploitable (issue #969
-    /// review) — a bare FFI call has no command-line text for those
-    /// bytes to land in. Best-effort on `ShellExecuteW`'s actual verdict:
-    /// some CI Windows runners have no registered "open" handler at all,
-    /// so this doesn't assert on the boolean result, only that the call
-    /// completes.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn win_shell_execute_open_does_not_panic_on_shell_metacharacters() {
-        let _ = win_shell_execute_open("https://example.com/search?q=foo&run=bar|calc.exe^%1");
-    }
-
     /// #969 acceptance bar: `open_url_result` reports `Ok(())` when an
     /// opener is present. Exercised through [`open_url_via`] with a
     /// harmless stand-in "opener" (a command every supported host can
     /// spawn without doing anything) instead of the real
-    /// `try_platform_opener` — spawning the *actual* platform opener in a
-    /// test would launch a real browser as a side effect, which is
-    /// exactly what this issue's acceptance bar says to avoid. This still
-    /// proves the production logic that matters: a successful open short
-    /// circuits straight to `Ok(())` without ever touching the OSC 8
-    /// fallback. See `open_url_result_returns_ok_through_the_real_delegation`
-    /// below for the one gap this stand-in leaves: the real,
-    /// fully-wired `PlatformServices::open_url_result` method itself.
+    /// [`crate::desktop::try_open_with_default`] — spawning the *actual*
+    /// platform opener in a test would launch a real browser as a side
+    /// effect, which is exactly what this issue's acceptance bar says to
+    /// avoid. This still proves the production logic that matters: a
+    /// successful open short circuits straight to `Ok(())` without ever
+    /// touching the OSC 8 fallback. `crate::desktop`'s own
+    /// `open_with_default_tests` module covers the real,
+    /// `$PATH`-delegated opener itself (issue #1087) — see
+    /// `try_open_with_default_returns_true_through_a_real_delegation`
+    /// there.
     #[test]
     fn open_url_via_returns_ok_when_the_opener_spawns() {
         let result = open_url_via("https://example.com/969", |_url| {
@@ -1100,42 +909,41 @@ mod open_url_tests {
         // `Err(BackendError::Unsupported)` condition.
     }
 
-    /// Serializes the one test below that temporarily overrides the
-    /// process-wide `$PATH` — nothing else in this crate's test binary
-    /// spawns a bare `open`/`xdg-open` by name (the native-clipboard-tool
-    /// tests below spawn `wl-copy`/`xclip`/`xsel` instead), so this lock
-    /// only has to protect against that single test running more than
-    /// once concurrently (`cargo test` can run the same binary's tests in
-    /// parallel threads, never a second copy of the *same* test).
-    #[cfg(unix)]
-    static PATH_OVERRIDE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// #969 review (non-blocking gap): every other test above exercises
     /// [`open_url_via`] with an injected stand-in opener — this is the
     /// one test that calls the real, fully-wired
-    /// `PlatformServices::open_url_result` trait method (`TuiPlatformServices`'s
-    /// one-line delegation to `open_url_via(url, try_platform_opener)`),
-    /// so that delegation itself is actually exercised rather than
-    /// trusted by inspection.
+    /// `PlatformServices::open_url_result` trait method end to end
+    /// (`TuiPlatformServices`'s one-line delegation to `open_url_via`
+    /// with the real [`crate::desktop::try_open_with_default`]), so that
+    /// delegation itself is actually exercised rather than trusted by
+    /// inspection.
     ///
     /// Safe to do without launching a real browser only because `$PATH`
-    /// is temporarily redirected (guarded by [`PATH_OVERRIDE_LOCK`], and
+    /// is temporarily redirected (guarded by
+    /// [`crate::desktop::PATH_OVERRIDE_TEST_LOCK`] — shared crate-wide
+    /// since issue #1087 moved the underlying opener into `crate::desktop`,
+    /// alongside `macos::services`'s own use of the same lock — and
     /// always restored via a drop guard even on panic) to a directory
     /// containing a stub executable under the *exact* name
-    /// `build_url_opener_command` looks up on this platform (`open` on
-    /// macOS, `xdg-open` elsewhere on Unix) that exits `0` immediately —
-    /// so `try_platform_opener`'s real `Command::new(..).spawn()` finds
-    /// and successfully launches *that*, not a browser.
+    /// [`crate::desktop::unix_open_with_default_command`] looks up on
+    /// this platform (`open` on macOS, `xdg-open` elsewhere on Unix) that
+    /// exits `0` immediately — so `try_open_with_default`'s real
+    /// `Command::new(..).spawn()` finds and successfully launches *that*,
+    /// not a browser.
     ///
-    /// **Unix only.** Windows' opener ([`win_shell_execute_open`]) is a
-    /// direct `ShellExecuteW` FFI call with no `$PATH`-resolved binary to
-    /// intercept this way, so there is no equivalent seam there; see
-    /// `win_shell_execute_open_does_not_panic_on_shell_metacharacters`
-    /// above for that platform's own coverage of the real function.
+    /// **Unix only.** Windows' opener is a direct `ShellExecuteW` FFI
+    /// call with no `$PATH`-resolved binary to intercept this way, so
+    /// there is no equivalent seam there; see
+    /// `crate::desktop::open_with_default_tests`'s
+    /// `windows_shell_execute_open_does_not_panic_on_shell_metacharacters`
+    /// and `win::services::open_url_result_reports_failure_for_an_unregistered_scheme`
+    /// for that platform's own coverage.
     #[cfg(unix)]
     #[test]
     fn open_url_result_returns_ok_through_the_real_delegation() {
-        let _guard = PATH_OVERRIDE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
 
         #[cfg(target_os = "macos")]
         const OPENER_NAME: &str = "open";
@@ -1431,15 +1239,18 @@ impl PlatformServices for TuiPlatformServices {
 
     /// quadraui#969: genuinely opens `url`, rather than #949's honest but
     /// unconditional `Err(BackendError::Unsupported)`. Tries the platform
-    /// URL opener first ([`try_platform_opener`] — `xdg-open`/`open` on
-    /// Unix, `ShellExecuteW` directly on Windows, never a shell); if it
-    /// can't even launch (no desktop session, opener binary missing),
-    /// falls back to an OSC 8 hyperlink ([`emit_osc8_hyperlink`]) so a
-    /// capable terminal still makes the URL clickable. Only reports
-    /// `Err(BackendError::Unsupported)` when *neither* leg reached
-    /// anything — see the module doc for the full three-step story.
+    /// URL opener first ([`crate::desktop::try_open_with_default`] —
+    /// `xdg-open`/`open` on Unix, `ShellExecuteW` directly on Windows,
+    /// never a shell); if it can't even launch (no desktop session,
+    /// opener binary missing), falls back to an OSC 8 hyperlink
+    /// ([`emit_osc8_hyperlink`]) so a capable terminal still makes the
+    /// URL clickable. Only reports `Err(BackendError::Unsupported)` when
+    /// *neither* leg reached anything — see the module doc for the full
+    /// three-step story.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
-        open_url_via(url, try_platform_opener)
+        open_url_via(url, |u| {
+            crate::desktop::try_open_with_default(std::ffi::OsStr::new(u))
+        })
     }
 
     /// No file manager window a terminal could reveal anything in —
@@ -1629,10 +1440,9 @@ mod message_dialog_tests {
     // macOS's `open`), that would actually launch a browser as a test
     // side effect. See `open_url_tests` below for the acceptance-bar
     // coverage instead — it exercises the same "opener present → `Ok`",
-    // "opener absent → OSC 8 fallback" logic through
-    // `open_url_via`/`build_url_opener_command` with a harmless stand-in
-    // command, asserted on the spawned command rather than by actually
-    // opening anything.
+    // "opener absent → OSC 8 fallback" logic through `open_url_via` with a
+    // harmless stand-in command, asserted on the spawned command rather
+    // than by actually opening anything.
 
     /// quadraui#956: no file manager window a terminal could reveal
     /// anything in — the one member of this issue's four TUI does not
