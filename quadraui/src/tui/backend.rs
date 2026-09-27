@@ -1552,11 +1552,29 @@ impl Backend for TuiBackend {
     ///   mouse at all, via Ctrl-A (select-all) plus Ctrl-C (see
     ///   `crate::runtime::preprocess_event`'s Ctrl-A interception) — the
     ///   `no-mouse` mode key path for Tier-1's drag-select gesture.
-    /// - `notifications` (quadraui#1092): `TuiPlatformServices::send_notification`
-    ///   dispatches a genuine best-effort notification (OSC 9/777 escape
-    ///   plus a native `osascript`/`notify-send` fallback) rather than
-    ///   silently discarding it — see that method's doc and the module
-    ///   doc's "Notifications" section.
+    /// - `notifications`: **deliberately still `false`**, even though
+    ///   `TuiPlatformServices::send_notification` (quadraui#1092) is no
+    ///   longer a no-op — it now makes a genuine best-effort attempt (OSC
+    ///   9/777 escape plus a native `osascript`/`notify-send` fallback;
+    ///   see that method's doc and the module doc's "Notifications"
+    ///   section). The reason this flag stays `false` anyway:
+    ///   [`crate::compose::notification::notify_or_toast`] branches on exactly
+    ///   this bit to decide whether it may skip its guaranteed, always-
+    ///   visible, hit-testable in-canvas `Toast` degrade. Both of
+    ///   `send_notification`'s legs are silent on failure — no OSC-
+    ///   capable terminal *and* no `notify-send`/`osascript` on the
+    ///   `$PATH` is the ordinary case for a vanilla terminal or a
+    ///   headless/CI container, which is a far more common way to run
+    ///   this backend than GTK or a native macOS/Windows app is to run
+    ///   without *any* desktop notification facility at all. Reporting
+    ///   `true` here would let `notify_or_toast` swap a guaranteed toast
+    ///   for a coin flip that can silently deliver nothing, which is a
+    ///   regression, not an upgrade, for that class of host. Apps that
+    ///   want the best-effort native/OSC path specifically (accepting
+    ///   the silent-failure risk) can still call
+    ///   [`crate::backend::PlatformServices::send_notification`]
+    ///   directly — this flag only gates the `notify_or_toast` helper's
+    ///   choice, not the method's availability.
     /// - everything else: **not** declared. No window to
     ///   drag/resize/maximize, no native pointer glyph, no native menu,
     ///   no IME positioning, and every `PlatformServices` dialog method
@@ -1581,7 +1599,9 @@ impl Backend for TuiBackend {
             // `WindowControl` method staying `Unsupported` on a backend
             // with no OS window (issue #950).
             window_control: true,
-            notifications: true,
+            // `notifications` deliberately stays `false` — see this
+            // method's doc above for why a real `send_notification`
+            // implementation doesn't earn this flag on this backend.
             color_depth: self.color_depth,
             kitty_keyboard: self.kitty_keyboard,
             sgr_pixel_mouse: self.sgr_pixel_mouse,

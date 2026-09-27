@@ -1092,7 +1092,15 @@ fn windows_explorer_select(path: &std::path::Path) -> bool {
 /// [`windows_shell_execute_open`]. `path.display()` is safe to embed
 /// unquoted-of-inner-quotes here: Windows' filesystem itself forbids `"`
 /// in a path, so there is no in-band way for `path` to break out of the
-/// `/select,"..."` quoting this builds.
+/// `/select,"..."` quoting this builds. That covers embedded quotes, but
+/// not the classic MSVCRT argv-splitting edge case where a path's literal
+/// string ends in a backslash immediately before the closing quote (an
+/// odd run of trailing backslashes there escapes the quote instead of
+/// closing the string) — not exploitable for injection (nothing follows
+/// for an escaped quote to expose) and not reachable through
+/// `path.display()` for an ordinary file/directory path (which doesn't
+/// carry a trailing separator), so [`windows_explorer_select_parameters`]
+/// strips one defensively rather than leaving it as a latent trap.
 #[cfg(all(windows, feature = "tui"))]
 fn windows_explorer_select_code(path: &std::path::Path) -> isize {
     // SAFETY: see `windows_shell_execute_open_code`'s identical SAFETY
@@ -1141,7 +1149,18 @@ fn windows_explorer_select_code(path: &std::path::Path) -> isize {
 #[cfg(feature = "tui")]
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_explorer_select_parameters(path: &std::path::Path) -> String {
-    format!("/select,\"{}\"", path.display())
+    // Strip a trailing separator before quoting: an odd run of
+    // backslashes immediately before the closing `"` escapes that quote
+    // rather than closing the string under MSVCRT-style argv splitting
+    // (see this function's doc comment above its caller,
+    // `windows_explorer_select_code`, for the full reasoning). Ordinary
+    // file/directory paths never carry one, so this is a defensive
+    // no-op in practice, not a behavior change for real callers.
+    let mut rendered = path.display().to_string();
+    while rendered.len() > 1 && (rendered.ends_with('\\') || rendered.ends_with('/')) {
+        rendered.pop();
+    }
+    format!("/select,\"{rendered}\"")
 }
 
 /// Build the `dbus-send` invocation for
@@ -1237,6 +1256,21 @@ mod reveal_in_file_manager_tests {
     /// so the expected output is the same on either host.
     #[test]
     fn windows_explorer_select_parameters_quotes_the_path() {
+        assert_eq!(
+            windows_explorer_select_parameters(std::path::Path::new(r"C:\a b\c.txt")),
+            r#"/select,"C:\a b\c.txt""#
+        );
+    }
+
+    #[test]
+    fn windows_explorer_select_parameters_strips_a_trailing_separator() {
+        // A path ending in a backslash right before the closing quote
+        // would otherwise escape that quote under MSVCRT-style argv
+        // splitting instead of closing the string.
+        assert_eq!(
+            windows_explorer_select_parameters(std::path::Path::new(r"C:\dir\")),
+            r#"/select,"C:\dir""#
+        );
         assert_eq!(
             windows_explorer_select_parameters(std::path::Path::new(r"C:\a b\c.txt")),
             r#"/select,"C:\a b\c.txt""#
@@ -1348,6 +1382,84 @@ pub(crate) fn display_notification_script(title: &str, body: &str, silent: bool)
         script.push_str(" sound name \"\"");
     }
     script
+}
+
+/// Build the `osascript -e <script>` command
+/// `tui::services::TuiPlatformServices::send_notification`'s macOS
+/// fallback leg spawns (issue #1092) — not yet spawned, so a test can
+/// assert on the constructed argv (in particular, that `title`/`body`
+/// reach `osascript` via [`display_notification_script`] unmodified)
+/// without a live display session. Split out for the same reason
+/// [`macos_reveal_in_file_manager_command`] and
+/// [`linux_show_items_via_dbus_command`] are: every other command this
+/// issue builds is unit-testable this way, and the notification fallback
+/// legs shouldn't be the one exception.
+#[cfg(all(target_os = "macos", feature = "tui"))]
+pub(crate) fn tui_macos_notify_command(
+    title: &str,
+    body: &str,
+    silent: bool,
+) -> std::process::Command {
+    let script = display_notification_script(title, body, silent);
+    let mut cmd = std::process::Command::new("osascript");
+    cmd.arg("-e").arg(script);
+    cmd
+}
+
+/// Build the `notify-send <title> <body>` command
+/// `tui::services::TuiPlatformServices::send_notification`'s Linux/BSD
+/// fallback leg spawns (issue #1092) — not yet spawned, so a test can
+/// assert `title` and `body` arrive as two separate argv entries (not
+/// shell-concatenated, so a body containing spaces can't be mistaken for
+/// extra `notify-send` flags) without a live notification-daemon
+/// session.
+#[cfg(all(unix, not(target_os = "macos"), feature = "tui"))]
+pub(crate) fn tui_notify_send_command(title: &str, body: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("notify-send");
+    cmd.arg(title).arg(body);
+    cmd
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tui_send_notification_command_tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tui_macos_notify_command_uses_osascript_with_the_display_notification_script() {
+        let cmd = tui_macos_notify_command("Build failed", "3 errors", false);
+        assert_eq!(cmd.get_program(), "osascript");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args[0], "-e");
+        assert_eq!(
+            args[1],
+            display_notification_script("Build failed", "3 errors", false).as_str()
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn tui_notify_send_command_passes_title_and_body_as_separate_args() {
+        let cmd = tui_notify_send_command("Build failed", "3 errors");
+        assert_eq!(cmd.get_program(), "notify-send");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["Build failed", "3 errors"]
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn tui_notify_send_command_keeps_body_out_of_argv0() {
+        // A body containing something that looks like a flag must stay
+        // its own argv entry, never get shell-concatenated with the
+        // title into something `notify-send` could misparse.
+        let cmd = tui_notify_send_command("t", "--urgency=critical");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["t", "--urgency=critical"]
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "macos", any(feature = "macos", feature = "tui")))]
