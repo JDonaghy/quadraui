@@ -889,4 +889,54 @@ mod tests {
              least one non-background pixel"
         );
     }
+
+    /// #1077 review follow-up: the fix above (`DWRITE_WORD_WRAPPING_NO_WRAP`)
+    /// is justified by "no caller relies on DirectWrite's own wrapping" —
+    /// every rasteriser pre-splits multi-line content into one `draw_text`
+    /// call per already-measured line (see this module's doc). This pins
+    /// the other half of that claim for a box that's *genuinely* too
+    /// narrow for its text (not just a hair short by float rounding, like
+    /// the test above): a long run given a box only wide enough for its
+    /// first character or two must still paint visible ink right at the
+    /// box's left edge — i.e. clip at the right edge — rather than reflow
+    /// its first word onto a second line that a caller's single-line-tall
+    /// box then crops away entirely (the exact silent-vanishing failure
+    /// mode `DWRITE_WORD_WRAPPING_WRAP` produced pre-fix, reproduced
+    /// above for the narrower "hair short by rounding" case).
+    #[test]
+    fn draw_text_clips_an_overlong_run_instead_of_wrapping_it_away() {
+        const BG: Color = Color::rgb(10, 20, 30);
+        const FG: Color = Color::rgb(220, 40, 40);
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let text = "This label is far too long to fit in the narrow box below it";
+        let (_, natural_height) = dwrite.measure_text(text).expect("measure_text");
+
+        // A box far narrower than even the text's first word, but
+        // exactly one line tall — what a caller passes when it has
+        // already decided this is single-line content (e.g. a
+        // status-bar segment or table cell) and expects overflow to
+        // clip, not grow the box downward or hide the start of the run.
+        let rect = Rect::new(4.0, 4.0, 12.0, natural_height.max(1.0));
+
+        let surface = HeadlessSurface::new(220, 40).expect("create surface");
+        surface
+            .paint(|target| {
+                let _ = fill_rect(target, Rect::new(0.0, 0.0, 220.0, 40.0), BG);
+                dwrite.draw_text(target, text, rect, FG).expect("draw_text");
+            })
+            .expect("paint");
+
+        let bg = (BG.r, BG.g, BG.b);
+        let ink_in_box = (rect.y as u32..(rect.y + rect.height) as u32)
+            .flat_map(|y| (rect.x as u32..(rect.x + rect.width) as u32).map(move |x| (x, y)))
+            .map(|(x, y)| surface.pixel_at(x, y))
+            .any(|px| (px.r, px.g, px.b) != bg);
+        assert!(
+            ink_in_box,
+            "a box far narrower than the text's first word must still paint the visible \
+             prefix that fits (clipped at the right edge), not vanish entirely because \
+             the first word reflowed onto a line this single-line-tall box can't show"
+        );
+    }
 }
