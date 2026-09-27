@@ -344,8 +344,9 @@ mod tests {
         let p = sample_palette();
         let surface = paint_via_backend(&p);
         let theme = Theme::default();
-        // `MacBackend::current_line_height` defaults to 16.0 and
-        // `paint_via_backend` never overrides it.
+        // `paint_via_backend` pins `MacBackend::current_line_height` to
+        // 16.0 (see that helper), so this is the exact value
+        // `draw_palette` laid the separator out with.
         let line_height = 16.0_f32;
         let title_h = line_height; // native_surface_paint::layout: title_h = line_height
         let drifted_sep_y = (title_h + line_height) as u32; // pre-#1076 macOS formula
@@ -447,37 +448,60 @@ mod tests {
              not macOS's pre-#1076 8.0px",
         );
 
-        // Driver-tier: paint through the real backend and find where the
-        // track's ink visually begins by scanning leftward from the
-        // popup's right edge, comparing each column against a baseline
-        // sampled well inside the item content area (away from either a
-        // 6px or 8px track). The boundary must land at `sb.track.x`
-        // (item_list_width - 6), not 2px further left as an 8px track
-        // would place it.
+        // Driver-tier: paint through the real backend and probe the
+        // columns that tell a 6px track apart from macOS's pre-#1076 8px
+        // one — the two columns immediately left of `sb.track.x` must
+        // still be plain `surface_bg`, because an 8px track starting 2px
+        // further left would have filled them.
+        //
+        // Exact-equality probes against `surface_bg` (the pattern
+        // `macos::tree`'s `paints_vertical_scrollbar_track_when_overflowing`
+        // uses), *not* a colour-distance "is there ink here" threshold:
+        // `native_surface_paint::paint` fills the track with
+        // `theme.scrollbar_track.with_alpha(0.4)`, which over
+        // `theme.surface_bg` lands ~5 levels per channel away from it
+        // (rgb(28,32,44) → ~rgb(33,37,49)). That is a decisive
+        // difference for an equality probe but far below any plausible
+        // ink threshold, so the scan this replaces could never find the
+        // boundary it was looking for.
         let surface = paint_via_backend(&p);
-        let track_y = (sb.track.y + sb.track.height / 2.0) as u32;
-        let dist2 = |a: (u8, u8, u8), b: (u8, u8, u8)| {
-            let dr = a.0 as i32 - b.0 as i32;
-            let dg = a.1 as i32 - b.1 as i32;
-            let db = a.2 as i32 - b.2 as i32;
-            dr * dr + dg * dg + db * db
-        };
-        let baseline_x = sb.track.x as u32 - 15;
-        let (br, bg, bb, _) = surface.pixel(baseline_x, track_y);
-        let baseline = (br, bg, bb);
-        let boundary_x = ((sb.track.x as u32 - 12)..=(sb.track.x as u32 + 1))
-            .find(|&x| {
-                let (r, g, b, _) = surface.pixel(x, track_y);
-                dist2((r, g, b), baseline) > 100
-            })
-            .expect("expected the track's ink to start somewhere in the scanned range");
+        let theme = Theme::default();
+        // The thumb sits at the top of the track at `scroll_offset == 0`
+        // and is painted in a *different* colour (`scrollbar_thumb`),
+        // inset 1px horizontally — probe below it so only the track's
+        // own fill is under the probe row.
+        let thumb_bottom = sb.thumb.y + sb.thumb.height;
+        let track_bottom = sb.track.y + sb.track.height;
         assert!(
-            (boundary_x as i32 - sb.track.x as i32).abs() <= 1,
-            "expected track ink to start at x={} (item_list_width - 6), found it \
-             starting at x={boundary_x} instead — scrollbar track width has drifted \
-             from the shared 6.0px value",
-            sb.track.x,
+            thumb_bottom < track_bottom - 2.0,
+            "test precondition: 40 items over ~12 visible rows must leave bare \
+             track below the thumb (thumb bottom {thumb_bottom}, track bottom \
+             {track_bottom})",
         );
+        let probe_y = ((thumb_bottom + track_bottom) / 2.0) as u32;
+        let bg = (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b);
+        let column = |x: u32| {
+            let (r, g, b, _) = surface.pixel(x, probe_y);
+            (r, g, b)
+        };
+        let track_x = sb.track.x as u32;
+        assert_ne!(
+            column(track_x + 1),
+            bg,
+            "expected the track's own fill at x={} (inside the 6px track), got \
+             plain surface_bg — the track didn't paint at all",
+            track_x + 1,
+        );
+        for dx in 1..=2 {
+            assert_eq!(
+                column(track_x - dx),
+                bg,
+                "x={} sits left of the shared 6px track and must be plain \
+                 surface_bg — macOS's pre-#1076 8px track would have painted \
+                 its fill there, so the scrollbar width has drifted back",
+                track_x - dx,
+            );
+        }
     }
 
     #[test]
