@@ -1,37 +1,26 @@
 //! GTK rasteriser for [`crate::Tooltip`].
 //!
-//! Cairo + Pango equivalent of `quadraui::tui::draw_tooltip`. Paints a
-//! background rectangle at the resolved bounds, then border chrome per
-//! the [`TooltipChrome`] argument (#541 — [`crate::TooltipBorder`]; see
-//! `primitives::tooltip`'s module doc for why the vocabulary is a
-//! sidecar value rather than a field on [`Tooltip`] or
-//! [`TooltipLayout`]). [`draw_tooltip`] keeps its pre-#541 signature and
-//! renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
-//! takes the request explicitly:
+//! Content painting (background, border chrome, title punch, plain/
+//! styled text) moved to the shared
+//! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
+//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! one drift it resolved (styled-line span bold/italic/underline, which
+//! GTK gains here for the first time).
 //!
-//! - [`TooltipBorder::Full`] (the default) strokes a full 4-sided box —
-//!   GTK has always done this, unconditionally, before #541 gave it a
-//!   name. An optional `chrome.title` is centred over the top edge,
-//!   punched through the stroke with a background-coloured backing
-//!   rectangle so it reads as embedded in the border rather than a
-//!   content row (matching the TUI rasteriser's top-row title).
-//! - [`TooltipBorder::Sides`] strokes two vertical lines at the left and
-//!   right edges only, no top/bottom — TUI's pre-#542 look, now
-//!   available on GTK by explicit request. No title (no top rule).
-//! - [`TooltipBorder::None`] strokes nothing.
-//!
-//! Then draws either the plain `text` or per-row `styled_lines`.
+//! [`draw_tooltip`] keeps its pre-#541 signature and renders
+//! `TooltipChrome::default()`; [`draw_tooltip_with_chrome`] takes the
+//! chrome request explicitly. See [`crate::TooltipBorder`] for what each
+//! variant paints.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::cairo_rgb;
-use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+use crate::primitives::tooltip::{native_surface_paint, Tooltip, TooltipChrome, TooltipLayout};
 use crate::theme::Theme;
 
 /// Draw a [`Tooltip`] at its resolved layout position with the default
-/// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
-/// this rasteriser drew before #541 added a choice.
+/// chrome — a [`crate::TooltipBorder::Full`] box, no title, i.e. exactly
+/// what this rasteriser drew before #541 added a choice.
 ///
 /// `padding_x` is the horizontal padding (in pixels) from the left
 /// border to the start of text — consumers typically pass the same
@@ -41,7 +30,6 @@ use crate::theme::Theme;
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
 ///
 /// To ask for different chrome, call [`draw_tooltip_with_chrome`].
-#[allow(clippy::too_many_arguments)]
 pub fn draw_tooltip(
     cr: &Context,
     layout: &pango::Layout,
@@ -69,9 +57,8 @@ pub fn draw_tooltip(
 /// `padding_x` is the horizontal padding (in pixels) from the left
 /// border to the start of text — consumers typically pass the same
 /// `char_width` they used when computing the tooltip's measured width.
-/// Halved when `chrome.border` is [`TooltipBorder::None`], since there
-/// is no border column to clear first — mirrors the TUI rasteriser's
-/// `text_col_offset` dropping from 2 (border + pad) to 1 (pad only).
+/// Halved when `chrome.border` is [`crate::TooltipBorder::None`], since
+/// there is no border column to clear first.
 ///
 /// Per-tooltip `tooltip.fg` / `tooltip.bg` overrides win over the
 /// theme defaults. The frame border always uses [`Theme::hover_border`].
@@ -86,125 +73,21 @@ pub fn draw_tooltip_with_chrome(
     padding_x: f64,
     theme: &Theme,
 ) {
-    let bounds = tooltip_layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-
-    let bg = tooltip
-        .bg
-        .map(cairo_rgb)
-        .unwrap_or_else(|| cairo_rgb(theme.hover_bg));
-    let fg = tooltip
-        .fg
-        .map(cairo_rgb)
-        .unwrap_or_else(|| cairo_rgb(theme.hover_fg));
-    let border = cairo_rgb(theme.hover_border);
-
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(bx, by, bw, bh);
-    cr.fill().ok();
-
-    // Content normally starts 2px below the top edge; a title pushes
-    // that down further below, since its real font height (title_h) is
-    // typically much taller than the 1px border line it's centred on —
-    // without this, a title would visually collide with the first
-    // content row instead of sitting in its own space above it, the way
-    // the TUI rasteriser's dedicated title row never overlaps content.
-    let mut text_top = by + 2.0;
-
-    match chrome.border {
-        TooltipBorder::Full => {
-            cr.set_source_rgb(border.0, border.1, border.2);
-            cr.set_line_width(1.0);
-            cr.rectangle(bx, by, bw, bh);
-            cr.stroke().ok();
-
-            if let Some(title) = chrome
-                .title
-                .as_deref()
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-            {
-                layout.set_text(title);
-                layout.set_attributes(None);
-                let (title_w, title_h) = layout.pixel_size();
-                let (title_w, title_h) = (title_w as f64, title_h as f64);
-                let pad = 4.0;
-                let title_x = bx + ((bw - title_w) / 2.0).max(0.0);
-                let title_y = by - title_h / 2.0;
-
-                // Punch a background-coloured gap through the border
-                // stroke so the title reads as embedded in the top rule,
-                // not a content row sitting on top of it.
-                cr.set_source_rgb(bg.0, bg.1, bg.2);
-                cr.rectangle(title_x - pad, title_y, title_w + pad * 2.0, title_h);
-                cr.fill().ok();
-
-                cr.set_source_rgb(fg.0, fg.1, fg.2);
-                cr.move_to(title_x, title_y);
-                super::painted_text::show_layout(cr, layout);
-
-                text_top = text_top.max(title_y + title_h + 2.0);
-            }
-        }
-        TooltipBorder::Sides => {
-            cr.set_source_rgb(border.0, border.1, border.2);
-            cr.set_line_width(1.0);
-            cr.move_to(bx, by);
-            cr.line_to(bx, by + bh);
-            cr.stroke().ok();
-            cr.move_to(bx + bw, by);
-            cr.line_to(bx + bw, by + bh);
-            cr.stroke().ok();
-        }
-        TooltipBorder::None => {}
-    }
-
-    let text_padding_x = if matches!(chrome.border, TooltipBorder::None) {
-        padding_x / 2.0
-    } else {
-        padding_x
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
     };
-    let text_x = bx + text_padding_x;
-
-    if let Some(ref styled_lines) = tooltip.styled_lines {
-        for (i, styled) in styled_lines.iter().enumerate() {
-            let row_y = text_top + i as f64 * line_height;
-            if row_y + line_height > by + bh {
-                break;
-            }
-            let mut x_off = text_x;
-            for span in &styled.spans {
-                let span_fg = span.fg.map(cairo_rgb).unwrap_or(fg);
-                cr.set_source_rgb(span_fg.0, span_fg.1, span_fg.2);
-                layout.set_text(&span.text);
-                layout.set_attributes(None);
-                cr.move_to(x_off, row_y);
-                super::painted_text::show_layout(cr, layout);
-                let (text_w, _) = layout.pixel_size();
-                x_off += text_w as f64;
-            }
-        }
-        return;
-    }
-
-    cr.set_source_rgb(fg.0, fg.1, fg.2);
-    for (i, text_line) in tooltip.text.lines().enumerate() {
-        let row_y = text_top + i as f64 * line_height;
-        if row_y + line_height > by + bh {
-            break;
-        }
-        layout.set_text(text_line);
-        layout.set_attributes(None);
-        cr.move_to(text_x, row_y);
-        super::painted_text::show_layout(cr, layout);
-    }
+    native_surface_paint::paint(
+        tooltip,
+        tooltip_layout,
+        chrome,
+        line_height as f32,
+        padding_x as f32,
+        &mut surface,
+        theme,
+    );
+    layout.set_attributes(None);
 }
 
 #[cfg(test)]
@@ -213,7 +96,7 @@ mod tests {
 
     use super::*;
     use crate::event::Rect as QRect;
-    use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipPlacement};
+    use crate::primitives::tooltip::{ResolvedPlacement, TooltipBorder, TooltipPlacement};
     use crate::types::WidgetId;
 
     const W: i32 = 200;
@@ -440,5 +323,79 @@ mod tests {
                  edge (top_with={top_with:?}, top_without={top_without:?})"
             );
         }
+    }
+
+    /// #1077: styled-line spans now render `bold` through
+    /// `NativeSurface::surface_draw_text_run_styled` — GTK's
+    /// pre-migration rasteriser cleared Pango attributes before drawing
+    /// each span, silently dropping it. Observed RED before the port
+    /// (GTK ignored `span.bold` entirely, so this failed): paint the
+    /// same text once bold and once regular, and assert the bold run's
+    /// ink extends further right — Pango's bold face is strictly wider
+    /// per-glyph for any real font.
+    #[test]
+    fn styled_line_bold_span_paints_wider_ink_than_regular() {
+        use crate::types::{StyledSpan, StyledText};
+
+        // Furthest-right column (within `x_start..x_end`) that differs
+        // from the pure-background reference colour, scanning every row
+        // in `y_start..y_end` — i.e. the right edge of the painted ink.
+        fn last_ink_x(
+            data: &[u8],
+            stride: usize,
+            bg: (u8, u8, u8),
+            x_start: i32,
+            x_end: i32,
+            y_start: i32,
+            y_end: i32,
+        ) -> i32 {
+            let mut last = x_start;
+            for y in y_start..y_end {
+                for x in x_start..x_end {
+                    if pixel(data, stride, x, y) != bg {
+                        last = last.max(x);
+                    }
+                }
+            }
+            last
+        }
+
+        let (layout, chrome) = sample_layout(TooltipBorder::None, None);
+        let b = layout.bounds;
+
+        // Short enough that neither weight's ink reaches the tooltip's
+        // own right edge (120px wide, minus 8px left padding) — the
+        // very first version of this test used a string long enough
+        // that *both* weights saturated the scan range at the same
+        // rightmost column, hiding the width difference entirely.
+        let mut bold_tip = sample_tooltip();
+        bold_tip.styled_lines = Some(vec![StyledText {
+            spans: vec![StyledSpan {
+                bold: true,
+                ..StyledSpan::plain("MMM")
+            }],
+        }]);
+        let mut regular_tip = sample_tooltip();
+        regular_tip.styled_lines = Some(vec![StyledText {
+            spans: vec![StyledSpan::plain("MMM")],
+        }]);
+
+        let (bold_data, stride) = paint(&bold_tip, &layout, &chrome);
+        let (regular_data, _) = paint(&regular_tip, &layout, &chrome);
+
+        let x_start = b.x as i32;
+        let x_end = (b.x + b.width) as i32;
+        let y_start = b.y as i32 + 2; // text_top offset used by `paint`
+        let y_end = y_start + LINE_H as i32;
+        let bg = bg_reference(&bold_data, stride, b);
+
+        let bold_ink_x = last_ink_x(&bold_data, stride, bg, x_start, x_end, y_start, y_end);
+        let regular_ink_x = last_ink_x(&regular_data, stride, bg, x_start, x_end, y_start, y_end);
+
+        assert!(
+            bold_ink_x > regular_ink_x,
+            "bold span should paint wider than the same text at regular weight \
+             (bold_ink_x={bold_ink_x}, regular_ink_x={regular_ink_x})"
+        );
     }
 }

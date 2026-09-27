@@ -525,6 +525,185 @@ impl Tooltip {
     }
 }
 
+// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::context_menu::native_surface_paint` for
+// the same pattern applied one primitive earlier in this slice (#1077,
+// part 1/4).
+//
+// Pre-migration, `gtk::tooltip`, `macos::tooltip` and `win::tooltip`
+// were already near-identical (bg fill, border-chrome match on `Full` /
+// `Sides` / `None`, optional title punched through the top rule,
+// plain-`text`-vs-`styled_lines` content) — the only real drift found
+// while unifying:
+//
+// - **Styled-line span weight/style.** [`crate::types::StyledSpan`]
+//   carries `bold`/`italic`/`underline` per run. Windows's rasteriser
+//   already measured and drew each span through
+//   `DWrite::{measure_text_styled, draw_text_styled}`, honouring
+//   `span.bold` (DirectWrite has no italic/underline draw path of its
+//   own, so those two were dropped there too); GTK and macOS both
+//   ignored all three — GTK explicitly cleared Pango attributes before
+//   drawing each span, and macOS's `draw_text`/`measure_text` never took
+//   a style parameter at all. `paint` calls
+//   [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]
+//   /`surface_measure_text_styled` for every backend now: Windows keeps
+//   its bold rendering exactly as before (dropping italic/underline, per
+//   [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]'s
+//   own documented per-backend override survey); GTK gains real
+//   bold/italic/underline rendering it never had; macOS's adapter takes
+//   the verb's default (ignore style, forward to the plain measure/draw)
+//   so its rendering is unchanged. Plain `tooltip.text` (no
+//   `styled_lines`) is unaffected on every backend — it never carried
+//   per-run style.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::{Point, Rect};
+
+    /// Paint a [`Tooltip`] at its resolved `tooltip_layout` onto
+    /// `surface`, with the border and optional title requested by
+    /// `chrome` (#541).
+    ///
+    /// `line_height` / `padding_x` are in `surface`-native units
+    /// (character cells for TUI-shaped callers, pixels for every pixel
+    /// backend — though TUI itself never calls this, see the module
+    /// doc's *Why TUI stays out* on [`NativeSurface`]). `padding_x` is
+    /// halved when `chrome.border` is [`TooltipBorder::None`], since
+    /// there is no border column to clear first.
+    pub(crate) fn paint(
+        tooltip: &Tooltip,
+        tooltip_layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+        line_height: f32,
+        padding_x: f32,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        let bounds = tooltip_layout.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+
+        let bg = tooltip.bg.unwrap_or(theme.hover_bg);
+        let fg = tooltip.fg.unwrap_or(theme.hover_fg);
+        let border = theme.hover_border;
+
+        surface.surface_fill_rect(bounds, bg);
+
+        // Content normally starts 2 units below the top edge; a title
+        // pushes that down further, since its real font height
+        // (`title_h`) is typically much taller than the 1-unit border
+        // line it's centred on — without this, a title would visually
+        // collide with the first content row instead of sitting in its
+        // own space above it.
+        let mut text_top = bounds.y + 2.0;
+
+        match chrome.border {
+            TooltipBorder::Full => {
+                surface.surface_stroke_rect(bounds, border, 1.0);
+
+                if let Some(title) = chrome
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
+                    let (title_w, title_h) = surface.surface_measure_text(title);
+                    let pad = 4.0;
+                    let title_x = bounds.x + ((bounds.width - title_w) / 2.0).max(0.0);
+                    let title_y = bounds.y - title_h / 2.0;
+
+                    // Punch a background-coloured gap through the border
+                    // stroke so the title reads as embedded in the top
+                    // rule, not a content row sitting on top of it.
+                    surface.surface_fill_rect(
+                        Rect::new(title_x - pad, title_y, title_w + pad * 2.0, title_h),
+                        bg,
+                    );
+                    surface.surface_draw_text_run(
+                        Rect::new(title_x, title_y, title_w.max(1.0), title_h.max(1.0)),
+                        title,
+                        fg,
+                    );
+
+                    text_top = text_top.max(title_y + title_h + 2.0);
+                }
+            }
+            TooltipBorder::Sides => {
+                surface.surface_draw_line(
+                    Point::new(bounds.x, bounds.y),
+                    Point::new(bounds.x, bounds.y + bounds.height),
+                    border,
+                    1.0,
+                );
+                surface.surface_draw_line(
+                    Point::new(bounds.x + bounds.width, bounds.y),
+                    Point::new(bounds.x + bounds.width, bounds.y + bounds.height),
+                    border,
+                    1.0,
+                );
+            }
+            TooltipBorder::None => {}
+        }
+
+        let text_padding_x = if matches!(chrome.border, TooltipBorder::None) {
+            padding_x / 2.0
+        } else {
+            padding_x
+        };
+        let text_x = bounds.x + text_padding_x;
+        let text_w = (bounds.x + bounds.width - text_x).max(0.0);
+
+        if let Some(ref styled_lines) = tooltip.styled_lines {
+            for (i, styled) in styled_lines.iter().enumerate() {
+                let row_y = text_top + i as f32 * line_height;
+                if row_y + line_height > bounds.y + bounds.height {
+                    break;
+                }
+                let mut x_off = text_x;
+                for span in &styled.spans {
+                    let span_fg = span.fg.unwrap_or(fg);
+                    let (span_w, _) = surface.surface_measure_text_styled(&span.text, span.bold);
+                    let rect = Rect::new(x_off, row_y, span_w.max(1.0), line_height);
+                    surface.surface_draw_text_run_styled(
+                        rect,
+                        &span.text,
+                        span_fg,
+                        span.bold,
+                        span.italic,
+                        span.underline,
+                        1.0,
+                    );
+                    x_off += span_w;
+                }
+            }
+            return;
+        }
+
+        for (i, text_line) in tooltip.text.lines().enumerate() {
+            let row_y = text_top + i as f32 * line_height;
+            if row_y + line_height > bounds.y + bounds.height {
+                break;
+            }
+            surface.surface_draw_text_run(
+                Rect::new(text_x, row_y, text_w, line_height),
+                text_line,
+                fg,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

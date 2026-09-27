@@ -1,39 +1,26 @@
 //! macOS rasteriser for [`crate::Tooltip`].
 //!
-//! Mirrors [`crate::gtk::tooltip::draw_tooltip`]: a filled background
-//! rectangle at the tooltip's resolved bounds, then border chrome per
-//! the [`TooltipChrome`] argument (#541 — [`crate::TooltipBorder`]; see
-//! `primitives::tooltip`'s module doc for why the vocabulary is a
-//! sidecar value rather than a field on [`Tooltip`] or
-//! [`TooltipLayout`]). [`draw_tooltip`] keeps its pre-#541 signature and
-//! renders `TooltipChrome::default()`; [`draw_tooltip_with_chrome`]
-//! takes the request explicitly:
+//! Content painting moved to the shared
+//! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
+//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! one drift it resolved (styled-line span bold/italic/underline; macOS
+//! keeps ignoring all three, unchanged from before this migration — see
+//! [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]'s
+//! doc for why the macOS adapter takes that verb's default).
 //!
-//! - [`TooltipBorder::Full`] (the default) strokes a full 4-sided box —
-//!   this backend has always done this, unconditionally, before #541
-//!   gave it a name (it was one of the three backends the original issue
-//!   flagged as "not verified in detail" beyond a `fill_rect` call —
-//!   confirmed here to be a `stroke_rect`, same as GTK). An optional
-//!   `chrome.title` is centred over the top edge, punched through the
-//!   stroke with a background-coloured backing rectangle so it reads as
-//!   embedded in the border, mirroring the TUI and GTK rasterisers.
-//! - [`TooltipBorder::Sides`] strokes two vertical lines at the left and
-//!   right edges only, no top/bottom. No title (no top rule).
-//! - [`TooltipBorder::None`] strokes nothing.
-//!
-//! Then draws either the plain `text` or per-row `styled_lines`.
+//! [`draw_tooltip`] keeps its pre-#541 signature and renders
+//! `TooltipChrome::default()`; [`draw_tooltip_with_chrome`] takes the
+//! chrome request explicitly.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-use super::text::{draw_text, measure_text};
-use crate::primitives::tooltip::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+use crate::primitives::tooltip::{native_surface_paint, Tooltip, TooltipChrome, TooltipLayout};
 use crate::theme::Theme;
 
 /// Draw a [`Tooltip`] at its resolved layout position with the default
-/// chrome — a [`TooltipBorder::Full`] box, no title, i.e. exactly what
-/// this rasteriser drew before #541 added a choice.
+/// chrome — a [`crate::TooltipBorder::Full`] box, no title, i.e. exactly
+/// what this rasteriser drew before #541 added a choice.
 ///
 /// `padding_x` is the horizontal padding from the left border to the
 /// start of text — consumers typically pass `char_width`.
@@ -44,7 +31,6 @@ use crate::theme::Theme;
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
-#[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_tooltip(
     ctx: CGContextRef,
     font: &CTFont,
@@ -75,8 +61,8 @@ pub unsafe fn draw_tooltip(
 ///
 /// `padding_x` is the horizontal padding from the left border to the
 /// start of text — consumers typically pass `char_width`. Halved when
-/// `chrome.border` is [`TooltipBorder::None`], since there is no border
-/// column to clear first — mirrors the TUI/GTK rasterisers.
+/// `chrome.border` is [`crate::TooltipBorder::None`], since there is no
+/// border column to clear first.
 ///
 /// # Safety
 ///
@@ -93,100 +79,19 @@ pub unsafe fn draw_tooltip_with_chrome(
     padding_x: f64,
     theme: &Theme,
 ) {
-    let bounds = tooltip_layout.bounds;
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-
-    let bg = tooltip.bg.unwrap_or(theme.hover_bg);
-    let fg = tooltip.fg.unwrap_or(theme.hover_fg);
-    let border = theme.hover_border;
-
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-
-    fill_rect(ctx, bx, by, bw, bh, bg);
-
-    // Content normally starts 2pt below the top edge; a title pushes
-    // that down further, since its real font height (title_h) is
-    // typically much taller than the 1pt border line it's centred on —
-    // without this, a title would visually collide with the first
-    // content row instead of sitting in its own space above it, the way
-    // the TUI rasteriser's dedicated title row never overlaps content.
-    let mut text_top = by + 2.0;
-
-    match chrome.border {
-        TooltipBorder::Full => {
-            stroke_rect(ctx, bx, by, bw, bh, border, 1.0);
-
-            if let Some(title) = chrome
-                .title
-                .as_deref()
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-            {
-                let (title_w, title_h) = measure_text(font, title);
-                let pad = 4.0;
-                let title_x = bx + ((bw - title_w) / 2.0).max(0.0);
-                let title_y = by - title_h / 2.0;
-
-                // Punch a background-coloured gap through the border
-                // stroke so the title reads as embedded in the top rule,
-                // not a content row sitting on top of it — mirrors the
-                // GTK rasteriser.
-                fill_rect(
-                    ctx,
-                    title_x - pad,
-                    title_y,
-                    title_w + pad * 2.0,
-                    title_h,
-                    bg,
-                );
-                draw_text(ctx, font, title, title_x, title_y, color_to_cg(fg));
-
-                text_top = text_top.max(title_y + title_h + 2.0);
-            }
-        }
-        TooltipBorder::Sides => {
-            stroke_line(ctx, bx, by, bx, by + bh, border, 1.0);
-            stroke_line(ctx, bx + bw, by, bx + bw, by + bh, border, 1.0);
-        }
-        TooltipBorder::None => {}
-    }
-
-    let text_padding_x = if matches!(chrome.border, TooltipBorder::None) {
-        padding_x / 2.0
-    } else {
-        padding_x
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
     };
-    let text_x = bx + text_padding_x;
-
-    if let Some(ref styled_lines) = tooltip.styled_lines {
-        for (i, styled) in styled_lines.iter().enumerate() {
-            let row_y = text_top + i as f64 * line_height;
-            if row_y + line_height > by + bh {
-                break;
-            }
-            let mut x_off = text_x;
-            for span in &styled.spans {
-                let span_fg = span.fg.unwrap_or(fg);
-                draw_text(ctx, font, &span.text, x_off, row_y, color_to_cg(span_fg));
-                let (sw, _) = measure_text(font, &span.text);
-                x_off += sw;
-            }
-        }
-        return;
-    }
-
-    for (i, text_line) in tooltip.text.lines().enumerate() {
-        let row_y = text_top + i as f64 * line_height;
-        if row_y + line_height > by + bh {
-            break;
-        }
-        draw_text(ctx, font, text_line, text_x, row_y, color_to_cg(fg));
-    }
+    native_surface_paint::paint(
+        tooltip,
+        tooltip_layout,
+        chrome,
+        line_height as f32,
+        padding_x as f32,
+        &mut surface,
+        theme,
+    );
 }
 
 #[cfg(test)]
@@ -196,7 +101,9 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout, TooltipPlacement};
+    use crate::primitives::tooltip::{
+        ResolvedPlacement, Tooltip, TooltipBorder, TooltipLayout, TooltipPlacement,
+    };
     use crate::types::WidgetId;
     use crate::Backend;
 
