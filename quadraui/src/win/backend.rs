@@ -2474,6 +2474,7 @@ impl Backend for WinBackend {
                 rect,
                 palette,
                 self.current_line_height,
+                self.nerd_fonts_enabled,
             );
             return;
         }
@@ -2486,22 +2487,19 @@ impl Backend for WinBackend {
     /// [`Self::draw_palette`], so this doesn't gate on one being attached.
     /// `win::palette` itself is Windows-only (real `Direct2D`/`DirectWrite`
     /// types), same `#[cfg(target_os = "windows")]` split every other
-    /// method on this impl uses to stay a type-check-only stub elsewhere.
+    /// method on this impl uses to stay a type-check-only stub elsewhere —
+    /// so this calls the shared, target-agnostic
+    /// [`crate::primitives::palette::native_surface_paint::layout`]
+    /// (#1076) directly rather than reaching into that Windows-only
+    /// module (issue #924).
     fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
-        // Pure geometry (issue #818) — `super::palette::win_palette_layout`
-        // needs no Direct2D/DirectWrite type either, so this is computed
-        // directly instead of reaching into that Windows-only module
-        // (issue #924).
-        let line_height = self.current_line_height;
-        let title_h = if !palette.title.is_empty() {
-            line_height
-        } else {
-            0.0
-        };
-        let query_h = if palette.show_query { line_height } else { 0.0 };
-        palette.layout(rect.width, rect.height, title_h, query_h, 6.0, 8.0, |_| {
-            crate::primitives::palette::PaletteItemMeasure::new(line_height)
-        })
+        crate::primitives::palette::native_surface_paint::layout(
+            rect.width,
+            rect.height,
+            palette,
+            self.current_line_height,
+        )
+        .0
     }
 
     /// #734: see [`Self::draw_status_bar`]'s doc for the "surface not

@@ -1967,6 +1967,7 @@ impl Backend for MacBackend {
                 palette,
                 &theme,
                 line_height,
+                self.nerd_fonts_enabled,
             );
         }
     }
