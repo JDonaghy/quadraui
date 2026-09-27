@@ -16,13 +16,13 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use crate::event::Rect;
-use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
+use crate::primitives::layout_metrics::pixel_panel_layout;
+use crate::primitives::panel::{Panel, PanelLayout};
 use crate::theme::Theme;
 
-const GTK_ACTION_BUTTON_PX: f32 = 24.0;
-
 /// Compute the GTK pixel-unit layout for a [`Panel`] without painting.
+/// Shares its action-button width with `mac_panel_layout` /
+/// `win_panel_layout` via [`pixel_panel_layout`] (issue #1079).
 pub fn gtk_panel_layout(
     panel: &Panel,
     x: f64,
@@ -31,17 +31,14 @@ pub fn gtk_panel_layout(
     h: f64,
     line_height: f64,
 ) -> PanelLayout {
-    let bounds = Rect::new(x as f32, y as f32, w as f32, h as f32);
-    let measure = PanelMeasure {
-        title_bar_height: if panel.title.is_some() {
-            line_height as f32
-        } else {
-            0.0
-        },
-        action_button_width: GTK_ACTION_BUTTON_PX,
-        content_padding: 0.0,
-    };
-    panel.layout(bounds, measure)
+    pixel_panel_layout(
+        panel,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        line_height as f32,
+    )
 }
 
 /// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces

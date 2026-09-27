@@ -18,25 +18,23 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{rounded_rect_path, set_source};
+use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
 use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
+    status_color, status_glyph, PipelineView, PipelineViewLayout,
 };
 use crate::theme::Theme;
 
-/// Arrow connector width in pixels.
-const GTK_ARROW_WIDTH_PX: f32 = 32.0;
-/// Height reserved for the action button in pixels.
-const GTK_ACTION_HEIGHT_PX: f32 = 22.0;
-/// Corner radius for stage boxes.
-const CORNER_RADIUS: f64 = 4.0;
-/// Padding inside each stage box (left/right, in px).
-const H_PAD: f64 = 8.0;
-/// Border width for stage box outline.
-const BORDER_WIDTH: f64 = 1.0;
-/// Height reserved above stage boxes for the focus indicator (pixels).
-const GTK_FOCUS_INDICATOR_H: f64 = 8.0;
-
-/// Compute the GTK pixel-unit layout for a [`PipelineView`] without painting.
+/// Compute the GTK pixel-unit layout for a [`PipelineView`] without
+/// painting. Shares its geometry with `mac_pipeline_view_layout` /
+/// `win_pipeline_view_layout` via [`pixel_pipeline_view_layout`] (issue
+/// #1079).
+///
+/// Note: the returned layout (incl. `bounds`) is offset down by
+/// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
+/// reserved caret strip. The focus caret is painted in the gap between
+/// the passed-in `y` and `bounds.y`; a host that clips drawing to
+/// `layout.bounds` would clip the caret — clip to the original `(y, h)`
+/// instead.
 pub fn gtk_pipeline_view_layout(
     view: &PipelineView,
     x: f64,
@@ -44,26 +42,7 @@ pub fn gtk_pipeline_view_layout(
     w: f64,
     h: f64,
 ) -> PipelineViewLayout {
-    let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
-        GTK_ACTION_HEIGHT_PX
-    } else {
-        0.0
-    };
-    // Note: the returned layout (incl. `bounds`) is offset down by
-    // `GTK_FOCUS_INDICATOR_H`, so `bounds.y` starts below the reserved caret
-    // strip. The focus caret is painted in the gap between the passed-in `y`
-    // and `bounds.y`; a host that clips drawing to `layout.bounds` would clip
-    // the caret — clip to the original `(y, h)` instead.
-    view.layout(
-        x as f32,
-        (y + GTK_FOCUS_INDICATOR_H) as f32,
-        PipelineViewMeasure::new(
-            w as f32,
-            (h - GTK_FOCUS_INDICATOR_H).max(0.0) as f32,
-            GTK_ARROW_WIDTH_PX,
-            action_h,
-        ),
-    )
+    pixel_pipeline_view_layout(view, x as f32, y as f32, w as f32, h as f32)
 }
 
 /// Draw a [`PipelineView`] onto `cr`. Returns the layout for host click
@@ -100,21 +79,21 @@ pub fn draw_pipeline_view(
 
         // ── Box fill ─────────────────────────────────────────────────────
         set_source(cr, theme.surface_bg);
-        rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
+        rounded_rect_path(cr, bx, by, bw, bh, pixel::CORNER_RADIUS);
         cr.fill().ok();
 
         // ── Box border (per-status colour; focus uses an above-box indicator) ──
         let border_color = status_color(&stage.status, theme);
         set_source(cr, border_color);
-        cr.set_line_width(BORDER_WIDTH);
-        rounded_rect_path(cr, bx, by, bw, bh, CORNER_RADIUS);
+        cr.set_line_width(pixel::PIPELINE_BORDER_WIDTH);
+        rounded_rect_path(cr, bx, by, bw, bh, pixel::CORNER_RADIUS);
         cr.stroke().ok();
 
         // ── Focus indicator (small ▼ triangle above the box) ─────────────
         if is_focused {
             let ind_x = bx + bw / 2.0;
             let tri_tip_y = by - 1.0;
-            let tri_base_y = by - GTK_FOCUS_INDICATOR_H + 1.0;
+            let tri_base_y = by - pixel::PIPELINE_FOCUS_INDICATOR_H as f64 + 1.0;
             let tri_half_w = 5.0;
             set_source(cr, theme.muted_fg);
             cr.move_to(ind_x, tri_tip_y);
@@ -141,7 +120,7 @@ pub fn draw_pipeline_view(
         if !stage.label.is_empty() {
             set_source(cr, theme.foreground);
             pango_layout.set_text(&stage.label);
-            pango_layout.set_width((bw - 2.0 * H_PAD) as i32 * pango::SCALE);
+            pango_layout.set_width((bw - 2.0 * pixel::PIPELINE_H_PAD) as i32 * pango::SCALE);
             pango_layout.set_ellipsize(pango::EllipsizeMode::End);
             let (lw, lh) = pango_layout.pixel_size();
             let label_cx = bx + bw / 2.0 - lw as f64 / 2.0;

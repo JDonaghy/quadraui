@@ -28,28 +28,18 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
+use crate::primitives::layout_metrics::pixel_panel_layout;
+use crate::primitives::panel::{Panel, PanelLayout};
 use crate::theme::Theme;
-
-/// Width (DIPs) reserved per title-bar action button — the DirectWrite
-/// twin of `gtk::panel::GTK_ACTION_BUTTON_PX`.
-pub const ACTION_BUTTON_DIP: f32 = 24.0;
 
 /// Compute a [`Panel`]'s layout without painting — the DirectWrite
 /// measurer twin of [`draw_panel`]. Both call [`Panel::layout`] with the
 /// identical measure, so a no-paint hit-test call always agrees with
-/// what the last paint drew.
+/// what the last paint drew. Shares its action-button width with
+/// `gtk_panel_layout` / `mac_panel_layout` via [`pixel_panel_layout`]
+/// (issue #1079).
 pub fn win_panel_layout(rect: Rect, panel: &Panel, line_height: f32) -> PanelLayout {
-    let measure = PanelMeasure {
-        title_bar_height: if panel.title.is_some() {
-            line_height
-        } else {
-            0.0
-        },
-        action_button_width: ACTION_BUTTON_DIP,
-        content_padding: 0.0,
-    };
-    panel.layout(rect, measure)
+    pixel_panel_layout(panel, rect.x, rect.y, rect.width, rect.height, line_height)
 }
 
 /// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces

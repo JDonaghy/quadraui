@@ -3506,17 +3506,16 @@ impl Backend for WinBackend {
     /// thickness), so unlike most `*_layout` siblings this doesn't even
     /// need `self.dwrite`, only kept behind the `target_os = "windows"`
     /// gate for consistency with every other method in this file.
+    ///
+    /// Issue #1079: this used to duplicate `super::split::win_split_layout`'s
+    /// `DIVIDER_DIP` constant by value (per `PRIMITIVE_RULES.md`#713, to
+    /// avoid reaching into the Windows-only `super::split` module — issue
+    /// #924). [`crate::primitives::layout_metrics::pixel_split_layout`]
+    /// is plain, platform-independent geometry (no Windows-only type in
+    /// its signature), so it can be called directly here with no such
+    /// tradeoff — one shared divider-thickness constant instead of two.
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
-        // Pure geometry (uniform divider thickness, no measurer) —
-        // mirrors `super::split::win_split_layout`'s shape (same
-        // `DIVIDER_DIP`, duplicated by value per `PRIMITIVE_RULES.md`#713),
-        // computed directly instead of reaching into that Windows-only
-        // module (issue #924).
-        const DIVIDER_DIP: f32 = 4.0;
-        split.layout(
-            rect,
-            crate::primitives::split::SplitMeasure::new(DIVIDER_DIP),
-        )
+        crate::primitives::layout_metrics::pixel_split_layout(split, rect)
     }
 
     /// #740: see [`Self::draw_split`]'s doc for the "surface not attached
@@ -3548,20 +3547,17 @@ impl Backend for WinBackend {
     /// thickness), so unlike most `*_layout` siblings this doesn't even
     /// need `self.dwrite`, only kept behind the `target_os = "windows"`
     /// gate for consistency with every other method in this file. See
-    /// [`Self::split_layout`]'s comment for why this block has no
-    /// `return`.
+    /// [`Self::split_layout`]'s doc (issue #1079) for why this now
+    /// delegates to the shared, platform-independent
+    /// [`crate::primitives::layout_metrics::pixel_split_tree_layout`]
+    /// instead of duplicating `super::split_tree`'s `DIVIDER_DIP` by
+    /// value.
     fn split_tree_layout(
         &self,
         rect: Rect,
         tree: &crate::primitives::split_tree::SplitTree,
     ) -> crate::primitives::split_tree::SplitTreeLayout {
-        // Pure geometry — see `split_layout`'s doc (issue #924). Same
-        // `DIVIDER_DIP` value as `super::split_tree`.
-        const DIVIDER_DIP: f32 = 4.0;
-        tree.layout(
-            rect,
-            crate::primitives::split_tree::SplitTreeMeasure::new(DIVIDER_DIP),
-        )
+        crate::primitives::layout_metrics::pixel_split_tree_layout(tree, rect)
     }
 
     /// #736: real Direct2D/DirectWrite rasteriser via `win::board` once a
@@ -3590,28 +3586,18 @@ impl Backend for WinBackend {
     /// method in this file. No `return` in the `windows` arm — see
     /// [`Self::activity_bar_layout`]'s doc for why.
     fn board_layout(&self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
-        // Pure geometry (fixed DIP constants) — `crate::primitives::board`
-        // exposes both `board_layout` and every constant
-        // `super::board::win_board_layout` uses, so this calls them
-        // directly rather than reaching into that Windows-only module
-        // (issue #924).
-        use crate::primitives::board::{
-            BoardMeasure, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX, BOARD_COL_MIN_PX,
-            BOARD_HEADER_H_PX,
-        };
-        crate::primitives::board::board_layout(
+        // Pure geometry (fixed DIP constants) — issue #1079 lifted the
+        // `BoardMeasure::new(BOARD_*_PX...)` construction
+        // `super::board::win_board_layout` also does into
+        // `crate::primitives::layout_metrics::pixel_board_layout`, callable
+        // directly here (no Windows-only type in its signature) rather
+        // than reaching into that Windows-only module (issue #924).
+        crate::primitives::layout_metrics::pixel_board_layout(
             model,
             rect.x,
             rect.y,
             rect.width,
             rect.height,
-            BoardMeasure::new(
-                BOARD_COL_MIN_PX,
-                BOARD_COL_GAP_PX,
-                BOARD_HEADER_H_PX,
-                BOARD_CARD_H_PX,
-                BOARD_CARD_GAP_PX,
-            ),
         )
     }
 
@@ -3821,32 +3807,27 @@ impl Backend for WinBackend {
 
     /// #735: pure geometry — `PipelineView::layout` needs no measurer at
     /// all (fixed DIP constants for arrow/action-height), so this needs
-    /// no `self.dwrite`/surface at all (issue #924) — computed directly
-    /// rather than reaching into the Windows-only `super::pipeline_view`
-    /// module. Same constant values as that module, per
-    /// `PRIMITIVE_RULES.md`#713.
+    /// no `self.dwrite`/surface at all (issue #924).
+    ///
+    /// Issue #1079: this used to duplicate `super::pipeline_view`'s
+    /// `WIN_ARROW_WIDTH_DIP` / `WIN_ACTION_HEIGHT_DIP` /
+    /// `WIN_FOCUS_INDICATOR_H` constants by value (per
+    /// `PRIMITIVE_RULES.md`#713, to avoid reaching into that
+    /// Windows-only module — issue #924).
+    /// [`crate::primitives::layout_metrics::pixel_pipeline_view_layout`]
+    /// is plain, platform-independent geometry, so it can be called
+    /// directly here instead — one shared set of constants.
     fn pipeline_view_layout(
         &self,
         rect: Rect,
         view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        const WIN_ARROW_WIDTH_DIP: f32 = 32.0;
-        const WIN_ACTION_HEIGHT_DIP: f32 = 22.0;
-        const WIN_FOCUS_INDICATOR_H: f32 = 8.0;
-        let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
-            WIN_ACTION_HEIGHT_DIP
-        } else {
-            0.0
-        };
-        view.layout(
+        crate::primitives::layout_metrics::pixel_pipeline_view_layout(
+            view,
             rect.x,
-            rect.y + WIN_FOCUS_INDICATOR_H,
-            crate::primitives::pipeline_view::PipelineViewMeasure::new(
-                rect.width,
-                (rect.height - WIN_FOCUS_INDICATOR_H).max(0.0),
-                WIN_ARROW_WIDTH_DIP,
-                action_h,
-            ),
+            rect.y,
+            rect.width,
+            rect.height,
         )
     }
 
@@ -3864,25 +3845,21 @@ impl Backend for WinBackend {
 
     /// #29: pure geometry — `ProgressBar::layout` needs no measurer at
     /// all (uniform cancel-affordance width), so this needs no
-    /// `self.dwrite`/surface at all (issue #924) — computed directly
-    /// rather than reaching into the Windows-only `super::progress`
-    /// module. Same `CANCEL_WIDTH_DIP` value as that module, per
-    /// `PRIMITIVE_RULES.md`#713.
+    /// `self.dwrite`/surface at all (issue #924).
+    ///
+    /// Issue #1079: this used to duplicate `super::progress`'s
+    /// `CANCEL_WIDTH_DIP` constant by value (per `PRIMITIVE_RULES.md`#713,
+    /// to avoid reaching into that Windows-only module — issue #924).
+    /// [`crate::primitives::layout_metrics::pixel_progress_layout`] is
+    /// plain, platform-independent geometry, so it can be called
+    /// directly here instead — one shared constant.
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        const CANCEL_WIDTH_DIP: f32 = 28.0;
-        let cancel_width = if bar.cancellable {
-            CANCEL_WIDTH_DIP
-        } else {
-            0.0
-        };
-        bar.layout(
+        crate::primitives::layout_metrics::pixel_progress_layout(
+            bar,
             rect.x,
             rect.y,
-            crate::primitives::progress::ProgressBarMeasure {
-                width: rect.width,
-                height: rect.height,
-                cancel_width,
-            },
+            rect.width,
+            rect.height,
         )
     }
 
@@ -4178,15 +4155,14 @@ impl Backend for WinBackend {
         rect: Rect,
         chart: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
-        chart.layout(
+        crate::primitives::layout_metrics::pixel_chart_layout(
+            chart,
             rect.x,
             rect.y,
-            crate::primitives::chart::ChartMeasure {
-                width: rect.width,
-                height: rect.height,
-                char_width: self.current_char_width,
-                line_height: self.current_line_height,
-            },
+            rect.width,
+            rect.height,
+            self.current_line_height,
+            self.current_char_width,
         )
     }
 }

@@ -13,16 +13,16 @@
 use gtk4::cairo::Context;
 
 use crate::event::Rect;
-use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::layout_metrics::pixel_split_tree_layout;
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::theme::Theme;
 
-const GTK_DIVIDER_PX: f32 = 4.0;
-
 /// Compute the GTK pixel-unit layout for a [`SplitTree`] without
-/// painting.
+/// painting. Shares its divider thickness with `mac_split_tree_layout` /
+/// `win_split_tree_layout` via [`pixel_split_tree_layout`] (issue #1079).
 pub fn gtk_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = Rect::new(x as f32, y as f32, w as f32, h as f32);
-    tree.layout(bounds, SplitTreeMeasure::new(GTK_DIVIDER_PX))
+    pixel_split_tree_layout(tree, bounds)
 }
 
 /// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
@@ -142,7 +142,10 @@ mod tests {
         let layout = gtk_split_tree_layout(&tree, 0.0, 0.0, 100.0, 50.0);
         assert_eq!(layout.leaves.len(), 2);
         assert_eq!(layout.dividers.len(), 1);
-        assert_eq!(layout.dividers[0].thickness, GTK_DIVIDER_PX);
+        assert_eq!(
+            layout.dividers[0].thickness,
+            crate::primitives::layout_metrics::pixel::DIVIDER
+        );
         // available = 96, 0.5*96 = 48.
         assert!((layout.dividers[0].position - 48.0).abs() < 0.001);
     }

@@ -23,16 +23,9 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::measure_text;
-use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
+use crate::primitives::layout_metrics::pixel_toast_stack_layout;
+use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::theme::Theme;
-
-const TOAST_WIDTH_PX: f32 = 320.0;
-const TOAST_MARGIN_PX: f32 = 12.0;
-const TOAST_GAP_PX: f32 = 8.0;
-const DISMISS_WIDTH_PX: f32 = 28.0;
-const ACTION_PADDING_PX: f32 = 16.0;
-const TOAST_PADDING_PX: f64 = 8.0;
 
 /// Compute the macOS pixel-unit layout for a [`ToastStack`].
 ///
@@ -45,7 +38,11 @@ const TOAST_PADDING_PX: f64 = 8.0;
 /// paint's internal layout computation (which measures via
 /// [`crate::native_surface::NativeSurface::surface_measure_text`]) — same
 /// "no-paint layout stays put" posture as `MacBackend::status_bar_layout`
-/// (#860).
+/// (#860). Shares its geometry with `gtk_toast_stack_layout` /
+/// `win_toast_stack_layout` via [`pixel_toast_stack_layout`] (issue
+/// #1079) — `font: &CTFont` is passed straight through as `&dyn
+/// TextMeasure` (`CTFont` implements it directly, see `macos::text`'s
+/// module doc).
 #[allow(clippy::too_many_arguments)]
 pub fn mac_toast_stack_layout(
     stack: &ToastStack,
@@ -56,35 +53,14 @@ pub fn mac_toast_stack_layout(
     viewport_height: f32,
     line_height: f64,
 ) -> ToastStackLayout {
-    stack.layout(
+    pixel_toast_stack_layout(
+        stack,
+        font,
         origin_x,
         origin_y,
         viewport_width,
         viewport_height,
-        TOAST_MARGIN_PX,
-        TOAST_GAP_PX,
-        |i| {
-            let toast = &stack.toasts[i];
-            let h = if toast.body.is_empty() {
-                line_height as f32 + TOAST_PADDING_PX as f32 * 2.0
-            } else {
-                line_height as f32 * 2.0 + TOAST_PADDING_PX as f32 * 2.0
-            };
-            let action_w = toast
-                .action
-                .as_ref()
-                .map(|a| {
-                    let (tw, _) = measure_text(font, &a.label);
-                    tw as f32 + ACTION_PADDING_PX
-                })
-                .unwrap_or(0.0);
-            ToastMeasure {
-                width: TOAST_WIDTH_PX.min(viewport_width - TOAST_MARGIN_PX * 2.0),
-                height: h,
-                dismiss_width: DISMISS_WIDTH_PX,
-                action_width: action_w,
-            }
-        },
+        line_height as f32,
     )
 }
 
@@ -139,6 +115,7 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
+    use crate::primitives::layout_metrics::pixel;
     use crate::primitives::toast::{ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity};
     use crate::types::WidgetId;
     use crate::Backend;
@@ -217,14 +194,14 @@ mod tests {
         let first = &layout.visible_toasts[0];
         // Right edge near W - margin.
         assert!(
-            (first.bounds.x + first.bounds.width - (W as f32 - TOAST_MARGIN_PX)).abs() < 1.0,
+            (first.bounds.x + first.bounds.width - (W as f32 - pixel::TOAST_MARGIN)).abs() < 1.0,
             "toast right edge should be near viewport right: got x={}, width={}",
             first.bounds.x,
             first.bounds.width,
         );
         // Bottom edge near H - margin.
         assert!(
-            (first.bounds.y + first.bounds.height - (H as f32 - TOAST_MARGIN_PX)).abs() < 1.0,
+            (first.bounds.y + first.bounds.height - (H as f32 - pixel::TOAST_MARGIN)).abs() < 1.0,
             "toast bottom edge should be near viewport bottom",
         );
     }
@@ -241,7 +218,7 @@ mod tests {
         let t = &layout.visible_toasts[0];
         // Probe inside the box, away from glyphs (right of the title
         // and above the dismiss).
-        let px = (t.bounds.x + t.bounds.width - DISMISS_WIDTH_PX - 4.0) as u32;
+        let px = (t.bounds.x + t.bounds.width - pixel::TOAST_DISMISS_WIDTH - 4.0) as u32;
         let py = (t.bounds.y + t.bounds.height - 2.0) as u32;
         let (r, g, b, _) = surface.pixel(px, py);
         // Error severity's fallback tint is `theme.error_fg` — see

@@ -44,10 +44,9 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use super::text::{fill_rect, stroke_rect, DWrite};
 use crate::event::Rect;
 use crate::primitives::board::{
-    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel,
-    BOARD_CARD_GAP_PX, BOARD_CARD_H_PAD_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX, BOARD_COL_MIN_PX,
-    BOARD_HEADER_H_PX,
+    badge_fg_color, badge_icon, BoardLayout, BoardModel, BOARD_CARD_H_PAD_PX,
 };
+use crate::primitives::layout_metrics::pixel_board_layout;
 use crate::theme::Theme;
 
 /// Border stroke width for card boxes, in DIPs. Same value as
@@ -74,22 +73,11 @@ const HEADER_Y_OFF_DIP: f32 = 4.0;
 /// Compute the Win-GUI DIP-unit layout for a [`BoardModel`] without
 /// painting — the DirectWrite twin of [`draw_board`]'s internal layout
 /// call. Same contract as the GTK/macOS/TUI twins' `*_board_layout`:
-/// `rect.x`/`rect.y` are baked into every returned bound (absolute frame).
+/// `rect.x`/`rect.y` are baked into every returned bound (absolute
+/// frame). Shares its column/card measure with `gtk_board_layout` /
+/// `mac_board_layout` via [`pixel_board_layout`] (issue #1079).
 pub fn win_board_layout(model: &BoardModel, rect: Rect) -> BoardLayout {
-    board_layout(
-        model,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        BoardMeasure::new(
-            BOARD_COL_MIN_PX,
-            BOARD_COL_GAP_PX,
-            BOARD_HEADER_H_PX,
-            BOARD_CARD_H_PX,
-            BOARD_CARD_GAP_PX,
-        ),
-    )
+    pixel_board_layout(model, rect.x, rect.y, rect.width, rect.height)
 }
 
 /// Draw a [`BoardModel`] into `rect` (DIPs, target-relative) on `target`.

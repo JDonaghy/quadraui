@@ -15,20 +15,19 @@
 use core_graphics::sys::CGContextRef;
 
 use crate::event::Rect as QRect;
-use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::layout_metrics::pixel_split_tree_layout;
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::theme::Theme;
-
-/// 4-point divider thickness, matching `super::split`'s `DIVIDER_PX` and
-/// the GTK twin's `GTK_DIVIDER_PX`.
-const MAC_DIVIDER_PX: f32 = 4.0;
 
 /// Compute the macOS point-unit layout for a [`SplitTree`] without
 /// painting. `x` / `y` are baked into the returned leaf and divider
 /// geometry (absolute frame), matching [`super::split::mac_split_layout`]
-/// and the GTK / TUI twins.
+/// and the GTK / TUI twins. Shares its divider thickness with
+/// `gtk_split_tree_layout` / `win_split_tree_layout` via
+/// [`pixel_split_tree_layout`] (issue #1079).
 pub fn mac_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    tree.layout(bounds, SplitTreeMeasure::new(MAC_DIVIDER_PX))
+    pixel_split_tree_layout(tree, bounds)
 }
 
 /// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
@@ -265,7 +264,10 @@ mod tests {
     #[test]
     fn divider_thickness_matches_the_plain_split_rasteriser() {
         let layout = mac_split_tree_layout(&two_pane(), 0.0, 0.0, 100.0, 50.0);
-        assert_eq!(layout.dividers[0].thickness, MAC_DIVIDER_PX);
+        assert_eq!(
+            layout.dividers[0].thickness,
+            crate::primitives::layout_metrics::pixel::DIVIDER
+        );
         // available = 96, 0.5 * 96 = 48 — identical to the GTK twin's
         // `layout_matches_split_layout_semantics`.
         assert!((layout.dividers[0].position - 48.0).abs() < 0.001);

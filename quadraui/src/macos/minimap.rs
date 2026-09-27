@@ -43,19 +43,13 @@ use core_text::font::CTFont;
 
 use super::text::draw_text;
 use crate::event::Rect;
+use crate::primitives::layout_metrics::pixel_minimap_layout_scaled;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
-    MinimapRenderMode, MinimapScale, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine,
-    COLUMN_CAPACITY,
+    MinimapRenderMode, MinimapScale, MinimapSpan, SpanCursor, VisibleMinimapLine, COLUMN_CAPACITY,
 };
 use crate::theme::Theme;
 use crate::types::Color;
-
-/// Same grouping factor as GTK/Win-GUI — see `gtk::minimap::LINES_PER_ROW`'s
-/// doc. macOS shows one buffer line per painted row, no cross-line colour
-/// reduction (see [`crate::MinimapGrid`]'s doc for why TUI's braille
-/// packing differs).
-pub const LINES_PER_ROW: usize = 1;
 
 /// Compute the macOS point-unit layout for a [`Minimap`] without painting, at
 /// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is for
@@ -70,7 +64,10 @@ pub fn mac_minimap_layout(minimap: &Minimap, rect: Rect) -> MinimapLayout {
 }
 
 /// [`mac_minimap_layout`], but at an explicit [`MinimapScale`] (issue
-/// #1143) — what [`MacBackend::minimap_layout`] actually calls.
+/// #1143) — what [`MacBackend::minimap_layout`] actually calls. Shares
+/// its `lines_per_row`/sizing formula with `gtk_minimap_layout_scaled` /
+/// `win_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`] (issue
+/// #1079).
 ///
 /// [`MacBackend::minimap_layout`]: crate::macos::MacBackend
 pub(crate) fn mac_minimap_layout_scaled(
@@ -78,11 +75,7 @@ pub(crate) fn mac_minimap_layout_scaled(
     rect: Rect,
     scale: MinimapScale,
 ) -> MinimapLayout {
-    minimap.layout_with_sizing(
-        rect,
-        LINES_PER_ROW,
-        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
-    )
+    pixel_minimap_layout_scaled(minimap, rect, scale)
 }
 
 /// Draw a [`Minimap`] into `rect` (points, target-relative) on `ctx`, at

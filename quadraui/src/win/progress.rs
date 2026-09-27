@@ -22,34 +22,18 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
+use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::theme::Theme;
-
-/// Width (DIPs) reserved for the cancel affordance — the DirectWrite
-/// twin of `gtk::progress::GTK_CANCEL_WIDTH_PX`.
-pub const CANCEL_WIDTH_DIP: f32 = 28.0;
-/// Width (DIPs) of the sliding indeterminate pulse.
-const PULSE_WIDTH_DIP: f32 = 40.0;
 
 /// Compute a [`ProgressBar`]'s layout without painting — the twin of
 /// [`draw_progress`]. Both call [`ProgressBar::layout`] with the
 /// identical cancel-affordance width, so a no-paint hit-test call
-/// always agrees with what the last paint drew.
+/// always agrees with what the last paint drew. Shares that width with
+/// `gtk_progress_layout` / `mac_progress_layout` via
+/// [`pixel_progress_layout`] (issue #1079).
 pub fn win_progress_layout(rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-    let cancel_width = if bar.cancellable {
-        CANCEL_WIDTH_DIP
-    } else {
-        0.0
-    };
-    bar.layout(
-        rect.x,
-        rect.y,
-        ProgressBarMeasure {
-            width: rect.width,
-            height: rect.height,
-            cancel_width,
-        },
-    )
+    pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height)
 }
 
 /// Draw a [`ProgressBar`] onto `target`. Returns the layout for host
@@ -73,12 +57,12 @@ pub fn draw_progress(
         // Indeterminate: a sliding pulse driven by `frame_idx`, same
         // formula as `gtk::progress::draw_progress`.
         let bar_w = if bar.cancellable {
-            (rect.width - CANCEL_WIDTH_DIP).max(0.0)
+            (rect.width - pixel::PROGRESS_CANCEL_WIDTH).max(0.0)
         } else {
             rect.width
         };
         if bar_w > 0.0 {
-            let pulse_w = PULSE_WIDTH_DIP.min(bar_w);
+            let pulse_w = pixel::PROGRESS_PULSE_WIDTH.min(bar_w);
             let pos = (bar.frame_idx as f32 * 4.0) % bar_w;
             let w = pulse_w.min(bar_w - pos);
             if w > 0.0 {

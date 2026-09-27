@@ -15,24 +15,25 @@
 //! docs.
 
 use crate::event::Rect;
-use crate::primitives::chart::{Chart, ChartLayout, ChartMeasure};
+use crate::primitives::chart::{Chart, ChartLayout};
+use crate::primitives::layout_metrics::pixel_chart_layout;
 
 /// Compute a [`Chart`]'s layout without painting — the DirectWrite twin
-/// of `gtk_chart_layout`/`mac_chart_layout`.
+/// of `gtk_chart_layout`/`mac_chart_layout`, via [`pixel_chart_layout`]
+/// (issue #1079).
 pub fn win_chart_layout(
     chart: &Chart,
     rect: Rect,
     char_width: f32,
     line_height: f32,
 ) -> ChartLayout {
-    chart.layout(
+    pixel_chart_layout(
+        chart,
         rect.x,
         rect.y,
-        ChartMeasure {
-            width: rect.width,
-            height: rect.height,
-            char_width,
-            line_height,
-        },
+        rect.width,
+        rect.height,
+        line_height,
+        char_width,
     )
 }

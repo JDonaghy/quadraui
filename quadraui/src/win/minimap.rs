@@ -48,17 +48,12 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
+use crate::primitives::layout_metrics::pixel_minimap_layout_scaled;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapLayout,
-    MinimapRenderMode, MinimapScale, MinimapSizing, MinimapSpan, SpanCursor, VisibleMinimapLine,
-    COLUMN_CAPACITY,
+    MinimapRenderMode, MinimapScale, MinimapSpan, SpanCursor, VisibleMinimapLine, COLUMN_CAPACITY,
 };
 use crate::theme::Theme;
-
-/// Win-GUI shows one buffer line per painted row — no cross-line colour
-/// reduction, same technique as `gtk::minimap::LINES_PER_ROW` (see
-/// [`crate::MinimapGrid`]'s doc for why TUI's braille packing differs).
-pub const LINES_PER_ROW: usize = 1;
 
 /// Compute the Win-GUI DIP-unit layout for a [`Minimap`] without painting,
 /// at [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly
@@ -75,7 +70,10 @@ pub fn win_minimap_layout(minimap: &Minimap, rect: Rect) -> MinimapLayout {
 }
 
 /// [`win_minimap_layout`], but at an explicit [`MinimapScale`] (issue
-/// #1143) — what [`WinBackend::minimap_layout`] actually calls.
+/// #1143) — what [`WinBackend::minimap_layout`] actually calls. Shares
+/// its `lines_per_row`/sizing formula with `gtk_minimap_layout_scaled` /
+/// `mac_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`] (issue
+/// #1079).
 ///
 /// [`WinBackend::minimap_layout`]: crate::win::backend::WinBackend
 pub(crate) fn win_minimap_layout_scaled(
@@ -83,11 +81,7 @@ pub(crate) fn win_minimap_layout_scaled(
     rect: Rect,
     scale: MinimapScale,
 ) -> MinimapLayout {
-    minimap.layout_with_sizing(
-        rect,
-        LINES_PER_ROW,
-        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
-    )
+    pixel_minimap_layout_scaled(minimap, rect, scale)
 }
 
 /// Draw a [`Minimap`] into `rect` (DIPs, target-relative) on `target`.

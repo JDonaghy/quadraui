@@ -2360,18 +2360,29 @@ impl Backend for GtkBackend {
         table_layout
     }
 
+    /// Issue #1079: this used to measure each column header by **byte
+    /// length** (`col.title.len() as f32 * char_width`) — a multi-byte
+    /// header (e.g. "日付") measured 2–3x too wide, since `str::len()`
+    /// counts UTF-8 bytes, not characters. Now routes through
+    /// [`crate::primitives::layout_metrics::pixel_data_table_layout`]
+    /// with a real `pango::Layout` measurer built from the widget-realized
+    /// `pango_ctx` (falling back to `PangoTextMeasure`'s `chars().count()`
+    /// estimate only when no context exists yet) — same "in-frame gets
+    /// real metrics, otherwise a character estimate" posture as
+    /// `Self::status_bar_layout`/`Self::form_layout`/`Self::toast_stack_layout`.
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
-        let lh = self.current_line_height;
-        let header_height = (lh * 1.2).round();
-        table.layout(
+        let char_w = self.current_char_width as f32;
+        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
+        };
+        crate::primitives::layout_metrics::pixel_data_table_layout(
+            table,
             rect.width,
             rect.height,
-            lh as f32,
-            header_height as f32,
-            8.0,
-            |col| {
-                crate::ColumnMeasure::new(col.title.len() as f32 * self.current_char_width as f32)
-            },
+            self.current_line_height as f32,
+            &measure,
         )
     }
 
@@ -4355,29 +4366,32 @@ impl Backend for GtkBackend {
         rect: QRect,
         stack: &crate::primitives::toast::ToastStack,
     ) -> crate::primitives::toast::ToastStackLayout {
-        // Layout-only path needs Pango for text measurement, but this
-        // runs outside the frame scope (from click handlers). Use a
-        // fixed-size approximation — same pattern as menu_bar_layout
-        // which uses current_char_width.
-        stack.layout(rect.x, rect.y, rect.width, rect.height, 12.0, 8.0, |i| {
-            let toast = &stack.toasts[i];
-            let h = if toast.body.is_empty() {
-                self.current_line_height as f32 + 16.0
-            } else {
-                self.current_line_height as f32 * 2.0 + 16.0
-            };
-            let action_w = toast
-                .action
-                .as_ref()
-                .map(|a| a.label.len() as f32 * self.current_char_width as f32 + 16.0)
-                .unwrap_or(0.0);
-            crate::primitives::toast::ToastMeasure {
-                width: 320.0_f32.min(rect.width - 24.0),
-                height: h,
-                dismiss_width: 28.0,
-                action_width: action_w,
-            }
-        })
+        // Layout-only path (from click handlers, outside `enter_frame_scope`)
+        // still measures via a real `pango::Layout` built from the
+        // widget-realized `pango_ctx` when one exists — falling back to
+        // `PangoTextMeasure`'s `chars().count()` estimate only when it
+        // doesn't (mirrors `Self::status_bar_layout`/`Self::form_layout`).
+        // Issue #1079: this used to be its own inline duplicate of
+        // `gtk_toast_stack_layout`'s formula, measuring the action label
+        // by **byte length** (`a.label.len()`) instead of a real/estimated
+        // character measurement — the same class of bug
+        // `data_table_layout` had. Sharing `pixel_toast_stack_layout`
+        // fixes both at once.
+        let char_w = self.current_char_width as f32;
+        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let measure = PangoTextMeasure {
+            layout: &pango_layout,
+            char_w,
+        };
+        crate::primitives::layout_metrics::pixel_toast_stack_layout(
+            stack,
+            &measure,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            self.current_line_height as f32,
+        )
     }
 
     fn draw_command_center(
@@ -7848,6 +7862,83 @@ mod tests {
         assert_eq!(
             at_origin.columns, shifted.columns,
             "LOCAL data_table_layout must not shift column bounds by rect.x/rect.y"
+        );
+    }
+
+    /// Issue #1079 regression: a multi-byte column header must measure by
+    /// **character count**, not UTF-8 byte length, on the click-routing
+    /// path's no-live-Pango-context fallback measurer. Before this fix,
+    /// `GtkBackend::data_table_layout` computed
+    /// `col.title.len() as f32 * char_width` directly — `"日付"` is 2
+    /// characters but 6 UTF-8 bytes, so a `Content`-width column came out
+    /// ~3x too wide. RED before #1079 (the resolved width matched the
+    /// byte-length formula), GREEN after (it matches
+    /// `PangoTextMeasure`'s `chars().count()`-based no-context estimate,
+    /// the same fallback `Self::form_layout`/`Self::status_bar_layout`
+    /// already used).
+    #[test]
+    fn gtk_backend_data_table_layout_measures_multibyte_header_by_char_count() {
+        use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
+        use crate::types::StyledText;
+
+        let title = "日付"; // 2 chars, 6 UTF-8 bytes
+        let table = crate::DataTable {
+            id: WidgetId::new("dt"),
+            // A trailing `Fixed` column so `resolve_columns`'s pass 4
+            // (#521 defect 2: stretch the *last* column to fill any
+            // viewport leftover) grows that one instead of masking
+            // the `Content` column's own measured width under test.
+            columns: vec![
+                Column {
+                    title: title.into(),
+                    width: ColumnWidth::Content {
+                        min: 0.0,
+                        max: 1000.0,
+                    },
+                    align: Default::default(),
+                },
+                Column {
+                    title: "filler".into(),
+                    width: ColumnWidth::Fixed(50.0),
+                    align: Default::default(),
+                },
+            ],
+            rows: vec![DataRow {
+                cells: vec![StyledText::plain("x"), StyledText::plain("y")],
+                decoration: Default::default(),
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+
+        // Fresh backend: no `pango_ctx` set, so `data_table_layout` falls
+        // back to the char-count estimate — exactly the path #1079's bug
+        // lived in.
+        let backend = GtkBackend::new();
+        let layout =
+            Backend::data_table_layout(&backend, QRect::new(0.0, 0.0, 500.0, 50.0), &table);
+
+        let char_w = 8.0_f32; // `GtkBackend::new()`'s default `current_char_width`
+        let byte_length_width = title.len() as f32 * char_w; // pre-#1079 bug's value
+        let char_count_width = (title.chars().count() as f32 * char_w).ceil() + 2.0;
+
+        assert_ne!(
+            byte_length_width, char_count_width,
+            "sanity: the two formulas must disagree for a multi-byte header"
+        );
+        assert_eq!(
+            layout.columns[0].width, char_count_width,
+            "multi-byte column header must measure by character count, not \
+             UTF-8 byte length: got {}, expected the char-count estimate \
+             {char_count_width} (byte-length bug would have produced {byte_length_width})",
+            layout.columns[0].width,
         );
     }
 

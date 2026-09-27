@@ -22,12 +22,22 @@
 //! font/context (see `macos::form::CtFontMeasure`).
 
 use crate::event::Rect as QRect;
+use crate::primitives::board::{BoardLayout, BoardMeasure, BoardModel};
+use crate::primitives::chart::{Chart, ChartLayout, ChartMeasure};
+use crate::primitives::data_table::{ColumnMeasure, DataTable, DataTableLayout};
 use crate::primitives::form::{FieldKind, FormField, FormFieldMeasure, FormItemMeasure};
 use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
+use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale, MinimapSizing};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
 };
+use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
+use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, PipelineViewMeasure};
+use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
+use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::types::Decoration;
 use crate::WidgetId;
@@ -40,6 +50,74 @@ use crate::WidgetId;
 pub trait TextMeasure {
     /// Width, in pixels/DIPs, of `text` rendered in the current UI font.
     fn width_of(&self, text: &str) -> f32;
+}
+
+/// Pixel/DIP-unit layout constants every pixel backend (`gtk`, `macos`,
+/// `win`) used to redefine independently, at the same value, under a
+/// different name (issue #1079): `GTK_DIVIDER_PX` / `MAC_DIVIDER_PX` /
+/// `DIVIDER_DIP` were all `4.0`, `TOAST_WIDTH_PX` / `GTK_TOAST_WIDTH_PX` /
+/// `TOAST_WIDTH_DIP` were all `320.0`, and so on for every constant below.
+/// One definition here means one place to change a value backends must
+/// agree on, and a `grep -rn 'const <NAME>' src/` that returns exactly one
+/// hit instead of three-to-six near-identical ones.
+///
+/// Values are logical pixels for `gtk`/`macos`, DIPs for `win` — the same
+/// numeric unit convention every backend already shared before this fix,
+/// just previously copy-pasted instead of referenced.
+pub mod pixel {
+    /// [`crate::Split`] / [`crate::primitives::split_tree::SplitTree`]
+    /// divider thickness.
+    pub const DIVIDER: f32 = 4.0;
+
+    /// [`crate::ToastStack`] max toast width.
+    pub const TOAST_WIDTH: f32 = 320.0;
+    /// [`crate::ToastStack`] margin from the viewport edge.
+    pub const TOAST_MARGIN: f32 = 12.0;
+    /// [`crate::ToastStack`] gap between stacked toasts.
+    pub const TOAST_GAP: f32 = 8.0;
+    /// [`crate::ToastStack`] vertical padding inside a toast box.
+    pub const TOAST_PADDING: f32 = 8.0;
+    /// [`crate::ToastStack`] width of the dismiss (`×`) affordance.
+    pub const TOAST_DISMISS_WIDTH: f32 = 28.0;
+    /// [`crate::ToastStack`] extra width reserved around an action label.
+    pub const TOAST_ACTION_PADDING: f32 = 16.0;
+
+    /// [`crate::ProgressBar`] width of the cancel (`×`) affordance.
+    pub const PROGRESS_CANCEL_WIDTH: f32 = 28.0;
+    /// [`crate::ProgressBar`] width of the sliding indeterminate pulse.
+    pub const PROGRESS_PULSE_WIDTH: f32 = 40.0;
+
+    /// [`crate::Panel`] width reserved per title-bar action button.
+    pub const PANEL_ACTION_BUTTON: f32 = 24.0;
+
+    /// [`crate::primitives::pipeline_view::PipelineView`] arrow connector
+    /// width between stage boxes.
+    pub const PIPELINE_ARROW_WIDTH: f32 = 32.0;
+    /// [`crate::primitives::pipeline_view::PipelineView`] height reserved
+    /// for a stage's action button.
+    pub const PIPELINE_ACTION_HEIGHT: f32 = 22.0;
+    /// [`crate::primitives::pipeline_view::PipelineView`] height reserved
+    /// above stage boxes for the keyboard-focus caret strip.
+    pub const PIPELINE_FOCUS_INDICATOR_H: f32 = 8.0;
+    /// [`crate::primitives::pipeline_view::PipelineView`] stage-box corner
+    /// radius (paint-only — [`super::PipelineViewLayout`] carries only
+    /// rectangles).
+    pub const CORNER_RADIUS: f64 = 4.0;
+    /// [`crate::primitives::pipeline_view::PipelineView`] horizontal
+    /// padding inside a stage box (paint-only).
+    pub const PIPELINE_H_PAD: f64 = 8.0;
+    /// [`crate::primitives::pipeline_view::PipelineView`] stage-box
+    /// border stroke width (paint-only).
+    pub const PIPELINE_BORDER_WIDTH: f64 = 1.0;
+
+    /// [`crate::DataTable`] width reserved for the vertical scrollbar.
+    pub const DATA_TABLE_SCROLLBAR_WIDTH: f32 = 8.0;
+
+    /// [`crate::primitives::minimap::Minimap`] buffer lines painted per
+    /// minimap row. Every pixel backend shows one buffer line per row (no
+    /// cross-line colour reduction — see [`crate::MinimapGrid`]'s doc for
+    /// why TUI's braille packing differs).
+    pub const MINIMAP_LINES_PER_ROW: usize = 1;
 }
 
 // ── Tree ─────────────────────────────────────────────────────────────
@@ -376,6 +454,275 @@ pub fn form_field_measure(
         }
         _ => FormFieldMeasure::new(row_h),
     }
+}
+
+// ── Toast ────────────────────────────────────────────────────────────
+
+/// Compute the pixel-unit layout for a [`ToastStack`] any pixel backend
+/// produces (issue #1079 — `gtk_toast_stack_layout`, `mac_toast_stack_layout`,
+/// `win_toast_stack_layout` were three copies of this exact formula, only
+/// differing in the constant names and how `measure` was obtained).
+///
+/// `(origin_x, origin_y)` is baked into the returned bounds (absolute
+/// frame) — hosts call `layout.hit_test(x, y)` with raw click
+/// coordinates, no localisation needed, matching every other
+/// `*_toast_stack_layout`.
+#[allow(clippy::too_many_arguments)]
+pub fn pixel_toast_stack_layout(
+    stack: &ToastStack,
+    measure: &dyn TextMeasure,
+    origin_x: f32,
+    origin_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    line_height: f32,
+) -> ToastStackLayout {
+    stack.layout(
+        origin_x,
+        origin_y,
+        viewport_width,
+        viewport_height,
+        pixel::TOAST_MARGIN,
+        pixel::TOAST_GAP,
+        |i| {
+            let toast = &stack.toasts[i];
+            let h = if toast.body.is_empty() {
+                line_height + pixel::TOAST_PADDING * 2.0
+            } else {
+                line_height * 2.0 + pixel::TOAST_PADDING * 2.0
+            };
+            let action_w = toast
+                .action
+                .as_ref()
+                .map(|a| measure.width_of(&a.label) + pixel::TOAST_ACTION_PADDING)
+                .unwrap_or(0.0);
+            ToastMeasure {
+                width: pixel::TOAST_WIDTH
+                    .min((viewport_width - pixel::TOAST_MARGIN * 2.0).max(0.0)),
+                height: h,
+                dismiss_width: pixel::TOAST_DISMISS_WIDTH,
+                action_width: action_w,
+            }
+        },
+    )
+}
+
+// ── Split / SplitTree ───────────────────────────────────────────────
+
+/// Compute a [`Split`]'s layout at the shared [`pixel::DIVIDER`]
+/// thickness — the twin of every backend's `*_split_layout` (issue
+/// #1079).
+pub fn pixel_split_layout(split: &Split, bounds: QRect) -> SplitLayout {
+    split.layout(bounds, SplitMeasure::new(pixel::DIVIDER))
+}
+
+/// Compute a [`SplitTree`]'s layout at the shared [`pixel::DIVIDER`]
+/// thickness — the twin of every backend's `*_split_tree_layout` (issue
+/// #1079).
+pub fn pixel_split_tree_layout(tree: &SplitTree, bounds: QRect) -> SplitTreeLayout {
+    tree.layout(bounds, SplitTreeMeasure::new(pixel::DIVIDER))
+}
+
+// ── Progress ─────────────────────────────────────────────────────────
+
+/// Compute a [`ProgressBar`]'s layout — the twin of every backend's
+/// `*_progress_layout` (issue #1079). `x`/`y`/`w`/`h` are the bar's own
+/// bounds; the cancel affordance (when `bar.cancellable`) reserves
+/// [`pixel::PROGRESS_CANCEL_WIDTH`].
+pub fn pixel_progress_layout(
+    bar: &ProgressBar,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> ProgressBarLayout {
+    let cancel_width = if bar.cancellable {
+        pixel::PROGRESS_CANCEL_WIDTH
+    } else {
+        0.0
+    };
+    bar.layout(
+        x,
+        y,
+        ProgressBarMeasure {
+            width: w,
+            height: h,
+            cancel_width,
+        },
+    )
+}
+
+// ── PipelineView ─────────────────────────────────────────────────────
+
+/// Compute a [`PipelineView`]'s layout — the twin of every backend's
+/// `*_pipeline_view_layout` (issue #1079).
+///
+/// Note: the returned layout (incl. `bounds`) is offset down by
+/// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
+/// reserved caret strip. The focus caret is painted in the gap between
+/// the passed-in `y` and `bounds.y`; a host that clips drawing to
+/// `layout.bounds` would clip the caret — clip to the original `(y, h)`
+/// instead.
+pub fn pixel_pipeline_view_layout(
+    view: &PipelineView,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> PipelineViewLayout {
+    let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
+        pixel::PIPELINE_ACTION_HEIGHT
+    } else {
+        0.0
+    };
+    view.layout(
+        x,
+        y + pixel::PIPELINE_FOCUS_INDICATOR_H,
+        PipelineViewMeasure::new(
+            w,
+            (h - pixel::PIPELINE_FOCUS_INDICATOR_H).max(0.0),
+            pixel::PIPELINE_ARROW_WIDTH,
+            action_h,
+        ),
+    )
+}
+
+// ── Board ────────────────────────────────────────────────────────────
+
+/// Compute a [`BoardModel`]'s layout — the twin of every backend's
+/// `*_board_layout` (issue #1079). The per-column/card geometry
+/// constants (`BOARD_COL_MIN_PX` etc.) were already shared via
+/// [`crate::primitives::board`] before this issue; this fn just removes
+/// the last bit of drift, the three near-identical wrapper calls.
+pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) -> BoardLayout {
+    use crate::primitives::board::{
+        board_layout, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX, BOARD_COL_MIN_PX,
+        BOARD_HEADER_H_PX,
+    };
+    board_layout(
+        model,
+        x,
+        y,
+        w,
+        h,
+        BoardMeasure::new(
+            BOARD_COL_MIN_PX,
+            BOARD_COL_GAP_PX,
+            BOARD_HEADER_H_PX,
+            BOARD_CARD_H_PX,
+            BOARD_CARD_GAP_PX,
+        ),
+    )
+}
+
+// ── Panel ────────────────────────────────────────────────────────────
+
+/// Compute a [`Panel`]'s layout — the twin of every backend's
+/// `*_panel_layout` (issue #1079). `content_padding` is always `0.0`
+/// today — no backend passes a non-zero value (see each backend's now
+/// pre-#1079 `*_panel_layout` history).
+pub fn pixel_panel_layout(
+    panel: &Panel,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    line_height: f32,
+) -> PanelLayout {
+    let bounds = QRect::new(x, y, w, h);
+    let measure = PanelMeasure {
+        title_bar_height: if panel.title.is_some() {
+            line_height
+        } else {
+            0.0
+        },
+        action_button_width: pixel::PANEL_ACTION_BUTTON,
+        content_padding: 0.0,
+    };
+    panel.layout(bounds, measure)
+}
+
+// ── Chart ────────────────────────────────────────────────────────────
+
+/// Compute a [`Chart`]'s layout — the twin of every backend's
+/// `*_chart_layout` (issue #1079). Pure passthrough to
+/// [`Chart::layout`]; kept here (rather than inlined at each call site)
+/// so a future backend gets it for free, matching every other fn in
+/// this module.
+pub fn pixel_chart_layout(
+    chart: &Chart,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    line_height: f32,
+    char_width: f32,
+) -> ChartLayout {
+    chart.layout(
+        x,
+        y,
+        ChartMeasure {
+            width: w,
+            height: h,
+            char_width,
+            line_height,
+        },
+    )
+}
+
+// ── DataTable ────────────────────────────────────────────────────────
+
+/// Compute a [`DataTable`]'s layout via `measure` — the twin of every
+/// backend's `*_data_table_layout` (issue #1079).
+///
+/// **The bug this fn fixes:** `GtkBackend::data_table_layout` (the
+/// no-paint, click-routing path) used to measure each column header by
+/// **byte length** (`col.title.len() as f32 * char_width`) instead of a
+/// real text measurement — every other measurer in this crate (real
+/// Pango/CoreText/DirectWrite metrics, or at worst a `chars().count()`
+/// estimate) counts *characters*, not UTF-8 bytes, so a multi-byte
+/// header (e.g. "日付") measured 2–3x too wide. Routing every backend's
+/// column-header measurement through `measure: &dyn TextMeasure` — real
+/// glyph metrics when a live font/context is available, a
+/// character-count estimate otherwise (see each backend's `TextMeasure`
+/// adapter) — makes that class of bug structurally impossible: there is
+/// now exactly one measurement path, and it never sees raw byte counts.
+pub fn pixel_data_table_layout(
+    table: &DataTable,
+    w: f32,
+    h: f32,
+    line_height: f32,
+    measure: &dyn TextMeasure,
+) -> DataTableLayout {
+    let header_height = (line_height * 1.2).round();
+    table.layout(
+        w,
+        h,
+        line_height,
+        header_height,
+        pixel::DATA_TABLE_SCROLLBAR_WIDTH,
+        |col| ColumnMeasure::new(measure.width_of(&col.title)),
+    )
+}
+
+// ── Minimap ──────────────────────────────────────────────────────────
+
+/// Compute a [`Minimap`]'s layout at an explicit [`MinimapScale`] (issue
+/// #1143) — the twin of every backend's `*_minimap_layout_scaled` (issue
+/// #1079). Every pixel backend shows one buffer line per painted row
+/// ([`pixel::MINIMAP_LINES_PER_ROW`]) — no cross-line colour reduction
+/// (see [`crate::MinimapGrid`]'s doc for why TUI's braille packing
+/// differs).
+pub fn pixel_minimap_layout_scaled(
+    minimap: &Minimap,
+    bounds: QRect,
+    scale: MinimapScale,
+) -> MinimapLayout {
+    minimap.layout_with_sizing(
+        bounds,
+        pixel::MINIMAP_LINES_PER_ROW,
+        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
+    )
 }
 
 #[cfg(test)]

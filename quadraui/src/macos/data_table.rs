@@ -22,16 +22,17 @@ use core_text::font::CTFont;
 use super::cg::*;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::data_table::{
-    ColumnAlign, ColumnMeasure, DataTable, DataTableLayout, SortDirection,
-};
+use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
+use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 use crate::types::Decoration;
 
-const SCROLLBAR_WIDTH: f32 = 8.0;
-
 /// Compute the layout the macOS rasteriser would produce for `table`
-/// at `(x, y, w, h)` and `line_height`.
+/// at `(x, y, w, h)` and `line_height`. Shares its column-measurement
+/// path (and `font: &CTFont` passed straight through as `&dyn
+/// TextMeasure` — `CTFont` implements it directly, see `macos::text`'s
+/// module doc) with `gtk_data_table_layout` / `win_data_table_layout`
+/// via [`pixel_data_table_layout`] (issue #1079).
 pub fn mac_data_table_layout(
     table: &DataTable,
     font: &CTFont,
@@ -41,21 +42,9 @@ pub fn mac_data_table_layout(
     h: f64,
     line_height: f64,
 ) -> DataTableLayout {
-    let header_height = (line_height * 1.2).round();
-    let measure = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
-        let (tw, _) = measure_text(font, &col.title);
-        ColumnMeasure::new(tw.max(0.0) as f32)
-    };
     let _ = (x, y); // hit_test consumes table-local coords; bounds stay
                     // relative to the table's origin.
-    table.layout(
-        w as f32,
-        h as f32,
-        line_height as f32,
-        header_height as f32,
-        SCROLLBAR_WIDTH,
-        measure,
-    )
+    pixel_data_table_layout(table, w as f32, h as f32, line_height as f32, font)
 }
 
 /// Draw `table` into `(x, y, w, h)` on `ctx`. Returns the same layout

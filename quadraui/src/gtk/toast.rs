@@ -16,15 +16,9 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
+use crate::primitives::layout_metrics::pixel_toast_stack_layout;
+use crate::primitives::toast::{ToastStack, ToastStackLayout};
 use crate::theme::Theme;
-
-const GTK_TOAST_WIDTH_PX: f32 = 320.0;
-const GTK_TOAST_MARGIN_PX: f32 = 12.0;
-const GTK_TOAST_GAP_PX: f32 = 8.0;
-const GTK_DISMISS_WIDTH_PX: f32 = 28.0;
-const GTK_ACTION_PADDING_PX: f32 = 16.0;
-const GTK_TOAST_PADDING_PX: f64 = 8.0;
 
 /// Compute the GTK pixel-unit layout for a [`ToastStack`] without painting.
 ///
@@ -36,7 +30,12 @@ const GTK_TOAST_PADDING_PX: f64 = 8.0;
 /// Still its own pango-based measurer, independent of the shared paint's
 /// internal layout computation (which measures via
 /// [`NativeSurface::surface_measure_text`]) — same "no-paint layout stays
-/// put" posture as `GtkBackend::status_bar_layout` (#860).
+/// put" posture as `GtkBackend::status_bar_layout` (#860). Shares its
+/// geometry with `mac_toast_stack_layout` / `win_toast_stack_layout` via
+/// [`pixel_toast_stack_layout`] (issue #1079); `pango_layout`'s
+/// `set_attributes(None)` reset (previously done per-column inside the
+/// measure closure) happens once up front instead, since
+/// `super::toolbar::PangoMeasure` never touches attributes itself.
 #[allow(clippy::too_many_arguments)]
 pub fn gtk_toast_stack_layout(
     stack: &ToastStack,
@@ -47,36 +46,19 @@ pub fn gtk_toast_stack_layout(
     viewport_height: f32,
     line_height: f64,
 ) -> ToastStackLayout {
-    stack.layout(
+    pango_layout.set_attributes(None);
+    let measure = super::toolbar::PangoMeasure {
+        pango_layout: Some(pango_layout),
+        char_width: 0.0,
+    };
+    pixel_toast_stack_layout(
+        stack,
+        &measure,
         origin_x,
         origin_y,
         viewport_width,
         viewport_height,
-        GTK_TOAST_MARGIN_PX,
-        GTK_TOAST_GAP_PX,
-        |i| {
-            let toast = &stack.toasts[i];
-            let h = if toast.body.is_empty() {
-                line_height as f32 + GTK_TOAST_PADDING_PX as f32 * 2.0
-            } else {
-                line_height as f32 * 2.0 + GTK_TOAST_PADDING_PX as f32 * 2.0
-            };
-            let action_w = toast
-                .action
-                .as_ref()
-                .map(|a| {
-                    pango_layout.set_text(&a.label);
-                    pango_layout.set_attributes(None);
-                    pango_layout.pixel_size().0 as f32 + GTK_ACTION_PADDING_PX
-                })
-                .unwrap_or(0.0);
-            ToastMeasure {
-                width: GTK_TOAST_WIDTH_PX.min(viewport_width - GTK_TOAST_MARGIN_PX * 2.0),
-                height: h,
-                dismiss_width: GTK_DISMISS_WIDTH_PX,
-                action_width: action_w,
-            }
-        },
+        line_height as f32,
     )
 }
 
