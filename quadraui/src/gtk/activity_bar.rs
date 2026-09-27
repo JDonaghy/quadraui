@@ -15,7 +15,7 @@ use gtk4::pango;
 use gtk4::pango::FontDescription;
 
 use crate::primitives::activity_bar::{
-    ActivityBar, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
+    native_surface_paint, ActivityBar, ActivityBarRowHit, ActivityBarStyle,
 };
 use crate::theme::Theme;
 
@@ -131,138 +131,29 @@ pub fn draw_activity_bar_with_style(
     hovered_idx: Option<usize>,
     nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
-    // Background.
-    let (br, bgc, bb) = (
-        theme.tab_bar_bg.r as f64 / 255.0,
-        theme.tab_bar_bg.g as f64 / 255.0,
-        theme.tab_bar_bg.b as f64 / 255.0,
-    );
-    cr.set_source_rgb(br, bgc, bb);
-    cr.rectangle(0.0, 0.0, width, height);
-    cr.fill().ok();
-
-    // Right-edge separator.
-    let (sr, sg, sb) = (
-        theme.separator.r as f64 / 255.0,
-        theme.separator.g as f64 / 255.0,
-        theme.separator.b as f64 / 255.0,
-    );
-    cr.set_source_rgb(sr, sg, sb);
-    cr.rectangle(width - 1.0, 0.0, 1.0, height);
-    cr.fill().ok();
-
     let saved_font = pango_layout.font_description().unwrap_or_default();
     let icon_font = activity_bar_icon_font();
     pango_layout.set_font_description(Some(&icon_font));
     pango_layout.set_attributes(None);
 
-    // #658: no theme fallback for either knob — `None` genuinely means
-    // "don't paint this". `Some` colours pass straight through.
-    let accent_col = bar
-        .active_accent
-        .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0));
-    let active_bg_col = style
-        .active_bg
-        .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0));
-    let inactive_fg = (
-        theme.inactive_fg.r as f64 / 255.0,
-        theme.inactive_fg.g as f64 / 255.0,
-        theme.inactive_fg.b as f64 / 255.0,
-    );
-    let active_fg = (
-        theme.foreground.r as f64 / 255.0,
-        theme.foreground.g as f64 / 255.0,
-        theme.foreground.b as f64 / 255.0,
-    );
-    let hover_bg = {
-        let c = theme.tab_bar_bg.lighten(0.10);
-        (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0)
-    };
-
     // Compute layout from the primitive — one derivation for both paint
     // and hit-test.
     let layout = bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32);
 
-    let mut regions: Vec<ActivityBarRowHit> = Vec::new();
-
-    for (flat_idx, vi) in layout.visible_items.iter().enumerate() {
-        let y = vi.bounds.y as f64;
-        let row_h = vi.bounds.height as f64;
-
-        let item = match vi.side {
-            ActivitySide::Top => &bar.top_items[vi.item_idx],
-            ActivitySide::Bottom => &bar.bottom_items[vi.item_idx],
-        };
-
-        let is_hovered = hovered_idx == Some(flat_idx);
-
-        // Active-row fill (VS Code style). Lowest-priority layer — painted
-        // first so hover/keyboard-selection tints below still take visual
-        // precedence over it when they also apply to this row. `None`
-        // (the default) paints nothing here (#658).
-        if item.is_active {
-            if let Some((r, g, b)) = active_bg_col {
-                cr.set_source_rgb(r, g, b);
-                cr.rectangle(0.0, y, width, row_h);
-                cr.fill().ok();
-            }
-        }
-
-        // Hover tint (lower priority: painted first so selection can win).
-        if is_hovered {
-            cr.set_source_rgb(hover_bg.0, hover_bg.1, hover_bg.2);
-            cr.rectangle(0.0, y, width, row_h);
-            cr.fill().ok();
-        }
-
-        // Keyboard-selection highlight: painted *after* hover so the brighter
-        // selection tint (lighten 0.20, or `bar.selection_bg`) always wins over
-        // the dimmer hover tint (lighten 0.10) when the cursor sits on a hovered
-        // row.
-        if item.is_keyboard_selected {
-            let sel_bg = bar
-                .selection_bg
-                .map(|c| (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0))
-                .unwrap_or_else(|| {
-                    let c = theme.tab_bar_bg.lighten(0.20);
-                    (c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0)
-                });
-            cr.set_source_rgb(sel_bg.0, sel_bg.1, sel_bg.2);
-            cr.rectangle(0.0, y, width, row_h);
-            cr.fill().ok();
-        }
-
-        if item.is_active {
-            if let Some((r, g, b)) = accent_col {
-                cr.set_source_rgb(r, g, b);
-                cr.rectangle(0.0, y, 2.0, row_h);
-                cr.fill().ok();
-            }
-        }
-
-        let icon_str = if nerd_fonts_enabled {
-            item.icon.glyph.as_str()
-        } else {
-            item.icon.fallback.as_str()
-        };
-        pango_layout.set_text(icon_str);
-        let (iw, ih) = pango_layout.pixel_size();
-        let fg = if item.is_active || is_hovered || item.is_keyboard_selected {
-            active_fg
-        } else {
-            inactive_fg
-        };
-        cr.set_source_rgb(fg.0, fg.1, fg.2);
-        cr.move_to((width - iw as f64) / 2.0, y + (row_h - ih as f64) / 2.0);
-        super::painted_text::show_layout(cr, pango_layout);
-
-        regions.push(ActivityBarRowHit {
-            y_start: y as f32,
-            y_end: (y + row_h) as f32,
-            id: item.id.clone(),
-            tooltip: item.tooltip.clone(),
-        });
-    }
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
+    let regions = native_surface_paint::paint(
+        bar,
+        &layout,
+        style,
+        &mut surface,
+        theme,
+        hovered_idx,
+        nerd_fonts_enabled,
+    );
 
     pango_layout.set_font_description(Some(&saved_font));
 

@@ -677,6 +677,44 @@ pub(crate) fn draw_line(
     Ok(())
 }
 
+/// Run `f` with `target`'s transform temporarily set to a translation by
+/// `(dx, dy)` DIPs, then restore the identity transform. Returns `f`'s
+/// own return value.
+///
+/// The Direct2D twin of Cairo's `cr.translate(dx, dy)` /
+/// `CGContextTranslateCTM` (see [`crate::macos::activity_bar`]'s module
+/// doc) — used by callers that paint a bar-relative rasteriser (e.g.
+/// [`crate::win::activity_bar::draw_activity_bar`]) at a non-zero
+/// on-screen origin without threading that origin through every
+/// coordinate the rasteriser itself computes.
+pub(crate) fn with_translation<F: FnOnce() -> R, R>(
+    target: &ID2D1RenderTarget,
+    dx: f32,
+    dy: f32,
+    f: F,
+) -> R {
+    let translated = windows_numerics::Matrix3x2 {
+        M11: 1.0,
+        M12: 0.0,
+        M21: 0.0,
+        M22: 1.0,
+        M31: dx,
+        M32: dy,
+    };
+    unsafe { target.SetTransform(&translated) };
+    let result = f();
+    let identity = windows_numerics::Matrix3x2 {
+        M11: 1.0,
+        M12: 0.0,
+        M21: 0.0,
+        M22: 1.0,
+        M31: 0.0,
+        M32: 0.0,
+    };
+    unsafe { target.SetTransform(&identity) };
+    result
+}
+
 /// Run `f` with `target`'s transform temporarily set to a horizontal
 /// scale of `scale_x`, anchored at `anchor_x` (DIPs) so content at that
 /// x-coordinate doesn't shift — only stretches/shrinks to either side of
