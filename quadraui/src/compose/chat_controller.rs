@@ -127,6 +127,7 @@
 //! or a transcript click last parked the cursor.
 
 use crate::compose::markdown::render_markdown_to_styled;
+use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
 use crate::text_util::{
     next_char_boundary, prev_char_boundary, safe_prefix, snap_to_char_boundary, wrap_spans,
     WrapPolicy,
@@ -135,8 +136,8 @@ use crate::theme::Theme;
 use crate::types::StyledSpan;
 use crate::{
     Backend, ButtonMask, Color, FieldKind, Form, FormField, Key, MessageList, MessageListHit,
-    MessageListMeasure, MessageRow, Modifiers, MouseButton, NamedKey, Rect, Scrollbar, Spinner,
-    StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
+    MessageListMeasure, MessageRow, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
+    Spinner, StyledText, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -240,13 +241,6 @@ pub enum ChatControllerEvent {
 }
 
 // ── Internal types ─────────────────────────────────────────────────────────────
-
-struct ScrollDrag {
-    origin_y: f32,
-    origin_offset: usize,
-    travel: f32,
-    max_offset: usize,
-}
 
 /// Pre-computed rect zones for one render/handle pass.
 struct ChatLayout {
@@ -358,7 +352,7 @@ pub struct ChatController {
     /// position when follow-tail is engaged — without requiring the caller to
     /// hold a `&mut` reference.
     transcript_scroll_top: Cell<usize>,
-    transcript_drag: Option<ScrollDrag>,
+    transcript_drag: Option<ThumbDrag>,
     /// When `true` the viewport is pinned to the tail: each [`render`] call
     /// drives `transcript_scroll_top` to `total_rows − visible_rows` so
     /// freshly-appended content stays visible.
@@ -901,9 +895,8 @@ impl ChatController {
     /// After clamping, [`stuck_to_bottom`](Self) is recomputed: scrolling up
     /// disengages follow-tail; scrolling back to the last page re-engages it.
     pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
-        let max = total_rows.saturating_sub(visible_rows) as isize;
-        let cur = self.transcript_scroll_top.get() as isize;
-        let new = (cur + delta).max(0).min(max) as usize;
+        let max = total_rows.saturating_sub(visible_rows);
+        let new = scroll_by_clamped(self.transcript_scroll_top.get(), delta, max);
         self.transcript_scroll_top.set(new);
         // Re-engage follow-tail when scrolled to (or past) the last page;
         // disengage it when scrolled up from there.
@@ -1528,14 +1521,14 @@ impl ChatController {
         // Send/Stop segment click? (#1137) — see this struct's *Send / Stop
         // segment* doc section for the idle-vs-busy split.
         if let Some(send_rect) = layout.send {
-            if rect_contains(send_rect, x, y) {
+            if send_rect.contains(Point::new(x, y)) {
                 return self.click_send();
             }
         }
 
         // Scrollbar click?
         if let Some(sb_rect) = layout.scrollbar {
-            if rect_contains(sb_rect, x, y) {
+            if sb_rect.contains(Point::new(x, y)) {
                 return self.click_scrollbar(backend, layout, sb_rect, y);
             }
         }
@@ -1545,7 +1538,7 @@ impl ChatController {
         // `TurnClicked` so the app can toggle collapse / resolve a
         // `path:line` location; a miss (blank tail below the last row)
         // just absorbs the click.
-        if rect_contains(layout.transcript, x, y) {
+        if layout.transcript.contains(Point::new(x, y)) {
             let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
             let (rows, turn_starts) = self.build_transcript_rows_indexed(col_budget);
             let list = MessageList {
@@ -1578,7 +1571,7 @@ impl ChatController {
         }
 
         // Input area click?
-        if rect_contains(layout.input, x, y) {
+        if layout.input.contains(Point::new(x, y)) {
             self.focus_input();
             let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
             let rows = wrap_input_rows(&self.input_buf, col_budget);
@@ -1643,24 +1636,24 @@ impl ChatController {
             false,
             track_w.max(1.0),
         );
-        let thumb_top = sb_rect.y + sb.thumb_start;
-        let thumb_bottom = thumb_top + sb.thumb_len;
-
-        if y >= thumb_top && y < thumb_bottom {
-            let travel = (sb_rect.height - sb.thumb_len).max(0.0);
-            self.transcript_drag = Some(ScrollDrag {
-                origin_y: y,
-                origin_offset: self.transcript_scroll_top.get(),
-                travel,
-                max_offset,
-            });
-            ChatControllerEvent::Consumed
-        } else if y < thumb_top {
-            self.scroll_transcript_by(-(visible as isize), total, visible);
-            ChatControllerEvent::Consumed
-        } else {
-            self.scroll_transcript_by(visible as isize, total, visible);
-            ChatControllerEvent::Consumed
+        match sb.press_zone(y) {
+            PressZone::Thumb => {
+                self.transcript_drag = Some(ThumbDrag::begin(
+                    y,
+                    self.transcript_scroll_top.get() as f32,
+                    sb.travel(),
+                    max_offset as f32,
+                ));
+                ChatControllerEvent::Consumed
+            }
+            PressZone::Before => {
+                self.scroll_transcript_by(-(visible as isize), total, visible);
+                ChatControllerEvent::Consumed
+            }
+            PressZone::After => {
+                self.scroll_transcript_by(visible as isize, total, visible);
+                ChatControllerEvent::Consumed
+            }
         }
     }
 
@@ -1668,17 +1661,13 @@ impl ChatController {
         let Some(drag) = &self.transcript_drag else {
             return ChatControllerEvent::Ignored;
         };
-        if drag.travel <= 0.0 || drag.max_offset == 0 {
+        let Some(new) = drag.offset_at(y) else {
             return ChatControllerEvent::Ignored;
-        }
-        let dy = y - drag.origin_y;
-        let drow = dy / drag.travel * drag.max_offset as f32;
-        let new = (drag.origin_offset as f32 + drow).round() as i32;
-        let new = new.max(0) as usize;
+        };
+        let new = new.round() as usize;
         // Copy max_offset before the immutable borrow of `drag` ends so we can
         // use it when updating `stuck_to_bottom` after mutating `self`.
-        let max_offset = drag.max_offset;
-        let new = new.min(max_offset);
+        let max_offset = drag.max_offset() as usize;
         if new == self.transcript_scroll_top.get() {
             return ChatControllerEvent::Ignored;
         }
@@ -1971,10 +1960,6 @@ fn input_visual_to_byte(text: &str, rows: &[InputRow], row_idx: usize, col: usiz
     let r = &rows[row_idx.min(last)];
     let len = r.text.chars().count();
     line_col_to_byte(text, r.logical_line, r.col_offset + col.min(len))
-}
-
-fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

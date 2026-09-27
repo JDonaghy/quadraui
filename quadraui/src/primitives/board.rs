@@ -480,22 +480,19 @@ impl BoardLayout {
     /// [`BoardHit::ColumnHeader`] when it falls on a column header,
     /// or [`BoardHit::Empty`] otherwise.
     pub fn hit_test(&self, x: f32, y: f32) -> BoardHit {
+        let point = Point::new(x, y);
         for col in &self.columns {
-            if rect_contains(col.header_bounds, x, y) {
+            if col.header_bounds.contains(point) {
                 return BoardHit::ColumnHeader(col.col_id.clone());
             }
             for card in &col.cards {
-                if rect_contains(card.bounds, x, y) {
+                if card.bounds.contains(point) {
                     return BoardHit::Card(card.id.clone());
                 }
             }
         }
         BoardHit::Empty
     }
-}
-
-fn rect_contains(r: Rect, x: f32, y: f32) -> bool {
-    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
 /// Compute the layout for a [`BoardModel`].

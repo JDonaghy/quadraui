@@ -12,7 +12,7 @@ use crate::compose::app_shell::{
     AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellPosition,
 };
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
-use crate::event::Rect;
+use crate::event::{Point, Rect};
 use crate::primitives::image::ImageSource;
 use crate::types::{Icon, WidgetId};
 use crate::{Backend, Reaction, ResizeEdge, UiEvent};
@@ -497,32 +497,42 @@ impl<'a> ShellContext<'a> {
 
     /// Check if a mouse position lands inside the sidebar content area.
     pub fn in_sidebar(&self, x: f32, y: f32) -> bool {
-        rect_contains_opt(self.layout.sidebar_content_bounds, x, y)
+        self.layout
+            .sidebar_content_bounds
+            .is_some_and(|r| r.contains(Point::new(x, y)))
     }
 
     /// Check if a mouse position lands inside the main content area.
     pub fn in_main(&self, x: f32, y: f32) -> bool {
-        rect_contains(self.layout.main_content_bounds, x, y)
+        self.layout.main_content_bounds.contains(Point::new(x, y))
     }
 
     /// Check if a mouse position lands inside the bottom panel.
     pub fn in_bottom_panel(&self, x: f32, y: f32) -> bool {
-        rect_contains_opt(self.layout.bottom_panel_bounds, x, y)
+        self.layout
+            .bottom_panel_bounds
+            .is_some_and(|r| r.contains(Point::new(x, y)))
     }
 
     /// Check if a mouse position lands inside the title bar.
     pub fn in_title_bar(&self, x: f32, y: f32) -> bool {
-        rect_contains_opt(self.layout.title_bar_bounds, x, y)
+        self.layout
+            .title_bar_bounds
+            .is_some_and(|r| r.contains(Point::new(x, y)))
     }
 
     /// Check if a mouse position lands inside the status bar.
     pub fn in_status_bar(&self, x: f32, y: f32) -> bool {
-        rect_contains_opt(self.layout.status_bar_bounds, x, y)
+        self.layout
+            .status_bar_bounds
+            .is_some_and(|r| r.contains(Point::new(x, y)))
     }
 
     /// Check if a mouse position lands inside the command line.
     pub fn in_command_line(&self, x: f32, y: f32) -> bool {
-        rect_contains_opt(self.layout.command_line_bounds, x, y)
+        self.layout
+            .command_line_bounds
+            .is_some_and(|r| r.contains(Point::new(x, y)))
     }
 
     /// Sidebar content bounds (convenience for coordinate translation).
@@ -558,7 +568,8 @@ impl<'a> ShellContext<'a> {
     /// Check if a mouse position lands inside one currently-visible
     /// [`BottomBand`] (issue #997).
     pub fn in_bottom_band(&self, id: &WidgetId, x: f32, y: f32) -> bool {
-        rect_contains_opt(self.bottom_band_bounds(id), x, y)
+        self.bottom_band_bounds(id)
+            .is_some_and(|r| r.contains(Point::new(x, y)))
     }
 
     /// Title bar bounds.
@@ -594,7 +605,7 @@ impl<'a> ShellContext<'a> {
             return None;
         }
         // `near_right`/`near_bottom` use `>=` (not `>`) so the last valid
-        // cell index is included on TUI, mirroring `rect_contains`'s own
+        // cell index is included on TUI, mirroring `Rect::contains`'s own
         // `x < r.x + r.width` upper bound (which treats column
         // `r.width - 1` as inside). With continuous GTK pixel coordinates
         // the `=` case is a single point of measure zero and doesn't
@@ -644,14 +655,6 @@ impl<'a> ShellContext<'a> {
     pub fn command_line_bounds(&self) -> Option<Rect> {
         self.layout.command_line_bounds
     }
-}
-
-fn rect_contains(r: Rect, x: f32, y: f32) -> bool {
-    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
-}
-
-fn rect_contains_opt(r: Option<Rect>, x: f32, y: f32) -> bool {
-    r.is_some_and(|r| rect_contains(r, x, y))
 }
 
 /// Application trait for apps that use the AppShell chrome.

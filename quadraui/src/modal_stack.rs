@@ -158,7 +158,7 @@ impl ModalStack {
     /// open modal).
     pub fn hit_test(&self, point: Point) -> Option<&WidgetId> {
         for entry in self.iter_top_down() {
-            if rect_contains(&entry.bounds, point) {
+            if entry.bounds.contains(point) {
                 return Some(&entry.id);
             }
         }
@@ -237,13 +237,6 @@ impl ModalStack {
              (\"ModalStack drives hit-testing but not paint\")"
         )
     }
-}
-
-fn rect_contains(rect: &Rect, point: Point) -> bool {
-    point.x >= rect.x
-        && point.x < rect.x + rect.width
-        && point.y >= rect.y
-        && point.y < rect.y + rect.height
 }
 
 #[cfg(test)]

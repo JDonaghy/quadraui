@@ -145,6 +145,142 @@ pub fn fit_thumb(
     (thumb_start, thumb_len)
 }
 
+/// Where a click landed relative to a [`Scrollbar`]'s painted thumb,
+/// along its axis. Returned by [`Scrollbar::press_zone`] so callers can
+/// route a scrollbar click into "start a thumb drag" (on the thumb) vs.
+/// "page before/after" (on the bare track) without re-deriving
+/// `thumb_top`/`thumb_bottom` arithmetic themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PressZone {
+    /// Before the thumb (page up / left).
+    Before,
+    /// On the thumb itself — start a drag.
+    Thumb,
+    /// After the thumb (page down / right).
+    After,
+}
+
+impl Scrollbar {
+    /// Classify a click at `pos` — the coordinate along this
+    /// scrollbar's [`ScrollAxis`] (`y` for [`ScrollAxis::Vertical`],
+    /// `x` for [`ScrollAxis::Horizontal`]), in the same units as
+    /// [`Self::track`] — against the painted thumb.
+    ///
+    /// This is the three-way branch (`FormController`,
+    /// `TreeController`, `ChatController`) previously re-derived from
+    /// raw `track.y + thumb_start` / `+ thumb_len` arithmetic in each
+    /// controller (quadraui#1089).
+    pub fn press_zone(&self, pos: f32) -> PressZone {
+        let thumb_start = match self.axis {
+            ScrollAxis::Vertical => self.track.y + self.thumb_start,
+            ScrollAxis::Horizontal => self.track.x + self.thumb_start,
+        };
+        let thumb_end = thumb_start + self.thumb_len;
+        if pos < thumb_start {
+            PressZone::Before
+        } else if pos < thumb_end {
+            PressZone::Thumb
+        } else {
+            PressZone::After
+        }
+    }
+
+    /// How far the thumb can travel along the track: `track_len -
+    /// thumb_len`, clamped to `>= 0.0`. `track_len` is `track.height`
+    /// for a vertical scrollbar, `track.width` for horizontal.
+    ///
+    /// Feeds [`ThumbDrag::begin`]'s `travel` parameter.
+    pub fn travel(&self) -> f32 {
+        let track_len = match self.axis {
+            ScrollAxis::Vertical => self.track.height,
+            ScrollAxis::Horizontal => self.track.width,
+        };
+        (track_len - self.thumb_len).max(0.0)
+    }
+}
+
+/// State for an in-progress scrollbar thumb drag.
+///
+/// Shared by every scroll-owning controller — `FormController`,
+/// `TreeController`, `ChatController`'s transcript scrollbar, and
+/// `SidebarSystem`'s row + panel scrollbars each carried an identical
+/// `origin_y` / `origin_offset` / `travel` / `max_offset` struct plus
+/// the same linear-interpolation drag math before quadraui#1089
+/// consolidated them here.
+///
+/// Offsets are `f32` so this type serves both discrete, row-indexed
+/// scroll state (`usize`, round [`Self::offset_at`]'s result) and
+/// continuous pixel-based scroll state (`SidebarSystem`'s panel
+/// scrollbar) without duplicating the struct.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThumbDrag {
+    origin_pos: f32,
+    origin_offset: f32,
+    travel: f32,
+    max_offset: f32,
+}
+
+impl ThumbDrag {
+    /// Start tracking a drag from a thumb click.
+    ///
+    /// - `origin_pos` — cursor coordinate (along the scroll axis) at
+    ///   mouse-down.
+    /// - `origin_offset` — the scroll offset at mouse-down.
+    /// - `travel` — track pixels/cells the thumb can move over, e.g.
+    ///   [`Scrollbar::travel`].
+    /// - `max_offset` — the largest reachable scroll offset.
+    pub fn begin(origin_pos: f32, origin_offset: f32, travel: f32, max_offset: f32) -> Self {
+        Self {
+            origin_pos,
+            origin_offset,
+            travel,
+            max_offset,
+        }
+    }
+
+    /// Resolve the scroll offset for cursor coordinate `pos`, clamped
+    /// to `[0, max_offset]`.
+    ///
+    /// Returns `None` when the drag has no usable range (`travel <=
+    /// 0.0` or `max_offset <= 0.0`) — callers should treat that as "no
+    /// change" (e.g. return their own `Ignored` event variant).
+    ///
+    /// The result is not rounded: continuous (pixel) callers use it
+    /// directly, discrete (row-indexed) callers round it to `usize`
+    /// themselves. Clamping before rounding gives the same integer
+    /// result as the reverse order, since `max_offset` is always an
+    /// exact integer value for discrete callers.
+    pub fn offset_at(&self, pos: f32) -> Option<f32> {
+        if self.travel <= 0.0 || self.max_offset <= 0.0 {
+            return None;
+        }
+        let delta = pos - self.origin_pos;
+        let scaled = delta / self.travel * self.max_offset;
+        Some((self.origin_offset + scaled).clamp(0.0, self.max_offset))
+    }
+
+    /// The `max_offset` this drag was started with. Useful for callers
+    /// that need to compare a resolved [`Self::offset_at`] result
+    /// against the drag's own range after the drag reference has gone
+    /// out of scope (e.g. to recompute a "stuck to end" flag).
+    pub fn max_offset(&self) -> f32 {
+        self.max_offset
+    }
+}
+
+/// Clamp `current + delta` into `[0, max]`.
+///
+/// The core arithmetic behind every `scroll_by` / `page_scroll` in this
+/// crate — `FormController`, `TreeController`, and
+/// `ChatController::scroll_transcript_by` each re-derived it
+/// independently before quadraui#1089. `max` is typically
+/// `content_len.saturating_sub(viewport_rows)`.
+pub fn scroll_by_clamped(current: usize, delta: isize, max: usize) -> usize {
+    let cur = current as isize;
+    let max = max as isize;
+    (cur + delta).clamp(0, max) as usize
+}
+
 /// Clamp a (possibly stale) `scroll_offset` into a valid starting index
 /// for `content_len` items.
 ///
@@ -564,5 +700,99 @@ mod tests {
     #[test]
     fn visible_window_zero_viewport_rows_is_empty() {
         assert_eq!(visible_window(3, 20, 0), (3, 3));
+    }
+
+    // ── press_zone / travel ─────────────────────────────────────────
+
+    #[test]
+    fn press_zone_before_on_after_thumb() {
+        // track 0..200, thumb spans [50, 90).
+        let sb = Scrollbar::vertical("v", Rect::new(0.0, 0.0, 8.0, 200.0), 40.0, 200.0, 40.0, 1.0);
+        assert_eq!(sb.thumb_start, 40.0);
+        assert!((sb.thumb_len - 40.0).abs() < 0.01);
+        assert_eq!(sb.press_zone(10.0), PressZone::Before);
+        assert_eq!(sb.press_zone(sb.thumb_start), PressZone::Thumb);
+        assert_eq!(
+            sb.press_zone(sb.thumb_start + sb.thumb_len - 1.0),
+            PressZone::Thumb
+        );
+        assert_eq!(
+            sb.press_zone(sb.thumb_start + sb.thumb_len),
+            PressZone::After
+        );
+    }
+
+    #[test]
+    fn press_zone_uses_x_axis_for_horizontal() {
+        let track = Rect::new(0.0, 50.0, 100.0, 8.0);
+        let sb = Scrollbar::horizontal("h", track, 0.0, 200.0, 40.0, 10.0);
+        assert_eq!(sb.press_zone(0.0), PressZone::Thumb);
+        assert_eq!(
+            sb.press_zone(track.x + sb.thumb_len + 1.0),
+            PressZone::After
+        );
+    }
+
+    #[test]
+    fn travel_is_track_len_minus_thumb_len() {
+        let sb = Scrollbar::vertical("v", Rect::new(0.0, 0.0, 8.0, 200.0), 0.0, 200.0, 40.0, 1.0);
+        assert!((sb.travel() - (200.0 - sb.thumb_len)).abs() < 0.01);
+    }
+
+    #[test]
+    fn travel_never_negative() {
+        // min_thumb_len larger than track clamps thumb_len to track_len.
+        let sb = Scrollbar::vertical(
+            "v",
+            Rect::new(0.0, 0.0, 8.0, 50.0),
+            0.0,
+            200.0,
+            40.0,
+            1000.0,
+        );
+        assert_eq!(sb.travel(), 0.0);
+    }
+
+    // ── ThumbDrag ────────────────────────────────────────────────────
+
+    #[test]
+    fn thumb_drag_no_movement_returns_origin_offset() {
+        let drag = ThumbDrag::begin(100.0, 5.0, 80.0, 20.0);
+        assert_eq!(drag.offset_at(100.0), Some(5.0));
+    }
+
+    #[test]
+    fn thumb_drag_moves_proportionally() {
+        // travel=80 maps to max_offset=20 units, so moving 40 (half the
+        // travel) should move the offset by 10 (half of max_offset).
+        let drag = ThumbDrag::begin(0.0, 0.0, 80.0, 20.0);
+        assert_eq!(drag.offset_at(40.0), Some(10.0));
+    }
+
+    #[test]
+    fn thumb_drag_clamps_to_range() {
+        let drag = ThumbDrag::begin(0.0, 0.0, 80.0, 20.0);
+        assert_eq!(drag.offset_at(-1000.0), Some(0.0));
+        assert_eq!(drag.offset_at(1000.0), Some(20.0));
+    }
+
+    #[test]
+    fn thumb_drag_zero_travel_or_max_offset_is_none() {
+        assert_eq!(ThumbDrag::begin(0.0, 0.0, 0.0, 20.0).offset_at(50.0), None);
+        assert_eq!(ThumbDrag::begin(0.0, 0.0, 80.0, 0.0).offset_at(50.0), None);
+    }
+
+    // ── scroll_by_clamped ────────────────────────────────────────────
+
+    #[test]
+    fn scroll_by_clamped_moves_within_range() {
+        assert_eq!(scroll_by_clamped(5, 3, 20), 8);
+        assert_eq!(scroll_by_clamped(5, -3, 20), 2);
+    }
+
+    #[test]
+    fn scroll_by_clamped_clamps_to_bounds() {
+        assert_eq!(scroll_by_clamped(5, -100, 20), 0);
+        assert_eq!(scroll_by_clamped(5, 100, 20), 20);
     }
 }

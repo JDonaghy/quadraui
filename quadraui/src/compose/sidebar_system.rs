@@ -33,6 +33,7 @@ use crate::primitives::form::{
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionViewLayout, SectionMeasure,
 };
+use crate::primitives::scrollbar::ThumbDrag;
 use crate::primitives::tree::TreeRowMeasure;
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, MsvAxis, MultiSectionView,
@@ -140,19 +141,14 @@ pub enum SidebarEvent {
     Ignored,
 }
 
-struct ScrollDrag {
+/// A row-scroll thumb drag in progress on one tree section. Wraps the
+/// shared [`ThumbDrag`] math with the section index it applies to
+/// (quadraui#1089 — was a standalone `ScrollDrag` struct duplicating
+/// `FormController`/`TreeController`/`ChatController`'s identical drag
+/// state).
+struct SectionScrollDrag {
     section: usize,
-    origin_y: f32,
-    origin_offset: usize,
-    travel: f32,
-    max_offset: usize,
-}
-
-struct PanelScrollDrag {
-    origin_y: f32,
-    origin_scroll: f32,
-    travel: f32,
-    max_scroll: f32,
+    drag: ThumbDrag,
 }
 
 struct BackendInfo {
@@ -172,8 +168,8 @@ pub struct SidebarSystem {
     collapsed: Vec<bool>,
     visible: Vec<bool>,
     badges: Vec<Option<StyledText>>,
-    scroll_drag: Option<ScrollDrag>,
-    panel_drag: Option<PanelScrollDrag>,
+    scroll_drag: Option<SectionScrollDrag>,
+    panel_drag: Option<ThumbDrag>,
     has_focus: bool,
     allow_collapse: bool,
     navigation_mode: NavigationMode,
@@ -1154,12 +1150,9 @@ impl SidebarSystem {
                 let row_count = tc.rows().len();
                 let max_offset = row_count.saturating_sub(viewport_rows);
                 let travel = (sb.height - thumb_h).max(0.0);
-                self.scroll_drag = Some(ScrollDrag {
+                self.scroll_drag = Some(SectionScrollDrag {
                     section,
-                    origin_y: y,
-                    origin_offset: tc.scroll_offset(),
-                    travel,
-                    max_offset,
+                    drag: ThumbDrag::begin(y, tc.scroll_offset() as f32, travel, max_offset as f32),
                 });
                 SidebarEvent::ScrollChanged { section }
             }
@@ -1211,12 +1204,8 @@ impl SidebarSystem {
                     // is exactly the drift this issue exists to close.
                     let travel = (rect.height - thumb.height).max(0.0);
                     let _ = lh;
-                    self.panel_drag = Some(PanelScrollDrag {
-                        origin_y: y,
-                        origin_scroll: self.panel_scroll,
-                        travel,
-                        max_scroll,
-                    });
+                    self.panel_drag =
+                        Some(ThumbDrag::begin(y, self.panel_scroll, travel, max_scroll));
                     SidebarEvent::Consumed
                 } else {
                     SidebarEvent::Ignored
@@ -1323,12 +1312,9 @@ impl SidebarSystem {
 
     fn drag_to(&mut self, y: f32) -> SidebarEvent {
         if let Some(drag) = &self.panel_drag {
-            if drag.travel <= 0.0 || drag.max_scroll <= 0.0 {
+            let Some(new) = drag.offset_at(y) else {
                 return SidebarEvent::Ignored;
-            }
-            let dy = y - drag.origin_y;
-            let new = drag.origin_scroll + dy / drag.travel * drag.max_scroll;
-            let new = new.clamp(0.0, drag.max_scroll);
+            };
             if (new - self.panel_scroll).abs() < 0.5 {
                 return SidebarEvent::Ignored;
             }
@@ -1338,14 +1324,10 @@ impl SidebarSystem {
         let Some(drag) = &self.scroll_drag else {
             return SidebarEvent::Ignored;
         };
-        if drag.travel <= 0.0 || drag.max_offset == 0 {
+        let Some(new) = drag.drag.offset_at(y) else {
             return SidebarEvent::Ignored;
-        }
-        let dy = y - drag.origin_y;
-        let drow = dy / drag.travel * drag.max_offset as f32;
-        let new = (drag.origin_offset as f32 + drow).round() as i32;
-        let new = new.max(0) as usize;
-        let new = new.min(drag.max_offset);
+        };
+        let new = new.round() as usize;
         let section = drag.section;
         let SectionController::Tree(tc) = &mut self.sections[section] else {
             return SidebarEvent::Ignored;

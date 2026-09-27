@@ -23,6 +23,7 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
+use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
 use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
@@ -57,13 +58,6 @@ pub enum TreeControllerEvent {
     ContextMenuRequested { path: TreePath, position: Point },
 }
 
-struct ScrollDrag {
-    origin_y: f32,
-    origin_offset: usize,
-    travel: f32,
-    max_offset: usize,
-}
-
 struct EditingState {
     path: TreePath,
     text: String,
@@ -78,7 +72,7 @@ pub struct TreeController {
     selected_path: Option<TreePath>,
     scroll_offset: usize,
     has_focus: bool,
-    scroll_drag: Option<ScrollDrag>,
+    scroll_drag: Option<ThumbDrag>,
     vim_keys: bool,
     editing: Option<EditingState>,
     show_scrollbar: bool,
@@ -403,10 +397,8 @@ impl TreeController {
     }
 
     pub fn page_scroll(&mut self, delta: isize, viewport_rows: usize) {
-        let max = self.rows.len().saturating_sub(viewport_rows) as isize;
-        let cur = self.scroll_offset as isize;
-        let new = (cur + delta).max(0).min(max) as usize;
-        self.scroll_offset = new;
+        let max = self.rows.len().saturating_sub(viewport_rows);
+        self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -674,18 +666,18 @@ impl TreeController {
         x: f32,
         y: f32,
     ) -> TreeControllerEvent {
-        if !rect_contains(rect, x, y) {
+        if !rect.contains(Point::new(x, y)) {
             return TreeControllerEvent::Ignored;
         }
         let (tree_rect, sb_rect) = self.split_rect(backend, rect);
 
         if let Some(sb_rect) = sb_rect {
-            if rect_contains(sb_rect, x, y) {
+            if sb_rect.contains(Point::new(x, y)) {
                 return self.click_scrollbar(backend, tree_rect, sb_rect, x, y);
             }
         }
 
-        if rect_contains(tree_rect, x, y) {
+        if tree_rect.contains(Point::new(x, y)) {
             let tree = self.build_tree_view(tree_rect);
             let layout = backend.tree_layout(tree_rect, &tree);
             match layout.hit_test(x - tree_rect.x, y - tree_rect.y) {
@@ -714,7 +706,7 @@ impl TreeController {
         y: f32,
     ) -> TreeControllerEvent {
         let (tree_rect, _) = self.split_rect(backend, rect);
-        if !rect_contains(tree_rect, x, y) {
+        if !tree_rect.contains(Point::new(x, y)) {
             return TreeControllerEvent::Ignored;
         }
         let tree = self.build_tree_view(tree_rect);
@@ -736,7 +728,7 @@ impl TreeController {
         position: Point,
     ) -> TreeControllerEvent {
         let (tree_rect, _) = self.split_rect(backend, rect);
-        if !rect_contains(tree_rect, position.x, position.y) {
+        if !tree_rect.contains(position) {
             return TreeControllerEvent::Ignored;
         }
         let tree = self.build_tree_view(tree_rect);
@@ -766,24 +758,25 @@ impl TreeController {
         }
 
         let sb = self.build_scrollbar(backend, sb_rect);
-        let thumb_top = sb_rect.y + sb.thumb_start;
-        let thumb_bottom = thumb_top + sb.thumb_len;
 
-        if y >= thumb_top && y < thumb_bottom {
-            let travel = (sb_rect.height - sb.thumb_len).max(0.0);
-            self.scroll_drag = Some(ScrollDrag {
-                origin_y: y,
-                origin_offset: self.scroll_offset,
-                travel,
-                max_offset,
-            });
-            TreeControllerEvent::ScrollChanged
-        } else if y < thumb_top {
-            self.page_scroll(-(viewport_rows as isize), viewport_rows);
-            TreeControllerEvent::ScrollChanged
-        } else {
-            self.page_scroll(viewport_rows as isize, viewport_rows);
-            TreeControllerEvent::ScrollChanged
+        match sb.press_zone(y) {
+            PressZone::Thumb => {
+                self.scroll_drag = Some(ThumbDrag::begin(
+                    y,
+                    self.scroll_offset as f32,
+                    sb.travel(),
+                    max_offset as f32,
+                ));
+                TreeControllerEvent::ScrollChanged
+            }
+            PressZone::Before => {
+                self.page_scroll(-(viewport_rows as isize), viewport_rows);
+                TreeControllerEvent::ScrollChanged
+            }
+            PressZone::After => {
+                self.page_scroll(viewport_rows as isize, viewport_rows);
+                TreeControllerEvent::ScrollChanged
+            }
         }
     }
 
@@ -791,14 +784,10 @@ impl TreeController {
         let Some(drag) = &self.scroll_drag else {
             return TreeControllerEvent::Ignored;
         };
-        if drag.travel <= 0.0 || drag.max_offset == 0 {
+        let Some(new) = drag.offset_at(y) else {
             return TreeControllerEvent::Ignored;
-        }
-        let dy = y - drag.origin_y;
-        let drow = dy / drag.travel * drag.max_offset as f32;
-        let new = (drag.origin_offset as f32 + drow).round() as i32;
-        let new = new.max(0) as usize;
-        let new = new.min(drag.max_offset);
+        };
+        let new = new.round() as usize;
         if new == self.scroll_offset {
             return TreeControllerEvent::Ignored;
         }
@@ -807,10 +796,8 @@ impl TreeController {
     }
 
     pub fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
-        let max = self.rows.len().saturating_sub(viewport_rows) as isize;
-        let cur = self.scroll_offset as isize;
-        let new = (cur + delta).max(0).min(max) as usize;
-        self.scroll_offset = new;
+        let max = self.rows.len().saturating_sub(viewport_rows);
+        self.scroll_offset = scroll_by_clamped(self.scroll_offset, delta, max);
     }
 
     fn viewport_rows(&self, backend: &dyn Backend, rect: Rect) -> usize {
@@ -896,10 +883,6 @@ impl TreeController {
         sb.dragging = is_dragging;
         sb
     }
-}
-
-fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
-    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
 #[cfg(test)]
