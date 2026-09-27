@@ -102,8 +102,9 @@
 //! full support, arguably more honest than any other backend's), and
 //! `move_to_trash` (delegates to [`crate::desktop::move_to_trash`] — the
 //! cross-platform `trash` crate needs only a filesystem, not a live
-//! desktop session, so TUI gets it too). `open_path` shells out to
-//! `xdg-open`/`open` directly on Unix (best-effort — see
+//! desktop session, so TUI gets it too). `open_path` delegates to
+//! [`crate::desktop::open_with_default`] (issue #1087) — `xdg-open`/`open`
+//! on Unix, `ShellExecuteW` on Windows, best-effort either way (see
 //! [`TuiPlatformServices::open_path`]'s own doc). Only
 //! `reveal_in_file_manager` stays `Err(BackendError::Unsupported)`: a
 //! terminal genuinely has no file-manager window to reveal anything in.
@@ -982,6 +983,101 @@ mod open_url_tests {
         let result = services.open_url_result("https://example.com/969");
         assert_eq!(result, Ok(()));
     }
+
+    /// #1087 review (blocking gap): before this fix,
+    /// `TuiPlatformServices::open_path` hand-rolled its own
+    /// `std::process::Command::new(OPENER).arg(path).spawn()` instead of
+    /// delegating to [`crate::desktop::open_with_default`] the way
+    /// `macos::services`/`win::services`'s `open_path` already did — so it
+    /// never got the `stdout`/`stderr` nulling
+    /// [`crate::desktop::unix_open_with_default_command`]'s doc calls out
+    /// as "matters most for `tui`", and stayed `Err(Unsupported)` on
+    /// Windows despite `crate::desktop::open_with_default` trivially
+    /// covering it there too. This exercises the real, fully-wired
+    /// `PlatformServices::open_path` end to end (same `$PATH`-stub
+    /// technique as `open_url_result_returns_ok_through_the_real_delegation`
+    /// above) to prove the delegation is actually in place, not just
+    /// documented.
+    ///
+    /// **Unix only** — see that test's doc for why Windows has no
+    /// `$PATH`-resolved-binary equivalent to intercept this way.
+    #[cfg(unix)]
+    #[test]
+    fn open_path_returns_ok_through_the_real_delegation() {
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        #[cfg(target_os = "macos")]
+        const OPENER_NAME: &str = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        const OPENER_NAME: &str = "xdg-open";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stub_path = tmp.path().join(OPENER_NAME);
+        std::fs::write(&stub_path, b"#!/bin/sh\nexit 0\n").expect("write stub opener");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x stub opener");
+        }
+
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path.clone());
+
+        let mut new_path = std::ffi::OsString::from(tmp.path());
+        if let Some(existing) = &original_path {
+            new_path.push(":");
+            new_path.push(existing);
+        }
+        std::env::set_var("PATH", new_path);
+
+        let services = TuiPlatformServices::new();
+        let scratch = std::path::Path::new("/tmp/quadraui-1087-open-path-scratch");
+        assert_eq!(services.open_path(scratch), Ok(()));
+    }
+
+    /// The other half of the #1087 review gap above: with `$PATH`
+    /// redirected to a directory containing no opener binary at all,
+    /// `open_path` now genuinely reports `Err` (via
+    /// [`crate::desktop::open_with_default`]) instead of either the old
+    /// hand-rolled `Command::spawn` (whose `ENOENT` it did already
+    /// surface, so this specific assertion isn't new on Unix) or, on a
+    /// non-Unix host, the unconditional `Err(BackendError::Unsupported)`
+    /// the pre-fix code returned regardless of whether an opener existed.
+    #[cfg(unix)]
+    #[test]
+    fn open_path_reports_err_when_the_opener_is_missing() {
+        let _guard = crate::desktop::PATH_OVERRIDE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let original_path = std::env::var_os("PATH");
+        struct RestorePath(Option<std::ffi::OsString>);
+        impl Drop for RestorePath {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(path) => std::env::set_var("PATH", path),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+        let _restore = RestorePath(original_path);
+        let empty_dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("PATH", empty_dir.path());
+
+        let services = TuiPlatformServices::new();
+        let scratch = std::path::Path::new("/tmp/quadraui-1087-open-path-scratch");
+        assert!(services.open_path(scratch).is_err());
+    }
 }
 
 /// Default `PlatformServices` impl for the TUI backend.
@@ -1273,40 +1369,23 @@ impl PlatformServices for TuiPlatformServices {
         Err(BackendError::Unsupported)
     }
 
-    /// `xdg-open`/`open`, shelled out directly (issue #956) — the same
+    /// [`crate::desktop::open_with_default`] (issue #1087) — the same
     /// idea [`Self::open_url_result`] above uses for a URL (issue #969),
     /// applied to a filesystem path instead: a terminal running inside a
     /// desktop session (the common case — most TUI apps run in a
     /// graphical terminal emulator, not a bare VT) can still launch the
-    /// OS's default handler for a *file*. Best-effort: a
-    /// successful `spawn()` reports `Ok(())` even though the spawned
-    /// `xdg-open`/`open` may itself fail asynchronously with no way for
-    /// this call to observe it (same "launch succeeded, outcome unknown"
-    /// contract [`crate::tui::services::write_clipboard_via_native_tool`]'s
-    /// tool-spawn leg already has). `Err(BackendError::Unsupported)` on a
-    /// non-Unix host — Windows Terminal has no equivalent this module
-    /// implements yet.
+    /// OS's default handler for a *file*. `xdg-open`/`open` on Unix,
+    /// `ShellExecuteW` directly on Windows — the exact same opener
+    /// `macos::services`/`win::services`'s `open_path` now share, so a
+    /// Windows Terminal host gets real support here too instead of the
+    /// pre-#1087 `Err(BackendError::Unsupported)`. Best-effort: a
+    /// successful launch reports `Ok(())` even though the opener may
+    /// itself fail asynchronously with no way for this call to observe it
+    /// (same "launch succeeded, outcome unknown" contract
+    /// [`crate::tui::services::write_clipboard_via_native_tool`]'s
+    /// tool-spawn leg already has).
     fn open_path(&self, path: &Path) -> ServiceResult<()> {
-        #[cfg(target_os = "macos")]
-        const OPENER: &str = "open";
-        #[cfg(all(unix, not(target_os = "macos")))]
-        const OPENER: &str = "xdg-open";
-
-        #[cfg(unix)]
-        {
-            std::process::Command::new(OPENER)
-                .arg(path)
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| BackendError::PlatformFailure {
-                    context: format!("{OPENER}: {e}"),
-                })
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = path;
-            Err(BackendError::Unsupported)
-        }
+        crate::desktop::open_with_default(path.as_os_str())
     }
 
     /// [`crate::desktop::move_to_trash`] (issue #956) — genuinely **full**
