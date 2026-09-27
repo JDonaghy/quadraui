@@ -2459,8 +2459,9 @@ impl Backend for MacBackend {
 
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
         // No-paint twin of `draw_activity_bar`; both walk the same
-        // `row_plan`, so the returned bar-relative spans are exactly the
-        // rows that were painted (quadraui#552).
+        // `ActivityBar::layout` (#1081, replacing this module's old
+        // private `row_plan` helper), so the returned bar-relative spans
+        // are exactly the rows that were painted (quadraui#552).
         super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
