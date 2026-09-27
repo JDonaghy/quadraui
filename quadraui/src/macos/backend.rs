@@ -1711,6 +1711,18 @@ impl Backend for MacBackend {
             let Some(button) = window.standardWindowButton(kind) else {
                 continue;
             };
+            // #1177: in native full screen (or mid-zoom-transition),
+            // AppKit hides the traffic-light cluster (or its private
+            // titlebar ancestor) rather than removing it — the button
+            // objects (and their stale `frame()`s) still exist. Treat a
+            // hidden button as absent, same as a missing one, so the
+            // union — and therefore the reported inset — collapses to
+            // `Rect::default()` while the buttons aren't actually on
+            // screen, instead of reporting a phantom cluster-sized rect
+            // a consumer then leaves unpainted (the "grey rectangle").
+            if button.isHiddenOrHasHiddenAncestor() {
+                continue;
+            }
             // SAFETY: `superview` is safe to call on any live `NSView` on
             // the main thread — a currently-installed standard window
             // button always has one.
@@ -4945,6 +4957,96 @@ mod tests {
             "inset width {} must be strictly less than the window width {window_width} — equal \
              (or greater) is the exact #1154 symptom",
             inset.width,
+        );
+    }
+
+    /// #1177: once the traffic-light buttons are hidden — the state
+    /// AppKit puts them in while the window is in native full screen —
+    /// `titlebar_control_inset` must collapse to `Rect::default()`
+    /// instead of continuing to report the last-known cluster rect. A
+    /// stale non-empty inset here is exactly the "grey rectangle" bug
+    /// report: a consumer trusts this rect to know how much of the top
+    /// band it owns, leaves that many points unpainted assuming the
+    /// native buttons will show through, and nothing does because
+    /// they're hidden.
+    ///
+    /// Then flips `setHidden(false)` back and asserts the inset returns
+    /// to the same narrow, non-empty rect
+    /// `titlebar_control_inset_is_narrow_on_a_live_window` pins above —
+    /// covering the acceptance criterion's second half ("the correct
+    /// cluster rect again once they reappear"), not just the
+    /// hidden-collapses-to-default half.
+    #[test]
+    fn titlebar_control_inset_collapses_to_default_when_buttons_hidden() {
+        use objc2::msg_send;
+        use objc2_app_kit::{NSBackingStoreType, NSWindowButton, NSWindowStyleMask};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0));
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::Miniaturizable;
+        // SAFETY: same designated-initializer call as
+        // `titlebar_control_inset_is_narrow_on_a_live_window` above.
+        let window: Retained<NSWindow> = unsafe {
+            msg_send![
+                mtm.alloc::<NSWindow>(),
+                initWithContentRect: content_rect,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false,
+            ]
+        };
+
+        let button_kinds = [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ];
+        let buttons: Vec<_> = button_kinds
+            .iter()
+            .filter_map(|kind| window.standardWindowButton(*kind))
+            .collect();
+        assert!(
+            !buttons.is_empty(),
+            "a Titled/Closable/Resizable/Miniaturizable window must vend at least one standard \
+             window button to hide for this test to mean anything",
+        );
+
+        let mut b = MacBackend::new();
+        b.set_window(window);
+
+        // Sanity: with the buttons visible (the default just after
+        // window creation), the inset is the same narrow non-empty rect
+        // the sibling test pins.
+        let visible_inset = Backend::titlebar_control_inset(&b);
+        assert!(
+            visible_inset.width > 0.0,
+            "expected a non-empty inset before hiding any buttons, got {visible_inset:?}",
+        );
+
+        // Simulate the full-screen transition hiding the cluster.
+        for button in &buttons {
+            button.setHidden(true);
+        }
+        assert_eq!(
+            Backend::titlebar_control_inset(&b),
+            Rect::default(),
+            "hidden traffic lights must report Rect::default(), not a stale cluster rect — a \
+             non-default result here is the #1177 'grey rectangle' bug",
+        );
+
+        // Simulate exiting full screen: the buttons reappear.
+        for button in &buttons {
+            button.setHidden(false);
+        }
+        assert_eq!(
+            Backend::titlebar_control_inset(&b),
+            visible_inset,
+            "the inset must report the same cluster rect again once the buttons un-hide",
         );
     }
 

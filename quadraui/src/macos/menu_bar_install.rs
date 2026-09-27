@@ -198,10 +198,85 @@ pub(crate) fn install_menu_bar(
         append_top_level_menu(mtm, &main_menu, &target, top, &mut next_tag);
     }
 
+    // #1177: the standard "Enter/Exit Full Screen" item (and its
+    // Ctrl+Cmd+F key equivalent) isn't inserted automatically for a
+    // programmatically-built main menu the way it is for a nib-authored
+    // one — see `append_full_screen_item`'s doc.
+    append_full_screen_item(mtm, &main_menu);
+
     let ns_app = NSApplication::sharedApplication(mtm);
     ns_app.setMainMenu(Some(&main_menu));
 
     target
+}
+
+/// Install the standard macOS "Enter Full Screen" menu item (#1177).
+///
+/// Unlike a nib/storyboard-authored main menu, AppKit does **not**
+/// auto-insert this item for a menu built entirely in code via `NSMenu`
+/// — see Apple's Technical Q&A QA1830 ("Adding a Full Screen Menu Item
+/// Without Using a Storyboard or Nib File"). Without it, the only way
+/// into native full screen is a plain click on the green traffic
+/// light, and — per #1177 — there is then no keyboard shortcut and no
+/// menu item to get back out.
+///
+/// Placed in whichever of the app's own top-level "View" or "Window"
+/// menus already exists (matching where Terminal.app / VS Code / most
+/// native apps put it); if `bar` has neither, a dedicated top-level
+/// "View" menu is created to hold just this one item. Either way the
+/// item's action is `toggleFullScreen:` with a `nil` target, so it
+/// dispatches along the standard responder chain to `NSWindow` — same
+/// selector [`super::backend::MacBackend::set_fullscreen`] calls
+/// directly, so the menu, the Ctrl+Cmd+F key equivalent, and any
+/// programmatic call all converge on the identical AppKit transition.
+///
+/// The title stays `"Enter Full Screen"`; AppKit's own
+/// `NSWindow`-provided `validateMenuItem:` flips it to `"Exit Full
+/// Screen"` while the key window is full screen and back again on
+/// exit, purely because the action is `toggleFullScreen:` — no
+/// per-frame updating needed on our side.
+fn append_full_screen_item(mtm: MainThreadMarker, main_menu: &NSMenu) {
+    let target_menu = find_top_level_menu(main_menu, &["View", "Window"]).unwrap_or_else(|| {
+        let view_item: Retained<NSMenuItem> = NSMenuItem::new(mtm);
+        view_item.setTitle(&NSString::from_str("View"));
+        main_menu.addItem(&view_item);
+        let view_menu: Retained<NSMenu> = unsafe {
+            msg_send![
+                mtm.alloc::<NSMenu>(),
+                initWithTitle: &*NSString::from_str("View"),
+            ]
+        };
+        view_item.setSubmenu(Some(&view_menu));
+        view_menu
+    });
+
+    if target_menu.numberOfItems() > 0 {
+        target_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    }
+    add_stock_item(
+        mtm,
+        &target_menu,
+        "Enter Full Screen",
+        sel!(toggleFullScreen:),
+        "f",
+        NSEventModifierFlags::Command | NSEventModifierFlags::Control,
+    );
+}
+
+/// Find the first top-level menu in `main_menu` whose title matches
+/// (case-insensitively) one of `titles`, in `titles`' priority order.
+fn find_top_level_menu(main_menu: &NSMenu, titles: &[&str]) -> Option<Retained<NSMenu>> {
+    for title in titles {
+        for item in main_menu.itemArray().iter() {
+            let Some(submenu) = item.submenu() else {
+                continue;
+            };
+            if submenu.title().to_string().eq_ignore_ascii_case(title) {
+                return Some(submenu);
+            }
+        }
+    }
+    None
 }
 
 /// Standard app-menu prefix. Uses native AppKit selectors so apps
@@ -688,6 +763,119 @@ mod tests {
         assert_eq!(
             target.registered_id(1),
             Some(WidgetId::new("appearance.zoom_in")),
+        );
+    }
+
+    // ── #1177 full-screen menu item / Ctrl+Cmd+F ─────────────────
+
+    /// Find `title`'s top-level submenu in `NSApp.mainMenu()`, the same
+    /// way a user visually scanning the menu bar would.
+    fn find_installed_top_level_menu(
+        mtm: MainThreadMarker,
+        title: &str,
+    ) -> Option<Retained<NSMenu>> {
+        let main_menu = NSApplication::sharedApplication(mtm).mainMenu()?;
+        find_top_level_menu(&main_menu, &[title])
+    }
+
+    /// Locate the leaf item within `menu` whose action is
+    /// `toggleFullScreen:` — there should be exactly one after
+    /// `install_menu_bar`, regardless of which top-level menu it ended
+    /// up in.
+    fn find_full_screen_item(menu: &NSMenu) -> Option<Retained<NSMenuItem>> {
+        menu.itemArray()
+            .iter()
+            .find(|item| item.action() == Some(sel!(toggleFullScreen:)))
+    }
+
+    /// #1177: a `MenuBar` with neither a "View" nor a "Window" top-level
+    /// menu still ends up with a native "Enter Full Screen" item —
+    /// `install_menu_bar` must synthesize a "View" menu to hold it
+    /// rather than silently dropping the standard shortcut the way the
+    /// pre-fix code did.
+    #[test]
+    fn full_screen_item_creates_view_menu_when_none_exists() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let bar = MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("file"),
+                label: "&File".into(),
+                disabled: false,
+                submenu: Some(vec![item("file.open", "Open…")]),
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let _target = install_menu_bar(mtm, &bar, events());
+
+        let view_menu =
+            find_installed_top_level_menu(mtm, "View").expect("a View menu must be synthesized");
+        let fs_item =
+            find_full_screen_item(&view_menu).expect("Enter Full Screen item must be present");
+
+        assert_eq!(fs_item.title().to_string(), "Enter Full Screen");
+        assert_eq!(fs_item.keyEquivalent().to_string(), "f");
+        assert_eq!(
+            fs_item.keyEquivalentModifierMask(),
+            NSEventModifierFlags::Command | NSEventModifierFlags::Control,
+            "Ctrl+Cmd+F is the standard AppKit full-screen shortcut",
+        );
+    }
+
+    /// #1177: when the app's own `MenuBar` already has a top-level
+    /// "View" menu, the full-screen item is appended into *that* menu
+    /// (after a separator) instead of creating a redundant second
+    /// top-level "View" — matching where Terminal.app / VS Code / most
+    /// native apps put the item, and not duplicating the menu bar.
+    #[test]
+    fn full_screen_item_reuses_existing_view_menu() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let bar = MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("view"),
+                label: "View".into(),
+                disabled: false,
+                submenu: Some(vec![item("view.zoom_in", "Zoom In")]),
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let _target = install_menu_bar(mtm, &bar, events());
+
+        let main_menu = NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .expect("main menu installed");
+        let view_menus: Vec<_> = main_menu
+            .itemArray()
+            .iter()
+            .filter(|item| {
+                item.submenu()
+                    .is_some_and(|s| s.title().to_string().eq_ignore_ascii_case("view"))
+            })
+            .collect();
+        assert_eq!(
+            view_menus.len(),
+            1,
+            "must not create a second top-level View menu when one already exists",
+        );
+
+        let view_menu = view_menus[0].submenu().unwrap();
+        find_full_screen_item(&view_menu)
+            .expect("Enter Full Screen item must land in the app's existing View menu");
+        // The app's own item is still there too — the fix appends, it
+        // doesn't replace.
+        assert!(
+            view_menu
+                .itemArray()
+                .iter()
+                .any(|i| i.title().to_string() == "Zoom In"),
+            "the app's own View-menu item must survive alongside the injected full-screen item",
         );
     }
 
