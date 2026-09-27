@@ -687,6 +687,15 @@ pub(crate) fn draw_line(
 /// [`crate::win::activity_bar::draw_activity_bar`]) at a non-zero
 /// on-screen origin without threading that origin through every
 /// coordinate the rasteriser itself computes.
+///
+/// Restoring identity unconditionally (rather than the transform that was
+/// active before this call) matches [`with_horizontal_scale`] and every
+/// other rasteriser in this crate, which never leaves a non-identity
+/// transform set on the target between draw calls. **`f` must not itself
+/// leave a non-identity transform active, and callers must not nest this
+/// inside another still-open `with_translation`/`with_horizontal_scale`
+/// call** — doing so would have the inner call's unconditional identity
+/// restore clobber the outer transform rather than composing with it.
 pub(crate) fn with_translation<F: FnOnce() -> R, R>(
     target: &ID2D1RenderTarget,
     dx: f32,
