@@ -66,6 +66,34 @@ const BORDER_DIP: f32 = 1.0;
 /// [`draw_list`]), or [`crate::backend::Backend::char_width`]'s cached
 /// value for a no-paint layout, matching every other pixel backend's
 /// `Backend::list_layout`.
+///
+/// ## Downstream impact (CLAUDE.md rule 8): new `char_width` parameter (#1078)
+///
+/// This is a genuine arity break (3 args → 4), not a source-compatible
+/// widening like the other `win_*_layout` fns this issue touched
+/// (`win_data_table_layout` / `win_menu_bar_layout` / `win_status_bar_layout`
+/// / `win_spinner_layout` / `win_toast_stack_layout` / the four
+/// `win_tab_bar_*` fns only widened their first parameter's type from a
+/// concrete `&DWrite`/`&CTFont` to `&dyn TextMeasure`, which every existing
+/// `&DWrite`/`&CTFont` call site still satisfies via Rust's automatic
+/// unsized coercion — no call site anywhere needs to change). Any external
+/// caller invoking the old 3-arg `win_list_layout` no longer compiles.
+/// `win_list_layout` and all nine of the above are re-exported unconditionally
+/// from `quadraui::win` (not `cfg(target_os = "windows")`-gated — see this
+/// module's and `win::mod`'s doc), so per CLAUDE.md's mandatory rule 1, here
+/// is the blast radius for every one of them:
+///
+/// ```text
+/// $ grep -rn 'win_list_layout\|win_data_table_layout\|win_menu_bar_layout\|win_status_bar_layout\|win_spinner_layout\|win_toast_stack_layout\|win_tab_bar_layout\|win_tab_bar_layout_icons\|win_tab_bar_native_layout\|win_tab_bar_native_layout_icons' \
+///     ~/src/coord-tui/src ~/src/vimcode/src
+/// (no output — zero hits in both, for every symbol above)
+/// ```
+///
+/// Both consumers reach the Win-GUI backend only through the `Backend`
+/// trait (`WinBackend`) or `quadraui::win::shell_runner::run_with_shell` /
+/// `quadraui::win::testing::driver_with_shell` — neither calls any raw
+/// `win::*_layout` free function directly. Changing this signature is a
+/// no-op for both today.
 pub fn win_list_layout(
     list: &ListView,
     rect: Rect,
