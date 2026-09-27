@@ -1685,6 +1685,26 @@ impl Backend for WinBackend {
         }
     }
 
+    /// Win-GUI's platform-native convention (issue #1156): `Consolas
+    /// 14` for editor content, `Segoe UI 13` for UI chrome — VS Code's
+    /// own Windows defaults, and the same family names
+    /// `DEFAULT_EDITOR_FONT_FAMILY`/`DEFAULT_UI_FONT_FAMILY` already
+    /// fall back to (sizes differ: those exist for the "unset" runtime
+    /// default, `11pt`, not to model this platform recommendation).
+    /// Plain literals rather than those `cfg(target_os = "windows")`
+    /// consts themselves — unlike [`Self::set_ui_font`] above, this
+    /// method has no DirectWrite call to gate, and must type-check on
+    /// every host per this crate's cross-platform commitment (see
+    /// `CLAUDE.md`'s Win-GUI section).
+    fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+        crate::backend::PlatformFontDefaults {
+            editor_family: "Consolas".to_string(),
+            editor_size_pt: 14.0,
+            ui_family: "Segoe UI".to_string(),
+            ui_size_pt: 13.0,
+        }
+    }
+
     /// Register `bytes` with DirectWrite via
     /// [`crate::win::text::register_font_from_memory`] (issue #929) — no
     /// filesystem write, process-lifetime only. Stores the resulting
@@ -4993,6 +5013,21 @@ mod tests {
             "track width (and row pitch) must match tree_layout's non-header \
              item_height, not the raw line_height"
         );
+    }
+
+    /// Issue #1156: `default_fonts()` reports Win-GUI's VS-Code-alignment
+    /// convention (`Consolas 14`/`Segoe UI 13`) — cross-platform, no
+    /// `target_os = "windows"` gate needed, same rationale as
+    /// `win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height`
+    /// above.
+    #[test]
+    fn win_backend_default_fonts_reports_platform_convention() {
+        let backend = WinBackend::new();
+        let defaults = Backend::default_fonts(&backend);
+        assert_eq!(defaults.editor_family, "Consolas");
+        assert_eq!(defaults.editor_size_pt, 14.0);
+        assert_eq!(defaults.ui_family, "Segoe UI");
+        assert_eq!(defaults.ui_size_pt, 13.0);
     }
 
     /// #1043 / #623: a host-set `TreeStyle::row_height` must be honored

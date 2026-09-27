@@ -794,6 +794,14 @@ mod tests {
         fn list_char_width(&self) -> f32 {
             1.0
         }
+        fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+            crate::backend::PlatformFontDefaults {
+                editor_family: String::new(),
+                editor_size_pt: 0.0,
+                ui_family: String::new(),
+                ui_size_pt: 0.0,
+            }
+        }
         fn menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
             bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
         }

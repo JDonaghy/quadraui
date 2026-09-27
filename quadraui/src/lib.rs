@@ -548,8 +548,8 @@ pub use accelerator::{
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
     FileDialogOptions, MessageDialogButton, MessageDialogChoice, MessageDialogOptions, Metrics,
-    Notification, PlatformServices, PointerShape, ResizeEdge, RgbaImage, SecretStore,
-    ServiceResult, SystemTheme, WindowControl,
+    Notification, PlatformFontDefaults, PlatformServices, PointerShape, ResizeEdge, RgbaImage,
+    SecretStore, ServiceResult, SystemTheme, WindowControl,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,

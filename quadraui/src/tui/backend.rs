@@ -1634,6 +1634,21 @@ impl Backend for TuiBackend {
         1.0
     }
 
+    /// All-sentinel — see [`crate::backend::PlatformFontDefaults`]'s
+    /// doc: a terminal cell grid has no font concept to default, the
+    /// same structural reason [`Self::set_editor_font`]/
+    /// [`Self::set_ui_font`] take the trait's no-op default here. Use
+    /// [`Self::line_height`]/[`Self::char_width`] for the real
+    /// fixed-cell metrics instead (issue #1156).
+    fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+        crate::backend::PlatformFontDefaults {
+            editor_family: String::new(),
+            editor_size_pt: 0.0,
+            ui_family: String::new(),
+            ui_size_pt: 0.0,
+        }
+    }
+
     /// TUI's terminal scrollbar gutter is one character cell, not GTK's
     /// 8px default — matching `src/tui/terminal.rs`'s
     /// `sb_cols: … .unwrap_or(1)` (issue #506 review fix).
@@ -3674,6 +3689,15 @@ mod tests {
             1.0
         }
 
+        fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+            crate::backend::PlatformFontDefaults {
+                editor_family: String::new(),
+                editor_size_pt: 0.0,
+                ui_family: String::new(),
+                ui_size_pt: 0.0,
+            }
+        }
+
         // ── #13: stubs for the trait methods added with this issue ──
 
         fn draw_multi_section_view(
@@ -4263,6 +4287,19 @@ mod tests {
         let handle = backend.modal_stack_handle();
         let _first = handle.borrow_mut();
         let _second = handle.borrow_mut(); // must panic: real double-borrow check
+    }
+
+    /// Issue #1156: TUI has no font concept at all, so `default_fonts()`
+    /// returns the documented all-sentinel value rather than inheriting
+    /// any real platform convention.
+    #[test]
+    fn tui_backend_default_fonts_is_all_sentinel() {
+        let backend = TuiBackend::new();
+        let defaults = Backend::default_fonts(&backend);
+        assert_eq!(defaults.editor_family, "");
+        assert_eq!(defaults.editor_size_pt, 0.0);
+        assert_eq!(defaults.ui_family, "");
+        assert_eq!(defaults.ui_size_pt, 0.0);
     }
 
     /// quadraui#699: the whole point of `modal_stack_handle` is that

@@ -866,6 +866,59 @@ pub struct Metrics {
     pub line_height: f32,
 }
 
+/// This backend's platform-native font defaults for the editor and UI
+/// (chrome) roles — [`Backend::default_fonts`] (issue #1156).
+///
+/// Exists so a consumer can seed its own font settings from the
+/// platform-appropriate convention (`Menlo 12` on macOS, `Consolas 14`
+/// on Windows, `monospace 14` on Linux/GTK — the same table VS Code
+/// itself uses) without branching on `cfg!(target_os)` in otherwise
+/// backend-generic code, the exact workaround vimcode's own
+/// platform-neutrality rule forbids. Before this existed, a consumer
+/// had no portable way to ask "what should the editor font default to
+/// on whatever platform I'm running on right now" and typically
+/// hardcoded one OS's convention for every backend — vimcode shipped
+/// `"Monospace"`/14pt editor/10pt UI everywhere, which reads
+/// noticeably wrong on macOS (code text too large, chrome text too
+/// small next to VS Code's own defaults).
+///
+/// These are **static, backend-type-level facts** — the value this
+/// backend *would* use before any [`Backend::set_editor_font`] /
+/// [`Backend::set_ui_font`] call, not this instance's current,
+/// possibly-overridden state. Calling `default_fonts()` after a
+/// `set_editor_font`/`set_ui_font` call still returns the same
+/// platform default it always did; there is no accessor for "what is
+/// this backend's font right now" (a consumer that calls
+/// `set_editor_font` already knows the value it passed in). A
+/// consumer's own setting should be compared against this value to
+/// decide whether the *user* has overridden the platform default —
+/// "still equal to `default_fonts()`" means "no user override yet,
+/// keep tracking platform defaults across a future backend change";
+/// anything else means the user chose something and future backend
+/// changes must not stomp on it.
+///
+/// TUI returns an all-sentinel value (empty family strings, `0.0`
+/// sizes) — a terminal cell grid has no font concept to default,
+/// mirroring the no-op default [`Backend::set_editor_font`] /
+/// [`Backend::set_ui_font`] take there. Use [`Backend::line_height`] /
+/// [`Backend::char_width`] for TUI's actual fixed-cell metrics
+/// instead.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PlatformFontDefaults {
+    /// Platform-native default monospace family for editor content
+    /// (e.g. `"Menlo"`, `"Consolas"`, `"Monospace"`). Empty on TUI.
+    pub editor_family: String,
+    /// Point size paired with [`Self::editor_family`]. `0.0` on TUI.
+    pub editor_size_pt: f32,
+    /// Platform-native default UI/chrome family (e.g. the resolved
+    /// CoreText system font name, `"Segoe UI"`, `"Sans"`). Empty on
+    /// TUI.
+    pub ui_family: String,
+    /// Point size paired with [`Self::ui_family`]. `0.0` on TUI.
+    pub ui_size_pt: f32,
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 ///
 /// # Sealed — no implementations outside this crate
@@ -1023,6 +1076,17 @@ pub trait Backend: sealed::Sealed {
     /// every glyph already occupies exactly one terminal cell. GTK is
     /// currently the only backend that overrides this (#624).
     fn set_ui_font(&mut self, _font_desc: &str) {}
+
+    /// This backend's platform-native font defaults for the editor and
+    /// UI roles — see [`PlatformFontDefaults`]'s doc for the full
+    /// contract (issue #1156).
+    ///
+    /// No default body: every in-tree backend has a real, distinct
+    /// answer (unlike [`Self::set_editor_font`]/[`Self::set_ui_font`],
+    /// where a no-op is a legitimate default for a backend with no font
+    /// concept at all) — TUI's answer is the explicit sentinel
+    /// [`PlatformFontDefaults`] documents, not an inherited no-op.
+    fn default_fonts(&self) -> PlatformFontDefaults;
 
     /// Register an application-supplied font (raw TTF/OTF bytes) with the
     /// platform font manager for the lifetime of this process — no
