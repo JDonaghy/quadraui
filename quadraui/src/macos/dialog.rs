@@ -236,7 +236,6 @@ mod tests {
         let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
         let layout = layout_for(&dialog, viewport, 16.0);
         let (surface, _) = paint_via_backend(&dialog, &layout);
-        let theme = Theme::default();
         // Cancel (button_idx 0) is NOT the default button, so its
         // interior is plain surface_bg — its top edge should still
         // differ (border ink) from a point 3px further in.
