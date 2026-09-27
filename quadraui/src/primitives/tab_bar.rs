@@ -16,6 +16,56 @@
 //! existing engine-side `TabBarClickTarget` enum. `TabBarEvent` exists
 //! for a later stage where plugin-defined tab bars use event-driven clicks.
 //!
+//! # `NativeSurface` migration status — NOT migrated (issue #1081)
+//!
+//! **`TabBar` paint is still per-backend.** There is deliberately no
+//! `native_surface_paint` module in this file, unlike
+//! [`crate::primitives::menu_bar`], [`crate::primitives::toolbar`] and
+//! [`crate::primitives::activity_bar`] — the three primitives that
+//! `NativeSurface` Phase 4 slice 5/8 (#1081) *did* move. `gtk::tab_bar`,
+//! `macos::tab_bar` and `win::tab_bar` each still carry a full Cairo /
+//! Core Graphics / Direct2D paint loop, and the three copies have
+//! already drifted:
+//!
+//! | Behaviour | GTK | macOS | Windows |
+//! |---|---|---|---|
+//! | Active-tab background | rounded, y-inset chip (radius 4, 4 px inset) | full-height square rect | full-height square rect |
+//! | Active-tab top accent | 1 px, on the chip's inset top edge | 2 px, on the strip's top edge | 2 px, on the strip's top edge |
+//! | Close-button hover backdrop | rounded, `foreground` @ 15 % alpha | **none painted** | square, `tab_bar_bg.lighten(0.15)` |
+//! | Preview-tab label | italic + `tab_preview_*_fg` | upright + `tab_preview_*_fg` | upright, **`tab_preview_*_fg` ignored** |
+//! | [`TabFrame::Brackets`] framing | painted | **not painted** | **not painted** |
+//!
+//! ## Why it was held back rather than landed with the other three
+//!
+//! The other three primitives already shared one layout derivation
+//! across every pixel backend, so slicing their paint out was purely a
+//! paint change. `TabBar` does not: GTK and Windows resolve geometry
+//! through the shared
+//! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] (#1080),
+//! but macOS still resolves it in two bespoke, macOS-only builders
+//! (`macos::tab_bar::mac_tab_bar_layout_icons` →
+//! `TabBarHits`, `macos::tab_bar::mac_tab_bar_native_layout_icons` →
+//! [`TabBarLayout`]) that use a **different `close_bounds` convention**:
+//! macOS sizes the close box as `close_glyph_w + 2 * CLOSE_PAD` centred
+//! on the glyph, while `pixel_tab_bar_layout` sizes it as
+//! `tab_inner_gap + close_glyph_w` starting one inner gap *before* the
+//! glyph. A single shared `paint` positions the close glyph from
+//! [`VisibleTab::close_bounds`], so it cannot satisfy both conventions
+//! without a per-backend inset knob — which would reintroduce exactly
+//! the per-backend branching the migration exists to delete.
+//!
+//! Unifying that convention changes macOS's close-button **hit**
+//! geometry, which is `TabBarHits`/`TabBarLayout` output both unpinned
+//! downstream consumers route real clicks through (see `CLAUDE.md`'s
+//! *Downstream consumers*). That is a layout change, not a paint change,
+//! so it belongs to #1080's lane. **#1081 must stay open (or be
+//! re-scoped to the three landed primitives with a follow-up filed for
+//! `TabBar`) — it must not be closed as complete.** The prerequisite is:
+//! move `macos::tab_bar` onto `pixel_tab_bar_layout` so all three pixel
+//! backends share one `close_bounds` convention; only then can this
+//! module grow a `native_surface_paint` module and the three backend
+//! paint loops collapse into it.
+//!
 //! # Backend contract
 //!
 //! **`TabBar` has measurement-dependent state and a non-trivial backend
