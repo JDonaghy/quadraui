@@ -40,52 +40,26 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{draw_line, fill_rect, stroke_rect, DWrite};
 use crate::event::Rect;
+use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
 use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
+    status_color, status_glyph, PipelineView, PipelineViewLayout,
 };
 use crate::theme::Theme;
 
-/// Arrow connector width in DIPs. Same value as the GTK/macOS
-/// `*_ARROW_WIDTH_PX` constants — geometry constants are shared-*value*
-/// (PRIMITIVE_RULES.md's #713 list), not shared-code, since each
-/// backend's native unit differs (DIPs here, px there, cells in TUI).
-const WIN_ARROW_WIDTH_DIP: f32 = 32.0;
-/// Height reserved for the action button in DIPs.
-const WIN_ACTION_HEIGHT_DIP: f32 = 22.0;
-/// Height reserved above stage boxes for the focus indicator (DIPs).
-const WIN_FOCUS_INDICATOR_H: f32 = 8.0;
-/// Border stroke width in DIPs.
-const BORDER_WIDTH_DIP: f32 = 1.0;
-/// Horizontal padding inside each stage box, used to clip an overlong
-/// label rather than let it bleed past the box edge.
-const H_PAD_DIP: f32 = 8.0;
-
 /// Compute the Win-GUI DIP-unit layout for a [`PipelineView`] without
 /// painting — the DirectWrite twin of [`draw_pipeline_view`]'s internal
-/// layout call.
+/// layout call. Shares its geometry with `gtk_pipeline_view_layout` /
+/// `mac_pipeline_view_layout` via [`pixel_pipeline_view_layout`] (issue
+/// #1079).
 ///
 /// Note: the returned layout (incl. `bounds`) is offset down by
-/// `WIN_FOCUS_INDICATOR_H`, so `bounds.y` starts below the reserved caret
-/// strip. The focus caret is painted in the gap between `rect.y` and
-/// `bounds.y`; a host that clips drawing to `layout.bounds` would clip
-/// the caret — clip to the original `rect` instead. Same contract as the
-/// GTK/macOS/TUI twins' `*_pipeline_view_layout`.
+/// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
+/// reserved caret strip. The focus caret is painted in the gap between
+/// `rect.y` and `bounds.y`; a host that clips drawing to `layout.bounds`
+/// would clip the caret — clip to the original `rect` instead. Same
+/// contract as the GTK/macOS/TUI twins' `*_pipeline_view_layout`.
 pub fn win_pipeline_view_layout(view: &PipelineView, rect: Rect) -> PipelineViewLayout {
-    let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
-        WIN_ACTION_HEIGHT_DIP
-    } else {
-        0.0
-    };
-    view.layout(
-        rect.x,
-        rect.y + WIN_FOCUS_INDICATOR_H,
-        PipelineViewMeasure::new(
-            rect.width,
-            (rect.height - WIN_FOCUS_INDICATOR_H).max(0.0),
-            WIN_ARROW_WIDTH_DIP,
-            action_h,
-        ),
-    )
+    pixel_pipeline_view_layout(view, rect.x, rect.y, rect.width, rect.height)
 }
 
 /// Draw a [`PipelineView`] into `rect` (DIPs, target-relative) on
@@ -121,13 +95,18 @@ pub fn draw_pipeline_view(
         // ── Box border (per-status colour; focus uses an above-box
         // indicator, not a border override) ─────────────────────────────
         let border_color = status_color(&stage.status, theme);
-        let _ = stroke_rect(target, bb, border_color, BORDER_WIDTH_DIP);
+        let _ = stroke_rect(
+            target,
+            bb,
+            border_color,
+            pixel::PIPELINE_BORDER_WIDTH as f32,
+        );
 
         // ── Focus indicator (▼ chevron above the box) ──────────────────
         if is_focused {
             let ind_x = bb.x + bb.width / 2.0;
             let tri_tip_y = bb.y - 1.0;
-            let tri_base_y = bb.y - WIN_FOCUS_INDICATOR_H + 1.0;
+            let tri_base_y = bb.y - pixel::PIPELINE_FOCUS_INDICATOR_H + 1.0;
             let half_w = 5.0;
             let _ = draw_line(
                 target,
@@ -163,7 +142,7 @@ pub fn draw_pipeline_view(
         // ── Label (middle of box, clipped to the padded box width) ───────
         if !stage.label.is_empty() {
             if let Ok((lw, lh)) = dwrite.measure_text(&stage.label) {
-                let avail_w = (bb.width - 2.0 * H_PAD_DIP).max(0.0);
+                let avail_w = (bb.width - 2.0 * pixel::PIPELINE_H_PAD as f32).max(0.0);
                 let draw_w = lw.min(avail_w).max(1.0);
                 let label_cx = bb.x + bb.width / 2.0 - draw_w / 2.0;
                 let label_cy = bb.y + bb.height / 2.0 - lh / 2.0;
@@ -320,13 +299,13 @@ mod tests {
             .map(|_| win_pipeline_view_layout(&view, rect))
             .expect("paint pipeline view");
 
-        // Box top must sit exactly at origin_y + WIN_FOCUS_INDICATOR_H, not
+        // Box top must sit exactly at origin_y + PIPELINE_FOCUS_INDICATOR_H, not
         // a hardcoded absolute value — pins the offset math independently
         // of the hit_test round trip below.
         let bb0 = layout.stages[0].box_bounds;
         assert!(
-            (bb0.y - (origin_y + WIN_FOCUS_INDICATOR_H)).abs() < 0.001,
-            "stage box top should be origin_y + WIN_FOCUS_INDICATOR_H, got {}",
+            (bb0.y - (origin_y + pixel::PIPELINE_FOCUS_INDICATOR_H)).abs() < 0.001,
+            "stage box top should be origin_y + PIPELINE_FOCUS_INDICATOR_H, got {}",
             bb0.y,
         );
 

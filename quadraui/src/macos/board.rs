@@ -31,10 +31,10 @@ use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
 use crate::primitives::board::{
-    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel,
-    BOARD_CARD_CORNER_RADIUS_PX, BOARD_CARD_GAP_PX, BOARD_CARD_H_PAD_PX, BOARD_CARD_H_PX,
-    BOARD_COL_GAP_PX, BOARD_COL_MIN_PX, BOARD_HEADER_H_PX,
+    badge_fg_color, badge_icon, BoardLayout, BoardModel, BOARD_CARD_CORNER_RADIUS_PX,
+    BOARD_CARD_H_PAD_PX,
 };
+use crate::primitives::layout_metrics::pixel_board_layout;
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -53,22 +53,11 @@ const HEADER_Y_OFF: f64 = 4.0;
 
 /// Compute the macOS point-unit layout for a [`BoardModel`] without
 /// painting. `x` / `y` are baked into every returned rect (absolute
-/// frame), matching the GTK twin.
+/// frame), matching the GTK twin. Shares its column/card measure with
+/// `gtk_board_layout` / `win_board_layout` via [`pixel_board_layout`]
+/// (issue #1079).
 pub fn mac_board_layout(model: &BoardModel, x: f64, y: f64, w: f64, h: f64) -> BoardLayout {
-    board_layout(
-        model,
-        x as f32,
-        y as f32,
-        w as f32,
-        h as f32,
-        BoardMeasure::new(
-            BOARD_COL_MIN_PX,
-            BOARD_COL_GAP_PX,
-            BOARD_HEADER_H_PX,
-            BOARD_CARD_H_PX,
-            BOARD_CARD_GAP_PX,
-        ),
-    )
+    pixel_board_layout(model, x as f32, y as f32, w as f32, h as f32)
 }
 
 /// Draw a [`BoardModel`] onto `ctx`. Returns the layout for host click

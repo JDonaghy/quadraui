@@ -10,10 +10,12 @@
 //! compatibility shim over the shared [`super::surface::D2dSurface`]
 //! adapter (#1072 — consolidated from this module's own private
 //! `RawSplitTreeSurface`). No geometry is re-derived:
-//! [`win_split_tree_layout`] calls
-//! `SplitTree::layout` directly with the identical divider thickness
-//! [`DIVIDER_DIP`], which matches [`super::split::DIVIDER_DIP`] so a
-//! `SplitTree` and a plain `Split` line up, same as the gtk/macos twins.
+//! [`win_split_tree_layout`] delegates to
+//! [`crate::primitives::layout_metrics::pixel_split_tree_layout`] (issue
+//! #1079), the shared divider thickness
+//! [`crate::primitives::layout_metrics::pixel::DIVIDER`] `super::split`
+//! also uses, so a `SplitTree` and a plain `Split` line up, same as the
+//! gtk/macos twins.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod split_tree;` and `backend.rs`'s
@@ -29,19 +31,16 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use crate::event::Rect;
-use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::layout_metrics::pixel_split_tree_layout;
+use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::theme::Theme;
-
-/// Divider thickness (DIPs) — matches [`super::split::DIVIDER_DIP`], the
-/// DirectWrite twin of `gtk::split_tree`'s `GTK_DIVIDER_PX`.
-pub const DIVIDER_DIP: f32 = 4.0;
 
 /// Compute a [`SplitTree`]'s layout without painting — the twin of
 /// [`draw_split_tree`]. Both call [`SplitTree::layout`] with the
 /// identical divider thickness, so a no-paint hit-test call always
 /// agrees with what the last paint drew.
 pub fn win_split_tree_layout(rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
-    tree.layout(rect, SplitTreeMeasure::new(DIVIDER_DIP))
+    pixel_split_tree_layout(tree, rect)
 }
 
 /// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
@@ -216,7 +215,7 @@ mod tests {
         let layout = win_split_tree_layout(Rect::new(0.0, 0.0, 100.0, 50.0), &two_pane());
         assert_eq!(
             layout.dividers[0].thickness,
-            super::super::split::DIVIDER_DIP
+            crate::primitives::layout_metrics::pixel::DIVIDER
         );
         // available = 96, 0.5 * 96 = 48 — identical to the GTK/macOS twins.
         assert!((layout.dividers[0].position - 48.0).abs() < 0.001);

@@ -9,29 +9,16 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
+use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::theme::Theme;
 use crate::types::Color;
 
-/// 28-pt cancel affordance width, matching GTK.
-const CANCEL_WIDTH_PX: f32 = 28.0;
-
-/// Compute the macOS pixel-unit layout for a [`ProgressBar`].
+/// Compute the macOS pixel-unit layout for a [`ProgressBar`]. Shares its
+/// cancel-affordance width with `gtk_progress_layout` /
+/// `win_progress_layout` via [`pixel_progress_layout`] (issue #1079).
 pub fn mac_progress_layout(bar: &ProgressBar, x: f64, y: f64, w: f64, h: f64) -> ProgressBarLayout {
-    let cancel_w = if bar.cancellable {
-        CANCEL_WIDTH_PX
-    } else {
-        0.0
-    };
-    bar.layout(
-        x as f32,
-        y as f32,
-        ProgressBarMeasure {
-            width: w as f32,
-            height: h as f32,
-            cancel_width: cancel_w,
-        },
-    )
+    pixel_progress_layout(bar, x as f32, y as f32, w as f32, h as f32)
 }
 
 /// Draw a [`ProgressBar`] onto `ctx`. Returns the layout for host
@@ -70,12 +57,12 @@ pub unsafe fn draw_progress(
     } else {
         // Indeterminate pulse — same cadence as GTK.
         let bar_w = if bar.cancellable {
-            (w - CANCEL_WIDTH_PX as f64).max(0.0)
+            (w - pixel::PROGRESS_CANCEL_WIDTH as f64).max(0.0)
         } else {
             w
         };
         if bar_w > 0.0 {
-            let pulse_w = 40.0_f64.min(bar_w);
+            let pulse_w = (pixel::PROGRESS_PULSE_WIDTH as f64).min(bar_w);
             let pos = (bar.frame_idx as f64 * 4.0) % bar_w;
             fill_rect(ctx, x + pos, y, pulse_w.min(bar_w - pos), h, fill_color);
         }
@@ -235,7 +222,7 @@ mod tests {
         };
         let layout = mac_progress_layout(&bar, origin_x, origin_y, W as f64, H as f64);
         let cb = layout.cancel_bounds.expect("cancel bounds present");
-        assert!((cb.width - CANCEL_WIDTH_PX).abs() < 0.01);
+        assert!((cb.width - pixel::PROGRESS_CANCEL_WIDTH).abs() < 0.01);
         // Hit-test at the cancel center returns Cancel.
         let cx = cb.x + cb.width * 0.5;
         let cy = cb.y + cb.height * 0.5;

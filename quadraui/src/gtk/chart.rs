@@ -15,9 +15,12 @@
 //! signature is unchanged), so it needed no deprecation shim (CLAUDE.md
 //! rule 1).
 
-use crate::primitives::chart::{Chart, ChartLayout, ChartMeasure};
+use crate::primitives::chart::{Chart, ChartLayout};
+use crate::primitives::layout_metrics::pixel_chart_layout;
 
 /// Compute the GTK pixel-unit layout for a [`Chart`] without painting.
+/// Shares its geometry with `mac_chart_layout` / `win_chart_layout` via
+/// [`pixel_chart_layout`] (issue #1079).
 pub fn gtk_chart_layout(
     chart: &Chart,
     x: f64,
@@ -27,15 +30,14 @@ pub fn gtk_chart_layout(
     line_height: f64,
     char_width: f64,
 ) -> ChartLayout {
-    chart.layout(
+    pixel_chart_layout(
+        chart,
         x as f32,
         y as f32,
-        ChartMeasure {
-            width: w as f32,
-            height: h as f32,
-            char_width: char_width as f32,
-            line_height: line_height as f32,
-        },
+        w as f32,
+        h as f32,
+        line_height as f32,
+        char_width as f32,
     )
 }
 

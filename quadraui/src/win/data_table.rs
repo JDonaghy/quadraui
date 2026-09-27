@@ -33,10 +33,10 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 #[cfg(target_os = "windows")]
 use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
+use crate::primitives::data_table::DataTable;
 #[cfg(target_os = "windows")]
 use crate::primitives::data_table::{ColumnAlign, SortDirection};
-use crate::primitives::data_table::{ColumnMeasure, DataTable};
-use crate::primitives::layout_metrics::TextMeasure;
+use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
 #[cfg(target_os = "windows")]
 use crate::primitives::scrollbar::Scrollbar;
 #[cfg(target_os = "windows")]
@@ -45,30 +45,19 @@ use crate::theme::Theme;
 use crate::types::Decoration;
 use crate::DataTableLayout;
 
-const SCROLLBAR_WIDTH: f32 = 8.0;
-
 /// Compute a [`DataTable`]'s layout without painting — the DirectWrite
 /// twin of [`draw_data_table`]'s internal layout call. Pure geometry over
 /// [`TextMeasure`] (issue #1078) — `measure` may be a live `&DWrite` (when
 /// painting) or [`super::backend`]'s nominal measurer (no surface yet).
+/// Shares its column-measurement path with `gtk_data_table_layout` /
+/// `mac_data_table_layout` via [`pixel_data_table_layout`] (issue #1079).
 pub fn win_data_table_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
     table: &DataTable,
     line_height: f32,
 ) -> DataTableLayout {
-    let header_height = (line_height * 1.2).round();
-    let measure_col = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
-        ColumnMeasure::new(measure.width_of(&col.title))
-    };
-    table.layout(
-        rect.width,
-        rect.height,
-        line_height,
-        header_height,
-        SCROLLBAR_WIDTH,
-        measure_col,
-    )
+    pixel_data_table_layout(table, rect.width, rect.height, line_height, measure)
 }
 
 /// Draw a [`DataTable`] into `rect` (DIPs) on `target`. Returns the

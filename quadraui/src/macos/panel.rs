@@ -16,14 +16,13 @@
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use crate::event::Rect as QRect;
-use crate::primitives::panel::{Panel, PanelLayout, PanelMeasure};
+use crate::primitives::layout_metrics::pixel_panel_layout;
+use crate::primitives::panel::{Panel, PanelLayout};
 use crate::theme::Theme;
 
-/// 24-pt action-button width, matching GTK.
-const ACTION_BUTTON_PX: f32 = 24.0;
-
 /// Compute the macOS pixel-unit layout for a [`Panel`] without painting.
+/// Shares its action-button width with `gtk_panel_layout` /
+/// `win_panel_layout` via [`pixel_panel_layout`] (issue #1079).
 pub fn mac_panel_layout(
     panel: &Panel,
     x: f64,
@@ -32,17 +31,14 @@ pub fn mac_panel_layout(
     h: f64,
     line_height: f64,
 ) -> PanelLayout {
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let measure = PanelMeasure {
-        title_bar_height: if panel.title.is_some() {
-            line_height as f32
-        } else {
-            0.0
-        },
-        action_button_width: ACTION_BUTTON_PX,
-        content_padding: 0.0,
-    };
-    panel.layout(bounds, measure)
+    pixel_panel_layout(
+        panel,
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        line_height as f32,
+    )
 }
 
 /// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
@@ -177,7 +173,12 @@ mod tests {
         assert_eq!(layout.visible_actions.len(), 2);
         let first = &layout.visible_actions[0];
         // First action_idx=0 painted right-most.
-        assert!((first.bounds.x - (W as f32 - ACTION_BUTTON_PX)).abs() < 0.5);
+        assert!(
+            (first.bounds.x
+                - (W as f32 - crate::primitives::layout_metrics::pixel::PANEL_ACTION_BUTTON))
+                .abs()
+                < 0.5
+        );
     }
 
     #[test]

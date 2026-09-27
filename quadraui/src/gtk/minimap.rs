@@ -67,16 +67,13 @@ use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
 use crate::event::Rect as QRect;
+use crate::primitives::layout_metrics::pixel_minimap_layout_scaled;
 use crate::primitives::minimap::{
     color_at_column, minimap_font_px, render_mode, truncate_to_columns, Minimap, MinimapAtlasCache,
-    MinimapCharAtlas, MinimapLayout, MinimapRenderMode, MinimapScale, MinimapSizing, MinimapSpan,
-    SpanCursor, VisibleMinimapLine, ATLAS_FIRST_CHAR, ATLAS_LAST_CHAR, COLUMN_CAPACITY,
+    MinimapCharAtlas, MinimapLayout, MinimapRenderMode, MinimapScale, MinimapSpan, SpanCursor,
+    VisibleMinimapLine, ATLAS_FIRST_CHAR, ATLAS_LAST_CHAR, COLUMN_CAPACITY,
 };
 use crate::theme::Theme;
-
-/// GTK shows one buffer line per painted row — no cross-line colour
-/// reduction (see [`crate::MinimapGrid`]'s doc for why TUI differs).
-pub const LINES_PER_ROW: usize = 1;
 
 /// Compute the GTK pixel-unit layout for a [`Minimap`] without painting, at
 /// [`MinimapScale::One`] — the pre-#1143 fixed pitch. Kept exactly as-is
@@ -92,7 +89,10 @@ pub fn gtk_minimap_layout(minimap: &Minimap, x: f64, y: f64, w: f64, h: f64) -> 
 }
 
 /// [`gtk_minimap_layout`], but at an explicit [`MinimapScale`] (issue
-/// #1143) — what [`GtkBackend::minimap_layout`] actually calls.
+/// #1143) — what [`GtkBackend::minimap_layout`] actually calls. Shares
+/// its `lines_per_row`/sizing formula with `mac_minimap_layout_scaled` /
+/// `win_minimap_layout_scaled` via [`pixel_minimap_layout_scaled`] (issue
+/// #1079).
 ///
 /// [`GtkBackend::minimap_layout`]: crate::gtk::backend::GtkBackend
 pub(crate) fn gtk_minimap_layout_scaled(
@@ -103,10 +103,10 @@ pub(crate) fn gtk_minimap_layout_scaled(
     h: f64,
     scale: MinimapScale,
 ) -> MinimapLayout {
-    minimap.layout_with_sizing(
+    pixel_minimap_layout_scaled(
+        minimap,
         QRect::new(x as f32, y as f32, w as f32, h as f32),
-        LINES_PER_ROW,
-        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
+        scale,
     )
 }
 

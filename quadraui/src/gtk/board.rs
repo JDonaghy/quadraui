@@ -15,10 +15,10 @@ use gtk4::pango;
 
 use super::{rounded_rect_path, set_source};
 use crate::primitives::board::{
-    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel,
-    BOARD_CARD_CORNER_RADIUS_PX, BOARD_CARD_GAP_PX, BOARD_CARD_H_PAD_PX, BOARD_CARD_H_PX,
-    BOARD_COL_GAP_PX, BOARD_COL_MIN_PX, BOARD_HEADER_H_PX,
+    badge_fg_color, badge_icon, BoardLayout, BoardModel, BOARD_CARD_CORNER_RADIUS_PX,
+    BOARD_CARD_H_PAD_PX,
 };
+use crate::primitives::layout_metrics::pixel_board_layout;
 use crate::theme::Theme;
 
 /// Font size for card title text (in Pango units = 1024 * pt).
@@ -28,22 +28,11 @@ const BADGE_FONT_SIZE: f64 = 9.0;
 /// Font size for hint text.
 const HINT_FONT_SIZE: f64 = 9.0;
 
-/// Compute the GTK pixel-unit layout for a [`BoardModel`] without painting.
+/// Compute the GTK pixel-unit layout for a [`BoardModel`] without
+/// painting. Shares its column/card measure with `mac_board_layout` /
+/// `win_board_layout` via [`pixel_board_layout`] (issue #1079).
 pub fn gtk_board_layout(model: &BoardModel, x: f64, y: f64, w: f64, h: f64) -> BoardLayout {
-    board_layout(
-        model,
-        x as f32,
-        y as f32,
-        w as f32,
-        h as f32,
-        BoardMeasure::new(
-            BOARD_COL_MIN_PX,
-            BOARD_COL_GAP_PX,
-            BOARD_HEADER_H_PX,
-            BOARD_CARD_H_PX,
-            BOARD_CARD_GAP_PX,
-        ),
-    )
+    pixel_board_layout(model, x as f32, y as f32, w as f32, h as f32)
 }
 
 /// Draw a [`BoardModel`] onto `cr`. Returns the layout for host click

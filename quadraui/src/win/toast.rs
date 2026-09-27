@@ -39,17 +39,10 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::layout_metrics::TextMeasure;
-use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
+use crate::primitives::layout_metrics::{pixel_toast_stack_layout, TextMeasure};
+use crate::primitives::toast::{ToastStack, ToastStackLayout};
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
-
-const TOAST_WIDTH_DIP: f32 = 320.0;
-const TOAST_MARGIN_DIP: f32 = 12.0;
-const TOAST_GAP_DIP: f32 = 8.0;
-const DISMISS_WIDTH_DIP: f32 = 28.0;
-const ACTION_PADDING_DIP: f32 = 16.0;
-const TOAST_PADDING_DIP: f32 = 8.0;
 
 /// Compute a [`ToastStack`]'s layout without painting — the measurer twin
 /// of the shared paint's internal layout computation. Both use the
@@ -59,39 +52,23 @@ const TOAST_PADDING_DIP: f32 = 8.0;
 /// [`super::backend`]'s nominal measurer (no surface yet); independent of
 /// [`crate::native_surface::NativeSurface::surface_measure_text`] — same
 /// "no-paint layout stays put" posture as `WinBackend::status_bar_layout`
-/// (#860).
+/// (#860). Shares its geometry with `gtk_toast_stack_layout` /
+/// `mac_toast_stack_layout` via [`pixel_toast_stack_layout`] (issue
+/// #1079).
 pub fn win_toast_stack_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
     stack: &ToastStack,
     line_height: f32,
 ) -> ToastStackLayout {
-    stack.layout(
+    pixel_toast_stack_layout(
+        stack,
+        measure,
         rect.x,
         rect.y,
         rect.width,
         rect.height,
-        TOAST_MARGIN_DIP,
-        TOAST_GAP_DIP,
-        |i| {
-            let toast = &stack.toasts[i];
-            let h = if toast.body.is_empty() {
-                line_height + TOAST_PADDING_DIP * 2.0
-            } else {
-                line_height * 2.0 + TOAST_PADDING_DIP * 2.0
-            };
-            let action_w = toast
-                .action
-                .as_ref()
-                .map(|a| measure.width_of(&a.label) + ACTION_PADDING_DIP)
-                .unwrap_or(0.0);
-            ToastMeasure {
-                width: TOAST_WIDTH_DIP.min((rect.width - TOAST_MARGIN_DIP * 2.0).max(0.0)),
-                height: h,
-                dismiss_width: DISMISS_WIDTH_DIP,
-                action_width: action_w,
-            }
-        },
+        line_height,
     )
 }
 

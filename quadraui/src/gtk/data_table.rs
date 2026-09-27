@@ -8,9 +8,8 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use super::{cairo_rgb, set_source};
-use crate::primitives::data_table::{
-    ColumnAlign, ColumnMeasure, DataTable, DataTableLayout, SortDirection,
-};
+use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
+use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
 
 /// Draw a `DataTable` onto `cr`. Returns the layout used for painting.
@@ -27,21 +26,19 @@ pub fn draw_data_table(
     line_height: f64,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
-    let header_height = (line_height * 1.2).round();
-    let measure = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
-        pango_layout.set_text(&col.title);
-        pango_layout.set_attributes(None);
-        let (w, _) = pango_layout.pixel_size();
-        ColumnMeasure::new(w.max(0) as f32)
+    pango_layout.set_attributes(None);
+    let measure = super::toolbar::PangoMeasure {
+        pango_layout: Some(pango_layout),
+        char_width: 0.0,
     };
-    let layout = table.layout(
+    let layout = pixel_data_table_layout(
+        table,
         width as f32,
         height as f32,
         line_height as f32,
-        header_height as f32,
-        8.0,
-        measure,
+        &measure,
     );
+    let header_height = layout.header_height as f64;
 
     if width <= 0.0 || height <= 0.0 {
         return layout;
@@ -366,20 +363,17 @@ pub fn gtk_data_table_layout(
     height: f64,
     line_height: f64,
 ) -> DataTableLayout {
-    let header_height = (line_height * 1.2).round();
-    let measure = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
-        pango_layout.set_text(&col.title);
-        pango_layout.set_attributes(None);
-        let (w, _) = pango_layout.pixel_size();
-        ColumnMeasure::new(w.max(0) as f32)
+    pango_layout.set_attributes(None);
+    let measure = super::toolbar::PangoMeasure {
+        pango_layout: Some(pango_layout),
+        char_width: 0.0,
     };
-    table.layout(
+    pixel_data_table_layout(
+        table,
         width as f32,
         height as f32,
         line_height as f32,
-        header_height as f32,
-        8.0,
-        measure,
+        &measure,
     )
 }
 

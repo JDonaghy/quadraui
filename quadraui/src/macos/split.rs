@@ -15,16 +15,16 @@
 use core_graphics::sys::CGContextRef;
 
 use crate::event::Rect as QRect;
-use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
+use crate::primitives::layout_metrics::pixel_split_layout;
+use crate::primitives::split::{Split, SplitLayout};
 use crate::theme::Theme;
 
-/// 4-point divider thickness, matching GTK.
-const DIVIDER_PX: f32 = 4.0;
-
 /// Compute the macOS pixel-unit layout for a [`Split`] without painting.
+/// Shares its divider thickness with `gtk_split_layout` /
+/// `win_split_layout` via [`pixel_split_layout`] (issue #1079).
 pub fn mac_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    split.layout(bounds, SplitMeasure::new(DIVIDER_PX))
+    pixel_split_layout(split, bounds)
 }
 
 /// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces

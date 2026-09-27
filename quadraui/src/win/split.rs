@@ -26,19 +26,18 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use crate::event::Rect;
-use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
+use crate::primitives::layout_metrics::pixel_split_layout;
+use crate::primitives::split::{Split, SplitLayout};
 use crate::theme::Theme;
-
-/// Divider thickness (DIPs) — the DirectWrite twin of
-/// `gtk::split::GTK_DIVIDER_PX`.
-pub const DIVIDER_DIP: f32 = 4.0;
 
 /// Compute a [`Split`]'s layout without painting — the twin of
 /// [`draw_split`]. Both call [`Split::layout`] with the identical
 /// divider thickness, so a no-paint hit-test call always agrees with
-/// what the last paint drew.
+/// what the last paint drew. Shares that thickness with
+/// `gtk_split_layout` / `mac_split_layout` via
+/// [`crate::primitives::layout_metrics::pixel::DIVIDER`] (issue #1079).
 pub fn win_split_layout(rect: Rect, split: &Split) -> SplitLayout {
-    split.layout(rect, SplitMeasure::new(DIVIDER_DIP))
+    pixel_split_layout(split, rect)
 }
 
 /// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces

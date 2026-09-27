@@ -8,24 +8,23 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
+use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
 use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
+    status_color, status_glyph, PipelineView, PipelineViewLayout,
 };
 use crate::theme::Theme;
 use crate::types::Color;
 
-/// Arrow connector width in pixels.
-const MAC_ARROW_WIDTH_PX: f32 = 32.0;
-/// Height reserved for the action button in pixels.
-const MAC_ACTION_HEIGHT_PX: f32 = 22.0;
-/// Corner radius for stage boxes (matches the GTK `CORNER_RADIUS`).
-const CORNER_RADIUS: f64 = 4.0;
-/// Border width for stage box outline.
-const BORDER_WIDTH: f64 = 1.0;
-/// Height reserved above stage boxes for the focus indicator (pixels).
-const MAC_FOCUS_INDICATOR_H: f64 = 8.0;
-
-/// Compute the macOS pixel-unit layout for a [`PipelineView`].
+/// Compute the macOS pixel-unit layout for a [`PipelineView`]. Shares its
+/// geometry with `gtk_pipeline_view_layout` / `win_pipeline_view_layout`
+/// via [`pixel_pipeline_view_layout`] (issue #1079).
+///
+/// Note: the returned layout (incl. `bounds`) is offset down by
+/// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
+/// reserved caret strip. The focus caret is painted in the gap between
+/// the passed-in `y` and `bounds.y`; a host that clips drawing to
+/// `layout.bounds` would clip the caret — clip to the original `(y, h)`
+/// instead.
 pub fn mac_pipeline_view_layout(
     view: &PipelineView,
     x: f64,
@@ -33,26 +32,7 @@ pub fn mac_pipeline_view_layout(
     w: f64,
     h: f64,
 ) -> PipelineViewLayout {
-    let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
-        MAC_ACTION_HEIGHT_PX
-    } else {
-        0.0
-    };
-    // Note: the returned layout (incl. `bounds`) is offset down by
-    // `MAC_FOCUS_INDICATOR_H`, so `bounds.y` starts below the reserved caret
-    // strip. The focus caret is painted in the gap between the passed-in `y`
-    // and `bounds.y`; a host that clips drawing to `layout.bounds` would clip
-    // the caret — clip to the original `(y, h)` instead.
-    view.layout(
-        x as f32,
-        (y + MAC_FOCUS_INDICATOR_H) as f32,
-        PipelineViewMeasure::new(
-            w as f32,
-            (h - MAC_FOCUS_INDICATOR_H).max(0.0) as f32,
-            MAC_ARROW_WIDTH_PX,
-            action_h,
-        ),
-    )
+    pixel_pipeline_view_layout(view, x as f32, y as f32, w as f32, h as f32)
 }
 
 /// Draw a [`PipelineView`] onto `ctx`. Returns the layout for host click
@@ -93,21 +73,21 @@ pub unsafe fn draw_pipeline_view(
 
         // ── Box fill (rounded corners) ────────────────────────────────────
         set_fill_color(ctx, theme.surface_bg);
-        add_rounded_rect_path(ctx, bx, by, bw, bh, CORNER_RADIUS);
+        add_rounded_rect_path(ctx, bx, by, bw, bh, pixel::CORNER_RADIUS);
         CGContextFillPath(ctx);
 
         // ── Box border (per-status colour; focus uses an above-box indicator) ──
         let border_color = status_color(&stage.status, theme);
         set_stroke_color(ctx, border_color);
-        CGContextSetLineWidth(ctx, BORDER_WIDTH);
-        add_rounded_rect_path(ctx, bx, by, bw, bh, CORNER_RADIUS);
+        CGContextSetLineWidth(ctx, pixel::PIPELINE_BORDER_WIDTH);
+        add_rounded_rect_path(ctx, bx, by, bw, bh, pixel::CORNER_RADIUS);
         CGContextStrokePath(ctx);
 
         // ── Focus indicator (small ▼ triangle above the box) ─────────────
         if is_focused {
             let ind_x = bx + bw / 2.0;
             let tri_tip_y = by - 1.0;
-            let tri_base_y = by - MAC_FOCUS_INDICATOR_H + 1.0;
+            let tri_base_y = by - pixel::PIPELINE_FOCUS_INDICATOR_H as f64 + 1.0;
             let tri_half_w = 5.0_f64;
             set_fill_color(ctx, theme.muted_fg);
             CGContextMoveToPoint(ctx, ind_x, tri_tip_y);
@@ -351,7 +331,7 @@ mod tests {
     /// helpers must return coords in the same frame across backends").
     /// `mac_pipeline_view_layout` bakes `x`/`y` straight into the
     /// returned bounds (absolute frame, matching the GTK/TUI twins) —
-    /// and *also* adds `MAC_FOCUS_INDICATOR_H` to `y` itself before
+    /// and *also* adds [`pixel::PIPELINE_FOCUS_INDICATOR_H`] to `y` itself before
     /// laying out, an extra reason a non-zero-origin regression is
     /// plausible here. Deriving `ab`/`bb` from the layout (not
     /// hardcoding them) means this exercises whatever origin math the
@@ -363,13 +343,13 @@ mod tests {
         let view = make_view();
         let layout = mac_pipeline_view_layout(&view, origin_x, origin_y, 300.0, 80.0);
 
-        // Box top must sit exactly at origin_y + MAC_FOCUS_INDICATOR_H,
+        // Box top must sit exactly at origin_y + PIPELINE_FOCUS_INDICATOR_H,
         // not a hardcoded absolute value — pins the offset math
         // independently of the hit_test round trip below.
         let bb0 = layout.stages[0].box_bounds;
         assert!(
-            (bb0.y as f64 - (origin_y + MAC_FOCUS_INDICATOR_H)).abs() < 0.001,
-            "stage box top should be origin_y + MAC_FOCUS_INDICATOR_H, got {}",
+            (bb0.y as f64 - (origin_y + (pixel::PIPELINE_FOCUS_INDICATOR_H as f64))).abs() < 0.001,
+            "stage box top should be origin_y + PIPELINE_FOCUS_INDICATOR_H, got {}",
             bb0.y,
         );
 
@@ -398,8 +378,8 @@ mod tests {
 
         let bb = layout.stages[0].box_bounds;
         assert!(
-            (bb.y as f64 - (origin_y + MAC_FOCUS_INDICATOR_H)).abs() < 0.001,
-            "stage box top should be origin_y + MAC_FOCUS_INDICATOR_H, got {}",
+            (bb.y as f64 - (origin_y + (pixel::PIPELINE_FOCUS_INDICATOR_H as f64))).abs() < 0.001,
+            "stage box top should be origin_y + PIPELINE_FOCUS_INDICATOR_H, got {}",
             bb.y,
         );
         // Stage 0 has no action, so a click inside its box resolves to Body.
