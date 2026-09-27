@@ -504,10 +504,25 @@ mod tests {
         let bounds = driver
             .find_bounds("known-pixel")
             .expect("find_bounds should locate the painted segment");
+        // Unlike `GtkDriver`, `find_bounds` here is backed purely by the
+        // glyph draw position `macos::text::record_if_active` records —
+        // not a re-recorded "logical" fill rect (see this test's own
+        // module-level divergence note and `GtkBackend::draw_status_bar_interactive`'s
+        // comment). Since issue #1155, the shared
+        // `native_surface_paint::paint` insets that draw position by
+        // `PIXEL_EDGE_INSET` (outer bar edge) *and* `PIXEL_SEGMENT_PADDING`
+        // (per-segment text inset), so the lone left segment's label now
+        // starts at their sum, not at the bar's raw origin.
         assert_eq!(
             (bounds.x, bounds.y),
-            (0.0, 0.0),
-            "the only segment should start at the bar's origin"
+            (
+                crate::primitives::status_bar::PIXEL_EDGE_INSET
+                    + crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
+                0.0
+            ),
+            "the only segment's label should start `PIXEL_EDGE_INSET + \
+             PIXEL_SEGMENT_PADDING` in from the bar's left edge (issue #1155), \
+             not flush at its origin"
         );
 
         let (x, y) = driver
