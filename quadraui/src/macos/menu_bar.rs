@@ -1,30 +1,28 @@
 //! macOS rasteriser for [`crate::MenuBar`].
 //!
-//! Horizontal strip of top-level menu labels. Mirrors
-//! [`crate::gtk::menu_bar`]: per-item Core Text measurement,
-//! active-item highlight, label rendering with `&` stripped.
-//!
-//! ## Scope omissions (follow-up)
-//!
-//! - **Alt-key underline** — GTK applies a Pango underline attribute
-//!   to the `&`-marked character. Core Text supports underline via
-//!   `kCTUnderlineStyleAttributeName` but the existing
-//!   [`super::text::draw_text`] path doesn't thread attributes
-//!   through. Deferred with bold/italic to a unified text-attribute
-//!   pass. When this lands, mirror the GTK/TUI fix from quadraui#625:
-//!   underline only the char after `&`, and paint no underline at all
-//!   when the label has no `&` — don't reintroduce a "fall back to
-//!   char 0" default.
+//! Layout (`mac_menu_bar_layout`) stays here — it needs Core Text's own
+//! measurement to size each item. Content painting (background,
+//! active/disabled colouring, label text, Alt-key underline) moved to
+//! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
+//! (#1081, `NativeSurface` Phase 4 slice 5/8), which also **closes this
+//! backend's own documented gap**: pre-migration macOS painted no
+//! Alt-key underline at all (Core Text's `kCTUnderlineStyleAttributeName`
+//! needs attributed-string plumbing `super::text::draw_text` never had —
+//! see this module's git history for the old "Scope omissions" doc).
+//! The shared `paint` draws the underline as a manually-positioned
+//! filled rectangle instead of a font-level attribute, so it needs
+//! nothing beyond the measure/fill verbs every backend already has —
+//! see that fn's module doc for the full three-way drift it resolved.
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
+use super::text::measure_text;
 use crate::event::Rect as QRect;
-use crate::primitives::menu_bar::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
+use crate::primitives::menu_bar::{
+    native_surface_paint, MenuBar, MenuBarItemMeasure, MenuBarLayout,
+};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// 8-pt padding each side of the menu label inside its hit slot.
 const ITEM_PAD: f32 = 8.0;
@@ -67,45 +65,14 @@ pub unsafe fn draw_menu_bar(
     theme: &Theme,
 ) -> MenuBarLayout {
     CGContextSaveGState(ctx);
-    fill_rect(ctx, x, y, width, height, theme.tab_bar_bg);
 
     let layout = mac_menu_bar_layout(font, x, y, width, height, bar);
 
-    for vi in &layout.visible_items {
-        let item = &bar.items[vi.item_idx];
-        let is_active = bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
-
-        let (fg_color, bg_color) = if is_active {
-            (theme.tab_active_fg, theme.tab_active_bg)
-        } else if item.disabled {
-            (theme.muted_fg, theme.tab_bar_bg)
-        } else {
-            (theme.tab_inactive_fg, theme.tab_bar_bg)
-        };
-
-        // `vi.bounds.x` is already absolute — `mac_menu_bar_layout` passes
-        // `bounds.x = x` into `MenuBar::layout`, which starts its internal
-        // cursor at `bounds.x`, so item bounds already carry the bar's
-        // origin. Adding `x` again here double-counted it, invisibly at
-        // `x == 0` (every existing test) and shifting painted glyphs away
-        // from their own hit-test bounds at any other origin — the
-        // LESSONS.md "layout helpers must return coords in the same frame
-        // across backends" bug class. Same bug found and fixed in
-        // `tui::menu_bar::draw_menu_bar` via the quadraui#494 non-zero-
-        // origin regression test.
-        let item_x = vi.bounds.x as f64;
-        let item_w = vi.bounds.width as f64;
-
-        if is_active {
-            fill_rect(ctx, item_x, y, item_w, height, bg_color);
-        }
-
-        let text = display_text(&item.label);
-        let (text_w, text_h) = measure_text(font, &text);
-        let text_x = item_x + (item_w - text_w) / 2.0;
-        let text_y = y + (height - text_h) / 2.0;
-        draw_text(ctx, font, &text, text_x, text_y, color_to_cg(fg_color));
-    }
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    native_surface_paint::paint(bar, &layout, &mut surface, theme);
 
     CGContextRestoreGState(ctx);
     layout
@@ -116,33 +83,9 @@ fn display_text(label: &str) -> String {
     label.chars().filter(|&c| c != '&').collect()
 }
 
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
 extern "C" {
     fn CGContextSaveGState(c: CGContextRef);
     fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
