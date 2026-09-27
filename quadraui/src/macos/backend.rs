@@ -513,6 +513,27 @@ enum MacCursorKind {
     ResizeLeftRight,
 }
 
+/// The smallest `NSRect` enclosing both `a` and `b` — the same shape as
+/// AppKit's own `NSUnionRect` C function, which `objc2-foundation`
+/// doesn't bind, reimplemented here in pure Rust so
+/// [`MacBackend::titlebar_control_inset`] can union the
+/// Close/Miniaturize/Zoom button frames without an `unsafe` FFI call
+/// (issue #1154). Pure and AppKit-free on purpose, like [`mac_cursor_kind`]
+/// above — trivially unit-testable without a live `NSWindow`.
+fn union_ns_rect(a: NSRect, b: NSRect) -> NSRect {
+    let min_x = a.origin.x.min(b.origin.x);
+    let min_y = a.origin.y.min(b.origin.y);
+    let max_x = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);
+    let max_y = (a.origin.y + a.size.height).max(b.origin.y + b.size.height);
+    NSRect {
+        origin: NSPoint { x: min_x, y: min_y },
+        size: NSSize {
+            width: max_x - min_x,
+            height: max_y - min_y,
+        },
+    }
+}
+
 /// Map a [`PointerShape`] to the [`MacCursorKind`] it should show (#498).
 /// Mirrors `gtk::backend::pointer_shape_cursor_name`, but `NSCursor`'s
 /// public API (`objc2-app-kit`'s binding of it — see
@@ -1659,44 +1680,70 @@ impl Backend for MacBackend {
     /// `macos::headless`'s module doc for the same convention on the
     /// headless bitmap path).
     ///
-    /// Derives the inset from
+    /// Derives the inset from the **union of the Close/Miniaturize/Zoom
+    /// button frames**, each converted individually into window
+    /// coordinates, rather than from
     /// `standardWindowButton(NSWindowButton::CloseButton)`'s immediate
-    /// superview — AppKit's own private container view for the
-    /// three-button cluster, already sized to exactly their combined
-    /// bounding box — rather than unioning three individual button
-    /// frames or hardcoding the ~78pt Apple's HIG happens to use today.
-    /// That spacing is not an API contract: it moves with accessibility
-    /// settings (`Increase contrast`, larger click targets) and could
-    /// change in a future macOS release, so reading AppKit's own layout
-    /// is the only way this stays correct without needing to be
-    /// revisited by hand.
+    /// superview (issue #1154).
+    ///
+    /// That superview is AppKit's own private container view for the
+    /// three-button cluster — but on a *real* (non-headless) window it
+    /// is `NSTitlebarView` itself, which spans the window's **entire
+    /// width**, not just the button cluster. Reading its `bounds()`
+    /// therefore reports a false full-width inset, leaving consumers
+    /// (e.g. vimcode's command-center band) with zero width to paint
+    /// into. Unioning the three buttons' own frames instead of trusting
+    /// their shared ancestor's bounds sidesteps that private-view
+    /// assumption entirely — no hardcoded ~78pt HIG spacing, still
+    /// correct if accessibility settings (`Increase contrast`, larger
+    /// click targets) resize the cluster, since it's still reading
+    /// AppKit's own per-button layout.
     ///
     /// Returns `Rect::default()` — same as the trait default — when no
     /// window is set yet (`self.window` stays `None` until
     /// `macos::run::run_with` calls [`Self::set_window`]) or AppKit
-    /// hands back no button/container, e.g. a borderless style mask with
-    /// no `Titled` bit. Never called before `client_side_titlebar` was
-    /// set at window-creation time in practice, but safe to call any
-    /// time regardless.
+    /// hands back none of the three buttons, e.g. a borderless style
+    /// mask with no `Titled` bit. Never called before
+    /// `client_side_titlebar` was set at window-creation time in
+    /// practice, but safe to call any time regardless.
     fn titlebar_control_inset(&self) -> Rect {
         let Some(window) = self.window.as_ref() else {
             return Rect::default();
         };
-        let Some(close_button) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+        // Miniaturize/Zoom can be individually absent (e.g. a style mask
+        // that omits `Miniaturizable`/`Resizable`), so each is optional;
+        // only a total absence of all three (no `Titled` style mask at
+        // all) falls through to `Rect::default()` below.
+        let button_kinds = [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ];
+        let mut union_rect: Option<NSRect> = None;
+        for kind in button_kinds {
+            let Some(button) = window.standardWindowButton(kind) else {
+                continue;
+            };
+            // SAFETY: `superview` is safe to call on any live `NSView` on
+            // the main thread — a currently-installed standard window
+            // button always has one.
+            let Some(superview) = (unsafe { button.superview() }) else {
+                continue;
+            };
+            // `frame()` is already in `superview`'s coordinate space;
+            // `convertRect_toView(_, None)` reaches the window's base
+            // coordinate system (bottom-left origin) from there,
+            // regardless of how deep this button sits in AppKit's
+            // private titlebar view hierarchy.
+            let in_window = superview.convertRect_toView(button.frame(), None);
+            union_rect = Some(match union_rect {
+                Some(acc) => union_ns_rect(acc, in_window),
+                None => in_window,
+            });
+        }
+        let Some(in_window) = union_rect else {
             return Rect::default();
         };
-        // SAFETY: `superview` is safe to call on any live `NSView` on the
-        // main thread — `close_button` is a retained, currently-installed
-        // subview of the window's titlebar, so it always has one.
-        let Some(container) = (unsafe { close_button.superview() }) else {
-            return Rect::default();
-        };
-        // `convertRect_toView(_, None)` reaches the window's base
-        // coordinate system (bottom-left origin) directly, regardless of
-        // how deep `container` sits in AppKit's private titlebar view
-        // hierarchy — more robust than assuming `container.frame()` is
-        // already in window coordinates.
-        let in_window = container.convertRect_toView(container.bounds(), None);
         let content_height = window
             .contentView()
             .map(|view| view.frame().size.height)
@@ -4830,6 +4877,67 @@ mod tests {
         assert_eq!(Backend::titlebar_control_inset(&b), Rect::default());
     }
 
+    /// #1154: with a real `NSWindow`, `titlebar_control_inset` must report
+    /// the actual traffic-light cluster width, not the full window width
+    /// the pre-fix `close_button.superview()` read (that private
+    /// container is `NSTitlebarView`, which spans the window edge to
+    /// edge). Main-thread-gated — a no-op under a default `cargo test`
+    /// run, same rationale as
+    /// `mac_cursor_for_shape_vends_the_kind_it_maps_to` above; runs for
+    /// real under `cargo test -- --test-threads=1` on a macOS host.
+    ///
+    /// Pins two invariants straight from the bug report: well under the
+    /// ~78pt HIG cluster width (150pt of slack for accessibility-driven
+    /// resizing), and strictly less than the window's own width — the
+    /// exact symptom (`inset.width == window width`) this issue was filed
+    /// against.
+    #[test]
+    fn titlebar_control_inset_is_narrow_on_a_live_window() {
+        use objc2::msg_send;
+        use objc2_app_kit::{NSBackingStoreType, NSWindowStyleMask};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let window_width = 800.0_f64;
+        let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(window_width, 600.0));
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Resizable
+            | NSWindowStyleMask::Miniaturizable;
+        // SAFETY: `initWithContentRect:styleMask:backing:defer:` is
+        // `NSWindow`'s designated initializer, called here on the main
+        // thread (guarded by the `MainThreadMarker` above) with a valid,
+        // freshly-`alloc`'d receiver — mirrors `macos::run::run_with`'s
+        // own construction of the real app window.
+        let window: Retained<NSWindow> = unsafe {
+            msg_send![
+                mtm.alloc::<NSWindow>(),
+                initWithContentRect: content_rect,
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false,
+            ]
+        };
+
+        let mut b = MacBackend::new();
+        b.set_window(window);
+        let inset = Backend::titlebar_control_inset(&b);
+
+        assert!(
+            inset.width < 150.0,
+            "traffic-light cluster width should be well under 150pt (HIG spacing is ~78pt) — \
+             got {inset:?}; a width anywhere near the window width means this is reading the \
+             full-width NSTitlebarView again, not the button cluster (#1154)",
+        );
+        assert!(
+            (inset.width as f64) < window_width,
+            "inset width {} must be strictly less than the window width {window_width} — equal \
+             (or greater) is the exact #1154 symptom",
+            inset.width,
+        );
+    }
+
     /// Regression test for the blocking review finding on this PR: the
     /// `PointerShape` → cursor mapping this backend introduced had zero
     /// test coverage, despite `desktop::all_pointer_shapes()` existing
@@ -4887,6 +4995,50 @@ mod tests {
                 "PointerShape {shape:?} did not map to the expected cursor kind",
             );
         }
+    }
+
+    /// #1154: pure, AppKit-free coverage of [`union_ns_rect`] — the
+    /// building block `titlebar_control_inset` unions the three button
+    /// frames with, runnable on every platform and every thread (no
+    /// `MainThreadMarker` gate needed, unlike
+    /// `titlebar_control_inset_is_narrow_on_a_live_window` above).
+    #[test]
+    fn union_ns_rect_covers_both_inputs() {
+        // Disjoint rects, `b` to the right of and taller than `a` — the
+        // union must reach from `a`'s left/bottom edge to `b`'s
+        // right/top edge, not just pick one input or average them.
+        let a = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(10.0, 10.0));
+        let b = NSRect::new(NSPoint::new(20.0, 5.0), NSSize::new(10.0, 20.0));
+
+        let u = union_ns_rect(a, b);
+        assert_eq!(u.origin.x, 0.0);
+        assert_eq!(u.origin.y, 0.0);
+        assert_eq!(u.size.width, 30.0); // 20.0 + 10.0 - 0.0
+        assert_eq!(u.size.height, 25.0); // 5.0 + 20.0 - 0.0
+
+        // Order-independence: `union_ns_rect(a, b) == union_ns_rect(b, a)`,
+        // matching the loop in `titlebar_control_inset` folding buttons in
+        // whatever order AppKit hands them back.
+        let u_swapped = union_ns_rect(b, a);
+        assert_eq!(u.origin.x, u_swapped.origin.x);
+        assert_eq!(u.origin.y, u_swapped.origin.y);
+        assert_eq!(u.size.width, u_swapped.size.width);
+        assert_eq!(u.size.height, u_swapped.size.height);
+    }
+
+    /// A rect wholly inside another must not shrink the union — this is
+    /// what would happen from an accidental intersection instead of a
+    /// union.
+    #[test]
+    fn union_ns_rect_with_nested_rect_keeps_the_larger_one() {
+        let outer = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 50.0));
+        let inner = NSRect::new(NSPoint::new(10.0, 10.0), NSSize::new(5.0, 5.0));
+
+        let u = union_ns_rect(outer, inner);
+        assert_eq!(u.origin.x, 0.0);
+        assert_eq!(u.origin.y, 0.0);
+        assert_eq!(u.size.width, 100.0);
+        assert_eq!(u.size.height, 50.0);
     }
 
     /// The AppKit half of the mapping: each [`MacCursorKind`] vends the
