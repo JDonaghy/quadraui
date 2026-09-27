@@ -46,7 +46,7 @@ use crate::theme::Theme;
 // `Backend` tab-bar methods `WinBackend` implements still return it, so
 // the import needs the same allow every use site below does.
 #[allow(deprecated)]
-use crate::{tab_icon_at, SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabIcon, TabMeasure};
+use crate::{tab_icon_at, TabBar, TabBarHits, TabBarLayout, TabChrome, TabIcon};
 
 /// Left+right padding (DIPs) inside a tab's background fill.
 const TAB_PAD_DIP: f32 = 14.0;
@@ -61,6 +61,11 @@ const TAB_ICON_GAP_DIP: f32 = 6.0;
 #[cfg(target_os = "windows")]
 const TAB_ACTIVE_ACCENT_DIP: f32 = 2.0;
 
+/// Only used by the paint loop below (for hover-rect/close-glyph
+/// positioning) — the shared [`pixel_layout`] re-measures the same glyph
+/// itself via `measure`, so paint and layout can never disagree about its
+/// width even though each measures it once.
+#[cfg(target_os = "windows")]
 fn close_glyph_width(measure: &dyn TextMeasure, bar: &TabBar) -> f32 {
     if bar.show_tab_close {
         measure.width_of("×")
@@ -76,104 +81,74 @@ fn icon_extra_width(measure: &dyn TextMeasure, icons: &[Option<TabIcon>], i: usi
     }
 }
 
-/// Compute the [`TabBarLayout`] for `bar` against `rect`'s dimensions,
-/// measuring every tab/segment via `measure`. Shared by every paint and
-/// no-paint entry point in this module so they can never disagree on
-/// geometry. Pure geometry over [`TextMeasure`] (issue #1078) — no
-/// Direct2D/DirectWrite type needed, so [`super::backend::WinBackend`]
-/// can call this directly with a [`super::backend`]-local nominal
-/// measurer when no live `DWrite` handle exists yet, instead of carrying
-/// a separate duplicate.
+/// Compute `(layout, corrected_scroll_offset, available_cols)` for `bar`
+/// against `rect`'s dimensions, measuring every tab/segment via
+/// `measure`. Shared by every paint and no-paint entry point in this
+/// module so they can never disagree on geometry.
+///
+/// Issue #1080: this module's own `measure_tab`/`measure_segment`/
+/// `correct_scroll_offset` composition used to duplicate exactly what
+/// `gtk::tab_bar`/`macos::tab_bar` also each computed independently —
+/// now a thin wrapper over the shared
+/// [`crate::primitives::layout_metrics::pixel_tab_bar_layout`]. Windows
+/// has no bracket-chrome support yet (see this module's "Scope" doc), so
+/// `chrome` is always [`TabChrome::default`]. Pure geometry over
+/// [`TextMeasure`] (issue #1078) — no Direct2D/DirectWrite type needed,
+/// so [`super::backend::WinBackend`] can call this directly with a
+/// [`super::backend`]-local nominal measurer when no live `DWrite`
+/// handle exists yet, instead of carrying a separate duplicate.
+fn pixel_layout(
+    measure: &dyn TextMeasure,
+    rect: Rect,
+    bar: &TabBar,
+    icons: &[Option<TabIcon>],
+) -> (TabBarLayout, usize, usize) {
+    let tab_name_widths: Vec<f32> = bar
+        .tabs
+        .iter()
+        .map(|t| measure.width_of(&t.label))
+        .collect();
+    let icon_extras: Vec<f32> = (0..bar.tabs.len())
+        .map(|i| icon_extra_width(measure, icons, i))
+        .collect();
+    crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        bar,
+        rect.width,
+        rect.height,
+        TAB_PAD_DIP,
+        TAB_INNER_GAP_DIP,
+        TAB_OUTER_GAP_DIP,
+        &tab_name_widths,
+        &icon_extras,
+        &TabChrome::default(),
+        measure,
+    )
+}
+
+/// Compute the [`TabBarLayout`] half of [`pixel_layout`] — the icon-less
+/// callers below only need the layout, not the scroll-offset/
+/// available-cols engine feedback.
 fn compute_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
 ) -> TabBarLayout {
-    let close_w = close_glyph_width(measure, bar);
-    let measure_tab = |i: usize| -> TabMeasure {
-        let tab = &bar.tabs[i];
-        let name_w = measure.width_of(&tab.label);
-        let icon_extra = icon_extra_width(measure, icons, i);
-        let has_close = bar.show_tab_close && tab.is_closable;
-        let close_extra = if has_close {
-            TAB_INNER_GAP_DIP + close_w
-        } else {
-            0.0
-        };
-        let total =
-            TAB_PAD_DIP + icon_extra + name_w + close_extra + TAB_PAD_DIP + TAB_OUTER_GAP_DIP;
-        let close_region_w = if has_close {
-            TAB_INNER_GAP_DIP + close_w + TAB_PAD_DIP + TAB_OUTER_GAP_DIP
-        } else {
-            0.0
-        };
-        TabMeasure::new(total, close_region_w)
-    };
-    let measure_segment = |i: usize| -> SegmentMeasure {
-        SegmentMeasure::new(measure.width_of(&bar.right_segments[i].text))
-    };
-    bar.layout(rect.width, rect.height, 0.0, measure_tab, measure_segment)
-}
-
-/// Recompute the scroll offset that would make the active tab visible
-/// given this frame's actual measurements — the "engine feedback" half
-/// of the two-pass-paint pattern [`TabBar::layout`]'s doc describes
-/// (scroll arrows are disabled here, via `scroll_arrow_width: 0.0`, so
-/// [`TabBar::layout`] itself just honours `bar.scroll_offset` verbatim
-/// rather than correcting it).
-fn correct_scroll_offset(
-    measure: &dyn TextMeasure,
-    bar: &TabBar,
-    icons: &[Option<TabIcon>],
-    effective_tab_area: f32,
-) -> usize {
-    let close_w = close_glyph_width(measure, bar);
-    let active_idx = bar.tabs.iter().position(|t| t.is_active);
-    match active_idx {
-        Some(active) => {
-            let widths: Vec<usize> = (0..bar.tabs.len())
-                .map(|i| {
-                    let name_w = measure.width_of(&bar.tabs[i].label);
-                    let icon_extra = icon_extra_width(measure, icons, i);
-                    let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
-                    let close_extra = if has_close {
-                        TAB_INNER_GAP_DIP + close_w
-                    } else {
-                        0.0
-                    };
-                    (TAB_PAD_DIP * 2.0 + icon_extra + name_w + close_extra + TAB_OUTER_GAP_DIP)
-                        .ceil() as usize
-                })
-                .collect();
-            TabBar::fit_active_scroll_offset(
-                active,
-                bar.tabs.len(),
-                effective_tab_area.max(0.0) as usize,
-                |i| widths[i],
-            )
-        }
-        None => bar.scroll_offset,
-    }
+    pixel_layout(measure, rect, bar, icons).0
 }
 
 #[allow(deprecated)] // builds the deprecated `TabBarHits` — issue #823
 fn hits_from_layout(
-    measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
-    icons: &[Option<TabIcon>],
     layout: &TabBarLayout,
+    corrected_scroll_offset: usize,
+    available_cols: usize,
 ) -> TabBarHits {
     let mut hits = tab_bar_hits_from_layout(layout, bar);
     shift_tab_bar_hits(&mut hits, rect.x as f64);
-    let seg_reserved: f32 = layout
-        .visible_segments
-        .iter()
-        .map(|vs| vs.bounds.width)
-        .sum();
-    hits.correct_scroll_offset =
-        correct_scroll_offset(measure, bar, icons, rect.width - seg_reserved);
+    hits.correct_scroll_offset = corrected_scroll_offset;
+    hits.available_cols = available_cols;
     hits
 }
 
@@ -187,8 +162,8 @@ pub fn win_tab_bar_layout_icons(
     bar: &TabBar,
     icons: &[Option<TabIcon>],
 ) -> TabBarHits {
-    let layout = compute_layout(measure, rect, bar, icons);
-    hits_from_layout(measure, rect, bar, icons, &layout)
+    let (layout, corrected_scroll_offset, available_cols) = pixel_layout(measure, rect, bar, icons);
+    hits_from_layout(rect, bar, &layout, corrected_scroll_offset, available_cols)
 }
 
 /// Compute a [`TabBar`]'s layout without painting — the icon-less twin of
@@ -253,9 +228,9 @@ pub fn draw_tab_bar_icons(
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
 ) -> TabBarHits {
-    let layout = compute_layout(dwrite, rect, bar, icons);
+    let (layout, corrected_scroll_offset, available_cols) = pixel_layout(dwrite, rect, bar, icons);
     paint_tab_bar_icons_from_layout(target, dwrite, rect, bar, icons, hovered_close_tab, &layout);
-    hits_from_layout(dwrite, rect, bar, icons, &layout)
+    hits_from_layout(rect, bar, &layout, corrected_scroll_offset, available_cols)
 }
 
 /// Draw a [`TabBar`] with per-tab icon glyphs, returning [`TabBarLayout`]
