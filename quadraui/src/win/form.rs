@@ -26,7 +26,6 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
 use crate::primitives::form::{Form, FormLayout};
-use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -116,30 +115,19 @@ pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(
     }
 }
 
-/// Adapts a live [`DWrite`] handle to the shared [`TextMeasure`] trait
-/// so [`crate::primitives::layout_metrics::form_field_measure`] never
-/// has to name a DirectWrite type — mirrors `macos::form::CtFontMeasure`,
-/// which exists for exactly this reason.
-struct DWriteMeasure<'a>(&'a DWrite);
-
-impl TextMeasure for DWriteMeasure<'_> {
-    fn width_of(&self, text: &str) -> f32 {
-        self.0.measure_text(text).map(|(w, _)| w).unwrap_or(0.0)
-    }
-}
-
 /// Compute a [`Form`]'s layout without painting — the DirectWrite twin
 /// of [`draw_form`]'s internal layout call.
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::form_row_height`]
 /// / [`crate::primitives::layout_metrics::form_field_measure`] (#499,
-/// adopted for `win/` by #701), via [`DWriteMeasure`] — the same
-/// per-field-kind measurement math `macos::form::mac_form_layout` uses.
+/// adopted for `win/` by #701) — `dwrite` itself is a
+/// [`crate::primitives::layout_metrics::TextMeasure`] (issue #1078), the
+/// same per-field-kind measurement math `macos::form::mac_form_layout`
+/// uses.
 pub fn win_form_layout(dwrite: &DWrite, rect: Rect, form: &Form, line_height: f32) -> FormLayout {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
-    let measure = DWriteMeasure(dwrite);
     form.layout(rect.width, rect.height, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, dwrite)
     })
 }
 

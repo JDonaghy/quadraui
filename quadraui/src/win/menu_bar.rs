@@ -12,18 +12,27 @@
 //! "underline the first char" fallback, mirroring `gtk::menu_bar`
 //! (quadraui#625).
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod menu_bar;` and `backend.rs`'s
-//! module docs.
+//! Issue #1078: only [`draw_menu_bar`] (the real Direct2D paint entry
+//! point) is `#[cfg(target_os = "windows")]`-gated. [`win_menu_bar_layout`]
+//! is pure geometry generic over
+//! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
+//! DirectWrite type in its signature — so it compiles and runs
+//! everywhere, including a plain `cargo test --features win` on Linux.
+//! `super::mod`'s `mod menu_bar;` is no longer whole-module gated; see
+//! `backend.rs`'s module docs.
 //!
 //! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
 //! caller ([`crate::win::WinBackend::draw_menu_bar`]) passes
 //! `&self.current_theme`, the same field `Backend::set_theme` writes.
 
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
+#[cfg(target_os = "windows")]
 use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
+use crate::primitives::layout_metrics::TextMeasure;
+#[cfg(target_os = "windows")]
 use crate::theme::Theme;
 use crate::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
 
@@ -31,7 +40,9 @@ use crate::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
 /// mirrors `gtk::menu_bar::gtk_menu_bar_layout`'s `+ 16.0` (8px each
 /// side).
 const ITEM_H_PADDING_DIP: f32 = 16.0;
-/// Thickness (DIPs) of the Alt-key underline rectangle.
+/// Thickness (DIPs) of the Alt-key underline rectangle. Only used by the
+/// paint path (issue #1078).
+#[cfg(target_os = "windows")]
 const UNDERLINE_HEIGHT_DIP: f32 = 2.0;
 
 /// Strip `&` markers from a label for display — mirrors
@@ -46,19 +57,22 @@ fn display_text(label: &str) -> String {
 /// `label` carries no `&` at all. Mirrors
 /// `gtk::menu_bar::alt_char_byte_range`'s "no implicit fallback"
 /// contract (quadraui#625).
+#[cfg(any(target_os = "windows", test))]
 fn alt_char_index(label: &str) -> Option<usize> {
     let marker_byte = label.find('&')?;
     Some(label[..marker_byte].chars().count())
 }
 
-/// Compute the [`MenuBar`]'s layout without painting — the DirectWrite
-/// measurer twin of [`draw_menu_bar`], and what
-/// [`crate::win::WinBackend::menu_bar_layout`] calls directly.
-pub fn win_menu_bar_layout(dwrite: &DWrite, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
+/// Compute the [`MenuBar`]'s layout without painting — the measurer twin
+/// of [`draw_menu_bar`], and what
+/// [`crate::win::WinBackend::menu_bar_layout`] calls directly. Pure
+/// geometry over [`TextMeasure`] (issue #1078) — `measure` may be a live
+/// `&DWrite` (when painting) or [`super::backend`]'s nominal measurer (no
+/// surface yet).
+pub fn win_menu_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
     bar.layout(rect, |i| {
         let text = display_text(&bar.items[i].label);
-        let (w, _) = dwrite.measure_text(&text).unwrap_or((0.0, 0.0));
-        MenuBarItemMeasure::new(w + ITEM_H_PADDING_DIP)
+        MenuBarItemMeasure::new(measure.width_of(&text) + ITEM_H_PADDING_DIP)
     })
 }
 
@@ -74,6 +88,7 @@ pub fn win_menu_bar_layout(dwrite: &DWrite, rect: Rect, bar: &MenuBar) -> MenuBa
 /// - **Alt-underline:** a [`UNDERLINE_HEIGHT_DIP`]-tall bar under the
 ///   character following `&` in the raw label, in the label's own
 ///   foreground colour. No `&` in the label ⇒ no underline at all.
+#[cfg(target_os = "windows")]
 pub fn draw_menu_bar(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -127,113 +142,123 @@ pub fn draw_menu_bar(
     layout
 }
 
+// #1078: the paint↔click round-trip tests below need a real
+// `DWrite`/`HeadlessSurface` — gated the same way the whole module used
+// to be. `alt_char_index_*` are pure-string tests with no Direct2D/
+// DirectWrite dependency, so they stay outside this inner gate and run
+// on Linux too.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::menu_bar::{MenuBarHit, MenuBarItem};
-    use crate::types::{Color, WidgetId};
-    use crate::win::testing::HeadlessSurface;
 
-    const W: f32 = 300.0;
-    const H: f32 = 24.0;
+    #[cfg(target_os = "windows")]
+    mod windows_only {
+        use super::*;
+        use crate::primitives::menu_bar::{MenuBarHit, MenuBarItem};
+        use crate::types::{Color, WidgetId};
+        use crate::win::testing::HeadlessSurface;
 
-    fn bar() -> MenuBar {
-        MenuBar {
-            id: WidgetId::new("bar"),
-            items: vec![
-                MenuBarItem {
-                    id: WidgetId::new("bar:file"),
-                    label: "&File".into(),
-                    disabled: false,
-                    submenu: None,
-                },
-                MenuBarItem {
-                    id: WidgetId::new("bar:edit"),
-                    label: "&Edit".into(),
-                    disabled: false,
-                    submenu: None,
-                },
-            ],
-            open_item: Some(0),
-            focused_item: None,
+        const W: f32 = 300.0;
+        const H: f32 = 24.0;
+
+        fn bar() -> MenuBar {
+            MenuBar {
+                id: WidgetId::new("bar"),
+                items: vec![
+                    MenuBarItem {
+                        id: WidgetId::new("bar:file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        submenu: None,
+                    },
+                    MenuBarItem {
+                        id: WidgetId::new("bar:edit"),
+                        label: "&Edit".into(),
+                        disabled: false,
+                        submenu: None,
+                    },
+                ],
+                open_item: Some(0),
+                focused_item: None,
+            }
         }
-    }
 
-    fn is_painted(surface: &HeadlessSurface, x: u32, y: u32, bg: Color) -> bool {
-        let px = surface.pixel_at(x, y);
-        (px.r, px.g, px.b) != (bg.r, bg.g, bg.b)
-    }
-
-    /// Paint↔click round trip: each visible item paints a distinguishable
-    /// glyph inside its own bounds, and a click at each item's own
-    /// (absolute) bounds centre resolves back to that item via
-    /// `hit_test`.
-    #[test]
-    fn paint_and_hit_test_round_trip() {
-        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let bar = bar();
-        let rect = Rect::new(0.0, 0.0, W, H);
-        let theme = Theme::default();
-
-        surface
-            .paint(|target| {
-                draw_menu_bar(target, &dwrite, rect, &bar, &theme);
-            })
-            .expect("paint menu bar");
-
-        let layout = win_menu_bar_layout(&dwrite, rect, &bar);
-        assert_eq!(layout.visible_items.len(), 2, "both items should fit");
-
-        for vi in &layout.visible_items {
-            let cx = vi.bounds.x + vi.bounds.width / 2.0;
-            let cy = vi.bounds.y + vi.bounds.height / 2.0;
-            assert_eq!(
-                layout.hit_test(cx, cy),
-                MenuBarHit::Item(vi.item_idx),
-                "item {} centre should hit-test back to itself",
-                vi.item_idx,
-            );
-
-            // Some pixel inside the item's row must differ from the bar's
-            // own background — either the open item's active-bg fill, or
-            // an inactive item's painted label glyph.
-            let row_y = cy as u32;
-            let found = (vi.bounds.x as u32..(vi.bounds.x + vi.bounds.width) as u32)
-                .any(|x| is_painted(&surface, x, row_y, theme.tab_bar_bg));
-            assert!(
-                found,
-                "item {} should paint something distinguishable from the bar background",
-                vi.item_idx,
-            );
+        fn is_painted(surface: &HeadlessSurface, x: u32, y: u32, bg: Color) -> bool {
+            let px = surface.pixel_at(x, y);
+            (px.r, px.g, px.b) != (bg.r, bg.g, bg.b)
         }
-    }
 
-    /// The no-paint layout must agree byte-for-byte with what
-    /// `draw_menu_bar` painted.
-    #[test]
-    fn no_paint_layout_matches_paint_layout() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let bar = bar();
-        let rect = Rect::new(3.0, 0.0, W, H);
+        /// Paint↔click round trip: each visible item paints a distinguishable
+        /// glyph inside its own bounds, and a click at each item's own
+        /// (absolute) bounds centre resolves back to that item via
+        /// `hit_test`.
+        #[test]
+        fn paint_and_hit_test_round_trip() {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let bar = bar();
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let theme = Theme::default();
 
-        let surface = HeadlessSurface::new((W + 3.0) as u32, H as u32).expect("create surface");
-        let mut painted = None;
-        surface
-            .paint(|target| {
-                painted = Some(draw_menu_bar(
-                    target,
-                    &dwrite,
-                    rect,
-                    &bar,
-                    &Theme::default(),
-                ));
-            })
-            .expect("paint");
-        let painted = painted.expect("draw_menu_bar ran");
-        let no_paint = win_menu_bar_layout(&dwrite, rect, &bar);
+            surface
+                .paint(|target| {
+                    draw_menu_bar(target, &dwrite, rect, &bar, &theme);
+                })
+                .expect("paint menu bar");
 
-        assert_eq!(painted, no_paint);
+            let layout = win_menu_bar_layout(&dwrite, rect, &bar);
+            assert_eq!(layout.visible_items.len(), 2, "both items should fit");
+
+            for vi in &layout.visible_items {
+                let cx = vi.bounds.x + vi.bounds.width / 2.0;
+                let cy = vi.bounds.y + vi.bounds.height / 2.0;
+                assert_eq!(
+                    layout.hit_test(cx, cy),
+                    MenuBarHit::Item(vi.item_idx),
+                    "item {} centre should hit-test back to itself",
+                    vi.item_idx,
+                );
+
+                // Some pixel inside the item's row must differ from the bar's
+                // own background — either the open item's active-bg fill, or
+                // an inactive item's painted label glyph.
+                let row_y = cy as u32;
+                let found = (vi.bounds.x as u32..(vi.bounds.x + vi.bounds.width) as u32)
+                    .any(|x| is_painted(&surface, x, row_y, theme.tab_bar_bg));
+                assert!(
+                    found,
+                    "item {} should paint something distinguishable from the bar background",
+                    vi.item_idx,
+                );
+            }
+        }
+
+        /// The no-paint layout must agree byte-for-byte with what
+        /// `draw_menu_bar` painted.
+        #[test]
+        fn no_paint_layout_matches_paint_layout() {
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let bar = bar();
+            let rect = Rect::new(3.0, 0.0, W, H);
+
+            let surface = HeadlessSurface::new((W + 3.0) as u32, H as u32).expect("create surface");
+            let mut painted = None;
+            surface
+                .paint(|target| {
+                    painted = Some(draw_menu_bar(
+                        target,
+                        &dwrite,
+                        rect,
+                        &bar,
+                        &Theme::default(),
+                    ));
+                })
+                .expect("paint");
+            let painted = painted.expect("draw_menu_bar ran");
+            let no_paint = win_menu_bar_layout(&dwrite, rect, &bar);
+
+            assert_eq!(painted, no_paint);
+        }
     }
 
     #[test]

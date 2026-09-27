@@ -7,10 +7,16 @@
 //! [`DWrite::draw_text`]/`draw_text_styled`). Paint and hit-test both
 //! derive from one [`win_data_table_layout`] call.
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod data_table;` and `backend.rs`'s
-//! module docs. See `win::status_bar`'s module doc for why colours come
-//! from `Theme::default()` rather than a live `WinBackend` theme field.
+//! Issue #1078: only [`draw_data_table`] (the real Direct2D paint entry
+//! point) is `#[cfg(target_os = "windows")]`-gated. [`win_data_table_layout`]
+//! is pure geometry generic over
+//! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
+//! DirectWrite type in its signature — so it compiles and runs
+//! everywhere, including a plain `cargo test --features win` on Linux.
+//! `super::mod`'s `mod data_table;` is no longer whole-module gated; see
+//! `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
+//! colours come from `Theme::default()` rather than a live `WinBackend`
+//! theme field.
 //!
 //! # Scope for #26
 //!
@@ -21,30 +27,39 @@
 //! `FillRectangle`, since the shared [`super::text::fill_rect`] helper
 //! takes an opaque [`crate::Color`].
 
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
+#[cfg(target_os = "windows")]
 use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
-use crate::primitives::data_table::{ColumnAlign, ColumnMeasure, DataTable, SortDirection};
+#[cfg(target_os = "windows")]
+use crate::primitives::data_table::{ColumnAlign, SortDirection};
+use crate::primitives::data_table::{ColumnMeasure, DataTable};
+use crate::primitives::layout_metrics::TextMeasure;
+#[cfg(target_os = "windows")]
 use crate::primitives::scrollbar::Scrollbar;
+#[cfg(target_os = "windows")]
 use crate::theme::Theme;
+#[cfg(target_os = "windows")]
 use crate::types::Decoration;
 use crate::DataTableLayout;
 
 const SCROLLBAR_WIDTH: f32 = 8.0;
 
 /// Compute a [`DataTable`]'s layout without painting — the DirectWrite
-/// twin of [`draw_data_table`]'s internal layout call.
+/// twin of [`draw_data_table`]'s internal layout call. Pure geometry over
+/// [`TextMeasure`] (issue #1078) — `measure` may be a live `&DWrite` (when
+/// painting) or [`super::backend`]'s nominal measurer (no surface yet).
 pub fn win_data_table_layout(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     rect: Rect,
     table: &DataTable,
     line_height: f32,
 ) -> DataTableLayout {
     let header_height = (line_height * 1.2).round();
-    let measure = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
-        let (w, _) = dwrite.measure_text(&col.title).unwrap_or((0.0, 0.0));
-        ColumnMeasure::new(w)
+    let measure_col = |col: &crate::primitives::data_table::Column| -> ColumnMeasure {
+        ColumnMeasure::new(measure.width_of(&col.title))
     };
     table.layout(
         rect.width,
@@ -52,7 +67,7 @@ pub fn win_data_table_layout(
         line_height,
         header_height,
         SCROLLBAR_WIDTH,
-        measure,
+        measure_col,
     )
 }
 
@@ -73,6 +88,7 @@ pub fn win_data_table_layout(
 ///   per-span colour override.
 /// - **Footer:** a `Theme::separator` divider rule, `Theme::tab_bar_bg`
 ///   background, bold cell text.
+#[cfg(target_os = "windows")]
 pub fn draw_data_table(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -314,6 +330,7 @@ pub fn draw_data_table(
     layout
 }
 
+#[cfg(target_os = "windows")]
 fn align_text_x(col_x: f32, col_w: f32, text_w: f32, align: ColumnAlign) -> f32 {
     match align {
         ColumnAlign::Left => col_x,
@@ -326,6 +343,7 @@ fn align_text_x(col_x: f32, col_w: f32, text_w: f32, align: ColumnAlign) -> f32 
 /// as flat fills — see this module's "Scope for #26" doc for why this
 /// doesn't delegate to a shared `draw_scrollbar` (still a `todo!()`
 /// stub on `WinBackend`).
+#[cfg(target_os = "windows")]
 fn paint_scrollbar(target: &ID2D1RenderTarget, sb: &Scrollbar, theme: &Theme) {
     let _ = fill_rect(target, sb.track, theme.scrollbar_track);
     let thumb = match sb.axis {
@@ -345,7 +363,10 @@ fn paint_scrollbar(target: &ID2D1RenderTarget, sb: &Scrollbar, theme: &Theme) {
     let _ = fill_rect(target, thumb, theme.scrollbar_thumb);
 }
 
-#[cfg(test)]
+// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
+// — gated the same way the whole module used to be, rather than
+// pretending they run on Linux.
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTableHit};

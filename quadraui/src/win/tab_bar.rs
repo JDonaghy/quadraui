@@ -8,10 +8,18 @@
 //! `Backend::tab_bar_layout`'s doc for why that shift matters (issue
 //! #552).
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod tab_bar;` and `backend.rs`'s module
-//! docs. See `win::status_bar`'s module doc for why colours come from
-//! `Theme::default()` rather than a live `WinBackend` theme field.
+//! Issue #1078: only the actual Direct2D paint entry points
+//! ([`draw_tab_bar`], [`draw_tab_bar_icons`], [`draw_tab_bar_layout`],
+//! [`draw_tab_bar_icons_layout`], and their shared paint loop) are
+//! `#[cfg(target_os = "windows")]`-gated. [`compute_layout`] and every
+//! `win_tab_bar_*` no-paint fn below are pure geometry generic over
+//! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
+//! DirectWrite type in their signature — so they compile and run
+//! everywhere, including a plain `cargo test --features win` on Linux.
+//! `super::mod`'s `mod tab_bar;` is no longer whole-module gated; see
+//! `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
+//! colours come from `Theme::default()` rather than a live `WinBackend`
+//! theme field.
 //!
 //! Scope for #25: no [`crate::TabChrome`] / bracket-frame support (the
 //! `Backend` trait gives `draw_tab_bar_with_chrome` /
@@ -21,19 +29,22 @@
 //! `IDWriteTextFormat`; deferred to a follow-up rather than widening this
 //! issue).
 
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+#[cfg(target_os = "windows")]
+use super::text::fill_rect;
+#[cfg(target_os = "windows")]
+use super::text::DWrite;
 use crate::backend::{shift_tab_bar_hits, tab_bar_hits_from_layout};
 use crate::event::Rect;
+use crate::primitives::layout_metrics::TextMeasure;
+#[cfg(target_os = "windows")]
 use crate::theme::Theme;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this rasteriser still
+// `TabBarHits` is `#[deprecated]` (issue #823) — this module still
 // narrows its `TabBarLayout` down to that struct because the six
 // `Backend` tab-bar methods `WinBackend` implements still return it, so
-// the import needs the same allow every use site below does. This module
-// is `cfg(target_os = "windows")`-gated, so these warnings only surface
-// under `--target x86_64-pc-windows-msvc` (or a real Windows host) —
-// never on the Linux `--features win` compile gate.
+// the import needs the same allow every use site below does.
 #[allow(deprecated)]
 use crate::{tab_icon_at, SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabIcon, TabMeasure};
 
@@ -45,42 +56,45 @@ const TAB_INNER_GAP_DIP: f32 = 10.0;
 const TAB_OUTER_GAP_DIP: f32 = 1.0;
 /// Gap (DIPs) between a tab's icon glyph ([`crate::TabIcon`]) and its label.
 const TAB_ICON_GAP_DIP: f32 = 6.0;
-/// Height (DIPs) of the active tab's top-edge accent line.
+/// Height (DIPs) of the active tab's top-edge accent line. Only used by
+/// the paint path (issue #1078).
+#[cfg(target_os = "windows")]
 const TAB_ACTIVE_ACCENT_DIP: f32 = 2.0;
 
-fn close_glyph_width(dwrite: &DWrite, bar: &TabBar) -> f32 {
+fn close_glyph_width(measure: &dyn TextMeasure, bar: &TabBar) -> f32 {
     if bar.show_tab_close {
-        dwrite.measure_text("×").map(|(w, _)| w).unwrap_or(0.0)
+        measure.width_of("×")
     } else {
         0.0
     }
 }
 
-fn icon_extra_width(dwrite: &DWrite, icons: &[Option<TabIcon>], i: usize) -> f32 {
+fn icon_extra_width(measure: &dyn TextMeasure, icons: &[Option<TabIcon>], i: usize) -> f32 {
     match tab_icon_at(icons, i) {
-        Some(icon) => {
-            let (w, _) = dwrite.measure_text(&icon.glyph).unwrap_or((0.0, 0.0));
-            w + TAB_ICON_GAP_DIP
-        }
+        Some(icon) => measure.width_of(&icon.glyph) + TAB_ICON_GAP_DIP,
         None => 0.0,
     }
 }
 
 /// Compute the [`TabBarLayout`] for `bar` against `rect`'s dimensions,
-/// measuring every tab/segment via `dwrite`. Shared by every paint and
+/// measuring every tab/segment via `measure`. Shared by every paint and
 /// no-paint entry point in this module so they can never disagree on
-/// geometry.
+/// geometry. Pure geometry over [`TextMeasure`] (issue #1078) — no
+/// Direct2D/DirectWrite type needed, so [`super::backend::WinBackend`]
+/// can call this directly with a [`super::backend`]-local nominal
+/// measurer when no live `DWrite` handle exists yet, instead of carrying
+/// a separate duplicate.
 fn compute_layout(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
 ) -> TabBarLayout {
-    let close_w = close_glyph_width(dwrite, bar);
+    let close_w = close_glyph_width(measure, bar);
     let measure_tab = |i: usize| -> TabMeasure {
         let tab = &bar.tabs[i];
-        let (name_w, _) = dwrite.measure_text(&tab.label).unwrap_or((0.0, 0.0));
-        let icon_extra = icon_extra_width(dwrite, icons, i);
+        let name_w = measure.width_of(&tab.label);
+        let icon_extra = icon_extra_width(measure, icons, i);
         let has_close = bar.show_tab_close && tab.is_closable;
         let close_extra = if has_close {
             TAB_INNER_GAP_DIP + close_w
@@ -97,36 +111,31 @@ fn compute_layout(
         TabMeasure::new(total, close_region_w)
     };
     let measure_segment = |i: usize| -> SegmentMeasure {
-        let (w, _) = dwrite
-            .measure_text(&bar.right_segments[i].text)
-            .unwrap_or((0.0, 0.0));
-        SegmentMeasure::new(w)
+        SegmentMeasure::new(measure.width_of(&bar.right_segments[i].text))
     };
     bar.layout(rect.width, rect.height, 0.0, measure_tab, measure_segment)
 }
 
 /// Recompute the scroll offset that would make the active tab visible
-/// given this frame's actual DirectWrite measurements — the "engine
-/// feedback" half of the two-pass-paint pattern
-/// [`TabBar::layout`]'s doc describes (scroll arrows are disabled here,
-/// via `scroll_arrow_width: 0.0`, so [`TabBar::layout`] itself just
-/// honours `bar.scroll_offset` verbatim rather than correcting it).
+/// given this frame's actual measurements — the "engine feedback" half
+/// of the two-pass-paint pattern [`TabBar::layout`]'s doc describes
+/// (scroll arrows are disabled here, via `scroll_arrow_width: 0.0`, so
+/// [`TabBar::layout`] itself just honours `bar.scroll_offset` verbatim
+/// rather than correcting it).
 fn correct_scroll_offset(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
     effective_tab_area: f32,
 ) -> usize {
-    let close_w = close_glyph_width(dwrite, bar);
+    let close_w = close_glyph_width(measure, bar);
     let active_idx = bar.tabs.iter().position(|t| t.is_active);
     match active_idx {
         Some(active) => {
             let widths: Vec<usize> = (0..bar.tabs.len())
                 .map(|i| {
-                    let (name_w, _) = dwrite
-                        .measure_text(&bar.tabs[i].label)
-                        .unwrap_or((0.0, 0.0));
-                    let icon_extra = icon_extra_width(dwrite, icons, i);
+                    let name_w = measure.width_of(&bar.tabs[i].label);
+                    let icon_extra = icon_extra_width(measure, icons, i);
                     let has_close = bar.show_tab_close && bar.tabs[i].is_closable;
                     let close_extra = if has_close {
                         TAB_INNER_GAP_DIP + close_w
@@ -150,7 +159,7 @@ fn correct_scroll_offset(
 
 #[allow(deprecated)] // builds the deprecated `TabBarHits` — issue #823
 fn hits_from_layout(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
@@ -164,7 +173,7 @@ fn hits_from_layout(
         .map(|vs| vs.bounds.width)
         .sum();
     hits.correct_scroll_offset =
-        correct_scroll_offset(dwrite, bar, icons, rect.width - seg_reserved);
+        correct_scroll_offset(measure, bar, icons, rect.width - seg_reserved);
     hits
 }
 
@@ -173,20 +182,20 @@ fn hits_from_layout(
 /// [`draw_tab_bar_icons`]. `&[]` reproduces [`win_tab_bar_layout`].
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn win_tab_bar_layout_icons(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
 ) -> TabBarHits {
-    let layout = compute_layout(dwrite, rect, bar, icons);
-    hits_from_layout(dwrite, rect, bar, icons, &layout)
+    let layout = compute_layout(measure, rect, bar, icons);
+    hits_from_layout(measure, rect, bar, icons, &layout)
 }
 
 /// Compute a [`TabBar`]'s layout without painting — the icon-less twin of
 /// [`win_tab_bar_layout_icons`].
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-pub fn win_tab_bar_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarHits {
-    win_tab_bar_layout_icons(dwrite, rect, bar, &[])
+pub fn win_tab_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &TabBar) -> TabBarHits {
+    win_tab_bar_layout_icons(measure, rect, bar, &[])
 }
 
 /// Compute a [`TabBar`]'s [`TabBarLayout`] without painting, for a bar
@@ -197,18 +206,22 @@ pub fn win_tab_bar_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarHi
 /// path both [`draw_tab_bar_icons`] and [`win_tab_bar_layout_icons`]
 /// narrow down to `TabBarHits` — this just returns it directly.
 pub fn win_tab_bar_native_layout_icons(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     rect: Rect,
     bar: &TabBar,
     icons: &[Option<TabIcon>],
 ) -> TabBarLayout {
-    compute_layout(dwrite, rect, bar, icons)
+    compute_layout(measure, rect, bar, icons)
 }
 
 /// Compute a [`TabBar`]'s [`TabBarLayout`] without painting — the
 /// icon-less twin of [`win_tab_bar_native_layout_icons`].
-pub fn win_tab_bar_native_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> TabBarLayout {
-    win_tab_bar_native_layout_icons(dwrite, rect, bar, &[])
+pub fn win_tab_bar_native_layout(
+    measure: &dyn TextMeasure,
+    rect: Rect,
+    bar: &TabBar,
+) -> TabBarLayout {
+    win_tab_bar_native_layout_icons(measure, rect, bar, &[])
 }
 
 /// Draw a [`TabBar`] with per-tab icon glyphs (#620) into `rect` (DIPs)
@@ -230,6 +243,7 @@ pub fn win_tab_bar_native_layout(dwrite: &DWrite, rect: Rect, bar: &TabBar) -> T
 ///   hovered, so the hover state always shows `×` to close).
 /// - **Right segments:** painted in `tab_inactive_fg`, or `tab_active_fg`
 ///   when `seg.is_active`.
+#[cfg(target_os = "windows")]
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar_icons(
     target: &ID2D1RenderTarget,
@@ -250,6 +264,7 @@ pub fn draw_tab_bar_icons(
 /// Shares [`compute_layout`] and [`paint_tab_bar_icons_from_layout`] with
 /// it, so the two can never paint different pixels — only the return
 /// value differs.
+#[cfg(target_os = "windows")]
 pub fn draw_tab_bar_icons_layout(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -267,6 +282,7 @@ pub fn draw_tab_bar_icons_layout(
 /// — paints `bar` from a pre-computed `layout` and returns nothing, so
 /// both callers can hand back whichever return type (`TabBarHits` vs.
 /// `TabBarLayout`) their contract needs.
+#[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 fn paint_tab_bar_icons_from_layout(
     target: &ID2D1RenderTarget,
@@ -394,6 +410,7 @@ fn paint_tab_bar_icons_from_layout(
 
 /// Draw a [`TabBar`] with no per-tab icons — [`draw_tab_bar_icons`] with
 /// `icons: &[]`.
+#[cfg(target_os = "windows")]
 #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
 pub fn draw_tab_bar(
     target: &ID2D1RenderTarget,
@@ -408,6 +425,7 @@ pub fn draw_tab_bar(
 /// Draw a [`TabBar`] with no per-tab icons, returning [`TabBarLayout`]
 /// instead of the deprecated [`TabBarHits`] (issue #919) —
 /// [`draw_tab_bar_icons_layout`] with `icons: &[]`.
+#[cfg(target_os = "windows")]
 pub fn draw_tab_bar_layout(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -418,7 +436,14 @@ pub fn draw_tab_bar_layout(
     draw_tab_bar_icons_layout(target, dwrite, rect, bar, &[], hovered_close_tab)
 }
 
-#[cfg(test)]
+// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
+// (the module's paint fns are now the only Windows-only parts, but these
+// specific tests all exercise them) — gated the same way the whole
+// module used to be, rather than pretending they run on Linux. A
+// cross-platform-safe pure-geometry test lives in `win::list`'s test mod
+// instead (issue #1078's acceptance test), since `list_layout` is where
+// the drift this issue fixes actually was.
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use crate::primitives::tab_bar::{TabBarHit, TabBarSegment, TabItem};

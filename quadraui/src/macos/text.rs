@@ -277,6 +277,21 @@ pub fn measure_text(font: &CTFont, text: &str) -> (f64, f64) {
     )
 }
 
+/// Issue #1078: a direct impl rather than a per-module wrapper struct —
+/// before this, `macos::form::CtFontMeasure` and `macos::toolbar::CtFontMeasure`
+/// were byte-identical one-line adapters (`measure_text(font, text).0`)
+/// over this exact type, and `macos::sidebar_panel` imported the
+/// `toolbar` one only because there had to be a canonical copy
+/// *somewhere*. Implementing [`crate::primitives::layout_metrics::TextMeasure`]
+/// on `CTFont` itself means every layout fn that needs a `&dyn
+/// TextMeasure` can pass a live `&CTFont` straight through — no wrapper,
+/// no duplicate to drift. Mirrors `win::text::DWrite`'s identical fix.
+impl crate::primitives::layout_metrics::TextMeasure for CTFont {
+    fn width_of(&self, text: &str) -> f32 {
+        measure_text(self, text).0 as f32
+    }
+}
+
 /// Paint `text` at `(x, y)` (view-local points, top-left origin) using
 /// `font` and `color` (rgba 0.0–1.0 each). The CG context's clip
 /// region is respected automatically by Core Text — callers that want

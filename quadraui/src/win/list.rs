@@ -13,10 +13,16 @@
 //! ordering bug this module briefly had (#1075 review fix) before
 //! matching `gtk::list::draw_list`'s post-content border stroke.
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod list;` and `backend.rs`'s module
-//! docs. See `win::status_bar`'s module doc for why colours come from
-//! `Theme::default()` rather than a live `WinBackend` theme field.
+//! [`win_list_layout`] itself needs no Direct2D/DirectWrite type — it's
+//! pure geometry over [`crate::primitives::layout_metrics::list_layout`],
+//! same as `mac_list_layout` / `gtk_list_layout` — so, per issue #1078,
+//! only [`draw_list`] (the actual Direct2D paint entry point) is
+//! `#[cfg(target_os = "windows")]`-gated; `win_list_layout` compiles and
+//! runs everywhere, including a plain `cargo test --features win` on
+//! Linux. See `super::mod`'s `mod list;` (no longer whole-module gated)
+//! and `backend.rs`'s module docs. See `win::status_bar`'s module doc for
+//! why colours come from `Theme::default()` rather than a live
+//! `WinBackend` theme field.
 //!
 //! # Scope for #26
 //!
@@ -27,52 +33,58 @@
 //! Nerd-Font icon glyphs are not distinguished from ASCII fallbacks —
 //! see `win::tree`'s module doc for why.
 //!
-//! # Known gap: no horizontal scrollbar (#712)
+//! # #1078: h-scrollbar row reservation now shared
 //!
-//! Unlike `gtk_list_layout` / `mac_list_layout`, [`win_list_layout`]
-//! takes no `char_width` and never reserves a bottom row for an
-//! h-scrollbar — `ListView::max_content_width` is silently ignored for
-//! layout purposes on this backend (only `h_scroll`'s pixel cursor
-//! shift is honoured, for text already scrolled by an app that has no
-//! other way to move the viewport). This is a real feature gap, not the
-//! #712 measure-vs-paint drift GTK and macOS had: there is nothing here
-//! to disagree with itself. Track closing it as its own follow-up
-//! rather than folding it into #712's fix, so a future PR doesn't
-//! accidentally claim Windows' h-scrollbar support already matches the
-//! other two backends.
-//!
-//! Note: since #1075, [`draw_list`] *does* paint the vertical
-//! scrollbar (`ListView::show_v_scrollbar`) — that gap was specific to
-//! all three backends never painting it despite
-//! `Backend::list_vscrollbar` already returning real geometry, and the
-//! shared `paint` fixes it uniformly. The horizontal-scrollbar gap
-//! above is unrelated and unchanged by this migration: `win_list_layout`
-//! still never reserves a row for it, so `needs_hscrollbar` (computed
-//! inside the shared paint from `char_width`) never triggers on this
-//! backend, matching the pre-migration silence exactly.
+//! Before #1078, [`win_list_layout`] took no `char_width` and never
+//! reserved a bottom row for an h-scrollbar — `ListView::max_content_width`
+//! was silently ignored for layout purposes on this backend, unlike
+//! `gtk_list_layout` / `mac_list_layout`. Routing through
+//! [`crate::primitives::layout_metrics::list_layout`] (with
+//! `border_inset` derived from [`ListView::bordered`], matching
+//! [`BORDER_DIP`]) closes that gap for free: Windows now reserves the
+//! same row every other pixel backend does, and [`draw_list`] passes
+//! `supports_hscrollbar: true` to the shared paint to match.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
-use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
-use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
-use crate::theme::Theme;
+use crate::primitives::list::{ListView, ListViewLayout};
 
 /// Border thickness (DIPs) for a `bordered` list — matches the 1-unit
-/// inset [`ListView::layout`] itself bakes in for bordered lists.
+/// inset [`ListView::layout`] itself bakes in for bordered lists, and
+/// the `border_inset` [`win_list_layout`] passes to
+/// [`crate::primitives::layout_metrics::list_layout`].
 const BORDER_DIP: f32 = 1.0;
 
 /// Compute a [`ListView`]'s layout without painting — the DirectWrite
-/// twin of [`draw_list`]'s internal layout call.
-pub fn win_list_layout(list: &ListView, rect: Rect, line_height: f32) -> ListViewLayout {
-    let title_height = if list.title.is_some() {
-        line_height
+/// twin of [`draw_list`]'s internal layout call. Pure geometry (no
+/// Direct2D/DirectWrite type in its signature), so — unlike
+/// [`draw_list`] — this is not `target_os = "windows"`-gated; see this
+/// module's doc.
+///
+/// `char_width` is used only for the h-scrollbar-overflow threshold
+/// check (`ListView::max_content_width` is in character columns); pass
+/// a live `DWrite`-measured glyph width when painting (see
+/// [`draw_list`]), or [`crate::backend::Backend::char_width`]'s cached
+/// value for a no-paint layout, matching every other pixel backend's
+/// `Backend::list_layout`.
+pub fn win_list_layout(
+    list: &ListView,
+    rect: Rect,
+    line_height: f32,
+    char_width: f32,
+) -> ListViewLayout {
+    let border_inset = if list.bordered {
+        BORDER_DIP as f64
     } else {
         0.0
     };
-    list.layout(rect.width, rect.height, title_height, |_| {
-        ListItemMeasure::new(line_height)
-    })
+    crate::primitives::layout_metrics::list_layout(
+        list,
+        rect.width as f64,
+        rect.height as f64,
+        line_height as f64,
+        char_width as f64,
+        border_inset,
+    )
 }
 
 /// Draw a [`ListView`] into `rect` (DIPs) on `target`. Returns the
@@ -94,15 +106,24 @@ pub fn win_list_layout(list: &ListView, rect: Rect, line_height: f32) -> ListVie
 ///   [`ListView::show_v_scrollbar`] calls for one (#1075) — previously
 ///   never painted on any of the three pixel backends despite
 ///   `Backend::list_vscrollbar` already returning real geometry.
+#[cfg(target_os = "windows")]
 pub fn draw_list(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
+    target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
+    dwrite: &super::text::DWrite,
     rect: Rect,
     list: &ListView,
     line_height: f32,
 ) -> ListViewLayout {
+    use super::text::fill_rect;
+    use crate::theme::Theme;
+
     let theme = Theme::default();
-    let layout = win_list_layout(list, rect, line_height);
+    let char_width = dwrite
+        .measure_text("M")
+        .map(|(w, _)| w)
+        .unwrap_or(0.0)
+        .max(1.0);
+    let layout = win_list_layout(list, rect, line_height, char_width);
 
     let mut surface = super::surface::D2dSurface {
         target,
@@ -120,7 +141,12 @@ pub fn draw_list(
         /* nerd_fonts_enabled */
         false,
         /* supports_border */ true,
-        /* supports_hscrollbar */ false,
+        // #1078: `win_list_layout` now reserves the h-scrollbar row via
+        // the shared `layout_metrics::list_layout`, so painting one here
+        // when it's needed matches the reservation instead of leaving an
+        // unlabeled blank row.
+        /* supports_hscrollbar */
+        true,
         &mut surface,
         &theme,
     );
@@ -172,16 +198,15 @@ pub fn draw_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::list::{ListItem, ListViewHit};
     use crate::types::{Decoration, StyledText, WidgetId};
-    use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 200.0;
     const H: f32 = 100.0;
     const LINE_HEIGHT: f32 = 14.0;
+    const CHAR_WIDTH: f32 = 8.0;
 
-    fn item(label: &str) -> ListItem {
-        ListItem {
+    fn item(label: &str) -> crate::primitives::list::ListItem {
+        crate::primitives::list::ListItem {
             text: StyledText::plain(label.to_string()),
             icon: None,
             detail: None,
@@ -189,7 +214,7 @@ mod tests {
         }
     }
 
-    fn make_list(items: Vec<ListItem>) -> ListView {
+    fn make_list(items: Vec<crate::primitives::list::ListItem>) -> ListView {
         ListView {
             id: WidgetId::new("list"),
             title: None,
@@ -204,7 +229,7 @@ mod tests {
         }
     }
 
-    fn make_bordered_list(items: Vec<ListItem>) -> ListView {
+    fn make_bordered_list(items: Vec<crate::primitives::list::ListItem>) -> ListView {
         ListView {
             id: WidgetId::new("list"),
             title: None,
@@ -219,173 +244,271 @@ mod tests {
         }
     }
 
-    /// Paint↔click round trip: the selected row's background must be
-    /// painted at its own bounds, and clicking each visible row's
-    /// centre must hit_test back to that row.
+    /// #1078 regression: `win_list_layout` must apply the exact same
+    /// `border_inset` [`crate::primitives::layout_metrics::list_layout`]
+    /// would given [`BORDER_DIP`] — before #1078 `win_list_layout` had no
+    /// `border_inset`/`char_width` concept at all and could not agree
+    /// with the shared fn by construction. Runs on Linux: no Direct2D/
+    /// DirectWrite type involved.
     #[test]
-    fn paint_and_hit_test_round_trip() {
-        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let list = make_list(vec![item("alpha"), item("beta"), item("gamma")]);
-        let rect = Rect::new(0.0, 0.0, W, H);
-
-        let layout = surface
-            .paint(|target| {
-                draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
-            })
-            .map(|_| win_list_layout(&list, rect, LINE_HEIGHT))
-            .expect("paint list");
-
-        assert_eq!(layout.visible_items.len(), 3);
-        for vis in &layout.visible_items {
-            let hit = layout.hit_test(
-                vis.bounds.x + vis.bounds.width / 2.0,
-                vis.bounds.y + vis.bounds.height / 2.0,
-            );
-            assert_eq!(hit, ListViewHit::Item(vis.item_idx));
-        }
-
-        let theme = Theme::default();
-        let sel_bounds = layout.visible_items[0].bounds;
-        let px = surface.pixel_at((sel_bounds.x + 1.0) as u32, (sel_bounds.y + 1.0) as u32);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (
-                theme.selected_bg.r,
-                theme.selected_bg.g,
-                theme.selected_bg.b
-            ),
-            "selected row (idx 0) should paint selected_bg at its own bounds"
-        );
-    }
-
-    /// Scroll-offset round trip.
-    #[test]
-    fn scroll_offset_paint_and_click_agree() {
-        let mut list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
-        list.scroll_offset = 2;
-        let rect = Rect::new(0.0, 0.0, W, H);
-        let layout = win_list_layout(&list, rect, LINE_HEIGHT);
-        let first = layout.visible_items.first().expect("has items");
-        assert_eq!(first.item_idx, 2);
-        let hit = layout.hit_test(
-            first.bounds.x + 5.0,
-            first.bounds.y + first.bounds.height / 2.0,
-        );
-        assert_eq!(hit, ListViewHit::Item(2));
-    }
-
-    /// A click below the last item returns `Empty`.
-    #[test]
-    fn click_below_last_item_returns_empty() {
-        let list = make_list(vec![item("a"), item("b")]);
-        let rect = Rect::new(0.0, 0.0, W, H);
-        let layout = win_list_layout(&list, rect, LINE_HEIGHT);
-        let last = layout.visible_items.last().expect("has items");
-        let hit = layout.hit_test(10.0, last.bounds.y + last.bounds.height + 5.0);
-        assert_eq!(hit, ListViewHit::Empty);
-    }
-
-    /// No-paint layout must agree byte-for-byte with what `draw_list`
-    /// painted, including a title row.
-    #[test]
-    fn no_paint_layout_matches_paint_layout() {
-        let mut list = make_list(vec![item("alpha"), item("beta")]);
-        list.title = Some(StyledText::plain("Files"));
-        let rect = Rect::new(0.0, 0.0, W, H);
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-
-        let painted = surface
-            .paint(|target| {
-                draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
-            })
-            .map(|_| win_list_layout(&list, rect, LINE_HEIGHT))
-            .expect("paint");
-        let no_paint = win_list_layout(&list, rect, LINE_HEIGHT);
-        assert_eq!(painted, no_paint);
-    }
-
-    /// #1075 regression: before the `native_surface_paint` migration,
-    /// `draw_list` never painted `ListView::show_v_scrollbar`'s
-    /// track/thumb on any of the three pixel backends, even though
-    /// `Backend::list_vscrollbar` already returned real geometry for
-    /// hit-testing. Paints through the real `draw_list` and probes a
-    /// pixel inside the resolved track rect — this would have failed
-    /// (background colour, nothing painted) against the pre-#1075 body.
-    #[test]
-    fn paints_vertical_scrollbar_track_when_enabled() {
-        let mut list = make_list((0..30).map(|i| item(&format!("row-{i}"))).collect());
-        list.show_v_scrollbar = true;
-        let rect = Rect::new(0.0, 0.0, W, H);
-        let expected = list
-            .vscrollbar(rect, LINE_HEIGHT)
-            .expect("30 rows in a 100px / 14px viewport must need a v-scrollbar");
-
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        surface
-            .paint(|target| {
-                draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
-            })
-            .expect("paint list");
-
-        let theme = Theme::default();
-        let probe_x = (expected.track.x + expected.track.width / 2.0) as u32;
-        let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
-        let px = surface.pixel_at(probe_x.min(W as u32 - 1), probe_y.min(H as u32 - 1));
-        assert_ne!(
-            (px.r, px.g, px.b),
-            (theme.background.r, theme.background.g, theme.background.b),
-            "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
-             (non-background) — the #1075 regression this test guards"
-        );
-    }
-
-    /// #1075 review fix: the `native_surface_paint::paint` migration
-    /// briefly drew the `ListView::bordered` frame *before* the shared
-    /// content paint, which unconditionally fills the whole `rect` with
-    /// `base_bg` as its first paint operation — silently erasing the
-    /// border. Paints a bordered list and probes all four edges,
-    /// asserting they still carry `theme.border_fg` after the shared
-    /// paint has run.
-    #[test]
-    fn bordered_frame_survives_shared_content_paint() {
+    fn win_list_layout_matches_layout_metrics_list_layout_border_inset() {
         let list = make_bordered_list(vec![item("alpha"), item("beta"), item("gamma")]);
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
-        surface
-            .paint(|target| {
-                draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
-            })
-            .expect("paint list");
+        let via_win = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
+        let via_shared = crate::primitives::layout_metrics::list_layout(
+            &list,
+            W as f64,
+            H as f64,
+            LINE_HEIGHT as f64,
+            CHAR_WIDTH as f64,
+            BORDER_DIP as f64,
+        );
 
-        let theme = Theme::default();
-        let border = (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b);
-        let mid_x = (W / 2.0) as u32;
-        let mid_y = (H / 2.0) as u32;
+        assert_eq!(
+            via_win, via_shared,
+            "win_list_layout must delegate to layout_metrics::list_layout \
+             with border_inset == BORDER_DIP for a bordered list"
+        );
+    }
 
-        let top = surface.pixel_at(mid_x, 0);
-        let bottom = surface.pixel_at(mid_x, H as u32 - 1);
-        let left = surface.pixel_at(0, mid_y);
-        let right = surface.pixel_at(W as u32 - 1, mid_y);
+    /// Same invariant for the unbordered case (`border_inset` must be
+    /// `0.0`), and a sanity check that the two differ from each other —
+    /// otherwise the assertion above could pass for the wrong reason
+    /// (both layouts ignoring the inset).
+    #[test]
+    fn win_list_layout_unbordered_has_no_inset_and_differs_from_bordered() {
+        let bordered = make_bordered_list(vec![item("alpha"), item("beta")]);
+        let unbordered = make_list(vec![item("alpha"), item("beta")]);
+        let rect = Rect::new(0.0, 0.0, W, H);
 
-        for (label, px) in [
-            ("top", top),
-            ("bottom", bottom),
-            ("left", left),
-            ("right", right),
-        ] {
+        let via_win_unbordered = win_list_layout(&unbordered, rect, LINE_HEIGHT, CHAR_WIDTH);
+        let via_shared_unbordered = crate::primitives::layout_metrics::list_layout(
+            &unbordered,
+            W as f64,
+            H as f64,
+            LINE_HEIGHT as f64,
+            CHAR_WIDTH as f64,
+            0.0,
+        );
+        assert_eq!(via_win_unbordered, via_shared_unbordered);
+
+        let via_win_bordered = win_list_layout(&bordered, rect, LINE_HEIGHT, CHAR_WIDTH);
+        assert_ne!(
+            via_win_unbordered.visible_items[0].bounds, via_win_bordered.visible_items[0].bounds,
+            "a bordered list must actually inset its rows relative to an \
+             unbordered one"
+        );
+    }
+
+    /// #712/#1078: an overflowing `max_content_width` must reserve the
+    /// bottom row for an h-scrollbar, exactly like `mac_list_layout` /
+    /// `gtk_list_layout` — the "known gap" this module's pre-#1078 doc
+    /// tracked.
+    #[test]
+    fn win_list_layout_reserves_hscrollbar_row_when_content_overflows() {
+        let mut list = make_list((0..12).map(|i| item(&format!("row-{i}"))).collect());
+        list.max_content_width = Some(1000); // guarantees overflow at any sane char_width
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let overflowing = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
+        list.max_content_width = None;
+        let fitting = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
+
+        assert!(
+            overflowing.visible_items.len() < fitting.visible_items.len(),
+            "an overflowing max_content_width must reserve a row, leaving \
+             fewer visible items than the non-overflowing layout"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    mod windows_only {
+        use super::*;
+        use crate::primitives::list::ListViewHit;
+        use crate::win::testing::HeadlessSurface;
+        use crate::win::text::DWrite;
+
+        /// Paint↔click round trip: the selected row's background must be
+        /// painted at its own bounds, and clicking each visible row's
+        /// centre must hit_test back to that row.
+        #[test]
+        fn paint_and_hit_test_round_trip() {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let list = make_list(vec![item("alpha"), item("beta"), item("gamma")]);
+            let rect = Rect::new(0.0, 0.0, W, H);
+
+            let layout = surface
+                .paint(|target| {
+                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                })
+                .map(|_| win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH))
+                .expect("paint list");
+
+            assert_eq!(layout.visible_items.len(), 3);
+            for vis in &layout.visible_items {
+                let hit = layout.hit_test(
+                    vis.bounds.x + vis.bounds.width / 2.0,
+                    vis.bounds.y + vis.bounds.height / 2.0,
+                );
+                assert_eq!(hit, ListViewHit::Item(vis.item_idx));
+            }
+
+            let theme = crate::theme::Theme::default();
+            let sel_bounds = layout.visible_items[0].bounds;
+            let px = surface.pixel_at((sel_bounds.x + 1.0) as u32, (sel_bounds.y + 1.0) as u32);
             assert_eq!(
                 (px.r, px.g, px.b),
-                border,
-                "{label} border edge should still be theme.border_fg after the shared \
-                 content paint ran (#1075 review regression: the border was being \
-                 painted before, then erased by native_surface_paint::paint's initial \
-                 full-rect background fill)"
+                (
+                    theme.selected_bg.r,
+                    theme.selected_bg.g,
+                    theme.selected_bg.b
+                ),
+                "selected row (idx 0) should paint selected_bg at its own bounds"
             );
+        }
+
+        /// Scroll-offset round trip.
+        #[test]
+        fn scroll_offset_paint_and_click_agree() {
+            let mut list = make_list((0..6).map(|i| item(&format!("row-{i}"))).collect());
+            list.scroll_offset = 2;
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let layout = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
+            let first = layout.visible_items.first().expect("has items");
+            assert_eq!(first.item_idx, 2);
+            let hit = layout.hit_test(
+                first.bounds.x + 5.0,
+                first.bounds.y + first.bounds.height / 2.0,
+            );
+            assert_eq!(hit, ListViewHit::Item(2));
+        }
+
+        /// A click below the last item returns `Empty`.
+        #[test]
+        fn click_below_last_item_returns_empty() {
+            let list = make_list(vec![item("a"), item("b")]);
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let layout = win_list_layout(&list, rect, LINE_HEIGHT, CHAR_WIDTH);
+            let last = layout.visible_items.last().expect("has items");
+            let hit = layout.hit_test(10.0, last.bounds.y + last.bounds.height + 5.0);
+            assert_eq!(hit, ListViewHit::Empty);
+        }
+
+        /// No-paint layout must agree byte-for-byte with what `draw_list`
+        /// painted, including a title row.
+        #[test]
+        fn no_paint_layout_matches_paint_layout() {
+            let mut list = make_list(vec![item("alpha"), item("beta")]);
+            list.title = Some(StyledText::plain("Files"));
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+
+            let painted = surface
+                .paint(|target| {
+                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                })
+                .map(|_| {
+                    let char_width = dwrite
+                        .measure_text("M")
+                        .map(|(w, _)| w)
+                        .unwrap_or(0.0)
+                        .max(1.0);
+                    win_list_layout(&list, rect, LINE_HEIGHT, char_width)
+                })
+                .expect("paint");
+            let char_width = dwrite
+                .measure_text("M")
+                .map(|(w, _)| w)
+                .unwrap_or(0.0)
+                .max(1.0);
+            let no_paint = win_list_layout(&list, rect, LINE_HEIGHT, char_width);
+            assert_eq!(painted, no_paint);
+        }
+
+        /// #1075 regression: before the `native_surface_paint` migration,
+        /// `draw_list` never painted `ListView::show_v_scrollbar`'s
+        /// track/thumb on any of the three pixel backends, even though
+        /// `Backend::list_vscrollbar` already returned real geometry for
+        /// hit-testing. Paints through the real `draw_list` and probes a
+        /// pixel inside the resolved track rect — this would have failed
+        /// (background colour, nothing painted) against the pre-#1075 body.
+        #[test]
+        fn paints_vertical_scrollbar_track_when_enabled() {
+            let mut list = make_list((0..30).map(|i| item(&format!("row-{i}"))).collect());
+            list.show_v_scrollbar = true;
+            let rect = Rect::new(0.0, 0.0, W, H);
+            let expected = list
+                .vscrollbar(rect, LINE_HEIGHT)
+                .expect("30 rows in a 100px / 14px viewport must need a v-scrollbar");
+
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                })
+                .expect("paint list");
+
+            let theme = crate::theme::Theme::default();
+            let probe_x = (expected.track.x + expected.track.width / 2.0) as u32;
+            let probe_y = (expected.track.y + expected.track.height / 2.0) as u32;
+            let px = surface.pixel_at(probe_x.min(W as u32 - 1), probe_y.min(H as u32 - 1));
+            assert_ne!(
+                (px.r, px.g, px.b),
+                (theme.background.r, theme.background.g, theme.background.b),
+                "expected the v-scrollbar track at ({probe_x}, {probe_y}) to be painted \
+                 (non-background) — the #1075 regression this test guards"
+            );
+        }
+
+        /// #1075 review fix: the `native_surface_paint::paint` migration
+        /// briefly drew the `ListView::bordered` frame *before* the shared
+        /// content paint, which unconditionally fills the whole `rect` with
+        /// `base_bg` as its first paint operation — silently erasing the
+        /// border. Paints a bordered list and probes all four edges,
+        /// asserting they still carry `theme.border_fg` after the shared
+        /// paint has run.
+        #[test]
+        fn bordered_frame_survives_shared_content_paint() {
+            let list = make_bordered_list(vec![item("alpha"), item("beta"), item("gamma")]);
+            let rect = Rect::new(0.0, 0.0, W, H);
+
+            let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_list(target, &dwrite, rect, &list, LINE_HEIGHT);
+                })
+                .expect("paint list");
+
+            let theme = crate::theme::Theme::default();
+            let border = (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b);
+            let mid_x = (W / 2.0) as u32;
+            let mid_y = (H / 2.0) as u32;
+
+            let top = surface.pixel_at(mid_x, 0);
+            let bottom = surface.pixel_at(mid_x, H as u32 - 1);
+            let left = surface.pixel_at(0, mid_y);
+            let right = surface.pixel_at(W as u32 - 1, mid_y);
+
+            for (label, px) in [
+                ("top", top),
+                ("bottom", bottom),
+                ("left", left),
+                ("right", right),
+            ] {
+                assert_eq!(
+                    (px.r, px.g, px.b),
+                    border,
+                    "{label} border edge should still be theme.border_fg after the shared \
+                     content paint ran (#1075 review regression: the border was being \
+                     painted before, then erased by native_surface_paint::paint's initial \
+                     full-rect background fill)"
+                );
+            }
         }
     }
 }

@@ -25,16 +25,23 @@
 //! adapter (#1072 — consolidated from this module's own private
 //! `RawWinToastSurface`).
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod toast;` and `backend.rs`'s module
-//! docs for why the rest of this repo's `--features win` compile gate
-//! stays meaningful without a Windows host.
+//! Issue #1078: only [`draw_toast_stack`] (the deprecated paint shim) is
+//! Windows-only. [`win_toast_stack_layout`] is pure geometry generic over
+//! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
+//! DirectWrite type in its signature — so it compiles and runs
+//! everywhere, including a plain `cargo test --features win` on Linux.
+//! `super::mod`'s `mod toast;` is no longer whole-module gated; see
+//! `backend.rs`'s module docs.
 
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
+#[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
+#[cfg(target_os = "windows")]
 use crate::theme::Theme;
 
 const TOAST_WIDTH_DIP: f32 = 320.0;
@@ -44,16 +51,17 @@ const DISMISS_WIDTH_DIP: f32 = 28.0;
 const ACTION_PADDING_DIP: f32 = 16.0;
 const TOAST_PADDING_DIP: f32 = 8.0;
 
-/// Compute a [`ToastStack`]'s layout without painting — the DirectWrite
-/// measurer twin of the shared paint's internal layout computation. Both
-/// use the identical per-toast measurer shape, so a no-paint hit-test
-/// call always agrees with what the last paint drew. Still its own
-/// DirectWrite-based measurer, independent of
+/// Compute a [`ToastStack`]'s layout without painting — the measurer twin
+/// of the shared paint's internal layout computation. Both use the
+/// identical per-toast measurer shape, so a no-paint hit-test call always
+/// agrees with what the last paint drew. Pure geometry over [`TextMeasure`]
+/// (issue #1078) — `measure` may be a live `&DWrite` (when painting) or
+/// [`super::backend`]'s nominal measurer (no surface yet); independent of
 /// [`crate::native_surface::NativeSurface::surface_measure_text`] — same
 /// "no-paint layout stays put" posture as `WinBackend::status_bar_layout`
 /// (#860).
 pub fn win_toast_stack_layout(
-    dwrite: &DWrite,
+    measure: &dyn TextMeasure,
     rect: Rect,
     stack: &ToastStack,
     line_height: f32,
@@ -75,10 +83,7 @@ pub fn win_toast_stack_layout(
             let action_w = toast
                 .action
                 .as_ref()
-                .map(|a| {
-                    let (w, _) = dwrite.measure_text(&a.label).unwrap_or((0.0, 0.0));
-                    w + ACTION_PADDING_DIP
-                })
+                .map(|a| measure.width_of(&a.label) + ACTION_PADDING_DIP)
                 .unwrap_or(0.0);
             ToastMeasure {
                 width: TOAST_WIDTH_DIP.min((rect.width - TOAST_MARGIN_DIP * 2.0).max(0.0)),
@@ -103,6 +108,7 @@ pub fn win_toast_stack_layout(
 /// `macos`) — see this module's doc for why the pre-#861 signature's
 /// `Theme::default()` was itself the bug being fixed here, not a shape
 /// worth preserving byte-for-byte in the shim.
+#[cfg(target_os = "windows")]
 #[deprecated(
     since = "0.0.1",
     note = "call `Backend::draw_toast_stack` instead — this free function is a compatibility shim over the shared #861 implementation"
@@ -131,7 +137,9 @@ pub fn draw_toast_stack(
     )
 }
 
-#[cfg(test)]
+// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
+// — gated the same way the whole module used to be.
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use crate::primitives::toast::{ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity};

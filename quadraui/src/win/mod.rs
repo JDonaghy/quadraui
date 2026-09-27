@@ -53,9 +53,8 @@ mod completions;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod context_menu;
-/// Direct2D / DirectWrite rasteriser for [`crate::DataTable`] (#26).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Direct2D / DirectWrite rasteriser for [`crate::DataTable`] (#26). Issue
+/// #1078: only its paint fn is Windows-only — see its module docs.
 mod data_table;
 /// Direct2D / DirectWrite rasteriser for [`crate::Dialog`] (#28).
 /// Windows-only in full — see its module docs.
@@ -90,12 +89,12 @@ mod form;
 #[cfg(target_os = "windows")]
 mod image;
 /// Direct2D / DirectWrite rasteriser for [`crate::ListView`] (#26).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Issue #1078: only [`list::draw_list`] (the real Direct2D paint entry
+/// point) is Windows-only — [`list::win_list_layout`] is pure geometry
+/// and compiles/runs everywhere; see that module's docs.
 mod list;
-/// Direct2D / DirectWrite rasteriser for [`crate::MenuBar`] (#25).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Direct2D / DirectWrite rasteriser for [`crate::MenuBar`] (#25). Issue
+/// #1078: only its paint fn is Windows-only — see its module docs.
 mod menu_bar;
 /// Direct2D / DirectWrite rasteriser for [`crate::MessageList`] (#30).
 /// Windows-only in full — see its module docs.
@@ -154,9 +153,8 @@ pub mod shell_runner;
 /// in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod sidebar_panel;
-/// Direct2D / DirectWrite rasteriser for [`crate::Spinner`] (#29).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Direct2D / DirectWrite rasteriser for [`crate::Spinner`] (#29). Issue
+/// #1078: only its paint fn is Windows-only — see its module docs.
 mod spinner;
 /// Direct2D rasteriser for [`crate::Split`] (#29). Windows-only in
 /// full — see its module docs.
@@ -166,18 +164,17 @@ mod split;
 /// (#740). Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod split_tree;
-/// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`] (#25).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`] (#25). Issue
+/// #1078: only its deprecated paint shim is Windows-only — see its
+/// module docs.
 mod status_bar;
 /// Shared `NativeSurface` adapter over a bare `&ID2D1RenderTarget`
 /// (issue #1072). Windows-only — same gating as the per-primitive
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]
 mod surface;
-/// Direct2D / DirectWrite rasteriser for [`crate::TabBar`] (#25).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Direct2D / DirectWrite rasteriser for [`crate::TabBar`] (#25). Issue
+/// #1078: only its paint fns are Windows-only — see its module docs.
 mod tab_bar;
 /// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids
 /// (#30). Windows-only in full — see its module docs.
@@ -225,9 +222,9 @@ mod text_display;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod text_input;
-/// Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (#29).
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
+/// Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (#29). Issue
+/// #1078: only its deprecated paint shim is Windows-only — see its
+/// module docs.
 mod toast;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::toolbar::Toolbar`] (#730). Windows-only in full
@@ -265,7 +262,8 @@ pub use completions::draw_completions;
 #[cfg(target_os = "windows")]
 pub use context_menu::draw_context_menu;
 #[cfg(target_os = "windows")]
-pub use data_table::{draw_data_table, win_data_table_layout};
+pub use data_table::draw_data_table;
+pub use data_table::win_data_table_layout;
 #[cfg(target_os = "windows")]
 pub use dialog::draw_dialog;
 // #866: `draw_diff_view` is `#[deprecated]` — see
@@ -301,9 +299,11 @@ pub use form::draw_form;
 #[cfg(target_os = "windows")]
 pub use image::draw_image;
 #[cfg(target_os = "windows")]
-pub use list::{draw_list, win_list_layout};
+pub use list::draw_list;
+pub use list::win_list_layout;
 #[cfg(target_os = "windows")]
-pub use menu_bar::{draw_menu_bar, win_menu_bar_layout};
+pub use menu_bar::draw_menu_bar;
+pub use menu_bar::win_menu_bar_layout;
 #[cfg(target_os = "windows")]
 pub use message_list::draw_message_list;
 #[cfg(target_os = "windows")]
@@ -347,7 +347,8 @@ pub use sidebar_panel::win_sidebar_panel_layout;
 #[allow(deprecated)]
 pub use sidebar_panel::draw_sidebar_panel;
 #[cfg(target_os = "windows")]
-pub use spinner::{draw_spinner, win_spinner_layout};
+pub use spinner::draw_spinner;
+pub use spinner::win_spinner_layout;
 #[cfg(target_os = "windows")]
 pub use split::{win_split_layout, DIVIDER_DIP};
 // #864: `draw_split` is `#[deprecated]` — see `split::draw_split`'s doc
@@ -376,18 +377,23 @@ pub use split_tree::{draw_split_tree, win_split_tree_layout};
 // re-export above.
 #[cfg(target_os = "windows")]
 #[allow(deprecated)]
-pub use status_bar::{draw_status_bar, win_status_bar_layout, MIN_GAP_DIP};
+pub use status_bar::draw_status_bar;
+pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
-pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons, win_tab_bar_layout, win_tab_bar_layout_icons};
+#[allow(deprecated)]
+pub use tab_bar::{draw_tab_bar, draw_tab_bar_icons};
+#[allow(deprecated)]
+pub use tab_bar::{win_tab_bar_layout, win_tab_bar_layout_icons};
 // Issue #919's `TabBarLayout`-returning counterparts to the four above —
 // exported for the same reason: a consumer holding only the free
 // rasteriser fns (not going through `Backend`) gets the same additive
-// pair every other new-method site does.
+// pair every other new-method site does. Issue #1078: the `win_tab_bar_*`
+// no-paint fns are pure geometry (generic over `TextMeasure`) and no
+// longer `target_os = "windows"`-gated — only the two `draw_tab_bar_*`
+// paint fns are.
 #[cfg(target_os = "windows")]
-pub use tab_bar::{
-    draw_tab_bar_icons_layout, draw_tab_bar_layout, win_tab_bar_native_layout,
-    win_tab_bar_native_layout_icons,
-};
+pub use tab_bar::{draw_tab_bar_icons_layout, draw_tab_bar_layout};
+pub use tab_bar::{win_tab_bar_native_layout, win_tab_bar_native_layout_icons};
 #[cfg(target_os = "windows")]
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
@@ -399,7 +405,8 @@ pub use text_input::{draw_text_input, win_text_input_layout};
 // re-export above.
 #[cfg(target_os = "windows")]
 #[allow(deprecated)]
-pub use toast::{draw_toast_stack, win_toast_stack_layout};
+pub use toast::draw_toast_stack;
+pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
 pub use toolbar::{draw_toolbar, win_toolbar_layout};
 #[cfg(target_os = "windows")]

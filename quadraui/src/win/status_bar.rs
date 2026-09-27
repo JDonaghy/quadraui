@@ -16,10 +16,12 @@
 //! stays put — it's still [`win_status_bar_layout`]'s own measurer
 //! constant, untouched by this migration.
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod status_bar;` and `backend.rs`'s
-//! module docs for why the rest of this repo's `--features win` compile
-//! gate stays meaningful without a Windows host.
+//! Issue #1078: only [`draw_status_bar`] (the deprecated paint shim) is
+//! Windows-only. [`win_status_bar_layout`] is pure geometry generic over
+//! [`StatusMeasure`] — no Direct2D/DirectWrite type in its signature —
+//! so it compiles and runs everywhere, including a plain `cargo test
+//! --features win` on Linux. `super::mod`'s `mod status_bar;` is no
+//! longer whole-module gated; see `backend.rs`'s module docs.
 //!
 //! # Theme
 //!
@@ -30,12 +32,16 @@
 //! bar's own background, when it has no segments) get that live theme's
 //! background, not [`Theme::default`].
 
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
+#[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::status_bar::StatusSegmentMeasure;
+#[cfg(target_os = "windows")]
 use crate::theme::Theme;
+#[cfg(target_os = "windows")]
 use crate::types::WidgetId;
 use crate::{StatusBar, StatusBarLayout};
 
@@ -46,18 +52,38 @@ use crate::{StatusBar, StatusBarLayout};
 /// its own independent copy of the same value (see that module's doc).
 pub const MIN_GAP_DIP: f32 = 16.0;
 
-/// Compute a [`StatusBar`]'s layout without painting — the DirectWrite
-/// measurer twin of the shared `paint`, and what
+/// Bold-aware text measurement for [`win_status_bar_layout`]. A status
+/// segment's `bold` flag changes its measured width, so this can't reuse
+/// [`crate::primitives::layout_metrics::TextMeasure`] (no `bold`
+/// parameter) the way `win::tab_bar`/`win::data_table` do — a real
+/// difference this rasteriser has always had (`DWrite::measure_text_styled`
+/// vs. every other module's plain `measure_text`), not new duplication.
+pub trait StatusMeasure {
+    fn width_of(&self, text: &str, bold: bool) -> f32;
+}
+
+#[cfg(target_os = "windows")]
+impl StatusMeasure for DWrite {
+    fn width_of(&self, text: &str, bold: bool) -> f32 {
+        self.measure_text_styled(text, bold)
+            .map(|(w, _)| w)
+            .unwrap_or(0.0)
+    }
+}
+
+/// Compute a [`StatusBar`]'s layout without painting — the measurer twin
+/// of the shared `paint`, and what
 /// [`crate::win::WinBackend::status_bar_layout`] calls directly. Both this
-/// function and `paint` measure a segment's width via
-/// `DWrite::measure_text_styled`, so a no-paint hit-test call always
-/// agrees with what the last paint drew.
-pub fn win_status_bar_layout(dwrite: &DWrite, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
+/// function and `paint` measure a segment's width the same bold-aware
+/// way, so a no-paint hit-test call always agrees with what the last
+/// paint drew.
+pub fn win_status_bar_layout(
+    measure: &dyn StatusMeasure,
+    rect: Rect,
+    bar: &StatusBar,
+) -> StatusBarLayout {
     bar.layout(rect.width, rect.height, MIN_GAP_DIP, |seg| {
-        let (w, _) = dwrite
-            .measure_text_styled(&seg.text, seg.bold)
-            .unwrap_or((0.0, 0.0));
-        StatusSegmentMeasure::new(w)
+        StatusSegmentMeasure::new(measure.width_of(&seg.text, seg.bold))
     })
 }
 
@@ -68,6 +94,7 @@ pub fn win_status_bar_layout(dwrite: &DWrite, rect: Rect, bar: &StatusBar) -> St
 /// point, and the one every in-tree call site already uses, which is why
 /// this shim has no in-repo caller left to trip the `-D
 /// warnings`-denied `deprecated` lint.
+#[cfg(target_os = "windows")]
 #[deprecated(
     since = "0.0.1",
     note = "call `Backend::draw_status_bar` instead — this free function is a compatibility shim over the shared #860 implementation"
@@ -98,11 +125,14 @@ pub fn draw_status_bar(
     )
 }
 
-#[cfg(test)]
+// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
+// — gated the same way the whole module used to be, rather than
+// pretending they run on Linux.
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use crate::primitives::status_bar::{StatusBarHit, StatusBarSegment, StatusSegmentSide};
-    use crate::types::Color;
+    use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 200.0;
