@@ -145,6 +145,30 @@ extern "C" {
     fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
+/// Fill `rect` with `bg` — the whole-frame backdrop [`QuadraView::draw_rect`]
+/// paints before delegating to the app's own render closure. Extracted
+/// (issue #1179) so it's exercised by a headless [`super::headless::BitmapSurface`]
+/// test with no live `NSView`/`NSWindow`: before #1179 this was inlined at
+/// the one live call site with a hard-coded dark literal
+/// (`(0.12, 0.12, 0.14)` == `#1F1F24`), which is exactly what showed
+/// through unpainted areas (the traffic-light inset, the breadcrumb gap,
+/// under translucent scrollbar tracks) on a light theme. Callers pass the
+/// current [`crate::theme::Theme::background`] instead.
+///
+/// # Safety
+///
+/// `cg_ref` must be a non-null `CGContextRef` borrowed for the duration
+/// of this call.
+pub(crate) unsafe fn fill_frame_background(
+    cg_ref: CGContextRef,
+    rect: CGRect,
+    bg: crate::types::Color,
+) {
+    let (r, g, b, a) = super::cg::color_to_cg(bg);
+    CGContextSetRGBFillColor(cg_ref, r, g, b, a);
+    CGContextFillRect(cg_ref, rect);
+}
+
 /// Type-erased closures the view invokes from its responder + draw
 /// callbacks. Built once per [`run`] call from the concrete `A:
 /// AppLogic`; from `define_class!`'s perspective they're just two
@@ -528,11 +552,17 @@ define_class!(
             // fill the middle. Removed once content rasterisers paint
             // the full client area.
             //
+            // #1179: this used to be a hard-coded dark literal
+            // (0.12, 0.12, 0.14 == #1F1F24), which showed through on
+            // light themes (behind the traffic lights, in the
+            // breadcrumb/status-bar gap, under translucent scrollbar
+            // tracks). Use the current theme's background instead so
+            // unpainted areas match the theme, not a fixed dark shade.
+            let bg = self.ivars().backend.borrow().current_theme().background;
             // SAFETY: `cg_ref` is a non-null `CGContextRef` borrowed
             // for the duration of this call.
             unsafe {
-                CGContextSetRGBFillColor(cg_ref, 0.12, 0.12, 0.14, 1.0);
-                CGContextFillRect(cg_ref, rect);
+                fill_frame_background(cg_ref, rect, bg);
             }
 
             // Now run the app's render via the stored closure.
@@ -2180,6 +2210,58 @@ mod run_config_tests {
         assert!(mask.contains(NSWindowStyleMask::Closable));
         assert!(mask.contains(NSWindowStyleMask::Resizable));
         assert!(mask.contains(NSWindowStyleMask::Miniaturizable));
+    }
+}
+
+/// Headless coverage for [`fill_frame_background`] (issue #1179) — the
+/// whole-frame backdrop `QuadraView::draw_rect` paints before delegating
+/// to the app's own render closure. Uses
+/// [`super::headless::BitmapSurface`] rather than a live `NSView`, so it
+/// exercises the exact FFI call `drawRect:` makes with no window/display
+/// dependency (see this file's module doc + `headless.rs`'s doc for why
+/// that pairing works).
+#[cfg(test)]
+mod background_fill_tests {
+    use super::*;
+    use crate::macos::headless::BitmapSurface;
+    use crate::types::Color;
+
+    /// A light theme's background must show through verbatim — this is
+    /// the exact regression #1179 reports: pre-fix, this pixel would be
+    /// `#1F1F24` (31, 31, 36) regardless of the theme, because the fill
+    /// colour was a hard-coded literal instead of `bg`.
+    #[test]
+    fn fill_frame_background_paints_the_given_background_not_a_fixed_dark_literal() {
+        const W: u32 = 120;
+        const H: u32 = 80;
+        // vscode-light-like background — nothing close to #1F1F24.
+        let light_bg = Color::rgb(236, 236, 236);
+
+        let surface = BitmapSurface::new(W, H);
+        let rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(W as f64, H as f64));
+        // SAFETY: `surface.context_ptr()` is a valid bitmap context for
+        // the surface's lifetime, borrowed only for this call.
+        unsafe {
+            fill_frame_background(surface.context_ptr(), rect, light_bg);
+        }
+
+        // Sample a point that stands in for the traffic-light inset
+        // (top-left corner, where #947's `titlebar_control_inset` lives)
+        // and one that stands in for the breadcrumb/status-bar gap and
+        // scrollbar gutter — every unpainted pixel, not just the centre.
+        for (x, y, label) in [
+            (10, 10, "traffic-light inset"),
+            (5, H - 3, "breadcrumb/status-bar gap"),
+            (W - 5, H / 2, "scrollbar gutter"),
+        ] {
+            let (r, g, b, _a) = surface.pixel(x, y);
+            assert_eq!(
+                (r, g, b),
+                (light_bg.r, light_bg.g, light_bg.b),
+                "{label} pixel ({x}, {y}) must show the theme background {light_bg:?}, \
+                 not a hard-coded dark literal: got ({r}, {g}, {b})"
+            );
+        }
     }
 }
 

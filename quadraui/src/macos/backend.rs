@@ -2109,7 +2109,15 @@ impl Backend for MacBackend {
         // (which would paint through `current_font`, the *editor* font,
         // via `MacBackend`'s own `NativeSurface` impl below).
         let theme = self.current_theme;
-        let line_height = self.chrome_line_height as f32;
+        // #1179: was `self.chrome_line_height`, so a caller that hands
+        // this a `rect` taller than the chrome font's own line height
+        // (e.g. vimcode's fixed-height breadcrumb row) got a background
+        // fill short of `rect.height` — the theme's clear colour (or,
+        // pre-#1179, a hard-coded dark literal) showed through the
+        // leftover strip. `paint` fills exactly the height it's given,
+        // so pass the rect's own height, matching `WinBackend`'s
+        // already-correct call.
+        let line_height = rect.height;
         let mut surface = ChromeSurface { backend: self };
         crate::primitives::status_bar::native_surface_paint::paint(
             bar,
@@ -7467,6 +7475,71 @@ mod tests {
             assert!((p.bounds.x - c.bounds.x).abs() < 0.001);
             assert!((p.bounds.width - c.bounds.width).abs() < 0.001);
         }
+    }
+
+    /// Issue #1179 acceptance test: a `StatusBar` drawn into a `rect`
+    /// taller than `chrome_line_height` (vimcode's fixed-height
+    /// breadcrumb row is the real-world case) must fill the whole rect,
+    /// not just its own line height — the leftover strip used to show
+    /// whatever the frame's clear colour was (a hard-coded dark literal
+    /// pre-#1179). Uses an empty-segments bar so the fill falls back to
+    /// `theme.background` (see `native_surface_paint::paint`'s doc),
+    /// which is what the pixel below `chrome_line_height` must match.
+    #[test]
+    fn draw_status_bar_interactive_fills_the_whole_rect_height_not_just_line_height() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::StatusBar;
+        use crate::theme::Theme;
+        use crate::types::Color;
+
+        const W: u32 = 200;
+        const H: u32 = 40;
+
+        // A light background, nothing close to the old dark clear
+        // literal (#1F1F24 == (31, 31, 36)) — the same regression #1179
+        // reports for `QuadraView::draw_rect`'s frame backdrop.
+        let theme = Theme {
+            background: Color::rgb(236, 236, 236),
+            ..Theme::default()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        let mut b = MacBackend::new();
+        b.set_current_theme(theme);
+        // Deliberately small chrome font so `chrome_line_height` sits
+        // well under `H` — the gap this test is pinning.
+        Backend::set_ui_font(&mut b, "Menlo 8");
+        assert!(
+            (b.chrome_line_height as u32) < H,
+            "test setup: chrome_line_height ({}) must be smaller than the rect height \
+             ({H}) for this to exercise the bug",
+            b.chrome_line_height,
+        );
+
+        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![],
+            right_segments: vec![],
+        };
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            let _ = backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+            );
+        });
+        b.end_frame();
+
+        // Bottom row of the rect — below where `chrome_line_height`
+        // alone would have stopped filling, pre-#1179.
+        let (r, g, bl, _a) = surface.pixel(W / 2, H - 2);
+        assert_eq!(
+            (r, g, bl),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "the bottom of a status-bar rect taller than chrome_line_height must be \
+             filled with the theme background, not left unpainted: got ({r}, {g}, {bl})"
+        );
     }
 
     /// Issue #1003 acceptance test: paint a `TreeView` through the real

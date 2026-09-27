@@ -2496,7 +2496,13 @@ impl Backend for GtkBackend {
             saved
         };
         let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
+        // #1179: was `self.current_line_height`, so a caller that hands
+        // this a `rect` taller than the current line height got a
+        // background fill short of `rect.height`, leaving an unpainted
+        // strip. `paint` fills exactly the height it's given — pass the
+        // rect's own height, matching `WinBackend`'s already-correct call
+        // and `MacBackend`'s #1179 fix.
+        let line_height = rect.height;
         let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
             bar,
             self,
@@ -7006,6 +7012,78 @@ mod tests {
                      paintable rect",
                 );
             }
+        }
+    }
+
+    /// Issue #1179: `rect` taller than `current_line_height` must be
+    /// filled in full, not just up to `current_line_height` — the same
+    /// regression class `MacBackend`'s #1179 fix pins, applied to GTK.
+    /// Uses an empty-segments bar so the fill falls back to
+    /// `theme.background` (see `native_surface_paint::paint`'s doc);
+    /// the sentinel colour must not survive anywhere in the rect,
+    /// including rows below the old `current_line_height` cutoff.
+    #[test]
+    fn gtk_backend_draw_status_bar_fills_the_whole_rect_height_not_just_line_height() {
+        let canvas_w = 40;
+        let canvas_h = 40;
+        let sentinel: (u8, u8, u8) = (7, 8, 9);
+        let bg = crate::types::Color::rgb(236, 236, 236);
+
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(crate::Theme {
+            background: bg,
+            ..crate::Theme::default()
+        });
+        // Small line height so the rect below is deliberately taller.
+        backend.set_current_line_height(6.0);
+        Backend::begin_frame(
+            &mut backend,
+            Viewport::new(canvas_w as f32, canvas_h as f32, 1.0),
+        );
+        let mut surface = pangocairo::cairo::ImageSurface::create(
+            pangocairo::cairo::Format::ARgb32,
+            canvas_w,
+            canvas_h,
+        )
+        .expect("create ImageSurface");
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(
+                sentinel.0 as f64 / 255.0,
+                sentinel.1 as f64 / 255.0,
+                sentinel.2 as f64 / 255.0,
+            );
+            cr.rectangle(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+            cr.fill().ok();
+
+            let bar = StatusBar {
+                id: WidgetId::new("test:status-bar"),
+                left_segments: vec![],
+                right_segments: vec![],
+            };
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_status_bar_interactive(
+                    QRect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
+                    &bar,
+                    &crate::InteractionState::new(),
+                );
+            });
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Bottom row — well below where `current_line_height` (6.0)
+        // alone would have stopped filling, pre-#1179.
+        let bottom_row = canvas_h - 2;
+        for x in 0..canvas_w {
+            assert_eq!(
+                chart_pixel(&data, stride, x, bottom_row),
+                (bg.r, bg.g, bg.b),
+                "pixel ({x}, {bottom_row}) must show the theme background — a rect \
+                 taller than current_line_height must be filled in full, not left \
+                 showing the sentinel colour",
+            );
         }
     }
 

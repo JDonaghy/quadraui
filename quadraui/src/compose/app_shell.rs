@@ -1001,14 +1001,17 @@ impl AppShell {
             // #996: one fill over the whole rect, not N stacked one-row
             // `StatusBar`s. The old per-row loop was exact on a cell grid
             // (rows abut by construction) but wrong on a pixel backend,
-            // where `draw_status_bar_interactive` fills only
+            // where `draw_status_bar_interactive` used to fill only
             // `current_line_height` regardless of the row rect's own
             // height — every row painted short of its own pitch and the
-            // gaps between rows rendered as a dashed line. There is no
+            // gaps between rows rendered as a dashed line. #1179 fixed
+            // that root cause on every pixel backend (`rect.height` is
+            // honoured now, see `tests/gtk_example_driver.rs`'s
+            // `draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely`),
+            // but a plain solid fill is still both simpler and strictly
+            // cheaper than N status-bar layouts per frame — there is no
             // text, no segments, and no interaction beyond the drag zone
-            // `register_chrome_zones` already registered above, so a
-            // plain solid fill is both correct on every backend and
-            // strictly cheaper than N status-bar layouts per frame.
+            // `register_chrome_zones` already registered above.
             backend.draw_solid_fill(divider_bounds, Color::rgb(100, 100, 110));
         }
 
