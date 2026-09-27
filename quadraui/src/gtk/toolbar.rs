@@ -1,45 +1,27 @@
 //! GTK rasteriser for [`crate::primitives::toolbar::Toolbar`].
 //!
-//! Paints a horizontal strip of clickable action buttons using Cairo +
-//! Pango. Each [`crate::ToolbarButton::Action`] becomes a pill-shaped
-//! cell with optional icon glyph, label, and key hint. Separators
-//! render as a thin vertical rule between groups; labels paint as
-//! plain text in `theme.muted_fg` (or their `fg` override).
+//! `gtk_toolbar_layout` stays here — it needs Pango's own text
+//! measurement to size each item. Content painting (background,
+//! per-state colouring, hover/pressed/active highlight, focus ring,
+//! separators, labels) moved to the shared
+//! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
+//! `NativeSurface` Phase 4 slice 5/8) — see that fn's module doc for
+//! the highlight-corner drift it resolved (this backend's rounded pill
+//! is now what every backend paints, closing macOS's and Windows'
+//! square-corner gap instead of flattening this one down to match
+//! them).
 //!
-//! ## Per-state colouring
-//!
-//! Priority (highest first): pressed → hovered → focused → is_active → enabled.
-//!
-//! | State              | Foreground             | Background           |
-//! |--------------------|------------------------|----------------------|
-//! | Action, enabled    | `theme.foreground`     | `bar_bg`             |
-//! | Action, disabled   | `theme.muted_fg`       | `bar_bg`             |
-//! | Action, is_active  | `theme.foreground`     | `theme.selected_bg`  |
-//! | Action, focused    | `theme.foreground`     | `bar_bg` + ring      |
-//! | Action, hovered    | `theme.hover_fg`       | `theme.hover_bg`     |
-//! | Action, pressed    | `theme.foreground`     | `theme.selected_bg`  |
-//! | Separator          | `theme.muted_fg`       | `bar_bg`             |
-//! | Label              | `Label.fg` or `muted`  | `bar_bg`             |
-//!
-//! Keyboard-focused buttons (via [`crate::primitives::toolbar::Toolbar::focused_index`])
-//! receive a `theme.accent_fg`-coloured rounded-rect stroke drawn on top of the
-//! button background. Hover / pressed still take visual priority over focus.
-//!
-//! `bar_bg` is `Toolbar.bg.unwrap_or(theme.header_bg)`.
+//! See that module's own doc for the full per-state colouring table.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::{rounded_rect_path, set_source};
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{
-    action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
+    measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
-
-/// Corner radius for action button highlight backgrounds.
-const CORNER_RADIUS: f64 = 4.0;
 
 /// Adapts a live `pango::Layout` (falling back to a `char_width`-based
 /// estimate when none is available, e.g. from a layout-only call between
@@ -125,113 +107,20 @@ pub fn draw_toolbar(
     cr.rectangle(x, y, w, h);
     cr.clip();
 
-    // Background fill.
-    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
-    set_source(cr, bar_bg);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-
-    for vis in &toolbar_layout.visible_items {
-        let item_x = vis.bounds.x as f64;
-        let item_y = vis.bounds.y as f64;
-        let item_w = vis.bounds.width as f64;
-        let item_h = vis.bounds.height as f64;
-        if item_w <= 0.0 || item_h <= 0.0 {
-            continue;
-        }
-
-        let btn = &bar.buttons[vis.item_idx];
-
-        match btn {
-            ToolbarButton::Action {
-                id,
-                label,
-                icon,
-                key_hint,
-                enabled,
-                is_active,
-                ..
-            } => {
-                let is_hovered = *enabled && hovered_id == Some(id);
-                let is_pressed = *enabled && pressed_id == Some(id);
-                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
-
-                // Highlight background for hover/pressed/active states.
-                // Priority: pressed > hovered > focused > is_active.
-                let highlight = if is_pressed || *is_active {
-                    Some(theme.selected_bg)
-                } else if is_hovered {
-                    Some(theme.hover_bg)
-                } else {
-                    None
-                };
-                if let Some(bg) = highlight {
-                    set_source(cr, bg);
-                    rounded_rect_path(
-                        cr,
-                        item_x + 2.0,
-                        item_y + 2.0,
-                        item_w - 4.0,
-                        item_h - 4.0,
-                        CORNER_RADIUS,
-                    );
-                    cr.fill().ok();
-                }
-
-                // Focus ring: drawn when focused and not already
-                // visually dominated by hover or pressed highlight.
-                if is_focused && !is_hovered && !is_pressed && !*is_active {
-                    set_source(cr, theme.accent_fg);
-                    cr.set_line_width(1.0);
-                    rounded_rect_path(
-                        cr,
-                        item_x + 1.5,
-                        item_y + 1.5,
-                        item_w - 3.0,
-                        item_h - 3.0,
-                        CORNER_RADIUS,
-                    );
-                    cr.stroke().ok();
-                }
-
-                // Foreground.
-                let text_fg = if !*enabled {
-                    theme.muted_fg
-                } else if is_hovered {
-                    theme.hover_fg
-                } else {
-                    theme.foreground
-                };
-                set_source(cr, text_fg);
-
-                let text = action_text(label, icon.as_deref(), key_hint.as_deref());
-                pango_layout.set_text(&text);
-                let (tw, th) = pango_layout.pixel_size();
-                let tx = item_x + (item_w - tw as f64) / 2.0;
-                let ty = item_y + (item_h - th as f64) / 2.0;
-                cr.move_to(tx, ty);
-                super::painted_text::show_layout(cr, pango_layout);
-            }
-            ToolbarButton::Separator => {
-                set_source(cr, theme.muted_fg);
-                cr.set_line_width(1.0);
-                let mid_x = item_x + item_w / 2.0;
-                let pad_y = (item_h * 0.2).max(2.0);
-                cr.move_to(mid_x, item_y + pad_y);
-                cr.line_to(mid_x, item_y + item_h - pad_y);
-                cr.stroke().ok();
-            }
-            ToolbarButton::Label { text, fg } => {
-                let color = fg.unwrap_or(theme.muted_fg);
-                set_source(cr, color);
-                pango_layout.set_text(text);
-                let (_tw, th) = pango_layout.pixel_size();
-                let ty = item_y + (item_h - th as f64) / 2.0;
-                cr.move_to(item_x, ty);
-                super::painted_text::show_layout(cr, pango_layout);
-            }
-        }
-    }
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
+    native_surface_paint::paint(
+        bar,
+        &toolbar_layout,
+        &mut surface,
+        theme,
+        hovered_id,
+        pressed_id,
+    );
+    pango_layout.set_attributes(None);
 
     cr.restore().ok();
     toolbar_layout
@@ -240,7 +129,7 @@ pub fn draw_toolbar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toolbar::ToolbarHit;
+    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit};
     use crate::types::WidgetId;
 
     fn test_toolbar() -> Toolbar {

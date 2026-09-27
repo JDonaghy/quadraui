@@ -1,14 +1,23 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::primitives::toolbar::Toolbar`]
 //! (#730).
 //!
-//! Mirrors `gtk::toolbar` / `macos::toolbar`'s structure and visual
-//! contract: [`Toolbar::layout`] (the D6 layout API) does every
-//! positioning decision via the shared
-//! [`crate::primitives::toolbar::measure_button`] formula (#730); this
-//! module only measures (via [`DWriteMeasure`], a thin adapter over
-//! [`DWrite`]) and paints (`ID2D1RenderTarget::FillRectangle` /
-//! `DrawLine` / `DrawText`). Paint and hit-test both derive from one
-//! `Toolbar::layout` call, so they can't drift apart.
+//! [`win_toolbar_layout`] stays here: [`Toolbar::layout`] (the D6 layout
+//! API) does every positioning decision via the shared
+//! [`crate::primitives::toolbar::measure_button`] formula (#730), this
+//! module just supplies the DirectWrite measurer. Content painting
+//! moved to the shared
+//! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
+//! `NativeSurface` Phase 4 slice 5/8), which also **closes this
+//! backend's own square-corner gap** described below under "Scope for
+//! #730" — that scope note is now stale: issue #1073 added
+//! [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+//! to every pixel backend (including this one, via
+//! [`super::text::fill_rounded_rect`]), so the hover/pressed/active
+//! highlight now paints a real rounded pill instead of a plain
+//! rectangle. See that verb's own doc, and
+//! `native_surface_paint::paint`'s module doc, for the full drift it
+//! resolved. The focus ring stays a **square** stroke on all three
+//! backends — [`NativeSurface`] has no rounded-stroke verb.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod toolbar;` and `backend.rs`'s
@@ -18,39 +27,21 @@
 //! ## Per-state colouring
 //!
 //! Priority (highest first): pressed → hovered → focused → is_active →
-//! enabled — identical to `gtk::toolbar` / `macos::toolbar`.
-//!
-//! | State              | Foreground             | Background           |
-//! |--------------------|------------------------|----------------------|
-//! | Action, enabled    | `theme.foreground`     | `bar_bg`             |
-//! | Action, disabled   | `theme.muted_fg`       | `bar_bg`             |
-//! | Action, is_active  | `theme.foreground`     | `theme.selected_bg`  |
-//! | Action, focused    | `theme.foreground`     | `bar_bg` + ring      |
-//! | Action, hovered    | `theme.hover_fg`       | `theme.hover_bg`     |
-//! | Action, pressed    | `theme.foreground`     | `theme.selected_bg`  |
-//! | Separator          | `theme.muted_fg`       | `bar_bg`             |
-//! | Label              | `Label.fg` or `muted`  | `bar_bg`             |
+//! enabled — identical to `gtk::toolbar` / `macos::toolbar`. See
+//! [`crate::primitives::toolbar::native_surface_paint::paint`]'s module
+//! doc for the full table.
 //!
 //! `bar_bg` is `Toolbar.bg.unwrap_or(theme.header_bg)`. `WinBackend` does
 //! not yet carry a live [`Theme`] (see `win::status_bar`'s module doc),
 //! so this rasteriser uses [`Theme::default`], the same posture every
 //! other `win::` chrome rasteriser takes.
-//!
-//! ## Scope for #730
-//!
-//! No rounded-rect / stroke-inset helper exists yet in `win::text`
-//! beyond [`stroke_rect`] (which insets a plain rectangle, not a
-//! rounded one — see its doc), so the hover/pressed/active highlight
-//! and focus ring paint as plain rectangles rather than GTK's
-//! rounded-rect pills. Hit-test bounds and click routing are unaffected
-//! — only the highlight's corner treatment differs.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{draw_line, fill_rect, stroke_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::toolbar::{
-    action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
+    measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -91,95 +82,11 @@ pub fn draw_toolbar(
     }
 
     let theme = Theme::default();
-    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
-    let _ = fill_rect(target, rect, bar_bg);
-
-    for vis in &layout.visible_items {
-        let item = vis.bounds;
-        if item.width <= 0.0 || item.height <= 0.0 {
-            continue;
-        }
-
-        let btn = &bar.buttons[vis.item_idx];
-        match btn {
-            ToolbarButton::Action {
-                id,
-                label,
-                icon,
-                key_hint,
-                enabled,
-                is_active,
-                ..
-            } => {
-                let is_hovered = *enabled && hovered_id == Some(id);
-                let is_pressed = *enabled && pressed_id == Some(id);
-                let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
-
-                // Highlight background: pressed/active > hovered > none.
-                let highlight = if is_pressed || *is_active {
-                    Some(theme.selected_bg)
-                } else if is_hovered {
-                    Some(theme.hover_bg)
-                } else {
-                    None
-                };
-                if let Some(bg) = highlight {
-                    let inset = Rect::new(
-                        item.x + 2.0,
-                        item.y + 2.0,
-                        (item.width - 4.0).max(0.0),
-                        (item.height - 4.0).max(0.0),
-                    );
-                    let _ = fill_rect(target, inset, bg);
-                }
-
-                // Focus ring: only when not already visually dominated
-                // by hover / pressed / active.
-                if is_focused && !is_hovered && !is_pressed && !*is_active {
-                    let ring = Rect::new(
-                        item.x + 1.5,
-                        item.y + 1.5,
-                        (item.width - 3.0).max(0.0),
-                        (item.height - 3.0).max(0.0),
-                    );
-                    let _ = stroke_rect(target, ring, theme.accent_fg, 1.0);
-                }
-
-                let fg = if !*enabled {
-                    theme.muted_fg
-                } else if is_hovered {
-                    theme.hover_fg
-                } else {
-                    theme.foreground
-                };
-
-                let text = action_text(label, icon.as_deref(), key_hint.as_deref());
-                let (tw, th) = dwrite.measure_text(&text).unwrap_or((0.0, 0.0));
-                let tx = item.x + (item.width - tw) / 2.0;
-                let ty = item.y + (item.height - th) / 2.0;
-                let _ = dwrite.draw_text(target, &text, Rect::new(tx, ty, tw, th), fg);
-            }
-            ToolbarButton::Separator => {
-                let mid_x = item.x + item.width / 2.0;
-                let pad_y = (item.height * 0.2).max(2.0);
-                let _ = draw_line(
-                    target,
-                    mid_x,
-                    item.y + pad_y,
-                    mid_x,
-                    item.y + item.height - pad_y,
-                    theme.muted_fg,
-                    1.0,
-                );
-            }
-            ToolbarButton::Label { text, fg } => {
-                let color = fg.unwrap_or(theme.muted_fg);
-                let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
-                let ty = item.y + (item.height - th) / 2.0;
-                let _ = dwrite.draw_text(target, text, Rect::new(item.x, ty, tw, th), color);
-            }
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    native_surface_paint::paint(bar, &layout, &mut surface, &theme, hovered_id, pressed_id);
 
     layout
 }
@@ -187,7 +94,7 @@ pub fn draw_toolbar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toolbar::ToolbarHit;
+    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit};
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 240.0;
@@ -347,5 +254,75 @@ mod tests {
             .expect("paint");
         let no_paint = win_toolbar_layout(&dwrite, rect, &bar);
         assert_eq!(painted, no_paint);
+    }
+
+    /// #1081 regression: pre-migration Windows painted the hover/pressed/
+    /// active highlight as a plain rectangle (this module's own doc used
+    /// to list "no rounded-rect helper exists yet" as a documented scope
+    /// gap) — the shared `native_surface_paint::paint` now fills a real
+    /// rounded pill via `surface_fill_rounded_rect`. A square fill would
+    /// paint the inset rect's own extreme corner pixel; a rounded one
+    /// (radius 4) leaves it unpainted, since that pixel sits outside the
+    /// corner arc.
+    #[test]
+    fn active_button_highlight_has_rounded_corners_not_square() {
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:on"),
+                label: "On".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: true,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+
+        surface
+            .paint(|target| {
+                draw_toolbar(target, &dwrite, rect, &bar, None, None);
+            })
+            .expect("paint toolbar");
+        let layout = win_toolbar_layout(&dwrite, rect, &bar);
+
+        let theme = Theme::default();
+        let item = &layout.visible_items[0].bounds;
+
+        // The inset highlight rect starts at (item.x + 2, item.y + 2);
+        // its very corner pixel sits outside a 4px-radius rounded
+        // corner arc.
+        let corner_x = (item.x + 2.0) as u32;
+        let corner_y = (item.y + 2.0) as u32;
+        let corner = surface.pixel_at(corner_x, corner_y);
+        assert_ne!(
+            (corner.r, corner.g, corner.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "highlight corner pixel should NOT be filled — rounded corner (quadraui#1081), not square",
+        );
+
+        // The inset rect's centre must still be filled solid in the
+        // highlight colour — proves this isn't just "nothing painted".
+        let cx = (item.x + item.width / 2.0) as u32;
+        let cy = (item.y + item.height / 2.0) as u32;
+        let centre = surface.pixel_at(cx, cy);
+        assert_eq!(
+            (centre.r, centre.g, centre.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "highlight centre pixel should be filled solid",
+        );
     }
 }

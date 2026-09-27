@@ -543,6 +543,170 @@ impl Toolbar {
     }
 }
 
+// ── NativeSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::menu_bar::native_surface_paint` for the
+// same pattern applied one primitive earlier in this issue.
+//
+// Pre-migration, `gtk::toolbar`, `macos::toolbar` and `win::toolbar`
+// agreed on every colour/state-priority decision (see this file's own
+// per-state colouring table, copied verbatim into all three module
+// docs) and on `action_text`/`measure_button`'s shared layout formula —
+// but diverged on the hover/pressed/active highlight's corner
+// treatment:
+//
+// - **GTK** painted a `CORNER_RADIUS`-rounded pill (`rounded_rect_path`
+//   + fill) and a matching rounded-rect focus-ring stroke.
+// - **macOS and Windows** both painted a plain square inset rectangle
+//   for the highlight, and a plain square stroke for the focus ring —
+//   Windows' own module doc explained why: "No rounded-rect / stroke-
+//   inset helper exists yet in `win::text`".
+//
+// That blocker no longer applies: issue #1073 added
+// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+// to every pixel backend specifically to unblock chrome primitives like
+// this one (see that verb's own doc). `paint` below uses it
+// unconditionally for the highlight fill — closing macOS's and
+// Windows' gap onto GTK's nicer pill shape, rather than flattening GTK
+// down to the 2-of-3 majority. The focus ring stays a **square**
+// stroke on all three: [`NativeSurface`] has no rounded-stroke verb
+// (same gap noted in `primitives::context_menu::native_surface_paint`'s
+// module doc), so keeping GTK's rounded ring would need a fill-shaped
+// workaround uglier than just picking the square the other two already
+// used.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{action_text, Toolbar, ToolbarButton, ToolbarLayout};
+    use crate::event::{Point, Rect};
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+
+    /// Corner radius for the hover/pressed/active highlight pill —
+    /// mirrors `gtk::toolbar`'s pre-migration `CORNER_RADIUS`, now
+    /// shared by every backend (see module doc).
+    const CORNER_RADIUS: f32 = 4.0;
+
+    /// Paint a [`Toolbar`] at its caller-resolved `layout` onto
+    /// `surface`. `hovered_id`/`pressed_id` select the live interaction
+    /// state; see this module's own doc table for the exact
+    /// fg/bg-per-state contract every backend shares.
+    pub(crate) fn paint(
+        bar: &Toolbar,
+        layout: &ToolbarLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) {
+        if layout.bar_bounds.width <= 0.0 || layout.bar_bounds.height <= 0.0 {
+            return;
+        }
+
+        let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+        surface.surface_fill_rect(layout.bar_bounds, bar_bg);
+
+        for vis in &layout.visible_items {
+            let item = vis.bounds;
+            if item.width <= 0.0 || item.height <= 0.0 {
+                continue;
+            }
+
+            let btn = &bar.buttons[vis.item_idx];
+            match btn {
+                ToolbarButton::Action {
+                    id,
+                    label,
+                    icon,
+                    key_hint,
+                    enabled,
+                    is_active,
+                    ..
+                } => {
+                    let is_hovered = *enabled && hovered_id == Some(id);
+                    let is_pressed = *enabled && pressed_id == Some(id);
+                    let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
+
+                    // Highlight background: pressed/active > hovered > none.
+                    let highlight = if is_pressed || *is_active {
+                        Some(theme.selected_bg)
+                    } else if is_hovered {
+                        Some(theme.hover_bg)
+                    } else {
+                        None
+                    };
+                    if let Some(bg) = highlight {
+                        let inset = Rect::new(
+                            item.x + 2.0,
+                            item.y + 2.0,
+                            (item.width - 4.0).max(0.0),
+                            (item.height - 4.0).max(0.0),
+                        );
+                        surface.surface_fill_rounded_rect(inset, CORNER_RADIUS, bg);
+                    }
+
+                    // Focus ring: only when not already visually
+                    // dominated by hover / pressed / active.
+                    if is_focused && !is_hovered && !is_pressed && !*is_active {
+                        let ring = Rect::new(
+                            item.x + 1.5,
+                            item.y + 1.5,
+                            (item.width - 3.0).max(0.0),
+                            (item.height - 3.0).max(0.0),
+                        );
+                        surface.surface_stroke_rect(ring, theme.accent_fg, 1.0);
+                    }
+
+                    let fg = if !*enabled {
+                        theme.muted_fg
+                    } else if is_hovered {
+                        theme.hover_fg
+                    } else {
+                        theme.foreground
+                    };
+
+                    let text = action_text(label, icon.as_deref(), key_hint.as_deref());
+                    let (tw, th) = surface.surface_measure_text(&text);
+                    let tx = item.x + (item.width - tw) / 2.0;
+                    let ty = item.y + (item.height - th) / 2.0;
+                    surface.surface_draw_text_run(
+                        Rect::new(tx, ty, tw.max(0.0), th.max(0.0)),
+                        &text,
+                        fg,
+                    );
+                }
+                ToolbarButton::Separator => {
+                    let mid_x = item.x + item.width / 2.0;
+                    let pad_y = (item.height * 0.2).max(2.0);
+                    surface.surface_draw_line(
+                        Point::new(mid_x, item.y + pad_y),
+                        Point::new(mid_x, item.y + item.height - pad_y),
+                        theme.muted_fg,
+                        1.0,
+                    );
+                }
+                ToolbarButton::Label { text, fg } => {
+                    let color = fg.unwrap_or(theme.muted_fg);
+                    let (tw, th) = surface.surface_measure_text(text);
+                    let ty = item.y + (item.height - th) / 2.0;
+                    surface.surface_draw_text_run(
+                        Rect::new(item.x, ty, tw.max(0.0), th.max(0.0)),
+                        text,
+                        color,
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
