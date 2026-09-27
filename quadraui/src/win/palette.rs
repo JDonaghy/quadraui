@@ -214,13 +214,20 @@ mod tests {
 
     /// Regression for #1076's **query_height** geometry drift: pre-#1076
     /// `win_palette_layout` reserved a bare `line_height` for the query
-    /// row; GTK alone added `+ 1.0` for the separator stroke drawn
-    /// immediately below it (D-007 §2). `native_surface_paint::layout`
-    /// now uses GTK's `+ 1.0` formula for every backend, so the
-    /// separator — and hence the first item row — sits one pixel lower
-    /// than the pre-#1076 Windows geometry did. Paints through the real
-    /// Direct2D `HeadlessSurface` path and checks the separator's ink
-    /// lands at the corrected row, not the drifted one.
+    /// row (and `win::draw_palette` painted no query/list separator at
+    /// all); GTK alone reserved `line_height + 1.0`, the `+ 1.0` being
+    /// the separator stroke that sits in the query band's **last pixel**
+    /// (D-007 §2). `native_surface_paint::layout` now uses GTK's formula
+    /// for every backend, so Windows gains the separator *and* its first
+    /// item row moves one pixel down, from `title_h + line_height` to
+    /// `title_h + line_height + 1.0`.
+    ///
+    /// Paints through the real Direct2D `HeadlessSurface` and pins all
+    /// three rows: the reserved separator pixel carries border ink, the
+    /// query text row above it does not, and the first item row below it
+    /// carries the selected row's fill — i.e. the separator neither
+    /// climbs into the text row nor steals (and get overpainted by) the
+    /// first item row, which is exactly what it used to do.
     #[test]
     fn separator_paints_at_corrected_row_not_drifted_one() {
         let surface = HeadlessSurface::new(300, 200).expect("create surface");
@@ -236,23 +243,52 @@ mod tests {
             .expect("paint palette");
 
         let theme = Theme::default();
-        let title_h = line_height; // native_surface_paint::layout: title_h = line_height
-        let drifted_sep_y = (title_h + line_height) as u32; // pre-#1076 formula
-        let fixed_sep_y = (title_h + line_height + 1.0) as u32; // corrected formula
-        let probe_x = 150_u32;
-
-        let px_fixed = surface.pixel_at(probe_x, fixed_sep_y);
-        let px_drifted = surface.pixel_at(probe_x, drifted_sep_y);
+        let layout = win_palette_layout(rect, &p, line_height);
+        let qb = layout.query_bounds.expect("query bounds present");
         assert_eq!(
-            (px_fixed.r, px_fixed.g, px_fixed.b),
-            (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b),
-            "expected separator ink at the corrected row {fixed_sep_y}",
+            qb.height,
+            line_height + 1.0,
+            "query band must reserve line_height + 1.0 (the +1 is the separator)",
         );
-        assert_ne!(
-            (px_drifted.r, px_drifted.g, px_drifted.b),
-            (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b),
-            "separator painted at the pre-#1076 drifted row {drifted_sep_y} — \
-             query_bounds.height must be line_height + 1.0, not line_height",
+
+        let title_h = line_height; // native_surface_paint::layout: title_h = line_height
+        let sep_y = (qb.y + qb.height - 1.0) as u32; // corrected: the reserved pixel
+        let first_row_y = (qb.y + qb.height) as u32; // pre-#1076: this was sep_y
+        assert_eq!(sep_y, (title_h + line_height) as u32);
+        assert_eq!(first_row_y, (title_h + line_height + 1.0) as u32);
+        assert_eq!(
+            layout.visible_items[0].bounds.y,
+            qb.y + qb.height,
+            "first item row starts immediately below the query band",
+        );
+
+        // `p`'s row 0 is the selected one, so the first item row paints
+        // `selected_bg` — the fill that used to swallow a separator
+        // painted at `first_row_y`.
+        let probe_x = 150_u32;
+        let is_border = |y: u32| {
+            let px = surface.pixel_at(probe_x, y);
+            (px.r, px.g, px.b) == (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b)
+        };
+        assert!(
+            is_border(sep_y),
+            "expected separator ink in the query band's reserved pixel, row {sep_y}",
+        );
+        assert!(
+            !is_border(sep_y - 1),
+            "separator climbed into the query *text* row {} — it belongs in the \
+             single pixel query_bounds reserves for it",
+            sep_y - 1,
+        );
+        let first_row_px = surface.pixel_at(probe_x, first_row_y);
+        assert_eq!(
+            (first_row_px.r, first_row_px.g, first_row_px.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "row {first_row_y} is the first item row (selected), not the separator's",
         );
     }
 

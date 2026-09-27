@@ -332,13 +332,17 @@ mod tests {
 
     /// Regression for #1076's **query_height** geometry drift: pre-#1076
     /// `mac_palette_layout` reserved a bare `line_height` for the query
-    /// row; GTK alone added `+ 1.0` for the separator stroke drawn
-    /// immediately below it (D-007 §2). `native_surface_paint::layout`
-    /// now uses GTK's `+ 1.0` formula for every backend, so the
-    /// separator — and hence the first item row — sits one pixel lower
-    /// than the pre-#1076 macOS geometry did. Paints through the real
-    /// `MacBackend`/Core Graphics path and checks the separator's ink
-    /// lands at the corrected row, not the drifted one.
+    /// row; GTK alone reserved `line_height + 1.0`, the `+ 1.0` being the
+    /// separator stroke that sits in the query band's **last pixel**
+    /// (D-007 §2). `native_surface_paint::layout` now uses GTK's formula
+    /// for every backend, so both the separator and the first item row
+    /// sit one pixel lower than the pre-#1076 macOS geometry did.
+    ///
+    /// Paints through the real `MacBackend`/Core Graphics path and pins
+    /// the separator to the reserved pixel — *inside* `query_bounds`, not
+    /// at `query_bounds.y + query_bounds.height`, which is already the
+    /// first item row (painting it there let the first row's fill
+    /// overpaint it; see this same test's Windows twin).
     #[test]
     fn separator_paints_at_corrected_row_not_drifted_one() {
         let p = sample_palette();
@@ -348,9 +352,23 @@ mod tests {
         // 16.0 (see that helper), so this is the exact value
         // `draw_palette` laid the separator out with.
         let line_height = 16.0_f32;
+        let layout = mac_palette_layout(&p, 0.0, 0.0, W as f64, H as f64, 16.0);
+        let qb = layout.query_bounds.expect("query bounds present");
+        assert_eq!(
+            qb.height,
+            line_height + 1.0,
+            "query band must reserve line_height + 1.0 (the +1 is the separator)",
+        );
+
         let title_h = line_height; // native_surface_paint::layout: title_h = line_height
-        let drifted_sep_y = (title_h + line_height) as u32; // pre-#1076 macOS formula
-        let fixed_sep_y = (title_h + line_height + 1.0) as u32; // corrected formula
+        let fixed_sep_y = (qb.y + qb.height - 1.0) as u32; // corrected: the reserved pixel
+        let drifted_sep_y = fixed_sep_y - 1; // pre-#1076 macOS query band was 1px shorter
+        assert_eq!(fixed_sep_y, (title_h + line_height) as u32);
+        assert_eq!(
+            layout.visible_items[0].bounds.y,
+            qb.y + qb.height,
+            "first item row starts immediately below the query band",
+        );
 
         let is_border = |x: u32, y: u32| {
             let (r, g, b, _) = surface.pixel(x, y);
@@ -365,6 +383,12 @@ mod tests {
             !is_border(probe_x, drifted_sep_y),
             "separator painted at the pre-#1076 drifted row {drifted_sep_y} — \
              query_bounds.height must be line_height + 1.0, not line_height",
+        );
+        assert!(
+            !is_border(probe_x, fixed_sep_y + 1),
+            "separator painted on the first item row {} — it belongs in the \
+             pixel query_bounds reserves for it, one row above",
+            fixed_sep_y + 1,
         );
     }
 
