@@ -470,7 +470,7 @@ impl StatusBar {
     ///   item hit boxes. Painting the segment's *text* inset within that
     ///   wider box (rather than flush to its left edge) is the paint
     ///   caller's job — see
-    ///   [`native_surface_paint::paint`](self::native_surface_paint::paint)
+    ///   [`native_surface_paint::paint`]
     ///   for the pixel-backend reference implementation.
     ///
     /// `min_gap` still reserves a gap between the left and right groups
