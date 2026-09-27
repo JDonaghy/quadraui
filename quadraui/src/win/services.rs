@@ -372,8 +372,16 @@ impl PlatformServices for WinPlatformServices {
     /// discarded one — before this override, `open_url_result` fell to
     /// [`crate::backend::PlatformServices::open_url_result`]'s default
     /// (`open_url` then always `Ok(())`), so a failed `ShellExecuteW` call
-    /// (e.g. `SE_ERR_NOASSOC` — no handler registered for the URL's
-    /// scheme) was silently reported as success.
+    /// (e.g. `SE_ERR_FNF` — the target does not exist) was silently
+    /// reported as success.
+    ///
+    /// Note what this still cannot promise: `ShellExecuteW` reports
+    /// whether it *handed the target off*, not whether anything
+    /// subsequently opened. An unregistered URI scheme, for instance,
+    /// returns success (42) because the shell accepted it and will sort
+    /// out the missing handler asynchronously — see this module's
+    /// `open_url_result_and_open_path_report_a_real_shell_execute_failure`
+    /// test for the failure this *can* honestly detect.
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
         #[cfg(target_os = "windows")]
         {
@@ -1510,24 +1518,36 @@ mod tests {
         assert_eq!(svc.cursor_screen_point(), Err(BackendError::Unsupported));
     }
 
-    /// #1087 acceptance bar: `open_url_result` reports a real failure when
-    /// `ShellExecuteW` itself fails, instead of the pre-#1087 capability
-    /// lie (`open_url` discarded the outcome; `open_url_result` fell to
-    /// the trait's `Ok(())` default). A URL scheme Windows has no
-    /// registered handler for (`SE_ERR_NOASSOC`) is the deterministic way
-    /// to make a real `ShellExecuteW` call fail without needing network
-    /// access or a live desktop session beyond the one `cargo test`
-    /// already runs under. Runs only on the `windows-latest` CI leg (see
-    /// `ci.yml`'s "Test (win feature, real Windows)" step) — `cargo test
-    /// --features win` on `ubuntu-latest` never compiles this `#[cfg]`
-    /// arm at all.
+    /// #1087 acceptance bar: `open_url_result`/`open_path` report a real
+    /// failure when `ShellExecuteW` itself fails, instead of the pre-#1087
+    /// capability lie (`open_url` discarded the outcome; `open_url_result`
+    /// fell to the trait's `Ok(())` default and always answered success).
+    ///
+    /// The target is an absolute path under a directory that does not
+    /// exist, with an extension no handler is registered for —
+    /// `ShellExecuteW` answers `SE_ERR_FNF` for it immediately, with no
+    /// network access, no UI, and no live desktop session beyond the one
+    /// `cargo test` already runs under.
+    ///
+    /// This test's first shape used an *unregistered URI scheme*
+    /// (`SE_ERR_NOASSOC`) instead, and that was wrong: modern Windows
+    /// hands an unknown scheme to the shell's "how do you want to open
+    /// this?" flow and `ShellExecuteW` returns **42 — success** — so the
+    /// assertion failed on `ci.yml`'s "Test (win feature, real Windows)"
+    /// step. See `desktop::open_with_default_tests`'
+    /// `unopenable_windows_target` for the full note. Runs only on the
+    /// `windows-latest` CI leg — `cargo test --features win` on
+    /// `ubuntu-latest` never compiles this `#[cfg]` arm at all.
     #[cfg(target_os = "windows")]
     #[test]
-    fn open_url_result_reports_failure_for_an_unregistered_scheme() {
+    fn open_url_result_and_open_path_report_a_real_shell_execute_failure() {
+        let unopenable = format!(
+            "C:\\quadraui-1087-no-such-directory-{}\\x.quadraui1087nohandler",
+            std::process::id()
+        );
         let svc = WinPlatformServices::new();
-        assert!(svc
-            .open_url_result("quadraui-1087-nonexistent-scheme://x")
-            .is_err());
+        assert!(svc.open_url_result(&unopenable).is_err());
+        assert!(svc.open_path(Path::new(&unopenable)).is_err());
     }
 
     /// `assign_button_ids` is pure id-assignment logic, host-independent

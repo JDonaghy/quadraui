@@ -593,13 +593,71 @@ pub(crate) fn unix_open_with_default_command(target: &std::ffi::OsStr) -> std::p
 /// Windows opener: `ShellExecuteW`, called through a minimal hand-written
 /// FFI declaration rather than the `windows` crate — see
 /// [`open_with_default`]'s doc for why. Returns whether `ShellExecuteW`
-/// reports success: per its own docs, any return value greater than 32
-/// is success; the low range `0..=32` is a documented failure code (e.g.
-/// `SE_ERR_FNF = 2`, `SE_ERR_NOASSOC = 31`, the latter being the
-/// deterministic way this module's own tests provoke a real failure —
-/// see `open_with_default_tests` below).
+/// reports success, per [`shell_execute_reports_success`]'s `> 32` rule.
 #[cfg(all(windows, any(feature = "tui", feature = "win")))]
 fn windows_shell_execute_open(target: &std::ffi::OsStr) -> bool {
+    shell_execute_reports_success(windows_shell_execute_open_code(target))
+}
+
+/// `ShellExecuteW`'s documented success test, split out from the FFI call
+/// itself ([`windows_shell_execute_open_code`]) so it is unit-testable on
+/// *every* host — the FFI call is not.
+///
+/// Per `ShellExecuteW`'s own docs the return value is "greater than 32 if
+/// successful, or an error value that is less than or equal to 32
+/// otherwise" (e.g. `SE_ERR_FNF` = 2, `SE_ERR_NOASSOC` = 31). `32` itself
+/// is the boundary and is a *failure* (`SE_ERR_DDEFAIL`), which is the
+/// off-by-one this predicate exists to pin down.
+///
+/// Deliberately **not** `cfg(windows)`-gated: it is pure arithmetic with
+/// no WinAPI in it, exactly like `win::msg`'s `WM_SIZE` unpacking, so
+/// `ci.yml`'s ubuntu-leg `cargo test -p quadraui --features win` executes
+/// its tests too. Only [`windows_shell_execute_open_code`] — the part
+/// that genuinely calls into `shell32` — stays Windows-only.
+///
+/// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]` for the
+/// same reason [`wide_nul_terminated`] carries one: its only non-test
+/// caller is the Windows-only [`windows_shell_execute_open`].
+#[cfg(any(feature = "tui", feature = "win"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn shell_execute_reports_success(code: isize) -> bool {
+    code > 32
+}
+
+#[cfg(all(test, any(feature = "tui", feature = "win")))]
+mod shell_execute_reports_success_tests {
+    use super::*;
+
+    /// [`shell_execute_reports_success`] is `ShellExecuteW`'s documented
+    /// "greater than 32" rule, and the boundary is the whole reason it's a
+    /// named function rather than an inline comparison: `32` itself
+    /// (`SE_ERR_DDEFAIL`) is a *failure*, so a `>=` here would silently
+    /// turn one real failure code into a reported success. Pure
+    /// arithmetic, no WinAPI — so this runs on every host, including
+    /// `ci.yml`'s ubuntu-leg `cargo test -p quadraui --features win`,
+    /// where nothing else in the Windows opener compiles at all.
+    #[test]
+    fn success_threshold_is_strictly_above_32() {
+        const SE_ERR_FNF: isize = 2;
+        const SE_ERR_NOASSOC: isize = 31;
+        const SE_ERR_DDEFAIL: isize = 32;
+
+        assert!(!shell_execute_reports_success(0));
+        assert!(!shell_execute_reports_success(SE_ERR_FNF));
+        assert!(!shell_execute_reports_success(SE_ERR_NOASSOC));
+        assert!(!shell_execute_reports_success(SE_ERR_DDEFAIL));
+        assert!(shell_execute_reports_success(33));
+        assert!(shell_execute_reports_success(42));
+    }
+}
+
+/// The raw `ShellExecuteW(NULL, "open", target, NULL, NULL,
+/// SW_SHOWNORMAL)` return value. Split from
+/// [`windows_shell_execute_open`] so a test can assert on the actual
+/// documented `SE_ERR_*` code a given target produces on a real host;
+/// callers outside this module want the `bool`.
+#[cfg(all(windows, any(feature = "tui", feature = "win")))]
+fn windows_shell_execute_open_code(target: &std::ffi::OsStr) -> isize {
     // SAFETY: `ShellExecuteW` is a well-known, stable Win32 API. Both
     // wide-string buffers passed below are nul-terminated and kept alive
     // (as local `Vec<u16>`s) for the duration of the call; the remaining
@@ -626,7 +684,7 @@ fn windows_shell_execute_open(target: &std::ffi::OsStr) -> bool {
 
     let operation = wide_nul_terminated("open");
     let file = wide_nul_terminated(&target.to_string_lossy());
-    let result = unsafe {
+    unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             operation.as_ptr(),
@@ -635,8 +693,7 @@ fn windows_shell_execute_open(target: &std::ffi::OsStr) -> bool {
             std::ptr::null(),
             SW_SHOWNORMAL,
         )
-    };
-    result > 32
+    }
 }
 
 /// Process-wide `$PATH` is shared, mutable global state — every test
@@ -704,23 +761,84 @@ mod open_with_default_tests {
         );
     }
 
-    /// [`windows_shell_execute_open`] never builds a `std::process::Command`
-    /// (that's the whole point — no `cmd.exe`/shell in the loop at all),
-    /// so there is no command to assert on without actually invoking
-    /// `ShellExecuteW`. What *is* checkable without a live desktop
-    /// session: it never panics on a target containing the exact
-    /// metacharacters (`&`, `|`, `^`, `%`) that made the original `cmd
-    /// /c start` approach exploitable (issue #969 review) — a bare FFI
-    /// call has no command-line text for those bytes to land in.
-    /// Best-effort on `ShellExecuteW`'s actual verdict: some CI Windows
-    /// runners have no registered "open" handler at all, so this doesn't
-    /// assert on the boolean result, only that the call completes.
+    /// A target that can never resolve, chosen so the real
+    /// `ShellExecuteW` call fails *without* handing anything to the shell:
+    /// an absolute path under a directory that does not exist, with an
+    /// extension no handler is registered for. Verified on a real Windows
+    /// host to return `SE_ERR_FNF` (2) immediately, with no UI.
+    ///
+    /// Deliberately **not** an unregistered URI scheme. That was this
+    /// module's first attempt (`quadraui-1087-nonexistent-scheme://x`) and
+    /// it is simply wrong on modern Windows: `ShellExecuteW` hands an
+    /// unknown scheme off to the shell's "how do you want to open this?"
+    /// / Store-lookup flow and returns **42 — success** — before any of
+    /// that resolves, so the call reports success for a launch that never
+    /// happens. It red-lined `ci.yml`'s "Test (win feature, real Windows)"
+    /// step, which is the only leg that executes these `cfg(windows)`
+    /// arms at all. Don't reintroduce it.
+    #[cfg(windows)]
+    fn unopenable_windows_target() -> std::ffi::OsString {
+        std::ffi::OsString::from(format!(
+            "C:\\quadraui-1087-no-such-directory-{}\\x.quadraui1087nohandler",
+            std::process::id()
+        ))
+    }
+
+    /// The real FFI call's real verdict on a target that cannot open:
+    /// `SE_ERR_FNF`, which [`shell_execute_reports_success`] then reports
+    /// as `false`. This is the Windows half of #1087's "stop lying about
+    /// the launch" bar — the `$PATH`-stub tests below cover the Unix arm,
+    /// which has a spawned binary to intercept and Windows does not.
     #[cfg(windows)]
     #[test]
-    fn windows_shell_execute_open_does_not_panic_on_shell_metacharacters() {
-        let _ = windows_shell_execute_open(std::ffi::OsStr::new(
-            "https://example.com/search?q=foo&run=bar|calc.exe^%1",
+    fn windows_shell_execute_open_reports_a_real_failure_code() {
+        const SE_ERR_FNF: isize = 2;
+        let target = unopenable_windows_target();
+        assert_eq!(windows_shell_execute_open_code(&target), SE_ERR_FNF);
+        assert!(!windows_shell_execute_open(&target));
+    }
+
+    /// `open_with_default`'s `ServiceResult` wrapping on Windows — the
+    /// same bar `open_with_default_reports_err_when_the_opener_is_missing`
+    /// sets on Unix, reached through a real `ShellExecuteW` call instead
+    /// of a `$PATH` stub.
+    #[cfg(windows)]
+    #[test]
+    fn open_with_default_reports_err_when_windows_cannot_open_the_target() {
+        let target = unopenable_windows_target();
+        assert_eq!(
+            open_with_default(&target),
+            Err(crate::backend::BackendError::PlatformFailure {
+                context: format!("open_with_default: no opener launched for {target:?}"),
+            })
+        );
+    }
+
+    /// [`windows_shell_execute_open`] never builds a `std::process::Command`
+    /// (that's the whole point — no `cmd.exe`/shell in the loop at all),
+    /// so there is no command to assert on beyond invoking `ShellExecuteW`
+    /// for real. What this pins down: the exact metacharacters (`&`, `|`,
+    /// `^`, `%`) that made the original `cmd /c start` approach
+    /// exploitable (issue #969 review) are carried through inertly — a
+    /// bare FFI call has no command-line text for those bytes to land in,
+    /// so they stay part of the *filename* and the call fails with
+    /// `SE_ERR_FNF` rather than executing `calc.exe`.
+    ///
+    /// The target is an unopenable path (see
+    /// [`unopenable_windows_target`]) rather than the `https://` URL this
+    /// test first used: a real URL launches the host's actual browser on
+    /// every CI run and on every developer's desktop, which is both a
+    /// side effect a unit test has no business having and a way to wedge
+    /// the run behind a shell dialog.
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_execute_open_treats_shell_metacharacters_as_inert_text() {
+        const SE_ERR_FNF: isize = 2;
+        let target = std::ffi::OsString::from(format!(
+            "C:\\quadraui-1087-no-such-directory-{}\\q=foo&run=bar|calc.exe^%1.quadraui1087nohandler",
+            std::process::id()
         ));
+        assert_eq!(windows_shell_execute_open_code(&target), SE_ERR_FNF);
     }
 
     /// #1087 acceptance bar: `try_open_with_default`/`open_with_default`
