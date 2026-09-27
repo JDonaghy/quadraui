@@ -40,7 +40,7 @@ use crate::primitives::editor::{
     CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLine, EditorSelection, GitLineStatus,
 };
 use crate::primitives::scrollbar::Scrollbar;
-use crate::text_util::snap_to_char_boundary;
+use crate::text_util::{char_col_to_visual, snap_to_char_boundary};
 use crate::theme::Theme;
 use crate::types::Color;
 use ratatui::buffer::Buffer;
@@ -531,28 +531,6 @@ fn byte_to_char_idx(text: &str, byte_offset: usize) -> usize {
     text[..snap_to_char_boundary(text, byte_offset)]
         .chars()
         .count()
-}
-
-/// Convert a character-index column into a visual column, expanding
-/// tabs to the next tab stop. Mirrors
-/// `vimcode::tui_main::render_impl::char_col_to_visual`.
-fn char_col_to_visual(raw_text: &str, char_col: usize, tabstop: usize) -> usize {
-    let tabstop = tabstop.max(1);
-    let mut vis = 0usize;
-    for (i, ch) in raw_text.chars().enumerate() {
-        if ch == '\n' || ch == '\r' {
-            break;
-        }
-        if i >= char_col {
-            break;
-        }
-        if ch == '\t' {
-            vis = ((vis / tabstop) + 1) * tabstop;
-        } else {
-            vis += 1;
-        }
-    }
-    vis
 }
 
 /// Paint one [`EditorLine`]'s text spans into `buf`, scrolled by

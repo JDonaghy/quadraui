@@ -359,13 +359,6 @@ fn selection_byte_range(sel: TextSelection, line_idx: usize, line_text: &str) ->
     if line_idx < sel.start_line || line_idx > sel.end_line {
         return (0, 0);
     }
-    let char_to_byte = |col: usize| -> usize {
-        line_text
-            .char_indices()
-            .nth(col)
-            .map(|(b, _)| b)
-            .unwrap_or(line_text.len())
-    };
     let (start_col, end_col) = if sel.start_line == sel.end_line {
         (sel.start_col, sel.end_col)
     } else if line_idx == sel.start_line {
@@ -378,5 +371,8 @@ fn selection_byte_range(sel: TextSelection, line_idx: usize, line_text: &str) ->
     if end_col <= start_col {
         return (0, 0);
     }
-    (char_to_byte(start_col), char_to_byte(end_col))
+    (
+        crate::text_util::char_to_byte_idx(line_text, start_col),
+        crate::text_util::char_to_byte_idx(line_text, end_col),
+    )
 }
