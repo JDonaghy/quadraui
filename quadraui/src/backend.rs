@@ -1738,6 +1738,39 @@ pub trait Backend: sealed::Sealed {
     /// `let viewport_cols = ((rect.width - gutter) / backend.char_width()).floor();`
     fn char_width(&self) -> f32;
 
+    /// Override the cached line height (in this backend's native units)
+    /// that [`Self::line_height`] reports and every `draw_*` rasteriser
+    /// paints against.
+    ///
+    /// This exists because the three pixel backends resolve their own
+    /// line height each frame from a live font (GTK's Pango layout,
+    /// macOS's `CTFont`, Win-GUI's DirectWrite text format) — a host that
+    /// needs to *re-apply* the current value immediately before a
+    /// click-time hit test (undoing any drift between the paint pass and
+    /// the event that follows it) had no portable way to do so before
+    /// this method: `GtkBackend::set_current_line_height` /
+    /// `MacBackend::set_current_line_height` /
+    /// `WinBackend::set_current_line_height` were each real, but only
+    /// reachable through the concrete backend type, not through `&mut
+    /// dyn Backend` — `vimcode`'s `TextMetricsBackend` supertrait
+    /// (`src/app.rs`) exists only to paper over that gap, and this method
+    /// is what lets it be deleted.
+    ///
+    /// Default: no-op. TUI is a fixed-cell backend — its line height is
+    /// `1.0` by construction, and there is no font-derived value for a
+    /// host to re-apply.
+    fn set_current_line_height(&mut self, _line_height: f32) {}
+
+    /// Override the cached character width (in this backend's native
+    /// units) that [`Self::char_width`] reports — the `char_width` twin
+    /// of [`Self::set_current_line_height`]; see that method's doc for
+    /// the full rationale.
+    ///
+    /// Default: no-op. TUI is a fixed-cell backend — its character width
+    /// is `1.0` by construction, and there is no font-derived value for a
+    /// host to re-apply.
+    fn set_current_char_width(&mut self, _char_width: f32) {}
+
     /// The advance, in this backend's native units, of the font
     /// [`Self::draw_list`] actually paints `ListView` row text with.
     ///

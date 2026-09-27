@@ -1711,6 +1711,20 @@ impl Backend for MacBackend {
         self.current_char_width as f32
     }
 
+    /// Forwards to [`Self::set_current_line_height`] (issue #1086) — the
+    /// `Backend`-trait-object-reachable twin of that inherent method, the
+    /// macOS counterpart of `GtkBackend`'s / `WinBackend`'s overrides of
+    /// the same trait method.
+    fn set_current_line_height(&mut self, line_height: f32) {
+        MacBackend::set_current_line_height(self, line_height as f64);
+    }
+
+    /// Forwards to [`Self::set_current_char_width`] — see
+    /// [`Backend::set_current_line_height`]'s doc.
+    fn set_current_char_width(&mut self, char_width: f32) {
+        MacBackend::set_current_char_width(self, char_width as f64);
+    }
+
     /// `chrome_char_width`, not `current_char_width` — [`Self::draw_list`]
     /// paints row text with `chrome_font` (issue #1003), and
     /// `chrome_char_width` is that font's real advance, kept in sync by

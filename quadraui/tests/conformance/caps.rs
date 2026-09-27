@@ -821,6 +821,28 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "braille has no font to scale — the cell-native dot packing described in \
          primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
     ),
+    // ── issue #1086: `set_current_line_height`/`set_current_char_width`
+    // let a host re-apply a pixel backend's font-derived metrics through
+    // `&mut dyn Backend` (closing the gap `vimcode`'s `TextMetricsBackend`
+    // supertrait used to paper over). TUI is a fixed-cell backend — its
+    // line height and character width are `1.0` by construction, per
+    // `Backend::line_height`/`Backend::char_width`'s own TUI bodies just
+    // above — so there is no font-derived value for a host to ever
+    // re-apply, and the no-op default is the honest, permanent answer,
+    // not unfinished work. GTK/macOS/Win-GUI all override both methods to
+    // forward onto their existing inherent setters.
+    (
+        "tui",
+        "set_current_line_height",
+        "fixed-cell backend — line_height() is 1.0 by construction, so there is no font-derived \
+         value to re-apply (#1086)",
+    ),
+    (
+        "tui",
+        "set_current_char_width",
+        "fixed-cell backend — char_width() is 1.0 by construction, so there is no font-derived \
+         value to re-apply (#1086)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

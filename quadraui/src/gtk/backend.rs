@@ -2163,6 +2163,20 @@ impl Backend for GtkBackend {
         self.current_char_width as f32
     }
 
+    /// Forwards to [`Self::set_current_line_height`] (issue #1086) — the
+    /// `Backend`-trait-object-reachable twin of that inherent method,
+    /// which `vimcode`'s click-drift guard (#540/#819) needs to re-apply
+    /// metrics through `&mut dyn Backend` without a GTK-typed supertrait.
+    fn set_current_line_height(&mut self, line_height: f32) {
+        GtkBackend::set_current_line_height(self, line_height as f64);
+    }
+
+    /// Forwards to [`Self::set_current_char_width`] — see
+    /// [`Backend::set_current_line_height`]'s doc.
+    fn set_current_char_width(&mut self, char_width: f32) {
+        GtkBackend::set_current_char_width(self, char_width as f64);
+    }
+
     /// `current_chrome_char_width`, not `current_char_width` —
     /// [`Self::draw_list`] paints row text with `ui_font` (#416/#624),
     /// and `current_chrome_char_width` is that font's real Pango
