@@ -2189,6 +2189,20 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
+    /// Forwards to [`Self::set_current_line_height`] (issue #1086) — the
+    /// `Backend`-trait-object-reachable twin of that inherent method, the
+    /// Win-GUI counterpart of `GtkBackend`'s / `MacBackend`'s overrides of
+    /// the same trait method.
+    fn set_current_line_height(&mut self, line_height: f32) {
+        WinBackend::set_current_line_height(self, line_height);
+    }
+
+    /// Forwards to [`Self::set_current_char_width`] — see
+    /// [`Backend::set_current_line_height`]'s doc.
+    fn set_current_char_width(&mut self, char_width: f32) {
+        WinBackend::set_current_char_width(self, char_width);
+    }
+
     /// Same value as [`Self::char_width`] today: [`Self::draw_list`]
     /// (`super::list::draw_list`) still paints row text with `self.dwrite`
     /// (the editor `IDWriteTextFormat`), not `self.chrome_dwrite` — see
