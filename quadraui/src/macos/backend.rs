@@ -168,6 +168,14 @@ pub struct MacBackend {
     /// every paint size, unlike GTK's already-scaled `Pixbuf`). Survives
     /// across frames, mirroring `GtkBackend::image_cache`.
     image_cache: crate::image_cache::ImageCache<CGImage>,
+    /// Downsampled Core Text glyph atlas for [`Backend::draw_minimap`]'s
+    /// [`MinimapRenderMode::Characters`] branch (issue #1153) — see
+    /// [`super::minimap`]'s "Glyph atlas" module doc section and
+    /// [`crate::primitives::minimap::MinimapAtlasCache`]'s doc. Survives
+    /// across frames, mirroring `GtkBackend::minimap_atlas_cache` (#1035).
+    ///
+    /// [`MinimapRenderMode::Characters`]: crate::primitives::minimap::MinimapRenderMode::Characters
+    minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
     /// Set once via [`Self::set_current_font`] during app setup.
     /// `draw_*` methods recover this for text rendering +
     /// measurement. Wrapped in `Option` so apps that don't paint
@@ -577,6 +585,7 @@ impl MacBackend {
             current_cg_ptr: Cell::new(std::ptr::null()),
             current_theme: Theme::default(),
             image_cache: crate::image_cache::ImageCache::default(),
+            minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -3319,6 +3328,13 @@ impl Backend for MacBackend {
     /// Win-GUI, not a shim over shared logic — actually run, and
     /// [`MinimapPaintResult::painted`](crate::backend::MinimapPaintResult::painted)
     /// reports `true`.
+    ///
+    /// Calls [`super::minimap::draw_minimap_cached`], not the plain
+    /// [`super::minimap::draw_minimap_scaled`] — issue #1153's fix: at
+    /// [`crate::primitives::minimap::MinimapScale::Two`] the row pitch
+    /// clears the legibility floor, and only the cached, atlas-backed
+    /// paint path shapes glyphs small enough to actually fit their own
+    /// row band instead of the backend's full editor-size font.
     fn draw_minimap(
         &mut self,
         rect: Rect,
@@ -3335,15 +3351,18 @@ impl Backend for MacBackend {
             .as_ref()
             .expect("MacBackend::draw_minimap requires set_current_font");
         let theme = self.current_theme;
+        let dpi_scale = self.viewport.scale as f64;
         // SAFETY: ctx is non-null inside the frame scope (checked above).
         let layout = unsafe {
-            super::minimap::draw_minimap_scaled(
+            super::minimap::draw_minimap_cached(
                 ctx,
                 font,
                 rect,
                 minimap,
                 &theme,
                 self.minimap_scale,
+                &mut self.minimap_atlas_cache,
+                dpi_scale,
             )
         };
         crate::backend::MinimapPaintResult {

@@ -110,7 +110,12 @@ pub fn draw_minimap(
 /// mirroring GTK's is left as follow-up work for a Windows-hosted session
 /// (see `CLAUDE.md`'s "Win-GUI: building and testing for real" — an
 /// FFI-heavy pixel-readback port like this needs to be verified against a
-/// live Direct2D/WARP surface, not just `cargo check`).
+/// live Direct2D/WARP surface, not just `cargo check`). Issue #1153 ported
+/// the identical fix to `macos::minimap` (a Core Text sample-sheet atlas,
+/// verifiable there via `headless::BitmapSurface` on a macOS CI runner) —
+/// this module's own gap is the same shape, still open, and still needs a
+/// Windows-hosted session to build+verify (`HeadlessSurface` is real
+/// Direct2D/WARP, not a stub, but this repo has no such host in CI today).
 ///
 /// [`WinBackend::draw_minimap`]: crate::win::backend::WinBackend
 pub(crate) fn draw_minimap_scaled(
