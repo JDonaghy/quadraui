@@ -236,6 +236,331 @@ impl MenuBar {
     }
 }
 
+// ── NativeSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+//
+// `paint` below is the one shared paint implementation, written against
+// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// API — see `crate::primitives::context_menu::native_surface_paint` for
+// the same pattern applied three primitives earlier (#1077, slice 1/8 of
+// that issue's own numbering; this repo's issue tracker also carries it
+// forward as slice 5/8 of the overall `NativeSurface` Phase 4 run).
+//
+// Pre-migration, `gtk::menu_bar`, `macos::menu_bar` and `win::menu_bar`
+// agreed on layout, background/active/disabled colouring, and centred
+// label text — but diverged, sometimes substantially, on the Alt-key
+// underline:
+//
+// - **GTK** underlined the activation character via a Pango
+//   `AttrList`/`AttrInt::new_underline` range on just that character —
+//   real per-glyph underline metrics, but a mechanism [`NativeSurface`]
+//   has no verb for (there is no "underline this byte range of a text
+//   run" primitive, only whole-run `surface_draw_text_run_styled`, whose
+//   `underline` flag would underline the entire label).
+// - **Windows** underlined by measuring the prefix before the
+//   activation character and the character's own width, then filling a
+//   manually-positioned `UNDERLINE_HEIGHT_DIP`-tall rectangle beneath
+//   it — reusing the same measure/fill verbs every other rasteriser
+//   already has, no font-shaping API involved.
+// - **macOS had no underline at all** — its own module doc listed this
+//   as a documented "follow-up" scope omission (Core Text's
+//   `kCTUnderlineStyleAttributeName` needs attributed-string plumbing
+//   `super::text::draw_text` didn't have), not a deliberate design
+//   choice.
+//
+// `paint` adopts Windows' manual-rectangle approach for all three
+// backends: it is the only one of the three that maps directly onto
+// [`NativeSurface`]'s existing verbs
+// ([`crate::native_surface::NativeSurface::surface_measure_text`] +
+// [`crate::native_surface::NativeSurface::surface_fill_rect`]), and
+// adopting it closes macOS's gap instead of leaving a third rendering
+// path unported. Visually near-identical to GTK's Pango underline at
+// the sizes this bar renders at (a 2px solid bar under one character).
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{MenuBar, MenuBarLayout};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+
+    /// Thickness (surface-native units) of the Alt-key underline
+    /// rectangle — mirrors `win::menu_bar`'s pre-migration
+    /// `UNDERLINE_HEIGHT_DIP`.
+    const UNDERLINE_HEIGHT: f32 = 2.0;
+
+    /// Strip `&` markers from a label for display — mirrors each
+    /// pre-migration backend's own `display_text`.
+    pub(super) fn display_text(label: &str) -> String {
+        label.chars().filter(|&c| c != '&').collect()
+    }
+
+    /// The **char index** (not byte index — [`NativeSurface::surface_measure_text`]
+    /// works over substrings, not byte ranges) into the display string
+    /// of the Alt-activation character (the character immediately after
+    /// `&`), or `None` when `label` carries no `&` at all — mirrors
+    /// `win::menu_bar`'s pre-migration `alt_char_index`'s "no implicit
+    /// fallback" contract (quadraui#625).
+    pub(super) fn alt_char_index(label: &str) -> Option<usize> {
+        let marker_byte = label.find('&')?;
+        Some(label[..marker_byte].chars().count())
+    }
+
+    /// Paint a [`MenuBar`] at its caller-resolved `layout` onto
+    /// `surface`.
+    ///
+    /// # Visual contract
+    ///
+    /// - **Background:** filled with `theme.tab_bar_bg`.
+    /// - **Open/focused item:** `theme.tab_active_bg` fill,
+    ///   `theme.tab_active_fg` label.
+    /// - **Disabled item:** `theme.muted_fg` label, no fill.
+    /// - **Alt-underline:** a [`UNDERLINE_HEIGHT`]-tall bar under the
+    ///   character following `&` in the raw label, in the label's own
+    ///   foreground colour. No `&` in the label ⇒ no underline at all.
+    pub(crate) fn paint(
+        bar: &MenuBar,
+        layout: &MenuBarLayout,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+    ) {
+        surface.surface_fill_rect(layout.bounds, theme.tab_bar_bg);
+
+        for vi in &layout.visible_items {
+            let item = &bar.items[vi.item_idx];
+            let is_active =
+                bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
+
+            let (fg, bg) = if is_active {
+                (theme.tab_active_fg, theme.tab_active_bg)
+            } else if item.disabled {
+                (theme.muted_fg, theme.tab_bar_bg)
+            } else {
+                (theme.tab_inactive_fg, theme.tab_bar_bg)
+            };
+
+            if is_active {
+                surface.surface_fill_rect(vi.bounds, bg);
+            }
+
+            let text = display_text(&item.label);
+            let (text_w, text_h) = surface.surface_measure_text(&text);
+            let text_x = vi.bounds.x + (vi.bounds.width - text_w) / 2.0;
+            let text_y = vi.bounds.y + (vi.bounds.height - text_h) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(text_x, text_y, text_w.max(0.0), text_h.max(0.0)),
+                &text,
+                fg,
+            );
+
+            if let Some(idx) = alt_char_index(&item.label) {
+                if let Some(ch) = text.chars().nth(idx) {
+                    let prefix: String = text.chars().take(idx).collect();
+                    let (prefix_w, _) = surface.surface_measure_text(&prefix);
+                    let (char_w, _) = surface.surface_measure_text(&ch.to_string());
+                    let underline_rect = Rect::new(
+                        text_x + prefix_w,
+                        text_y + text_h - UNDERLINE_HEIGHT,
+                        char_w.max(1.0),
+                        UNDERLINE_HEIGHT,
+                    );
+                    surface.surface_fill_rect(underline_rect, fg);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn alt_char_index_none_without_ampersand() {
+            assert_eq!(alt_char_index("File"), None);
+        }
+
+        #[test]
+        fn alt_char_index_marks_char_after_ampersand() {
+            assert_eq!(alt_char_index("&File"), Some(0));
+            // '&' isn't necessarily the first char — "Sa&ve" underlines
+            // 'v' (char index 2 in "Save").
+            assert_eq!(alt_char_index("Sa&ve"), Some(2));
+        }
+
+        #[test]
+        fn alt_char_index_handles_empty_and_trailing_marker() {
+            assert_eq!(alt_char_index(""), None);
+            // A trailing `&` marks a char index past the display
+            // string's end — `paint`'s `text.chars().nth(idx)` guard
+            // turns that into "no underline" rather than panicking.
+            assert_eq!(alt_char_index("File&"), Some(4));
+            assert_eq!(display_text("File&").chars().nth(4), None);
+        }
+
+        #[test]
+        fn display_text_strips_ampersand() {
+            assert_eq!(display_text("&File"), "File");
+            assert_eq!(display_text("Sa&ve"), "Save");
+            assert_eq!(display_text("File"), "File");
+        }
+
+        // ── paint()'s Alt-underline drift fix (#1081) ───────────────────
+        //
+        // These run through `paint` itself against a `RecordingSurface`
+        // test double (mirrors `primitives::palette::native_surface_paint`'s
+        // pattern) rather than any one platform's real Cairo/Core
+        // Graphics/Direct2D calls — deterministic on every host, and the
+        // one test that proves the behaviour every backend now shares,
+        // including macOS, which painted no underline at all before this
+        // port (see this module's own doc above).
+        use crate::backend::ImagePaintResult;
+        use crate::event::{Point, Viewport};
+        use crate::primitives::menu_bar::{MenuBarItem, MenuBarItemMeasure};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            texts: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 20.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.texts.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn drift_bar() -> MenuBar {
+            MenuBar {
+                id: WidgetId::new("bar"),
+                items: vec![
+                    MenuBarItem {
+                        id: WidgetId::new("file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        submenu: None,
+                    },
+                    MenuBarItem {
+                        id: WidgetId::new("help"),
+                        label: "Help".into(),
+                        disabled: false,
+                        submenu: None,
+                    },
+                ],
+                open_item: Some(0),
+                focused_item: None,
+            }
+        }
+
+        fn drift_layout(bar: &MenuBar) -> MenuBarLayout {
+            let bounds = Rect::new(0.0, 0.0, 300.0, 20.0);
+            bar.layout(bounds, |i| {
+                let text = display_text(&bar.items[i].label);
+                MenuBarItemMeasure::new(text.chars().count() as f32 * 8.0 + 16.0)
+            })
+        }
+
+        #[test]
+        fn paints_alt_underline_as_a_filled_rect_under_the_activation_char() {
+            let bar = drift_bar();
+            let layout = drift_layout(&bar);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(&bar, &layout, &mut surface, &theme);
+
+            let (label_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t == "File")
+                .expect("File label painted");
+            // 'F' is the activation char (index 0, empty prefix) — its
+            // underline rect starts flush with the label's own x/bottom
+            // edge and is one char's measured width
+            // (`RecordingSurface::surface_measure_text`'s `8.0`/char).
+            let expected = Rect::new(
+                label_rect.x,
+                label_rect.y + label_rect.height - UNDERLINE_HEIGHT,
+                8.0,
+                UNDERLINE_HEIGHT,
+            );
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| (r.x - expected.x).abs() < 0.01
+                        && (r.y - expected.y).abs() < 0.01
+                        && (r.width - expected.width).abs() < 0.01
+                        && (r.height - expected.height).abs() < 0.01
+                        && *c == theme.tab_active_fg),
+                "expected an underline fill at {expected:?} in {:?}, got fills: {:?}",
+                theme.tab_active_fg,
+                surface.fills,
+            );
+        }
+
+        #[test]
+        fn no_ampersand_means_no_underline_fill_beneath_the_label() {
+            // quadraui#625's "no implicit fallback" contract, carried
+            // forward into the shared paint: "Help" has no `&`, so it
+            // must get no thin underline-shaped fill at all.
+            let bar = drift_bar();
+            let layout = drift_layout(&bar);
+            let mut surface = RecordingSurface::default();
+            paint(&bar, &layout, &mut surface, &Theme::default());
+
+            let help_item = layout
+                .visible_items
+                .iter()
+                .find(|vi| bar.items[vi.item_idx].label == "Help")
+                .expect("Help item visible");
+            let thin_fills_under_help = surface
+                .fills
+                .iter()
+                .filter(|(r, _)| {
+                    r.height <= UNDERLINE_HEIGHT
+                        && r.x >= help_item.bounds.x
+                        && r.x < help_item.bounds.x + help_item.bounds.width
+                })
+                .count();
+            assert_eq!(
+                thin_fills_under_help, 0,
+                "Help has no '&' and must get no underline fill"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

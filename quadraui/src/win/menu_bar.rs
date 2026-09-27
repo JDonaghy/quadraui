@@ -1,25 +1,18 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::MenuBar`] (issue #25).
 //!
-//! Paints a horizontal strip of menu-bar items using DirectWrite for text
-//! measurement and painting. Each item's label supports an Alt-key
-//! underline: the character right after `&` is underlined by painting a
-//! thin filled rectangle beneath it (DirectWrite's native
-//! `IDWriteTextLayout::SetUnderline` API is deliberately not used here —
-//! a manually-positioned rectangle reuses the same measure/fill
-//! primitives every other rasteriser in this module already relies on,
-//! rather than introducing a new, unverified DirectWrite call path). A
-//! label with no `&` at all is never underlined — no implicit
-//! "underline the first char" fallback, mirroring `gtk::menu_bar`
-//! (quadraui#625).
-//!
-//! Issue #1078: only [`draw_menu_bar`] (the real Direct2D paint entry
-//! point) is `#[cfg(target_os = "windows")]`-gated. [`win_menu_bar_layout`]
-//! is pure geometry generic over
-//! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
-//! DirectWrite type in its signature — so it compiles and runs
-//! everywhere, including a plain `cargo test --features win` on Linux.
-//! `super::mod`'s `mod menu_bar;` is no longer whole-module gated; see
-//! `backend.rs`'s module docs.
+//! [`win_menu_bar_layout`] stays here — pure geometry generic over
+//! [`crate::primitives::layout_metrics::TextMeasure`], no Direct2D/
+//! DirectWrite type in its signature, so it compiles and runs everywhere,
+//! including a plain `cargo test --features win` on Linux (issue #1078;
+//! `super::mod`'s `mod menu_bar;` is no longer whole-module gated — see
+//! `backend.rs`'s module docs). Content painting (background,
+//! active/disabled colouring, label text, Alt-key underline) moved to
+//! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
+//! (#1081, `NativeSurface` Phase 4 slice 5/8) — see that fn's module doc
+//! for the underline-mechanism drift it resolved (this backend's own
+//! manual-rectangle underline was the one every backend adopted; GTK's
+//! Pango per-character attribute and macOS's total absence of underline
+//! both had to give way to it).
 //!
 //! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
 //! caller ([`crate::win::WinBackend::draw_menu_bar`]) passes
@@ -29,9 +22,11 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 #[cfg(target_os = "windows")]
-use super::text::{fill_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::TextMeasure;
+#[cfg(target_os = "windows")]
+use crate::primitives::menu_bar::native_surface_paint;
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
 use crate::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
@@ -40,27 +35,11 @@ use crate::{MenuBar, MenuBarItemMeasure, MenuBarLayout};
 /// mirrors `gtk::menu_bar::gtk_menu_bar_layout`'s `+ 16.0` (8px each
 /// side).
 const ITEM_H_PADDING_DIP: f32 = 16.0;
-/// Thickness (DIPs) of the Alt-key underline rectangle. Only used by the
-/// paint path (issue #1078).
-#[cfg(target_os = "windows")]
-const UNDERLINE_HEIGHT_DIP: f32 = 2.0;
 
 /// Strip `&` markers from a label for display — mirrors
 /// `gtk::menu_bar::display_text`.
 fn display_text(label: &str) -> String {
     label.chars().filter(|&c| c != '&').collect()
-}
-
-/// The **char index** (not byte index — DirectWrite measurement works
-/// over substrings) into the display string of the Alt-activation
-/// character (the character immediately after `&`), or `None` when
-/// `label` carries no `&` at all. Mirrors
-/// `gtk::menu_bar::alt_char_byte_range`'s "no implicit fallback"
-/// contract (quadraui#625).
-#[cfg(any(target_os = "windows", test))]
-fn alt_char_index(label: &str) -> Option<usize> {
-    let marker_byte = label.find('&')?;
-    Some(label[..marker_byte].chars().count())
 }
 
 /// Compute the [`MenuBar`]'s layout without painting — the measurer twin
@@ -85,9 +64,11 @@ pub fn win_menu_bar_layout(measure: &dyn TextMeasure, rect: Rect, bar: &MenuBar)
 /// - **Open/focused item:** `theme.tab_active_bg` fill,
 ///   `theme.tab_active_fg` label.
 /// - **Disabled item:** `theme.muted_fg` label, no fill.
-/// - **Alt-underline:** a [`UNDERLINE_HEIGHT_DIP`]-tall bar under the
-///   character following `&` in the raw label, in the label's own
-///   foreground colour. No `&` in the label ⇒ no underline at all.
+/// - **Alt-underline:** a 2px-tall bar under the character following
+///   `&` in the raw label, in the label's own foreground colour. No `&`
+///   in the label ⇒ no underline at all. See
+///   [`crate::primitives::menu_bar::native_surface_paint::paint`] for
+///   the exact geometry.
 #[cfg(target_os = "windows")]
 pub fn draw_menu_bar(
     target: &ID2D1RenderTarget,
@@ -96,57 +77,20 @@ pub fn draw_menu_bar(
     bar: &MenuBar,
     theme: &Theme,
 ) -> MenuBarLayout {
-    let _ = fill_rect(target, rect, theme.tab_bar_bg);
-
     let layout = win_menu_bar_layout(dwrite, rect, bar);
 
-    for vi in &layout.visible_items {
-        let item = &bar.items[vi.item_idx];
-        let is_active = bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
-
-        let (fg, bg) = if is_active {
-            (theme.tab_active_fg, theme.tab_active_bg)
-        } else if item.disabled {
-            (theme.muted_fg, theme.tab_bar_bg)
-        } else {
-            (theme.tab_inactive_fg, theme.tab_bar_bg)
-        };
-
-        if is_active {
-            let _ = fill_rect(target, vi.bounds, bg);
-        }
-
-        let text = display_text(&item.label);
-        let (text_w, text_h) = dwrite.measure_text(&text).unwrap_or((0.0, 0.0));
-        let text_x = vi.bounds.x + (vi.bounds.width - text_w) / 2.0;
-        let text_y = vi.bounds.y + (vi.bounds.height - text_h) / 2.0;
-        let text_rect = Rect::new(text_x, text_y, text_w, text_h);
-        let _ = dwrite.draw_text(target, &text, text_rect, fg);
-
-        if let Some(idx) = alt_char_index(&item.label) {
-            if let Some(ch) = text.chars().nth(idx) {
-                let prefix: String = text.chars().take(idx).collect();
-                let (prefix_w, _) = dwrite.measure_text(&prefix).unwrap_or((0.0, 0.0));
-                let (char_w, _) = dwrite.measure_text(&ch.to_string()).unwrap_or((0.0, 0.0));
-                let underline_rect = Rect::new(
-                    text_x + prefix_w,
-                    text_y + text_h - UNDERLINE_HEIGHT_DIP,
-                    char_w.max(1.0),
-                    UNDERLINE_HEIGHT_DIP,
-                );
-                let _ = fill_rect(target, underline_rect, fg);
-            }
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    native_surface_paint::paint(bar, &layout, &mut surface, theme);
 
     layout
 }
 
 // #1078: the paint↔click round-trip tests below need a real
 // `DWrite`/`HeadlessSurface` — gated the same way the whole module used
-// to be. `alt_char_index_*` are pure-string tests with no Direct2D/
-// DirectWrite dependency, so they stay outside this inner gate and run
-// on Linux too.
+// to be.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,26 +205,14 @@ mod tests {
         }
     }
 
+    // `alt_char_index`'s own tests (none-without-ampersand,
+    // char-after-ampersand, empty/trailing-marker) moved with it to
+    // `crate::primitives::menu_bar::native_surface_paint::tests` (#1081)
+    // — `display_text` is the only helper still local to this module
+    // (still needed by `win_menu_bar_layout`).
     #[test]
-    fn alt_char_index_none_without_ampersand() {
-        assert_eq!(alt_char_index("File"), None);
-    }
-
-    #[test]
-    fn alt_char_index_marks_char_after_ampersand() {
-        assert_eq!(alt_char_index("&File"), Some(0));
-        // '&' isn't necessarily the first char — "Sa&ve" underlines 'v'
-        // (char index 2 in "Save").
-        assert_eq!(alt_char_index("Sa&ve"), Some(2));
-    }
-
-    #[test]
-    fn alt_char_index_handles_empty_and_trailing_marker() {
-        assert_eq!(alt_char_index(""), None);
-        // A trailing `&` marks a char index past the display string's end
-        // — `draw_menu_bar`'s `text.chars().nth(idx)` guard turns that
-        // into "no underline" rather than panicking.
-        assert_eq!(alt_char_index("File&"), Some(4));
-        assert_eq!(display_text("File&").chars().nth(4), None);
+    fn display_text_strips_ampersand() {
+        assert_eq!(display_text("&File"), "File");
+        assert_eq!(display_text("File"), "File");
     }
 }
