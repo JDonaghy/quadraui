@@ -1295,6 +1295,27 @@ impl Backend for MacBackend {
         self.set_chrome_font(font);
     }
 
+    /// macOS's platform-native convention (issue #1156): `Menlo 12`
+    /// for editor content — VS Code's own macOS default, and a
+    /// concrete literal rather than a live CoreText query, since
+    /// `system_monospace_font`'s `kCTFontUserFixedPitchFontType`
+    /// resolves to whatever fixed-pitch face the user's Font Book
+    /// preference names, not necessarily the historic coding-font
+    /// convention this default represents — and `13pt` UI chrome,
+    /// resolved through the same [`super::text::system_ui_font`] query
+    /// [`Self::new`] seeds `chrome_font` from, so `ui_family` always
+    /// names whatever San Francisco variant Core Text actually
+    /// resolves on the running OS version rather than a version-pinned
+    /// guess.
+    fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+        crate::backend::PlatformFontDefaults {
+            editor_family: "Menlo".to_string(),
+            editor_size_pt: 12.0,
+            ui_family: super::text::system_ui_font(13.0).family_name(),
+            ui_size_pt: 13.0,
+        }
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         let mut out: Vec<UiEvent> = self.events.borrow_mut().drain(..).collect();
         // Issue #831: fold in any `UiEvent::User` payloads a background
@@ -6939,6 +6960,43 @@ mod tests {
                 .family_name(),
             "Menlo",
         );
+    }
+
+    /// Issue #1156: `default_fonts()` reports macOS's VS-Code-alignment
+    /// convention — `Menlo 12` for editor content, and the real
+    /// CoreText-resolved system UI font name at 13pt for chrome, not a
+    /// hardcoded guess at what "SF" resolves to on the running OS
+    /// version.
+    #[test]
+    fn mac_backend_default_fonts_reports_platform_convention() {
+        use crate::Backend;
+
+        let b = MacBackend::new();
+        let defaults = Backend::default_fonts(&b);
+        assert_eq!(defaults.editor_family, "Menlo");
+        assert_eq!(defaults.editor_size_pt, 12.0);
+        assert_eq!(
+            defaults.ui_family,
+            super::super::text::system_ui_font(13.0).family_name()
+        );
+        assert_eq!(defaults.ui_size_pt, 13.0);
+    }
+
+    /// A prior `set_editor_font`/`set_ui_font` call must not perturb
+    /// `default_fonts()` — it reports a static platform fact, not this
+    /// instance's current, possibly-overridden state (see
+    /// `PlatformFontDefaults`'s doc).
+    #[test]
+    fn mac_backend_default_fonts_is_unaffected_by_set_editor_font_and_set_ui_font() {
+        use crate::Backend;
+
+        let mut b = MacBackend::new();
+        b.set_editor_font("Helvetica", 40.0);
+        Backend::set_ui_font(&mut b, "Helvetica 40");
+        let defaults = Backend::default_fonts(&b);
+        assert_eq!(defaults.editor_family, "Menlo");
+        assert_eq!(defaults.editor_size_pt, 12.0);
+        assert_eq!(defaults.ui_size_pt, 13.0);
     }
 
     /// `set_ui_font` degrades to the CoreText system UI font (rather

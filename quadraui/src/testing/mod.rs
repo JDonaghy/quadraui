@@ -823,6 +823,18 @@ impl crate::Backend for RecordingBackend {
         // like TUI's real backend does (quadraui#912).
         self.char_width
     }
+    fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+        // `RecordingBackend` only records call shape, not real font
+        // metrics — same rationale as `list_char_width` above. No
+        // platform to default fonts against, so this is the same
+        // all-sentinel value TUI's real backend returns.
+        crate::backend::PlatformFontDefaults {
+            editor_family: String::new(),
+            editor_size_pt: 0.0,
+            ui_family: String::new(),
+            ui_size_pt: 0.0,
+        }
+    }
     fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {
         self.record("draw_tree");
     }

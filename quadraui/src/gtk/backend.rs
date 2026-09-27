@@ -1831,6 +1831,27 @@ impl Backend for GtkBackend {
         self.ui_font = resolve_generic_families_gtk(font_desc);
     }
 
+    /// GTK's platform-native convention (issue #1156): `"Monospace"`/
+    /// `"Sans"`, the same fontconfig generic aliases
+    /// [`resolve_generic_families_gtk`] already resolves
+    /// [`crate::GenericFamily::Monospace`]/[`crate::GenericFamily::SansSerif`]
+    /// to — Pango/fontconfig picks the concrete installed face (Droid
+    /// Sans Mono, DejaVu Sans Mono, whatever the distro ships) at
+    /// render time, so there is no single concrete family name to
+    /// return here the way macOS/Win-GUI have one. Sizes (14pt editor,
+    /// 13pt UI) match the VS Code convention this issue's table
+    /// documents — distinct from `editor_font_size_pt`/`ui_font`'s own
+    /// 11pt un-set default above, which exists for headless-test
+    /// convenience rather than to model a platform recommendation.
+    fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
+        crate::backend::PlatformFontDefaults {
+            editor_family: "Monospace".to_string(),
+            editor_size_pt: 14.0,
+            ui_family: "Sans".to_string(),
+            ui_size_pt: 13.0,
+        }
+    }
+
     /// Overrides [`crate::gtk::NERD_FONT_FALLBACK_FAMILY`] for every
     /// subsequent `with_nerd_font_fallback`/`chrome_font_description`/
     /// `tab_bar::tab_icon_font` call in this process (issue #929). Process-
@@ -6604,6 +6625,37 @@ mod tests {
         Backend::set_editor_font(&mut backend, "Fira Code", 13.0);
         assert_eq!(backend.ui_font, "Cantarell 12");
         assert_eq!(backend.editor_font_pango_string(), "Fira Code 13");
+    }
+
+    /// Issue #1156: `default_fonts()` reports GTK's fontconfig-alias
+    /// platform convention (`Monospace`/`Sans`, 14pt/13pt), matching
+    /// this crate's VS-Code-alignment table — not this instance's own
+    /// `editor_font_family`/`ui_font` state, which stays at its own
+    /// separate 11pt un-set default.
+    #[test]
+    fn gtk_backend_default_fonts_reports_platform_convention() {
+        let backend = GtkBackend::new();
+        let defaults = Backend::default_fonts(&backend);
+        assert_eq!(defaults.editor_family, "Monospace");
+        assert_eq!(defaults.editor_size_pt, 14.0);
+        assert_eq!(defaults.ui_family, "Sans");
+        assert_eq!(defaults.ui_size_pt, 13.0);
+    }
+
+    /// A prior `set_editor_font`/`set_ui_font` call must not perturb
+    /// `default_fonts()` — it reports a static platform fact, not this
+    /// instance's current, possibly-overridden state (see
+    /// `PlatformFontDefaults`'s doc).
+    #[test]
+    fn gtk_backend_default_fonts_is_unaffected_by_set_editor_font_and_set_ui_font() {
+        let mut backend = GtkBackend::new();
+        Backend::set_editor_font(&mut backend, "Fira Code", 20.0);
+        Backend::set_ui_font(&mut backend, "Cantarell 30");
+        let defaults = Backend::default_fonts(&backend);
+        assert_eq!(defaults.editor_family, "Monospace");
+        assert_eq!(defaults.editor_size_pt, 14.0);
+        assert_eq!(defaults.ui_family, "Sans");
+        assert_eq!(defaults.ui_size_pt, 13.0);
     }
 
     /// Issue #1023: `monospace`/`sans-serif` (and Pango's own
