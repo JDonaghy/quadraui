@@ -310,9 +310,29 @@ mod tests {
             "highlight corner pixel should NOT be filled — rounded corner (quadraui#1081), not square",
         );
 
-        // The inset rect's centre must still be filled solid in the
-        // highlight colour — proves this isn't just "nothing painted".
-        let cx = (item.x + item.width / 2.0) as u32;
+        // The inset rect must still be filled solid in the highlight
+        // colour somewhere away from the corners — proves this isn't
+        // just "nothing painted". Deliberately NOT the button's exact
+        // geometric centre: that's also where the "On" label's own text
+        // is centred (`tx = item.x + (item.width - tw) / 2`), and on a
+        // real Windows host DirectWrite's ClearType/greyscale
+        // anti-aliasing blends glyph ink into the surrounding highlight
+        // fill, so the centre pixel is a mix of `theme.foreground` and
+        // `theme.selected_bg` — not pure `theme.selected_bg`
+        // (quadraui#1081 CI fixup: this exact assertion read
+        // `(179, 220, 204)` instead of `theme.selected_bg`'s
+        // `(50, 60, 90)` on windows-latest; the macOS twin in
+        // `macos::toolbar` needed the same fix for CoreText smoothing).
+        // `measure_button`'s `ACTION_H_PAD = 8.0` guarantees the text
+        // always starts at `item.x + 8` regardless of font/glyph metrics
+        // (`item.width == text_width + 2 * ACTION_H_PAD`, so
+        // `tx == item.x + ACTION_H_PAD`), so the strip
+        // `[item.x + 2, item.x + 8)` — between the inset's left edge and
+        // where the label starts — is always text-free. `+ 5.0` sits in
+        // the middle of that strip; the y stays at mid-height,
+        // comfortably clear of the top/bottom corner arcs (radius 4 on a
+        // 40px-tall bar).
+        let cx = (item.x + 5.0) as u32;
         let cy = (item.y + item.height / 2.0) as u32;
         let centre = surface.pixel_at(cx, cy);
         assert_eq!(
@@ -322,7 +342,7 @@ mod tests {
                 theme.selected_bg.g,
                 theme.selected_bg.b
             ),
-            "highlight centre pixel should be filled solid",
+            "highlight fill should be solid away from the corners and the label text",
         );
     }
 }
