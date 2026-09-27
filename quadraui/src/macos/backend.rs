@@ -940,9 +940,25 @@ impl MacBackend {
     // `WinBackend`'s identically-named, identically-shaped block in
     // `win/backend.rs` (#741).
 
-    /// Every `TextRegion` registered so far this frame.
+    /// Every `TextRegion` registered so far this frame. Test-only since
+    /// #1088 — `macos::run` used to read this (and a now-deleted
+    /// `track_focused_text_region`) as two separate accessor calls before
+    /// a `dispatch_click` call it built inline; both now go through
+    /// [`Self::text_selection_state_mut`] instead.
+    #[cfg(test)]
     pub(crate) fn text_regions(&self) -> &[TextRegion] {
         &self.text_selection.text_regions
+    }
+
+    /// Mutable access to the whole [`crate::text_selection::TextSelectionState`]
+    /// — the shape [`crate::dispatch::route_pointer`] (issue #1088) needs
+    /// to both read `text_regions` and call `track_focused_text_region`
+    /// without two separate accessor calls. Mirrors
+    /// `GtkBackend::text_selection_state_mut`.
+    pub(crate) fn text_selection_state_mut(
+        &mut self,
+    ) -> &mut crate::text_selection::TextSelectionState {
+        &mut self.text_selection
     }
 
     /// Return the current active text selection, if any.
@@ -990,15 +1006,6 @@ impl MacBackend {
     fn cancel_text_selection_drag_impl(&mut self) {
         let mut drag = self.drag_state.borrow_mut();
         self.text_selection.cancel_text_selection_drag(&mut drag);
-    }
-
-    /// Record that `id` is the most-recently focused/clicked `TextRegion`.
-    /// Called by `macos::run`'s mouse-down handling after a `TextSelection`
-    /// drag begins, so [`Self::select_all_text_region`] can resolve the
-    /// correct target even before the first drag-move fires a
-    /// `TextSelectionChanged` event.
-    pub(crate) fn track_focused_text_region(&mut self, id: WidgetId) {
-        self.text_selection.track_focused_text_region(id);
     }
 
     /// Set the active selection to cover the entire visible content of the

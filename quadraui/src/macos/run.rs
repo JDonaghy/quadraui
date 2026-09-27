@@ -103,7 +103,6 @@ use super::text::make_font;
 // rather than a second decoder.
 use super::tray::decode_ns_image;
 use crate::backend::Backend;
-use crate::dispatch::DragTarget;
 use crate::event::Viewport;
 use crate::primitives::image::ImageSource;
 use crate::runner::{AppLogic, Reaction};
@@ -236,42 +235,25 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // `ModalStack` via the shared dispatch layer before the app sees it,
     // so a click inside an open dialog stays inside the dialog and a
     // click outside dismisses it — instead of falling straight through
-    // to whatever widget is underneath. `dispatch_click` may return 0..n
-    // events (e.g. dismiss emits `MouseDown` + `Palette(Closed)`); each
-    // goes through the shared `preprocess_event` (which folds double-
-    // clicks, clears the selection display, etc. — see this function's
-    // doc), and the outcomes are folded the way `gtk::run`'s click loop
-    // folds them: `Exit` wins immediately, else `Redraw` wins over
-    // `Continue`.
-    if let UiEvent::MouseDown {
-        button,
-        position,
-        modifiers,
-        ..
-    } = &event
-    {
-        let (button, position, modifiers) = (*button, *position, *modifiers);
+    // to whatever widget is underneath. `route_pointer` (issue #1088) may
+    // return 0..n events (e.g. dismiss emits `MouseDown` +
+    // `Palette(Closed)`); each goes through the shared `preprocess_event`
+    // (which folds double-clicks, clears the selection display, etc. —
+    // see this function's doc), and the outcomes are folded the way
+    // `gtk::run`'s click loop folds them: `Exit` wins immediately, else
+    // `Redraw` wins over `Continue`.
+    if let UiEvent::MouseDown { .. } = &event {
         let dispatched = {
             let stack_rc = backend.modal_stack_handle();
             let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
-            let evs = crate::dispatch::dispatch_click(
+            crate::dispatch::route_pointer(
                 &stack,
-                &[], // scroll surfaces not tracked by MacBackend yet
-                backend.text_regions(),
                 &mut drag,
-                position,
-                button,
-                modifiers,
-            );
-            // #803: track which region was clicked so Ctrl-A can target
-            // it even before the first drag-move fires a
-            // `TextSelectionChanged` event — mirrors gtk::run/win::run.
-            if let Some(DragTarget::TextSelection { region, .. }) = drag.target() {
-                backend.track_focused_text_region(region.clone());
-            }
-            evs
+                backend.text_selection_state_mut(),
+                event,
+            )
         };
         let mut outcome = EventOutcome::Continue;
         for ev in dispatched {
@@ -287,9 +269,9 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         return outcome;
     }
 
-    // #803: route a `MouseMoved` through `dispatch_mouse_drag` so an
-    // in-progress `TextSelection`/scrollbar/split-divider drag (armed by
-    // the `MouseDown` branch above) emits its synthetic event
+    // #803: route a `MouseMoved` through `route_pointer` (issue #1088) so
+    // an in-progress `TextSelection`/scrollbar/split-divider drag (armed
+    // by the `MouseDown` branch above) emits its synthetic event
     // (`TextSelectionChanged`/`ScrollOffsetChanged`/`SplitDividerDragged`)
     // alongside the plain `MouseMoved` — mirrors gtk::run's motion
     // controller / win::run::route_mouse_move. The plain `MouseMoved`
@@ -299,12 +281,18 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // `preprocess_event`) applies uniformly — safe because
     // `dispatch_mouse_drag` never emits a second `MouseMoved`, so this
     // can't loop.
-    if let UiEvent::MouseMoved { position, buttons } = &event {
-        let (position, buttons) = (*position, *buttons);
+    if let UiEvent::MouseMoved { .. } = &event {
         let events = {
+            let stack_rc = backend.modal_stack_handle();
             let drag_rc = backend.drag_state_handle();
-            let drag = drag_rc.borrow();
-            crate::dispatch::dispatch_mouse_drag(&drag, position, buttons)
+            let stack = stack_rc.borrow();
+            let mut drag = drag_rc.borrow_mut();
+            crate::dispatch::route_pointer(
+                &stack,
+                &mut drag,
+                backend.text_selection_state_mut(),
+                event,
+            )
         };
         let mut outcome = EventOutcome::Continue;
         for ev in events {
@@ -323,25 +311,26 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         return outcome;
     }
 
-    // #803: route a `MouseUp` through `dispatch_mouse_up` so an
+    // #803: route a `MouseUp` through `route_pointer` (issue #1088) so an
     // in-progress drag ends cleanly — mirrors gtk::run's
     // `connect_released` / win::run::route_mouse_up. `dispatch_mouse_up`
     // always returns exactly one `MouseUp` (see its doc), rewritten with
     // `widget` when the release lands inside an open modal.
-    if let UiEvent::MouseUp {
-        position, button, ..
-    } = &event
-    {
-        let (position, button) = (*position, *button);
+    if let UiEvent::MouseUp { .. } = &event {
         let ev = {
             let stack_rc = backend.modal_stack_handle();
             let drag_rc = backend.drag_state_handle();
             let stack = stack_rc.borrow();
             let mut drag = drag_rc.borrow_mut();
-            crate::dispatch::dispatch_mouse_up(&stack, &mut drag, position, button)
-                .into_iter()
-                .next()
-                .expect("dispatch_mouse_up always returns exactly one MouseUp")
+            crate::dispatch::route_pointer(
+                &stack,
+                &mut drag,
+                backend.text_selection_state_mut(),
+                event,
+            )
+            .into_iter()
+            .next()
+            .expect("dispatch_mouse_up always returns exactly one MouseUp")
         };
         return app.handle(ev, backend).into();
     }
@@ -395,12 +384,10 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.begin_frame(viewport);
     // Issue #830: resolve the currently-focused widget's rect (if any)
     // from this frame's tab stops before entering the frame scope.
-    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
-        app.tab_stops(<A as AppLogic>::AreaId::default())
-            .into_iter()
-            .find(|(stop_id, _)| *stop_id == id)
-            .map(|(_, rect)| rect)
-    });
+    // `focused_stop_rect` (issue #1088) is the one implementation of this
+    // lookup; every runner used to carry its own copy.
+    let focus_ring_rect =
+        runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
     backend.enter_frame_scope(ctx, |b| {
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render(&mut *b, <A as AppLogic>::AreaId::default());

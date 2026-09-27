@@ -166,7 +166,7 @@ use super::events::{
 };
 use crate::backend::Backend;
 use crate::desktop::{smoke_clipboard_round_trip_ok, smoke_size_ok, SmokeConfig};
-use crate::dispatch::{dispatch_click, dispatch_mouse_drag, dispatch_mouse_up};
+use crate::dispatch::route_pointer;
 use crate::runner::{AppLogic, Reaction};
 use crate::runtime::{self, ReactionSink, RESIZE_SETTLE};
 // Re-exported (not just imported) so `gtk::testing` — and any other
@@ -691,36 +691,31 @@ fn activate<A: AppLogic + 'static>(
                 return;
             };
 
-            // Route through dispatch_click so text-region clicks begin a
-            // TextSelection drag and scrollbar clicks begin scrollbar drags —
-            // regardless of GDK's own press count. Double-click folding used
-            // to be decided right here from `n_press == 2`, bypassing
-            // `dispatch_click` (and so `TextRegion`/modal routing) for the
-            // second press entirely; #813 moves it into `dispatch_event`'s
-            // shared `fold_double_click` step below, applied uniformly to
-            // whatever `dispatch_click` returns, the same as macOS/Windows.
+            // Route through `route_pointer` (issue #1088) so text-region
+            // clicks begin a TextSelection drag and scrollbar clicks begin
+            // scrollbar drags — regardless of GDK's own press count.
+            // Double-click folding used to be decided right here from
+            // `n_press == 2`, bypassing `dispatch_click` (and so
+            // `TextRegion`/modal routing) for the second press entirely;
+            // #813 moves it into `dispatch_event`'s shared
+            // `fold_double_click` step below, applied uniformly to whatever
+            // `route_pointer` returns, the same as macOS/Windows.
             let events = {
                 let stack_rc = backend_mut.modal_stack_handle();
                 let drag_rc = backend_mut.drag_state_handle();
                 let stack = stack_rc.borrow();
                 let mut drag = drag_rc.borrow_mut();
-                let evs = dispatch_click(
+                route_pointer(
                     &stack,
-                    &[], // scroll surfaces not tracked in the runner
-                    backend_mut.text_regions(),
                     &mut drag,
-                    position,
-                    button,
-                    modifiers,
-                );
-                // Track which region was clicked so Ctrl-A can target
-                // the right region even before the first drag move.
-                if let Some(crate::dispatch::DragTarget::TextSelection { region, .. }) =
-                    drag.target()
-                {
-                    backend_mut.track_focused_text_region(region.clone());
-                }
-                evs
+                    backend_mut.text_selection_state_mut(),
+                    UiEvent::MouseDown {
+                        widget: None,
+                        button,
+                        position,
+                        modifiers,
+                    },
+                )
             };
 
             let mut needs_redraw = false;
@@ -791,7 +786,16 @@ fn activate<A: AppLogic + 'static>(
                 let drag_rc = backend_mut.drag_state_handle();
                 let stack = stack_rc.borrow();
                 let mut drag = drag_rc.borrow_mut();
-                dispatch_mouse_up(&stack, &mut drag, position, button)
+                route_pointer(
+                    &stack,
+                    &mut drag,
+                    backend_mut.text_selection_state_mut(),
+                    UiEvent::MouseUp {
+                        widget: None,
+                        button,
+                        position,
+                    },
+                )
             };
             for ev in events {
                 // #902 backstop — see the `#902` section above
@@ -875,9 +879,16 @@ fn activate<A: AppLogic + 'static>(
                 return;
             };
             let events = {
+                let stack_rc = backend_mut.modal_stack_handle();
                 let drag_rc = backend_mut.drag_state_handle();
-                let drag = drag_rc.borrow();
-                dispatch_mouse_drag(&drag, position, buttons)
+                let stack = stack_rc.borrow();
+                let mut drag = drag_rc.borrow_mut();
+                route_pointer(
+                    &stack,
+                    &mut drag,
+                    backend_mut.text_selection_state_mut(),
+                    UiEvent::MouseMoved { position, buttons },
+                )
             };
 
             // `TextSelectionChanged` (active-selection state update) and the
@@ -1649,13 +1660,10 @@ pub(crate) fn render_frame<A: AppLogic>(
 
     // Issue #830: resolve the currently-focused widget's rect (if any)
     // from this frame's tab stops before entering the frame scope —
-    // mirrors `tui::run::paint_frame`.
-    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
-        app.tab_stops(A::AreaId::default())
-            .into_iter()
-            .find(|(stop_id, _)| *stop_id == id)
-            .map(|(_, rect)| rect)
-    });
+    // mirrors `tui::run::paint_frame`. `focused_stop_rect` (issue #1088)
+    // is the one implementation of this lookup; every runner used to
+    // carry its own copy.
+    let focus_ring_rect = runtime::focused_stop_rect(backend, app, A::AreaId::default());
     backend.enter_frame_scope(cr, &layout, |b| {
         // Single-area runner: pass the default `AreaId`.
         app.render(b, A::AreaId::default());

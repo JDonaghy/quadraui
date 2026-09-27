@@ -156,7 +156,6 @@
 //! `QUADRAUI_WIN_SMOKE_MS` is set.
 
 use crate::backend::Backend;
-use crate::dispatch::DragTarget;
 use crate::event::{Point, Viewport};
 use crate::primitives::image::ImageSource;
 use crate::runner::AppLogic;
@@ -256,13 +255,13 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     }
 }
 
-/// Route a `MouseDown` through the shared text-selection/scrollbar-drag
-/// pipeline ([`crate::dispatch::dispatch_click`]) before handing the
+/// Route a `MouseDown` through the shared pointer-routing pipeline
+/// ([`crate::dispatch::route_pointer`], issue #1088) before handing the
 /// resulting event(s) to [`dispatch_event`] — the Win-GUI twin of
 /// `gtk::run`'s `connect_pressed` closure / `TuiBackend::apply_dispatch`'s
-/// `MouseDown` arm (#741). Also tracks the clicked region via
-/// [`WinBackend::track_focused_text_region`] so Ctrl-A can resolve it even
-/// before the first drag-move fires a `TextSelectionChanged` event.
+/// `MouseDown` arm (#741). `route_pointer` also tracks the clicked region
+/// so Ctrl-A can resolve it even before the first drag-move fires a
+/// `TextSelectionChanged` event.
 ///
 /// Not itself `#[cfg(target_os = "windows")]`: same posture as
 /// [`dispatch_event`] — its only callers (`mod win32`'s `WM_*BUTTONDOWN`
@@ -284,19 +283,17 @@ pub(crate) fn route_mouse_down<A: AppLogic>(
         let drag_rc = backend.drag_state_handle();
         let stack = stack_rc.borrow();
         let mut drag = drag_rc.borrow_mut();
-        let evs = crate::dispatch::dispatch_click(
+        crate::dispatch::route_pointer(
             &stack,
-            &[], // scroll surfaces not tracked by this runner yet — mirrors gtk::run/TuiBackend
-            backend.text_regions(),
             &mut drag,
-            position,
-            button,
-            modifiers,
-        );
-        if let Some(DragTarget::TextSelection { region, .. }) = drag.target() {
-            backend.track_focused_text_region(region.clone());
-        }
-        evs
+            backend.text_selection_state_mut(),
+            UiEvent::MouseDown {
+                widget: None,
+                button,
+                position,
+                modifiers,
+            },
+        )
     };
 
     let mut outcome = EventOutcome::Continue;
@@ -314,7 +311,7 @@ pub(crate) fn route_mouse_down<A: AppLogic>(
 }
 
 /// Route a `MouseMoved` (button held) through
-/// [`crate::dispatch::dispatch_mouse_drag`] so a `TextSelection`/scrollbar
+/// [`crate::dispatch::route_pointer`] so a `TextSelection`/scrollbar
 /// drag armed by [`route_mouse_down`] emits `TextSelectionChanged`/
 /// scroll events — the Win-GUI twin of `gtk::run`'s motion-controller
 /// closure. See [`route_mouse_down`]'s doc for why this isn't
@@ -327,9 +324,16 @@ pub(crate) fn route_mouse_move<A: AppLogic>(
     buttons: ButtonMask,
 ) -> EventOutcome {
     let events = {
+        let stack_rc = backend.modal_stack_handle();
         let drag_rc = backend.drag_state_handle();
-        let drag = drag_rc.borrow();
-        crate::dispatch::dispatch_mouse_drag(&drag, position, buttons)
+        let stack = stack_rc.borrow();
+        let mut drag = drag_rc.borrow_mut();
+        crate::dispatch::route_pointer(
+            &stack,
+            &mut drag,
+            backend.text_selection_state_mut(),
+            UiEvent::MouseMoved { position, buttons },
+        )
     };
 
     let mut outcome = EventOutcome::Continue;
@@ -346,9 +350,9 @@ pub(crate) fn route_mouse_move<A: AppLogic>(
     outcome
 }
 
-/// Route a `MouseUp` through [`crate::dispatch::dispatch_mouse_up`] so an
-/// in-progress scrollbar/text-selection drag ends cleanly — the Win-GUI
-/// twin of `gtk::run`'s `connect_released` closure. See
+/// Route a `MouseUp` through [`crate::dispatch::route_pointer`] (issue
+/// #1088) so an in-progress scrollbar/text-selection drag ends cleanly —
+/// the Win-GUI twin of `gtk::run`'s `connect_released` closure. See
 /// [`route_mouse_down`]'s doc for why this isn't
 /// `#[cfg(target_os = "windows")]`-gated.
 #[allow(dead_code)]
@@ -363,7 +367,16 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
         let drag_rc = backend.drag_state_handle();
         let stack = stack_rc.borrow();
         let mut drag = drag_rc.borrow_mut();
-        crate::dispatch::dispatch_mouse_up(&stack, &mut drag, position, button)
+        crate::dispatch::route_pointer(
+            &stack,
+            &mut drag,
+            backend.text_selection_state_mut(),
+            UiEvent::MouseUp {
+                widget: None,
+                button,
+                position,
+            },
+        )
     };
 
     let mut outcome = EventOutcome::Continue;
@@ -422,12 +435,10 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
     }
     // After app.render: paint the focus-ring convention (#830) — mirrors
     // the other three runners' post-render overlay ordering.
-    let focus_ring_rect = backend.focus_manager().focused().cloned().and_then(|id| {
-        app.tab_stops(<A as AppLogic>::AreaId::default())
-            .into_iter()
-            .find(|(stop_id, _)| *stop_id == id)
-            .map(|(_, rect)| rect)
-    });
+    // `focused_stop_rect` (issue #1088) is the one implementation of this
+    // lookup; every runner used to carry its own copy.
+    let focus_ring_rect =
+        crate::runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
     if let Some(rect) = focus_ring_rect {
         backend.draw_focus_ring(rect);
     }
