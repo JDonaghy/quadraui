@@ -396,8 +396,9 @@ mod tests {
 
         let layout = paint(&surface, &dwrite, rect, &bar, None, None);
 
-        // The left segment starts at bar-local x=0 — its fill colour must
-        // be visible somewhere across its own bounds.
+        // Since issue #1155 the left segment starts at bar-local
+        // x=`PIXEL_EDGE_INSET`, not at x=0 — its fill colour must be
+        // visible somewhere across its own bounds.
         let mid_y = (H / 2.0) as u32;
         let left_vs = layout
             .visible_segments
@@ -415,10 +416,26 @@ mod tests {
             "left segment's bg should be painted at its own bounds"
         );
 
-        let left_hit = layout.hit_test(1.0, H / 2.0);
+        // Hit-test the left segment at its own painted centre rather than
+        // a hardcoded `x = 1.0`: issue #1155 reserves `PIXEL_EDGE_INSET`
+        // between the bar's left edge and its left-most segment, so x=1.0
+        // now lands in that inset (correctly `Empty`), which made this a
+        // stale assertion rather than a real regression.
+        let left_cx = left_vs.bounds.x + left_vs.bounds.width / 2.0;
+        let left_hit = layout.hit_test(left_cx, H / 2.0);
         assert_eq!(
             left_hit,
             StatusBarHit::Segment(WidgetId::new("status:mode"))
+        );
+
+        // …and the reserved outer inset itself is *not* clickable — the
+        // positive half of the same #1155 claim, pinned here on the paint
+        // path (the pure-layout twin is `layout_padding_tests` above).
+        assert_eq!(
+            layout.hit_test(PIXEL_EDGE_INSET / 2.0, H / 2.0),
+            StatusBarHit::Empty,
+            "the `PIXEL_EDGE_INSET` strip left of the first segment should \
+             not hit any segment (issue #1155)"
         );
 
         // Right segment is right-aligned; its hit-test centre must resolve

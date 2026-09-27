@@ -144,7 +144,16 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
             // tooltips, which are never painted). Recorded through the
             // rasteriser's `cr.translate(rect.x, rect.y)`, so this also
             // pins the user→device coordinate conversion.
-            ("draw_activity_bar", "E"),
+            //
+            // `"G"` (source-control), not `ShellApp`'s first icon `"E"`:
+            // `find_bounds` is a *substring* search over painted texts in
+            // paint order, and the panel-title status bar paints
+            // `" EXPLORER "` before the activity bar runs — so `"E"`
+            // resolves to that status-bar segment, never to the glyph this
+            // case claims to cover. `"G"` appears in no other painted text
+            // in this fixture. See
+            // `activity_bar_glyphs_record_absolute_surface_coordinates`.
+            ("draw_activity_bar", "G"),
         ],
     );
 }
@@ -153,29 +162,45 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
 /// `GtkBackend::draw_activity_bar`), which is the one place a naive
 /// current-point read would record bar-local instead of surface
 /// coordinates. Its glyphs must land inside the bar's own column.
+///
+/// # Needle choice (issue #1155)
+///
+/// Both probes must be needles *no other* painted text in this fixture
+/// contains, because [`GtkDriver::find_bounds`] is a substring search over
+/// painted texts in **paint order** and `AppShell` paints the sidebar's
+/// `" EXPLORER "` panel-title status bar before `draw_activity_bar` runs.
+/// This test used to probe the top-pinned glyph with `"E"`, which resolved
+/// to that status bar instead — and passed only because the sidebar (and
+/// therefore its title bar) starts at x=54, just inside the `< 64.0` bound
+/// below. #1155's `PIXEL_EDGE_INSET` pushed that segment to x=64 and the
+/// assertion failed, exposing the mis-resolution rather than a real
+/// regression in `draw_activity_bar`. `"G"` (source-control) and `"*"`
+/// (settings) are unique to the activity bar's own glyphs.
 #[test]
 fn activity_bar_glyphs_record_absolute_surface_coordinates() {
     let driver = GtkDriver::new(shell_app::ShellApp::new(), W, H);
 
-    let explorer = driver
-        .find_bounds("E")
-        .expect("activity bar explorer glyph should be painted");
+    let source_control = driver
+        .find_bounds("G")
+        .expect("activity bar source-control glyph should be painted");
     let settings = driver
         .find_bounds("*")
         .expect("bottom-pinned settings glyph should be painted");
 
     // ShellApp reserves 3 line-heights for the bar at the far left.
     assert!(
-        explorer.x < 64.0,
-        "explorer glyph should sit in the left-hand activity bar, got {explorer:?}"
+        source_control.x < 64.0,
+        "source-control glyph should sit in the left-hand activity bar, \
+         got {source_control:?}; painted={:?}",
+        driver.painted_texts()
     );
     // Bottom-pinned items paint near the bottom of the surface — the
     // give-away that the translate was applied (a bar-local y would put
     // this at the same y as the top items).
     assert!(
-        settings.y > explorer.y,
+        settings.y > source_control.y,
         "bottom-pinned settings glyph ({settings:?}) must record below the \
-         top-pinned explorer glyph ({explorer:?})"
+         top-pinned source-control glyph ({source_control:?})"
     );
 }
 

@@ -6750,10 +6750,18 @@ mod tests {
         // DirectWrite reports for each weight — proves the override
         // forwards to `measure_text_styled` rather than merely producing
         // some pair of different numbers.
+        //
+        // Issue #1155: a segment's `bounds` is its measured text width
+        // plus `PIXEL_SEGMENT_PADDING` on *both* sides (pixel backends
+        // call `StatusBar::layout_padded`), so the comparison is against
+        // the probe widths grown by that known, constant amount — the
+        // per-weight *delta* this test is really about is unaffected by it.
+        const PAD: f32 = 2.0 * crate::primitives::status_bar::PIXEL_SEGMENT_PADDING;
         assert_eq!(
             (regular_width, bold_width),
-            (probe_regular, probe_bold),
-            "resolved segment widths must match DirectWrite's own per-weight measurement"
+            (probe_regular + PAD, probe_bold + PAD),
+            "resolved segment widths must match DirectWrite's own per-weight measurement \
+             plus #1155's per-segment padding"
         );
     }
 
