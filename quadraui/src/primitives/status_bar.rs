@@ -628,6 +628,27 @@ impl StatusBar {
 //    it's what #791 already established as the correct shape for the
 //    other two backends.
 //
+// 3. **`find_bounds` semantics now genuinely differ per backend (#1155).**
+//    Each backend's testing driver locates a painted segment's label by
+//    recording where text actually got drawn — but "where text got
+//    drawn" means different rects on different backends, and this PR is
+//    the first change that makes the difference numerically observable.
+//    `GtkBackend::draw_status_bar_interactive` explicitly re-records
+//    `seg.bounds` (the full padded fill rect this `paint` computes) over
+//    whatever Pango recorded, per that call site's own comment — so
+//    `GtkDriver::find_bounds` returns the *segment's padded box*,
+//    starting at `PIXEL_EDGE_INSET` for the lone left segment. macOS and
+//    Windows have no such override: `MacDriver`/`WinDriver::find_bounds`
+//    is backed purely by the glyph draw position this `paint` computes
+//    below (`text_rect`, inset a further `PIXEL_SEGMENT_PADDING` past the
+//    fill rect) — so it returns `PIXEL_EDGE_INSET + PIXEL_SEGMENT_PADDING`
+//    for the same segment. Before this change both conventions happened
+//    to agree (`0.0` either way, no inset or padding existed to diverge
+//    on). Not introduced by this PR — the asymmetry is pre-existing
+//    backend-testing-helper divergence — but worth flagging so a future
+//    change doesn't assume `find_bounds` means the same rect across
+//    `GtkDriver`/`MacDriver`/`WinDriver`.
+//
 // `#[allow(dead_code)]`: see `primitives::form`'s identical note (#808)
 // — only *called* once a real pixel backend is compiled in, exercised by
 // each backend's own `Backend::draw_status_bar` call site plus this
