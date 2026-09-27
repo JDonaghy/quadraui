@@ -12,6 +12,12 @@
 //! of truth for all of that; per-file copies are deleted in favour of
 //! a glob import (`use super::cg::*;`) so call sites are unchanged.
 //!
+//! `stroke_line` (and the `CGContextMoveToPoint`/`CGContextAddLineToPoint`/
+//! `CGContextStrokePath` extern decls it alone used) was removed in #1077
+//! once its only caller, `macos::tooltip`'s `TooltipBorder::Sides` arm,
+//! moved onto `NativeSurface::surface_draw_line` (`CgSurface` →
+//! `super::backend::ns_draw_line`) instead.
+//!
 //! Not every `src/macos/` file that touches CoreGraphics draws through
 //! here — `backend.rs`, `board.rs`, `headless.rs`, `image.rs`,
 //! `pipeline_view.rs`, `text.rs`, `toolbar.rs`, and a handful of other
@@ -63,17 +69,6 @@ extern "C" {
     pub(crate) fn CGContextSetLineWidth(c: CGContextRef, width: core_graphics::base::CGFloat);
     pub(crate) fn CGContextFillRect(c: CGContextRef, rect: CGRect);
     pub(crate) fn CGContextStrokeRect(c: CGContextRef, rect: CGRect);
-    pub(crate) fn CGContextMoveToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    pub(crate) fn CGContextAddLineToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    pub(crate) fn CGContextStrokePath(c: CGContextRef);
 }
 
 /// Build a `CGRect` from `(x, y, w, h)` — replaces the `CGRectExt::new_xywh`
@@ -151,28 +146,4 @@ pub(crate) unsafe fn stroke_rect(
     CGContextSetRGBStrokeColor(ctx, r, g, b, a);
     CGContextSetLineWidth(ctx, line_width);
     CGContextStrokeRect(ctx, rect(x, y, w, h));
-}
-
-/// Stroke a single line segment from `(x0, y0)` to `(x1, y1)` with `c`
-/// at `line_width`.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-pub(crate) unsafe fn stroke_line(
-    ctx: CGContextRef,
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    c: Color,
-    line_width: f64,
-) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBStrokeColor(ctx, r, g, b, a);
-    CGContextSetLineWidth(ctx, line_width);
-    CGContextMoveToPoint(ctx, x0, y0);
-    CGContextAddLineToPoint(ctx, x1, y1);
-    CGContextStrokePath(ctx);
 }
