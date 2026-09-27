@@ -494,10 +494,12 @@ mod wide_nul_terminated_tests {
 /// Open `target` (a URL string or a filesystem path, carried as `&OsStr`
 /// so a non-UTF-8 path need not be lossily converted before the call) —
 /// the single opener implementation shared by `tui::services`
-/// (`TuiPlatformServices::open_url_result`'s opener step, via
-/// [`try_open_with_default`]), `macos::services` (`open_url`/`open_path`/
-/// `open_url_result`), and `win::services` (`open_url`/`open_path`/
-/// `open_url_result`).
+/// (`TuiPlatformServices::open_path` directly, and
+/// `TuiPlatformServices::open_url_result`'s opener step via
+/// [`try_open_with_default`] — that one can't call this function itself
+/// since it needs the raw bool to chain its own OSC 8 fallback),
+/// `macos::services` (`open_url`/`open_path`/`open_url_result`), and
+/// `win::services` (`open_url`/`open_path`/`open_url_result`).
 ///
 /// Before this issue, each backend wrote its own copy: `tui` via
 /// `build_url_opener_command`/`try_platform_opener`/a hand-written
@@ -526,6 +528,7 @@ mod wide_nul_terminated_tests {
 /// re-parses its own command-line text for `&`/`|`/`^`/`%` regardless of
 /// how the argument was quoted for `CreateProcess`.
 #[cfg(any(
+    feature = "tui",
     all(feature = "macos", target_os = "macos"),
     all(feature = "win", target_os = "windows")
 ))]
@@ -757,10 +760,11 @@ mod open_with_default_tests {
     /// honestly reports `false`. RED before this issue (`open_url_result`'s
     /// default just called the infallible `open_url` and always answered
     /// `Ok(())`). See `open_with_default_reports_err_when_the_opener_is_missing`
-    /// below (macOS/`win` only, since `open_with_default` itself isn't
-    /// compiled for a bare `--features tui` build — `tui::services` calls
-    /// `try_open_with_default` directly instead, so it can chain its own
-    /// OSC 8 fallback) for the `ServiceResult`-level half of this.
+    /// below for the `ServiceResult`-level half of this — `open_with_default`
+    /// itself is also compiled for a bare `--features tui` build (it backs
+    /// `TuiPlatformServices::open_path`), even though `open_url_result`
+    /// still calls `try_open_with_default` directly there so it can chain
+    /// its own OSC 8 fallback.
     #[cfg(unix)]
     #[test]
     fn try_open_with_default_returns_false_when_the_opener_is_missing() {
@@ -777,13 +781,19 @@ mod open_with_default_tests {
     }
 
     /// `open_with_default`'s own `ServiceResult` wrapping, via the `$PATH`
-    /// stub technique — macOS only: this technique needs a `$PATH`-resolved
+    /// stub technique — Unix only: this technique needs a `$PATH`-resolved
     /// binary to intercept, which only applies to `open_with_default`'s
-    /// Unix arm. `win::services`'s own `ServiceResult`-level coverage
+    /// Unix arm. Runs under either `macos` or bare `tui` (the latter is
+    /// `TuiPlatformServices::open_path`'s own coverage — issue #1087
+    /// review, "TUI `open_path` left as a fourth un-consolidated copy").
+    /// `win::services`'s own `ServiceResult`-level coverage
     /// (`open_url_result_reports_failure_for_an_unregistered_scheme`) uses
     /// a real `ShellExecuteW` call instead, since Windows' opener has no
     /// `$PATH`-resolved binary to intercept this way at all.
-    #[cfg(all(feature = "macos", target_os = "macos"))]
+    #[cfg(any(
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "tui", unix)
+    ))]
     #[test]
     fn open_with_default_reports_err_when_the_opener_is_missing() {
         let _guard = PATH_OVERRIDE_TEST_LOCK
