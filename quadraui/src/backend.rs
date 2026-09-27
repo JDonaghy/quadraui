@@ -3818,10 +3818,15 @@ pub trait PlatformServices {
     /// Default: `Err(BackendError::Unsupported)`, the same "future
     /// backend compiles before it has an opinion" placeholder
     /// [`Self::system_theme`]'s default doc explains. GTK, macOS, and
-    /// Win-GUI each override this with a real implementation; TUI keeps
-    /// the default — a terminal has no file manager window to reveal
-    /// anything in, so `Unsupported` there is the honest final answer,
-    /// not a placeholder (see `tui::services`'s module doc).
+    /// Win-GUI each override this with a real implementation. TUI used to
+    /// keep this default outright — a terminal has no file manager
+    /// *window* of its own — but issue #1092 gave it a real degrade too
+    /// (`crate::desktop::reveal_in_file_manager`: `open -R` / Explorer
+    /// `/select,` / D-Bus `ShowItems`, falling back to opening the parent
+    /// directory), on the same "the desktop session underneath the
+    /// terminal can do this even though the terminal itself can't"
+    /// reasoning `open_url_result` already applies to launching a browser
+    /// (see `tui::services`'s module doc's "`shell.*` parity" section).
     fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
         let _ = path;
         Err(BackendError::Unsupported)

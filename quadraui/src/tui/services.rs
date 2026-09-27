@@ -33,9 +33,9 @@
 //!
 //! [`docs/CLIPBOARD.md`]: https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/CLIPBOARD.md
 //!
-//! `send_notification` remains a no-op stub — apps that need it supply
-//! their own `PlatformServices` or call platform APIs directly. `open_url`
-//! is genuinely implemented; see "URL opening (issue #969)" below.
+//! `send_notification` is a genuine best-effort degrade, not a no-op
+//! stub — see "Notifications (issue #1092)" below. `open_url` is
+//! genuinely implemented too; see "URL opening (issue #969)" below.
 //!
 //! ## Dialogs (issue #965)
 //!
@@ -95,19 +95,84 @@
 //! `crate::compose::file_picker`'s module doc for why the analogous file
 //! picker doesn't repeat one of its keybinding trade-offs).
 //!
-//! ## `shell.*` parity (issue #956) — better than the rest of this list
+//! ## `shell.*` parity (issues #956, #1092) — every method now genuinely real
 //!
-//! Three of #956's four methods are genuinely implemented here, not
-//! no-op stubs: `beep` (BEL, a terminal's only notification channel —
-//! full support, arguably more honest than any other backend's), and
+//! All four of #956's methods are genuinely implemented here, not no-op
+//! stubs: `beep` (BEL, a terminal's only notification channel — full
+//! support, arguably more honest than any other backend's), and
 //! `move_to_trash` (delegates to [`crate::desktop::move_to_trash`] — the
 //! cross-platform `trash` crate needs only a filesystem, not a live
 //! desktop session, so TUI gets it too). `open_path` delegates to
 //! [`crate::desktop::open_with_default`] (issue #1087) — `xdg-open`/`open`
 //! on Unix, `ShellExecuteW` on Windows, best-effort either way (see
-//! [`TuiPlatformServices::open_path`]'s own doc). Only
-//! `reveal_in_file_manager` stays `Err(BackendError::Unsupported)`: a
-//! terminal genuinely has no file-manager window to reveal anything in.
+//! [`TuiPlatformServices::open_path`]'s own doc). `reveal_in_file_manager`
+//! used to be the one exception, an unconditional
+//! `Err(BackendError::Unsupported)` — a terminal genuinely has no
+//! file-manager *window* of its own, but per this crate's *Cross-backend
+//! portability commitment* that conflated "TUI has no window chrome" with
+//! "TUI can't ask the desktop session it's running inside to open one",
+//! which is exactly the same reasoning `open_url_result` (issue #969,
+//! below) already applied to launching a browser. Issue #1092 closes that
+//! gap: [`TuiPlatformServices::reveal_in_file_manager`] now delegates to
+//! [`crate::desktop::reveal_in_file_manager`] — `open -R` on macOS,
+//! `ShellExecuteW`-driven Explorer `/select,` on Windows, and
+//! `org.freedesktop.FileManager1.ShowItems` over D-Bus (falling back to
+//! opening the parent directory) on Linux/BSD — and only reports
+//! `Unsupported` when that degrade itself can't reach anything (see that
+//! function's own doc for the full per-platform story).
+//!
+//! ## Notifications (issue #1092)
+//!
+//! `send_notification` used to be `fn send_notification(&self, _n:
+//! Notification) {}` — a silent, undetectable no-op (`notifications` was
+//! never declared in [`TuiBackend::backend_caps`], so a caller checking
+//! that flag first would at least know not to trust it, but any caller
+//! that skipped the check got nothing with no signal at all). Two
+//! independent, best-effort legs now run on every call, mirroring
+//! [`TuiClipboard::write_text`]'s "every leg best-effort, run
+//! independently" posture (issue #398) rather than trying to pick one:
+//! this crate has no synchronous way to ask a terminal "do you support
+//! OSC 9?", so guessing which single leg to use would just be trading one
+//! silent failure mode for another.
+//!
+//! 1. **OSC 9 / OSC 777** ([`emit_notification_osc`]) — two terminal
+//!    escape sequences a capable terminal renders as a native
+//!    notification with no desktop session involved at all: OSC 9
+//!    (iTerm2's "Growl-style" extension, also understood by kitty and
+//!    WezTerm) and OSC 777 (rxvt-unicode's `notify` extension, also
+//!    understood by several VTE-based terminals). Both are written to
+//!    stdout and, on Unix, `/dev/tty`, the same dual-write reliability
+//!    reasoning [`TuiClipboard::write_text`]'s OSC 52 leg already uses.
+//!    `n`'s title/body are stripped of raw control characters first
+//!    ([`strip_control_chars`]) — an attacker- or content-derived title
+//!    containing another `ESC` could otherwise break out of the intended
+//!    sequence and inject arbitrary further escapes into a
+//!    capable-but-not-bulletproof terminal, the same class of bug issue
+//!    #969's review caught in `open_url_via`'s OSC 8 fallback.
+//! 2. **Native command-line notifier** — a desktop-level fallback for a
+//!    terminal that renders neither OSC escape: `osascript -e 'display
+//!    notification …'` on macOS (via
+//!    [`crate::desktop::display_notification_script`], shared with
+//!    `macos::services::MacPlatformServices::send_notification`'s own
+//!    real implementation — see that function's doc for the AppleScript
+//!    shape and why only `n.is_silent()` of #955's four `Notification`
+//!    fields has anywhere to go), `notify-send` on Linux/BSD. Neither
+//!    exists as a stock Windows Terminal fallback: OSC 9 is natively
+//!    supported there, so the escape leg alone already covers it.
+//!
+//! Both legs are silent on failure (tool absent, no display, terminal
+//! doesn't understand the escape) — a caller with no way to distinguish
+//! "delivered" from "silently dropped" is exactly [`Self::send_notification`]'s
+//! pre-existing, unavoidable contract (the trait method returns `()`,
+//! see `BackendCaps::notifications`'s own doc for what the capability
+//! flag *does* promise instead), not a regression this issue introduces.
+//! A terminal on a desktop session showing neither the OSC render nor a
+//! native notifier is the one genuinely headless case this can't reach —
+//! there is no further fallback to earn an honest `Unsupported` from,
+//! since `send_notification`'s bare-`()` signature has nowhere to carry
+//! one (see [`BackendCaps::notifications`]'s doc, and
+//! `tests/conformance/caps.rs`'s `PLATFORM_SERVICE_CONTRACTS` entry for
+//! why that's this method's honesty story rather than a `_result` twin).
 //!
 //! ## URL opening (issue #969)
 //!
@@ -424,6 +489,94 @@ fn open_url_via(url: &str, try_opener: impl FnOnce(&str) -> bool) -> ServiceResu
     }
     Err(BackendError::Unsupported)
 }
+
+// ── Notification OSC support (issue #1092) ──────────────────────────────────────
+
+/// Strip raw control characters (`ESC`, `BEL`, other C0/C1 controls) out
+/// of `s` before embedding it in a terminal escape sequence — see the
+/// module doc's "Notifications (issue #1092)" section for why: an
+/// attacker- or content-derived notification title/body containing
+/// another `ESC` could otherwise break out of the OSC 9/777 sequence
+/// [`emit_notification_osc`] builds and inject arbitrary further escapes
+/// into a capable-but-not-bulletproof terminal, the same class of bug
+/// issue #969's review caught in `open_url_via`'s OSC 8 fallback.
+fn strip_control_chars(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// Build the OSC 9 ("Growl-style") notification escape sequence: `ESC ]
+/// 9 ; <message> BEL`. iTerm2's own extension (also understood by kitty
+/// and WezTerm) has no separate title field — whatever follows the
+/// semicolon is shown as-is — so `title` and `body` are joined into one
+/// message, `title` dropped entirely when empty rather than emitting a
+/// dangling `": "` prefix.
+fn osc9_notification_sequence(title: &str, body: &str) -> String {
+    let message = if title.is_empty() {
+        body.to_string()
+    } else {
+        format!("{title}: {body}")
+    };
+    format!("\x1b]9;{message}\x07")
+}
+
+/// Build the OSC 777 `notify` escape sequence: `ESC ] 777 ; notify ;
+/// <title> ; <body> BEL` — rxvt-unicode's extension, also understood by
+/// several VTE-based terminals. Unlike OSC 9 above, this carries `title`
+/// and `body` as distinct fields.
+fn osc777_notification_sequence(title: &str, body: &str) -> String {
+    format!("\x1b]777;notify;{title};{body}\x07")
+}
+
+/// Write both [`osc9_notification_sequence`] and
+/// [`osc777_notification_sequence`] for `title`/`body` to `writer` in one
+/// call — emitting both is harmless (mirrors the tmux-passthrough
+/// reasoning in this module's "tmux" doc section: each terminal consumes
+/// whichever escape it understands and ignores the other). Returns
+/// whether the write (and flush) succeeded.
+fn emit_notification_osc_to(title: &str, body: &str, writer: &mut dyn std::io::Write) -> bool {
+    let seq = format!(
+        "{}{}",
+        osc9_notification_sequence(title, body),
+        osc777_notification_sequence(title, body)
+    );
+    writer
+        .write_all(seq.as_bytes())
+        .and_then(|()| writer.flush())
+        .is_ok()
+}
+
+/// Emit both notification OSC sequences for `n` to stdout and (Unix)
+/// `/dev/tty` — the first leg of
+/// [`TuiPlatformServices::send_notification`] (issue #1092); see the
+/// module doc's "Notifications" section. `title`/`body` are run through
+/// [`strip_control_chars`] first (unlike [`open_url_via`]'s OSC 8
+/// fallback, which rejects the whole write when a control character is
+/// present, this degrade has no fallback of its own to reject *into* —
+/// stripping keeps the notification visible instead of silently dropping
+/// it entirely).
+fn emit_notification_osc(n: &Notification) {
+    let title = strip_control_chars(&n.title);
+    let body = strip_control_chars(&n.body);
+    let _ = emit_notification_osc_to(&title, &body, &mut std::io::stdout());
+    emit_notification_osc_to_tty(&title, &body);
+}
+
+/// The `/dev/tty` half of [`emit_notification_osc`], as a
+/// `cfg`-overloaded pair (the same shape [`emit_osc8_hyperlink_to_tty`]
+/// uses) rather than an inline `#[cfg(unix)]` block — see that
+/// function's doc for the `unused_mut`-on-Windows trap this shape avoids.
+#[cfg(unix)]
+fn emit_notification_osc_to_tty(title: &str, body: &str) {
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = emit_notification_osc_to(title, body, &mut tty);
+    }
+}
+
+/// Non-Unix: there is no `/dev/tty` to write a second copy to, so the
+/// stdout leg in [`emit_notification_osc`] stands alone. See the `unix`
+/// overload of this same function (above) for the shared doc.
+#[cfg(not(unix))]
+fn emit_notification_osc_to_tty(_title: &str, _body: &str) {}
 
 // ── Native clipboard tool fallback (#398) ───────────────────────────────────────
 
@@ -1080,6 +1233,120 @@ mod open_url_tests {
     }
 }
 
+// ── Notification OSC tests (issue #1092) ─────────────────────────────────────────
+
+#[cfg(test)]
+mod notification_osc_tests {
+    use super::*;
+
+    #[test]
+    fn strip_control_chars_removes_escape_and_other_controls_but_keeps_the_rest() {
+        assert_eq!(strip_control_chars("plain text"), "plain text");
+        assert_eq!(strip_control_chars("a\x1b]0;pwned\x07b"), "a]0;pwnedb");
+        assert_eq!(strip_control_chars("tab\tnewline\n"), "tabnewline");
+    }
+
+    #[test]
+    fn osc9_notification_sequence_joins_title_and_body() {
+        assert_eq!(
+            osc9_notification_sequence("Build", "Finished"),
+            "\x1b]9;Build: Finished\x07"
+        );
+    }
+
+    #[test]
+    fn osc9_notification_sequence_drops_a_dangling_prefix_for_an_empty_title() {
+        assert_eq!(
+            osc9_notification_sequence("", "Finished"),
+            "\x1b]9;Finished\x07"
+        );
+    }
+
+    #[test]
+    fn osc777_notification_sequence_carries_title_and_body_as_distinct_fields() {
+        assert_eq!(
+            osc777_notification_sequence("Build", "Finished"),
+            "\x1b]777;notify;Build;Finished\x07"
+        );
+    }
+
+    #[test]
+    fn emit_notification_osc_to_writes_both_sequences_and_reports_success() {
+        let mut out = Vec::new();
+        assert!(emit_notification_osc_to("Build", "Finished", &mut out));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!(
+                "{}{}",
+                osc9_notification_sequence("Build", "Finished"),
+                osc777_notification_sequence("Build", "Finished")
+            )
+        );
+    }
+
+    /// Same "always-fails writer" stand-in [`emit_osc8_hyperlink_to`]'s
+    /// own test uses — stands in for "no controlling terminal/stream
+    /// reachable at all", the one case [`emit_notification_osc_to`]
+    /// should honestly report `false` for.
+    struct FailingWriter;
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(
+                "simulated write failure (#1092 test)",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emit_notification_osc_to_reports_failure_when_the_writer_fails() {
+        let mut w = FailingWriter;
+        assert!(!emit_notification_osc_to("Build", "Finished", &mut w));
+    }
+
+    /// #1092 review-equivalent bar (mirrors issue #969's `open_url_via`
+    /// control-character guard): a title/body carrying a raw control
+    /// character must never reach the OSC sequences unstripped — this
+    /// only pins that [`emit_notification_osc`]'s production call site
+    /// actually runs both through [`strip_control_chars`] first, via the
+    /// pure sequence builders directly (the same "control character
+    /// rejected before it reaches the sequence" bar
+    /// `open_url_via_rejects_control_characters_in_the_osc8_fallback`
+    /// sets for the OSC 8 leg).
+    #[test]
+    fn stripped_title_and_body_never_carry_a_raw_escape_into_the_sequence() {
+        let title = strip_control_chars("t\x1b]0;pwned\x07itle");
+        let body = strip_control_chars("b\x1body");
+        assert!(!title.contains('\x1b') && !title.contains('\x07'));
+        assert!(!body.contains('\x1b') && !body.contains('\x07'));
+
+        // Each builder emits exactly one `ESC` introducer (its own) — a
+        // sanitized title/body must not add any more than that.
+        let osc9 = osc9_notification_sequence(&title, &body);
+        assert_eq!(osc9.matches('\x1b').count(), 1, "{osc9:?}");
+        let osc777 = osc777_notification_sequence(&title, &body);
+        assert_eq!(osc777.matches('\x1b').count(), 1, "{osc777:?}");
+    }
+
+    /// #1092 acceptance bar: `send_notification` writes real OSC 9/777
+    /// bytes to the test process's stdout as a side effect — harmless,
+    /// the same posture `open_url_via_falls_back_to_osc8_when_the_opener_is_missing`
+    /// already accepts for its OSC 8 write. Doesn't (and can't) assert a
+    /// visible notification appeared; only that the call doesn't panic
+    /// and returns, matching `beep_reports_success`'s "doesn't assert on
+    /// the actual bytes written" posture for a real terminal write.
+    #[test]
+    fn send_notification_does_not_panic() {
+        let services = TuiPlatformServices::new();
+        services.send_notification(Notification::new(
+            "quadraui#1092",
+            "send_notification smoke test",
+        ));
+    }
+}
+
 /// Default `PlatformServices` impl for the TUI backend.
 pub struct TuiPlatformServices {
     clipboard: TuiClipboard,
@@ -1320,7 +1587,32 @@ impl PlatformServices for TuiPlatformServices {
         )
     }
 
-    fn send_notification(&self, _n: Notification) {}
+    /// quadraui#1092: a genuine best-effort degrade — see the module
+    /// doc's "Notifications" section for the full two-leg story
+    /// ([`emit_notification_osc`]'s OSC 9/777 escape leg, plus a native
+    /// `osascript`/`notify-send` command-line notifier fallback). Both
+    /// legs are independent and best-effort; this always attempts both
+    /// rather than trying to detect which one a given terminal actually
+    /// renders.
+    fn send_notification(&self, n: Notification) {
+        emit_notification_osc(&n);
+        #[cfg(target_os = "macos")]
+        {
+            let script =
+                crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .spawn();
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let _ = std::process::Command::new("notify-send")
+                .arg(&n.title)
+                .arg(&n.body)
+                .spawn();
+        }
+    }
 
     /// Infallible wrapper over [`Self::open_url_result`], discarding its
     /// outcome — see that method's doc (and the module doc's "URL opening
@@ -1349,24 +1641,17 @@ impl PlatformServices for TuiPlatformServices {
         })
     }
 
-    /// No file manager window a terminal could reveal anything in —
-    /// unconditionally `Err(BackendError::Unsupported)` (issue #956).
-    /// Unlike [`Self::open_url_result`] (issue #969), there is no
-    /// escape-sequence fallback that could make this one honest — an OSC
-    /// 8 hyperlink can stand in for "open a URL", but nothing plays that
-    /// role for "reveal this path in a file manager window", so
-    /// `Unsupported` here really is the final answer, not a placeholder.
-    /// Explicitly overridden (rather than left to inherit
-    /// [`PlatformServices::reveal_in_file_manager`]'s identical default
-    /// body) purely so a reader scanning `TuiPlatformServices` for #956
-    /// coverage finds this note instead of wondering why the method is
-    /// missing — [`Self::open_path`] and [`Self::move_to_trash`] below are
-    /// the two members of this issue's four that TUI implements for real,
-    /// [`Self::beep`] is fully native to a terminal, and this one is the
-    /// genuine gap: a terminal has no windowed file manager to hand a
-    /// selection to.
-    fn reveal_in_file_manager(&self, _path: &Path) -> ServiceResult<()> {
-        Err(BackendError::Unsupported)
+    /// quadraui#1092: delegates to [`crate::desktop::reveal_in_file_manager`]
+    /// — `open -R` on macOS, `ShellExecuteW`-driven Explorer `/select,` on
+    /// Windows, `org.freedesktop.FileManager1.ShowItems` over D-Bus
+    /// (falling back to opening the parent directory) on Linux/BSD. Used
+    /// to be an unconditional `Err(BackendError::Unsupported)` (issue
+    /// #956) — see that shared function's doc, and the module doc's
+    /// `shell.*` parity section, for why that was never actually earned:
+    /// a terminal has no file-manager *window* of its own, but a desktop
+    /// session running underneath it plainly does.
+    fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
+        crate::desktop::reveal_in_file_manager(path)
     }
 
     /// [`crate::desktop::open_with_default`] (issue #1087) — the same
@@ -1523,18 +1808,19 @@ mod message_dialog_tests {
     // harmless stand-in command, asserted on the spawned command rather
     // than by actually opening anything.
 
-    /// quadraui#956: no file manager window a terminal could reveal
-    /// anything in — the one member of this issue's four TUI does not
-    /// implement for real (see `TuiPlatformServices::reveal_in_file_manager`'s
-    /// doc).
-    #[test]
-    fn reveal_in_file_manager_reports_unsupported_on_tui() {
-        let services = TuiPlatformServices::new();
-        assert_eq!(
-            services.reveal_in_file_manager(std::path::Path::new("/tmp")),
-            Err(BackendError::Unsupported)
-        );
-    }
+    // quadraui#1092: `reveal_in_file_manager` is now genuinely functional
+    // (`crate::desktop::reveal_in_file_manager`) — it no longer
+    // unconditionally reports `Unsupported` the way #956 left it.
+    // Deliberately **not** pinned by a test that calls the real
+    // `TuiPlatformServices::reveal_in_file_manager` here, for the same
+    // "would have a real side effect on a host with a real desktop
+    // opener" reason `open_url_result` isn't (see the comment above this
+    // one): on macOS this would genuinely spawn Finder, and on Linux with
+    // a live session bus and file manager running, it would genuinely pop
+    // a window. See `crate::desktop`'s own `reveal_in_file_manager_tests`
+    // for the acceptance-bar coverage instead — command construction per
+    // platform plus the `$PATH`-stub "every leg fails → `Unsupported`"
+    // outcome, none of which spawn anything real.
 
     /// quadraui#956: BEL is a terminal's only notification channel — this
     /// pins that `beep` reports success (rather than the trait's
