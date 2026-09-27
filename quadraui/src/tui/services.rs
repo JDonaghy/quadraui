@@ -150,15 +150,21 @@
 //!    capable-but-not-bulletproof terminal, the same class of bug issue
 //!    #969's review caught in `open_url_via`'s OSC 8 fallback.
 //! 2. **Native command-line notifier** — a desktop-level fallback for a
-//!    terminal that renders neither OSC escape: `osascript -e 'display
-//!    notification …'` on macOS (via
-//!    [`crate::desktop::display_notification_script`], shared with
+//!    terminal that renders neither OSC escape:
+//!    [`crate::desktop::tui_macos_notify_command`] (`osascript -e
+//!    'display notification …'` on macOS, built from
+//!    [`crate::desktop::display_notification_script`] — shared text with
 //!    `macos::services::MacPlatformServices::send_notification`'s own
-//!    real implementation — see that function's doc for the AppleScript
+//!    real implementation, see that function's doc for the AppleScript
 //!    shape and why only `n.is_silent()` of #955's four `Notification`
-//!    fields has anywhere to go), `notify-send` on Linux/BSD. Neither
-//!    exists as a stock Windows Terminal fallback: OSC 9 is natively
-//!    supported there, so the escape leg alone already covers it.
+//!    fields has anywhere to go) or
+//!    [`crate::desktop::tui_notify_send_command`] (`notify-send` on
+//!    Linux/BSD). Both are split into pure, unspawned command builders —
+//!    same shape as [`crate::desktop::reveal_in_file_manager`]'s
+//!    per-platform commands below — specifically so a test can assert on
+//!    the constructed argv without spawning anything. Neither exists as
+//!    a stock Windows Terminal fallback: OSC 9 is natively supported
+//!    there, so the escape leg alone already covers it.
 //!
 //! Both legs are silent on failure (tool absent, no display, terminal
 //! doesn't understand the escape) — a caller with no way to distinguish
@@ -173,6 +179,20 @@
 //! one (see [`BackendCaps::notifications`]'s doc, and
 //! `tests/conformance/caps.rs`'s `PLATFORM_SERVICE_CONTRACTS` entry for
 //! why that's this method's honesty story rather than a `_result` twin).
+//!
+//! **`TuiBackend::backend_caps().notifications` stays `false`** despite
+//! this real implementation — see that method's doc
+//! (`crate::tui::backend`) for the full reasoning. Short version:
+//! [`crate::compose::notification::notify_or_toast`] treats `true` as a
+//! license to skip its guaranteed in-canvas `Toast` degrade, and both
+//! legs above are silent-fail on a very ordinary TUI host (vanilla
+//! terminal, headless/CI container — no OSC support, no
+//! `notify-send`/`osascript` on `$PATH`). Reporting `true` would let a
+//! caller trade a guaranteed, visible toast for a coin flip that can
+//! deliver nothing at all with no way to tell. This method is still
+//! reachable directly for a caller that wants the best-effort native/OSC
+//! attempt on purpose — the capability flag only gates
+//! `notify_or_toast`'s automatic choice, not this method's availability.
 //!
 //! ## URL opening (issue #969)
 //!
@@ -1598,19 +1618,12 @@ impl PlatformServices for TuiPlatformServices {
         emit_notification_osc(&n);
         #[cfg(target_os = "macos")]
         {
-            let script =
-                crate::desktop::display_notification_script(&n.title, &n.body, n.is_silent());
-            let _ = std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .spawn();
+            let _ =
+                crate::desktop::tui_macos_notify_command(&n.title, &n.body, n.is_silent()).spawn();
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            let _ = std::process::Command::new("notify-send")
-                .arg(&n.title)
-                .arg(&n.body)
-                .spawn();
+            let _ = crate::desktop::tui_notify_send_command(&n.title, &n.body).spawn();
         }
     }
 
