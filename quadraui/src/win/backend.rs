@@ -155,8 +155,10 @@ fn nominal_text_width(text: &str, char_width: f32) -> f32 {
 
 /// [`crate::primitives::layout_metrics::TextMeasure`] impl backed by
 /// [`nominal_text_width`] — for `*_layout` fallbacks (`form_layout`,
-/// `toolbar_layout`, `sidebar_panel_layout`) that need a
-/// `&dyn TextMeasure` rather than a bare width.
+/// `toolbar_layout`, `sidebar_panel_layout`, and — since issue #1078
+/// deleted their inline nominal-layout duplicates — `tab_bar_layout*`,
+/// `data_table_layout`, `menu_bar_layout`, `toast_stack_layout`) that
+/// need a `&dyn TextMeasure` rather than a bare width.
 struct NominalTextMeasure {
     char_width: f32,
 }
@@ -167,214 +169,31 @@ impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
     }
 }
 
-/// Nominal-measurer fallback for [`WinBackend::draw_tab_bar_icons`] /
-/// [`WinBackend::tab_bar_layout_icons`] and their `TabBarLayout`-returning
-/// counterparts (issue #924) — mirrors `super::tab_bar::compute_layout`'s
-/// shape (same padding/gap constants, duplicated by *value* rather than
-/// by code per `PRIMITIVE_RULES.md`#713, since that module is
-/// `target_os = "windows"`-gated and this fallback must also compile and
-/// run on non-Windows hosts) but measures every label/segment via
-/// [`nominal_text_width`] instead of `DWrite::measure_text`.
-fn win_tab_bar_nominal_layout(
-    rect: Rect,
-    bar: &TabBar,
-    icons: &[Option<crate::TabIcon>],
-    char_width: f32,
-) -> TabBarLayout {
-    const TAB_PAD_DIP: f32 = 14.0;
-    const TAB_INNER_GAP_DIP: f32 = 10.0;
-    const TAB_OUTER_GAP_DIP: f32 = 1.0;
-    const TAB_ICON_GAP_DIP: f32 = 6.0;
-
-    let close_w = if bar.show_tab_close {
-        nominal_text_width("×", char_width)
-    } else {
-        0.0
-    };
-    let icon_extra = |i: usize| match crate::tab_icon_at(icons, i) {
-        Some(icon) => nominal_text_width(&icon.glyph, char_width) + TAB_ICON_GAP_DIP,
-        None => 0.0,
-    };
-    let measure_tab = |i: usize| -> crate::TabMeasure {
-        let tab = &bar.tabs[i];
-        let name_w = nominal_text_width(&tab.label, char_width);
-        let has_close = bar.show_tab_close && tab.is_closable;
-        let close_extra = if has_close {
-            TAB_INNER_GAP_DIP + close_w
-        } else {
-            0.0
-        };
-        let total =
-            TAB_PAD_DIP + icon_extra(i) + name_w + close_extra + TAB_PAD_DIP + TAB_OUTER_GAP_DIP;
-        let close_region_w = if has_close {
-            TAB_INNER_GAP_DIP + close_w + TAB_PAD_DIP + TAB_OUTER_GAP_DIP
-        } else {
-            0.0
-        };
-        crate::TabMeasure::new(total, close_region_w)
-    };
-    let measure_segment = |i: usize| -> crate::SegmentMeasure {
-        crate::SegmentMeasure::new(nominal_text_width(&bar.right_segments[i].text, char_width))
-    };
-    bar.layout(rect.width, rect.height, 0.0, measure_tab, measure_segment)
+/// [`super::status_bar::StatusMeasure`] impl backed by
+/// [`nominal_text_width`] — `bold` is ignored, matching the pre-#1078
+/// `win_status_bar_nominal_layout`'s behaviour exactly (a real, tracked
+/// gap in the nominal fallback, not something this refactor fixes; see
+/// `super::status_bar::StatusMeasure`'s doc for why bold-awareness needs
+/// its own trait rather than `TextMeasure`).
+impl super::status_bar::StatusMeasure for NominalTextMeasure {
+    fn width_of(&self, text: &str, _bold: bool) -> f32 {
+        nominal_text_width(text, self.char_width)
+    }
 }
 
-/// [`TabBarHits`] twin of [`win_tab_bar_nominal_layout`] — narrows the
-/// nominal layout down via the same shared
-/// [`crate::backend::tab_bar_hits_from_layout`]/[`crate::backend::shift_tab_bar_hits`]
-/// helpers `super::tab_bar::hits_from_layout` uses. Skips that fn's extra
-/// "engine feedback" scroll-offset correction pass (a UX nicety, not a
-/// hit-test correctness requirement) — `tab_bar_hits_from_layout` already
-/// seeds `correct_scroll_offset` from `TabBar::layout`'s own
-/// `resolved_scroll_offset`, which honours `bar.scroll_offset` verbatim
-/// since this fallback measures with `scroll_arrow_width: 0.0` same as
-/// the real rasteriser.
-#[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
-fn win_tab_bar_nominal_hits(
-    rect: Rect,
-    bar: &TabBar,
-    icons: &[Option<crate::TabIcon>],
-    char_width: f32,
-) -> TabBarHits {
-    let layout = win_tab_bar_nominal_layout(rect, bar, icons, char_width);
-    let mut hits = crate::backend::tab_bar_hits_from_layout(&layout, bar);
-    crate::backend::shift_tab_bar_hits(&mut hits, rect.x as f64);
-    hits
-}
-
-/// Nominal-measurer fallback for [`WinBackend::draw_data_table`] /
-/// [`WinBackend::data_table_layout`] — mirrors
-/// `super::data_table::win_data_table_layout`'s shape (same
-/// `SCROLLBAR_WIDTH`/header-height formula, duplicated by value per
-/// `PRIMITIVE_RULES.md`#713) but measures column-title width via
-/// [`nominal_text_width`] instead of `DWrite::measure_text` (issue #924).
-fn win_data_table_nominal_layout(
-    rect: Rect,
-    table: &crate::DataTable,
-    line_height: f32,
-    char_width: f32,
-) -> crate::DataTableLayout {
-    const SCROLLBAR_WIDTH: f32 = 8.0;
-    let header_height = (line_height * 1.2).round();
-    table.layout(
-        rect.width,
-        rect.height,
-        line_height,
-        header_height,
-        SCROLLBAR_WIDTH,
-        |col| {
-            crate::primitives::data_table::ColumnMeasure::new(nominal_text_width(
-                &col.title, char_width,
-            ))
-        },
-    )
-}
-
-/// Nominal-measurer fallback for [`WinBackend::draw_status_bar_interactive`]
-/// / [`WinBackend::status_bar_layout`] — mirrors
-/// `super::status_bar::win_status_bar_layout`'s shape (same `MIN_GAP_DIP`,
-/// duplicated by value per `PRIMITIVE_RULES.md`#713) but measures each
-/// segment via [`nominal_text_width`] instead of
-/// `DWrite::measure_text_styled` (issue #924).
-fn win_status_bar_nominal_layout(rect: Rect, bar: &StatusBar, char_width: f32) -> StatusBarLayout {
-    const MIN_GAP_DIP: f32 = 16.0;
-    bar.layout(rect.width, rect.height, MIN_GAP_DIP, |seg| {
-        crate::primitives::status_bar::StatusSegmentMeasure::new(nominal_text_width(
-            &seg.text, char_width,
-        ))
-    })
-}
-
-/// Nominal-measurer fallback for [`WinBackend::draw_menu_bar`] /
-/// [`WinBackend::menu_bar_layout`] — mirrors
-/// `super::menu_bar::win_menu_bar_layout`'s shape (same
-/// `ITEM_H_PADDING_DIP`, duplicated by value per `PRIMITIVE_RULES.md`#713)
-/// but measures each item's label via [`nominal_text_width`] instead of
-/// `DWrite::measure_text` (issue #924).
-fn win_menu_bar_nominal_layout(rect: Rect, bar: &MenuBar, char_width: f32) -> MenuBarLayout {
-    const ITEM_H_PADDING_DIP: f32 = 16.0;
-    bar.layout(rect, |i| {
-        // `&`-marker stripped, mirroring `super::menu_bar::display_text`
-        // (private to that Windows-only module).
-        let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
-        crate::primitives::menu_bar::MenuBarItemMeasure::new(
-            nominal_text_width(&text, char_width) + ITEM_H_PADDING_DIP,
-        )
-    })
-}
-
-/// Nominal-measurer fallback for [`WinBackend::draw_toast_stack`] /
-/// [`WinBackend::toast_stack_layout`] — mirrors
-/// `super::toast::win_toast_stack_layout`'s shape (same margin/gap/
-/// padding constants, duplicated by value per `PRIMITIVE_RULES.md`#713)
-/// but measures each toast's action label via [`nominal_text_width`]
-/// instead of `DWrite::measure_text` (issue #924).
-fn win_toast_stack_nominal_layout(
-    rect: Rect,
-    stack: &ToastStack,
-    line_height: f32,
-    char_width: f32,
-) -> ToastStackLayout {
-    const TOAST_WIDTH_DIP: f32 = 320.0;
-    const TOAST_MARGIN_DIP: f32 = 12.0;
-    const TOAST_GAP_DIP: f32 = 8.0;
-    const DISMISS_WIDTH_DIP: f32 = 28.0;
-    const ACTION_PADDING_DIP: f32 = 16.0;
-    const TOAST_PADDING_DIP: f32 = 8.0;
-    stack.layout(
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        TOAST_MARGIN_DIP,
-        TOAST_GAP_DIP,
-        |i| {
-            let toast = &stack.toasts[i];
-            let h = if toast.body.is_empty() {
-                line_height + TOAST_PADDING_DIP * 2.0
-            } else {
-                line_height * 2.0 + TOAST_PADDING_DIP * 2.0
-            };
-            let action_w = toast
-                .action
-                .as_ref()
-                .map(|a| nominal_text_width(&a.label, char_width) + ACTION_PADDING_DIP)
-                .unwrap_or(0.0);
-            crate::primitives::toast::ToastMeasure {
-                width: TOAST_WIDTH_DIP.min((rect.width - TOAST_MARGIN_DIP * 2.0).max(0.0)),
-                height: h,
-                dismiss_width: DISMISS_WIDTH_DIP,
-                action_width: action_w,
-            }
-        },
-    )
-}
-
-/// Nominal-measurer fallback for [`WinBackend::draw_spinner`] /
-/// [`WinBackend::spinner_layout`] — mirrors `super::spinner`'s frame-text
-/// formula (same braille frame table, duplicated by value per
-/// `PRIMITIVE_RULES.md`#713 — every backend keeps its own copy) but
-/// measures the frame text via [`nominal_text_width`] instead of
-/// `DWrite::measure_text` (issue #924).
-fn win_spinner_nominal_layout(
-    rect: Rect,
-    spinner: &Spinner,
+/// [`super::spinner::SpinnerMeasureSource`] impl backed by
+/// [`nominal_text_width`] for the width and a fixed `line_height` for the
+/// height (`DWrite::measure_text` isn't available yet) — matches the
+/// pre-#1078 `win_spinner_nominal_layout`'s behaviour exactly.
+struct NominalSpinnerMeasure {
     char_width: f32,
     line_height: f32,
-) -> SpinnerLayout {
-    const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let glyph = FRAMES[spinner.frame_idx % FRAMES.len()];
-    let text = if spinner.label.is_empty() {
-        glyph.to_string()
-    } else {
-        format!("{glyph} {}", spinner.label)
-    };
-    let w = nominal_text_width(&text, char_width);
-    spinner.layout(
-        rect.x,
-        rect.y,
-        crate::primitives::spinner::SpinnerMeasure::new(w, line_height),
-    )
+}
+
+impl super::spinner::SpinnerMeasureSource for NominalSpinnerMeasure {
+    fn measure(&self, text: &str) -> (f32, f32) {
+        (nominal_text_width(text, self.char_width), self.line_height)
+    }
 }
 
 // ─── Direct2D bootstrap (#19) ───────────────────────────────────────────
@@ -2488,11 +2307,13 @@ impl Backend for WinBackend {
         // nothing (issue #924). `hovered_idx` only affects painting, so
         // it's unused on this path.
         let _ = hovered_idx;
-        win_data_table_nominal_layout(
+        super::data_table::win_data_table_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
             rect,
             table,
             self.current_line_height,
-            self.current_char_width,
         )
     }
 
@@ -2508,11 +2329,13 @@ impl Backend for WinBackend {
                 self.current_line_height,
             );
         }
-        win_data_table_nominal_layout(
+        super::data_table::win_data_table_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
             rect,
             table,
             self.current_line_height,
-            self.current_char_width,
         )
     }
 
@@ -2556,21 +2379,17 @@ impl Backend for WinBackend {
     }
 
     fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // Pure geometry (uniform `line_height` row pitch, no per-item
-        // text measurement) — mirrors `super::list::win_list_layout`
-        // (which is `target_os = "windows"`-gated purely for consistency
-        // with its neighbours, not because it needs any Direct2D/
-        // DirectWrite type), so this is computed directly rather than
-        // reaching into that module (issue #924).
-        let line_height = self.current_line_height;
-        let title_height = if list.title.is_some() {
-            line_height
-        } else {
-            0.0
-        };
-        list.layout(rect.width, rect.height, title_height, |_| {
-            crate::primitives::list::ListItemMeasure::new(line_height)
-        })
+        // #1078: `win_list_layout` is pure geometry — no Direct2D/
+        // DirectWrite type in its signature — so it's no longer gated
+        // behind `target_os = "windows"` and can be called directly
+        // instead of being duplicated inline here (issue #924's original
+        // reason for the duplicate no longer applies).
+        super::list::win_list_layout(
+            list,
+            rect,
+            self.current_line_height,
+            self.current_char_width,
+        )
     }
 
     /// #26: see [`Self::draw_tree`]'s doc.
@@ -2716,7 +2535,8 @@ impl Backend for WinBackend {
 
     /// #25: real Direct2D/DirectWrite rasteriser via `win::status_bar`
     /// once a surface is attached. Falls back to
-    /// [`win_status_bar_nominal_layout`] otherwise (issue #924) —
+    /// [`super::status_bar::win_status_bar_layout`] with a
+    /// [`NominalTextMeasure`] otherwise (issue #924) —
     /// `self.surface`/`self.dwrite` are always populated together by
     /// [`Self::attach_surface`], so that only happens for a standalone
     /// `WinBackend` no window has ever attached to yet.
@@ -2747,7 +2567,13 @@ impl Backend for WinBackend {
         // nothing (issue #924). `hovered_id`/`pressed_id` only affect
         // painting, so they're unused on this path.
         let _ = (hovered_id, pressed_id);
-        win_status_bar_nominal_layout(rect, bar, self.current_char_width)
+        super::status_bar::win_status_bar_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+        )
     }
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -2800,7 +2626,14 @@ impl Backend for WinBackend {
         // paint nothing (issue #924). `hovered_close_tab` only affects
         // painting, so it's unused on this path.
         let _ = hovered_close_tab;
-        win_tab_bar_nominal_hits(rect, bar, icons, self.current_char_width)
+        super::tab_bar::win_tab_bar_layout_icons(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+            icons,
+        )
     }
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2826,7 +2659,14 @@ impl Backend for WinBackend {
         }
         // See `draw_tab_bar_icons`'s doc.
         let _ = hovered_close_tab;
-        win_tab_bar_nominal_layout(rect, bar, icons, self.current_char_width)
+        super::tab_bar::win_tab_bar_native_layout_icons(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+            icons,
+        )
     }
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -2874,7 +2714,13 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::status_bar::win_status_bar_layout(dwrite, rect, bar);
         }
-        win_status_bar_nominal_layout(rect, bar, self.current_char_width)
+        super::status_bar::win_status_bar_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+        )
     }
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -2901,7 +2747,14 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::tab_bar::win_tab_bar_layout_icons(dwrite, rect, bar, icons);
         }
-        win_tab_bar_nominal_hits(rect, bar, icons, self.current_char_width)
+        super::tab_bar::win_tab_bar_layout_icons(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+            icons,
+        )
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
@@ -2917,7 +2770,14 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::tab_bar::win_tab_bar_native_layout_icons(dwrite, rect, bar, icons);
         }
-        win_tab_bar_nominal_layout(rect, bar, icons, self.current_char_width)
+        super::tab_bar::win_tab_bar_native_layout_icons(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+            icons,
+        )
     }
 
     /// #25: activity-bar layout needs no measurer at all (uniform
@@ -3597,7 +3457,13 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `menu_bar_layout` falls back to, and paint
         // nothing (issue #924).
-        win_menu_bar_nominal_layout(rect, bar, self.current_char_width)
+        super::menu_bar::win_menu_bar_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+        )
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
@@ -3607,7 +3473,13 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::menu_bar::win_menu_bar_layout(dwrite, rect, bar);
         }
-        win_menu_bar_nominal_layout(rect, bar, self.current_char_width)
+        super::menu_bar::win_menu_bar_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
+            rect,
+            bar,
+        )
     }
 
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
@@ -3891,11 +3763,13 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `toast_stack_layout` falls back to, and paint
         // nothing (issue #924).
-        win_toast_stack_nominal_layout(
+        super::toast::win_toast_stack_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
             rect,
             stack,
             self.current_line_height,
-            self.current_char_width,
         )
     }
 
@@ -3912,11 +3786,13 @@ impl Backend for WinBackend {
                 self.current_line_height,
             );
         }
-        win_toast_stack_nominal_layout(
+        super::toast::win_toast_stack_layout(
+            &NominalTextMeasure {
+                char_width: self.current_char_width,
+            },
             rect,
             stack,
             self.current_line_height,
-            self.current_char_width,
         )
     }
 
@@ -4020,11 +3896,13 @@ impl Backend for WinBackend {
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `spinner_layout` falls back to, and paint
         // nothing (issue #924).
-        win_spinner_nominal_layout(
+        super::spinner::win_spinner_layout(
+            &NominalSpinnerMeasure {
+                char_width: self.current_char_width,
+                line_height: self.current_line_height,
+            },
             rect,
             spinner,
-            self.current_char_width,
-            self.current_line_height,
         )
     }
 
@@ -4036,11 +3914,13 @@ impl Backend for WinBackend {
         if let Some(dwrite) = &self.dwrite {
             return super::spinner::win_spinner_layout(dwrite, rect, spinner);
         }
-        win_spinner_nominal_layout(
+        super::spinner::win_spinner_layout(
+            &NominalSpinnerMeasure {
+                char_width: self.current_char_width,
+                line_height: self.current_line_height,
+            },
             rect,
             spinner,
-            self.current_char_width,
-            self.current_line_height,
         )
     }
 

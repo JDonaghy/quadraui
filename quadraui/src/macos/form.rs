@@ -16,20 +16,8 @@ use core_text::font::CTFont;
 use super::text::{draw_text, measure_text};
 use crate::event::Rect as QRect;
 use crate::primitives::form::{Form, FormLayout};
-use crate::primitives::layout_metrics::TextMeasure;
 use crate::theme::Theme;
 use crate::types::Color;
-
-/// Adapts a live `CTFont` to the shared [`TextMeasure`] trait so
-/// [`crate::primitives::layout_metrics::form_field_measure`] never has
-/// to name a Core Text type.
-struct CtFontMeasure<'a>(&'a CTFont);
-
-impl TextMeasure for CtFontMeasure<'_> {
-    fn width_of(&self, text: &str) -> f32 {
-        measure_text(self.0, text).0 as f32
-    }
-}
 
 /// Compute the layout the macOS rasteriser would produce for `form`
 /// in `area` at `line_height`. Rows are `(line_height * 1.4).round()`
@@ -48,9 +36,8 @@ impl TextMeasure for CtFontMeasure<'_> {
 /// [`FormLayout::hit_test`].
 pub fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont) -> FormLayout {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
-    let measure = CtFontMeasure(font);
     form.layout(area.width, area.height, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, font)
     })
 }
 

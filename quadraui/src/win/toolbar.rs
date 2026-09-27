@@ -49,30 +49,11 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::{draw_line, fill_rect, stroke_rect, DWrite};
 use crate::event::Rect;
-use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{
     action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
-
-/// Adapts a live [`DWrite`] handle to the shared [`TextMeasure`] trait
-/// so [`crate::primitives::toolbar::measure_button`] never has to name a
-/// DirectWrite type — mirrors `macos::toolbar::CtFontMeasure` /
-/// `gtk::toolbar::PangoMeasure` / `win::form::DWriteMeasure`, which all
-/// exist for exactly this reason (#730).
-///
-/// `pub(crate)` (not private) so `win::sidebar_panel` — which embeds a
-/// [`Toolbar`] and needs the same measurer for its nested
-/// `Toolbar::layout` call — can reuse it rather than defining its own
-/// copy (#731; mirrors `gtk::sidebar_panel` reusing `gtk::toolbar::PangoMeasure`).
-pub(crate) struct DWriteMeasure<'a>(pub(crate) &'a DWrite);
-
-impl TextMeasure for DWriteMeasure<'_> {
-    fn width_of(&self, text: &str) -> f32 {
-        self.0.measure_text(text).map(|(w, _)| w).unwrap_or(0.0)
-    }
-}
 
 /// Compute the Win-GUI pixel/DIP layout for a [`Toolbar`] without
 /// painting — the DirectWrite twin of [`draw_toolbar`]'s internal layout
@@ -81,10 +62,15 @@ impl TextMeasure for DWriteMeasure<'_> {
 /// Coordinate frame: **ABSOLUTE** (`rect.x`/`rect.y` baked into every
 /// item's `bounds`), matching [`crate::Backend::toolbar_layout`]'s
 /// documented contract and `gtk_toolbar_layout` / `mac_toolbar_layout`.
+///
+/// `dwrite` itself is a [`crate::primitives::layout_metrics::TextMeasure`]
+/// (issue #1078) — no wrapper struct needed; see `win::text::DWrite`'s
+/// `TextMeasure` impl doc for why the former per-module wrapper
+/// (`win::form`/`win::toolbar`'s each having their own `DWriteMeasure`)
+/// was deleted.
 pub fn win_toolbar_layout(dwrite: &DWrite, rect: Rect, bar: &Toolbar) -> ToolbarLayout {
-    let measure = DWriteMeasure(dwrite);
     bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
-        ToolbarItemMeasure::new(measure_button(&measure, btn))
+        ToolbarItemMeasure::new(measure_button(dwrite, btn))
     })
 }
 

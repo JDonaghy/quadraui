@@ -207,6 +207,20 @@ impl DWrite {
     }
 }
 
+/// Issue #1078: a direct impl rather than a per-module wrapper struct —
+/// before this, `win::form::DWriteMeasure` and `win::toolbar::DWriteMeasure`
+/// were byte-identical one-line adapters (`.measure_text(text).0`) over
+/// this exact type, and `win::sidebar_panel` imported the `toolbar` one
+/// only because there had to be a canonical copy *somewhere*. Implementing
+/// [`TextMeasure`] on `DWrite` itself means every layout fn that needs a
+/// `&dyn TextMeasure` can pass a live `&DWrite` straight through — no
+/// wrapper, no duplicate to drift.
+impl crate::primitives::layout_metrics::TextMeasure for DWrite {
+    fn width_of(&self, text: &str) -> f32 {
+        self.measure_text(text).map(|(w, _)| w).unwrap_or(0.0)
+    }
+}
+
 /// `IDWriteFactory::CreateTextFormat` for `family` at `size_dip` — already
 /// converted from points via [`pt_to_dip`] by the caller, since
 /// `CreateTextFormat`'s `fontSize` parameter is DIPs, not points. Uses the

@@ -7,10 +7,13 @@
 //! primitive's module doc) just wraps the measured glyph+label box; the
 //! measurement itself comes from [`DWrite::measure_text`].
 //!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod spinner;` and `backend.rs`'s
-//! module docs for why the rest of this repo's `--features win` compile
-//! gate stays meaningful without a Windows host.
+//! Issue #1078: only [`draw_spinner`] (the real Direct2D paint entry
+//! point) is `#[cfg(target_os = "windows")]`-gated. [`win_spinner_layout`]
+//! is pure geometry generic over [`SpinnerMeasureSource`] — no Direct2D/
+//! DirectWrite type in its signature — so it compiles and runs
+//! everywhere, including a plain `cargo test --features win` on Linux.
+//! `super::mod`'s `mod spinner;` is no longer whole-module gated; see
+//! `backend.rs`'s module docs.
 //!
 //! # Theme
 //!
@@ -18,11 +21,14 @@
 //! module doc for the "placeholder until a later issue wires the app's
 //! real theme through" posture this module shares.
 
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
+#[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::spinner::{Spinner, SpinnerLayout, SpinnerMeasure};
+#[cfg(target_os = "windows")]
 use crate::theme::Theme;
 
 /// Braille animation frames — identical table to `gtk::spinner::FRAMES`
@@ -39,18 +45,41 @@ fn frame_text(spinner: &Spinner) -> String {
     }
 }
 
-/// Compute a [`Spinner`]'s layout without painting — the DirectWrite
-/// measurer twin of [`draw_spinner`]. Both measure the identical
-/// glyph+label text via [`DWrite::measure_text`], so a no-paint
-/// hit-test call always agrees with what the last paint drew.
-pub fn win_spinner_layout(dwrite: &DWrite, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
+/// Width+height text measurement for [`win_spinner_layout`]. A spinner's
+/// hit box height comes from the glyph+label text's own measured height
+/// (not a fixed `line_height`), so this can't reuse
+/// [`crate::primitives::layout_metrics::TextMeasure`] (width-only) the
+/// way `win::menu_bar`/`win::toast` do — a real difference this
+/// rasteriser has always had (`DWrite::measure_text` returns both), not
+/// new duplication.
+pub trait SpinnerMeasureSource {
+    fn measure(&self, text: &str) -> (f32, f32);
+}
+
+#[cfg(target_os = "windows")]
+impl SpinnerMeasureSource for DWrite {
+    fn measure(&self, text: &str) -> (f32, f32) {
+        self.measure_text(text).unwrap_or((0.0, 0.0))
+    }
+}
+
+/// Compute a [`Spinner`]'s layout without painting — the measurer twin of
+/// [`draw_spinner`]. Both measure the identical glyph+label text via the
+/// same [`SpinnerMeasureSource`], so a no-paint hit-test call always
+/// agrees with what the last paint drew.
+pub fn win_spinner_layout(
+    measure: &dyn SpinnerMeasureSource,
+    rect: Rect,
+    spinner: &Spinner,
+) -> SpinnerLayout {
     let text = frame_text(spinner);
-    let (w, h) = dwrite.measure_text(&text).unwrap_or((0.0, 0.0));
+    let (w, h) = measure.measure(&text);
     spinner.layout(rect.x, rect.y, SpinnerMeasure::new(w, h))
 }
 
 /// Draw a [`Spinner`] onto `target`. Returns the layout for host
 /// hit-testing.
+#[cfg(target_os = "windows")]
 pub fn draw_spinner(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -65,7 +94,9 @@ pub fn draw_spinner(
     layout
 }
 
-#[cfg(test)]
+// #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
+// — gated the same way the whole module used to be.
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use crate::primitives::spinner::SpinnerHit;

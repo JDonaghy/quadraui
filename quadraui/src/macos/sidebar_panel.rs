@@ -21,10 +21,10 @@ use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-use super::toolbar::CtFontMeasure;
-
 /// Compute the macOS pixel-unit layout for a `SidebarPanel`. `font`
-/// is required for accurate text measurement.
+/// is required for accurate text measurement — it's a
+/// [`crate::primitives::layout_metrics::TextMeasure`] itself (issue
+/// #1078), so no wrapper struct is needed.
 pub fn mac_sidebar_panel_layout(
     panel: &SidebarPanel,
     font: &CTFont,
@@ -35,11 +35,10 @@ pub fn mac_sidebar_panel_layout(
     h: f64,
 ) -> SidebarPanelLayout {
     let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
-    let measure = CtFontMeasure(font);
     panel.layout(
         bounds,
         SidebarPanelMeasure::new(line_height as f32, 8.0),
-        |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
+        |btn| ToolbarItemMeasure::new(measure_button(font, btn)),
     )
 }
 

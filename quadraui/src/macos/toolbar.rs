@@ -20,33 +20,17 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::{draw_text, measure_text};
-use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{
     action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
 };
 use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 
-/// Adapts a live `CTFont` to the shared [`TextMeasure`] trait so
-/// [`crate::primitives::toolbar::measure_button`] never has to name a
-/// Core Text type — mirrors `macos::form::CtFontMeasure` /
-/// `gtk::toolbar`'s `PangoMeasure` / `win::toolbar`'s `DWriteMeasure`,
-/// which exist for exactly this reason (#730).
-///
-/// `pub(crate)` so `macos::sidebar_panel`'s embedded toolbar header can
-/// build the exact same adapter for its own `measure_button` calls,
-/// guaranteeing paint and hit-test agree on item positions everywhere a
-/// `Toolbar` appears — with no separate per-caller measurer function.
-pub(crate) struct CtFontMeasure<'a>(pub(crate) &'a CTFont);
-
-impl TextMeasure for CtFontMeasure<'_> {
-    fn width_of(&self, text: &str) -> f32 {
-        measure_text(self.0, text).0 as f32
-    }
-}
-
 /// Compute the macOS pixel-unit layout for a [`Toolbar`] without
-/// painting. `font` is required for accurate text measurement.
+/// painting. `font` is required for accurate text measurement — it's a
+/// [`crate::primitives::layout_metrics::TextMeasure`] itself (issue
+/// #1078), so no wrapper struct is needed the way `macos::form`/
+/// `macos::toolbar` each used to define their own `CtFontMeasure`.
 pub fn mac_toolbar_layout(
     bar: &Toolbar,
     font: &CTFont,
@@ -55,9 +39,8 @@ pub fn mac_toolbar_layout(
     w: f64,
     h: f64,
 ) -> ToolbarLayout {
-    let measure = CtFontMeasure(font);
     bar.layout(x as f32, y as f32, w as f32, h as f32, |btn| {
-        ToolbarItemMeasure::new(measure_button(&measure, btn))
+        ToolbarItemMeasure::new(measure_button(font, btn))
     })
 }
 

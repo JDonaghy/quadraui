@@ -24,7 +24,6 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::DWrite;
-use super::toolbar::DWriteMeasure;
 use crate::event::Rect;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
@@ -46,9 +45,8 @@ pub fn win_sidebar_panel_layout(
     rect: Rect,
     panel: &SidebarPanel,
 ) -> SidebarPanelLayout {
-    let measure = DWriteMeasure(dwrite);
     panel.layout(rect, SidebarPanelMeasure::new(line_height, 0.0), |btn| {
-        ToolbarItemMeasure::new(measure_button(&measure, btn))
+        ToolbarItemMeasure::new(measure_button(dwrite, btn))
     })
 }
 
