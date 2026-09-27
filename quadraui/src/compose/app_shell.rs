@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
-use crate::types::{Color, Icon, WidgetId};
+use crate::types::{Icon, WidgetId};
 use crate::{Backend, ButtonMask, InteractionState, MouseButton, Point, Rect, UiEvent};
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -946,6 +946,14 @@ impl AppShell {
     /// Consumer draws: sidebar panel content, main content area.
     pub fn render(&self, backend: &mut dyn Backend, area: Rect) -> AppShellLayout {
         let lh = backend.line_height();
+        // quadraui#1180: the sidebar header and divider used to be
+        // hardcoded VS-Code-dark literals, unreadable on any other
+        // theme. `Backend::theme()` (added for this issue) reads back
+        // whatever the host last passed to `set_theme` — the same
+        // palette every `draw_*` rasteriser call below already paints
+        // with — so this chrome now tracks the app's actual theme
+        // instead of a fixed dark palette.
+        let theme = backend.theme();
         let layout = self.compute_layout(area, lh);
         Self::register_chrome_zones(backend, &layout);
 
@@ -982,8 +990,8 @@ impl AppShell {
                     id: WidgetId::new("app-shell:sidebar-header"),
                     left_segments: vec![StatusBarSegment {
                         text: format!(" {} ", panel.title),
-                        fg: Color::rgb(220, 220, 220),
-                        bg: Color::rgb(37, 37, 38),
+                        fg: theme.header_fg,
+                        bg: theme.header_bg,
                         bold: true,
                         action_id: None,
                     }],
@@ -1012,7 +1020,7 @@ impl AppShell {
             // cheaper than N status-bar layouts per frame — there is no
             // text, no segments, and no interaction beyond the drag zone
             // `register_chrome_zones` already registered above.
-            backend.draw_solid_fill(divider_bounds, Color::rgb(100, 100, 110));
+            backend.draw_solid_fill(divider_bounds, theme.separator);
         }
 
         layout
@@ -1902,6 +1910,71 @@ mod tests {
         (area.x..area.x + area.width)
             .map(|x| buf[(x, area.y)].symbol().to_string())
             .collect::<String>()
+    }
+
+    /// quadraui#1180: `render`'s sidebar header and resize divider used
+    /// to paint fixed VS-Code-dark literals (`Color::rgb(37,37,38)` /
+    /// `Color::rgb(100,100,110)`) regardless of what theme the app had
+    /// configured. This drives a real [`crate::tui::TuiBackend`] with a
+    /// theme that is neither of those literals and asserts the painted
+    /// cells came from `Backend::theme()` — i.e. from whatever the host
+    /// last passed to `set_theme` — not a baked-in dark palette.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn render_sources_header_and_divider_from_backend_theme() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // A light-ish theme, deliberately far from both old literals.
+        let light = crate::theme::Theme {
+            header_bg: crate::types::Color::rgb(240, 240, 240),
+            header_fg: crate::types::Color::rgb(10, 10, 10),
+            separator: crate::types::Color::rgb(200, 200, 200),
+            ..crate::theme::Theme::default()
+        };
+
+        let s = shell();
+        let a = area();
+        let mut backend = crate::tui::TuiBackend::new();
+        backend.set_current_theme(light);
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(a.width as u16, a.height as u16)).expect("terminal");
+        let mut layout = None;
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    layout = Some(s.render(b, a));
+                });
+            })
+            .expect("draw");
+        let layout = layout.expect("render ran inside the frame scope");
+
+        let header = layout
+            .sidebar_header_bounds
+            .expect("sidebar is visible with an active panel, so a header is laid out");
+        let buf = terminal.backend().buffer();
+        let header_cell = &buf[(header.x as u16, header.y as u16)];
+        assert_eq!(
+            header_cell.bg,
+            crate::tui::ratatui_color(light.header_bg),
+            "sidebar header bg must come from theme.header_bg, not a hardcoded literal"
+        );
+        assert_eq!(
+            header_cell.fg,
+            crate::tui::ratatui_color(light.header_fg),
+            "sidebar header fg must come from theme.header_fg, not a hardcoded literal"
+        );
+
+        let divider = layout
+            .divider_bounds
+            .expect("sidebar is visible, so a resize divider is laid out");
+        let divider_cell = &buf[(divider.x as u16, divider.y as u16)];
+        assert_eq!(
+            divider_cell.bg,
+            crate::tui::ratatui_color(light.separator),
+            "resize divider must come from theme.separator, not a hardcoded literal"
+        );
     }
 
     // ── Keyboard navigation ─────────────────────────────────────────

@@ -1592,6 +1592,10 @@ impl Backend for WinBackend {
         self.set_current_theme(theme);
     }
 
+    fn theme(&self) -> crate::Theme {
+        self.current_theme
+    }
+
     /// Store the nerd-fonts flag so `draw_tree` paints `Icon::glyph`
     /// instead of always falling back to `Icon::fallback` (#804).
     /// Mirrors `TuiBackend::set_nerd_fonts`/`GtkBackend::set_nerd_fonts`/
