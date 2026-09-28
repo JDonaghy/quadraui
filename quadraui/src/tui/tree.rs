@@ -194,8 +194,17 @@ pub fn draw_tree(
                 // per-span colouring (e.g. a muted/error label) survives
                 // the clamp untouched.
                 let ellipsis_col = area.x + (max_text_col - 1) as u16;
-                let existing = &buf[(ellipsis_col, y)];
-                let (ellipsis_fg, ellipsis_bg) = (existing.fg, existing.bg);
+                // Use the bounds-checked `Buffer::cell` accessor rather than
+                // direct indexing: `area` is caller-supplied (see
+                // `crate::tui::backend::draw_tree` / `multi_section_view.rs`)
+                // and isn't guaranteed to stay within the real buffer's own
+                // `area` across a resize race or a stale cached rect. Direct
+                // indexing panics in that case; `cell()` returns `None` and
+                // we fall back to the row's default colours instead.
+                let (ellipsis_fg, ellipsis_bg) = buf
+                    .cell((ellipsis_col, y))
+                    .map(|existing| (existing.fg, existing.bg))
+                    .unwrap_or((default_fg, bg));
                 set_cell(buf, ellipsis_col, y, '…', ellipsis_fg, ellipsis_bg);
             }
 
@@ -533,6 +542,32 @@ mod tests {
             cell_char(&buf, badge_col - 2, 1),
             '…',
             "expected the ellipsis directly before the gap column, row text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn long_label_ellipsis_tolerates_oversized_area_without_panicking() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        tree.rows[1].text = StyledText::plain("BACKEND_SPECULATIVE_EXECUTION_MODULE");
+        tree.rows[1].badge = Some(Badge::plain("U"));
+
+        // `area` is caller-supplied and can legitimately exceed the real
+        // buffer's own bounds (a resize race, an off-by-one in a caller's
+        // layout math, or a stale cached rect — see #1183 review). The
+        // ellipsis-overwrite used to read the existing cell via unchecked
+        // direct indexing, which panics the instant its column falls
+        // outside `buf`'s own area; this regression test paints into a
+        // buffer narrower than the row's `area` so `ellipsis_col` lands
+        // out of bounds, and simply not panicking is the assertion.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        draw_tree(
+            &mut buf,
+            Rect::new(0, 0, 40, 5),
+            &tree,
+            &Theme::default(),
+            false,
         );
     }
 
