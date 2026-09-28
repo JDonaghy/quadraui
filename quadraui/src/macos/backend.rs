@@ -7791,12 +7791,39 @@ mod tests {
     /// equivalent guard's worth of review attention, doesn't cover this
     /// path: `AppShell::render` and `ScreenLayout::draw`'s
     /// `Surface::ActivityBar` arm both call this method directly, never
-    /// the styled one). Same shape as
-    /// `draw_tree_uses_ui_font_not_editor_font` above: paint the same
-    /// single-row activity bar under two wildly different *editor* font
-    /// sizes with `ui_font` left at its default — the painted icon
-    /// glyph's horizontal extent must be identical — then change
-    /// `ui_font` alone as a positive control and see it grow.
+    /// the styled one).
+    ///
+    /// Issue #1157 narrowed what "uses ui_font, not editor_font" can
+    /// mean here: the icon glyph's *size* is now pinned to
+    /// `ActivityBarStyle::resolved_icon_size_px()` regardless of either
+    /// font's own point size (`macos::activity_bar`'s module doc), so
+    /// this test's original positive control — grow `ui_font`'s point
+    /// size alone and watch the icon widen — is no longer a valid
+    /// probe; it would fail on a correct, on-issue implementation,
+    /// because making the icon *not* track a font's size is exactly
+    /// what #1157 fixed. Swapping `ui_font`'s *family* instead isn't a
+    /// reliable substitute either: at a fixed 24pt, `W`-heavy fallback
+    /// text renders within a few px of "canvas-filling" in every
+    /// installed system family, so a family-only visual delta is too
+    /// close to noise to assert on.
+    ///
+    /// So this test asserts the same underlying contract
+    /// (`draw_activity_bar` paints through `chrome_font`, never
+    /// `current_font`/the editor font) via two size-based probes that
+    /// remain valid post-#1157, plus a family-based probe on the side
+    /// this fix *didn't* touch — `editor_font`'s family should have
+    /// exactly zero effect, since the editor font is never read at all
+    /// on this path:
+    /// - icon extent is independent of `editor_font`'s size (unchanged
+    ///   from before #1157);
+    /// - icon extent is independent of `editor_font`'s *family* too —
+    ///   if `draw_activity_bar` ever regressed to reading
+    ///   `current_font` instead of `chrome_font`, swapping the editor
+    ///   family would move the rendered glyph;
+    /// - icon extent is *also* independent of `ui_font`'s size — the
+    ///   #1157 fix itself, exercised through this trait method rather
+    ///   than only through `draw_activity_bar_with_style` (see
+    ///   `macos::activity_bar::tests::icon_ink_height_follows_style_not_chrome_font_size`).
     #[test]
     fn draw_activity_bar_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
@@ -7876,11 +7903,27 @@ mod tests {
              small_editor={small_editor_extent}, large_editor={large_editor_extent}"
         );
 
-        let ui_font_extent = icon_extent(("Menlo", 8.0), Some("Helvetica 60"));
+        // Editor *family* must be just as inert as editor *size* — if
+        // `draw_activity_bar` ever regressed to reading `current_font`
+        // instead of `chrome_font`, a family swap this different
+        // (monospace code font vs a decorative display face) would move
+        // the rendered glyph.
+        let other_editor_family_extent = icon_extent(("Papyrus", 8.0), None);
         assert!(
-            ui_font_extent > small_editor_extent + 20,
-            "changing ui_font alone must visibly widen the painted activity bar icon: \
-             default_ui_font={small_editor_extent}, ui_font_Helvetica_60={ui_font_extent}"
+            small_editor_extent.abs_diff(other_editor_family_extent) <= 1,
+            "activity bar icon glyph extent must be editor-font-family independent: \
+             menlo_editor={small_editor_extent}, papyrus_editor={other_editor_family_extent}"
+        );
+
+        // #1157: icon extent must also be ui_font-*size* independent —
+        // the fix this issue shipped, exercised through the mandatory
+        // `draw_activity_bar` entry point rather than only the styled
+        // one.
+        let huge_ui_font_extent = icon_extent(("Menlo", 8.0), Some("Helvetica 60"));
+        assert!(
+            small_editor_extent.abs_diff(huge_ui_font_extent) <= 1,
+            "activity bar icon glyph extent must be ui-font-size independent (issue #1157): \
+             default_ui_font={small_editor_extent}, ui_font_Helvetica_60={huge_ui_font_extent}"
         );
     }
 }
