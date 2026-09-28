@@ -30,7 +30,10 @@ use std::path::Path;
 /// **Field set is incremental.** Each migrated primitive adds the
 /// fields it needs. The `Default` impl keeps a coherent dark palette
 /// so apps can spread `..Default::default()` after specifying the
-/// fields they care about.
+/// fields they care about. Building a *light* theme the same way?
+/// Spread `..Theme::light_default()` instead — `Default::default()`
+/// is dark, so every field a light theme leaves unmapped would
+/// otherwise arrive dark (quadraui#1184).
 ///
 /// # Adding a field here is a BREAKING change — prefer a method
 ///
@@ -722,12 +725,130 @@ impl Theme {
     pub fn text_selection_highlight(&self) -> Color {
         Color::rgba(99, 148, 255, 77)
     }
+
+    // ── Light default palette (quadraui#1184) ───────────────────────────
+
+    /// A coherent **light** palette, structured field-for-field like
+    /// [`Theme::default`]'s dark one.
+    ///
+    /// [`Theme::default`] is dark (#727), so an app that spreads
+    /// `..Theme::default()` after picking its own light `background` /
+    /// `foreground` gets every *unmapped* field — including any field
+    /// this crate adds later — at its dark value. That is exactly what
+    /// happened in vimcode: `inactive_selected_bg` was never mapped in
+    /// its `vscode-light` palette, so the Explorer's unfocused selected
+    /// row rendered as dark navy under light text.
+    ///
+    /// `light_default()` is a **separate associated function, not a
+    /// change to `Default`** — flipping `Default` itself would be just
+    /// as one-sided a trap in the other direction (every app that
+    /// forgets to map a field in a *dark* theme would silently get
+    /// light leaks instead), and `Default::default()` can't take a
+    /// caller-supplied background anyway. An app building a light theme
+    /// spreads `..Theme::light_default()` instead of
+    /// `..Theme::default()`; an app building a dark theme keeps
+    /// `..Theme::default()` unchanged. Being a plain function (not a
+    /// field, not a trait impl change) it is purely additive — nothing
+    /// downstream can miss it the way #620 missed a new field.
+    pub fn light_default() -> Self {
+        let bg = Color::rgb(250, 250, 248);
+        let fg = Color::rgb(30, 30, 35);
+        let muted = Color::rgb(120, 122, 130);
+        Self {
+            background: bg,
+            foreground: fg,
+            tab_bar_bg: Color::rgb(238, 238, 235),
+            tab_active_bg: Color::rgb(255, 255, 255),
+            tab_active_fg: fg,
+            tab_inactive_fg: Color::rgb(110, 110, 120),
+            tab_preview_active_fg: Color::rgb(70, 70, 85),
+            tab_preview_inactive_fg: Color::rgb(150, 150, 160),
+            separator: Color::rgb(210, 210, 215),
+            surface_bg: Color::rgb(255, 255, 255),
+            surface_fg: fg,
+            selected_bg: Color::rgb(200, 220, 250),
+            inactive_selected_bg: Color::rgb(225, 230, 240),
+            border_fg: Color::rgb(180, 190, 200),
+            title_fg: Color::rgb(40, 55, 80),
+            header_bg: Color::rgb(235, 235, 232),
+            header_fg: fg,
+            muted_fg: muted,
+            error_fg: Color::rgb(180, 30, 30),
+            warning_fg: Color::rgb(170, 110, 10),
+            query_fg: fg,
+            match_fg: Color::rgb(180, 120, 0),
+            accent_fg: Color::rgb(20, 110, 190),
+            hover_bg: Color::rgb(250, 250, 240),
+            hover_fg: fg,
+            hover_border: Color::rgb(190, 195, 205),
+            input_bg: Color::rgb(255, 255, 255),
+            inactive_fg: Color::rgb(140, 142, 150),
+            selection_bg: Color::rgb(190, 215, 245),
+            link_fg: Color::rgb(20, 100, 180),
+            completion_bg: Color::rgb(255, 255, 255),
+            completion_fg: fg,
+            completion_border: Color::rgb(190, 195, 205),
+            completion_selected_bg: Color::rgb(200, 220, 250),
+            accent_bg: Color::rgb(30, 120, 215),
+            scrollbar_track: Color::rgb(235, 235, 232),
+            scrollbar_thumb: Color::rgb(180, 180, 190),
+
+            // Editor lift (#276 Phase C Stage 1) — light-theme defaults.
+            editor_active_background: Color::rgb(255, 255, 255),
+            cursorline_bg: Color::rgb(240, 240, 222),
+            dap_stopped_bg: Color::rgb(255, 235, 190),
+            colorcolumn_bg: Color::rgb(240, 240, 236),
+            diff_added_bg: Color::rgb(220, 245, 220),
+            diff_removed_bg: Color::rgb(250, 220, 220),
+            diff_padding_bg: Color::rgb(240, 240, 236),
+            line_number_fg: muted,
+            line_number_active_fg: Color::rgb(40, 40, 50),
+            diagnostic_error: Color::rgb(180, 30, 30),
+            diagnostic_warning: Color::rgb(170, 110, 10),
+            diagnostic_info: Color::rgb(20, 100, 180),
+            diagnostic_hint: Color::rgb(20, 110, 190),
+            git_added: Color::rgb(30, 140, 30),
+            git_modified: Color::rgb(170, 110, 10),
+            git_deleted: Color::rgb(180, 30, 30),
+            lightbulb: Color::rgb(180, 140, 0),
+            spell_error: Color::rgb(0, 130, 130),
+            cursor: Color::rgb(20, 20, 25),
+            cursor_normal_alpha: 0.40,
+            selection: Color::rgb(190, 215, 245),
+            selection_alpha: 0.50,
+            yank_highlight_bg: Color::rgb(255, 230, 120),
+            yank_highlight_alpha: 0.30,
+            bracket_match_bg: Color::rgb(210, 215, 225),
+            indent_guide_fg: Color::rgb(222, 222, 218),
+            indent_guide_active_fg: Color::rgb(170, 170, 180),
+            annotation_fg: Color::rgb(150, 150, 160),
+            ghost_text_fg: Color::rgb(150, 150, 160),
+            command_line_bg: bg,
+            command_line_fg: fg,
+
+            // Board / kanban (#362)
+            board_selected_card_bg: Color::rgb(200, 220, 250),
+            board_col_header_bg: Color::rgb(235, 235, 232),
+            badge_running: Color::rgb(170, 110, 10),
+            badge_passed: Color::rgb(30, 140, 30),
+            badge_warning: Color::rgb(190, 110, 20),
+            badge_blocked: Color::rgb(180, 30, 30),
+            card_hint_bg: Color::rgb(225, 230, 240),
+            card_hint_fg: Color::rgb(60, 70, 90),
+        }
+    }
 }
 
 impl Default for Theme {
     /// Neutral dark palette so the rasterisers produce something visible
     /// when an app forgets to populate the theme. Apps almost always
     /// override this.
+    ///
+    /// **This is a dark palette.** An app building a *light* theme that
+    /// spreads `..Theme::default()` after setting its own `background`
+    /// / `foreground` will get every other, unmapped field at its dark
+    /// value — see [`Theme::light_default`] (quadraui#1184) for a base
+    /// that doesn't have that failure mode.
     fn default() -> Self {
         let bg = Color::rgb(20, 22, 30);
         let fg = Color::rgb(220, 220, 220);
@@ -1155,6 +1276,145 @@ mod tests {
         assert_eq!(
             themed.text_selection_highlight(),
             Theme::default().text_selection_highlight()
+        );
+    }
+
+    // ── Light default palette (quadraui#1184) ───────────────────────────
+
+    /// Perceptual luminance (ITU-R BT.601), `0.0` (black) .. `255.0`
+    /// (white). Test-only — good enough to distinguish "reads as light"
+    /// from "reads as dark" without pulling in a colour-science crate.
+    fn luminance(c: Color) -> f64 {
+        0.299 * c.r as f64 + 0.587 * c.g as f64 + 0.114 * c.b as f64
+    }
+
+    /// Every background-type field on [`Theme::light_default`] must read
+    /// as light. This is the failure mode a dark `Theme::default()` leak
+    /// produces (#1184): an app spreads `..Theme::default()` over a
+    /// light `background`/`foreground` pair and every *other*
+    /// background-type key stays dark. Asserting this on
+    /// `light_default()` is what makes it a safe base for that spread.
+    #[test]
+    fn light_default_background_type_keys_are_light() {
+        let t = Theme::light_default();
+        let backgrounds = [
+            ("background", t.background),
+            ("tab_bar_bg", t.tab_bar_bg),
+            ("tab_active_bg", t.tab_active_bg),
+            ("surface_bg", t.surface_bg),
+            ("selected_bg", t.selected_bg),
+            ("inactive_selected_bg", t.inactive_selected_bg),
+            ("header_bg", t.header_bg),
+            ("hover_bg", t.hover_bg),
+            ("input_bg", t.input_bg),
+            ("selection_bg", t.selection_bg),
+            ("completion_bg", t.completion_bg),
+            ("completion_selected_bg", t.completion_selected_bg),
+            ("scrollbar_track", t.scrollbar_track),
+            ("editor_active_background", t.editor_active_background),
+            ("cursorline_bg", t.cursorline_bg),
+            ("colorcolumn_bg", t.colorcolumn_bg),
+            ("diff_added_bg", t.diff_added_bg),
+            ("diff_removed_bg", t.diff_removed_bg),
+            ("diff_padding_bg", t.diff_padding_bg),
+            ("command_line_bg", t.command_line_bg),
+            ("board_selected_card_bg", t.board_selected_card_bg),
+            ("board_col_header_bg", t.board_col_header_bg),
+            ("card_hint_bg", t.card_hint_bg),
+        ];
+        for (name, c) in backgrounds {
+            let l = luminance(c);
+            assert!(
+                l > 180.0,
+                "{name} = {c:?} reads as dark (luminance {l:.1}) in the light palette"
+            );
+        }
+    }
+
+    /// Symmetric check on the text-ish fields: they must stay dark
+    /// enough to read against the light backgrounds asserted above.
+    #[test]
+    fn light_default_foreground_type_keys_are_dark() {
+        let t = Theme::light_default();
+        let foregrounds = [
+            ("foreground", t.foreground),
+            ("tab_active_fg", t.tab_active_fg),
+            ("surface_fg", t.surface_fg),
+            ("header_fg", t.header_fg),
+            ("muted_fg", t.muted_fg),
+            ("query_fg", t.query_fg),
+            ("hover_fg", t.hover_fg),
+            ("completion_fg", t.completion_fg),
+            ("line_number_fg", t.line_number_fg),
+            ("line_number_active_fg", t.line_number_active_fg),
+            ("command_line_fg", t.command_line_fg),
+            ("cursor", t.cursor),
+        ];
+        for (name, c) in foregrounds {
+            let l = luminance(c);
+            assert!(
+                l < 140.0,
+                "{name} = {c:?} reads as light (luminance {l:.1}) — too low \
+                 contrast against a light background"
+            );
+        }
+    }
+
+    /// Reproduces the vimcode regression from #1184: an app builds a
+    /// light theme by setting only the two base keys and spreading the
+    /// rest from a "default". With `..Theme::default()` that used to
+    /// leave `inactive_selected_bg` dark navy (`rgb(35, 40, 58)`) under
+    /// light text — vimcode's Explorer never mapped that key in its
+    /// `vscode-light` palette. With `..Theme::light_default()` the same
+    /// minimal spread must produce a light `inactive_selected_bg`
+    /// instead, and every other selection/background-type key with it.
+    #[test]
+    fn light_theme_built_from_light_default_does_not_leak_dark_keys() {
+        let light = Theme {
+            background: Color::rgb(255, 255, 255),
+            foreground: Color::rgb(30, 30, 30),
+            ..Theme::light_default()
+        };
+        assert!(
+            luminance(light.inactive_selected_bg) > 180.0,
+            "inactive_selected_bg leaked a dark default: {:?}",
+            light.inactive_selected_bg
+        );
+        assert!(
+            luminance(light.selected_bg) > 180.0,
+            "selected_bg leaked a dark default: {:?}",
+            light.selected_bg
+        );
+
+        // Negative control: the *old* dark `Theme::default()` spread
+        // must still fail the same assertion — proving this test
+        // actually distinguishes the two palettes rather than passing
+        // unconditionally.
+        let dark_leak = Theme {
+            background: Color::rgb(255, 255, 255),
+            foreground: Color::rgb(30, 30, 30),
+            ..Theme::default()
+        };
+        assert!(
+            luminance(dark_leak.inactive_selected_bg) < 180.0,
+            "negative control: Theme::default()'s inactive_selected_bg should \
+             still be dark ({:?}) — if this fails, the fixture changed",
+            dark_leak.inactive_selected_bg
+        );
+    }
+
+    /// `light_default()` is a genuinely distinct palette from
+    /// `default()`, not an accidental alias — otherwise it would fix
+    /// nothing.
+    #[test]
+    fn light_default_differs_from_dark_default() {
+        assert_ne!(
+            Theme::light_default().background,
+            Theme::default().background
+        );
+        assert_ne!(
+            Theme::light_default().inactive_selected_bg,
+            Theme::default().inactive_selected_bg
         );
     }
 }
