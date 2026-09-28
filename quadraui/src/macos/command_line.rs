@@ -240,6 +240,14 @@ mod tests {
         let cmd = sample("  x", None, false);
         let rect = QRect::new(0.0, 0.0, W as f32, 20.0);
         let theme = Theme {
+            // `paint()` fills the *entire* bar rect with `command_line_bg`
+            // before painting the selection highlight, so this must match
+            // the white the surface was primed with below — otherwise the
+            // "unselected column stays plain background" assertion checks
+            // against the wrong colour. Mirrors the GTK twin
+            // (`gtk_command_line_selection_paints_highlight_behind_text`),
+            // which sets this explicitly for the same reason.
+            command_line_bg: crate::types::Color::rgb(255, 255, 255),
             selection: crate::types::Color::rgb(0, 0, 255),
             selection_alpha: 1.0,
             ..Theme::default()
