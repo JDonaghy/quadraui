@@ -186,6 +186,25 @@ pub(crate) fn wrap_text_lines(
 
 /// Truncate `text` to a single line that fits `max_width`, ellipsizing if
 /// it doesn't — the title's shape (never wraps, unlike the body).
+///
+/// `#[cfg_attr(not(any(<every backend feature>)), allow(dead_code))]`: the
+/// only callers are *rasterisers* — `tui::toast` and
+/// `native_surface_paint::paint` (gtk/win/macos) — unlike its sibling
+/// [`wrap_text_lines`], which `primitives::layout_metrics` also calls from
+/// the ungated no-paint layout path (the title is always one line, so it
+/// can't change a toast's height and layout never needs to truncate it).
+/// A featureless `cargo check -p quadraui` therefore compiles no caller at
+/// all. Kept compiled (rather than `#[cfg]`-ed out) on every leg so the
+/// `wrap_tests` unit tests below cover it with no features enabled too.
+#[cfg_attr(
+    not(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )),
+    allow(dead_code)
+)]
 pub(crate) fn truncate_line(text: &str, max_width: f32, width_of: &dyn Fn(&str) -> f32) -> String {
     wrap_text_lines(text, max_width, 1, width_of)
         .into_iter()
