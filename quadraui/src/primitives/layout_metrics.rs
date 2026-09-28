@@ -490,6 +490,13 @@ pub fn form_field_measure(
 /// frame) — hosts call `layout.hit_test(x, y)` with raw click
 /// coordinates, no localisation needed, matching every other
 /// `*_toast_stack_layout`.
+///
+/// Height grows with a wrapped body (#1182 — up to
+/// [`crate::primitives::toast::MAX_BODY_LINES`] lines via
+/// [`crate::primitives::toast::wrap_text_lines`]), matching what
+/// `native_surface_paint::paint`'s own copy of this formula actually
+/// draws, so a no-paint layout call here always agrees with the last
+/// paint.
 #[allow(clippy::too_many_arguments)]
 pub fn pixel_toast_stack_layout(
     stack: &ToastStack,
@@ -509,11 +516,20 @@ pub fn pixel_toast_stack_layout(
         pixel::TOAST_GAP,
         |i| {
             let toast = &stack.toasts[i];
-            let h = if toast.body.is_empty() {
-                line_height + pixel::TOAST_PADDING * 2.0
+            let body_avail = (pixel::TOAST_WIDTH - pixel::TOAST_PADDING * 2.0).max(0.0);
+            let body_lines = if toast.body.is_empty() {
+                0
             } else {
-                line_height * 2.0 + pixel::TOAST_PADDING * 2.0
+                crate::primitives::toast::wrap_text_lines(
+                    &toast.body,
+                    body_avail,
+                    crate::primitives::toast::MAX_BODY_LINES,
+                    &|s| measure.width_of(s),
+                )
+                .len()
+                .max(1)
             };
+            let h = line_height + pixel::TOAST_PADDING * 2.0 + body_lines as f32 * line_height;
             let action_w = toast
                 .action
                 .as_ref()

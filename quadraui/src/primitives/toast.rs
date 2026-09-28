@@ -83,6 +83,177 @@ pub struct ToastAction {
     pub label: String,
 }
 
+// ── Text wrapping (#1182) ───────────────────────────────────────────────────
+//
+// Shared between every backend's toast rasteriser: the GUI paint
+// (`native_surface_paint::paint`), its no-paint layout twin
+// (`crate::primitives::layout_metrics::pixel_toast_stack_layout`), and
+// `tui::toast`. Before this, none of them wrapped or truncated title/body
+// text at all — a long title ran straight through the action button's
+// reserved column, and a long body was drawn as one line that simply
+// extended past the toast box (and, on GUI, past the window). Unit-
+// agnostic (`width_of` is pixel width on GUI surfaces, character count on
+// TUI cells) so one implementation covers both.
+
+/// Max number of wrapped lines a toast body grows to before its last line
+/// is ellipsized. Shared by the paint/layout pair on every pixel backend
+/// and by `tui::toast`, so a no-paint layout call always predicts the same
+/// box height the matching paint call actually drew.
+pub(crate) const MAX_BODY_LINES: usize = 3;
+
+/// Greedy word-wrap `text` into lines that each measure `<= max_width`
+/// under `width_of`. Caps output at `max_lines`; if words remain past
+/// that cap, the last line is trimmed and suffixed with `…` so the cut is
+/// visible rather than silently dropped. A single word wider than
+/// `max_width` on its own (a long URL/identifier with no spaces) is
+/// hard-truncated with `…` instead of overflowing or looping forever
+/// trying to fit it.
+///
+/// `max_lines == 1` is how callers get "truncate/ellipsize, never wrap"
+/// behaviour for a title; `max_lines == `[`MAX_BODY_LINES`] is how the
+/// body grows the toast's height instead.
+pub(crate) fn wrap_text_lines(
+    text: &str,
+    max_width: f32,
+    max_lines: usize,
+    width_of: &dyn Fn(&str) -> f32,
+) -> Vec<String> {
+    if text.is_empty() || max_lines == 0 {
+        return Vec::new();
+    }
+    if max_width <= 0.0 {
+        return vec![text.to_string()];
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut idx = 0;
+    while idx < words.len() && lines.len() < max_lines {
+        let mut line = String::new();
+        loop {
+            if idx >= words.len() {
+                break;
+            }
+            let word = words[idx];
+            let candidate = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if width_of(&candidate) <= max_width {
+                line = candidate;
+                idx += 1;
+                continue;
+            }
+            if line.is_empty() {
+                // A single word wider than max_width on its own:
+                // hard-truncate it with an ellipsis rather than looping
+                // forever trying (and failing) to fit it whole.
+                let mut piece = String::new();
+                for ch in word.chars() {
+                    let next = format!("{piece}{ch}…");
+                    if width_of(&next) > max_width && !piece.is_empty() {
+                        break;
+                    }
+                    piece.push(ch);
+                }
+                piece.push('…');
+                line = piece;
+                idx += 1;
+            }
+            break;
+        }
+        lines.push(line);
+    }
+
+    // Words remain past `max_lines`: ellipsize the last line so the cut
+    // is visible rather than silently dropped.
+    if idx < words.len() {
+        if let Some(last) = lines.last_mut() {
+            while !last.is_empty() && width_of(&format!("{last}…")) > max_width {
+                last.pop();
+            }
+            last.push('…');
+        }
+    }
+
+    lines
+}
+
+/// Truncate `text` to a single line that fits `max_width`, ellipsizing if
+/// it doesn't — the title's shape (never wraps, unlike the body).
+pub(crate) fn truncate_line(text: &str, max_width: f32, width_of: &dyn Fn(&str) -> f32) -> String {
+    wrap_text_lines(text, max_width, 1, width_of)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::{truncate_line, wrap_text_lines};
+
+    /// Character-count "pixel" metric — simplest deterministic `width_of`
+    /// for these unit tests (matches how `tui::toast` measures).
+    fn chars(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    #[test]
+    fn short_text_is_one_line_unchanged() {
+        let lines = wrap_text_lines("Hello", 20.0, 3, &chars);
+        assert_eq!(lines, vec!["Hello".to_string()]);
+    }
+
+    #[test]
+    fn wraps_on_word_boundaries() {
+        let lines = wrap_text_lines("one two three four", 9.0, 3, &chars);
+        // "one two" = 7 chars fits in 9; adding "three" (13) doesn't.
+        assert_eq!(lines[0], "one two");
+        for line in &lines {
+            assert!(chars(line) <= 9.0, "line {line:?} exceeds max_width");
+        }
+    }
+
+    #[test]
+    fn ellipsizes_last_line_when_content_overflows_max_lines() {
+        let lines = wrap_text_lines("a b c d e f g h", 3.0, 2, &chars);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].ends_with('…'));
+        for line in &lines {
+            assert!(chars(line) <= 3.0, "line {line:?} exceeds max_width");
+        }
+    }
+
+    #[test]
+    fn truncate_line_never_wraps() {
+        let line = truncate_line("Install Markdown Language Server?", 10.0, &chars);
+        assert!(chars(&line) <= 10.0);
+        assert!(line.ends_with('…'));
+    }
+
+    #[test]
+    fn single_word_wider_than_max_width_is_hard_truncated() {
+        let lines = wrap_text_lines("supercalifragilisticexpialidocious", 5.0, 1, &chars);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            chars(&lines[0]) <= 5.0,
+            "line {:?} exceeds max_width",
+            lines[0]
+        );
+        assert!(lines[0].ends_with('…'));
+    }
+
+    #[test]
+    fn empty_text_yields_no_lines() {
+        assert!(wrap_text_lines("", 20.0, 3, &chars).is_empty());
+    }
+}
+
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
 // First new B.3 primitive on D6. Toasts stack in a corner with uniform
@@ -464,7 +635,8 @@ impl ToastStack {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        ToastItem, ToastMeasure, ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
+        truncate_line, wrap_text_lines, ToastItem, ToastMeasure, ToastSeverity, ToastStack,
+        ToastStackLayout, VisibleToast, MAX_BODY_LINES,
     };
     use crate::event::Rect;
     use crate::native_surface::NativeSurface;
@@ -521,11 +693,17 @@ pub(crate) mod native_surface_paint {
             TOAST_GAP,
             |i| {
                 let toast = &stack.toasts[i];
-                let h = if toast.body.is_empty() {
-                    line_height + TOAST_PADDING * 2.0
+                let body_avail = (TOAST_WIDTH - TOAST_PADDING * 2.0).max(0.0);
+                let body_lines = if toast.body.is_empty() {
+                    0
                 } else {
-                    line_height * 2.0 + TOAST_PADDING * 2.0
+                    wrap_text_lines(&toast.body, body_avail, MAX_BODY_LINES, &|s| {
+                        surface.surface_measure_text(s).0
+                    })
+                    .len()
+                    .max(1)
                 };
+                let h = line_height + TOAST_PADDING * 2.0 + body_lines as f32 * line_height;
                 let action_w = toast
                     .action
                     .as_ref()
@@ -551,13 +729,20 @@ pub(crate) mod native_surface_paint {
         layout
     }
 
-    /// Paint one resolved toast box: background tint, title, optional
-    /// body (second line), dismiss `×` and optional action label — both
-    /// of the latter centred horizontally within their own reserved
+    /// Paint one resolved toast box: background tint, a theme border
+    /// (#1182 — previously absent on every backend, which left an Info
+    /// toast's `surface_bg` fill blending into a light-theme window),
+    /// title, optional body, dismiss `×` and optional action label —
+    /// both of the latter centred horizontally within their own reserved
     /// sub-region, at the same vertical position as the title (see this
-    /// module's doc, divergence 2). The body line is offset below the
+    /// module's doc, divergence 2).
+    ///
+    /// The title is truncated/ellipsized to the space left of the
+    /// action/dismiss buttons — never drawn under them (#1182). The body
+    /// wraps across up to [`MAX_BODY_LINES`] lines, offset below the
     /// title by the title's own *measured* height, not the nominal
-    /// `line_height` (divergence 3).
+    /// `line_height` (divergence 3), each subsequent line advancing by
+    /// `line_height`.
     fn paint_toast(
         surface: &mut dyn NativeSurface,
         theme: &Theme,
@@ -569,14 +754,22 @@ pub(crate) mod native_surface_paint {
             .accent
             .unwrap_or_else(|| severity_bg(toast.severity, theme));
         surface.surface_fill_rect(vt.bounds, bg_color);
+        surface.surface_stroke_rect(vt.bounds, theme.border_fg, 1.0);
+
+        let dismiss_w = vt.dismiss_bounds.map(|d| d.width).unwrap_or(0.0);
+        let action_w = vt.action_bounds.map(|a| a.width).unwrap_or(0.0);
+        let title_avail_w = (vt.bounds.width - TOAST_PADDING * 2.0 - dismiss_w - action_w).max(0.0);
+        let title_line = truncate_line(&toast.title, title_avail_w, &|s| {
+            surface.surface_measure_text(s).0
+        });
 
         let title_rect = Rect::new(
             vt.bounds.x + TOAST_PADDING,
             vt.bounds.y + TOAST_PADDING,
-            (vt.bounds.width - TOAST_PADDING * 2.0).max(0.0),
+            title_avail_w,
             line_height,
         );
-        surface.surface_draw_text_run(title_rect, &toast.title, theme.foreground);
+        surface.surface_draw_text_run(title_rect, &title_line, theme.foreground);
 
         if !toast.body.is_empty() {
             // Offset by the title's own measured pixel height (matching
@@ -585,13 +778,19 @@ pub(crate) mod native_surface_paint {
             // divergence 3. Only `win::toast` used `line_height` here
             // pre-migration.
             let (_, title_h) = surface.surface_measure_text(&toast.title);
-            let body_rect = Rect::new(
-                title_rect.x,
-                title_rect.y + title_h,
-                title_rect.width,
-                line_height,
-            );
-            surface.surface_draw_text_run(body_rect, &toast.body, theme.foreground);
+            let body_avail_w = (vt.bounds.width - TOAST_PADDING * 2.0).max(0.0);
+            let body_lines = wrap_text_lines(&toast.body, body_avail_w, MAX_BODY_LINES, &|s| {
+                surface.surface_measure_text(s).0
+            });
+            for (i, line) in body_lines.iter().enumerate() {
+                let body_rect = Rect::new(
+                    title_rect.x,
+                    title_rect.y + title_h + i as f32 * line_height,
+                    body_avail_w,
+                    line_height,
+                );
+                surface.surface_draw_text_run(body_rect, line, theme.foreground);
+            }
         }
 
         if let Some(db) = vt.dismiss_bounds {
@@ -833,6 +1032,77 @@ pub(crate) mod native_surface_paint {
                 .find(|(_, text, _)| text == "Body text")
                 .expect("body painted");
             assert_eq!(body_run.0.y, title_run.0.y + 20.0);
+        }
+
+        /// Acceptance regression for #1182: a toast with a long title, an
+        /// action button and a long body must not overlap the title with
+        /// the action, and every painted text run must stay inside the
+        /// toast's own bounds (no run extending past the box, let alone
+        /// the viewport). The pre-fix behaviour drew the full,
+        /// untruncated title straight through the action column and the
+        /// full body as one unwrapped line past the box's right edge.
+        #[test]
+        fn long_title_and_body_stay_inside_bounds_and_dont_overlap_action() {
+            let mut t = toast("t1", "Install Markdown Language Server?");
+            t.action = Some(ToastAction {
+                id: WidgetId::new("install"),
+                label: "Install".into(),
+            });
+            t.body =
+                "N: don't ask again · :ExtInstall markdown-language-server for full details".into();
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+
+            let vt = &layout.visible_toasts[0];
+            let ab = vt.action_bounds.expect("action bounds present");
+
+            // Every text run must stay within the toast's own bounds,
+            // both horizontally (x + measured width) and vertically
+            // (y + line height, allowing for wrapped body lines).
+            for (rect, text, _) in &surface.text_runs {
+                if text == "×" {
+                    continue;
+                }
+                let (w, _) = surface.surface_measure_text(text);
+                assert!(
+                    rect.x >= vt.bounds.x - 0.01,
+                    "{text:?} starts left of the toast bounds"
+                );
+                assert!(
+                    rect.x + w <= vt.bounds.x + vt.bounds.width + 0.01,
+                    "{text:?} (rect {rect:?}, measured width {w}) overflows the toast's right edge"
+                );
+                assert!(
+                    rect.y + 16.0 <= vt.bounds.y + vt.bounds.height + 0.01,
+                    "{text:?} overflows the toast's bottom edge"
+                );
+            }
+
+            // The title run specifically must end at or before the
+            // action button's left edge — no overlap.
+            let title_run = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text.starts_with("Install Markdown"))
+                .expect("truncated title painted");
+            let (title_w, _) = surface.surface_measure_text(&title_run.1);
+            assert!(
+                title_run.0.x + title_w <= ab.x + 0.01,
+                "title run {:?} overlaps the action button at {:?}",
+                title_run,
+                ab
+            );
+
+            // The long body needed more than one line, so the box grew
+            // taller than the single-body-line default.
+            let single_line_height = 16.0 + 8.0 * 2.0 + 16.0; // line_height + 2*padding + 1 body line
+            assert!(
+                vt.bounds.height > single_line_height,
+                "box should have grown to fit the wrapped body: height={}",
+                vt.bounds.height
+            );
         }
     }
 }
