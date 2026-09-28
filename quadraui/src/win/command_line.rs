@@ -236,10 +236,28 @@ mod tests {
     /// `theme.selection`. After the port, it paints through the shared
     /// `native_surface_paint::paint`, same as `gtk::command_line`'s
     /// `gtk_command_line_selection_paints_highlight_behind_text` twin.
+    ///
+    /// # Why the probes never sit in a column that holds a glyph
+    ///
+    /// The GTK twin pays for its `"  x"` / "column 1 is an ink-free
+    /// control pixel" shape with a **monospace** paint font
+    /// (`"Monospace 12"`), so Pango's per-glyph advances line up with
+    /// [`CommandLineLayout`]'s fixed column pitch and column *n* holds
+    /// character *n* and nothing else. This module's paint font is the
+    /// proportional `Segoe UI`, and the pitch is `measure_text("0")`
+    /// (see `win::text::DWrite::new`): a space advances ~3.5 DIP against
+    /// a ~7.3 DIP column, so in `"  x"` DirectWrite paints the `x`
+    /// *inside column 1* — the exact pixel a transplanted twin reads as
+    /// its unselected control. That is a font-metric coincidence, not
+    /// the behaviour under test, so the colour probes here run against
+    /// an **all-spaces** string (ink-free on any face, proportional or
+    /// not), and the "text still reaches the surface" half asserts over
+    /// the whole bar with no column arithmetic at all.
     #[test]
     fn selection_paints_highlight_behind_text() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        assert!(char_width > 1.0, "char_width should be several px");
         let theme = Theme {
             command_line_bg: Color::rgb(255, 255, 255),
             command_line_fg: Color::rgb(0, 0, 0),
@@ -247,16 +265,18 @@ mod tests {
             selection_alpha: 1.0,
             ..Theme::default()
         };
-        // Two leading spaces then a letter: selecting byte 0..1 highlights
-        // a space (no ink), byte 1..2 stays an unselected but equally
-        // ink-free control pixel — mirrors `gtk::command_line`'s twin.
-        let cmd = sample("  x", None, false);
         let rect = Rect::new(0.0, 0.0, W, H);
+        let row = (rect.height / 2.0) as u32;
 
+        // Part 1 — highlight geometry. Three spaces: selecting byte 0..1
+        // highlights column 0, and column 1 is an unselected control
+        // pixel that no glyph can ever occupy (see this test's doc).
+        let cmd = sample("   ", None, false);
         let layout = win_command_line_layout(&cmd, rect, char_width);
         let sel_rect = layout
             .selection_bounds((0, 1))
             .expect("non-empty selection should produce a rect");
+        let unsel_rect = layout.char_bounds(1);
 
         surface
             .paint(|target| {
@@ -272,22 +292,59 @@ mod tests {
             })
             .expect("paint command line selection");
 
-        let sel_px = (sel_rect.x + sel_rect.width / 2.0) as u32;
-        let unsel_px = (sel_rect.x + sel_rect.width + sel_rect.width / 2.0) as u32;
-        let row = (rect.height / 2.0) as u32;
-
-        let sample_px = surface.pixel_at(sel_px, row);
+        // Both probes come from the shared layout's own column rects, so
+        // this never hardcodes a coordinate.
+        let sample_px = surface.pixel_at((sel_rect.x + sel_rect.width / 2.0) as u32, row);
         assert_eq!(
             (sample_px.r, sample_px.g, sample_px.b),
             (0, 0, 255),
             "selected space column should paint the highlight colour",
         );
 
-        let unsel_sample = surface.pixel_at(unsel_px, row);
+        let unsel_sample = surface.pixel_at((unsel_rect.x + unsel_rect.width / 2.0) as u32, row);
         assert_eq!(
             (unsel_sample.r, unsel_sample.g, unsel_sample.b),
             (255, 255, 255),
             "unselected column should not paint the highlight",
+        );
+
+        // Part 2 — the "behind text" half of this test's name: with real
+        // text and the whole string selected, the bar must carry *both*
+        // the highlight fill and glyph ink on top of it. Whole-bar scan,
+        // so it holds for any font's advances.
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let cmd = sample(":wq", None, false);
+        surface
+            .paint(|target| {
+                draw_command_line_selection(
+                    target,
+                    &dwrite,
+                    rect,
+                    &cmd,
+                    &theme,
+                    char_width,
+                    Some((0, cmd.text.len())),
+                );
+            })
+            .expect("paint command line selection over text");
+
+        let (mut saw_highlight, mut saw_ink) = (false, false);
+        for x in 0..W as u32 {
+            for y in 0..H as u32 {
+                match surface.pixel_at(x, y) {
+                    px if (px.r, px.g, px.b) == (0, 0, 255) => saw_highlight = true,
+                    px if (px.r, px.g, px.b) != (255, 255, 255) => saw_ink = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            saw_highlight,
+            "a fully-selected command line should paint the highlight colour somewhere",
+        );
+        assert!(
+            saw_ink,
+            "glyph ink should still paint on top of the selection highlight",
         );
     }
 
