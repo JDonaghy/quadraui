@@ -542,6 +542,11 @@ path = "examples/tui_command_line_selection.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_context_menu_style"
+path = "examples/tui_context_menu_style.rs"
+required-features = ["tui"]
+
+[[example]]
 name = "msv_multi_tree"
 path = "examples/msv_multi_tree.rs"
 required-features = ["tui"]
@@ -564,6 +569,11 @@ required-features = ["gtk"]
 [[example]]
 name = "gtk_command_line_selection"
 path = "examples/gtk_command_line_selection.rs"
+required-features = ["gtk"]
+
+[[example]]
+name = "gtk_context_menu_style"
+path = "examples/gtk_context_menu_style.rs"
 required-features = ["gtk"]
 
 [[example]]
@@ -879,6 +889,11 @@ required-features = ["macos"]
 [[example]]
 name = "macos_right_click_demo"
 path = "examples/macos_right_click_demo.rs"
+required-features = ["macos"]
+
+[[example]]
+name = "macos_context_menu_style"
+path = "examples/macos_context_menu_style.rs"
 required-features = ["macos"]
 
 [[example]]

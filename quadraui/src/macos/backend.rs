@@ -1406,6 +1406,18 @@ impl Backend for MacBackend {
         self.core.unregister_accelerator(id);
     }
 
+    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// accelerator methods above. `Auto` (the default) resolves to
+    /// `Native` here since [`Self::backend_caps`] declares
+    /// `native_menu: true` — see [`crate::backend::MenuStyle::resolve`].
+    fn menu_style(&self) -> crate::backend::MenuStyle {
+        self.core.menu_style()
+    }
+
+    fn set_menu_style(&mut self, style: crate::backend::MenuStyle) {
+        self.core.set_menu_style(style);
+    }
+
     /// Issue #930: this used to `.expect()` the `MainThreadMarker`, which
     /// panics whenever called off the main thread. Every *real* call site
     /// (`macos::shell_runner`) is already on the main thread, so that
@@ -4327,6 +4339,32 @@ mod tests {
             crate::event::Rect::new(0.0, 0.0, 10.0, 5.0),
         );
         assert_eq!(h2.borrow().len(), 1);
+    }
+
+    /// Issue #1187 acceptance: on macOS headless, `Auto` resolves to
+    /// `Native` (this is the one backend that declares
+    /// `caps.native_menu`) and `Custom` resolves to painted, unchanged
+    /// from every other backend. No `MainThreadMarker`/AppKit needed —
+    /// `menu_style`/`set_menu_style`/`effective_menu_style` are pure
+    /// `BackendCore` state + `MenuStyle::resolve`, not AppKit calls.
+    #[test]
+    fn mac_backend_auto_resolves_native_and_custom_resolves_painted() {
+        let mut backend = MacBackend::new();
+
+        // Default is `Auto`, and `Auto` resolves `Native` here because
+        // `MacBackend::backend_caps().native_menu` is `true`.
+        assert_eq!(backend.menu_style(), crate::backend::MenuStyle::Auto);
+        assert_eq!(
+            backend.effective_menu_style(),
+            crate::backend::ResolvedMenuStyle::Native
+        );
+
+        backend.set_menu_style(crate::backend::MenuStyle::Custom);
+        assert_eq!(backend.menu_style(), crate::backend::MenuStyle::Custom);
+        assert_eq!(
+            backend.effective_menu_style(),
+            crate::backend::ResolvedMenuStyle::Custom
+        );
     }
 
     /// Regression test for #930: `install_menu_bar` used to

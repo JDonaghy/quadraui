@@ -54,6 +54,8 @@ mod chat_demo;
 mod clipboard_demo;
 #[path = "../examples/common/command_line_selection_demo.rs"]
 mod command_line_selection_demo;
+#[path = "../examples/common/context_menu_style_demo.rs"]
+mod context_menu_style_demo;
 #[path = "../examples/common/data_table_app.rs"]
 mod data_table_app;
 #[path = "../examples/common/demo.rs"]
@@ -170,6 +172,7 @@ use chart_app::ChartApp;
 use chat_demo::ChatDemo;
 use clipboard_demo::ClipboardDemo;
 use command_line_selection_demo::CommandLineSelectionDemo;
+use context_menu_style_demo::ContextMenuStyleDemo;
 use data_table_app::DataTableApp;
 use demo::AppState;
 use dialog_table_demo::DialogTableDemo;
@@ -7702,4 +7705,98 @@ fn command_line_selection_demo_pressing_q_exits() {
     assert!(!driver.exited());
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the app exit");
+}
+
+/// Issue #1187 acceptance: on a TUI driver, opening a context menu
+/// through `ContextMenuController::open` with the resolved `Custom`
+/// style paints it and makes it hit-testable — clicking an item
+/// delivers `UiEvent::ContextMenuItemActivated` with the right id,
+/// routed through the app's one `handle_menu_event` path. `TuiBackend`
+/// never declares `native_menu`, so `Auto` (the default) already
+/// resolves `Custom` here without touching `set_menu_style` at all.
+#[test]
+fn context_menu_style_demo_click_activates_item() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
+    assert!(
+        driver.screen_contains("effective=custom"),
+        "TUI has no native_menu capability, so Auto must resolve Custom:\n{}",
+        driver.screen()
+    );
+
+    driver.right_click(10.0, 4.0);
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("Copy"),
+        "right-click should paint the context menu:\n{screen}"
+    );
+
+    let (x, y) = driver
+        .find("Copy")
+        .unwrap_or_else(|| panic!("'Copy' must be visible after right-click:\n{screen}"));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("Last action: ctx.copy"),
+        "clicking Copy should deliver ContextMenuItemActivated(ctx.copy):\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Cut"),
+        "the menu should close after activation:\n{}",
+        driver.screen()
+    );
+}
+
+/// Issue #1187 acceptance: Escape dismisses the painted menu and
+/// delivers `UiEvent::ContextMenuDismissed` without activating anything.
+#[test]
+fn context_menu_style_demo_escape_dismisses() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
+    driver.right_click(10.0, 4.0);
+    assert!(driver.screen_contains("Copy"));
+
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        !driver.screen_contains("Copy"),
+        "Escape should dismiss the painted menu:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Last action"),
+        "dismissal must not report an activated action:\n{}",
+        driver.screen()
+    );
+}
+
+/// Issue #1187 acceptance: the example shows switching `MenuStyle` at
+/// runtime via `Backend::set_menu_style` — `m` cycles the *requested*
+/// style even though TUI's *effective* style stays `custom` throughout
+/// (no `native_menu` capability to resolve `Native`/`Auto` against).
+#[test]
+fn context_menu_style_demo_m_cycles_requested_style() {
+    let mut driver = TuiDriver::new(ContextMenuStyleDemo::new(), 60, 12);
+    assert!(driver.screen_contains("style=Auto"));
+
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("style=Native"),
+        "'m' should cycle Auto -> Native:\n{}",
+        driver.screen()
+    );
+    assert!(driver.screen_contains("effective=custom"));
+
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("style=Custom"),
+        "'m' should cycle Native -> Custom:\n{}",
+        driver.screen()
+    );
+    assert!(driver.screen_contains("effective=custom"));
+
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("style=Auto"),
+        "'m' should cycle Custom -> Auto:\n{}",
+        driver.screen()
+    );
 }

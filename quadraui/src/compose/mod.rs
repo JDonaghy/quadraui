@@ -57,6 +57,7 @@
 pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;
+pub mod context_menu_controller;
 pub mod dual_mode_palette;
 pub mod file_picker;
 pub mod focus_group;
@@ -84,6 +85,7 @@ pub use bottom_panel::{
     BottomPanelTab,
 };
 pub use chat_controller::{ChatController, ChatControllerEvent, ChatRole, ChatTurn};
+pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
 pub use dual_mode_palette::{DualModePaletteController, DualModePaletteEvent};
 pub use file_picker::{FilePickerController, FilePickerEvent, FilePickerMode};
 pub use focus_group::FocusGroup;

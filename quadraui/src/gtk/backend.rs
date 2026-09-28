@@ -1871,6 +1871,16 @@ impl Backend for GtkBackend {
         self.core.unregister_accelerator(id);
     }
 
+    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// accelerator methods above.
+    fn menu_style(&self) -> crate::backend::MenuStyle {
+        self.core.menu_style()
+    }
+
+    fn set_menu_style(&mut self, style: crate::backend::MenuStyle) {
+        self.core.set_menu_style(style);
+    }
+
     fn modal_stack_handle(&self) -> Rc<std::cell::RefCell<ModalStack>> {
         // Trait-level entry point for quadraui#699 — delegates to the
         // inherent `GtkBackend::modal_stack_handle` (same clone), which

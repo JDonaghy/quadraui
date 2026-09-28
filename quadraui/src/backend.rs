@@ -919,6 +919,141 @@ pub struct PlatformFontDefaults {
     pub ui_size_pt: f32,
 }
 
+/// Framework-level policy for whether a context menu (or, follow-up
+/// work permitting, a menu bar) shows as a real OS menu or as an
+/// in-window painted popup (issue #1187).
+///
+/// Set via [`Backend::set_menu_style`] (defaults to `Auto`), resolved
+/// per backend via [`Backend::effective_menu_style`] /
+/// [`Self::resolve`]. `Default` is `Auto`, matching the framework
+/// default described in the issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuStyle {
+    /// Native where the backend can do it ([`BackendCaps::native_menu`]
+    /// is `true` — macOS today), painted everywhere else (GTK, Win-GUI,
+    /// and always TUI). This is VS Code's own off-macOS default: custom
+    /// chrome everywhere except macOS.
+    #[default]
+    Auto,
+    /// Prefer a real OS menu. Falls back to painted on any backend that
+    /// doesn't declare [`BackendCaps::native_menu`] — this variant never
+    /// results in "nothing shows".
+    Native,
+    /// Always paint in-window, even on a backend (macOS) that could show
+    /// a native menu.
+    Custom,
+}
+
+/// What [`MenuStyle::resolve`] decided for a given [`BackendCaps`] —
+/// the two presentations [`crate::compose::ContextMenuController::open`]
+/// actually chooses between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedMenuStyle {
+    /// Show via the backend's real OS menu machinery
+    /// ([`Backend::show_context_menu`] on macOS).
+    Native,
+    /// Paint in-window — [`crate::compose::ContextMenuController`] (or
+    /// an app's own state + [`Backend::draw_context_menu`]) owns this
+    /// path.
+    Custom,
+}
+
+impl MenuStyle {
+    /// Resolve this style against a backend's declared capabilities.
+    ///
+    /// Pure and total — every `(MenuStyle, BackendCaps)` pair maps to
+    /// exactly one [`ResolvedMenuStyle`], with no "shows nothing" case:
+    ///
+    /// | style    | `caps.native_menu == true` | `caps.native_menu == false` |
+    /// |----------|-----------------------------|------------------------------|
+    /// | `Auto`   | `Native`                    | `Custom`                    |
+    /// | `Native` | `Native`                    | `Custom` (fallback)         |
+    /// | `Custom` | `Custom`                    | `Custom`                    |
+    ///
+    /// `Auto` and `Native` are deliberately identical here: today's one
+    /// `native_menu` backend (macOS) is exactly the case the issue
+    /// calls out for `Auto`, so no per-backend special-casing is needed
+    /// beyond the capability flag every backend already declares
+    /// honestly (`tests/conformance`'s `CAP_CONTRACTS` machinery).
+    pub fn resolve(self, caps: &BackendCaps) -> ResolvedMenuStyle {
+        match self {
+            MenuStyle::Custom => ResolvedMenuStyle::Custom,
+            MenuStyle::Auto | MenuStyle::Native => {
+                if caps.native_menu {
+                    ResolvedMenuStyle::Native
+                } else {
+                    ResolvedMenuStyle::Custom
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod menu_style_tests {
+    use super::{BackendCaps, MenuStyle, ResolvedMenuStyle};
+
+    fn caps(native_menu: bool) -> BackendCaps {
+        BackendCaps {
+            native_menu,
+            ..BackendCaps::empty()
+        }
+    }
+
+    #[test]
+    fn auto_resolves_native_when_caps_declare_native_menu() {
+        assert_eq!(
+            MenuStyle::Auto.resolve(&caps(true)),
+            ResolvedMenuStyle::Native
+        );
+    }
+
+    #[test]
+    fn auto_resolves_custom_when_caps_lack_native_menu() {
+        assert_eq!(
+            MenuStyle::Auto.resolve(&caps(false)),
+            ResolvedMenuStyle::Custom
+        );
+    }
+
+    #[test]
+    fn native_resolves_native_when_caps_declare_native_menu() {
+        assert_eq!(
+            MenuStyle::Native.resolve(&caps(true)),
+            ResolvedMenuStyle::Native
+        );
+    }
+
+    #[test]
+    fn native_falls_back_to_custom_when_caps_lack_native_menu() {
+        assert_eq!(
+            MenuStyle::Native.resolve(&caps(false)),
+            ResolvedMenuStyle::Custom
+        );
+    }
+
+    #[test]
+    fn custom_resolves_custom_when_caps_declare_native_menu() {
+        assert_eq!(
+            MenuStyle::Custom.resolve(&caps(true)),
+            ResolvedMenuStyle::Custom
+        );
+    }
+
+    #[test]
+    fn custom_resolves_custom_when_caps_lack_native_menu() {
+        assert_eq!(
+            MenuStyle::Custom.resolve(&caps(false)),
+            ResolvedMenuStyle::Custom
+        );
+    }
+
+    #[test]
+    fn default_is_auto() {
+        assert_eq!(MenuStyle::default(), MenuStyle::Auto);
+    }
+}
+
 /// One implementation per platform. TUI, GTK, Win-GUI, and (v1.x) macOS.
 ///
 /// # Sealed — no implementations outside this crate
@@ -1468,8 +1603,18 @@ pub trait Backend: sealed::Sealed {
     /// TUI / GTK / Win-GUI: no-op default. Apps that want a painted
     /// right-click menu on those backends continue to manage their
     /// own `ContextMenu` state and call `draw_context_menu` from
-    /// their render path. A stash-and-paint default lands in a
-    /// follow-up ticket if a consumer asks for it.
+    /// their render path — or, since issue #1187, let
+    /// [`crate::compose::ContextMenuController`] own that state for
+    /// them (it calls this method for the `Native` half of the
+    /// resolved style and manages painting/hit-testing itself for the
+    /// `Custom` half).
+    ///
+    /// This is the **low-level, always-native** building block — kept
+    /// working unchanged for apps that want to call it directly and
+    /// accept "no-op off macOS". [`crate::compose::ContextMenuController::open`]
+    /// is the **style-aware, one-call** entry point new code should
+    /// prefer: it calls this method itself on the `Native` path and
+    /// owns the painted state `Custom` needs on every other backend.
     ///
     /// Apps typically invoke this from a `MouseDown { button: Right }`
     /// handler.
@@ -1478,6 +1623,65 @@ pub trait Backend: sealed::Sealed {
         _menu: &crate::primitives::context_menu::ContextMenu,
         _anchor: crate::event::Point,
     ) {
+    }
+
+    // ─── MenuStyle (#1187) ──────────────────────────────────────────────
+    /// This backend's current [`MenuStyle`] setting. Defaults to
+    /// [`MenuStyle::Auto`] on every backend. Set via
+    /// [`Self::set_menu_style`]; resolve to an actual presentation via
+    /// [`Self::effective_menu_style`].
+    ///
+    /// The trait default returns `MenuStyle::Auto` unconditionally —
+    /// every real backend (`TuiBackend`/`GtkBackend`/`MacBackend`/
+    /// `WinBackend`) overrides this alongside [`Self::set_menu_style`]
+    /// to actually persist the value (both delegate to
+    /// [`crate::backend_core::BackendCore`]). A test double that
+    /// doesn't override either method behaves as if the style were
+    /// permanently `Auto` — consistent, not silently broken, since
+    /// `Auto` is also the crate-wide default.
+    fn menu_style(&self) -> MenuStyle {
+        MenuStyle::Auto
+    }
+
+    /// Change this backend's [`MenuStyle`] at runtime. See
+    /// [`Self::menu_style`] for the default-no-op-without-override
+    /// caveat on test doubles.
+    fn set_menu_style(&mut self, _style: MenuStyle) {}
+
+    /// [`Self::menu_style`] resolved against this backend's declared
+    /// [`BackendCaps`] via [`MenuStyle::resolve`] — what
+    /// [`crate::compose::ContextMenuController::open`] uses to decide
+    /// native vs. painted. Exposed so apps and tests can check the live
+    /// decision (e.g. to render "menu: native" in a status bar) without
+    /// duplicating the resolution rule.
+    ///
+    /// Generic over every backend for free: built purely from
+    /// [`Self::menu_style`] + [`Self::backend_caps`], both of which
+    /// every backend already has to supply. No backend needs to
+    /// override this.
+    ///
+    /// # Why the "one call" from issue #1187 lives on
+    /// [`crate::compose::ContextMenuController`], not here
+    ///
+    /// A `Backend`-trait default method has nowhere to keep "a menu is
+    /// currently open, painted, and hit-testable" state — that's a
+    /// per-call-site concern, not a per-backend one, and every backend
+    /// struct would need a new field to carry it. A default method that
+    /// only implemented the `Native` half (delegating to
+    /// [`Self::show_context_menu`]) and silently no-op'd on `Custom`
+    /// would violate the one hard rule this issue states for every
+    /// [`MenuStyle`]: *never shows nothing* — and `Custom` is where
+    /// `Auto` (the default style) resolves on every backend except
+    /// macOS. So this trait intentionally does **not** grow an
+    /// `open_context_menu` method; [`crate::compose::ContextMenuController::open`]
+    /// is the real one-call entry point — it owns the state
+    /// `Custom` needs, calls [`Self::show_context_menu`] itself for
+    /// `Native`, and its `handle`/`render` cover both paths uniformly.
+    /// See that type's module doc for the full recipe, and its own doc
+    /// for the same event-handler-time-only call contract
+    /// [`Self::show_context_menu`] already documents.
+    fn effective_menu_style(&self) -> ResolvedMenuStyle {
+        self.menu_style().resolve(&self.backend_caps())
     }
 
     // ─── Window chrome (CSD) ────────────────────────────────────────────

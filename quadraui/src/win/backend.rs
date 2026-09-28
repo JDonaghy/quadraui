@@ -1895,6 +1895,16 @@ impl Backend for WinBackend {
         self.core.unregister_accelerator(id);
     }
 
+    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// accelerator methods above.
+    fn menu_style(&self) -> crate::backend::MenuStyle {
+        self.core.menu_style()
+    }
+
+    fn set_menu_style(&mut self, style: crate::backend::MenuStyle) {
+        self.core.set_menu_style(style);
+    }
+
     // ─── Text selection (#741) ──────────────────────────────────────────
 
     /// Overrides the trait's no-op default — see [`Self::text_regions`]
