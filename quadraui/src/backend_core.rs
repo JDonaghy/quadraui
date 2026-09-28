@@ -88,6 +88,13 @@ pub(crate) struct BackendCore {
     /// at a couple of call sites that also touch other backend fields in
     /// the same statement.
     pub(crate) text_selection: TextSelectionState,
+    /// The [`crate::backend::MenuStyle`] set via [`Backend::set_menu_style`]
+    /// (issue #1187). `#[derive(Default)]` above gives this
+    /// `MenuStyle::default()` (`Auto`) with no explicit initialisation,
+    /// matching the framework-wide default the issue asks for.
+    ///
+    /// [`Backend::set_menu_style`]: crate::backend::Backend::set_menu_style
+    menu_style: crate::backend::MenuStyle,
 }
 
 impl BackendCore {
@@ -175,6 +182,20 @@ impl BackendCore {
                 }
             }
         }
+    }
+
+    // ─── MenuStyle (#1187) ────────────────────────────────────────────────
+
+    /// Current [`crate::backend::MenuStyle`] — see
+    /// [`Backend::menu_style`][crate::backend::Backend::menu_style].
+    pub(crate) fn menu_style(&self) -> crate::backend::MenuStyle {
+        self.menu_style
+    }
+
+    /// Set the [`crate::backend::MenuStyle`] — see
+    /// [`Backend::set_menu_style`][crate::backend::Backend::set_menu_style].
+    pub(crate) fn set_menu_style(&mut self, style: crate::backend::MenuStyle) {
+        self.menu_style = style;
     }
 
     // ─── Text selection ─────────────────────────────────────────────────

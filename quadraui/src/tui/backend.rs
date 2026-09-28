@@ -1500,6 +1500,16 @@ impl Backend for TuiBackend {
         self.core.unregister_accelerator(id);
     }
 
+    /// #1187: persists via `self.core`, same one-liner delegation as the
+    /// accelerator methods above.
+    fn menu_style(&self) -> crate::backend::MenuStyle {
+        self.core.menu_style()
+    }
+
+    fn set_menu_style(&mut self, style: crate::backend::MenuStyle) {
+        self.core.set_menu_style(style);
+    }
+
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
         self.modal_stack.clone()
     }

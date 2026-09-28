@@ -843,6 +843,38 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "fixed-cell backend — char_width() is 1.0 by construction, so there is no font-derived \
          value to re-apply (#1086)",
     ),
+    // ── issue #1187: `effective_menu_style` is `menu_style().resolve(&backend_caps())`
+    // — built purely from two methods every backend already supplies
+    // (`menu_style`/`set_menu_style`, both overridden below to persist via
+    // `BackendCore`, and the required `backend_caps`). There is nothing
+    // backend-specific left to override; a per-backend copy would just
+    // repeat the same one-line call. Same shape as `Metrics`/`measure`
+    // above this test file's own precedent for "derived from other
+    // required/overridden methods, intentionally never overridden".
+    (
+        "tui",
+        "effective_menu_style",
+        "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
+         required methods, nothing backend-specific to add (#1187)",
+    ),
+    (
+        "gtk",
+        "effective_menu_style",
+        "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
+         required methods, nothing backend-specific to add (#1187)",
+    ),
+    (
+        "macos",
+        "effective_menu_style",
+        "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
+         required methods, nothing backend-specific to add (#1187)",
+    ),
+    (
+        "win",
+        "effective_menu_style",
+        "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
+         required methods, nothing backend-specific to add (#1187)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.

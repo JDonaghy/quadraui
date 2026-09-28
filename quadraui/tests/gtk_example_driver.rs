@@ -15,7 +15,7 @@
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
 use quadraui::testing::ConformanceDriver;
-use quadraui::{Key, Modifiers, NamedKey, Reaction, Theme, UiEvent, WidgetId};
+use quadraui::{Key, Modifiers, MouseButton, NamedKey, Point, Reaction, Theme, UiEvent, WidgetId};
 
 #[path = "../examples/common/pipeline_app.rs"]
 mod pipeline_app;
@@ -53,6 +53,10 @@ use split_app::SplitApp;
 #[path = "../examples/common/sidebar_panel_body_demo.rs"]
 mod sidebar_panel_body_demo;
 use sidebar_panel_body_demo::SidebarPanelBodyDemo;
+
+#[path = "../examples/common/context_menu_style_demo.rs"]
+mod context_menu_style_demo;
+use context_menu_style_demo::ContextMenuStyleDemo;
 
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
@@ -1094,5 +1098,74 @@ fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placehol
     assert!(
         driver.screen_contains("item0"),
         "tree body should still paint its rows beneath the header-only chrome"
+    );
+}
+
+// ─── ContextMenuStyleDemo: MenuStyle + ContextMenuController (#1187) ───────
+
+const CTX_MENU_W: i32 = 400;
+const CTX_MENU_H: i32 = 300;
+
+/// Issue #1187 acceptance: on a GTK test backend, opening a context menu
+/// through `ContextMenuController::open` with the resolved `Custom`
+/// style paints it and makes it hit-testable — clicking an item
+/// delivers `UiEvent::ContextMenuItemActivated` with the right id.
+/// `GtkBackend` never declares `native_menu`, so `Auto` (the default)
+/// already resolves `Custom` here without touching `set_menu_style`.
+#[test]
+fn context_menu_style_demo_gtk_click_activates_item() {
+    let mut driver = GtkDriver::new(ContextMenuStyleDemo::new(), CTX_MENU_W, CTX_MENU_H);
+    assert!(
+        driver.screen_contains("effective=custom"),
+        "GTK has no native_menu capability, so Auto must resolve Custom"
+    );
+
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Right,
+        position: Point::new(50.0, 50.0),
+        modifiers: Modifiers::default(),
+    });
+    assert!(
+        driver.screen_contains("Copy"),
+        "right-click should paint the context menu"
+    );
+
+    let (x, y) = driver
+        .find("Copy")
+        .unwrap_or_else(|| panic!("'Copy' must be visible after right-click"));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("Last action: ctx.copy"),
+        "clicking Copy should deliver ContextMenuItemActivated(ctx.copy)"
+    );
+    assert!(
+        !driver.screen_contains("Cut"),
+        "the menu should close after activation"
+    );
+}
+
+/// Issue #1187 acceptance: Escape dismisses the painted menu and
+/// delivers `UiEvent::ContextMenuDismissed` without activating anything.
+#[test]
+fn context_menu_style_demo_gtk_escape_dismisses() {
+    let mut driver = GtkDriver::new(ContextMenuStyleDemo::new(), CTX_MENU_W, CTX_MENU_H);
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Right,
+        position: Point::new(50.0, 50.0),
+        modifiers: Modifiers::default(),
+    });
+    assert!(driver.screen_contains("Copy"));
+
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        !driver.screen_contains("Copy"),
+        "Escape should dismiss the painted menu"
+    );
+    assert!(
+        !driver.screen_contains("Last action"),
+        "dismissal must not report an activated action"
     );
 }

@@ -561,9 +561,9 @@ pub use accelerator::{
 };
 pub use backend::{
     Backend, BackendCaps, BackendError, Clipboard, ClipboardFormat, ColorDepth, Display,
-    FileDialogOptions, MessageDialogButton, MessageDialogChoice, MessageDialogOptions, Metrics,
-    Notification, PlatformFontDefaults, PlatformServices, PointerShape, ResizeEdge, RgbaImage,
-    SecretStore, ServiceResult, SystemTheme, WindowControl,
+    FileDialogOptions, MenuStyle, MessageDialogButton, MessageDialogChoice, MessageDialogOptions,
+    Metrics, Notification, PlatformFontDefaults, PlatformServices, PointerShape, ResizeEdge,
+    ResolvedMenuStyle, RgbaImage, SecretStore, ServiceResult, SystemTheme, WindowControl,
 };
 pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
@@ -605,16 +605,16 @@ pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
     AppShellLayout, BackendWidget, BottomBand, BottomPanelConfig, BottomPanelController,
     BottomPanelEvent, BottomPanelLayout, BottomPanelTab, ChatController, ChatControllerEvent,
-    ChatRole, ChatTurn, DualModePaletteController, DualModePaletteEvent, FilePickerController,
-    FilePickerEvent, FilePickerMode, FocusGroup, FocusRing, FolderPickerController,
-    FolderPickerEvent, FormController, FormControllerEvent, GroupLayout, HelpAction, HelpNote,
-    HelpOverlayController, HelpOverlayEvent, HelpRegistry, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController, MessageDialogEvent, NavigationMode, Pane, PaneDragRect, PaneTab,
-    PanelDefinition, SectionKind, ShellPosition, SidebarEvent, SidebarPanelBody,
-    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem, StatusBarAction,
-    StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout, ToolbarHoverTracker,
-    TreeController, TreeControllerEvent, ViewHelp, WorkspaceController, WorkspaceDoc,
-    WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
+    ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome, DualModePaletteController,
+    DualModePaletteEvent, FilePickerController, FilePickerEvent, FilePickerMode, FocusGroup,
+    FocusRing, FolderPickerController, FolderPickerEvent, FormController, FormControllerEvent,
+    GroupLayout, HelpAction, HelpNote, HelpOverlayController, HelpOverlayEvent, HelpRegistry,
+    MenuDef, MenuEvent, MenuSystem, MessageDialogController, MessageDialogEvent, NavigationMode,
+    Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent,
+    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
+    StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
+    ToolbarHoverTracker, TreeController, TreeControllerEvent, ViewHelp, WorkspaceController,
+    WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
