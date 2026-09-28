@@ -210,7 +210,16 @@ pub fn draw_minimap_with_scale(
 
     let bg = ratatui_color(theme.background);
     let default_fg = ratatui_color(theme.foreground);
-    let highlight_bg = ratatui_color(theme.accent_bg);
+    // Pre-blended tint, not a solid `accent_bg` fill (issue #1181): a
+    // terminal cell's background is one opaque colour, with no alpha
+    // channel to composite through, so TUI can't lean on source-over the
+    // way `gtk::minimap`/`macos::minimap` do (a translucent
+    // `accent_bg`-at-0.25 fill over the already-painted background) --
+    // it must pre-mix on the CPU instead, exactly like `win::minimap`
+    // does via the same shared `Color::blend` helper. All four backends
+    // now converge on the identical resulting colour:
+    // `blend(background, accent_bg, 0.25)`.
+    let highlight_bg = ratatui_color(theme.background.blend(theme.accent_bg, 0.25));
     let hl = &layout.viewport_highlight;
     let width_cells = area.width as usize;
 
@@ -469,8 +478,37 @@ mod tests {
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
         let _layout = draw_minimap(&mut buf, area, &mm, &theme);
-        assert_eq!(buf[(0u16, 0u16)].bg, ratatui_color(theme.accent_bg));
-        assert_ne!(buf[(0u16, 1u16)].bg, ratatui_color(theme.accent_bg));
+        let expected_tint = ratatui_color(theme.background.blend(theme.accent_bg, 0.25));
+        assert_eq!(buf[(0u16, 0u16)].bg, expected_tint);
+        assert_ne!(buf[(0u16, 1u16)].bg, expected_tint);
+    }
+
+    /// Regression test for issue #1181: the viewport highlight must be the
+    /// same pre-blended tint `gtk::minimap`/`macos::minimap`/`win::minimap`
+    /// converge on (`blend(background, accent_bg, 0.25)`), not opaque
+    /// `theme.accent_bg` at full strength — the pre-fix bug this test
+    /// guards against directly.
+    #[test]
+    fn viewport_highlight_is_a_blended_tint_not_opaque_accent_bg() {
+        let mut mm = eight_by_four();
+        mm.visible_row_start = 0;
+        mm.visible_row_count = 4; // first row group only
+        let theme = Theme {
+            background: Color::rgb(20, 20, 20),
+            accent_bg: Color::rgb(0, 96, 191),
+            ..Theme::default()
+        };
+        let area = Rect::new(0, 0, 2, 2);
+        let mut buf = Buffer::empty(area);
+        let _layout = draw_minimap(&mut buf, area, &mm, &theme);
+
+        let expected = theme.background.blend(theme.accent_bg, 0.25);
+        assert_eq!(buf[(0u16, 0u16)].bg, ratatui_color(expected));
+        assert_ne!(
+            buf[(0u16, 0u16)].bg,
+            ratatui_color(theme.accent_bg),
+            "the viewport slider must not paint opaque accent_bg at full strength"
+        );
     }
 
     /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
