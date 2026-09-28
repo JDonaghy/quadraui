@@ -23,10 +23,13 @@ use crate::theme::Theme;
 /// native-button `set_height_request: 48` baked into vimcode's GTK CSS.
 pub const ACTIVITY_ROW_PX: f64 = 48.0;
 
-/// Pango font description for activity-bar icon glyphs. 18pt renders at
-/// ≈ 24px at the standard 96 dpi (`18 * 96 / 72 = 24`), matching VS
-/// Code's 24px codicons — the pre-#620 "… 20" size rendered ≈ 26.7px,
-/// visibly oversized against the unchanged 48px row (`ACTIVITY_ROW_PX`).
+/// Pango font description for activity-bar icon glyphs, at the
+/// pre-#1157 fixed 18pt (≈ 24px at the standard 96 dpi,
+/// `18 * 96 / 72 = 24`) size — matches
+/// [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`]'s
+/// 24px default converted through [`activity_bar_icon_font`]'s own
+/// pt/px ratio; the pre-#620 "… 20" size rendered ≈ 26.7px, visibly
+/// oversized against the unchanged 48px row (`ACTIVITY_ROW_PX`).
 ///
 /// The family (`"Symbols Nerd Font"`) is the same default
 /// [`super::NERD_FONT_FALLBACK_FAMILY`] names for every other GTK
@@ -38,18 +41,38 @@ pub const ACTIVITY_ROW_PX: f64 = 48.0;
 /// not track a `Backend::set_nerd_font_fallback` override
 /// (`GtkBackend::set_nerd_font_fallback`, issue #929) — it exists for
 /// its point size (`draw_activity_bar`'s size-assertion tests read
-/// `ICON_FONT_DESC.ends_with(" 18")`) and as the literal every draw call
-/// starts from before substituting in the live family.
+/// `ICON_FONT_DESC.ends_with(" 18")`) and as a byte-for-byte pin for
+/// [`activity_bar_icon_font`]'s default-size output (modulo family
+/// substitution).
+///
+/// `#[allow(dead_code)]`: `activity_bar_icon_font` builds its own
+/// description at whatever size the caller resolves (#1157) rather than
+/// parsing this literal, so nothing outside `#[cfg(test)]` reads this
+/// constant any more — it's kept `pub` (and non-`#[cfg(test)]`) purely as
+/// the size the two tests above pin against, matching this module's
+/// private (non-`pub`) enclosing `gtk::activity_bar` — `pub` alone
+/// doesn't make it externally reachable, so `dead_code` still fires
+/// outside test builds.
+#[allow(dead_code)]
 pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 
-/// [`ICON_FONT_DESC`] with its family swapped for whatever
-/// [`super::current_nerd_font_fallback_family`] currently resolves to —
-/// [`NERD_FONT_FALLBACK_FAMILY`][super::NERD_FONT_FALLBACK_FAMILY] until
-/// a `Backend::set_nerd_font_fallback` call overrides it. The point size
-/// (`" 18"`) always comes from `ICON_FONT_DESC` itself, so the two can
-/// never drift on that axis.
-fn activity_bar_icon_font() -> FontDescription {
-    let mut f = FontDescription::from_string(ICON_FONT_DESC);
+/// Build the Pango font description [`draw_activity_bar_with_style`]
+/// paints the icon glyph with, at `size_px` device-independent pixels
+/// (issue #1157 — [`crate::ActivityBarStyle::icon_size_px`]).
+///
+/// Converts `size_px` to Pango's point-size convention via the 96/72 dpi
+/// ratio [`ICON_FONT_DESC`]'s own doc explains, so
+/// `activity_bar_icon_font(24.0)` — the
+/// [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`]
+/// default — reproduces [`ICON_FONT_DESC`]'s `18` byte-for-byte (see
+/// `icon_font_matches_the_pinned_default_description` below). The family
+/// always comes from [`super::current_nerd_font_fallback_family`] —
+/// [`NERD_FONT_FALLBACK_FAMILY`][super::NERD_FONT_FALLBACK_FAMILY] until a
+/// `Backend::set_nerd_font_fallback` call overrides it — never from
+/// [`ICON_FONT_DESC`]'s own literal family.
+fn activity_bar_icon_font(size_px: f32) -> FontDescription {
+    let pt = size_px * 72.0 / 96.0;
+    let mut f = FontDescription::from_string(&format!("monospace {pt}"));
     f.set_family(&format!(
         "{}, monospace",
         super::current_nerd_font_fallback_family()
@@ -113,12 +136,15 @@ pub fn draw_activity_bar(
 ///   either knob.
 /// - **Hovered row:** subtle background tint
 ///   (`theme.tab_bar_bg.lighten(0.10)`).
-/// - **Icon glyph:** centred in each row using [`ICON_FONT_DESC`]
-///   ("Symbols Nerd Font, monospace 18" — 18pt ≈ 24px at 96 dpi,
-///   matching VS Code's 24px codicons; #620); foreground is
-///   `theme.foreground` for active/hovered rows, `theme.inactive_fg`
-///   otherwise. `ACTIVITY_ROW_PX` (the 48px row) is unrelated and
-///   unchanged — only the glyph shrank.
+/// - **Icon glyph:** centred in each row at `style.resolved_icon_size_px()`
+///   (issue #1157; defaults to
+///   [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`] —
+///   24px, matching VS Code's codicons; see [`activity_bar_icon_font`]'s
+///   own doc for the pt/px conversion and #620's original fixed-18pt
+///   fix this generalises); foreground is `theme.foreground` for
+///   active/hovered rows, `theme.inactive_fg` otherwise.
+///   `ACTIVITY_ROW_PX` (the 48px row) is unrelated and independent of
+///   the icon's own size.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_activity_bar_with_style(
     cr: &Context,
@@ -132,7 +158,7 @@ pub fn draw_activity_bar_with_style(
     nerd_fonts_enabled: bool,
 ) -> Vec<ActivityBarRowHit> {
     let saved_font = pango_layout.font_description().unwrap_or_default();
-    let icon_font = activity_bar_icon_font();
+    let icon_font = activity_bar_icon_font(style.resolved_icon_size_px());
     pango_layout.set_font_description(Some(&icon_font));
     pango_layout.set_attributes(None);
 
@@ -211,6 +237,100 @@ mod tests {
             new_w <= old_w,
             "new icon glyph width ({new_w}) should not exceed the pre-#620 20pt \
              width ({old_w})"
+        );
+    }
+
+    /// #1157: [`activity_bar_icon_font`]'s default-size output (24px, the
+    /// crate's `DEFAULT_ACTIVITY_ICON_SIZE_PX`) must reproduce
+    /// [`ICON_FONT_DESC`]'s pinned `18` point size byte-for-byte (modulo
+    /// family, which always comes from
+    /// `super::current_nerd_font_fallback_family` on both sides here).
+    #[test]
+    fn icon_font_matches_the_pinned_default_description() {
+        use crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX;
+
+        let desc = activity_bar_icon_font(DEFAULT_ACTIVITY_ICON_SIZE_PX);
+        let pinned = FontDescription::from_string(ICON_FONT_DESC);
+        assert_eq!(
+            desc.size(),
+            pinned.size(),
+            "activity_bar_icon_font({DEFAULT_ACTIVITY_ICON_SIZE_PX}) should match \
+             ICON_FONT_DESC's pinned point size"
+        );
+    }
+
+    /// #1157: the icon glyph's *ink* size follows
+    /// `ActivityBarStyle::icon_size_px`, not whatever font size the
+    /// caller's `pango::Layout` happened to carry when `draw_activity_bar_with_style`
+    /// was called — the regression this issue reports ("icon size follows
+    /// the active font").
+    #[test]
+    fn icon_ink_height_follows_style_not_the_callers_font() {
+        let bar = one_item_bar(None);
+
+        // Bounding-box height (in device px) of every non-background
+        // pixel in a freshly painted single-row surface.
+        let ink_height = |style: &ActivityBarStyle, callers_font_pt: f64| -> i32 {
+            let mut surface =
+                ImageSurface::create(Format::ARgb32, ROW_W, ACTIVITY_ROW_PX as i32).unwrap();
+            {
+                let cr = Context::new(&surface).unwrap();
+                let pango_layout = pangocairo::functions::create_layout(&cr);
+                // Simulate a caller whose own (editor/chrome) font is set
+                // to something wildly different before painting — the
+                // fix must not let this leak into the icon glyph size.
+                pango_layout.set_font_description(Some(&FontDescription::from_string(&format!(
+                    "monospace {callers_font_pt}"
+                ))));
+                draw_activity_bar_with_style(
+                    &cr,
+                    &pango_layout,
+                    ROW_W as f64,
+                    ACTIVITY_ROW_PX,
+                    &bar,
+                    style,
+                    &Theme::default(),
+                    None,
+                    false,
+                );
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().unwrap();
+            let theme = Theme::default();
+            let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+            let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
+            for y in 0..ACTIVITY_ROW_PX as i32 {
+                // Exclude the last column: it's the bar's own 1px
+                // right-edge separator (always painted, regardless of
+                // icon size), not glyph ink.
+                for x in 0..ROW_W - 1 {
+                    if pixel(&data, stride, x, y) != bg {
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
+                }
+            }
+            if min_y > max_y {
+                0
+            } else {
+                max_y - min_y + 1
+            }
+        };
+
+        let default_at_small_font = ink_height(&ActivityBarStyle::default(), 6.0);
+        let default_at_huge_font = ink_height(&ActivityBarStyle::default(), 60.0);
+        assert_eq!(
+            default_at_small_font, default_at_huge_font,
+            "default icon ink height must not track the caller's font size \
+             (6pt vs 60pt should paint identically)"
+        );
+
+        let small_icon = ink_height(&ActivityBarStyle::new().with_icon_size_px(10.0), 14.0);
+        assert!(
+            small_icon < default_at_huge_font,
+            "icon_size_px(10.0) ({small_icon}px ink) should paint smaller than \
+             the 24px default ({default_at_huge_font}px ink)"
         );
     }
 

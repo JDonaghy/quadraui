@@ -381,6 +381,7 @@ pub use generic_font::GenericFamily;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
     ActivityBarStyle, ActivityItem, ActivitySide, VisibleActivityItem,
+    DEFAULT_ACTIVITY_ICON_SIZE_PX,
 };
 pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
