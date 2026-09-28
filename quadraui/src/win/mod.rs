@@ -250,7 +250,14 @@ mod tree;
 pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
-pub use board::{draw_board, win_board_layout};
+pub use board::win_board_layout;
+// #1085: `draw_board` is `#[deprecated]` — see `board::draw_board`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use board::draw_board;
 #[cfg(target_os = "windows")]
 pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
@@ -322,9 +329,25 @@ pub use panel::win_panel_layout;
 #[allow(deprecated)]
 pub use panel::draw_panel;
 #[cfg(target_os = "windows")]
-pub use pipeline_view::{draw_pipeline_view, win_pipeline_view_layout};
+pub use pipeline_view::win_pipeline_view_layout;
+// #1085: `draw_pipeline_view` is `#[deprecated]` — see
+// `pipeline_view::draw_pipeline_view`'s doc for why the shim exists and
+// why re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
 #[cfg(target_os = "windows")]
-pub use progress::{draw_progress, win_progress_layout};
+#[allow(deprecated)]
+pub use pipeline_view::draw_pipeline_view;
+#[cfg(target_os = "windows")]
+pub use progress::win_progress_layout;
+// #1085: `draw_progress` is `#[deprecated]` — see
+// `progress::draw_progress`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[cfg(target_os = "windows")]
+#[allow(deprecated)]
+pub use progress::draw_progress;
 #[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig};

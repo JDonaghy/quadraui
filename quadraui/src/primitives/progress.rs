@@ -171,6 +171,242 @@ impl ProgressBar {
     }
 }
 
+// ── NativeSurface paint (shared gtk/macos/win implementation, issue #1085,
+// NativeSurface Phase 4 8/8) ────────────────────────────────────────────
+//
+// Before this, `gtk::progress::draw_progress` (Cairo + Pango),
+// `macos::progress::draw_progress` (Core Graphics + Core Text) and
+// `win::progress::draw_progress` (Direct2D + DirectWrite) each
+// independently painted the same track/fill/label/cancel geometry
+// (already unified by [`ProgressBar::layout`]/[`pixel_progress_layout`])
+// with their own drawing API. `paint` below is the one shared
+// implementation, written against [`crate::native_surface::NativeSurface`]
+// (#807, Phase 1) instead of any one backend's drawing API — same shape
+// as `diff_view`'s #866 migration and this issue's `board`/`pipeline_view`
+// slices above.
+//
+// ## Divergence found (re-verified, reported here rather than silently
+// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
+// acceptance bar)
+//
+// **Theme ignored on Windows.** `gtk::progress::draw_progress` and
+// `macos::progress::draw_progress` both take a `theme: &Theme` parameter
+// and paint the host's actual active theme. `win::progress::draw_progress`
+// took no theme parameter at all — it called `Theme::default()`
+// internally on every paint, so a Win-GUI host running any theme other
+// than the default painted every progress bar in the wrong colours (see
+// that module's former doc, "`WinBackend` does not yet carry a live
+// `Theme`"). `paint` below takes `theme: &Theme` like its GTK/macOS
+// twins, and `WinBackend::draw_progress` now passes `self.current_theme`
+// — the same live theme every other Win-GUI rasteriser already uses.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{ProgressBar, ProgressBarLayout};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+    use crate::theme::Theme;
+
+    /// Paint a [`ProgressBar`] into `rect` on `surface`, returning
+    /// [`ProgressBarLayout`] for host click dispatch — same contract as
+    /// every deleted per-backend `draw_progress`.
+    pub(crate) fn paint(
+        bar: &ProgressBar,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        rect: Rect,
+    ) -> ProgressBarLayout {
+        let layout = pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height);
+
+        // Track background.
+        surface.surface_fill_rect(rect, theme.surface_bg);
+
+        let fill_color = bar.accent.unwrap_or(theme.accent_bg);
+        if let Some(fb) = layout.fill_bounds {
+            surface.surface_fill_rect(fb, fill_color);
+        } else {
+            // Indeterminate pulse — same cadence on every backend.
+            let bar_w = if bar.cancellable {
+                (rect.width - pixel::PROGRESS_CANCEL_WIDTH).max(0.0)
+            } else {
+                rect.width
+            };
+            if bar_w > 0.0 {
+                let pulse_w = pixel::PROGRESS_PULSE_WIDTH.min(bar_w);
+                let pos = (bar.frame_idx as f32 * 4.0) % bar_w;
+                let w = pulse_w.min(bar_w - pos);
+                if w > 0.0 {
+                    surface.surface_fill_rect(
+                        Rect::new(rect.x + pos, rect.y, w, rect.height),
+                        fill_color,
+                    );
+                }
+            }
+        }
+
+        // Label.
+        if !bar.label.is_empty() {
+            surface.surface_draw_text_run(
+                Rect::new(
+                    rect.x + 4.0,
+                    rect.y,
+                    (rect.width - 4.0).max(0.0),
+                    rect.height,
+                ),
+                &bar.label,
+                theme.foreground,
+            );
+        }
+
+        // Cancel `×` affordance.
+        if let Some(cb) = layout.cancel_bounds {
+            let (tw, _) = surface.surface_measure_text("\u{d7}");
+            let glyph_x = cb.x + ((cb.width - tw) / 2.0).max(0.0);
+            surface.surface_draw_text_run(
+                Rect::new(
+                    glyph_x,
+                    cb.y,
+                    (cb.x + cb.width - glyph_x).max(1.0),
+                    cb.height,
+                ),
+                "\u{d7}",
+                theme.foreground,
+            );
+        }
+
+        layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues — mirrors
+        /// `primitives::diff_view`'s own `RecordingSurface` (#810/#865/#866).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(200.0, 20.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn bar(value: Option<f32>, cancellable: bool) -> ProgressBar {
+            ProgressBar {
+                id: WidgetId::new("p"),
+                label: String::new(),
+                value,
+                frame_idx: 0,
+                cancellable,
+                accent: None,
+            }
+        }
+
+        #[test]
+        fn determinate_fill_uses_the_caller_supplied_theme() {
+            let bar = bar(Some(0.5), false);
+            let custom_accent = Color::rgb(12, 200, 250);
+            let theme = Theme {
+                accent_bg: custom_accent,
+                ..Theme::default()
+            };
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&bar, &mut surface, &theme, Rect::new(0.0, 0.0, 200.0, 20.0));
+            let fb = layout.fill_bounds.expect("determinate fill present");
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(r, c)| *r == fb && *c == custom_accent));
+        }
+
+        #[test]
+        fn label_and_cancel_glyph_are_drawn_as_text_runs() {
+            let mut bar = bar(Some(0.5), true);
+            bar.label = "Uploading".into();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(&bar, &mut surface, &theme, Rect::new(0.0, 0.0, 200.0, 20.0));
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Uploading"));
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "\u{d7}"));
+        }
+
+        #[test]
+        fn indeterminate_pulse_moves_with_frame_idx() {
+            let theme = Theme::default();
+            let mut bar0 = bar(None, false);
+            bar0.frame_idx = 0;
+            let mut surface0 = RecordingSurface::default();
+            paint(
+                &bar0,
+                &mut surface0,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+            );
+
+            let mut bar1 = bar(None, false);
+            bar1.frame_idx = 5;
+            let mut surface1 = RecordingSurface::default();
+            paint(
+                &bar1,
+                &mut surface1,
+                &theme,
+                Rect::new(0.0, 0.0, 200.0, 20.0),
+            );
+
+            let pulse0 = surface0.fills.last().expect("pulse fill").0;
+            let pulse1 = surface1.fills.last().expect("pulse fill").0;
+            assert_ne!(pulse0.x, pulse1.x);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

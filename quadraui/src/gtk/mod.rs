@@ -80,7 +80,13 @@ mod tree;
 pub use crate::primitives::tab_bar::TabBarHits;
 pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style, ACTIVITY_ROW_PX};
 pub use backend::GtkBackend;
-pub use board::{draw_board, gtk_board_layout};
+pub use board::gtk_board_layout;
+// #1085: `draw_board` is `#[deprecated]` — see `board::draw_board`'s doc
+// for why the shim exists and why re-exporting it here (rather than
+// dropping the re-export) is the point. `#[allow(deprecated)]` for the
+// same reason as `form::draw_form`'s re-export above.
+#[allow(deprecated)]
+pub use board::draw_board;
 pub use chart::gtk_chart_layout;
 pub use command_center::{draw_command_center, gtk_command_center_layout};
 pub use completions::draw_completions;
@@ -138,8 +144,22 @@ pub use panel::gtk_panel_layout;
 // same reason as `form::draw_form`'s re-export above.
 #[allow(deprecated)]
 pub use panel::draw_panel;
-pub use pipeline_view::{draw_pipeline_view, gtk_pipeline_view_layout};
-pub use progress::{draw_progress, gtk_progress_layout};
+pub use pipeline_view::gtk_pipeline_view_layout;
+// #1085: `draw_pipeline_view` is `#[deprecated]` — see
+// `pipeline_view::draw_pipeline_view`'s doc for why the shim exists and
+// why re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
+pub use pipeline_view::draw_pipeline_view;
+pub use progress::gtk_progress_layout;
+// #1085: `draw_progress` is `#[deprecated]` — see
+// `progress::draw_progress`'s doc for why the shim exists and why
+// re-exporting it here (rather than dropping the re-export) is the
+// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
+// re-export above.
+#[allow(deprecated)]
+pub use progress::draw_progress;
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };

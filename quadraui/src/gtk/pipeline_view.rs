@@ -1,27 +1,23 @@
 //! GTK rasteriser for [`crate::primitives::pipeline_view::PipelineView`].
 //!
-//! Paints a horizontal row of rounded-rect stage boxes connected by
-//! `───▶` arrow connectors using Cairo. Each box shows a status icon,
-//! the stage label, and an optional action button in `[text]` style.
-//!
-//! ## Colour mapping (same as TUI)
-//!
-//! | Status   | Icon | Fill                |
-//! |----------|------|---------------------|
-//! | Done     | ✓    | `theme.success`     |
-//! | Active   | ●    | `theme.accent_bg`   |
-//! | Failed   | ✗    | `theme.error`       |
-//! | Pending  | ·    | `theme.muted_fg`    |
-//! | Skipped  | ─    | `theme.muted_fg`    |
+//! Painting moved to the shared
+//! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+//! (#1085, `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the
+//! seven named divergences found while unifying
+//! `gtk::pipeline_view::draw_pipeline_view`,
+//! `macos::pipeline_view::draw_pipeline_view` and
+//! `win::pipeline_view::draw_pipeline_view` into one implementation. This
+//! module now only carries [`gtk_pipeline_view_layout`] (still real,
+//! backend-specific pure geometry — no painting involved) and the
+//! deprecated [`draw_pipeline_view`] compatibility shim over the shared
+//! [`super::surface::CairoSurface`] adapter (mirrors `gtk::diff_view`'s
+//! #866 shim).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::{rounded_rect_path, set_source};
-use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
-use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout,
-};
+use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
+use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`PipelineView`] without
@@ -30,11 +26,11 @@ use crate::theme::Theme;
 /// #1079).
 ///
 /// Note: the returned layout (incl. `bounds`) is offset down by
-/// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
-/// reserved caret strip. The focus caret is painted in the gap between
-/// the passed-in `y` and `bounds.y`; a host that clips drawing to
-/// `layout.bounds` would clip the caret — clip to the original `(y, h)`
-/// instead.
+/// [`crate::primitives::layout_metrics::pixel::PIPELINE_FOCUS_INDICATOR_H`],
+/// so `bounds.y` starts below the reserved caret strip. The focus caret is
+/// painted in the gap between the passed-in `y` and `bounds.y`; a host
+/// that clips drawing to `layout.bounds` would clip the caret — clip to
+/// the original `(y, h)` instead.
 pub fn gtk_pipeline_view_layout(
     view: &PipelineView,
     x: f64,
@@ -45,8 +41,17 @@ pub fn gtk_pipeline_view_layout(
     pixel_pipeline_view_layout(view, x as f32, y as f32, w as f32, h as f32)
 }
 
-/// Draw a [`PipelineView`] onto `cr`. Returns the layout for host click
-/// dispatch.
+/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
+/// the pre-#1085 signature exactly for any external caller that held a
+/// direct `quadraui::gtk::draw_pipeline_view` reference rather than going
+/// through [`crate::Backend::draw_pipeline_view`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_pipeline_view` instead — this free function is a compatibility shim over the shared #1085 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pipeline_view(
     cr: &Context,
@@ -58,160 +63,50 @@ pub fn draw_pipeline_view(
     view: &PipelineView,
     theme: &Theme,
 ) -> PipelineViewLayout {
-    let layout = gtk_pipeline_view_layout(view, x, y, w, h);
-
-    if w <= 0.0 || h <= 0.0 {
-        return layout;
-    }
-
-    for sb in &layout.stages {
-        let stage = &view.stages[sb.index];
-        let is_focused = view.focused_stage == Some(sb.index);
-
-        let bx = sb.box_bounds.x as f64;
-        let by = sb.box_bounds.y as f64;
-        let bw = sb.box_bounds.width as f64;
-        let bh = sb.box_bounds.height as f64;
-
-        if bw <= 0.0 || bh <= 0.0 {
-            continue;
-        }
-
-        // ── Box fill ─────────────────────────────────────────────────────
-        set_source(cr, theme.surface_bg);
-        rounded_rect_path(cr, bx, by, bw, bh, pixel::CORNER_RADIUS);
-        cr.fill().ok();
-
-        // ── Box border (per-status colour; focus uses an above-box indicator) ──
-        let border_color = status_color(&stage.status, theme);
-        set_source(cr, border_color);
-        cr.set_line_width(pixel::PIPELINE_BORDER_WIDTH);
-        rounded_rect_path(cr, bx, by, bw, bh, pixel::CORNER_RADIUS);
-        cr.stroke().ok();
-
-        // ── Focus indicator (small ▼ triangle above the box) ─────────────
-        if is_focused {
-            let ind_x = bx + bw / 2.0;
-            let tri_tip_y = by - 1.0;
-            let tri_base_y = by - pixel::PIPELINE_FOCUS_INDICATOR_H as f64 + 1.0;
-            let tri_half_w = 5.0;
-            set_source(cr, theme.muted_fg);
-            cr.move_to(ind_x, tri_tip_y);
-            cr.line_to(ind_x - tri_half_w, tri_base_y);
-            cr.line_to(ind_x + tri_half_w, tri_base_y);
-            cr.close_path();
-            cr.fill().ok();
-        }
-
-        // ── Status icon (top third of box) ───────────────────────────────
-        let icon_text = status_glyph(&stage.status);
-        let icon_color = status_color(&stage.status, theme);
-        set_source(cr, icon_color);
-        pango_layout.set_text(icon_text);
-        pango_layout.set_attributes(None);
-        let (iw, ih) = pango_layout.pixel_size();
-        let icon_cx = bx + bw / 2.0 - iw as f64 / 2.0;
-        let icon_h = bh / 3.0;
-        let icon_cy = by + icon_h / 2.0 - ih as f64 / 2.0;
-        cr.move_to(icon_cx, icon_cy);
-        super::painted_text::show_layout(cr, pango_layout);
-
-        // ── Label (middle third) ─────────────────────────────────────────
-        if !stage.label.is_empty() {
-            set_source(cr, theme.foreground);
-            pango_layout.set_text(&stage.label);
-            pango_layout.set_width((bw - 2.0 * pixel::PIPELINE_H_PAD) as i32 * pango::SCALE);
-            pango_layout.set_ellipsize(pango::EllipsizeMode::End);
-            let (lw, lh) = pango_layout.pixel_size();
-            let label_cx = bx + bw / 2.0 - lw as f64 / 2.0;
-            let label_cy = by + bh / 2.0 - lh as f64 / 2.0;
-            cr.move_to(label_cx, label_cy);
-            super::painted_text::show_layout(cr, pango_layout);
-            pango_layout.set_width(-1); // reset
-        }
-
-        // ── Action button (bottom strip) ─────────────────────────────────
-        if let (Some(ab), Some(action_text)) = (sb.action_bounds, &stage.action) {
-            let btn_label = format!("[{}]", action_text);
-            let aby = ab.y as f64;
-            let abh = ab.height as f64;
-
-            // Subtle tint background for the button area.
-            set_source(cr, theme.accent_bg);
-            cr.set_source_rgba(
-                theme.accent_bg.r as f64 / 255.0,
-                theme.accent_bg.g as f64 / 255.0,
-                theme.accent_bg.b as f64 / 255.0,
-                0.15,
-            );
-            cr.rectangle(bx + 1.0, aby, bw - 2.0, abh - 1.0);
-            cr.fill().ok();
-
-            set_source(cr, theme.accent_bg);
-            pango_layout.set_text(&btn_label);
-            pango_layout.set_width(-1);
-            let (bw2, bh2) = pango_layout.pixel_size();
-            let btn_cx = bx + bw / 2.0 - bw2 as f64 / 2.0;
-            let btn_cy = aby + abh / 2.0 - bh2 as f64 / 2.0;
-            cr.move_to(btn_cx, btn_cy);
-            super::painted_text::show_layout(cr, pango_layout);
-        }
-
-        // ── Arrow connector ───────────────────────────────────────────────
-        if let Some(arrow) = sb.arrow_bounds {
-            let ax = arrow.x as f64;
-            let ay = (arrow.y + arrow.height / 2.0) as f64;
-            let aw = arrow.width as f64;
-
-            set_source(cr, theme.muted_fg);
-            cr.set_line_width(1.0);
-            // Dashed line up to the arrowhead.
-            cr.move_to(ax, ay);
-            cr.line_to(ax + aw - 6.0, ay);
-            cr.stroke().ok();
-
-            // Simple filled triangle arrowhead.
-            let tip_x = ax + aw - 1.0;
-            let tail_x = ax + aw - 7.0;
-            let half_h = 4.0;
-            cr.move_to(tip_x, ay);
-            cr.line_to(tail_x, ay - half_h);
-            cr.line_to(tail_x, ay + half_h);
-            cr.close_path();
-            cr.fill().ok();
-        }
-    }
-
-    layout
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
+    crate::primitives::pipeline_view::native_surface_paint::paint(
+        view,
+        &mut surface,
+        theme,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
+    )
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
 // Headless painted-indicator tests (mirror the TUI tests in
-// `tui/pipeline_view.rs`). They verify two state-derived geometry facts that
-// this primitive's focus decoupling depends on:
+// `tui/pipeline_view.rs`). Uses a Cairo `ImageSurface` (no display
+// required) and reads back pixels directly, following the established
+// pattern in `gtk/tab_bar.rs`. Routed through `GtkBackend::draw_pipeline_view`
+// (the real `Backend` trait method — which now paints via the shared
+// `native_surface_paint::paint`) rather than the deprecated free-function
+// shim above, so these tests don't trip the `-D warnings`-denied
+// `deprecated` lint (CLAUDE.md rule 3; mirrors
+// `gtk::backend::tests::gtk_diff_view_layout_matches_draw_diff_view_side_by_side_with_header`'s
+// identical test-migration note).
 //
-//   1. A focused stage paints the `▼` caret in the reserved strip above the
-//      box (and an unfocused stage leaves that strip blank).
-//   2. The box border renders in the per-status colour (`git_added` for Done)
-//      rather than the focus accent (`accent_bg`).
-//
-// Uses a Cairo `ImageSurface` (no display required) and reads back pixels
-// directly, following the established pattern in `gtk/tab_bar.rs`. Gated on the
-// `gtk` feature so it only runs under `cargo test --features gtk`.
-
+// Regression for #1085 divergence 6: the focus indicator is now a
+// two-line chevron (mirrors Windows's pre-existing shape) rather than a
+// filled triangle, so the exact interior centroid a filled triangle
+// would have painted is now the chevron's hollow middle — these tests
+// probe a point on one of the two strokes instead (see `caret_probe`).
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Rect as QRect;
+    use crate::gtk::backend::GtkBackend;
     use crate::primitives::pipeline_view::{PipelineStage, PipelineViewLayout, StageStatus};
     use crate::types::WidgetId;
+    use crate::Backend;
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     // Surface large enough to contain the box plus the reserved caret strip.
     const W: i32 = 240;
     const H: i32 = 80;
-    const X: f64 = 20.0;
-    const Y: f64 = 20.0;
     const BOX_W: f64 = 200.0;
     const BOX_H: f64 = 50.0;
 
@@ -273,8 +168,9 @@ mod tests {
     }
 
     /// Paint a single Done stage into a fresh white surface with the given
-    /// focus state. Returns the surface and the resolved layout so tests can
-    /// derive box geometry rather than hardcoding it.
+    /// focus state, via the real `Backend::draw_pipeline_view` path.
+    /// Returns the surface and the resolved layout so tests can derive box
+    /// geometry rather than hardcoding it.
     fn paint(focused: Option<usize>) -> (ImageSurface, PipelineViewLayout) {
         let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
         let layout;
@@ -287,32 +183,34 @@ mod tests {
             let pango_layout = pangocairo::functions::create_layout(&cr);
             let mut view = make_view();
             view.focused_stage = focused;
-            layout = draw_pipeline_view(
-                &cr,
-                &pango_layout,
-                X,
-                Y,
-                BOX_W,
-                BOX_H,
-                &view,
-                &Theme::default(),
-            );
+            let mut backend = GtkBackend::new();
+            let painted = std::cell::RefCell::new(None);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                *painted.borrow_mut() = Some(
+                    b.draw_pipeline_view(QRect::new(20.0, 20.0, BOX_W as f32, BOX_H as f32), &view),
+                );
+            });
+            layout = painted.into_inner().expect("layout captured");
         }
         (surface, layout)
     }
 
-    /// Centroid of the `▼` caret painted above the box: tip at `by - 1`, base
-    /// at `by - 7`, so the centroid sits at `by - 5` on the box centre column.
-    fn caret_centroid(layout: &PipelineViewLayout) -> (i32, i32) {
+    /// Midpoint of the chevron's left stroke — from `(ind_x - 5, by - 7)`
+    /// to `(ind_x, by - 1)` — comfortably clear of the box's top border
+    /// (whose 1px stroke straddles `by` itself and antialiases a pixel or
+    /// two above it, which would otherwise false-positive this probe).
+    fn caret_probe(layout: &PipelineViewLayout) -> (i32, i32) {
         let bb = layout.stages[0].box_bounds;
-        let cx = (bb.x + bb.width / 2.0).round() as i32;
-        let cy = (bb.y as f64 - 5.0).round() as i32;
+        let ind_x = bb.x + bb.width / 2.0;
+        let cx = (ind_x - 2.5).round() as i32;
+        let cy = (bb.y as f64 - 4.0).round() as i32;
         (cx, cy)
     }
 
-    /// Focused Done stage: the caret is painted above the box AND the box
-    /// border keeps its per-status (`git_added`) colour rather than the focus
-    /// accent. This is the exact issue scenario — focus + Done together.
+    /// Focused Done stage: the chevron tip is painted above the box AND
+    /// the box border keeps its per-status (`git_added`) colour rather
+    /// than the focus accent. This is the exact issue scenario — focus +
+    /// Done together.
     #[test]
     fn focused_done_stage_shows_indicator_and_retains_border() {
         let (mut surface, layout) = paint(Some(0));
@@ -325,18 +223,18 @@ mod tests {
         let accent = (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b);
         let muted = (theme.muted_fg.r, theme.muted_fg.g, theme.muted_fg.b);
 
-        // (a) The caret region above the box is painted (not background white)
-        //     and is the muted indicator colour.
-        let (cx, cy) = caret_centroid(&layout);
+        // (a) The chevron tip above the box is painted (not background
+        //     white) and is the muted indicator colour.
+        let (cx, cy) = caret_probe(&layout);
         let caret_px = pixel(&data, stride, cx, cy);
         assert_ne!(
             caret_px,
             (255, 255, 255),
-            "focus caret should paint the reserved strip above the box, got white"
+            "focus chevron should paint above the box, got white"
         );
         assert!(
             dist2(caret_px, muted) < 1500,
-            "caret pixel {caret_px:?} should be ~muted_fg {muted:?}"
+            "chevron tip pixel {caret_px:?} should be ~muted_fg {muted:?}"
         );
 
         // (b) The box border renders in the Done colour, not the focus accent.
@@ -362,7 +260,7 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
-        let (cx, cy) = caret_centroid(&layout);
+        let (cx, cy) = caret_probe(&layout);
         let px = pixel(&data, stride, cx, cy);
         assert_eq!(
             px,

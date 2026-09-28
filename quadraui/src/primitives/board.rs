@@ -608,6 +608,430 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
     count.max(1)
 }
 
+// ── NativeSurface paint (shared gtk/macos/win implementation, issue #1085,
+// NativeSurface Phase 4 8/8) ────────────────────────────────────────────
+//
+// Before this, `gtk::board::draw_board` (Cairo + Pango),
+// `macos::board::draw_board` (Core Graphics + Core Text) and
+// `win::board::draw_board` (Direct2D + DirectWrite) each independently
+// painted the same column/card geometry (already unified by #736's
+// `BoardLayout`/[`pixel_board_layout`]) with their own drawing API.
+// `paint` below is the one shared implementation, written against
+// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// one backend's drawing API — same shape as `diff_view`'s #866 migration.
+//
+// ## Divergences found (re-verified, reported here rather than silently
+// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
+// acceptance bar)
+//
+// 1. **Column header text overflow.** `gtk::board` painted the header
+//    title with no clip at all — an overlong title could bleed into the
+//    next column. `macos::board` wrapped its header draw in
+//    `CGContextSaveGState`/`CGContextClipToRect(header_bounds)`.
+//    `win::board` relied on `DWrite::draw_text`'s own
+//    `D2D1_DRAW_TEXT_OPTIONS_CLIP`. `NativeSurface` has no wrap/ellipsize
+//    verb (see `diff_view`'s #866 "Header-label overflow handling"
+//    divergence for the identical tradeoff), so `paint` below hard-clips
+//    every column header to its own bounds on every backend — the
+//    macOS/Windows behaviour. An overlong header on GTK now hard-clips
+//    instead of silently bleeding into the next column (a real bug fix).
+// 2. **Card title wrapping.** `gtk::board` word-wrapped an overlong title
+//    across multiple lines (`pango::Layout::set_width`, no explicit max
+//    line count). `macos::board` and `win::board` both painted a single
+//    line, clipped to the card box (macOS: `CGContextClipToRect`;
+//    Windows: `D2D1_DRAW_TEXT_OPTIONS_CLIP`). Per the same "no wrap verb"
+//    constraint as divergence 1, `paint` hard-clips the (single-line)
+//    title to the card box on every backend — the macOS/Windows
+//    behaviour. A long title on GTK now clips instead of wrapping to a
+//    second line (`BOARD_CARD_H_PX` is a fixed 64px regardless of
+//    wrapping, so a wrapped second line was never guaranteed to avoid
+//    colliding with the badge row 26px below the card top anyway).
+// 3. **Card border shape.** `gtk::board` and `macos::board` stroked a
+//    *rounded*-rect border (`BOARD_CARD_CORNER_RADIUS_PX`); `win::board`
+//    could only stroke a straight rectangle (`win::text` has no
+//    `ID2D1RoundedRectangleGeometry`-backed rounded stroke — see that
+//    module's former doc). `NativeSurface::surface_stroke_rect` is
+//    axis-aligned only (there is no `surface_stroke_rounded_rect`), so
+//    `paint` strokes every card border as a straight rectangle on every
+//    backend — the Windows behaviour. Card fills stay flat rectangles
+//    too (not [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`])
+//    so the fill and its border never mismatch in shape. GTK/macOS cards
+//    lose their rounded-pill corners; `BOARD_CARD_CORNER_RADIUS_PX` is no
+//    longer consumed by any rasteriser (TUI has no notion of rounded
+//    corners either, so this makes all four backends agree).
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{
+        badge_fg_color, badge_icon, BoardCard, BoardLayout, BoardModel, BOARD_CARD_H_PAD_PX,
+    };
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::primitives::layout_metrics::pixel_board_layout;
+    use crate::theme::Theme;
+
+    /// Vertical offset of the card title baseline from the card top.
+    const TITLE_Y_OFF: f32 = 6.0;
+    /// Vertical offset of the badge row from the card top.
+    const BADGE_Y_OFF: f32 = 26.0;
+    /// Vertical offset of the hint strip from the card bottom.
+    const HINT_Y_OFF: f32 = 18.0;
+    /// Height of the hint strip.
+    const HINT_H: f32 = 14.0;
+    /// Vertical offset of the column header text from the header top.
+    const HEADER_Y_OFF: f32 = 4.0;
+    /// Card border stroke width — see divergence 3 above for why this is
+    /// always a straight rect, never a rounded one.
+    const CARD_BORDER_WIDTH: f32 = 1.0;
+
+    /// Paint a [`BoardModel`] into `rect` on `surface`, returning
+    /// [`BoardLayout`] for host click dispatch — same contract as every
+    /// deleted per-backend `draw_board`.
+    pub(crate) fn paint(
+        model: &BoardModel,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        rect: Rect,
+    ) -> BoardLayout {
+        let layout = pixel_board_layout(model, rect.x, rect.y, rect.width, rect.height);
+
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        let h_pad = BOARD_CARD_H_PAD_PX as f32;
+
+        for col_layout in &layout.columns {
+            let col = &model.columns[col_layout.col_index];
+
+            // ── Column header ────────────────────────────────────────────
+            let hb = col_layout.header_bounds;
+            surface.surface_fill_rect(hb, theme.board_col_header_bg);
+            surface.surface_push_clip(hb);
+            surface.surface_draw_text_run(
+                Rect::new(
+                    hb.x + h_pad,
+                    hb.y + HEADER_Y_OFF,
+                    (hb.width - h_pad).max(0.0),
+                    (hb.height - HEADER_Y_OFF).max(0.0),
+                ),
+                &col.title,
+                theme.header_fg,
+            );
+            surface.surface_pop_clip();
+
+            // ── Cards ────────────────────────────────────────────────────
+            for card_layout in &col_layout.cards {
+                let card: &BoardCard = &col.cards[card_layout.card_index];
+                let is_selected = model
+                    .selected_card_id
+                    .as_ref()
+                    .map(|id| id == &card.id)
+                    .unwrap_or(false);
+
+                let cb = card_layout.bounds;
+                if cb.width <= 0.0 || cb.height <= 0.0 {
+                    continue;
+                }
+
+                // Card background.
+                let card_bg = if is_selected {
+                    theme.board_selected_card_bg
+                } else {
+                    theme.surface_bg
+                };
+                surface.surface_fill_rect(cb, card_bg);
+
+                // Card border.
+                let border_col = if is_selected {
+                    theme.accent_bg
+                } else {
+                    theme.border_fg
+                };
+                surface.surface_stroke_rect(cb, border_col, CARD_BORDER_WIDTH);
+
+                // Everything below is clipped to the card box — see
+                // divergences 1/2 above for why every backend now clips
+                // rather than wrapping or silently overflowing.
+                surface.surface_push_clip(cb);
+
+                // ── Title line ───────────────────────────────────────────
+                let prefix = if card.labels.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} ", card.labels.join(" "))
+                };
+                let full_title = format!("{}{}", prefix, card.title);
+                surface.surface_draw_text_run(
+                    Rect::new(
+                        cb.x + h_pad,
+                        cb.y + TITLE_Y_OFF,
+                        (cb.width - h_pad * 2.0).max(0.0),
+                        (cb.height - TITLE_Y_OFF).max(0.0),
+                    ),
+                    &full_title,
+                    theme.surface_fg,
+                );
+
+                // ── Badge row ────────────────────────────────────────────
+                let badge_y = cb.y + BADGE_Y_OFF;
+                let mut badge_x = cb.x + h_pad;
+                for badge in &card.badges {
+                    let badge_str = format!("{}{} ", badge_icon(badge.status), badge.label);
+                    let (bw, bh) = surface.surface_measure_text(&badge_str);
+                    let color = badge_fg_color(badge.status, theme);
+                    surface.surface_draw_text_run(
+                        Rect::new(badge_x, badge_y, bw.max(1.0), bh.max(1.0)),
+                        &badge_str,
+                        color,
+                    );
+                    badge_x += bw;
+                    if badge_x > cb.x + cb.width - h_pad {
+                        break;
+                    }
+                }
+
+                // ── Hint ─────────────────────────────────────────────────
+                if let Some(hint) = &card.hint {
+                    let hint_y = cb.y + cb.height - HINT_Y_OFF;
+                    if hint_y > badge_y + 10.0 {
+                        // Background strip.
+                        let strip =
+                            Rect::new(cb.x + 2.0, hint_y - 2.0, (cb.width - 4.0).max(0.0), HINT_H);
+                        surface.surface_fill_rect(strip, theme.card_hint_bg);
+                        // Text.
+                        surface.surface_draw_text_run(
+                            Rect::new(
+                                cb.x + h_pad,
+                                hint_y,
+                                (cb.width - h_pad * 2.0).max(0.0),
+                                HINT_H,
+                            ),
+                            hint,
+                            theme.card_hint_fg,
+                        );
+                    }
+                }
+
+                surface.surface_pop_clip();
+            }
+        }
+
+        layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::board::{BadgeStatus, BoardColumn, CardBadge};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues — mirrors
+        /// `primitives::diff_view`'s own `RecordingSurface` (#810/#865/#866).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+            clip_pushes: Vec<Rect>,
+            clip_pops: usize,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(460.0, 300.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, _stroke_width: f32) {
+                self.strokes.push((rect, color));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn card(id: &str, title: &str) -> BoardCard {
+            BoardCard {
+                id: WidgetId::new(id),
+                title: title.into(),
+                labels: vec!["#1".into()],
+                badges: vec![CardBadge {
+                    label: "P".into(),
+                    status: BadgeStatus::Passed,
+                }],
+                hint: None,
+            }
+        }
+
+        fn sample_model() -> BoardModel {
+            BoardModel {
+                id: WidgetId::new("board"),
+                columns: vec![BoardColumn {
+                    id: WidgetId::new("col:backlog"),
+                    title: "Backlog".into(),
+                    cards: vec![card("card:a", "First")],
+                    scroll_offset: 0,
+                }],
+                selected_card_id: None,
+                col_scroll_offset: 0,
+            }
+        }
+
+        #[test]
+        fn zero_size_rect_paints_nothing() {
+            let model = sample_model();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+            );
+            assert!(layout.columns.is_empty());
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        /// Regression for divergence 1: the column header text is clipped
+        /// to its own bounds (push/pop bracketed) rather than painted
+        /// with no clip at all.
+        #[test]
+        fn column_header_text_is_clipped() {
+            let model = sample_model();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            assert_eq!(surface.clip_pushes.len(), surface.clip_pops);
+            // One header clip + one clip per painted card.
+            assert!(surface.clip_pushes.len() >= 2);
+            let header = &model.columns[0];
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == &header.title));
+        }
+
+        /// Regression for divergence 2/3: the card title/badges/hint all
+        /// paint inside a single push/pop clip bracket around the whole
+        /// card, and the card border is a straight `surface_stroke_rect`
+        /// call (never `surface_fill_rounded_rect`).
+        #[test]
+        fn card_paints_a_straight_border_inside_one_clip_bracket() {
+            let model = sample_model();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            let cb = layout.columns[0].cards[0].bounds;
+            assert!(
+                surface.strokes.iter().any(|(r, _)| *r == cb),
+                "card border must be a straight surface_stroke_rect over the card bounds",
+            );
+            // 1 header clip + 1 card clip.
+            assert_eq!(surface.clip_pushes.len(), 2);
+            assert_eq!(surface.clip_pops, 2);
+        }
+
+        #[test]
+        fn selected_card_uses_the_selection_background() {
+            let mut model = sample_model();
+            model.selected_card_id = Some(WidgetId::new("card:a"));
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &model,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            let cb = layout.columns[0].cards[0].bounds;
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(r, c)| *r == cb && *c == theme.board_selected_card_bg));
+        }
+
+        /// Badge glyph + label text is drawn via `surface_draw_text_run`,
+        /// not a bespoke per-backend loop.
+        #[test]
+        fn badge_text_is_recorded() {
+            let model = sample_model();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            assert!(surface
+                .text_runs
+                .iter()
+                .any(|(_, t, _)| t.starts_with('✓') && t.contains('P')));
+        }
+
+        /// A hint is only painted when there's room below the badge row —
+        /// mirrors every pre-#1085 backend's `if hint_y > badge_y + 10.0`
+        /// guard.
+        #[test]
+        fn hint_paints_only_when_present() {
+            let mut model = sample_model();
+            model.columns[0].cards[0].hint = Some("blocked".into());
+            let mut surface = RecordingSurface::default();
+            paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "blocked"));
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

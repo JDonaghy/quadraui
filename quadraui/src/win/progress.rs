@@ -1,28 +1,44 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`] (issue
 //! #29).
 //!
-//! Mirrors `gtk::progress`'s structure: [`ProgressBar::layout`] (the D6
-//! layout API — see that primitive's module doc) computes fill/cancel
-//! geometry; this module paints the track, the fill (determinate) or a
-//! sliding pulse driven by `frame_idx` (indeterminate — `value.is_none()`),
-//! the label, and the cancel glyph.
+//! Painting moved to the shared
+//! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
+//! `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the one
+//! named divergence this backend was the source of: this module's
+//! pre-#1085 `draw_progress` took no `theme` parameter at all and called
+//! `Theme::default()` internally on every paint, so a Win-GUI host
+//! running any theme other than the default painted every progress bar
+//! in the wrong colours.
+//!
+//! [`super::backend::WinBackend::draw_progress`] (the sanctioned,
+//! `Backend`-trait entry point, and the one every in-tree call site
+//! already uses) no longer goes through this module's [`draw_progress`]
+//! at all — it calls the shared `paint` directly with
+//! `self.current_theme`, the same live theme every other Win-GUI
+//! rasteriser already uses, which is where the fix actually lands. The
+//! deprecated [`draw_progress`] free function below keeps its exact
+//! pre-#1085 four-argument signature (CLAUDE.md rule 8 — a shim must stay
+//! call-compatible, not gain a new required parameter) and therefore
+//! *deliberately* keeps hardcoding `Theme::default()` internally: that
+//! was the only theme a caller of the old signature could ever have
+//! gotten anyway, so this is a faithful compatibility shim for that
+//! narrow legacy call shape, not a second copy of the bug for real
+//! (trait-routed) hosts. This module now only carries
+//! [`win_progress_layout`] (still real, backend-specific pure geometry —
+//! no painting involved) and that shim over the shared
+//! [`super::surface::D2dSurface`] adapter (mirrors `win::diff_view`'s
+//! #866 shim).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod progress;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
-//!
-//! # Theme
-//!
-//! `WinBackend` does not yet carry a live [`Theme`] — see `win::status_bar`'s
-//! module doc for the "placeholder until a later issue wires the app's
-//! real theme through" posture this module shares.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+use crate::primitives::layout_metrics::pixel_progress_layout;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::theme::Theme;
 
@@ -36,65 +52,35 @@ pub fn win_progress_layout(rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
     pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height)
 }
 
-/// Draw a [`ProgressBar`] onto `target`. Returns the layout for host
-/// click dispatch.
+/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
+/// the pre-#1085 signature exactly (still no `theme` parameter — see
+/// this module's doc for why that is deliberate, not an oversight) for
+/// any external caller that held a direct `quadraui::win::draw_progress`
+/// reference rather than going through
+/// [`crate::Backend::draw_progress`] — the sanctioned entry point, and
+/// the one every in-tree call site already uses, which is why this shim
+/// has no in-repo caller left to trip the `-D warnings`-denied
+/// `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_progress` instead — this free function is a compatibility shim over the shared #1085 implementation, and (like its pre-#1085 self) always paints `Theme::default()`"
+)]
 pub fn draw_progress(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
     rect: Rect,
     bar: &ProgressBar,
 ) -> ProgressBarLayout {
-    let layout = win_progress_layout(rect, bar);
-    let theme = Theme::default();
-
-    // Track background.
-    let _ = fill_rect(target, rect, theme.surface_bg);
-
-    let fill_color = bar.accent.unwrap_or(theme.accent_bg);
-    if let Some(fb) = layout.fill_bounds {
-        let _ = fill_rect(target, fb, fill_color);
-    } else {
-        // Indeterminate: a sliding pulse driven by `frame_idx`, same
-        // formula as `gtk::progress::draw_progress`.
-        let bar_w = if bar.cancellable {
-            (rect.width - pixel::PROGRESS_CANCEL_WIDTH).max(0.0)
-        } else {
-            rect.width
-        };
-        if bar_w > 0.0 {
-            let pulse_w = pixel::PROGRESS_PULSE_WIDTH.min(bar_w);
-            let pos = (bar.frame_idx as f32 * 4.0) % bar_w;
-            let w = pulse_w.min(bar_w - pos);
-            if w > 0.0 {
-                let pulse_rect = Rect::new(rect.x + pos, rect.y, w, rect.height);
-                let _ = fill_rect(target, pulse_rect, fill_color);
-            }
-        }
-    }
-
-    if !bar.label.is_empty() {
-        let label_rect = Rect::new(
-            rect.x + 4.0,
-            rect.y,
-            (rect.width - 4.0).max(0.0),
-            rect.height,
-        );
-        let _ = dwrite.draw_text(target, &bar.label, label_rect, theme.foreground);
-    }
-
-    if let Some(cb) = layout.cancel_bounds {
-        let (glyph_w, _) = dwrite.measure_text("\u{d7}").unwrap_or((0.0, 0.0));
-        let glyph_x = cb.x + ((cb.width - glyph_w) / 2.0).max(0.0);
-        let glyph_rect = Rect::new(
-            glyph_x,
-            cb.y,
-            (cb.x + cb.width - glyph_x).max(1.0),
-            cb.height,
-        );
-        let _ = dwrite.draw_text(target, "\u{d7}", glyph_rect, theme.foreground);
-    }
-
-    layout
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::progress::native_surface_paint::paint(
+        bar,
+        &mut surface,
+        &Theme::default(),
+        rect,
+    )
 }
 
 #[cfg(test)]
@@ -118,6 +104,35 @@ mod tests {
         }
     }
 
+    /// Paint `bar` via the shared
+    /// [`crate::primitives::progress::native_surface_paint::paint`]
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s
+    /// headless target — the same adapter the deprecated
+    /// [`draw_progress`] shim uses, exercised here directly so these
+    /// tests don't trip the `-D warnings`-denied `deprecated` lint
+    /// (CLAUDE.md rule 3; mirrors `win::diff_view`'s identical
+    /// test-migration note).
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        rect: Rect,
+        bar: &ProgressBar,
+        theme: &Theme,
+    ) -> ProgressBarLayout {
+        surface
+            .paint(|target| {
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
+                crate::primitives::progress::native_surface_paint::paint(
+                    bar, &mut raw, theme, rect,
+                );
+            })
+            .map(|_| win_progress_layout(rect, bar))
+            .expect("paint progress")
+    }
+
     /// Determinate mode: the fill's painted colour lands at its own
     /// bounds, and a click past the filled fraction (but inside the
     /// track) still resolves to `Body`.
@@ -128,14 +143,9 @@ mod tests {
         let bar = bar(Some(0.5), false);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
-        let layout = surface
-            .paint(|target| {
-                draw_progress(target, &dwrite, rect, &bar);
-            })
-            .map(|_| win_progress_layout(rect, &bar))
-            .expect("paint progress");
-
         let theme = Theme::default();
+        let layout = paint(&surface, &dwrite, rect, &bar, &theme);
+
         let fb = layout.fill_bounds.expect("determinate fill present");
         assert!((fb.width - W as f32 * 0.5).abs() < 0.01);
 
@@ -156,30 +166,55 @@ mod tests {
         assert_eq!(hit, ProgressBarHit::Body(WidgetId::new("p")));
     }
 
+    /// Regression for #1085's one named divergence: `draw_progress` used
+    /// to hardcode `Theme::default()` internally, ignoring whatever theme
+    /// the host was actually running. A non-default `accent_bg` must now
+    /// show up in the painted fill.
+    #[test]
+    fn paints_the_caller_supplied_theme_not_a_hardcoded_default() {
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let bar = bar(Some(0.5), false);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let custom_accent = crate::types::Color::rgb(12, 200, 250);
+        assert_ne!(
+            custom_accent,
+            Theme::default().accent_bg,
+            "fixture must actually differ from the default theme to be a real regression guard",
+        );
+        let theme = Theme {
+            accent_bg: custom_accent,
+            ..Theme::default()
+        };
+
+        paint(&surface, &dwrite, rect, &bar, &theme);
+
+        let fill_px = surface.pixel_at(2, H / 2);
+        assert_eq!(
+            (fill_px.r, fill_px.g, fill_px.b),
+            (custom_accent.r, custom_accent.g, custom_accent.b),
+            "draw_progress must paint the caller's theme, not Theme::default()",
+        );
+    }
+
     /// Indeterminate mode animates via `frame_idx`: two different frame
     /// indices paint the pulse at different positions.
     #[test]
     fn indeterminate_mode_animates_via_frame_idx() {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
 
         let mut bar0 = bar(None, false);
         bar0.frame_idx = 0;
         let surface0 = HeadlessSurface::new(W, H).expect("create surface");
-        surface0
-            .paint(|target| {
-                draw_progress(target, &dwrite, rect, &bar0);
-            })
-            .expect("paint frame 0");
+        paint(&surface0, &dwrite, rect, &bar0, &theme);
 
         let mut bar1 = bar(None, false);
         bar1.frame_idx = 5;
         let surface1 = HeadlessSurface::new(W, H).expect("create surface");
-        surface1
-            .paint(|target| {
-                draw_progress(target, &dwrite, rect, &bar1);
-            })
-            .expect("paint frame 5");
+        paint(&surface1, &dwrite, rect, &bar1, &theme);
 
         // The pulse starts at x=0 on frame 0 (lit) and has moved past
         // x=0 by frame 5 (frame 0's leading pixel should no longer be
@@ -201,13 +236,9 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let bar = bar(Some(1.0), true);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
 
-        let layout = surface
-            .paint(|target| {
-                draw_progress(target, &dwrite, rect, &bar);
-            })
-            .map(|_| win_progress_layout(rect, &bar))
-            .expect("paint progress");
+        let layout = paint(&surface, &dwrite, rect, &bar, &theme);
 
         let cb = layout.cancel_bounds.expect("cancel bounds present");
         let hit = layout.hit_test(cb.x + cb.width / 2.0, cb.y + cb.height / 2.0);
@@ -223,12 +254,8 @@ mod tests {
 
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-        let painted = surface
-            .paint(|target| {
-                draw_progress(target, &dwrite, rect, &bar);
-            })
-            .map(|_| win_progress_layout(rect, &bar))
-            .expect("paint");
+        let theme = Theme::default();
+        let painted = paint(&surface, &dwrite, rect, &bar, &theme);
         let no_paint = win_progress_layout(rect, &bar);
 
         assert_eq!(painted, no_paint);

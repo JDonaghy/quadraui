@@ -1,18 +1,23 @@
 //! macOS rasteriser for [`crate::ProgressBar`].
 //!
-//! Paints a horizontal bar with filled portion, optional label, and
-//! optional cancel `×` affordance. Indeterminate bars animate a 40-px
-//! pulse that slides across the track using `frame_idx`.
+//! Painting moved to the shared
+//! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
+//! `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the one
+//! named divergence (Windows previously ignored the host's theme
+//! entirely) found while unifying `gtk::progress::draw_progress`,
+//! `macos::progress::draw_progress` and `win::progress::draw_progress`
+//! into one implementation. This module now only carries
+//! [`mac_progress_layout`] (still real, backend-specific pure geometry —
+//! no painting involved) and the deprecated [`draw_progress`]
+//! compatibility shim over the shared [`super::surface::CgSurface`]
+//! adapter (mirrors `macos::diff_view`'s #866 shim).
 
-use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
-use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+use crate::primitives::layout_metrics::pixel_progress_layout;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Compute the macOS pixel-unit layout for a [`ProgressBar`]. Shares its
 /// cancel-affordance width with `gtk_progress_layout` /
@@ -21,13 +26,22 @@ pub fn mac_progress_layout(bar: &ProgressBar, x: f64, y: f64, w: f64, h: f64) ->
     pixel_progress_layout(bar, x as f32, y as f32, w as f32, h as f32)
 }
 
-/// Draw a [`ProgressBar`] onto `ctx`. Returns the layout for host
-/// click dispatch.
+/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
+/// the pre-#1085 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_progress` reference rather than going
+/// through [`crate::Backend::draw_progress`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
 /// the call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_progress` instead — this free function is a compatibility shim over the shared #1085 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_progress(
     ctx: CGContextRef,
@@ -39,88 +53,16 @@ pub unsafe fn draw_progress(
     bar: &ProgressBar,
     theme: &Theme,
 ) -> ProgressBarLayout {
-    let layout = mac_progress_layout(bar, x, y, w, h);
-
-    // Track background.
-    fill_rect(ctx, x, y, w, h, theme.surface_bg);
-
-    let fill_color = bar.accent.unwrap_or(theme.accent_bg);
-    if let Some(fb) = layout.fill_bounds {
-        fill_rect(
-            ctx,
-            fb.x as f64,
-            fb.y as f64,
-            fb.width as f64,
-            fb.height as f64,
-            fill_color,
-        );
-    } else {
-        // Indeterminate pulse — same cadence as GTK.
-        let bar_w = if bar.cancellable {
-            (w - pixel::PROGRESS_CANCEL_WIDTH as f64).max(0.0)
-        } else {
-            w
-        };
-        if bar_w > 0.0 {
-            let pulse_w = (pixel::PROGRESS_PULSE_WIDTH as f64).min(bar_w);
-            let pos = (bar.frame_idx as f64 * 4.0) % bar_w;
-            fill_rect(ctx, x + pos, y, pulse_w.min(bar_w - pos), h, fill_color);
-        }
-    }
-
-    // Label.
-    if !bar.label.is_empty() {
-        draw_text(
-            ctx,
-            font,
-            &bar.label,
-            x + 4.0,
-            y,
-            color_to_cg(theme.foreground),
-        );
-    }
-
-    // Cancel `×` affordance.
-    if let Some(cb) = layout.cancel_bounds {
-        let (tw, _) = measure_text(font, "×");
-        draw_text(
-            ctx,
-            font,
-            "×",
-            cb.x as f64 + (cb.width as f64 - tw) / 2.0,
-            cb.y as f64,
-            color_to_cg(theme.foreground),
-        );
-    }
-
-    layout
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::progress::native_surface_paint::paint(
+        bar,
+        &mut surface,
+        theme,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
     )
-}
-
-unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    use core_graphics::geometry::{CGPoint, CGSize};
-    CGContextFillRect(ctx, CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h)));
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextFillRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
@@ -141,6 +83,10 @@ mod tests {
         make_font("Menlo", 14.0).expect("Menlo installed")
     }
 
+    /// Paint via the real `Backend::draw_progress` path — which now
+    /// routes through the shared `native_surface_paint::paint` — avoids
+    /// tripping the `-D warnings`-denied `deprecated` lint (CLAUDE.md
+    /// rule 3) by not calling the deprecated free-function shim above.
     fn paint_via_backend(bar: &ProgressBar) -> (BitmapSurface, ProgressBarLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -222,7 +168,10 @@ mod tests {
         };
         let layout = mac_progress_layout(&bar, origin_x, origin_y, W as f64, H as f64);
         let cb = layout.cancel_bounds.expect("cancel bounds present");
-        assert!((cb.width - pixel::PROGRESS_CANCEL_WIDTH).abs() < 0.01);
+        assert!(
+            (cb.width - crate::primitives::layout_metrics::pixel::PROGRESS_CANCEL_WIDTH).abs()
+                < 0.01
+        );
         // Hit-test at the cancel center returns Cancel.
         let cx = cb.x + cb.width * 0.5;
         let cy = cb.y + cb.height * 0.5;
