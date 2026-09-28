@@ -3272,10 +3272,12 @@ impl Backend for GtkBackend {
                 // should be blank after a shrink-then-expand" ghosting. vimcode's
                 // bespoke renderer does the same full-pane fill first; the trait doc
                 // on `primitives::terminal::paint` delegates this to the caller, and
-                // the GTK backend is that caller. (30,30,30) matches the vt100
-                // default cell background used by `TerminalSession::build_rows`, so
-                // blank areas blend seamlessly with blank cells.
-                self.surface_fill_rect(rect, Color::rgb(30, 30, 30));
+                // the GTK backend is that caller. Filling with `theme.background`
+                // (quadraui#1184) rather than a hardcoded `rgb(30, 30, 30)` keeps
+                // this blank-area fill consistent with whatever palette the app
+                // built — a light theme no longer shows a dark terminal pane
+                // through every uncovered pixel.
+                self.surface_fill_rect(rect, theme.background);
 
                 crate::primitives::terminal::paint(
                     term,
@@ -9072,6 +9074,65 @@ mod tests {
             (blue.r, blue.g, blue.b),
             "a theme change must force a full repaint even with unchanged \
              cell content, so theme-derived overlay colours never go stale"
+        );
+    }
+
+    /// Regression test for quadraui#1184: the full-pane blank-area clear
+    /// in `draw_terminal` used to hardcode `Color::rgb(30, 30, 30)` (the
+    /// vt100 default cell background) regardless of the active theme, so
+    /// a light theme's terminal pane still showed a dark rectangle
+    /// wherever the cell grid didn't cover the full rect. Set a light
+    /// theme and a grid shorter than the rect (row 1 is blank) — the
+    /// uncovered area must be filled with `theme.background`, not the
+    /// old dark literal.
+    #[test]
+    fn draw_terminal_blank_area_fill_uses_theme_background() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        let light_bg = crate::types::Color::rgb(250, 250, 245);
+        let red = crate::types::Color::rgb(200, 0, 0);
+
+        let mut backend = GtkBackend::new();
+        backend.current_line_height = TERM_417_LH;
+        backend.current_char_width = TERM_417_CW;
+        Backend::set_theme(
+            &mut backend,
+            crate::Theme {
+                background: light_bg,
+                foreground: crate::types::Color::rgb(20, 20, 20),
+                ..crate::Theme::light_default()
+            },
+        );
+        let mut surface = ImageSurface::create(Format::ARgb32, TERM_417_W, TERM_417_H)
+            .expect("create ImageSurface");
+        let rect = QRect::new(0.0, 0.0, TERM_417_W as f32, TERM_417_H as f32);
+        let id = WidgetId::new("test:term");
+
+        // Only row 0 has content (`TERM_417_H` / `TERM_417_LH` = 2 rows
+        // tall) — row 1's `y` range is never touched by any cell paint,
+        // so it must come from the blank-area fill.
+        let term = TerminalPrim {
+            id: id.clone(),
+            cells: vec![term_row_417(red)],
+            scrollbar: None,
+        };
+        let viewport = Viewport::new(TERM_417_W as f32, TERM_417_H as f32, 1.0);
+
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = pangocairo::functions::create_layout(&cr);
+            Backend::begin_frame(&mut backend, viewport);
+            backend.enter_frame_scope(&cr, &layout, |b| b.draw_terminal(rect, &term));
+        }
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        assert_eq!(
+            probe_pixel_417(&data, stride, 5, TERM_417_LH as i32 + 5),
+            (light_bg.r, light_bg.g, light_bg.b),
+            "the blank area below the last content row must be filled \
+             with the theme's background, not a hardcoded dark literal"
         );
     }
 
