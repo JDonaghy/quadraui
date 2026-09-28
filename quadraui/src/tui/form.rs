@@ -134,7 +134,14 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
         let is_header = matches!(field.kind, FieldKind::Label);
 
         let (default_fg, row_bg) = match (is_header, is_focused) {
-            (_, true) => (fg, sel_bg),
+            // quadraui#1180: `fg` (`theme.foreground`, the editor-body text
+            // colour) has no guaranteed contrast against `selected_bg` — on
+            // `vscode-light` both are near-black on mid-blue and the focused
+            // row goes unreadable. `hdr_fg` (`theme.header_fg`) is `Theme`'s
+            // documented on-selection foreground; `Tree` and
+            // `native_surface_paint::paint` already pair it with
+            // `selected_bg` the same way for their focused row.
+            (_, true) => (hdr_fg, sel_bg),
             (true, false) => (hdr_fg, hdr_bg),
             (false, false) => (fg, bg),
         };
@@ -304,15 +311,22 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     (area.width as usize).saturating_sub(w + 2)
                 };
                 if start_col > label_end + 1 || no_label {
+                    // quadraui#1180: was unconditionally painted in `dim_fg`
+                    // (`theme.muted_fg`), so a focused (`selected_bg`)
+                    // `ReadOnly` row's value stayed in the same dim colour
+                    // as an unfocused one — unreadable on `selected_bg`,
+                    // unlike every other field kind here, which derives its
+                    // value colour from `field_fg` (focus/disabled-aware).
+                    // Mirrors the `native_surface_paint::paint` fix.
                     draw_styled_text(
                         buf,
                         area,
                         y,
                         start_col,
                         value,
-                        dim_fg,
+                        field_fg,
                         row_bg,
-                        Decoration::Muted,
+                        Decoration::Normal,
                         dim_fg,
                     );
                 }
@@ -853,6 +867,83 @@ mod tests {
         // Row 1 ("wrap", focused) bg should be (99, 0, 0).
         let bg = buf[(0u16, 1u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
+    }
+
+    /// quadraui#1180: a focused row painted its label in `theme.foreground`
+    /// — no guaranteed contrast against `selected_bg` (both near-black on
+    /// mid-blue under `vscode-light`) — while `Tree`'s equivalent focused
+    /// row already used `theme.header_fg`. Also covers the `ReadOnly` field
+    /// kind, whose value was unconditionally painted in `theme.muted_fg`
+    /// regardless of focus — the second half of the issue's "value is
+    /// unreadable" report. Mirrors
+    /// `primitives::form::native_surface_paint::tests::
+    /// focused_row_paints_label_and_value_in_header_fg_not_foreground_or_muted_fg`,
+    /// but against the TUI rasteriser (`draw_form`), which is a separate
+    /// implementation from `native_surface_paint::paint` and was not fixed
+    /// by that change.
+    #[test]
+    fn focused_row_paints_label_and_value_in_header_fg_not_foreground_or_muted_fg() {
+        let f = Form {
+            id: WidgetId::new("f"),
+            fields: vec![FormField {
+                id: WidgetId::new("note"),
+                label: label("Note"),
+                kind: FieldKind::ReadOnly {
+                    value: label("hello"),
+                },
+                disabled: false,
+                validation: None,
+                hint: label(""),
+            }],
+            focused_field: Some(WidgetId::new("note")),
+            scroll_offset: 0,
+            has_focus: true,
+        };
+        // `Theme::default()` sets `header_fg == foreground` (both the
+        // neutral dark `fg` literal), which would make this test pass
+        // whether `draw_form` used `header_fg` or `foreground` — exactly
+        // the ambiguity the buggy code exploited. Use a theme (mirroring
+        // `vscode-light`'s shape) where `header_fg`, `foreground` and
+        // `muted_fg` are three distinct colours so the assertions below
+        // actually discriminate between them.
+        let theme = Theme {
+            foreground: crate::types::Color::rgb(10, 10, 10),
+            header_fg: crate::types::Color::rgb(250, 250, 250),
+            muted_fg: crate::types::Color::rgb(0, 128, 128),
+            ..Theme::default()
+        };
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
+        draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &theme);
+
+        let hdr_fg = ratatui_color(theme.header_fg);
+
+        // "Note" label starts at col 1 (label_col).
+        let label_fg = buf[(1u16, 0u16)].fg;
+        assert_eq!(
+            label_fg, hdr_fg,
+            "focused row's label must use theme.header_fg (Tree's \
+             on-selection convention), not theme.foreground"
+        );
+
+        // "hello" value is right-aligned; find its start column.
+        let mut hello_col = None;
+        for x in 0..30u16 {
+            if cell_char(&buf, x, 0) == 'h'
+                && x + 4 < 30
+                && cell_char(&buf, x + 1, 0) == 'e'
+                && cell_char(&buf, x + 2, 0) == 'l'
+            {
+                hello_col = Some(x);
+                break;
+            }
+        }
+        let hello_col = hello_col.expect("'hello' value must be painted");
+        let value_fg = buf[(hello_col, 0u16)].fg;
+        assert_eq!(
+            value_fg, hdr_fg,
+            "a focused ReadOnly row's value must track the row's \
+             on-selection foreground, not an unconditional theme.muted_fg"
+        );
     }
 
     #[test]
