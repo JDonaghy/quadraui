@@ -4049,37 +4049,26 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// #1085: paint via the shared
+    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+    /// — see that fn's doc for the seven named divergences found while
+    /// unifying `gtk::pipeline_view::draw_pipeline_view`,
+    /// `macos::pipeline_view::draw_pipeline_view` and
+    /// `win::pipeline_view::draw_pipeline_view` into one implementation.
+    /// Every text run `paint` draws goes through
+    /// [`Self::surface_draw_text_run`], which is already recorded into
+    /// the painted-text map [`super::testing::GtkDriver::find`] scans
+    /// (quadraui#489's per-glyph-run sink — see
+    /// [`Self::enter_frame_scope`]'s doc) — this method no longer needs
+    /// its own manual `record_painted_text` calls the way the pre-#1085
+    /// bespoke rasteriser did.
     fn draw_pipeline_view(
         &mut self,
         rect: QRect,
         view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_pipeline_view called outside enter_frame_scope");
-        let layout = crate::gtk::draw_pipeline_view(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            view,
-            &theme,
-        );
-        // Record each stage's label + action-button text into the
-        // painted-text map GtkDriver::find scans (quadraui#448, GD-3) —
-        // extends draw_status_bar's pattern (quadraui#447, GD-2) to the
-        // pipeline view so example-driver tests can locate stages/actions
-        // by text instead of hardcoding coordinates.
-        for (stage, bounds) in view.stages.iter().zip(layout.stages.iter()) {
-            self.record_painted_text(&stage.label, bounds.label_bounds);
-            if let (Some(action), Some(action_bounds)) = (&stage.action, bounds.action_bounds) {
-                self.record_painted_text(action, action_bounds);
-            }
-        }
-        layout
+        crate::primitives::pipeline_view::native_surface_paint::paint(view, self, &theme, rect)
     }
 
     fn pipeline_view_layout(
@@ -4096,25 +4085,20 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// #1085: paint via the shared
+    /// [`crate::primitives::progress::native_surface_paint::paint`] —
+    /// see that fn's doc for the one named divergence (Windows
+    /// previously ignored the host's theme entirely) found while
+    /// unifying `gtk::progress::draw_progress`,
+    /// `macos::progress::draw_progress` and `win::progress::draw_progress`
+    /// into one implementation.
     fn draw_progress(
         &mut self,
         rect: QRect,
         bar: &crate::primitives::progress::ProgressBar,
     ) -> crate::primitives::progress::ProgressBarLayout {
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_progress called outside enter_frame_scope");
-        crate::gtk::draw_progress(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            &theme,
-        )
+        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect)
     }
 
     fn progress_layout(
@@ -4467,25 +4451,20 @@ impl Backend for GtkBackend {
         )
     }
 
+    /// #1085: paint via the shared
+    /// [`crate::primitives::board::native_surface_paint::paint`] — see
+    /// that fn's doc for the three named divergences (column-header
+    /// overflow; card-title wrapping; rounded vs. straight card borders)
+    /// found while unifying `gtk::board::draw_board`,
+    /// `macos::board::draw_board` and `win::board::draw_board` into one
+    /// implementation.
     fn draw_board(
         &mut self,
         rect: QRect,
         model: &crate::primitives::board::BoardModel,
     ) -> crate::primitives::board::BoardLayout {
         let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_board called outside enter_frame_scope");
-        crate::gtk::draw_board(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            model,
-            &theme,
-        )
+        crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
     }
 
     fn board_layout(

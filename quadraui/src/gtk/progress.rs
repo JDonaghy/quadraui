@@ -1,13 +1,21 @@
 //! GTK rasteriser for [`crate::ProgressBar`].
 //!
-//! Paints a horizontal bar with filled portion, optional label, and
-//! optional cancel affordance.
+//! Painting moved to the shared
+//! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
+//! `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the one
+//! named divergence (Windows previously ignored the host's theme
+//! entirely) found while unifying `gtk::progress::draw_progress`,
+//! `macos::progress::draw_progress` and `win::progress::draw_progress`
+//! into one implementation. This module now only carries
+//! [`gtk_progress_layout`] (still real, backend-specific pure geometry —
+//! no painting involved) and the deprecated [`draw_progress`]
+//! compatibility shim over the shared [`super::surface::CairoSurface`]
+//! adapter (mirrors `gtk::diff_view`'s #866 shim).
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::set_source;
-use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
+use crate::primitives::layout_metrics::pixel_progress_layout;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::theme::Theme;
 
@@ -19,8 +27,17 @@ pub fn gtk_progress_layout(bar: &ProgressBar, x: f64, y: f64, w: f64, h: f64) ->
     pixel_progress_layout(bar, x as f32, y as f32, w as f32, h as f32)
 }
 
-/// Draw a [`ProgressBar`] onto `cr`. Returns the layout for host
-/// click dispatch.
+/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
+/// the pre-#1085 signature exactly for any external caller that held a
+/// direct `quadraui::gtk::draw_progress` reference rather than going
+/// through [`crate::Backend::draw_progress`] — the sanctioned entry
+/// point, and the one every in-tree call site already uses, which is why
+/// this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_progress` instead — this free function is a compatibility shim over the shared #1085 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_progress(
     cr: &Context,
@@ -32,55 +49,17 @@ pub fn draw_progress(
     bar: &ProgressBar,
     theme: &Theme,
 ) -> ProgressBarLayout {
-    let layout = gtk_progress_layout(bar, x, y, w, h);
-
-    // Track background.
-    set_source(cr, theme.surface_bg);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
-
-    // Fill.
-    if let Some(fb) = layout.fill_bounds {
-        let fill_color = bar.accent.unwrap_or(theme.accent_bg);
-        set_source(cr, fill_color);
-        cr.rectangle(fb.x as f64, fb.y as f64, fb.width as f64, fb.height as f64);
-        cr.fill().ok();
-    } else {
-        // Indeterminate pulse.
-        let bar_w = if bar.cancellable {
-            (w - pixel::PROGRESS_CANCEL_WIDTH as f64).max(0.0)
-        } else {
-            w
-        };
-        if bar_w > 0.0 {
-            let pulse_w = (pixel::PROGRESS_PULSE_WIDTH as f64).min(bar_w);
-            let pos = (bar.frame_idx as f64 * 4.0) % bar_w;
-            let fill_color = bar.accent.unwrap_or(theme.accent_bg);
-            set_source(cr, fill_color);
-            cr.rectangle(x + pos, y, pulse_w.min(bar_w - pos), h);
-            cr.fill().ok();
-        }
-    }
-
-    // Label.
-    if !bar.label.is_empty() {
-        pango_layout.set_text(&bar.label);
-        pango_layout.set_attributes(None);
-        set_source(cr, theme.foreground);
-        cr.move_to(x + 4.0, y);
-        super::painted_text::show_layout(cr, pango_layout);
-    }
-
-    // Cancel affordance.
-    if let Some(cb) = layout.cancel_bounds {
-        pango_layout.set_text("×");
-        set_source(cr, theme.foreground);
-        let text_w = pango_layout.pixel_size().0 as f64;
-        cr.move_to(cb.x as f64 + (cb.width as f64 - text_w) / 2.0, cb.y as f64);
-        super::painted_text::show_layout(cr, pango_layout);
-    }
-
-    layout
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(pango_layout),
+        translucent_fill: true,
+    };
+    crate::primitives::progress::native_surface_paint::paint(
+        bar,
+        &mut surface,
+        theme,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
+    )
 }
 
 #[cfg(test)]

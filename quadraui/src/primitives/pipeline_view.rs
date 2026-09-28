@@ -359,6 +359,464 @@ impl PipelineView {
     }
 }
 
+// ── NativeSurface paint (shared gtk/macos/win implementation, issue #1085,
+// NativeSurface Phase 4 8/8) ────────────────────────────────────────────
+//
+// Before this, `gtk::pipeline_view::draw_pipeline_view` (Cairo + Pango),
+// `macos::pipeline_view::draw_pipeline_view` (Core Graphics + Core Text)
+// and `win::pipeline_view::draw_pipeline_view` (Direct2D + DirectWrite)
+// each independently painted the same stage/arrow geometry (already
+// unified by [`PipelineView::layout`]/[`pixel_pipeline_view_layout`])
+// with their own drawing API. `paint` below is the one shared
+// implementation, written against [`crate::native_surface::NativeSurface`]
+// (#807, Phase 1) instead of any one backend's drawing API — same shape
+// as `diff_view`'s #866 migration and `board`'s #1085 slice above.
+//
+// ## Divergences found (re-verified, reported here rather than silently
+// resolved — CLAUDE.md's "re-verify before you implement" + this issue's
+// acceptance bar)
+//
+// 1. **Status icon vertical position.** `gtk::pipeline_view` and
+//    `win::pipeline_view` both centred the icon glyph within the top
+//    third of the box (`icon_h = bh / 3.0`, then `by + icon_h / 2.0 -
+//    ih / 2.0`). `macos::pipeline_view` used `by + bh / 5.0`, ignoring
+//    the glyph's own measured height entirely. `paint` uses the 2-of-3
+//    majority (gtk/win) formula on every backend — macOS gains real
+//    vertical centring it never had.
+// 2. **Label vertical position.** `gtk::pipeline_view` and
+//    `win::pipeline_view` both centred the label using its own measured
+//    height (`by + bh / 2.0 - lh / 2.0`). `macos::pipeline_view` used a
+//    hardcoded `by + bh / 2.0 - 8.0` offset, never consulting the
+//    measured height. `paint` uses the 2-of-3 majority formula — macOS's
+//    label centring no longer drifts for fonts taller/shorter than the
+//    8px the hardcoded offset assumed.
+// 3. **Label overflow handling.** `gtk::pipeline_view` ellipsized an
+//    overflowing label with Pango's `EllipsizeMode::End`.
+//    `win::pipeline_view` clamped the *drawn* width to
+//    `bb.width - 2 * PIPELINE_H_PAD` and let `DWrite::draw_text`'s
+//    `D2D1_DRAW_TEXT_OPTIONS_CLIP` cut it off. `macos::pipeline_view` did
+//    neither — an overlong label could paint past the box into the next
+//    stage or the arrow connector, uncropped. `NativeSurface` has no
+//    ellipsize verb (see `diff_view`'s #866 "Header-label overflow
+//    handling" and `board`'s #1085 divergence 1/2 for the identical
+//    tradeoff), so `paint` clamps the label's drawn width like
+//    `win::pipeline_view` did and additionally hard-clips the whole box
+//    (icon + label + action) to `box_bounds` — macOS's overflow bleed is
+//    fixed, and GTK's ellipsis becomes a hard clip.
+// 4. **Action-button tint background.** `gtk::pipeline_view` painted a
+//    translucent `theme.accent_bg` tint (Cairo `set_source_rgba` at
+//    `0.15` alpha, inset 1px) behind the button label.
+//    `win::pipeline_view` approximated the same tint with a CPU-side
+//    [`crate::types::Color::blend`] against `theme.surface_bg` — exactly
+//    the "`Color::blend` instead of a real alpha composite" smell
+//    [`crate::native_surface::NativeSurface::surface_fill_rect_alpha`]'s
+//    own doc names as the reason that verb exists.
+//    `macos::pipeline_view` painted no tint at all. `paint` uses
+//    [`crate::native_surface::NativeSurface::surface_fill_rect_alpha`] to
+//    fill the full `action_bounds` with a real alpha composite over
+//    `theme.accent_bg` at the same `0.15` alpha every backend already
+//    agreed on — macOS gains the tint it was missing, and Windows's CPU
+//    blend becomes a real composite.
+// 5. **Action-button label vertical position.** `gtk::pipeline_view` and
+//    `win::pipeline_view` both centred the button label vertically within
+//    `action_bounds` (`ab.y + ab.height / 2.0 - bh2 / 2.0`).
+//    `macos::pipeline_view` drew it flush to `ab.y` (top-aligned,
+//    ignoring the button's own height). `paint` uses the 2-of-3 majority
+//    formula — macOS's button label is now vertically centred like its
+//    siblings.
+// 6. **Focus indicator / arrow-head shape.** `gtk::pipeline_view` and
+//    `macos::pipeline_view` filled a solid triangle path for both the
+//    `▼` focus indicator and the arrow connector's head.
+//    `win::pipeline_view` drew each as two stroked line segments instead
+//    — `win::text` exposes no filled-arbitrary-path primitive (only
+//    rects, rounded rects, lines, and circles). `NativeSurface` has the
+//    identical gap (`surface_draw_line`/`surface_fill_rect`/
+//    `surface_fill_rounded_rect`, no fill-path verb), so `paint` adopts
+//    Windows's two-line chevron on every backend. GTK/macOS's solid
+//    triangles become open chevrons — a visible but small shape change at
+//    this glyph-scale size.
+// 7. **Stage-box border shape.** `gtk::pipeline_view` and
+//    `macos::pipeline_view` stroked a *rounded*-rect border
+//    (`pixel::CORNER_RADIUS`); `win::pipeline_view` could only stroke a
+//    straight rectangle (no rounded-stroke primitive — see divergence 6's
+//    same underlying gap). `NativeSurface::surface_stroke_rect` is
+//    axis-aligned only, so `paint` strokes every stage-box border as a
+//    straight rectangle — mirrors `board`'s #1085 divergence 3 exactly.
+//    GTK/macOS boxes lose their rounded-pill corners; `pixel::CORNER_RADIUS`
+//    is no longer consumed by any rasteriser.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{status_color, status_glyph, PipelineView, PipelineViewLayout};
+    use crate::event::{Point, Rect};
+    use crate::native_surface::NativeSurface;
+    use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
+    use crate::theme::Theme;
+
+    /// Alpha applied to the action button's tint background — the value
+    /// every pre-port backend already agreed on (GTK's `set_source_rgba`
+    /// alpha, Windows's `Color::blend` factor). See divergence 4 above.
+    const ACTION_TINT_ALPHA: f32 = 0.15;
+
+    /// Paint a [`PipelineView`] into `rect` on `surface`, returning
+    /// [`PipelineViewLayout`] for host click dispatch — same contract as
+    /// every deleted per-backend `draw_pipeline_view`.
+    pub(crate) fn paint(
+        view: &PipelineView,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        rect: Rect,
+    ) -> PipelineViewLayout {
+        let layout = pixel_pipeline_view_layout(view, rect.x, rect.y, rect.width, rect.height);
+
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        for sb in &layout.stages {
+            let stage = &view.stages[sb.index];
+            let is_focused = view.focused_stage == Some(sb.index);
+            let bb = sb.box_bounds;
+
+            if bb.width <= 0.0 || bb.height <= 0.0 {
+                continue;
+            }
+
+            // ── Box fill + border (straight rect on every backend — see
+            // divergence 7 above) ───────────────────────────────────────
+            surface.surface_fill_rect(bb, theme.surface_bg);
+            let border_color = status_color(&stage.status, theme);
+            surface.surface_stroke_rect(bb, border_color, pixel::PIPELINE_BORDER_WIDTH as f32);
+
+            // ── Focus indicator (▼ chevron above the box — divergence 6) ──
+            if is_focused {
+                let ind_x = bb.x + bb.width / 2.0;
+                let tri_tip_y = bb.y - 1.0;
+                let tri_base_y = bb.y - pixel::PIPELINE_FOCUS_INDICATOR_H + 1.0;
+                let half_w = 5.0;
+                surface.surface_draw_line(
+                    Point::new(ind_x - half_w, tri_base_y),
+                    Point::new(ind_x, tri_tip_y),
+                    theme.muted_fg,
+                    1.5,
+                );
+                surface.surface_draw_line(
+                    Point::new(ind_x, tri_tip_y),
+                    Point::new(ind_x + half_w, tri_base_y),
+                    theme.muted_fg,
+                    1.5,
+                );
+            }
+
+            // Icon + label + action are all clipped to the box — see
+            // divergence 3 above for why every backend now hard-clips.
+            surface.surface_push_clip(bb);
+
+            // ── Status icon (top third of box — divergence 1) ────────────
+            let icon_text = status_glyph(&stage.status);
+            let icon_color = status_color(&stage.status, theme);
+            let (iw, ih) = surface.surface_measure_text(icon_text);
+            let icon_h = bb.height / 3.0;
+            let icon_cx = bb.x + bb.width / 2.0 - iw / 2.0;
+            let icon_cy = bb.y + icon_h / 2.0 - ih / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(icon_cx, icon_cy, iw.max(1.0), ih.max(1.0)),
+                icon_text,
+                icon_color,
+            );
+
+            // ── Label (centred, clamped + hard-clipped — divergences 2/3) ──
+            if !stage.label.is_empty() {
+                let (lw, lh) = surface.surface_measure_text(&stage.label);
+                let avail_w = (bb.width - 2.0 * pixel::PIPELINE_H_PAD as f32).max(0.0);
+                let draw_w = lw.min(avail_w).max(1.0);
+                let label_cx = bb.x + bb.width / 2.0 - draw_w / 2.0;
+                let label_cy = bb.y + bb.height / 2.0 - lh / 2.0;
+                surface.surface_draw_text_run(
+                    Rect::new(label_cx, label_cy, draw_w, lh.max(1.0)),
+                    &stage.label,
+                    theme.foreground,
+                );
+            }
+
+            // ── Action button (bottom strip — divergences 4/5) ────────────
+            if let (Some(ab), Some(action_text)) = (sb.action_bounds, &stage.action) {
+                let btn_label = format!("[{}]", action_text);
+
+                surface.surface_fill_rect_alpha(ab, theme.accent_bg, ACTION_TINT_ALPHA);
+
+                let (bw2, bh2) = surface.surface_measure_text(&btn_label);
+                let btn_cx = ab.x + ab.width / 2.0 - bw2 / 2.0;
+                let btn_cy = ab.y + ab.height / 2.0 - bh2 / 2.0;
+                surface.surface_draw_text_run(
+                    Rect::new(btn_cx, btn_cy, bw2.max(1.0), bh2.max(1.0)),
+                    &btn_label,
+                    theme.accent_bg,
+                );
+            }
+
+            surface.surface_pop_clip();
+
+            // ── Arrow connector (line + chevron head — divergence 6) ──────
+            if let Some(arrow) = sb.arrow_bounds {
+                let ax = arrow.x;
+                let mid_y = arrow.y + arrow.height / 2.0;
+                let aw = arrow.width;
+
+                surface.surface_draw_line(
+                    Point::new(ax, mid_y),
+                    Point::new(ax + aw - 6.0, mid_y),
+                    theme.muted_fg,
+                    1.0,
+                );
+
+                let tip_x = ax + aw - 1.0;
+                let tail_x = ax + aw - 7.0;
+                let half_h = 4.0;
+                surface.surface_draw_line(
+                    Point::new(tail_x, mid_y - half_h),
+                    Point::new(tip_x, mid_y),
+                    theme.muted_fg,
+                    1.0,
+                );
+                surface.surface_draw_line(
+                    Point::new(tip_x, mid_y),
+                    Point::new(tail_x, mid_y + half_h),
+                    theme.muted_fg,
+                    1.0,
+                );
+            }
+        }
+
+        layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::event::Viewport;
+        use crate::primitives::pipeline_view::{PipelineStage, StageStatus};
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every drawing verb `paint` issues — mirrors
+        /// `primitives::diff_view`'s own `RecordingSurface` (#810/#865/#866).
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            strokes: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+            lines: Vec<(Point, Point, Color)>,
+            clip_pushes: Vec<Rect>,
+            clip_pops: usize,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> Viewport {
+                Viewport::new(300.0, 80.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 14.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, _stroke_width: f32) {
+                self.strokes.push((rect, color));
+            }
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                from: crate::Point,
+                to: crate::Point,
+                color: Color,
+                _stroke_width: f32,
+            ) {
+                self.lines.push((from, to, color));
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn make_view() -> PipelineView {
+            PipelineView {
+                id: WidgetId::new("pipe"),
+                stages: vec![
+                    PipelineStage {
+                        label: "Build".into(),
+                        status: StageStatus::Done,
+                        action: None,
+                    },
+                    PipelineStage {
+                        label: "Test".into(),
+                        status: StageStatus::Active,
+                        action: Some("Retry".into()),
+                    },
+                ],
+                focused_stage: Some(0),
+            }
+        }
+
+        #[test]
+        fn zero_size_rect_paints_nothing() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+            );
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+        }
+
+        /// Regression for divergence 7: the stage-box border is a
+        /// straight `surface_stroke_rect`, never a rounded fill/stroke.
+        #[test]
+        fn stage_box_border_is_a_straight_rect() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+            let bb = layout.stages[0].box_bounds;
+            assert!(surface.strokes.iter().any(|(r, _)| *r == bb));
+        }
+
+        /// Regression for divergence 6: the focused stage's indicator is
+        /// two line strokes (a chevron), not a filled path.
+        #[test]
+        fn focused_stage_paints_a_two_line_chevron() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+            assert_eq!(
+                surface.lines.len(),
+                2 + 3,
+                "1 focus chevron (2 lines) + 1 arrow connector (3 lines)"
+            );
+        }
+
+        /// Regression for divergence 3: icon + label + action are all
+        /// clipped to the stage box (one push/pop bracket per stage).
+        #[test]
+        fn each_stage_clips_its_content_to_the_box() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+            assert_eq!(surface.clip_pushes.len(), surface.clip_pops);
+            assert_eq!(surface.clip_pushes.len(), view.stages.len());
+        }
+
+        /// Regression for divergence 4: the action button paints a
+        /// translucent `accent_bg` tint (a real alpha composite, via the
+        /// default `surface_fill_rect_alpha` forwarding to
+        /// `surface_fill_rect` with `color.with_alpha`), covering the
+        /// whole `action_bounds` — every backend gets it now, including
+        /// the one (macOS) that previously painted none at all.
+        #[test]
+        fn action_button_paints_a_translucent_tint_over_the_full_bounds() {
+            let view = make_view();
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+            let ab = layout.stages[1]
+                .action_bounds
+                .expect("stage 1 has an action button");
+            let tint = surface
+                .fills
+                .iter()
+                .find(|(r, _)| *r == ab)
+                .map(|(_, c)| *c)
+                .expect("action tint fill over the full action_bounds");
+            assert_eq!(tint.r, theme.accent_bg.r);
+            assert_eq!(tint.g, theme.accent_bg.g);
+            assert_eq!(tint.b, theme.accent_bg.b);
+            assert!(
+                tint.a < theme.accent_bg.a,
+                "tint alpha ({}) must be lower than accent_bg's own opaque alpha ({})",
+                tint.a,
+                theme.accent_bg.a,
+            );
+        }
+
+        /// Regression for divergences 1/2: icon and label both use the
+        /// "top-third centred" / "measured-height centred" majority
+        /// formula (gtk+win), not macOS's pre-#1085 hardcoded offsets.
+        #[test]
+        fn icon_and_label_are_centred_using_their_measured_size() {
+            let view = make_view();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(
+                &view,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 300.0, 80.0),
+            );
+            let bb = layout.stages[0].box_bounds;
+            let (_, icon_text, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == status_glyph(&StageStatus::Done))
+                .expect("icon text painted");
+            assert_eq!(icon_text, status_glyph(&StageStatus::Done));
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Build")
+                .expect("label text painted");
+            let (lw, lh) = surface.surface_measure_text("Build");
+            assert!((label_rect.width - lw).abs() < 0.01);
+            let expected_cy = bb.y + bb.height / 2.0 - lh / 2.0;
+            assert!((label_rect.y - expected_cy).abs() < 0.01);
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

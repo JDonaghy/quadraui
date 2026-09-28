@@ -1,30 +1,28 @@
 //! macOS rasteriser for [`crate::primitives::pipeline_view::PipelineView`].
 //!
-//! Paints a horizontal row of bordered stage boxes connected by arrow
-//! connectors using Core Graphics. Each box shows a status icon, label,
-//! and optional action button.
+//! Painting moved to the shared
+//! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+//! (#1085, `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the
+//! seven named divergences found while unifying
+//! `gtk::pipeline_view::draw_pipeline_view`,
+//! `macos::pipeline_view::draw_pipeline_view` and
+//! `win::pipeline_view::draw_pipeline_view` into one implementation. This
+//! module now only carries [`mac_pipeline_view_layout`] (still real,
+//! backend-specific pure geometry — no painting involved) and the
+//! deprecated [`draw_pipeline_view`] compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter (mirrors `macos::diff_view`'s
+//! #866 shim).
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
-use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
-use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout,
-};
+use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
+use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Compute the macOS pixel-unit layout for a [`PipelineView`]. Shares its
 /// geometry with `gtk_pipeline_view_layout` / `win_pipeline_view_layout`
 /// via [`pixel_pipeline_view_layout`] (issue #1079).
-///
-/// Note: the returned layout (incl. `bounds`) is offset down by
-/// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
-/// reserved caret strip. The focus caret is painted in the gap between
-/// the passed-in `y` and `bounds.y`; a host that clips drawing to
-/// `layout.bounds` would clip the caret — clip to the original `(y, h)`
-/// instead.
 pub fn mac_pipeline_view_layout(
     view: &PipelineView,
     x: f64,
@@ -35,12 +33,21 @@ pub fn mac_pipeline_view_layout(
     pixel_pipeline_view_layout(view, x as f32, y as f32, w as f32, h as f32)
 }
 
-/// Draw a [`PipelineView`] onto `ctx`. Returns the layout for host click
-/// dispatch.
+/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
+/// the pre-#1085 signature exactly for any external caller that held a
+/// direct `quadraui::macos::draw_pipeline_view` reference rather than
+/// going through [`crate::Backend::draw_pipeline_view`] — the sanctioned
+/// entry point, and the one every in-tree call site already uses, which
+/// is why this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
 ///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of the call.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_pipeline_view` instead — this free function is a compatibility shim over the shared #1085 implementation"
+)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_pipeline_view(
     ctx: CGContextRef,
@@ -52,219 +59,16 @@ pub unsafe fn draw_pipeline_view(
     view: &PipelineView,
     theme: &Theme,
 ) -> PipelineViewLayout {
-    let layout = mac_pipeline_view_layout(view, x, y, w, h);
-
-    if w <= 0.0 || h <= 0.0 {
-        return layout;
-    }
-
-    for sb in &layout.stages {
-        let stage = &view.stages[sb.index];
-        let is_focused = view.focused_stage == Some(sb.index);
-
-        let bx = sb.box_bounds.x as f64;
-        let by = sb.box_bounds.y as f64;
-        let bw = sb.box_bounds.width as f64;
-        let bh = sb.box_bounds.height as f64;
-
-        if bw <= 0.0 || bh <= 0.0 {
-            continue;
-        }
-
-        // ── Box fill (rounded corners) ────────────────────────────────────
-        set_fill_color(ctx, theme.surface_bg);
-        add_rounded_rect_path(ctx, bx, by, bw, bh, pixel::CORNER_RADIUS);
-        CGContextFillPath(ctx);
-
-        // ── Box border (per-status colour; focus uses an above-box indicator) ──
-        let border_color = status_color(&stage.status, theme);
-        set_stroke_color(ctx, border_color);
-        CGContextSetLineWidth(ctx, pixel::PIPELINE_BORDER_WIDTH);
-        add_rounded_rect_path(ctx, bx, by, bw, bh, pixel::CORNER_RADIUS);
-        CGContextStrokePath(ctx);
-
-        // ── Focus indicator (small ▼ triangle above the box) ─────────────
-        if is_focused {
-            let ind_x = bx + bw / 2.0;
-            let tri_tip_y = by - 1.0;
-            let tri_base_y = by - pixel::PIPELINE_FOCUS_INDICATOR_H as f64 + 1.0;
-            let tri_half_w = 5.0_f64;
-            set_fill_color(ctx, theme.muted_fg);
-            CGContextMoveToPoint(ctx, ind_x, tri_tip_y);
-            CGContextAddLineToPoint(ctx, ind_x - tri_half_w, tri_base_y);
-            CGContextAddLineToPoint(ctx, ind_x + tri_half_w, tri_base_y);
-            CGContextClosePath(ctx);
-            CGContextFillPath(ctx);
-        }
-
-        // ── Status icon ───────────────────────────────────────────────────
-        let icon_text = status_glyph(&stage.status);
-        let icon_color = status_color(&stage.status, theme);
-        let (iw, _ih) = measure_text(font, icon_text);
-        let icon_cx = bx + bw / 2.0 - iw / 2.0;
-        let icon_cy = by + bh / 5.0;
-        draw_text(
-            ctx,
-            font,
-            icon_text,
-            icon_cx,
-            icon_cy,
-            color_to_cg(icon_color),
-        );
-
-        // ── Label ─────────────────────────────────────────────────────────
-        if !stage.label.is_empty() {
-            let (lw, _lh) = measure_text(font, &stage.label);
-            let label_cx = bx + bw / 2.0 - lw / 2.0;
-            let label_cy = by + bh / 2.0 - 8.0;
-            draw_text(
-                ctx,
-                font,
-                &stage.label,
-                label_cx,
-                label_cy,
-                color_to_cg(theme.foreground),
-            );
-        }
-
-        // ── Action button ─────────────────────────────────────────────────
-        if let (Some(ab), Some(action_text)) = (sb.action_bounds, &stage.action) {
-            let btn_label = format!("[{}]", action_text);
-            let (bw2, _) = measure_text(font, &btn_label);
-            let btn_cx = bx + bw / 2.0 - bw2 / 2.0;
-            let btn_cy = ab.y as f64;
-            draw_text(
-                ctx,
-                font,
-                &btn_label,
-                btn_cx,
-                btn_cy,
-                color_to_cg(theme.accent_bg),
-            );
-        }
-
-        // ── Arrow connector ───────────────────────────────────────────────
-        if let Some(arrow) = sb.arrow_bounds {
-            let ax = arrow.x as f64;
-            let mid_y = arrow.y as f64 + arrow.height as f64 / 2.0;
-            let aw = arrow.width as f64;
-
-            // Horizontal line.
-            set_stroke_color(ctx, theme.muted_fg);
-            CGContextSetLineWidth(ctx, 1.0);
-            CGContextMoveToPoint(ctx, ax, mid_y);
-            CGContextAddLineToPoint(ctx, ax + aw - 6.0, mid_y);
-            CGContextStrokePath(ctx);
-
-            // Simple arrowhead triangle.
-            let tip_x = ax + aw - 1.0;
-            let tail_x = ax + aw - 7.0;
-            let hh = 4.0;
-            CGContextMoveToPoint(ctx, tip_x, mid_y);
-            CGContextAddLineToPoint(ctx, tail_x, mid_y - hh);
-            CGContextAddLineToPoint(ctx, tail_x, mid_y + hh);
-            CGContextClosePath(ctx);
-            set_fill_color(ctx, theme.muted_fg);
-            CGContextFillPath(ctx);
-        }
-    }
-
-    layout
-}
-
-/// Build a rounded-rectangle CG path and make it the current path on `ctx`.
-///
-/// Uses `CGContextAddArcToPoint` to produce four rounded corners with radius
-/// `r`. Equivalent to the GTK `rounded_rect_path` helper but expressed in
-/// Core Graphics primitives.
-unsafe fn add_rounded_rect_path(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    // Clamp radius so it never exceeds half the shortest side.
-    let r = r.min(w / 2.0).min(h / 2.0);
-    CGContextBeginPath(ctx);
-    // Start at top-left corner (after the radius offset).
-    CGContextMoveToPoint(ctx, x + r, y);
-    // Top edge → top-right corner.
-    CGContextAddLineToPoint(ctx, x + w - r, y);
-    CGContextAddArcToPoint(ctx, x + w, y, x + w, y + r, r);
-    // Right edge → bottom-right corner.
-    CGContextAddLineToPoint(ctx, x + w, y + h - r);
-    CGContextAddArcToPoint(ctx, x + w, y + h, x + w - r, y + h, r);
-    // Bottom edge → bottom-left corner.
-    CGContextAddLineToPoint(ctx, x + r, y + h);
-    CGContextAddArcToPoint(ctx, x, y + h, x, y + h - r, r);
-    // Left edge → top-left corner.
-    CGContextAddLineToPoint(ctx, x, y + r);
-    CGContextAddArcToPoint(ctx, x, y, x + r, y, r);
-    CGContextClosePath(ctx);
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    crate::primitives::pipeline_view::native_surface_paint::paint(
+        view,
+        &mut surface,
+        theme,
+        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
     )
-}
-
-unsafe fn set_fill_color(ctx: CGContextRef, c: Color) {
-    CGContextSetRGBFillColor(
-        ctx,
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    );
-}
-
-unsafe fn set_stroke_color(ctx: CGContextRef, c: Color) {
-    CGContextSetRGBStrokeColor(
-        ctx,
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    );
-}
-
-extern "C" {
-    fn CGContextSetRGBFillColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetRGBStrokeColor(
-        c: CGContextRef,
-        red: core_graphics::base::CGFloat,
-        green: core_graphics::base::CGFloat,
-        blue: core_graphics::base::CGFloat,
-        alpha: core_graphics::base::CGFloat,
-    );
-    fn CGContextSetLineWidth(c: CGContextRef, width: core_graphics::base::CGFloat);
-    fn CGContextBeginPath(c: CGContextRef);
-    fn CGContextMoveToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    fn CGContextAddLineToPoint(
-        c: CGContextRef,
-        x: core_graphics::base::CGFloat,
-        y: core_graphics::base::CGFloat,
-    );
-    fn CGContextAddArcToPoint(
-        c: CGContextRef,
-        x1: core_graphics::base::CGFloat,
-        y1: core_graphics::base::CGFloat,
-        x2: core_graphics::base::CGFloat,
-        y2: core_graphics::base::CGFloat,
-        radius: core_graphics::base::CGFloat,
-    );
-    fn CGContextStrokePath(c: CGContextRef);
-    fn CGContextClosePath(c: CGContextRef);
-    fn CGContextFillPath(c: CGContextRef);
 }
 
 #[cfg(test)]
@@ -304,6 +108,10 @@ mod tests {
         }
     }
 
+    /// Paint via the real `Backend::draw_pipeline_view` path — which now
+    /// routes through the shared `native_surface_paint::paint` — avoids
+    /// tripping the `-D warnings`-denied `deprecated` lint (CLAUDE.md
+    /// rule 3) by not calling the deprecated free-function shim above.
     fn paint_via_backend(view: &PipelineView) -> (BitmapSurface, PipelineViewLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -326,16 +134,70 @@ mod tests {
         assert_eq!(layout.stages.len(), 2);
     }
 
+    /// Regression for #1085 divergence 4: macOS previously painted no
+    /// tint at all behind the action button — this fixture's stage 1
+    /// ("Test") has an action, so its `action_bounds` must now show a
+    /// visible `accent_bg` tint rather than the plain box background.
+    #[test]
+    fn action_button_paints_a_translucent_accent_tint() {
+        let view = make_view();
+        let (surface, layout) = paint_via_backend(&view);
+        let ab = layout.stages[1]
+            .action_bounds
+            .expect("stage 1 has an action button");
+        // Probe near the tint's edge, clear of the button's own glyphs.
+        let px = (ab.x + 2.0) as u32;
+        let py = (ab.y + ab.height - 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(px, py);
+        assert_ne!(
+            (r, g, b),
+            (0, 0, 0),
+            "action button area must show the accent tint, not the plain (black) box fill",
+        );
+    }
+
+    /// Regression for #1085 divergence 5: the action-button label used to
+    /// paint flush to `ab.y` on macOS (ignoring the button's own height);
+    /// it now centres like GTK/Windows, so the glyph ink should not touch
+    /// the very top row of `action_bounds`.
+    #[test]
+    fn action_button_label_is_vertically_centred() {
+        let view = make_view();
+        let (surface, layout) = paint_via_backend(&view);
+        let ab = layout.stages[1]
+            .action_bounds
+            .expect("stage 1 has an action button");
+        // The top-most row of the action strip should be clear of glyph
+        // ink (just the translucent tint) once the label is centred
+        // rather than flush to the top.
+        let mut top_row_has_dark_glyph_ink = false;
+        for x in (ab.x as u32)..(ab.x + ab.width) as u32 {
+            let (r, g, b, _) = surface.pixel(x, ab.y as u32);
+            // Glyph ink here is painted in `accent_bg`; the tint alone is
+            // a much darker blend toward the black background. Look for
+            // a near-pure accent_bg pixel specifically at the top row.
+            let theme = Theme::default();
+            if (r, g, b) == (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b) {
+                top_row_has_dark_glyph_ink = true;
+            }
+        }
+        assert!(
+            !top_row_has_dark_glyph_ink,
+            "action label should be vertically centred in its button, not flush to the top row",
+        );
+    }
+
     /// Shared body for the action↔click round trip, run at both the
     /// origin and a non-zero origin (quadraui#494 / LESSONS.md "Layout
     /// helpers must return coords in the same frame across backends").
     /// `mac_pipeline_view_layout` bakes `x`/`y` straight into the
     /// returned bounds (absolute frame, matching the GTK/TUI twins) —
-    /// and *also* adds [`pixel::PIPELINE_FOCUS_INDICATOR_H`] to `y` itself before
-    /// laying out, an extra reason a non-zero-origin regression is
-    /// plausible here. Deriving `ab`/`bb` from the layout (not
-    /// hardcoding them) means this exercises whatever origin math the
-    /// function actually does, at any origin. Calls
+    /// and *also* adds
+    /// [`crate::primitives::layout_metrics::pixel::PIPELINE_FOCUS_INDICATOR_H`]
+    /// to `y` itself before laying out, an extra reason a non-zero-origin
+    /// regression is plausible here. Deriving `ab`/`bb` from the layout
+    /// (not hardcoding them) means this exercises whatever origin math
+    /// the function actually does, at any origin. Calls
     /// `mac_pipeline_view_layout` directly (pure fn, no font/paint
     /// dependency — it forwards to `PipelineView::layout`, which is
     /// plain geometry).
@@ -348,7 +210,12 @@ mod tests {
         // independently of the hit_test round trip below.
         let bb0 = layout.stages[0].box_bounds;
         assert!(
-            (bb0.y as f64 - (origin_y + (pixel::PIPELINE_FOCUS_INDICATOR_H as f64))).abs() < 0.001,
+            (bb0.y as f64
+                - (origin_y
+                    + (crate::primitives::layout_metrics::pixel::PIPELINE_FOCUS_INDICATOR_H
+                        as f64)))
+                .abs()
+                < 0.001,
             "stage box top should be origin_y + PIPELINE_FOCUS_INDICATOR_H, got {}",
             bb0.y,
         );
@@ -378,7 +245,12 @@ mod tests {
 
         let bb = layout.stages[0].box_bounds;
         assert!(
-            (bb.y as f64 - (origin_y + (pixel::PIPELINE_FOCUS_INDICATOR_H as f64))).abs() < 0.001,
+            (bb.y as f64
+                - (origin_y
+                    + (crate::primitives::layout_metrics::pixel::PIPELINE_FOCUS_INDICATOR_H
+                        as f64)))
+                .abs()
+                < 0.001,
             "stage box top should be origin_y + PIPELINE_FOCUS_INDICATOR_H, got {}",
             bb.y,
         );

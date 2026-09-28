@@ -3556,18 +3556,21 @@ impl Backend for WinBackend {
         crate::primitives::layout_metrics::pixel_split_tree_layout(tree, rect)
     }
 
-    /// #736: real Direct2D/DirectWrite rasteriser via `win::board` once a
-    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
-    /// "surface not attached yet" fallback posture.
+    /// #1085: paint via the shared
+    /// [`crate::primitives::board::native_surface_paint::paint`] once a
+    /// surface is attached — mirrors [`Self::draw_diff_view`]. See that
+    /// fn's doc for the three named divergences (column-header overflow;
+    /// card-title wrapping; rounded vs. straight card borders) found
+    /// while unifying `gtk::board::draw_board`, `macos::board::draw_board`
+    /// and `win::board::draw_board` into one implementation. See
+    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// fallback posture.
     fn draw_board(&mut self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::board::draw_board(
-                &surface.target,
-                dwrite,
-                rect,
-                model,
-                &self.current_theme,
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            return crate::primitives::board::native_surface_paint::paint(
+                model, self, &theme, rect,
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
@@ -3781,19 +3784,25 @@ impl Backend for WinBackend {
     /// #735: real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.
+    /// #1085: paint via the shared
+    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+    /// once a surface is attached — mirrors [`Self::draw_diff_view`]. See
+    /// that fn's doc for the seven named divergences found while
+    /// unifying `gtk::pipeline_view::draw_pipeline_view`,
+    /// `macos::pipeline_view::draw_pipeline_view` and
+    /// `win::pipeline_view::draw_pipeline_view` into one implementation.
+    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// yet" fallback posture.
     fn draw_pipeline_view(
         &mut self,
         rect: Rect,
         view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::pipeline_view::draw_pipeline_view(
-                &surface.target,
-                dwrite,
-                rect,
-                view,
-                &self.current_theme,
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            return crate::primitives::pipeline_view::native_surface_paint::paint(
+                view, self, &theme, rect,
             );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
@@ -3827,12 +3836,27 @@ impl Backend for WinBackend {
         )
     }
 
-    /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
+    /// #1085: paint via the shared
+    /// [`crate::primitives::progress::native_surface_paint::paint`] once
+    /// a surface is attached — mirrors [`Self::draw_diff_view`]. See that
+    /// fn's doc for the one named divergence (this backend previously
+    /// ignored the host's theme entirely, painting `Theme::default()` on
+    /// every call — see `win::progress`'s module doc) found while
+    /// unifying `gtk::progress::draw_progress`,
+    /// `macos::progress::draw_progress` and `win::progress::draw_progress`
+    /// into one implementation. Note this now passes `self.current_theme`
+    /// — the fix — rather than routing through `win::progress::draw_progress`,
+    /// whose deprecated shim deliberately keeps the old
+    /// `Theme::default()`-only behaviour for byte-compatible external
+    /// callers (CLAUDE.md rule 8). See [`Self::draw_status_bar`]'s doc
+    /// for the "surface not attached yet" fallback posture.
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::progress::draw_progress(&surface.target, dwrite, rect, bar);
+        if self.surface.is_some() && self.dwrite.is_some() {
+            let theme = self.current_theme;
+            return crate::primitives::progress::native_surface_paint::paint(
+                bar, self, &theme, rect,
+            );
         }
         // No surface/DWrite yet — return the real (pure-geometry) layout
         // via `progress_layout` and paint nothing (issue #924).

@@ -1,35 +1,21 @@
 //! Direct2D / DirectWrite rasteriser for
 //! [`crate::primitives::pipeline_view::PipelineView`] (#735).
 //!
-//! Mirrors the gtk/macos/tui twins' structure: [`PipelineView::layout`]
-//! (the shared layout API) resolves every stage's box/icon/label/action/
-//! arrow bounds — this module only measures (fixed DIP constants, same
-//! posture as the GTK/macOS/TUI twins' own `*_ARROW_WIDTH_*` /
-//! `*_ACTION_HEIGHT_*` constants — pipeline geometry needs no per-glyph
-//! text measurement to lay out, only to paint) and paints via
-//! [`DWrite::draw_text`]/[`fill_rect`]/[`stroke_rect`]/[`draw_line`].
-//!
-//! The `status → glyph` / `status → colour` tables are **not** duplicated
-//! here. They lived three times over (gtk, macos, tui) before this issue;
-//! #713's primitive-first rule forbids a fourth copy, so this rasteriser
-//! (and the three pre-existing ones, migrated in the same PR) all call
-//! [`crate::primitives::pipeline_view::status_glyph`] /
-//! [`crate::primitives::pipeline_view::status_color`] instead.
-//!
-//! No rounded-rect helper exists in `win::text` (see `win::toolbar`'s and
-//! `win::command_center`'s module docs for the same note — Direct2D needs
-//! an `ID2D1RoundedRectangleGeometry` for a rounded one), so the stage box
-//! paints as a straight-edged rectangle via [`stroke_rect`] rather than
-//! GTK/macOS's rounded-rect pill. Hit-test bounds and click routing are
-//! unaffected — [`PipelineViewLayout`] carries only rectangles, and the
-//! visual corner radius is not part of its contract.
-//!
-//! The `▼` focus caret and arrow connector's `▶` head are, similarly,
-//! painted as two short strokes forming a chevron via [`draw_line`]
-//! rather than a filled triangle path — `win::text` exposes no
-//! filled-path primitive (only rectangles, lines, and circles; see that
-//! module's doc), and a two-line chevron reads the same as a small
-//! filled triangle at this size.
+//! Painting moved to the shared
+//! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+//! (#1085, `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the
+//! seven named divergences found while unifying
+//! `gtk::pipeline_view::draw_pipeline_view`,
+//! `macos::pipeline_view::draw_pipeline_view` and
+//! `win::pipeline_view::draw_pipeline_view` into one implementation
+//! (several of which — the straight-rect stage-box border, the two-line
+//! chevron arrow head/focus indicator, the clamped+clipped label — were
+//! already this backend's own behaviour and are now what every backend
+//! shares). This module now only carries [`win_pipeline_view_layout`]
+//! (still real, backend-specific pure geometry — no painting involved)
+//! and the deprecated [`draw_pipeline_view`] compatibility shim over the
+//! shared [`super::surface::D2dSurface`] adapter (mirrors
+//! `win::diff_view`'s #866 shim).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod pipeline_view;` and `backend.rs`'s
@@ -38,12 +24,10 @@
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{draw_line, fill_rect, stroke_rect, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
-use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
-use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout,
-};
+use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
+use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::theme::Theme;
 
 /// Compute the Win-GUI DIP-unit layout for a [`PipelineView`] without
@@ -62,11 +46,17 @@ pub fn win_pipeline_view_layout(view: &PipelineView, rect: Rect) -> PipelineView
     pixel_pipeline_view_layout(view, rect.x, rect.y, rect.width, rect.height)
 }
 
-/// Draw a [`PipelineView`] into `rect` (DIPs, target-relative) on
-/// `target`. Returns the resolved [`PipelineViewLayout`] — same contract
-/// as the GTK/macOS/TUI twins' `draw_pipeline_view`: callers (and tests)
-/// read the layout back instead of re-deriving it, so paint and hit-test
-/// can't drift apart.
+/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
+/// the pre-#1085 signature exactly for any external caller that held a
+/// direct `quadraui::win::draw_pipeline_view` reference rather than
+/// going through [`crate::Backend::draw_pipeline_view`] — the sanctioned
+/// entry point, and the one every in-tree call site already uses, which
+/// is why this shim has no in-repo caller left to trip the `-D
+/// warnings`-denied `deprecated` lint.
+#[deprecated(
+    since = "0.0.1",
+    note = "call `Backend::draw_pipeline_view` instead — this free function is a compatibility shim over the shared #1085 implementation"
+)]
 pub fn draw_pipeline_view(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -74,137 +64,17 @@ pub fn draw_pipeline_view(
     view: &PipelineView,
     theme: &Theme,
 ) -> PipelineViewLayout {
-    let layout = win_pipeline_view_layout(view, rect);
-
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return layout;
-    }
-
-    for sb in &layout.stages {
-        let stage = &view.stages[sb.index];
-        let is_focused = view.focused_stage == Some(sb.index);
-        let bb = sb.box_bounds;
-
-        if bb.width <= 0.0 || bb.height <= 0.0 {
-            continue;
-        }
-
-        // ── Box fill ─────────────────────────────────────────────────────
-        let _ = fill_rect(target, bb, theme.surface_bg);
-
-        // ── Box border (per-status colour; focus uses an above-box
-        // indicator, not a border override) ─────────────────────────────
-        let border_color = status_color(&stage.status, theme);
-        let _ = stroke_rect(
-            target,
-            bb,
-            border_color,
-            pixel::PIPELINE_BORDER_WIDTH as f32,
-        );
-
-        // ── Focus indicator (▼ chevron above the box) ──────────────────
-        if is_focused {
-            let ind_x = bb.x + bb.width / 2.0;
-            let tri_tip_y = bb.y - 1.0;
-            let tri_base_y = bb.y - pixel::PIPELINE_FOCUS_INDICATOR_H + 1.0;
-            let half_w = 5.0;
-            let _ = draw_line(
-                target,
-                ind_x - half_w,
-                tri_base_y,
-                ind_x,
-                tri_tip_y,
-                theme.muted_fg,
-                1.5,
-            );
-            let _ = draw_line(
-                target,
-                ind_x,
-                tri_tip_y,
-                ind_x + half_w,
-                tri_base_y,
-                theme.muted_fg,
-                1.5,
-            );
-        }
-
-        // ── Status icon (top third of box) ───────────────────────────────
-        let icon_text = status_glyph(&stage.status);
-        let icon_color = status_color(&stage.status, theme);
-        if let Ok((iw, ih)) = dwrite.measure_text(icon_text) {
-            let icon_h = bb.height / 3.0;
-            let icon_cx = bb.x + bb.width / 2.0 - iw / 2.0;
-            let icon_cy = bb.y + icon_h / 2.0 - ih / 2.0;
-            let icon_rect = Rect::new(icon_cx, icon_cy, iw.max(1.0), ih.max(1.0));
-            let _ = dwrite.draw_text(target, icon_text, icon_rect, icon_color);
-        }
-
-        // ── Label (middle of box, clipped to the padded box width) ───────
-        if !stage.label.is_empty() {
-            if let Ok((lw, lh)) = dwrite.measure_text(&stage.label) {
-                let avail_w = (bb.width - 2.0 * pixel::PIPELINE_H_PAD as f32).max(0.0);
-                let draw_w = lw.min(avail_w).max(1.0);
-                let label_cx = bb.x + bb.width / 2.0 - draw_w / 2.0;
-                let label_cy = bb.y + bb.height / 2.0 - lh / 2.0;
-                let label_rect = Rect::new(label_cx, label_cy, draw_w, lh.max(1.0));
-                let _ = dwrite.draw_text(target, &stage.label, label_rect, theme.foreground);
-            }
-        }
-
-        // ── Action button (bottom strip) ─────────────────────────────────
-        if let (Some(ab), Some(action_text)) = (sb.action_bounds, &stage.action) {
-            let btn_label = format!("[{}]", action_text);
-
-            // Subtle tint background for the button area.
-            let tint = theme.surface_bg.blend(theme.accent_bg, 0.15);
-            let _ = fill_rect(target, ab, tint);
-
-            if let Ok((bw2, bh2)) = dwrite.measure_text(&btn_label) {
-                let btn_cx = ab.x + ab.width / 2.0 - bw2 / 2.0;
-                let btn_cy = ab.y + ab.height / 2.0 - bh2 / 2.0;
-                let btn_rect = Rect::new(btn_cx, btn_cy, bw2.max(1.0), bh2.max(1.0));
-                let _ = dwrite.draw_text(target, &btn_label, btn_rect, theme.accent_bg);
-            }
-        }
-
-        // ── Arrow connector (─── ▶ chevron head) ──────────────────────────
-        if let Some(arrow) = sb.arrow_bounds {
-            let ax = arrow.x;
-            let mid_y = arrow.y + arrow.height / 2.0;
-            let aw = arrow.width;
-
-            let _ = draw_line(target, ax, mid_y, ax + aw - 6.0, mid_y, theme.muted_fg, 1.0);
-
-            let tip_x = ax + aw - 1.0;
-            let tail_x = ax + aw - 7.0;
-            let half_h = 4.0;
-            let _ = draw_line(
-                target,
-                tail_x,
-                mid_y - half_h,
-                tip_x,
-                mid_y,
-                theme.muted_fg,
-                1.0,
-            );
-            let _ = draw_line(
-                target,
-                tip_x,
-                mid_y,
-                tail_x,
-                mid_y + half_h,
-                theme.muted_fg,
-                1.0,
-            );
-        }
-    }
-
-    layout
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::pipeline_view::native_surface_paint::paint(view, &mut surface, theme, rect)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::layout_metrics::pixel;
     use crate::primitives::pipeline_view::{PipelineHit, PipelineStage, StageStatus};
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
@@ -231,6 +101,35 @@ mod tests {
         }
     }
 
+    /// Paint `view` via the shared
+    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+    /// through a [`super::super::surface::D2dSurface`] over `surface`'s
+    /// headless target — the same adapter the deprecated
+    /// [`draw_pipeline_view`] shim uses, exercised here directly so these
+    /// tests don't trip the `-D warnings`-denied `deprecated` lint
+    /// (CLAUDE.md rule 3; mirrors `win::diff_view`'s identical
+    /// test-migration note).
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        rect: Rect,
+        view: &PipelineView,
+        theme: &Theme,
+    ) -> PipelineViewLayout {
+        surface
+            .paint(|target| {
+                let mut raw = super::super::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
+                crate::primitives::pipeline_view::native_surface_paint::paint(
+                    view, &mut raw, theme, rect,
+                );
+            })
+            .map(|_| win_pipeline_view_layout(view, rect))
+            .expect("paint pipeline view")
+    }
+
     /// C0 smoke: `draw_pipeline_view` must actually paint text + a
     /// click-routable layout rather than panicking or hitting a
     /// `todo!()` (#735's acceptance bar — "draw_pipeline_view survives C0
@@ -249,12 +148,7 @@ mod tests {
         let view = make_view();
         let rect = Rect::new(0.0, 0.0, W, H);
 
-        let layout = surface
-            .paint(|target| {
-                draw_pipeline_view(target, &dwrite, rect, &view, &theme);
-            })
-            .map(|_| win_pipeline_view_layout(&view, rect))
-            .expect("paint pipeline view");
+        let layout = paint(&surface, &dwrite, rect, &view, &theme);
 
         assert_eq!(layout.stages.len(), 2);
 
@@ -292,12 +186,7 @@ mod tests {
         let view = make_view();
         let rect = Rect::new(origin_x, origin_y, W - origin_x, H - origin_y);
 
-        let layout = surface
-            .paint(|target| {
-                draw_pipeline_view(target, &dwrite, rect, &view, &theme);
-            })
-            .map(|_| win_pipeline_view_layout(&view, rect))
-            .expect("paint pipeline view");
+        let layout = paint(&surface, &dwrite, rect, &view, &theme);
 
         // Box top must sit exactly at origin_y + PIPELINE_FOCUS_INDICATOR_H, not
         // a hardcoded absolute value — pins the offset math independently
@@ -333,12 +222,7 @@ mod tests {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
 
-        let painted = surface
-            .paint(|target| {
-                draw_pipeline_view(target, &dwrite, rect, &view, &Theme::default());
-            })
-            .map(|_| win_pipeline_view_layout(&view, rect))
-            .expect("paint");
+        let painted = paint(&surface, &dwrite, rect, &view, &Theme::default());
         let no_paint = win_pipeline_view_layout(&view, rect);
         assert_eq!(painted, no_paint);
     }
@@ -357,17 +241,44 @@ mod tests {
             .fill_rect(Rect::new(0.0, 0.0, W, H), Color::rgb(255, 255, 255))
             .expect("fill background");
 
-        surface
-            .paint(|target| {
-                draw_pipeline_view(target, &dwrite, rect, &view, &theme);
-            })
-            .expect("paint pipeline view");
+        paint(&surface, &dwrite, rect, &view, &theme);
 
         let px = surface.pixel_at(1, 1);
         assert_eq!(
             (px.r, px.g, px.b),
             (255, 255, 255),
             "a zero-width pipeline view should paint nothing at all",
+        );
+    }
+
+    /// Regression for #1085 divergence 4: the action-button tint is now a
+    /// real [`crate::native_surface::NativeSurface::surface_fill_rect_alpha`]
+    /// composite instead of a CPU-side `Color::blend` — probing just
+    /// above the button's centre (clear of the label glyphs) must show a
+    /// colour strictly between the plain box background and a fully
+    /// opaque `accent_bg`.
+    #[test]
+    fn action_tint_is_a_real_alpha_composite_not_a_cpu_blend() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let theme = Theme::default();
+        let view = make_view();
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = paint(&surface, &dwrite, rect, &view, &theme);
+        let ab = layout.stages[1]
+            .action_bounds
+            .expect("stage 1 has an action button");
+        let px = surface.pixel_at((ab.x + 2.0) as u32, ab.y as u32);
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+            "action button area must show the accent tint, not the plain box fill",
+        );
+        assert_ne!(
+            (px.r, px.g, px.b),
+            (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b),
+            "a 0.15-alpha tint must not paint fully opaque accent_bg",
         );
     }
 }

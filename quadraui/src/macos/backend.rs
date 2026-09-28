@@ -3037,34 +3037,19 @@ impl Backend for MacBackend {
             self.current_line_height,
         )
     }
+    /// #1085: paint via the shared
+    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
+    /// — see that fn's doc for the seven named divergences found while
+    /// unifying `gtk::pipeline_view::draw_pipeline_view`,
+    /// `macos::pipeline_view::draw_pipeline_view` and
+    /// `win::pipeline_view::draw_pipeline_view` into one implementation.
     fn draw_pipeline_view(
         &mut self,
         rect: Rect,
         view: &crate::primitives::pipeline_view::PipelineView,
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_pipeline_view called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_pipeline_view requires set_current_font");
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::pipeline_view::draw_pipeline_view(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                view,
-                &theme,
-            )
-        }
+        crate::primitives::pipeline_view::native_surface_paint::paint(view, self, &theme, rect)
     }
     fn pipeline_view_layout(
         &self,
@@ -3079,30 +3064,16 @@ impl Backend for MacBackend {
             rect.height as f64,
         )
     }
+    /// #1085: paint via the shared
+    /// [`crate::primitives::progress::native_surface_paint::paint`] —
+    /// see that fn's doc for the one named divergence (Windows
+    /// previously ignored the host's theme entirely) found while
+    /// unifying `gtk::progress::draw_progress`,
+    /// `macos::progress::draw_progress` and `win::progress::draw_progress`
+    /// into one implementation.
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_progress called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_progress requires set_current_font");
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::progress::draw_progress(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-            )
-        }
+        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect)
     }
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         super::progress::mac_progress_layout(
@@ -3357,30 +3328,16 @@ impl Backend for MacBackend {
     /// exactly why macOS silently painted an empty board — so this is
     /// implemented ahead of quadraui#600 removing the default. When #600
     /// lands, this method is already here and the lane does not regress.
+    /// #1085: paint via the shared
+    /// [`crate::primitives::board::native_surface_paint::paint`] — see
+    /// that fn's doc for the three named divergences (column-header
+    /// overflow; card-title wrapping; rounded vs. straight card borders)
+    /// found while unifying `gtk::board::draw_board`,
+    /// `macos::board::draw_board` and `win::board::draw_board` into one
+    /// implementation.
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_board called outside enter_frame_scope",
-        );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_board requires set_current_font");
         let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::board::draw_board(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                model,
-                &theme,
-            )
-        }
+        crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
     }
 
     fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout {
