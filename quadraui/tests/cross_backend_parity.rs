@@ -20,9 +20,10 @@
 
 use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriver};
 use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
+use quadraui::tui::ratatui_color;
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
 use quadraui::{
-    AppLogic, Backend, DataTableLayout, NamedKey, Reaction, Rect, Tooltip, TooltipBorder,
+    AppLogic, Backend, DataTableLayout, NamedKey, Reaction, Rect, Theme, Tooltip, TooltipBorder,
     TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
@@ -1349,6 +1350,100 @@ fn scroll_line_number(status: &str) -> u32 {
         .expect("a line number must follow \"line\"")
         .parse()
         .expect("the line token must be numeric")
+}
+
+/// Issue #1181: the TUI minimap's viewport-highlight slider must paint the
+/// same pre-blended tint (`Color::blend(background, accent_bg, 0.25)`)
+/// GTK and macOS already converge on — GTK/macOS get there by compositing
+/// a translucent `accent_bg`-at-0.25 fill *over* the already-painted
+/// background via Cairo/Core Graphics source-over, which is
+/// mathematically the same result as the CPU-side pre-mix TUI (and Win-GUI)
+/// must do instead, since a terminal cell's background is one opaque
+/// colour with no alpha channel to composite through.
+///
+/// Drives each backend's real, production `draw_minimap` rasteriser
+/// directly (not through an `AppLogic`/driver, since `MinimapApp`'s own
+/// syntax-highlighted, non-blank buffer would paint opaque glyph/column
+/// blocks — themselves *not* alpha-blended — right over the highlighted
+/// band, making a raw pixel read ambiguous between "the highlight tint"
+/// and "a block's own solid colour"). An all-blank-lines fixture sidesteps
+/// that entirely: nothing paints over the highlight band on either
+/// backend, so a pixel anywhere inside it is pure `background`/`accent_bg`
+/// tint. TUI's cell read is exact (no anti-aliasing); GTK's is Cairo's own
+/// alpha-composited byte result, allowed a small rounding tolerance.
+#[test]
+fn minimap_viewport_slider_is_a_blended_tint_not_opaque_accent_bg_on_tui_and_gtk() {
+    use gtk4::cairo::{Context as CairoContext, Format, ImageSurface};
+    use quadraui::gtk::draw_minimap as gtk_draw_minimap;
+    use quadraui::tui::draw_minimap as tui_draw_minimap;
+    use quadraui::{Minimap, MinimapLine};
+
+    let theme = Theme::default();
+    let expected = theme.background.blend(theme.accent_bg, 0.25);
+
+    fn blank_minimap(total_lines: usize) -> Minimap {
+        Minimap {
+            id: WidgetId::new("mm"),
+            lines: (0..total_lines)
+                .map(|i| MinimapLine {
+                    text: String::new(),
+                    line_idx: i,
+                })
+                .collect(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 4,
+            total_buffer_lines: total_lines,
+        }
+    }
+
+    // TUI: braille-pack the blank lines into a small strip and read the
+    // top-left cell's background back — `visible_row_count: 4` covers
+    // exactly the first (4-buffer-line) braille row, so the highlight
+    // starts flush with the strip's top-left corner (`scroll_offset == 0`
+    // in `MinimapApp` terms).
+    let tui_mm = blank_minimap(16);
+    let tui_area = ratatui::layout::Rect::new(0, 0, 4, 4);
+    let mut tui_buf = ratatui::buffer::Buffer::empty(tui_area);
+    tui_draw_minimap(&mut tui_buf, tui_area, &tui_mm, &theme);
+    let tui_bg = tui_buf[(0u16, 0u16)].bg;
+    let expected_ratatui = ratatui_color(expected);
+    let opaque_accent_ratatui = ratatui_color(theme.accent_bg);
+    assert_eq!(
+        tui_bg, expected_ratatui,
+        "TUI's viewport slider must paint the exact blended tint, not opaque accent_bg"
+    );
+    assert_ne!(
+        tui_bg, opaque_accent_ratatui,
+        "TUI's viewport slider must not still be the pre-#1181 opaque accent_bg"
+    );
+
+    // GTK: same blank-lines fixture, painted via the real Cairo rasteriser
+    // into an offscreen `ImageSurface`, at GTK's own (1-buffer-line-per-row)
+    // pixel row pitch — `visible_row_count: 4` still covers a handful of
+    // rows at the strip's top, so the highlight again starts flush with
+    // (0, 0).
+    let gtk_mm = blank_minimap(16);
+    let mut surface = ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+    {
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        gtk_draw_minimap(&cr, &pango_layout, 0.0, 0.0, 40.0, 40.0, &gtk_mm, &theme);
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let data = surface.data().expect("surface data");
+    let off = 1usize * stride + 1usize * 4; // (1, 1): inside the highlight, off the very edge
+    let (gb_, gg, gr) = (data[off], data[off + 1], data[off + 2]);
+
+    let close = |a: u8, b: u8| (i16::from(a) - i16::from(b)).abs() <= 2;
+    assert!(
+        close(gr, expected.r) && close(gg, expected.g) && close(gb_, expected.b),
+        "GTK's viewport slider pixel {:?} should be within rounding tolerance of the \
+         same blended tint {:?} TUI now shares",
+        (gr, gg, gb_),
+        (expected.r, expected.g, expected.b)
+    );
 }
 
 #[test]
