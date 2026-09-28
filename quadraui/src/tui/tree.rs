@@ -142,9 +142,40 @@ pub fn draw_tree(
             paint_edit_input(buf, area, y, col, edit, default_fg, bg, text_sel_bg, dim_fg);
         } else {
             let text_start = col;
-            let text_end = draw_styled_text(
+
+            // #1183: reserve room for the right-aligned badge *before*
+            // painting the label, clamping the label to end at least one
+            // blank column short of the badge. Previously the label
+            // painted at full row width and the badge was drawn on top of
+            // it afterward, overwriting the label's last cells with no
+            // gap and no indication anything was cut off (e.g.
+            // `BACKEND_SPECU` instead of `BACKEND_SP… U`).
+            let badge_start_col = row
+                .badge
+                .as_ref()
+                .map(|badge| (area.width as usize).saturating_sub(badge.text.chars().count()));
+            let draw_badge = badge_start_col.is_some_and(|start| start > text_start);
+            let max_text_col = if draw_badge {
+                // Reserve one blank gap column between the label and the
+                // badge; never go below `text_start` (a zero-width label
+                // is still valid when the badge leaves no room at all).
+                badge_start_col
+                    .expect("draw_badge is only true when badge_start_col is Some")
+                    .saturating_sub(1)
+                    .max(text_start)
+            } else {
+                area.width as usize
+            };
+
+            let text_area = Rect {
+                x: area.x,
+                y: area.y,
+                width: max_text_col as u16,
+                height: area.height,
+            };
+            draw_styled_text(
                 buf,
-                area,
+                text_area,
                 y,
                 col,
                 &row.text,
@@ -153,20 +184,32 @@ pub fn draw_tree(
                 row.decoration,
                 dim_fg,
             );
-            col = text_end;
 
-            if let Some(ref badge) = row.badge {
-                let badge_width: usize = badge.text.chars().count();
-                let badge_start_col = (area.width as usize).saturating_sub(badge_width);
-                if badge_start_col > text_start {
-                    let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
-                    let badge_bg = badge.bg.map(qc).unwrap_or(bg);
-                    for (bx, ch) in (badge_start_col..).zip(badge.text.chars()) {
-                        if bx >= area.width as usize {
-                            break;
-                        }
-                        set_cell(buf, area.x + bx as u16, y, ch, badge_fg, badge_bg);
+            let label_truncated = draw_badge
+                && max_text_col > text_start
+                && text_start + row.text.visible_width() > max_text_col;
+            if label_truncated {
+                // Overwrite the label's last painted cell with `…`,
+                // reusing whatever fg/bg that cell already has so
+                // per-span colouring (e.g. a muted/error label) survives
+                // the clamp untouched.
+                let ellipsis_col = area.x + (max_text_col - 1) as u16;
+                let existing = &buf[(ellipsis_col, y)];
+                let (ellipsis_fg, ellipsis_bg) = (existing.fg, existing.bg);
+                set_cell(buf, ellipsis_col, y, '…', ellipsis_fg, ellipsis_bg);
+            }
+
+            if draw_badge {
+                let badge = row.badge.as_ref().expect("draw_badge implies row.badge");
+                let badge_start_col =
+                    badge_start_col.expect("draw_badge is only true when badge_start_col is Some");
+                let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
+                let badge_bg = badge.bg.map(qc).unwrap_or(bg);
+                for (bx, ch) in (badge_start_col..).zip(badge.text.chars()) {
+                    if bx >= area.width as usize {
+                        break;
                     }
+                    set_cell(buf, area.x + bx as u16, y, ch, badge_fg, badge_bg);
                 }
             }
         }
@@ -433,6 +476,63 @@ mod tests {
             buf[(icon_col as u16, 2u16)].fg,
             ratatui_color(theme.foreground),
             "row without Icon::color should paint the icon glyph in the default fg, unchanged"
+        );
+    }
+
+    /// #1183 regression: a label too long to fit before a right-aligned
+    /// badge must be clamped to end at least one blank column short of
+    /// the badge, with the clamped label ending in `…` — not overwritten
+    /// by the badge with no gap or truncation indicator (vimcode's
+    /// Explorer showed `BACKEND_SPECU`, where the trailing `U` was
+    /// actually the git-untracked badge glued onto the label).
+    #[test]
+    fn long_label_with_badge_leaves_gap_and_ellipsizes() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // Row 1 ("main.rs", a leaf at indent=1) gets an over-long label
+        // and a one-character badge.
+        tree.rows[1].text = StyledText::plain("BACKEND_SPECULATIVE_EXECUTION_MODULE");
+        tree.rows[1].badge = Some(Badge::plain("U"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        draw_tree(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+
+        // Badge "U" (1 col) is painted at the row's very last column.
+        let badge_col = width - 1;
+        assert_eq!(
+            cell_char(&buf, badge_col, 1),
+            'U',
+            "expected the badge in the last column, row text: {text:?}"
+        );
+        // The column immediately before the badge is blank — the
+        // mandatory gap column, never glued to the badge.
+        assert_eq!(
+            cell_char(&buf, badge_col - 1, 1),
+            ' ',
+            "expected a blank gap column before the badge, row text: {text:?}"
+        );
+        // The label was truncated somewhere before the gap, and the
+        // truncation is marked with an ellipsis, not a hard cut.
+        assert!(
+            text.contains('…'),
+            "expected the clamped label to end in an ellipsis, row text: {text:?}"
+        );
+        // The ellipsis sits immediately before the gap column (the label's
+        // last painted cell).
+        assert_eq!(
+            cell_char(&buf, badge_col - 2, 1),
+            '…',
+            "expected the ellipsis directly before the gap column, row text: {text:?}"
         );
     }
 

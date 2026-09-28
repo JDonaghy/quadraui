@@ -533,7 +533,22 @@ pub(crate) mod native_surface_paint {
                 .map(|(_, bw, ..)| *bw + 8.0)
                 .unwrap_or(0.0);
             let text_right_limit = row_x + row_w - badge_reserve - 4.0;
+            let text_start_x = cursor_x;
 
+            // #1183: hard-clip label painting to `text_right_limit` so a
+            // long span can never bleed into the badge's reserved gap.
+            // Before this, only a span's *background fill* was clamped
+            // (`clipped_w` below) — the glyph run itself was always drawn
+            // at its full measured width via `surface_draw_text_run_styled`,
+            // so an over-long label's last glyphs painted straight through
+            // (and often past) the badge with no gap, mirroring the TUI
+            // bug this issue reports. `NativeSurface` has no ellipsize verb
+            // (see `diff_view::native_surface_paint`'s identical note), so
+            // GUI backends hard-clip rather than ellipsize — TUI is the
+            // only backend that can cheaply measure+truncate a column
+            // budget and paint a literal `…` glyph.
+            let clip_w = (text_right_limit - cursor_x).max(0.0);
+            surface.surface_push_clip(Rect::new(cursor_x, row_y, clip_w, row_h));
             for span in &row.text.spans {
                 if cursor_x >= text_right_limit {
                     break;
@@ -562,10 +577,19 @@ pub(crate) mod native_surface_paint {
                 );
                 cursor_x += sw;
             }
+            surface.surface_pop_clip();
 
             if let Some((btext, bw, bfg, bbg)) = badge_info {
                 let bx = row_x + row_w - bw - 4.0;
-                if bx > cursor_x {
+                // #1183: gate on `text_right_limit > text_start_x` (is
+                // there room, in principle, to reserve the badge + gap at
+                // all?) rather than the old `bx > cursor_x` — `cursor_x`
+                // reflects the label's *unclamped* measured width, so a
+                // label just barely longer than the row used to hide the
+                // badge outright instead of clamping the label and still
+                // showing it, the mirror image of the overwrite bug this
+                // issue reports.
+                if text_right_limit > text_start_x {
                     if bbg != row_bg {
                         surface.surface_fill_rect(Rect::new(bx - 2.0, row_y, bw + 4.0, row_h), bbg);
                     }
@@ -657,7 +681,7 @@ pub(crate) mod native_surface_paint {
         use crate::backend::ImagePaintResult;
         use crate::event::{Point, Viewport};
         use crate::primitives::tree::TreeRow;
-        use crate::types::{Color, SelectionMode, StyledText, TreeStyle, WidgetId};
+        use crate::types::{Badge, Color, SelectionMode, StyledText, TreeStyle, WidgetId};
         use crate::Image;
 
         /// Records every fill + text-run call — mirrors
@@ -668,6 +692,7 @@ pub(crate) mod native_surface_paint {
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
             texts: Vec<(Rect, String, Color)>,
+            clips: Vec<Rect>,
         }
 
         impl NativeSurface for RecordingSurface {
@@ -696,7 +721,9 @@ pub(crate) mod native_surface_paint {
                 self.texts.push((rect, text.to_string(), color));
             }
             fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _sw: f32) {}
-            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clips.push(rect);
+            }
             fn surface_pop_clip(&mut self) {}
             fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
                 ImagePaintResult::Unsupported
@@ -920,6 +947,63 @@ pub(crate) mod native_surface_paint {
                 .texts
                 .iter()
                 .any(|(_, t, c)| t == "careful" && *c == theme.warning_fg));
+        }
+
+        /// #1183 parity check: GUI backends (GTK/Win/macOS all share this
+        /// `paint` fn) must clamp an over-long label before a right-aligned
+        /// badge the same way TUI does — a gap between the label's clip
+        /// boundary and the badge, never the badge painted flush against
+        /// (or on top of) the label. `NativeSurface` has no ellipsize verb
+        /// (see `paint`'s inline #1183 note), so this asserts the hard-clip
+        /// boundary sits strictly left of the badge's start, not a literal
+        /// `…` glyph — that part of the fix is TUI-only.
+        #[test]
+        fn long_label_with_badge_clips_before_badge_leaving_a_gap() {
+            let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
+            row.badge = Some(Badge::plain("U"));
+            let tree = make_tree(vec![row]);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            let (badge_bw, _) = surface.surface_measure_text("U");
+            let badge_start_x = AREA.x + AREA.width - badge_bw - 4.0;
+
+            // `paint` also pushes one whole-`area` clip bracket at the top
+            // of the function (unrelated to this row's label); the label
+            // clip is the narrower, row-scoped one, so pick the tightest
+            // match rather than the first.
+            let label_clip = surface
+                .clips
+                .iter()
+                .filter(|r| (r.y - layout.visible_rows[0].bounds.y).abs() < 0.01)
+                .min_by(|a, b| a.width.partial_cmp(&b.width).unwrap())
+                .expect("expected a clip pushed around the row's label paint");
+
+            assert!(
+                label_clip.x + label_clip.width < badge_start_x,
+                "label clip right edge ({}) must sit strictly left of the badge's \
+                 start ({badge_start_x}), leaving a gap — got clip {:?}",
+                label_clip.x + label_clip.width,
+                label_clip
+            );
+
+            // The badge itself must still be painted (there was room for it).
+            assert!(
+                surface.texts.iter().any(|(_, t, _)| t == "U"),
+                "badge text should still paint when the label is clamped, got texts: {:?}",
+                surface.texts
+            );
         }
     }
 }
