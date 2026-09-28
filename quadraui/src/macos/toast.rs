@@ -133,7 +133,7 @@ mod tests {
             title: title.into(),
             body: String::new(),
             severity,
-            action: None,
+            actions: Vec::new(),
             accent: None,
         }
     }
@@ -146,6 +146,7 @@ mod tests {
                 toast("t1", "Saved", ToastSeverity::Success),
                 toast("t2", "Error", ToastSeverity::Error),
             ],
+            focus: None,
         }
     }
 
@@ -212,6 +213,7 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![toast("err", "Boom", ToastSeverity::Error)],
+            focus: None,
         };
         let (surface, layout) = paint_via_backend(&stack);
         let theme = Theme::default();
@@ -264,16 +266,18 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![ToastItem {
-                action: Some(ToastAction {
+                actions: vec![ToastAction {
                     id: WidgetId::new("undo"),
                     label: "Undo".into(),
-                }),
+                    primary: false,
+                }],
                 ..toast("t", "Did the thing", ToastSeverity::Info)
             }],
+            focus: None,
         };
         let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
         let t = &layout.visible_toasts[0];
-        let ab = t.action_bounds.expect("action bounds present");
+        let ab = *t.action_bounds.first().expect("action bounds present");
         // Hit-test the action returns Action.
         let hit = layout.hit_test(ab.x + ab.width * 0.5, ab.y + ab.height * 0.5);
         assert!(matches!(hit, ToastHit::Action(_)), "hit was {:?}", hit);
@@ -295,6 +299,7 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![],
+            focus: None,
         };
         let (_surface, layout) = paint_via_backend(&stack);
         assert!(layout.visible_toasts.is_empty());

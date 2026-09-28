@@ -1111,9 +1111,10 @@ pub const CASES: &[Case] = &[
                     title: "c0tost".to_string(),
                     body: String::new(),
                     severity: ToastSeverity::Info,
-                    action: None,
+                    actions: vec![],
                     accent: None,
                 }],
+                focus: None,
             };
             let _ = b.draw_toast_stack(area, &stack);
         },

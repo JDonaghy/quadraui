@@ -130,7 +130,7 @@ mod tests {
             title: title.into(),
             body: String::new(),
             severity: ToastSeverity::Info,
-            action: None,
+            actions: Vec::new(),
             accent: Some(BOX_COLOR),
         }
     }
@@ -140,6 +140,7 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts,
+            focus: None,
         }
     }
 

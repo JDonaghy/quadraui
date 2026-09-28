@@ -36,6 +36,10 @@
 //! - [`SidebarPanelBody`] — background fill + optional header/search
 //!   chrome + body widget + scrollbar-gutter reservation for a sidebar
 //!   panel, composed from existing `Backend` methods (issue #1041).
+//! - [`ToastStackController`] — keyboard-focus cursor for the non-modal
+//!   [`crate::primitives::toast::ToastStack`]: Tab/Shift+Tab/Left/Right
+//!   cycle a focused toast's buttons, Up/Down move between toasts, Enter
+//!   activates, Escape dismisses (issue #1185).
 //!
 //! # Adopt-or-demote pass (#825, before the `v0.1.0` tag)
 //!
@@ -73,6 +77,7 @@ pub mod sidebar_panel_body;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
 pub mod tab_group;
+pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 pub mod workspace;
@@ -109,6 +114,7 @@ pub use tab_group::{
     resolve_tab_drop, GroupLayout, Pane, PaneDragRect, PaneTab, TabDragSource, TabDropInstruction,
     TabGroupController, TabGroupEvent, TabGroupLayout,
 };
+pub use toast_stack::{ToastStackController, ToastStackEvent};
 pub use toolbar_hover_tracker::ToolbarHoverTracker;
 pub use tree_controller::{TreeController, TreeControllerEvent};
 pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};

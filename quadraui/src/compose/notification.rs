@@ -35,16 +35,15 @@ use crate::types::WidgetId;
 /// directly. [`Notification::tag`], when set, becomes the toast's
 /// [`WidgetId`] — falling back to the title when there is no tag, so two
 /// untagged notifications with different titles still get distinct
-/// toast ids. Only the **first** of [`Notification::actions`] survives:
-/// [`ToastItem::action`] carries one optional action button, unlike
-/// `Notification`'s `Vec` — GTK's native path (and any future backend
-/// with the same multi-action facility) has no such limit, so an app
-/// that relies on more than one action button should check
-/// [`crate::backend::BackendCaps::notifications`] itself and build a
-/// richer in-canvas fallback rather than call this helper. `icon` and
-/// `silent` have no [`ToastItem`] equivalent and are dropped — a toast
-/// is always silent (no OS notification sound to suppress) and paints
-/// with the app's own chrome, not a caller-supplied icon.
+/// toast ids. Every one of [`Notification::actions`] survives into
+/// [`ToastItem::actions`] (#1185 — before the toast primitive supported
+/// more than one action button, only the first of `Notification`'s
+/// `Vec` made it across; now the shapes match 1:1, none marked
+/// [`ToastAction::primary`] since `Notification` carries no such
+/// distinction). `icon` and `silent` have no [`ToastItem`] equivalent
+/// and are dropped — a toast is always silent (no OS notification sound
+/// to suppress) and paints with the app's own chrome, not a
+/// caller-supplied icon.
 pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<ToastItem> {
     if backend.backend_caps().notifications {
         backend.services().send_notification(n);
@@ -59,16 +58,21 @@ pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<ToastIt
     } else {
         ToastSeverity::Info
     };
-    let action = n.actions().first().map(|(action_id, label)| ToastAction {
-        id: action_id.clone(),
-        label: label.clone(),
-    });
+    let actions = n
+        .actions()
+        .iter()
+        .map(|(action_id, label)| ToastAction {
+            id: action_id.clone(),
+            label: label.clone(),
+            primary: false,
+        })
+        .collect();
     Some(ToastItem {
         id,
         title: n.title,
         body: n.body,
         severity,
-        action,
+        actions,
         accent: None,
     })
 }
@@ -106,7 +110,7 @@ mod tests {
         assert_eq!(item.body, "3 errors");
         assert_eq!(item.severity, ToastSeverity::Info);
         assert_eq!(
-            item.action.as_ref().map(|a| a.id.clone()),
+            item.actions.first().map(|a| a.id.clone()),
             Some(WidgetId::new("open-problems"))
         );
     }
@@ -139,14 +143,19 @@ mod tests {
         assert_eq!(untagged.id, WidgetId::new("untagged title"));
     }
 
+    /// #1185: every `Notification::actions` entry survives into
+    /// `ToastItem::actions`, not just the first — the toast primitive
+    /// dropped its one-action limit alongside this issue's multi-action
+    /// support.
     #[test]
-    fn only_first_action_survives_degrade() {
+    fn every_action_survives_degrade() {
         let backend = RecordingBackend::new();
         let n = Notification::new("t", "b")
             .with_action(WidgetId::new("first"), "First")
             .with_action(WidgetId::new("second"), "Second");
         let item = notify_or_toast(&backend, n).unwrap();
-        assert_eq!(item.action.map(|a| a.id), Some(WidgetId::new("first")));
+        let ids: Vec<WidgetId> = item.actions.iter().map(|a| a.id.clone()).collect();
+        assert_eq!(ids, vec![WidgetId::new("first"), WidgetId::new("second")]);
     }
 
     /// The degraded [`ToastItem`] round-trips through the real layout +
@@ -166,15 +175,17 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![item],
+            focus: None,
         };
         let layout = stack.layout(0.0, 0.0, 400.0, 300.0, 8.0, 8.0, |_| {
             let mut m = ToastMeasure::new(220.0, 48.0);
-            m.action_width = 60.0;
-            m.dismiss_width = 20.0;
+            m.action_rects = vec![crate::event::Rect::new(140.0, 28.0, 60.0, 20.0)];
+            m.dismiss_rect = Some(crate::event::Rect::new(200.0, 0.0, 20.0, 20.0));
             m
         });
-        let action_bounds = layout.visible_toasts[0]
+        let action_bounds = *layout.visible_toasts[0]
             .action_bounds
+            .first()
             .expect("toast with an action must lay out an action rect");
         let cx = action_bounds.x + action_bounds.width / 2.0;
         let cy = action_bounds.y + action_bounds.height / 2.0;

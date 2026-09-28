@@ -528,8 +528,8 @@ pub use primitives::text_input::{
     VisibleTextInputLine,
 };
 pub use primitives::toast::{
-    ToastAction, ToastCorner, ToastHit, ToastItem, ToastMeasure, ToastSeverity, ToastStack,
-    ToastStackLayout, VisibleToast,
+    ToastAction, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastItem, ToastMeasure,
+    ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
 };
 pub use primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemKind, ToolbarItemMeasure,
@@ -613,8 +613,9 @@ pub use compose::{
     Pane, PaneDragRect, PaneTab, PanelDefinition, SectionKind, ShellPosition, SidebarEvent,
     SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSectionDef, SidebarSystem,
     StatusBarAction, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
-    ToolbarHoverTracker, TreeController, TreeControllerEvent, ViewHelp, WorkspaceController,
-    WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
+    ToastStackController, ToastStackEvent, ToolbarHoverTracker, TreeController,
+    TreeControllerEvent, ViewHelp, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
+    WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
