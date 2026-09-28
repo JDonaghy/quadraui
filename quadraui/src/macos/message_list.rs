@@ -1,27 +1,33 @@
 //! macOS rasteriser for [`crate::MessageList`].
 //!
-//! Mirror of [`crate::gtk::message_list::draw_message_list`]: walks
-//! `rows[scroll_top..]`, painting each row's text at
-//! `(x + row.indent, y + i*line_height)` in the row's `fg`. Panel
-//! background fill is the caller's responsibility — repeated per-row
-//! bg fills would overdraw any header / separator already painted by
-//! the panel chrome.
+//! Painting moved to the shared
+//! [`crate::primitives::message_list::native_surface_paint::paint`]
+//! (#1084, `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! per-backend divergence survey, most notably: this module used to
+//! ignore [`crate::primitives::message_list::MessageRow::spans`]
+//! entirely, painting every row flat regardless of any rich styling a
+//! caller supplied. [`draw_message_list`] below is now a thin wrapper
+//! over the shared paint, using [`crate::macos::surface::CgSurface`] as
+//! the `NativeSurface` adapter — mirroring
+//! [`crate::win::message_list::draw_message_list`]'s equivalent
+//! migration. `gtk::message_list::draw_message_list` is *not* migrated;
+//! see the shared `paint`'s doc for why.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::text::{draw_text, measure_text};
+use crate::event::Rect;
 use crate::primitives::message_list::MessageList;
-use crate::types::Color;
 
 /// Draw a [`MessageList`] into a rectangular region.
 ///
 /// `(x, y)` is the top-left of the message area in points; `w` is
-/// the width (used by callers to clip text — this rasteriser doesn't
-/// itself clip beyond `max_y` because Core Text will paint past the
-/// right edge when text overflows). `max_y` is the bottom edge:
-/// rows whose top would land at or past `max_y` are skipped.
-/// `line_height` is the per-row point height.
+/// the width — this rasteriser doesn't clip to it (Core Text paints
+/// past the right edge when text overflows), it's used only for the
+/// zero-size guard below, matching this module's pre-#1084 behaviour
+/// (see the shared `paint`'s doc, "Zero-size guard"). `max_y` is the
+/// bottom edge: rows whose top would land at or past `max_y` are
+/// skipped. `line_height` is the per-row point height.
 ///
 /// # Safety
 ///
@@ -39,37 +45,20 @@ pub unsafe fn draw_message_list(
     max_y: f64,
     line_height: f64,
 ) {
-    if w <= 0.0 || line_height <= 0.0 {
+    if w <= 0.0 {
         return;
     }
-    for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
-        let ry = y + i as f64 * line_height;
-        if ry + line_height > max_y {
-            break;
-        }
-        let (_, text_h) = measure_text(font, &row.text);
-        // Vertically centre the glyph cell within the row pitch —
-        // matches the GTK rasteriser's `(line_height - lh) / 2`
-        // baseline placement.
-        let text_y = ry + (line_height - text_h) / 2.0;
-        draw_text(
-            ctx,
-            font,
-            &row.text,
-            x + row.indent as f64,
-            text_y,
-            color_to_cg(row.fg),
-        );
-    }
-}
-
-fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
-    (
-        c.r as f64 / 255.0,
-        c.g as f64 / 255.0,
-        c.b as f64 / 255.0,
-        c.a as f64 / 255.0,
-    )
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    let rect = Rect::new(x as f32, y as f32, w as f32, (max_y - y) as f32);
+    crate::primitives::message_list::native_surface_paint::paint(
+        list,
+        &mut surface,
+        rect,
+        line_height as f32,
+    );
 }
 
 #[cfg(test)]
@@ -80,7 +69,7 @@ mod tests {
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::message_list::{MessageList, MessageRow};
-    use crate::types::WidgetId;
+    use crate::types::{Color, WidgetId};
     use crate::Backend;
 
     const W: u32 = 240;
@@ -239,5 +228,44 @@ mod tests {
         // Last pixel: glyphs unlikely to reach the far right + bottom
         // corner exactly; expect panel bg.
         assert_eq!((r, g, b), (13, 13, 13));
+    }
+
+    /// #1084's RED-before-the-port case: pre-migration,
+    /// `macos::message_list::draw_message_list` never read `row.spans` at
+    /// all, so a styled row painted no differently from a flat one — there
+    /// was no way to even ask this backend to honour per-span colour.
+    /// Mirrors `win::message_list`'s `styled_row_paints_per_span_colour`.
+    #[test]
+    fn styled_row_paints_per_span_colour() {
+        let mut list = sample_list();
+        list.rows = vec![MessageRow {
+            text: "bold text".into(),
+            fg: Color::rgb(220, 220, 220),
+            indent: 0.0,
+            spans: vec![
+                crate::types::StyledSpan {
+                    text: "bold".into(),
+                    fg: Some(Color::rgb(255, 0, 0)),
+                    bg: None,
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                },
+                crate::types::StyledSpan::plain(" text"),
+            ],
+            scale: 1.0,
+        }];
+        let s = paint(&list);
+        let panel_bg = (13, 13, 13);
+        let mut has_paint = false;
+        'outer: for y in 0..16 {
+            for x in 0..60u32.min(W) {
+                if pixel_differs_from(&s, x, y, panel_bg) {
+                    has_paint = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(has_paint, "styled row should paint glyph pixels");
     }
 }

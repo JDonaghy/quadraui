@@ -167,6 +167,309 @@ impl MessageList {
     }
 }
 
+// ── NativeSurface paint (issue #1084, NativeSurface Phase 4 7/8) ───────────
+//
+// `paint` below is shared by the **macOS and Windows** rasterisers only —
+// `gtk::message_list::draw_message_list` is **not** migrated and stays a
+// full, bespoke Cairo + Pango implementation. This mirrors the exception
+// `crate::primitives::rich_text_popup::native_surface_paint` already
+// documents and for the same underlying reason:
+//
+// [`gtk::message_list::draw_message_list`](crate::gtk::message_list::draw_message_list)
+// renders each row's `spans` as **one** Pango call carrying a byte-ranged
+// `AttrList` (per-span fg/bold/italic/underline, plus a whole-row
+// `AttrFloat::new_scale` for markdown heading rows) — real shaped-line
+// glyph positions, immune to the "measure each span, advance x by its
+// width" drift that issue #214 fixed in `rich_text_popup`. `NativeSurface`
+// has no "shape one line with N attribute ranges" verb, only single-
+// style runs (`surface_draw_text_run(_styled)`), so migrating GTK onto
+// `paint` below would mean reintroducing that previously-fixed bug class.
+// Per this issue's "do not tranche silently" instruction: this is that
+// call, made explicitly.
+//
+// macOS and Windows never had that problem — both already painted
+// per-span with manual x-advance (the same shape `paint` below takes) —
+// so consolidating *their* two copies carries no such risk, and closes a
+// real, pre-existing gap between them:
+//
+// - **Spans ignored entirely.** `macos::message_list::draw_message_list`
+//   never read `row.spans` at all — every row painted flat `row.text` +
+//   `row.fg`, even when the caller supplied rich per-span styling. This
+//   was not a documented scope omission on that module (unlike, say,
+//   `win::message_list`'s italic/underline/scale note below) — it simply
+//   never implemented the styled path `win::message_list` (#30) already
+//   had. `paint` reads spans on both backends uniformly now: this is the
+//   RED-before-the-port case — see `macos::message_list`'s
+//   `styled_row_paints_per_span_colour` test, which has no pre-#1084
+//   equivalent because there was no way to even ask for it.
+// - **Per-span bold.** Carried via [`NativeSurface::surface_draw_text_run_styled`]
+//   on both backends now. Win's `D2dSurface` honours it for real
+//   (`DWrite::draw_text_styled`, matching this module's pre-#1084
+//   behaviour exactly); macOS's `CgSurface` takes that verb's *default*,
+//   which drops style entirely — inert on macOS (no visual regression,
+//   no new bold either), the same posture `crate::primitives::status_bar`
+//   and `crate::primitives::rich_text_popup` already document for the
+//   identical default.
+//
+// Not carried over on either backend, matching pre-#1084 `win::message_list`'s
+// own documented gap:
+//
+// - **Per-span italic / underline.** Passed through to
+//   `surface_draw_text_run_styled`, but dropped by both backends' current
+//   adapters (`D2dSurface` explicitly ignores them; `CgSurface` takes the
+//   style-dropping default) — no Direct2D italic text format or underline
+//   attribute is wired up today, matching `win::message_list`'s pre-#1084
+//   module doc verbatim. Not a new gap introduced by this migration.
+// - **`MessageRow::scale`** (markdown heading rows). `NativeSurface` has
+//   no font-*size* verb (`surface_draw_text_run_styled`'s `scale_x` is a
+//   horizontal *stretch* of the same-size glyph, for the wide-CJK-glyph
+//   fix — see that verb's own doc — not a point-size change), so there is
+//   no way to honour it through this trait, matching
+//   `crate::primitives::rich_text_popup::native_surface_paint`'s
+//   identical gap for its own per-line font scale. Every row paints at
+//   its regular glyph size on both backends, same as every pre-#1084
+//   macOS row (which ignored `scale` along with the rest of the styled
+//   path) and every pre-#1084 Windows row (which never read `scale` at
+//   all — see that module's old doc).
+//
+// **Zero-size guard**, closed uniformly like every other
+// `native_surface_paint::paint` in this crate: pre-#1084, only
+// `macos::message_list::draw_message_list` short-circuited a non-positive
+// `w`; `win::message_list::draw_message_list` had no `w` parameter to
+// guard at all. `paint` below takes no `w` — every original caller's `w`
+// was used solely for that early-return, never to clip or size anything —
+// so each backend's thin wrapper keeps its own pre-paint check instead
+// (see `macos::message_list::draw_message_list`'s `if w <= 0.0` guard);
+// `paint` itself only needs `line_height > 0.0`, matching Windows's
+// pre-#1084 guard exactly.
+#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::MessageList;
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+
+    /// Paint a [`MessageList`] into `rect` on `surface` — see this
+    /// module's doc for the full per-backend divergence survey this
+    /// closes/preserves. `rect.width` is unused (see the doc's "Zero-size
+    /// guard" note); only `rect.x`, `rect.y`, and `rect.height` (via
+    /// `rect.y + rect.height` as the bottom clip) matter.
+    ///
+    /// A `line_height <= 0.0` short-circuits to a no-paint call without
+    /// touching `surface` at all.
+    pub(crate) fn paint(
+        list: &MessageList,
+        surface: &mut dyn NativeSurface,
+        rect: Rect,
+        line_height: f32,
+    ) {
+        if line_height <= 0.0 {
+            return;
+        }
+        let max_y = rect.y + rect.height;
+
+        for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
+            let ry = rect.y + i as f32 * line_height;
+            if ry + line_height > max_y {
+                break;
+            }
+
+            if !row.spans.is_empty() {
+                // ── Styled path ─────────────────────────────────────────
+                let mut cursor_x = rect.x + row.indent;
+                for span in &row.spans {
+                    let span_fg = span.fg.unwrap_or(row.fg);
+                    let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+                    let sy = ry + (line_height - sh) / 2.0;
+                    surface.surface_draw_text_run_styled(
+                        Rect::new(cursor_x, sy, sw.max(1.0), sh.max(1.0)),
+                        &span.text,
+                        span_fg,
+                        span.bold,
+                        span.italic,
+                        span.underline,
+                        1.0,
+                    );
+                    cursor_x += sw;
+                }
+            } else {
+                // ── Flat path (unchanged from before spans were added) ───
+                let (sw, sh) = surface.surface_measure_text(&row.text);
+                let sy = ry + (line_height - sh) / 2.0;
+                surface.surface_draw_text_run(
+                    Rect::new(rect.x + row.indent, sy, sw.max(1.0), sh.max(1.0)),
+                    &row.text,
+                    row.fg,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::primitives::message_list::MessageRow;
+        use crate::types::{Color, StyledSpan, WidgetId};
+        use crate::Image;
+
+        /// Records every surface verb this primitive's paint uses —
+        /// mirrors `primitives::command_line`'s identical test double, so
+        /// this test runs on any host without Core Graphics/Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            text_runs: Vec<(Rect, String, Color)>,
+            styled_runs: Vec<(Rect, String, Color, bool, bool, bool)>,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> crate::Viewport {
+                crate::Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_measure_text_styled(&self, text: &str, _bold: bool) -> (f32, f32) {
+                self.surface_measure_text(text)
+            }
+            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            #[allow(clippy::too_many_arguments)]
+            fn surface_draw_text_run_styled(
+                &mut self,
+                rect: Rect,
+                text: &str,
+                color: Color,
+                bold: bool,
+                italic: bool,
+                underline: bool,
+                _scale_x: f32,
+            ) {
+                self.styled_runs
+                    .push((rect, text.to_string(), color, bold, italic, underline));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, _rect: Rect) {}
+            fn surface_pop_clip(&mut self) {}
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample_list() -> MessageList {
+            MessageList {
+                id: WidgetId::new("ml"),
+                rows: vec![
+                    MessageRow::new("You:", Color::rgb(255, 220, 0), 0.0),
+                    MessageRow::new("hi there", Color::rgb(220, 220, 220), 8.0),
+                ],
+                scroll_top: 0,
+            }
+        }
+
+        #[test]
+        fn flat_rows_paint_via_plain_text_run() {
+            let list = sample_list();
+            let mut surface = RecordingSurface::default();
+            paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 16.0);
+            assert_eq!(surface.text_runs.len(), 2);
+            assert!(surface.styled_runs.is_empty());
+            assert_eq!(surface.text_runs[0].1, "You:");
+            assert_eq!(surface.text_runs[0].2, Color::rgb(255, 220, 0));
+        }
+
+        /// The RED-before-the-port case named in this module's doc: prior
+        /// to #1084, `macos::message_list::draw_message_list` had no way
+        /// to paint a styled row at all — it never read `row.spans`. This
+        /// asserts the shared `paint` now does, on any backend.
+        #[test]
+        fn styled_rows_paint_per_span_via_styled_run() {
+            let mut list = sample_list();
+            list.rows = vec![MessageRow {
+                text: "bold text".into(),
+                fg: Color::rgb(220, 220, 220),
+                indent: 0.0,
+                spans: vec![
+                    StyledSpan {
+                        text: "bold".into(),
+                        fg: Some(Color::rgb(255, 0, 0)),
+                        bg: None,
+                        bold: true,
+                        italic: false,
+                        underline: false,
+                    },
+                    StyledSpan::plain(" text"),
+                ],
+                scale: 1.0,
+            }];
+            let mut surface = RecordingSurface::default();
+            paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 16.0);
+            assert!(surface.text_runs.is_empty());
+            assert_eq!(surface.styled_runs.len(), 2);
+            assert_eq!(surface.styled_runs[0].1, "bold");
+            assert_eq!(surface.styled_runs[0].2, Color::rgb(255, 0, 0));
+            assert!(surface.styled_runs[0].3, "first span should paint bold");
+            // Second span falls back to the row's own fg.
+            assert_eq!(surface.styled_runs[1].2, Color::rgb(220, 220, 220));
+            assert!(!surface.styled_runs[1].3);
+        }
+
+        #[test]
+        fn scroll_top_skips_leading_rows() {
+            let mut list = sample_list();
+            list.scroll_top = 1;
+            let mut surface = RecordingSurface::default();
+            paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 16.0);
+            assert_eq!(surface.text_runs.len(), 1);
+            assert_eq!(surface.text_runs[0].1, "hi there");
+        }
+
+        #[test]
+        fn rows_past_bottom_edge_are_not_painted() {
+            let mut list = sample_list();
+            for i in 0..20 {
+                list.rows.push(MessageRow::new(
+                    format!("row {i}"),
+                    Color::rgb(200, 200, 200),
+                    0.0,
+                ));
+            }
+            let mut surface = RecordingSurface::default();
+            // Only 3 rows worth of height available.
+            paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 48.0), 16.0);
+            assert_eq!(surface.text_runs.len(), 3);
+        }
+
+        #[test]
+        fn zero_line_height_paints_nothing() {
+            let list = sample_list();
+            let mut surface = RecordingSurface::default();
+            paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 0.0);
+            assert!(surface.text_runs.is_empty());
+            assert!(surface.styled_runs.is_empty());
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
