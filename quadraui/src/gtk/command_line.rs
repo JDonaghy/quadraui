@@ -1,14 +1,21 @@
 //! GTK rasteriser for [`crate::primitives::command_line::CommandLine`].
 //!
-//! [`draw_command_line_selection`] (issue #1001) paints
-//! [`CommandLineLayout::selection_bounds`]'s rect as a highlight behind
-//! the text; [`draw_command_line`] is unchanged and delegates to it with
-//! `selection: None`.
+//! Painting moved to the shared
+//! [`crate::primitives::command_line::native_surface_paint::paint`]
+//! (#1083, `NativeSurface` Phase 4 6/8) — see that fn's doc for the named
+//! divergences (macOS/Windows silently dropping the `selection` argument;
+//! GTK's own cursor-anchor formula ignoring right-align) found while
+//! unifying `gtk::command_line::draw_command_line_selection`,
+//! `macos::command_line::draw_command_line` and
+//! `win::command_line::draw_command_line` into one implementation. This
+//! module now only carries [`gtk_command_line_layout`] (pure measurement,
+//! still used directly by `GtkBackend::command_line_layout`) and thin
+//! wrappers over the shared paint, using
+//! [`crate::gtk::surface::CairoSurface`] as the `NativeSurface` adapter.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::cairo_rgb;
 use crate::primitives::command_line::{CommandLine, CommandLineLayout, CommandLineMeasure};
 use crate::theme::Theme;
 
@@ -69,11 +76,6 @@ pub fn draw_command_line(
 /// `crate::primitives::command_line`'s module doc and
 /// `crate::primitives::text_input`'s "Why the editing state is a
 /// wrapper" section for the precedent this follows).
-///
-/// The highlight is painted **before** the text (`draw_visual_selection`'s
-/// ordering in `gtk::editor` — "drawn before text so text is on top"),
-/// using `theme.selection` / `theme.selection_alpha`, the same colours
-/// `gtk::editor` and `gtk::data_table` paint their selection rects with.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_command_line_selection(
     cr: &Context,
@@ -87,50 +89,20 @@ pub fn draw_command_line_selection(
     char_width: f32,
     selection: Option<(usize, usize)>,
 ) -> CommandLineLayout {
-    let cmd_layout = gtk_command_line_layout(cmd, x, y, width, line_height, char_width);
-    let bg = cairo_rgb(theme.command_line_bg);
-    let fg = cairo_rgb(theme.command_line_fg);
-
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(x, y, width, line_height);
-    cr.fill().ok();
-
-    if let Some(sel) = selection {
-        if let Some(r) = cmd_layout.selection_bounds(sel) {
-            let (sr, sg, sb) = cairo_rgb(theme.selection);
-            cr.set_source_rgba(sr, sg, sb, theme.selection_alpha as f64);
-            cr.rectangle(r.x as f64, r.y as f64, r.width as f64, r.height as f64);
-            cr.fill().ok();
-        }
-    }
-
-    if cmd.text.is_empty() {
-        return cmd_layout;
-    }
-
-    layout.set_text(&cmd.text);
-    layout.set_attributes(None);
-    cr.set_source_rgb(fg.0, fg.1, fg.2);
-
-    if cmd.right_align {
-        let (text_w, _) = layout.pixel_size();
-        cr.move_to(x + width - text_w as f64, y);
-    } else {
-        cr.move_to(x, y);
-    }
-    super::painted_text::show_layout(cr, layout);
-
-    if let Some(offset) = cmd.cursor_offset {
-        let anchor = crate::text_util::safe_prefix(&cmd.text, offset);
-        layout.set_text(anchor);
-        let (text_w, _) = layout.pixel_size();
-        let cursor_color = cairo_rgb(theme.cursor);
-        cr.set_source_rgb(cursor_color.0, cursor_color.1, cursor_color.2);
-        cr.rectangle(x + text_w as f64, y, 2.0, line_height);
-        cr.fill().ok();
-    }
-
-    cmd_layout
+    let mut surface = super::surface::CairoSurface {
+        cr,
+        layout: Some(layout),
+        translucent_fill: true,
+    };
+    let rect = crate::event::Rect::new(x as f32, y as f32, width as f32, line_height as f32);
+    crate::primitives::command_line::native_surface_paint::paint(
+        cmd,
+        &mut surface,
+        theme,
+        rect,
+        char_width,
+        selection,
+    )
 }
 
 #[cfg(test)]

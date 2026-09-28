@@ -2891,36 +2891,38 @@ impl Backend for WinBackend {
         rect: Rect,
         cmd: &crate::primitives::command_line::CommandLine,
     ) {
+        self.draw_command_line_selection(rect, cmd, None);
+    }
+
+    /// #1083: real selection-highlight paint via the shared
+    /// `primitives::command_line::native_surface_paint::paint` —
+    /// previously ignored `selection` entirely and forwarded to the
+    /// plain (unhighlighted) paint, the gap issue #1001 scoped out of
+    /// this backend and left as a documented follow-up. See
+    /// `win::command_line`'s module doc. Same "surface not attached
+    /// yet" degrade-to-no-op posture as before (issue #924).
+    fn draw_command_line_selection(
+        &mut self,
+        rect: Rect,
+        cmd: &crate::primitives::command_line::CommandLine,
+        selection: Option<(usize, usize)>,
+    ) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            super::command_line::draw_command_line(
+            super::command_line::draw_command_line_selection(
                 &surface.target,
                 dwrite,
                 rect,
                 cmd,
                 &self.current_theme,
                 self.current_char_width,
+                selection,
             );
             return;
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
         // of panicking (issue #924).
-        let _ = (rect, cmd);
-    }
-
-    /// No visual highlight yet — issue #1001 scoped the paint work to
-    /// GTK/Cairo and TUI/ratatui; `win::command_line` has no
-    /// selection-aware paint path of its own yet. Delegates to the plain
-    /// paint (same "surface not attached yet" degrade-to-no-op posture as
-    /// `draw_command_line` above) so callers get correct (if
-    /// unhighlighted) text instead of a missing trait impl.
-    fn draw_command_line_selection(
-        &mut self,
-        rect: Rect,
-        cmd: &crate::primitives::command_line::CommandLine,
-        _selection: Option<(usize, usize)>,
-    ) {
-        self.draw_command_line(rect, cmd);
+        let _ = (rect, cmd, selection);
     }
 
     /// #725: pure measurement — only needs `current_char_width`, not a

@@ -1,30 +1,23 @@
 //! macOS (Core Graphics + Core Text) rasteriser for
 //! [`crate::primitives::command_line::CommandLine`].
 //!
-//! Straight port of [`crate::gtk::command_line::draw_command_line`]:
-//! fill the bar rect with `theme.command_line_bg`, draw the text in
-//! `theme.command_line_fg` (left- or right-aligned), and optionally
-//! paint a 2-point insert cursor at `cursor_offset`.
-//!
-//! ## Divergence from the GTK twin (deliberate)
-//!
-//! GTK anchors the cursor at `x + prefix_width`, i.e. it ignores the
-//! right-alignment shift. That is only ever visible for a right-aligned
-//! command line that *also* carries a cursor — a combination the vim-style
-//! count/match displays never produce — so the bug has never bitten. This
-//! rasteriser anchors at `text_x + prefix_width` instead, which agrees with
-//! GTK for every left-aligned case and is simply correct for the other.
+//! Painting moved to the shared
+//! [`crate::primitives::command_line::native_surface_paint::paint`]
+//! (#1083, `NativeSurface` Phase 4 6/8) — see that fn's doc for the named
+//! divergences this closed (this module used to paint no selection
+//! highlight at all, and anchored its insert cursor at `text_x +
+//! prefix_width` via a real Core Text glyph-prefix measurement rather
+//! than the shared [`crate::primitives::command_line::CommandLineLayout::char_bounds`]
+//! fixed-advance column — the latter is what the unified `paint` uses
+//! now). [`draw_command_line`]/[`draw_command_line_selection`] below are
+//! thin wrappers over it, using [`crate::macos::surface::CgSurface`] as
+//! the `NativeSurface` adapter.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-use super::text::{draw_text, measure_text};
 use crate::primitives::command_line::CommandLine;
 use crate::theme::Theme;
-
-/// Insert-cursor width in points. Matches the GTK rasteriser's 2px bar.
-const CURSOR_W: f64 = 2.0;
 
 /// Paint `cmd` into the rect `(x, y, width, line_height)` on `ctx`.
 ///
@@ -47,54 +40,57 @@ pub unsafe fn draw_command_line(
     y: f64,
     width: f64,
     line_height: f64,
+    char_width: f32,
 ) {
-    if width <= 0.0 || line_height <= 0.0 {
-        return;
-    }
-
-    CGContextSaveGState(ctx);
-    // Clip so an over-long command (or a right-aligned string wider than
-    // the bar) truncates at the bar edges instead of painting past them.
-    CGContextClipToRect(ctx, rect(x, y, width, line_height));
-
-    fill_rect(ctx, x, y, width, line_height, theme.command_line_bg);
-
-    if cmd.text.is_empty() {
-        CGContextRestoreGState(ctx);
-        return;
-    }
-
-    let text_x = if cmd.right_align {
-        let (text_w, _) = measure_text(font, &cmd.text);
-        x + width - text_w
-    } else {
-        x
-    };
-    draw_text(
+    draw_command_line_selection(
         ctx,
         font,
-        &cmd.text,
-        text_x,
+        cmd,
+        theme,
+        x,
         y,
-        color_to_cg(theme.command_line_fg),
+        width,
+        line_height,
+        char_width,
+        None,
     );
+}
 
-    if let Some(offset) = cmd.cursor_offset {
-        // `safe_prefix` snaps to a char boundary — a byte offset landing
-        // mid-`é` must not panic (quadraui#503, the GTK twin's regression).
-        let anchor = crate::text_util::safe_prefix(&cmd.text, offset);
-        let (anchor_w, _) = measure_text(font, anchor);
-        fill_rect(
-            ctx,
-            text_x + anchor_w,
-            y,
-            CURSOR_W,
-            line_height,
-            theme.cursor,
-        );
-    }
-
-    CGContextRestoreGState(ctx);
+/// Paint `cmd` exactly like [`draw_command_line`], additionally painting
+/// a selection highlight behind the text for `selection` — the macOS
+/// side of closing #1083's "selection silently dropped" divergence (see
+/// this module's doc). Sibling function, not a new parameter, mirroring
+/// [`crate::gtk::command_line::draw_command_line_selection`]'s shape.
+///
+/// # Safety
+///
+/// Same contract as [`draw_command_line`].
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_command_line_selection(
+    ctx: CGContextRef,
+    font: &CTFont,
+    cmd: &CommandLine,
+    theme: &Theme,
+    x: f64,
+    y: f64,
+    width: f64,
+    line_height: f64,
+    char_width: f32,
+    selection: Option<(usize, usize)>,
+) -> crate::primitives::command_line::CommandLineLayout {
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    let rect = crate::event::Rect::new(x as f32, y as f32, width as f32, line_height as f32);
+    crate::primitives::command_line::native_surface_paint::paint(
+        cmd,
+        &mut surface,
+        theme,
+        rect,
+        char_width,
+        selection,
+    )
 }
 
 #[cfg(test)]
@@ -200,21 +196,88 @@ mod tests {
         );
     }
 
+    /// #1083: the cursor bar paints at the shared
+    /// [`crate::primitives::command_line::CommandLineLayout::char_bounds`]
+    /// column — the same rect [`Backend::command_line_layout`] would hand
+    /// back for hit-testing that column — not a hand-measured Core Text
+    /// prefix width (this test's pre-#1083 shape). Mirrors
+    /// `win::command_line`'s `cursor_paints_at_the_shared_layout_column`.
     #[test]
     fn cursor_paints_cursor_colour_after_the_prefix() {
         let cmd = sample(":wq", Some(1), false);
-        let (surface, lh) = paint_via_backend(&cmd, QRect::new(0.0, 0.0, W as f32, 20.0));
+        let rect = QRect::new(0.0, 0.0, W as f32, 20.0);
+        let (surface, lh) = paint_via_backend(&cmd, rect);
         let theme = Theme::default();
-        let font = make_font("Menlo", 14.0).expect("Menlo installed");
-        let (prefix_w, _) = measure_text(&font, ":");
 
-        let px = (prefix_w + CURSOR_W / 2.0) as u32;
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        let layout = backend.command_line_layout(rect, &cmd);
+        let cursor_rect = layout.char_bounds(1);
+
+        let px = (cursor_rect.x + 1.0) as u32;
         let py = (lh / 2.0) as u32;
         let (r, g, b, _) = surface.pixel(px, py);
         assert_eq!(
             (r, g, b),
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
-            "insert cursor should paint at the prefix width",
+            "insert cursor should paint at char_bounds(1)'s column",
+        );
+    }
+
+    /// #1083: closes the divergence this module's doc names — before the
+    /// port, `MacBackend::draw_command_line_selection` silently ignored
+    /// `selection` and forwarded to the plain (unhighlighted) paint (see
+    /// issue #1001's "no visual highlight yet" note on that method), so
+    /// this assertion was RED: no pixel anywhere in the bar ever carried
+    /// `theme.selection`. After the port, it paints through the shared
+    /// `native_surface_paint::paint`, same as `gtk::command_line`'s
+    /// `gtk_command_line_selection_paints_highlight_behind_text` twin.
+    #[test]
+    fn selection_paints_highlight_behind_text() {
+        // A space character deliberately, so the probed pixel carries no
+        // glyph ink and the highlight colour (alpha 1.0, an opaque
+        // replace over the white background) can be asserted exactly.
+        let cmd = sample("  x", None, false);
+        let rect = QRect::new(0.0, 0.0, W as f32, 20.0);
+        let theme = Theme {
+            selection: crate::types::Color::rgb(0, 0, 255),
+            selection_alpha: 1.0,
+            ..Theme::default()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        backend.set_theme(theme);
+        let line_height = backend.line_height() as f64;
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_command_line_selection(rect, &cmd, Some((0, 1)));
+        });
+        backend.end_frame();
+
+        let layout = backend.command_line_layout(rect, &cmd);
+        let sel_rect = layout
+            .selection_bounds((0, 1))
+            .expect("non-empty selection should produce a rect");
+
+        let px = (sel_rect.x + sel_rect.width / 2.0) as u32;
+        let py = (line_height / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(px, py);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 255),
+            "selected column should paint the highlight colour",
+        );
+
+        // Unselected column (second space) stays plain background.
+        let unsel_px = (sel_rect.x + sel_rect.width + sel_rect.width / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(unsel_px, py);
+        assert_eq!(
+            (r, g, b),
+            (255, 255, 255),
+            "unselected column should not paint the highlight",
         );
     }
 

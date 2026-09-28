@@ -256,7 +256,7 @@ pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
 pub use command_center::{draw_command_center, win_command_center_layout};
 #[cfg(target_os = "windows")]
-pub use command_line::{draw_command_line, win_command_line_layout};
+pub use command_line::{draw_command_line, draw_command_line_selection, win_command_line_layout};
 #[cfg(target_os = "windows")]
 pub use completions::draw_completions;
 #[cfg(target_os = "windows")]

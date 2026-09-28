@@ -1,40 +1,27 @@
 //! Direct2D / DirectWrite rasteriser for
 //! [`crate::primitives::command_line::CommandLine`] (issue #725).
 //!
-//! Mirrors `win::status_bar`'s structure: [`CommandLine::layout`] (the
-//! shared #705 [`CommandLineLayout`], see that primitive's module doc)
-//! resolves every column position; this module only measures the current
-//! font's monospace `char_width` (already tracked on `WinBackend`, the
-//! same role as GTK's/macOS's `current_char_width`) and paints — a
-//! background fill via `fill_rect` and text via [`DWrite::draw_text`].
-//!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod command_line;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 //!
-//! # No cursor-offset → x arithmetic here
-//!
-//! The GTK/macOS/TUI twins each re-derive the cursor's x-position by
-//! measuring `text_util::safe_prefix(&cmd.text, offset)` against the
-//! paint font — three private copies of the same column arithmetic
-//! [`CommandLineLayout`] (#705) now exists specifically to centralise.
-//! This rasteriser does not add a fourth: the cursor bar's rect comes
-//! straight back from [`CommandLineLayout::char_bounds`], the exact value
-//! `command_line_layout` also hands a host for hit-testing, so paint and
-//! layout share one source of truth and can't drift apart (#725 scope
-//! note; `PRIMITIVE_RULES.md`'s primitive-first rule, #713).
+//! Painting moved to the shared
+//! [`crate::primitives::command_line::native_surface_paint::paint`]
+//! (#1083, `NativeSurface` Phase 4 6/8) — see that fn's doc for the named
+//! divergences this closed on the other two backends (this module's own
+//! `char_bounds`-based cursor and lack of any selection paint were
+//! already what the port converged everyone onto, so this file's own
+//! behaviour is unchanged by the move — only its implementation is now
+//! shared). [`draw_command_line`]/[`draw_command_line_selection`] below
+//! are thin wrappers over it, using [`crate::win::surface::D2dSurface`]
+//! as the `NativeSurface` adapter.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, DWrite};
 use crate::event::Rect;
 use crate::primitives::command_line::{CommandLine, CommandLineLayout, CommandLineMeasure};
 use crate::theme::Theme;
-
-/// Insert-cursor width in DIPs. Matches the GTK/macOS rasterisers' 2px
-/// bar (`gtk::command_line`, `macos::command_line::CURSOR_W`).
-const CURSOR_W_DIP: f32 = 2.0;
 
 /// Compute [`CommandLineLayout`] for `cmd` painted at `rect`, using the
 /// backend's monospace `char_width` (issue #705) — what
@@ -55,44 +42,42 @@ pub fn win_command_line_layout(
 /// apart (#705 review).
 pub fn draw_command_line(
     target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
+    dwrite: &super::text::DWrite,
     rect: Rect,
     cmd: &CommandLine,
     theme: &Theme,
     char_width: f32,
 ) -> CommandLineLayout {
-    let layout = win_command_line_layout(cmd, rect, char_width);
+    draw_command_line_selection(target, dwrite, rect, cmd, theme, char_width, None)
+}
 
-    if rect.width <= 0.0 || rect.height <= 0.0 {
-        return layout;
-    }
-
-    let _ = fill_rect(target, rect, theme.command_line_bg);
-
-    if cmd.text.is_empty() {
-        return layout;
-    }
-
-    // `layout.text_origin_x` already carries `rect.x` and any
-    // right-align shift (issue #505 convention: absolute, not
-    // rect-local) — paint the text starting there, clipped to the
-    // remainder of the bar so an over-long or right-aligned string
-    // can't paint past `rect`'s edges.
-    let text_rect = Rect::new(
-        layout.text_origin_x,
-        rect.y,
-        (rect.x + rect.width - layout.text_origin_x).max(0.0),
-        rect.height,
-    );
-    let _ = dwrite.draw_text(target, &cmd.text, text_rect, theme.command_line_fg);
-
-    if let Some(offset) = cmd.cursor_offset {
-        let col_rect = layout.char_bounds(offset);
-        let cursor_rect = Rect::new(col_rect.x, col_rect.y, CURSOR_W_DIP, col_rect.height);
-        let _ = fill_rect(target, cursor_rect, theme.cursor);
-    }
-
-    layout
+/// Paint `cmd` exactly like [`draw_command_line`], additionally painting
+/// a selection highlight behind the text for `selection` — the Windows
+/// side of closing #1083's "selection silently dropped" divergence (see
+/// this module's doc). Sibling function, not a new parameter, mirroring
+/// [`crate::gtk::command_line::draw_command_line_selection`]'s shape.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_command_line_selection(
+    target: &ID2D1RenderTarget,
+    dwrite: &super::text::DWrite,
+    rect: Rect,
+    cmd: &CommandLine,
+    theme: &Theme,
+    char_width: f32,
+    selection: Option<(usize, usize)>,
+) -> CommandLineLayout {
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    crate::primitives::command_line::native_surface_paint::paint(
+        cmd,
+        &mut surface,
+        theme,
+        rect,
+        char_width,
+        selection,
+    )
 }
 
 #[cfg(test)]
@@ -100,6 +85,7 @@ mod tests {
     use super::*;
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
 
     const W: f32 = 200.0;
     const H: f32 = 20.0;
@@ -232,13 +218,76 @@ mod tests {
             })
             .expect("paint command line");
 
-        let px = (cursor_col_rect.x + CURSOR_W_DIP / 2.0) as u32;
+        let px = (cursor_col_rect.x + 1.0) as u32;
         let py = (cursor_col_rect.y + cursor_col_rect.height / 2.0) as u32;
         let sample_px = surface.pixel_at(px, py);
         assert_eq!(
             (sample_px.r, sample_px.g, sample_px.b),
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
             "insert cursor should paint at char_bounds(1)'s column",
+        );
+    }
+
+    /// #1083: closes the divergence this module's doc names — before the
+    /// port, `WinBackend::draw_command_line_selection` silently ignored
+    /// `selection` and forwarded to the plain (unhighlighted) paint (see
+    /// issue #1001's "no visual highlight yet" note on that method), so
+    /// this assertion was RED: no pixel anywhere in the bar ever carried
+    /// `theme.selection`. After the port, it paints through the shared
+    /// `native_surface_paint::paint`, same as `gtk::command_line`'s
+    /// `gtk_command_line_selection_paints_highlight_behind_text` twin.
+    #[test]
+    fn selection_paints_highlight_behind_text() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let theme = Theme {
+            command_line_bg: Color::rgb(255, 255, 255),
+            command_line_fg: Color::rgb(0, 0, 0),
+            selection: Color::rgb(0, 0, 255),
+            selection_alpha: 1.0,
+            ..Theme::default()
+        };
+        // Two leading spaces then a letter: selecting byte 0..1 highlights
+        // a space (no ink), byte 1..2 stays an unselected but equally
+        // ink-free control pixel — mirrors `gtk::command_line`'s twin.
+        let cmd = sample("  x", None, false);
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = win_command_line_layout(&cmd, rect, char_width);
+        let sel_rect = layout
+            .selection_bounds((0, 1))
+            .expect("non-empty selection should produce a rect");
+
+        surface
+            .paint(|target| {
+                draw_command_line_selection(
+                    target,
+                    &dwrite,
+                    rect,
+                    &cmd,
+                    &theme,
+                    char_width,
+                    Some((0, 1)),
+                );
+            })
+            .expect("paint command line selection");
+
+        let sel_px = (sel_rect.x + sel_rect.width / 2.0) as u32;
+        let unsel_px = (sel_rect.x + sel_rect.width + sel_rect.width / 2.0) as u32;
+        let row = (rect.height / 2.0) as u32;
+
+        let sample_px = surface.pixel_at(sel_px, row);
+        assert_eq!(
+            (sample_px.r, sample_px.g, sample_px.b),
+            (0, 0, 255),
+            "selected space column should paint the highlight colour",
+        );
+
+        let unsel_sample = surface.pixel_at(unsel_px, row);
+        assert_eq!(
+            (unsel_sample.r, unsel_sample.g, unsel_sample.b),
+            (255, 255, 255),
+            "unselected column should not paint the highlight",
         );
     }
 

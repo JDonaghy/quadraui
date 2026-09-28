@@ -184,6 +184,352 @@ impl CommandLine {
     }
 }
 
+/// Shared [`NativeSurface`](crate::native_surface::NativeSurface)-backed
+/// paint for [`CommandLine`] (`NativeSurface` Phase 4 6/8, #1083) —
+/// replaces the three per-backend copies `gtk::command_line::draw_command_line_selection`,
+/// `macos::command_line::draw_command_line` and
+/// `win::command_line::draw_command_line` used to carry independently.
+///
+/// # Divergences the three pre-#1083 copies had, closed here
+///
+/// - **Selection highlight.** Only the GTK copy
+///   (`gtk::command_line::draw_command_line_selection`, #1001) ever
+///   painted [`CommandLineLayout::selection_bounds`]'s rect — macOS's and
+///   Windows's `Backend::draw_command_line_selection` both silently
+///   ignored the `selection` argument and forwarded to the plain
+///   `draw_command_line`, each with a doc comment admitting "no visual
+///   highlight yet ... issue #1001 scoped the paint work to GTK/Cairo and
+///   TUI/ratatui." [`paint`] below always paints the highlight (a no-op
+///   when `selection` is `None` or empty), so all three backends now
+///   agree.
+/// - **Insert-cursor x-position.** GTK measured a real glyph-prefix width
+///   against its own paint `pango::Layout` and anchored at `x +
+///   prefix_width`, ignoring any right-align shift — a bug the macOS
+///   module doc calls out explicitly ("only ever visible for a
+///   right-aligned command line that also carries a cursor ... the bug
+///   has never bitten"). macOS instead anchored at `text_x +
+///   prefix_width` (right-align-correct); Windows already used the
+///   shared [`CommandLineLayout::char_bounds`] fixed-advance column,
+///   independent of any per-backend glyph measurement. [`paint`] adopts
+///   Windows's approach uniformly (`layout.char_bounds(offset)`) — it
+///   agrees with every existing left-aligned call site (the only shape
+///   any live caller uses today) and is simply correct for the
+///   right-aligned case none of them exercised.
+/// - **Zero-size guard.** macOS and Windows both short-circuited a
+///   non-positive `rect.width`/`rect.height` to a no-paint layout; GTK
+///   had no equivalent guard (relying on Cairo's own no-op fill/clip for
+///   a degenerate rect). [`paint`] applies the guard uniformly, matching
+///   `primitives::status_bar::native_surface_paint::paint`'s precedent
+///   for the same shape (#860).
+/// - **Clipping.** Only macOS clipped painting to `rect` before this;
+///   [`paint`] pushes/pops a clip on every backend, so an over-long or
+///   right-aligned string that overflows the bar can no longer bleed
+///   past its edges on GTK/Windows.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{CommandLine, CommandLineLayout, CommandLineMeasure};
+    use crate::event::Rect;
+    use crate::native_surface::NativeSurface;
+    use crate::theme::Theme;
+
+    /// Insert-cursor width in surface-native units (px/DIP/pt) — matches
+    /// every pre-#1083 per-backend copy's 2-unit bar
+    /// (`gtk::command_line`'s hardcoded `2.0`, `macos::command_line::CURSOR_W`,
+    /// `win::command_line::CURSOR_W_DIP`).
+    const CURSOR_WIDTH: f32 = 2.0;
+
+    /// Paint a [`CommandLine`] into `rect` on `surface`, highlighting
+    /// `selection` (a `(start, end)` byte-offset pair, either order) if
+    /// given, and return the resolved [`CommandLineLayout`] — same
+    /// contract as [`crate::Backend::draw_command_line_selection`]. A
+    /// `None` (or empty/zero-width) `selection` paints identically to
+    /// [`crate::Backend::draw_command_line`].
+    ///
+    /// A non-positive `rect.width`/`rect.height` short-circuits to the
+    /// no-paint layout without touching `surface` at all — see this
+    /// module's doc, "Zero-size guard".
+    pub(crate) fn paint(
+        cmd: &CommandLine,
+        surface: &mut dyn NativeSurface,
+        theme: &Theme,
+        rect: Rect,
+        char_width: f32,
+        selection: Option<(usize, usize)>,
+    ) -> CommandLineLayout {
+        let layout = cmd.layout(rect, CommandLineMeasure::new(char_width));
+
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+
+        surface.surface_push_clip(rect);
+        surface.surface_fill_rect(rect, theme.command_line_bg);
+
+        if let Some(sel) = selection {
+            if let Some(r) = layout.selection_bounds(sel) {
+                surface.surface_fill_rect_alpha(r, theme.selection, theme.selection_alpha);
+            }
+        }
+
+        if !cmd.text.is_empty() {
+            // `layout.text_origin_x` already carries `rect.x` and any
+            // right-align shift (issue #505 convention: absolute, not
+            // rect-local) — paint starting there, bounded to the
+            // remainder of the bar so an over-long or right-aligned
+            // string can't paint past `rect`'s far edge (the clip above
+            // additionally stops it bleeding past every edge).
+            let text_rect = Rect::new(
+                layout.text_origin_x,
+                rect.y,
+                (rect.x + rect.width - layout.text_origin_x).max(0.0),
+                rect.height,
+            );
+            surface.surface_draw_text_run(text_rect, &cmd.text, theme.command_line_fg);
+
+            if let Some(offset) = cmd.cursor_offset {
+                let col_rect = layout.char_bounds(offset);
+                let cursor_rect = Rect::new(col_rect.x, col_rect.y, CURSOR_WIDTH, col_rect.height);
+                surface.surface_fill_rect(cursor_rect, theme.cursor);
+            }
+        }
+
+        surface.surface_pop_clip();
+        layout
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::backend::ImagePaintResult;
+        use crate::types::{Color, WidgetId};
+        use crate::Image;
+
+        /// Records every surface verb this primitive's paint uses —
+        /// mirrors `primitives::status_bar`'s identical test double, so
+        /// this test runs on any host without Cairo/Core Graphics/
+        /// Direct2D.
+        #[derive(Default)]
+        struct RecordingSurface {
+            fills: Vec<(Rect, Color)>,
+            text_runs: Vec<(Rect, String, Color)>,
+            clip_pushes: Vec<Rect>,
+            clip_pops: usize,
+        }
+
+        impl NativeSurface for RecordingSurface {
+            fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
+            fn surface_end_frame(&mut self) {}
+            fn surface_viewport(&self) -> crate::Viewport {
+                crate::Viewport::new(200.0, 100.0, 1.0)
+            }
+            fn surface_line_height(&self) -> f32 {
+                16.0
+            }
+            fn surface_char_width(&self) -> f32 {
+                8.0
+            }
+            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                (text.chars().count() as f32 * 8.0, 16.0)
+            }
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+                self.fills.push((rect, color));
+            }
+            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                self.text_runs.push((rect, text.to_string(), color));
+            }
+            fn surface_draw_line(
+                &mut self,
+                _from: crate::Point,
+                _to: crate::Point,
+                _color: Color,
+                _stroke_width: f32,
+            ) {
+            }
+            fn surface_push_clip(&mut self, rect: Rect) {
+                self.clip_pushes.push(rect);
+            }
+            fn surface_pop_clip(&mut self) {
+                self.clip_pops += 1;
+            }
+            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+                ImagePaintResult::Unsupported
+            }
+        }
+
+        fn sample(text: &str, cursor: Option<usize>, right_align: bool) -> CommandLine {
+            CommandLine {
+                id: WidgetId::new("cmdline"),
+                text: text.into(),
+                cursor_offset: cursor,
+                right_align,
+            }
+        }
+
+        #[test]
+        fn fills_background_then_text_then_cursor() {
+            let cmd = sample(":wq", Some(1), false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 100.0, 20.0);
+            let layout = paint(&cmd, &mut surface, &theme, rect, 8.0, None);
+
+            assert_eq!(surface.fills[0], (rect, theme.command_line_bg));
+            assert_eq!(surface.text_runs.len(), 1);
+            assert_eq!(surface.text_runs[0].1, ":wq");
+            assert_eq!(surface.text_runs[0].2, theme.command_line_fg);
+
+            // Cursor rect is the second fill, at char_bounds(1).
+            let cursor_rect = layout.char_bounds(1);
+            assert_eq!(surface.fills[1].0.x, cursor_rect.x);
+            assert_eq!(surface.fills[1].1, theme.cursor);
+        }
+
+        #[test]
+        fn no_selection_paints_no_highlight() {
+            let cmd = sample(":wq", None, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &cmd,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 20.0),
+                8.0,
+                None,
+            );
+            // Only the background fill — no selection, no cursor.
+            assert_eq!(surface.fills.len(), 1);
+        }
+
+        /// Closes the divergence documented on [`paint`]'s own doc: only
+        /// `gtk::command_line` used to paint a selection highlight —
+        /// macOS and Windows both dropped the `selection` argument
+        /// entirely. This is the RED-before-the-port case: on the old
+        /// `macos::command_line::draw_command_line`/`win::command_line::draw_command_line`
+        /// (which never took a `selection` argument at all), there was no
+        /// way to even ask for this, let alone assert it painted.
+        #[test]
+        fn selection_paints_highlight_before_text() {
+            let cmd = sample(":wq!", None, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 100.0, 20.0);
+            let layout = paint(&cmd, &mut surface, &theme, rect, 8.0, Some((0, 3)));
+
+            let sel_rect = layout.selection_bounds((0, 3)).unwrap();
+            // Highlight fill (index 1) comes after the background (index
+            // 0) and before the text run.
+            assert_eq!(surface.fills.len(), 2);
+            assert_eq!(surface.fills[1].0, sel_rect);
+            assert_eq!(
+                surface.fills[1].1,
+                theme.selection.with_alpha(theme.selection_alpha as f64)
+            );
+        }
+
+        #[test]
+        fn empty_selection_range_paints_no_highlight() {
+            let cmd = sample(":wq!", None, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &cmd,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 20.0),
+                8.0,
+                Some((2, 2)),
+            );
+            assert_eq!(surface.fills.len(), 1);
+        }
+
+        /// Closes the other documented divergence: GTK anchored the
+        /// cursor at a real glyph-prefix width ignoring right-align;
+        /// this shared `paint` anchors at the shared
+        /// `CommandLineLayout::char_bounds`, which *does* account for
+        /// the right-align shift.
+        #[test]
+        fn cursor_respects_right_align_shift() {
+            let cmd = sample("3/17", Some(2), true);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+            let layout = paint(&cmd, &mut surface, &theme, rect, 1.0, None);
+
+            let cursor_rect = layout.char_bounds(2);
+            assert!(
+                cursor_rect.x > rect.x,
+                "right-aligned text's cursor must shift right of the bar origin"
+            );
+            let cursor_fill = surface
+                .fills
+                .iter()
+                .find(|(r, c)| *c == theme.cursor && r.x == cursor_rect.x)
+                .expect("cursor should paint at char_bounds(2)");
+            let _ = cursor_fill;
+        }
+
+        #[test]
+        fn zero_size_rect_paints_nothing() {
+            let cmd = sample(":wq", Some(1), false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &cmd,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 0.0, 20.0),
+                8.0,
+                Some((0, 1)),
+            );
+            assert!(surface.fills.is_empty());
+            assert!(surface.text_runs.is_empty());
+            assert!(surface.clip_pushes.is_empty());
+            assert_eq!(surface.clip_pops, 0);
+        }
+
+        #[test]
+        fn clip_pushed_and_popped_once_around_paint() {
+            let cmd = sample(":wq", None, false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let rect = Rect::new(3.0, 4.0, 50.0, 20.0);
+            paint(&cmd, &mut surface, &theme, rect, 8.0, None);
+            assert_eq!(surface.clip_pushes, vec![rect]);
+            assert_eq!(surface.clip_pops, 1);
+        }
+
+        /// Multibyte regression (#503's class of bug): a `cursor_offset`
+        /// landing mid-character must not panic — `char_bounds` snaps via
+        /// `column_for_byte_offset`, not a raw string slice.
+        #[test]
+        fn multibyte_cursor_offset_does_not_panic() {
+            let text = ":éditer";
+            assert!(!text.is_char_boundary(2));
+            let cmd = sample(text, Some(2), false);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            paint(
+                &cmd,
+                &mut surface,
+                &theme,
+                Rect::new(0.0, 0.0, 100.0, 20.0),
+                8.0,
+                None,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

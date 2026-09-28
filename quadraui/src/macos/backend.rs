@@ -2559,20 +2559,35 @@ impl Backend for MacBackend {
         crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
     }
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
+        self.draw_command_line_selection(rect, cmd, None);
+    }
+    /// #1083: real selection-highlight paint via the shared
+    /// `primitives::command_line::native_surface_paint::paint` —
+    /// previously ignored `selection` entirely and forwarded to the
+    /// plain (unhighlighted) paint, the gap issue #1001 scoped out of
+    /// this backend and left as a documented follow-up. See
+    /// `macos::command_line`'s module doc.
+    fn draw_command_line_selection(
+        &mut self,
+        rect: Rect,
+        cmd: &CommandLine,
+        selection: Option<(usize, usize)>,
+    ) {
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
-            "MacBackend::draw_command_line called outside enter_frame_scope",
+            "MacBackend::draw_command_line_selection called outside enter_frame_scope",
         );
         let font = self
             .current_font
             .as_ref()
-            .expect("MacBackend::draw_command_line requires set_current_font");
+            .expect("MacBackend::draw_command_line_selection requires set_current_font");
         let theme = self.current_theme;
         let line_height = self.current_line_height;
+        let char_width = self.current_char_width as f32;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
-            super::command_line::draw_command_line(
+            super::command_line::draw_command_line_selection(
                 ctx,
                 font,
                 cmd,
@@ -2581,22 +2596,10 @@ impl Backend for MacBackend {
                 rect.y as f64,
                 rect.width as f64,
                 line_height,
+                char_width,
+                selection,
             );
         }
-    }
-    /// No visual highlight yet — issue #1001 scoped the paint work to
-    /// GTK/Cairo and TUI/ratatui (`macos::command_line::draw_command_line`
-    /// has no selection-aware paint path of its own). Delegates to the
-    /// plain paint so callers get correct (if unhighlighted) text instead
-    /// of a missing trait impl; tracked as a follow-up for the macOS
-    /// rasteriser alongside its other selection-highlight primitives.
-    fn draw_command_line_selection(
-        &mut self,
-        rect: Rect,
-        cmd: &CommandLine,
-        _selection: Option<(usize, usize)>,
-    ) {
-        self.draw_command_line(rect, cmd);
     }
     fn command_line_layout(
         &self,
