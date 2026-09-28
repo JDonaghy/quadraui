@@ -13,10 +13,22 @@
 //! divergence, deliberately left alone"; unifying onto one `paint`
 //! finally resolves it rather than parking it again).
 //!
-//! Uses the backend's active `CTFont` directly for icon rendering
-//! instead of GTK's hardcoded "Symbols Nerd Font" — apps that want
-//! Nerd-Font icons install a glyph-bearing font via
-//! [`super::MacBackend::set_current_font`] in `setup()`.
+//! Uses the backend's active `CTFont` for icon rendering — apps that
+//! want Nerd-Font icons install a glyph-bearing font via
+//! [`super::MacBackend::set_current_font`] in `setup()` — but **not**
+//! at that font's own size. Issue #1157: the icon glyph always paints
+//! at [`crate::ActivityBarStyle::resolved_icon_size_px`] (defaulting to
+//! [`crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX`],
+//! VS-Code parity), via [`core_text::font::CTFont::clone_with_font_size`]
+//! on whatever font the caller passed in — a same-family, same-fallback
+//! clone at a fixed size, so the icon no longer tracks the editor or
+//! chrome font's own size the way it did before this issue (first via
+//! `current_font`, then, post-#1003, via `chrome_font`). `size` in
+//! `clone_with_font_size` is Core Text points, which on macOS are
+//! already device-independent pixels 1:1 (unlike GTK's Pango / Win-GUI's
+//! DirectWrite, both of which apply the legacy 96/72 dpi point-to-pixel
+//! ratio — see `crate::gtk::activity_bar::activity_bar_icon_font`'s doc),
+//! so `resolved_icon_size_px()` is used here without conversion.
 //!
 //! Returns per-row [`ActivityBarRowHit`]s so callers can route clicks
 //! and query tooltips against the same frame's painted positions.
@@ -156,9 +168,14 @@ pub unsafe fn draw_activity_bar_with_style(
     CGContextSaveGState(ctx);
 
     let layout = bar.layout(width as f32, height as f32, ACTIVITY_ROW_PX as f32);
+    // #1157: paint the icon glyph at a fixed, VS-Code-parity size,
+    // independent of whatever size `font` itself carries — see this
+    // module's doc for why `clone_with_font_size` needs no pt/px
+    // conversion on macOS the way GTK/Win-GUI do.
+    let icon_font = font.clone_with_font_size(style.resolved_icon_size_px() as f64);
     let mut surface = super::surface::CgSurface {
         ctx,
-        font: Some(font),
+        font: Some(&icon_font),
     };
     let regions = native_surface_paint::paint(
         bar,
@@ -182,7 +199,7 @@ extern "C" {
 #[cfg(test)]
 mod tests {
     use super::super::headless::BitmapSurface;
-    use super::super::text::make_font;
+    use super::super::text::{make_font, system_ui_font};
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
@@ -298,6 +315,85 @@ mod tests {
         });
         backend.end_frame();
         (surface, regions.into_inner())
+    }
+
+    /// Bounding-box height (device px) of every non-background pixel
+    /// within row `[y0, y1)` — used by the #1157 icon-size tests below.
+    /// Excludes the bar's own 1pt right-edge separator column
+    /// (`x == W - 1`), which is unconditional and would otherwise swamp
+    /// a glyph-only ink measurement.
+    fn ink_height_in_row(surface: &BitmapSurface, y0: u32, y1: u32) -> u32 {
+        let theme = Theme::default();
+        let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+        let mut found: Option<(u32, u32)> = None;
+        for y in y0..y1 {
+            for x in 0..(W - 1) {
+                let (r, g, b, _) = surface.pixel(x, y);
+                if (r, g, b) != bg {
+                    found = Some(match found {
+                        Some((min_y, max_y)) => (min_y.min(y), max_y.max(y)),
+                        None => (y, y),
+                    });
+                }
+            }
+        }
+        found.map_or(0, |(min_y, max_y)| max_y - min_y + 1)
+    }
+
+    /// #1157: the icon glyph's ink size follows
+    /// `ActivityBarStyle::icon_size_px`, not the backend's `chrome_font`
+    /// size — the regression this issue reports ("icon size follows the
+    /// active font"), fixed by resizing whatever font is passed in
+    /// (`font.clone_with_font_size`) rather than trusting its own size.
+    #[test]
+    fn icon_ink_height_follows_style_not_chrome_font_size() {
+        use crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX;
+
+        // Settings (bottom-pinned, not active): no accent strip to
+        // isolate the glyph ink from.
+        let mut bar = sample_bar();
+        bar.active_accent = None;
+        let settings_y0 = H - ACTIVITY_ROW_PX as u32;
+        let settings_y1 = H;
+
+        let paint_with = |style: &crate::ActivityBarStyle, chrome_size_pt: f64| -> u32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = MacBackend::new();
+            backend.set_chrome_font(system_ui_font(chrome_size_pt));
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_activity_bar_with_style(
+                    QRect::new(0.0, 0.0, W as f32, H as f32),
+                    &bar,
+                    None,
+                    style,
+                );
+            });
+            backend.end_frame();
+            ink_height_in_row(&surface, settings_y0, settings_y1)
+        };
+
+        let default_style = crate::ActivityBarStyle::default();
+        let default_small_chrome = paint_with(&default_style, 6.0);
+        let default_huge_chrome = paint_with(&default_style, 40.0);
+        assert!(
+            default_small_chrome > 0,
+            "sanity: the glyph should paint some ink"
+        );
+        assert_eq!(
+            default_small_chrome, default_huge_chrome,
+            "default icon ink height must not track chrome_font's own size \
+             (6pt vs 40pt chrome font should paint identically)"
+        );
+
+        let small_style = crate::ActivityBarStyle::new().with_icon_size_px(10.0);
+        let small_icon = paint_with(&small_style, 11.0);
+        assert!(
+            small_icon < default_huge_chrome,
+            "icon_size_px(10.0) ({small_icon}px ink) should paint smaller than \
+             the {DEFAULT_ACTIVITY_ICON_SIZE_PX}px default ({default_huge_chrome}px ink)"
+        );
     }
 
     #[test]

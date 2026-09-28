@@ -21,6 +21,26 @@
 //! Takes the live theme as a `&Theme` parameter (quadraui#789) — the
 //! caller ([`crate::win::WinBackend::draw_activity_bar`]) passes
 //! `&self.current_theme`, the same field `Backend::set_theme` writes.
+//!
+//! Issue #1157: the icon glyph paints at a fixed, VS-Code-parity size
+//! (`ActivityBarStyle::resolved_icon_size_px`), independent of whichever
+//! editor/chrome font size the caller's `dwrite` handle carries — via
+//! [`super::text::DWrite::with_size`], a same-family, same-fallback
+//! clone at a different size, mirroring
+//! [`crate::macos::backend::MacBackend`]'s `font.clone_with_font_size(..)`
+//! and `gtk::activity_bar::activity_bar_icon_font`'s fresh
+//! `FontDescription`. `size_pt` is DirectWrite points, which — like
+//! GTK's Pango — apply the legacy 96/72 dpi point-to-pixel ratio
+//! internally ([`super::msg::pt_to_dip`]), so `resolved_icon_size_px()`
+//! is converted by that same `72.0 / 96.0` ratio before reaching
+//! `with_size` (unlike macOS, where Core Text points are already
+//! device-independent pixels 1:1 — see
+//! [`crate::macos::activity_bar`]'s module doc). Since this module still
+//! only paints `ActivityBarStyle::default()` (see the paragraph above —
+//! a pre-existing gap, not one #1157 closes), a caller-supplied
+//! `icon_size_px` override doesn't reach Win-GUI's paint yet either;
+//! only the *default* 24px size does, which is what fixes the reported
+//! "icon size follows the active font" symptom on this backend.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -55,7 +75,8 @@ pub fn win_activity_bar_layout(rect: Rect, bar: &ActivityBar) -> ActivityBarLayo
 /// - **Active item's accent line:** 2 DIP left-edge strip in
 ///   `bar.active_accent`, painted only when that field is `Some` — no
 ///   theme fallback (matches every other backend as of #658).
-/// - **Icon glyph:** centred in the row; `theme.foreground` for
+/// - **Icon glyph:** centred in the row, at a fixed VS-Code-parity size
+///   (issue #1157 — see this module's doc); `theme.foreground` for
 ///   active/hovered/selected rows, `theme.inactive_fg` otherwise.
 pub fn draw_activity_bar(
     target: &ID2D1RenderTarget,
@@ -77,16 +98,26 @@ pub fn draw_activity_bar(
     // and `MacBackend::draw_activity_bar`'s `CGContextTranslateCTM`
     // (see that module's doc, "What #552's audit missed").
     let layout = win_activity_bar_layout(rect, bar);
+    let style = ActivityBarStyle::default();
+
+    // #1157: build a same-family, same-fallback `DWrite` sized to the
+    // (default) icon size — see this module's doc for the pt/px ratio —
+    // falling back to the caller's own `dwrite` handle if the resize
+    // fails (degrades to the pre-#1157 "icon tracks the caller's font
+    // size" behaviour rather than painting nothing).
+    let icon_size_pt = style.resolved_icon_size_px() * 72.0 / 96.0;
+    let icon_dwrite = dwrite.with_size(icon_size_pt);
+    let icon_dwrite = icon_dwrite.as_ref().unwrap_or(dwrite);
 
     let mut surface = super::surface::D2dSurface {
         target,
-        dwrite: Some(dwrite),
+        dwrite: Some(icon_dwrite),
     };
     super::text::with_translation(target, rect.x, rect.y, || {
         native_surface_paint::paint(
             bar,
             &layout,
-            &ActivityBarStyle::default(),
+            &style,
             &mut surface,
             theme,
             hovered_idx,
@@ -254,6 +285,60 @@ mod tests {
             (theme.separator.r, theme.separator.g, theme.separator.b),
             "right-edge column should paint theme.separator (quadraui#1081 \
              — this used to be a no-op on Windows)",
+        );
+    }
+
+    /// #1157: the icon glyph paints at the fixed VS-Code-parity size
+    /// (`ActivityBarStyle::resolved_icon_size_px`'s default, 24px)
+    /// regardless of the `DWrite` handle's own font size — the
+    /// regression this issue reports ("icon size follows the active
+    /// font"), fixed by `DWrite::with_size` deriving a same-family clone
+    /// rather than trusting the caller's own size.
+    #[test]
+    fn icon_ink_height_does_not_track_the_callers_dwrite_size() {
+        let bar = bar();
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let theme = Theme::default();
+
+        let ink_height = |dwrite_size_pt: f32| -> u32 {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            let (dwrite, _, _) =
+                DWrite::new("Segoe UI", dwrite_size_pt, None).expect("create DWrite");
+
+            surface
+                .paint(|target| {
+                    draw_activity_bar(target, &dwrite, rect, &bar, None, &theme);
+                })
+                .expect("paint activity bar");
+
+            // Settings (bottom-pinned, not active): no accent strip to
+            // isolate the glyph ink from. Exclude the right-edge
+            // separator column (x == W - 1), which is unconditional.
+            let bg = theme.tab_bar_bg;
+            let y0 = H as u32 - ACTIVITY_ROW_DIP as u32;
+            let y1 = H as u32;
+            let mut found: Option<(u32, u32)> = None;
+            for y in y0..y1 {
+                for x in 0..(W as u32 - 1) {
+                    let px = surface.pixel_at(x, y);
+                    if (px.r, px.g, px.b) != (bg.r, bg.g, bg.b) {
+                        found = Some(match found {
+                            Some((min_y, max_y)) => (min_y.min(y), max_y.max(y)),
+                            None => (y, y),
+                        });
+                    }
+                }
+            }
+            found.map_or(0, |(min_y, max_y)| max_y - min_y + 1)
+        };
+
+        let small_caller = ink_height(6.0);
+        let huge_caller = ink_height(40.0);
+        assert!(small_caller > 0, "sanity: the glyph should paint some ink");
+        assert_eq!(
+            small_caller, huge_caller,
+            "icon ink height must not track the caller's DWrite font size \
+             (6pt vs 40pt should paint identically)"
         );
     }
 

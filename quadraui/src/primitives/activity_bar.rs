@@ -140,8 +140,12 @@ pub struct ActivityItem {
 /// avoid. Construct with [`ActivityBarStyle::new`] /
 /// [`ActivityBarStyle::default`] and the `with_*` builders; the field
 /// stays `pub` for reading.
+// `Eq` dropped from the derive (was `PartialEq, Eq`): `icon_size_px`
+// (#1157) is an `Option<f32>`, and `f32` has no `Eq` impl (NaN isn't
+// reflexive) — the same reason no other float-carrying `Copy` chrome
+// style type in this crate (e.g. `TabChrome`) derives `Eq` either.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct ActivityBarStyle {
     /// Background fill colour for the active item's row. `None` (the
     /// default) = no fill, i.e. today's behaviour. Independent of
@@ -150,6 +154,24 @@ pub struct ActivityBarStyle {
     /// neither.
     #[serde(default)]
     pub active_bg: Option<Color>,
+
+    /// Icon glyph size, in device-independent pixels (issue #1157). `None`
+    /// (the default) resolves to [`DEFAULT_ACTIVITY_ICON_SIZE_PX`] via
+    /// [`Self::resolved_icon_size_px`] — VS-Code parity (~24px) regardless
+    /// of whatever size the app's editor or chrome font happens to be set
+    /// to.
+    ///
+    /// Before this field existed, macOS painted the icon glyph at
+    /// whatever font the backend's `draw_activity_bar` passed in — first
+    /// the *editor* font, then (post-#1003) the *chrome* font — so icon
+    /// size tracked a font size never meant to govern it; GTK independently
+    /// hardcoded a fixed 18pt (≈24px @ 96dpi) size for the same reason.
+    /// This field generalises GTK's already-correct fixed size into a
+    /// configurable, cross-backend knob every pixel backend now honours,
+    /// rather than leaving a third independently-tuned constant on
+    /// Win-GUI.
+    #[serde(default)]
+    pub icon_size_px: Option<f32>,
 }
 
 impl ActivityBarStyle {
@@ -164,7 +186,38 @@ impl ActivityBarStyle {
         self.active_bg = Some(color);
         self
     }
+
+    /// Set the icon glyph size, in device-independent pixels. See
+    /// [`Self::icon_size_px`]'s doc for how each pixel backend interprets
+    /// this value (issue #1157).
+    pub fn with_icon_size_px(mut self, size_px: f32) -> Self {
+        self.icon_size_px = Some(size_px);
+        self
+    }
+
+    /// [`Self::icon_size_px`], or [`DEFAULT_ACTIVITY_ICON_SIZE_PX`] if unset.
+    pub fn resolved_icon_size_px(&self) -> f32 {
+        self.icon_size_px.unwrap_or(DEFAULT_ACTIVITY_ICON_SIZE_PX)
+    }
 }
+
+/// VS Code renders its activity-bar icons (24×24 codicon SVGs) at a fixed
+/// size regardless of the app's editor or chrome font size. This is the
+/// default an [`ActivityBarStyle`] with no explicit
+/// [`ActivityBarStyle::icon_size_px`] resolves to via
+/// [`ActivityBarStyle::resolved_icon_size_px`] (issue #1157).
+///
+/// The unit is device-independent pixels, not any one backend's native
+/// font-size unit — GTK's Pango and Win-GUI's DirectWrite both size fonts
+/// in *points* under the legacy 96/72 dpi convention (`pt = px * 72.0 /
+/// 96.0`, the same ratio `crate::gtk::activity_bar::ICON_FONT_DESC`'s own
+/// doc already documents for its pre-#1157 hardcoded 18pt/24px pair), while
+/// Core Text's *points* on macOS are already device-independent pixels
+/// 1:1 (no 96/72 rescale) — each backend's `activity_bar` module doc spells
+/// out its own conversion at the call site that applies it. TUI is
+/// unaffected: it always paints one glyph per cell, independent of any
+/// font size.
+pub const DEFAULT_ACTIVITY_ICON_SIZE_PX: f32 = 24.0;
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
@@ -700,6 +753,27 @@ mod tests {
         let defaulted: ActivityBarStyle = serde_json::from_str(old_json).unwrap();
         assert_eq!(defaulted, ActivityBarStyle::default());
         assert_eq!(defaulted.active_bg, None);
+    }
+
+    /// #1157: `icon_size_px` round-trips, defaults to `None` for
+    /// pre-#1157 payloads (mirrors the `active_bg` test above), and
+    /// `resolved_icon_size_px` falls back to
+    /// [`DEFAULT_ACTIVITY_ICON_SIZE_PX`] when unset.
+    #[test]
+    fn activity_bar_style_icon_size_roundtrips_and_defaults() {
+        let style = ActivityBarStyle::new().with_icon_size_px(18.0);
+        let json = serde_json::to_string(&style).unwrap();
+        let back: ActivityBarStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(style, back);
+        assert_eq!(back.resolved_icon_size_px(), 18.0);
+
+        let old_json = "{}";
+        let defaulted: ActivityBarStyle = serde_json::from_str(old_json).unwrap();
+        assert_eq!(defaulted.icon_size_px, None);
+        assert_eq!(
+            defaulted.resolved_icon_size_px(),
+            DEFAULT_ACTIVITY_ICON_SIZE_PX
+        );
     }
 
     #[test]

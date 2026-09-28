@@ -64,6 +64,14 @@ pub struct DWrite {
     /// request bold-weight measurement/painting without constructing a
     /// throwaway `IDWriteTextFormat` per call.
     bold_text_format: IDWriteTextFormat,
+    /// Family name this handle was constructed with — stashed so
+    /// [`Self::with_size`] can build a same-family clone at a different
+    /// size without an `IDWriteTextFormat::GetFontFamilyName` round-trip
+    /// (issue #1157, the activity-bar icon glyph's fixed-size knob).
+    family: String,
+    /// Nerd-Font fallback this handle was constructed with, if any —
+    /// same reuse rationale as `family`.
+    fallback: Option<IDWriteFontFallback>,
 }
 
 impl DWrite {
@@ -170,10 +178,27 @@ impl DWrite {
                 factory,
                 text_format,
                 bold_text_format,
+                family: family.to_string(),
+                fallback: fallback.cloned(),
             },
             line_height,
             char_width,
         ))
+    }
+
+    /// Build a new `DWrite` for the same family and Nerd-Font fallback as
+    /// `self`, but at `size_pt` — used by `win::activity_bar` (issue
+    /// #1157) to paint the icon glyph at a fixed VS-Code-parity size
+    /// independent of whichever editor/chrome font size `self` itself
+    /// was constructed at, mirroring
+    /// [`crate::macos::backend::MacBackend`]'s
+    /// `font.clone_with_font_size(..)` and
+    /// `gtk::activity_bar::activity_bar_icon_font`'s fresh
+    /// `FontDescription` — both of which also derive a same-family,
+    /// differently-sized text handle from whatever the caller passed in,
+    /// rather than trusting its own size.
+    pub(crate) fn with_size(&self, size_pt: f32) -> WinResult<DWrite> {
+        DWrite::new(&self.family, size_pt, self.fallback.as_ref()).map(|(dw, _, _)| dw)
     }
 
     /// `(width, height)` DIPs of `text` laid out against this format —
