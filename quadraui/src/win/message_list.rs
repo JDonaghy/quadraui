@@ -1,23 +1,28 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::MessageList`] (issue
 //! #30).
 //!
-//! Mirrors [`crate::macos::message_list::draw_message_list`]: walks
-//! `rows[scroll_top..]`, painting each row's text at `(x + row.indent, y
-//! + i*line_height)`, vertically centred within the row pitch. Panel
-//! background fill is the caller's responsibility — repeated per-row bg
-//! fills would overdraw any header/separator the panel chrome already
-//! painted, same posture as every other backend's `draw_message_list`.
+//! Painting moved to the shared
+//! [`crate::primitives::message_list::native_surface_paint::paint`]
+//! (#1084, `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! per-backend divergence survey (most notably: `macos::message_list`
+//! used to ignore `row.spans` entirely; this module's own italic/
+//! underline/scale gap, described below, is unchanged by the move).
+//! [`draw_message_list`] below is now a thin wrapper over the shared
+//! paint, using [`crate::win::surface::D2dSurface`] as the `NativeSurface`
+//! adapter. `gtk::message_list::draw_message_list` is *not* migrated; see
+//! the shared `paint`'s doc for why.
 //!
 //! # Styled rows
 //!
 //! When a row's `spans` vector is **non-empty**, each span paints in its
 //! own `fg` (falling back to `row.fg`) and `bold` weight, via
-//! [`DWrite::draw_text_styled`]. `italic` / `underline` / `scale` are
-//! **not yet** applied: `DWrite` has no italic text format, underline
-//! attribute, or per-run font-scale wired up today (GTK applies these
-//! through Pango's `AttrList`, TUI through ratatui `Modifier`s — neither
-//! has a Direct2D equivalent yet). A future issue can add them once a
-//! consumer needs rich message-list rows on Windows; until then a
+//! [`NativeSurface::surface_draw_text_run_styled`]'s `D2dSurface`
+//! implementation (`DWrite::draw_text_styled`). `italic` / `underline` /
+//! `scale` are **not yet** applied: `DWrite` has no italic text format,
+//! underline attribute, or per-run font-scale wired up today (GTK applies
+//! these through Pango's `AttrList`, TUI through ratatui `Modifier`s —
+//! neither has a Direct2D equivalent yet). A future issue can add them
+//! once a consumer needs rich message-list rows on Windows; until then a
 //! styled row still renders correctly coloured, bold-aware text, which
 //! is what distinguishes it from the flat path.
 //!
@@ -50,45 +55,20 @@ pub fn draw_message_list(
     max_y: f32,
     line_height: f32,
 ) {
-    if line_height <= 0.0 {
-        return;
-    }
-    for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
-        let ry = y + i as f32 * line_height;
-        if ry + line_height > max_y {
-            break;
-        }
-
-        if !row.spans.is_empty() {
-            // ── Styled path ─────────────────────────────────────────────
-            let mut cursor_x = x + row.indent;
-            for span in &row.spans {
-                let span_fg = span.fg.unwrap_or(row.fg);
-                let (sw, sh) = dwrite
-                    .measure_text_styled(&span.text, span.bold)
-                    .unwrap_or((0.0, 0.0));
-                let sy = ry + (line_height - sh) / 2.0;
-                let _ = dwrite.draw_text_styled(
-                    target,
-                    &span.text,
-                    Rect::new(cursor_x, sy, sw.max(1.0), sh.max(1.0)),
-                    span_fg,
-                    span.bold,
-                );
-                cursor_x += sw;
-            }
-        } else {
-            // ── Flat path (unchanged from before spans were added) ───────
-            let (sw, sh) = dwrite.measure_text(&row.text).unwrap_or((0.0, 0.0));
-            let sy = ry + (line_height - sh) / 2.0;
-            let _ = dwrite.draw_text(
-                target,
-                &row.text,
-                Rect::new(x + row.indent, sy, sw.max(1.0), sh.max(1.0)),
-                row.fg,
-            );
-        }
-    }
+    let mut surface = super::surface::D2dSurface {
+        target,
+        dwrite: Some(dwrite),
+    };
+    // No real width is known at this call site (see the shared `paint`'s
+    // doc, "Zero-size guard") — `rect.width` is unused by `paint`, so
+    // `0.0` is an honest placeholder rather than a magic sentinel.
+    let rect = Rect::new(x, y, 0.0, max_y - y);
+    crate::primitives::message_list::native_surface_paint::paint(
+        list,
+        &mut surface,
+        rect,
+        line_height,
+    );
 }
 
 #[cfg(test)]

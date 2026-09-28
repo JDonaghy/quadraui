@@ -1,11 +1,22 @@
 //! Direct2D / DirectWrite rasteriser for [`crate::DataTable`] (issue #26).
 //!
-//! Mirrors `gtk::data_table`'s structure: [`DataTable::layout`] (the D6
-//! layout API) resolves column positions, row/header/footer heights,
-//! and scrollbar reservations; this module measures column titles (via
-//! DirectWrite) and paints (via [`super::text::fill_rect`] +
-//! [`DWrite::draw_text`]/`draw_text_styled`). Paint and hit-test both
-//! derive from one [`win_data_table_layout`] call.
+//! Painting moved to the shared
+//! [`crate::primitives::data_table::native_surface_paint::paint`] (#1084,
+//! `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! per-backend divergence survey this closed, most notably: this module
+//! used to hand-roll flat, non-hover-aware scrollbar fills (see the old
+//! "Scope for #26" note below) instead of the shared, translucent
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`]
+//! `gtk::data_table` already used, approximated selection/hover row tints
+//! with a CPU-side [`crate::types::Color::blend`] instead of a real alpha
+//! composite, and silently discarded every footer span's own `fg`,
+//! painting the whole footer cell in one colour. [`draw_data_table`]
+//! below is now a thin wrapper over the shared paint, using
+//! [`crate::win::surface::D2dSurface`] as the `NativeSurface` adapter —
+//! mirroring [`crate::macos::data_table::draw_data_table`]'s equivalent
+//! migration. `gtk::data_table::draw_data_table` is *not* migrated; see
+//! the shared `paint`'s doc for why. [`win_data_table_layout`] (pure
+//! geometry, no paint) is untouched.
 //!
 //! Issue #1078: only [`draw_data_table`] (the real Direct2D paint entry
 //! point) is `#[cfg(target_os = "windows")]`-gated. [`win_data_table_layout`]
@@ -17,32 +28,15 @@
 //! `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
 //! colours come from `Theme::default()` rather than a live `WinBackend`
 //! theme field.
-//!
-//! # Scope for #26
-//!
-//! Scrollbar track/thumb paint as flat fills (no `win::draw_scrollbar`
-//! dependency — that trait method is still a `todo!()` stub). Row
-//! selection/hover tint is computed as a CPU-side RGB blend
-//! ([`crate::types::Color::blend`]) rather than an alpha-blended
-//! `FillRectangle`, since the shared [`super::text::fill_rect`] helper
-//! takes an opaque [`crate::Color`].
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-#[cfg(target_os = "windows")]
-use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::event::Rect;
 use crate::primitives::data_table::DataTable;
-#[cfg(target_os = "windows")]
-use crate::primitives::data_table::{ColumnAlign, SortDirection};
 use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
 #[cfg(target_os = "windows")]
-use crate::primitives::scrollbar::Scrollbar;
-#[cfg(target_os = "windows")]
 use crate::theme::Theme;
-#[cfg(target_os = "windows")]
-use crate::types::Decoration;
 use crate::DataTableLayout;
 
 /// Compute a [`DataTable`]'s layout without painting — the DirectWrite
@@ -64,292 +58,32 @@ pub fn win_data_table_layout(
 /// resolved [`DataTableLayout`] for host click dispatch.
 ///
 /// `hovered_idx` tints the hovered body row (skipped when it's also
-/// the selected row).
-///
-/// # Visual contract
-///
-/// - **Header:** `Theme::tab_bar_bg`, bold title + sort-direction
-///   suffix (`▲`/`▼`), column separators in `Theme::separator`.
-/// - **Selected row:** `Theme::selection_bg` blended over the row's own
-///   background at `Theme::selection_alpha`.
-/// - **Hovered row:** `Theme::tab_bar_bg` blended at `0.5`.
-/// - **Muted rows:** cell text in `Theme::muted_fg` regardless of any
-///   per-span colour override.
-/// - **Footer:** a `Theme::separator` divider rule, `Theme::tab_bar_bg`
-///   background, bold cell text.
+/// the selected row). See
+/// [`crate::primitives::data_table::native_surface_paint::paint`]'s doc
+/// for the full visual contract this now shares with
+/// `macos::data_table::draw_data_table`.
 #[cfg(target_os = "windows")]
 pub fn draw_data_table(
     target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
+    dwrite: &super::text::DWrite,
     rect: Rect,
     table: &DataTable,
     line_height: f32,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
     let theme = Theme::default();
-    let layout = win_data_table_layout(dwrite, rect, table, line_height);
-    let h_off = table.h_scroll;
-
-    push_clip(target, rect);
-
-    // ── Header ───────────────────────────────────────────────────────
-    let _ = fill_rect(
+    let mut surface = super::surface::D2dSurface {
         target,
-        Rect::new(rect.x, rect.y, rect.width, layout.header_height),
-        theme.tab_bar_bg,
-    );
-
-    for (col_idx, rc) in layout.columns.iter().enumerate() {
-        let Some(col) = table.columns.get(col_idx) else {
-            break;
-        };
-        if rc.width <= 0.0 {
-            continue;
-        }
-        let sort_suffix = match &table.sort {
-            Some((si, dir)) if *si == col_idx => match dir {
-                SortDirection::Ascending => " \u{25B2}",
-                SortDirection::Descending => " \u{25BC}",
-            },
-            _ => "",
-        };
-        let title = format!("{}{}", col.title, sort_suffix);
-        let col_x = rect.x + rc.x - h_off;
-        let col_rect = Rect::new(col_x, rect.y, rc.width, layout.header_height);
-        push_clip(target, col_rect);
-        let (tw, th) = dwrite
-            .measure_text_styled(&title, true)
-            .unwrap_or((0.0, 0.0));
-        let text_x = align_text_x(col_x, rc.width, tw, col.align);
-        let _ = dwrite.draw_text_styled(
-            target,
-            &title,
-            Rect::new(text_x, rect.y, tw, th),
-            theme.foreground,
-            true,
-        );
-        pop_clip(target);
-    }
-
-    for (col_idx, rc) in layout.columns.iter().enumerate() {
-        if col_idx + 1 >= layout.columns.len() {
-            break;
-        }
-        let sep_x = rect.x + rc.x + rc.width - h_off;
-        let _ = fill_rect(
-            target,
-            Rect::new(sep_x, rect.y, 1.0, layout.header_height),
-            theme.separator,
-        );
-    }
-
-    // ── Body ─────────────────────────────────────────────────────────
-    let body_y = rect.y + layout.header_height;
-    let visible = layout
-        .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
-
-    for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
-        let row = &table.rows[abs_idx];
-        let row_y = body_y + row_idx as f32 * line_height;
-        let is_selected = table.selected_idx == Some(abs_idx);
-        let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
-        let is_muted = row.decoration == Decoration::Muted;
-
-        let row_bg = if is_selected {
-            theme
-                .background
-                .blend(theme.selection_bg, theme.selection_alpha as f64)
-        } else if is_hovered {
-            theme.background.blend(theme.tab_bar_bg, 0.5)
-        } else {
-            theme.background
-        };
-        let _ = fill_rect(
-            target,
-            Rect::new(rect.x, row_y, rect.width, line_height),
-            row_bg,
-        );
-
-        for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let Some(styled) = row.cells.get(col_idx).filter(|c| !c.spans.is_empty()) else {
-                continue;
-            };
-            if rc.width <= 0.0 {
-                continue;
-            }
-            let col_x = rect.x + rc.x - h_off;
-            let col_rect = Rect::new(col_x, row_y, rc.width, line_height);
-            push_clip(target, col_rect);
-
-            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-            let (tw, th) = dwrite.measure_text(&full_text).unwrap_or((0.0, 0.0));
-            let align = table
-                .columns
-                .get(col_idx)
-                .map(|c| c.align)
-                .unwrap_or(ColumnAlign::Left);
-            let text_x = align_text_x(col_x, rc.width, tw, align);
-
-            if is_muted {
-                let _ = dwrite.draw_text(
-                    target,
-                    &full_text,
-                    Rect::new(text_x, row_y, tw, th),
-                    theme.muted_fg,
-                );
-            } else {
-                // Per-span colour runs, painted left to right from
-                // `text_x` (only meaningful for `ColumnAlign::Left`;
-                // centre/right alignment still anchors the whole run at
-                // `text_x` — matches `gtk::data_table`'s single anchor
-                // point for a multi-span cell).
-                let mut run_x = text_x;
-                for span in &styled.spans {
-                    let (sw, sh) = dwrite.measure_text(&span.text).unwrap_or((0.0, 0.0));
-                    let fg = span.fg.unwrap_or(theme.foreground);
-                    let _ =
-                        dwrite.draw_text(target, &span.text, Rect::new(run_x, row_y, sw, sh), fg);
-                    run_x += sw;
-                }
-            }
-            pop_clip(target);
-        }
-
-        for (col_idx, rc) in layout.columns.iter().enumerate() {
-            if col_idx + 1 >= layout.columns.len() || rc.width <= 0.0 {
-                continue;
-            }
-            let sep_x = rect.x + rc.x + rc.width - h_off;
-            let _ = fill_rect(
-                target,
-                Rect::new(sep_x, row_y, 1.0, line_height),
-                theme.separator,
-            );
-        }
-    }
-
-    // ── Scrollbars ───────────────────────────────────────────────────
-    let footer_h = layout.footer_height;
-    if table.show_scrollbar
-        && table.rows.len() > layout.visible_rows
-        && layout.scrollbar_width > 0.0
-    {
-        let sb_x = rect.x + rect.width - layout.scrollbar_width;
-        let track = Rect::new(
-            sb_x,
-            rect.y + layout.header_height,
-            layout.scrollbar_width,
-            (rect.height - layout.header_height - footer_h).max(0.0),
-        );
-        let sb = Scrollbar::vertical(
-            table.id.clone(),
-            track,
-            table.scroll_offset as f32,
-            table.rows.len() as f32,
-            layout.visible_rows as f32,
-            line_height,
-        );
-        paint_scrollbar(target, &sb, &theme);
-    }
-    if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
-        let hsb_y = rect.y + rect.height - footer_h - layout.h_scrollbar_height;
-        let track_w = (rect.width - layout.scrollbar_width).max(1.0);
-        let track = Rect::new(rect.x, hsb_y, track_w, layout.h_scrollbar_height);
-        let sb = Scrollbar::horizontal(
-            table.id.clone(),
-            track,
-            table.h_scroll,
-            layout.content_width,
-            track_w,
-            line_height,
-        );
-        paint_scrollbar(target, &sb, &theme);
-    }
-
-    // ── Footer ───────────────────────────────────────────────────────
-    if let Some(footer) = &table.footer {
-        if footer_h > 0.0 {
-            let footer_band_top = rect.y + rect.height - footer_h;
-            let footer_y = rect.y + rect.height - line_height;
-            let _ = fill_rect(
-                target,
-                Rect::new(rect.x, footer_band_top - 0.5, rect.width, 1.0),
-                theme.separator,
-            );
-            let _ = fill_rect(
-                target,
-                Rect::new(rect.x, footer_band_top, rect.width, footer_h),
-                theme.tab_bar_bg,
-            );
-
-            for (col_idx, rc) in layout.columns.iter().enumerate() {
-                let Some(styled) = footer.cells.get(col_idx).filter(|c| !c.spans.is_empty()) else {
-                    continue;
-                };
-                if rc.width <= 0.0 {
-                    continue;
-                }
-                let col_x = rect.x + rc.x - h_off;
-                push_clip(target, Rect::new(col_x, footer_y, rc.width, line_height));
-                let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let (tw, th) = dwrite
-                    .measure_text_styled(&full_text, true)
-                    .unwrap_or((0.0, 0.0));
-                let align = table
-                    .columns
-                    .get(col_idx)
-                    .map(|c| c.align)
-                    .unwrap_or(ColumnAlign::Left);
-                let text_x = align_text_x(col_x, rc.width, tw, align);
-                let _ = dwrite.draw_text_styled(
-                    target,
-                    &full_text,
-                    Rect::new(text_x, footer_y, tw, th),
-                    theme.foreground,
-                    true,
-                );
-                pop_clip(target);
-            }
-        }
-    }
-
-    pop_clip(target);
-    layout
-}
-
-#[cfg(target_os = "windows")]
-fn align_text_x(col_x: f32, col_w: f32, text_w: f32, align: ColumnAlign) -> f32 {
-    match align {
-        ColumnAlign::Left => col_x,
-        ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
-        ColumnAlign::Right => col_x + col_w - text_w,
-    }
-}
-
-/// Paint `sb`'s track (`scrollbar_track`) and thumb (`scrollbar_thumb`)
-/// as flat fills — see this module's "Scope for #26" doc for why this
-/// doesn't delegate to a shared `draw_scrollbar` (still a `todo!()`
-/// stub on `WinBackend`).
-#[cfg(target_os = "windows")]
-fn paint_scrollbar(target: &ID2D1RenderTarget, sb: &Scrollbar, theme: &Theme) {
-    let _ = fill_rect(target, sb.track, theme.scrollbar_track);
-    let thumb = match sb.axis {
-        crate::primitives::scrollbar::ScrollAxis::Vertical => Rect::new(
-            sb.track.x,
-            sb.track.y + sb.thumb_start,
-            sb.track.width,
-            sb.thumb_len,
-        ),
-        crate::primitives::scrollbar::ScrollAxis::Horizontal => Rect::new(
-            sb.track.x + sb.thumb_start,
-            sb.track.y,
-            sb.thumb_len,
-            sb.track.height,
-        ),
+        dwrite: Some(dwrite),
     };
-    let _ = fill_rect(target, thumb, theme.scrollbar_thumb);
+    crate::primitives::data_table::native_surface_paint::paint(
+        table,
+        &mut surface,
+        &theme,
+        rect,
+        line_height,
+        hovered_idx,
+    )
 }
 
 // #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
@@ -358,9 +92,10 @@ fn paint_scrollbar(target: &ID2D1RenderTarget, sb: &Scrollbar, theme: &Theme) {
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
-    use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTableHit};
-    use crate::types::{StyledText, WidgetId};
+    use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow, DataTableHit};
+    use crate::types::{Decoration, StyledText, WidgetId};
     use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
 
     const W: f32 = 300.0;
     const H: f32 = 100.0;
@@ -481,5 +216,64 @@ mod tests {
             .expect("paint");
         let no_paint = win_data_table_layout(&dwrite, rect, &table, LINE_HEIGHT);
         assert_eq!(painted, no_paint);
+    }
+
+    /// #1084's RED-before-the-port case: pre-migration,
+    /// `win::data_table::draw_data_table`'s footer painted the *entire*
+    /// cell as one run in `theme.foreground`, discarding every span's own
+    /// `fg` — there was no way for a footer span's colour override to
+    /// ever reach the screen on this backend. The shared `paint` now
+    /// splits by span, so the "Total" span's red `fg` must actually
+    /// appear somewhere in the footer band.
+    #[test]
+    fn footer_span_colour_overrides_the_default_foreground() {
+        use crate::types::{Color, StyledSpan};
+
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let mut t = table(vec![row("a.txt", "1kb")]);
+        t.footer = Some(DataRow {
+            cells: vec![
+                StyledText {
+                    spans: vec![StyledSpan {
+                        text: "Total".into(),
+                        fg: Some(Color::rgb(255, 0, 0)),
+                        bg: None,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                    }],
+                },
+                StyledText::plain("3"),
+            ],
+            decoration: Decoration::Normal,
+        });
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        surface
+            .fill_rect(rect, Color::rgb(255, 255, 255))
+            .expect("fill white bg");
+        surface
+            .paint(|target| {
+                draw_data_table(target, &dwrite, rect, &t, LINE_HEIGHT, None);
+            })
+            .expect("paint data table");
+
+        let layout = win_data_table_layout(&dwrite, rect, &t, LINE_HEIGHT);
+        let footer_top = (H - layout.footer_height).max(0.0) as u32;
+
+        let mut found_red = false;
+        for y in footer_top..(H as u32) {
+            for x in 0..(W as u32) {
+                let px = surface.pixel_at(x, y);
+                if px.r > 200 && px.g < 80 && px.b < 80 {
+                    found_red = true;
+                }
+            }
+        }
+        assert!(
+            found_red,
+            "footer 'Total' span should paint in its own red fg, not \
+             the pre-#1084 whole-cell `theme.foreground`"
+        );
     }
 }

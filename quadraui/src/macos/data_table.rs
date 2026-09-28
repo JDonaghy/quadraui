@@ -1,31 +1,29 @@
 //! macOS rasteriser for [`crate::DataTable`].
 //!
-//! Mirrors [`crate::gtk::data_table::draw_data_table`]: header row at
-//! `(line_height * 1.2)` with bold-ish accent (rendered as the default
-//! font for now — bold lands with the unified text-attribute pass),
-//! sort glyphs (`▲` / `▼`) suffixed onto the active sort column's
-//! title, body rows at `line_height` pitch with hover/select tints,
-//! column separators, and vertical + horizontal scrollbars when
-//! configured.
-//!
-//! ## Scope omissions (follow-up)
-//!
-//! - **Bold header text** — needs `CTFontCreateCopyWithSymbolicTraits`
-//!   bold variant, deferred with the text-attribute pass.
-//! - **Per-row selection alpha blending** — GTK uses `selection_alpha`
-//!   for translucent selection; macOS paints a solid `selection_bg`
-//!   pixel today. Visual parity tracked separately.
+//! Painting moved to the shared
+//! [`crate::primitives::data_table::native_surface_paint::paint`] (#1084,
+//! `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! per-backend divergence survey this closed, most notably: this module
+//! used to paint a fully opaque `selection_bg` pixel for the selected row
+//! (no alpha blending at all — a documented "Scope omission" prior to
+//! this migration) and hand-rolled flat, non-hover-aware scrollbar fills
+//! instead of the shared, translucent
+//! [`crate::primitives::scrollbar::native_surface_paint::paint`]
+//! `gtk::data_table` already used. [`draw_data_table`] below is now a
+//! thin wrapper over the shared paint, using
+//! [`crate::macos::surface::CgSurface`] as the `NativeSurface` adapter —
+//! mirroring [`crate::win::data_table::draw_data_table`]'s equivalent
+//! migration. `gtk::data_table::draw_data_table` is *not* migrated; see
+//! the shared `paint`'s doc for why. [`mac_data_table_layout`] (pure
+//! geometry, no paint) is untouched.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-
-use super::text::{draw_text, measure_text};
-use crate::primitives::data_table::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
+use crate::primitives::data_table::DataTable;
 use crate::primitives::layout_metrics::pixel_data_table_layout;
 use crate::theme::Theme;
-use crate::types::Decoration;
+use crate::DataTableLayout;
 
 /// Compute the layout the macOS rasteriser would produce for `table`
 /// at `(x, y, w, h)` and `line_height`. Shares its column-measurement
@@ -67,260 +65,19 @@ pub unsafe fn draw_data_table(
     line_height: f64,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
-    let layout = mac_data_table_layout(table, font, x, y, w, h, line_height);
-    if w <= 0.0 || h <= 0.0 {
-        return layout;
-    }
-
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, rect(x, y, w, h));
-
-    // Header background.
-    fill_rect(ctx, x, y, w, layout.header_height as f64, theme.tab_bar_bg);
-
-    let h_off = table.h_scroll as f64;
-    let header_height = layout.header_height as f64;
-
-    for (col_idx, rc) in layout.columns.iter().enumerate() {
-        if col_idx >= table.columns.len() || rc.width <= 0.0 {
-            break;
-        }
-        let col = &table.columns[col_idx];
-        let sort_suffix = match &table.sort {
-            Some((si, dir)) if *si == col_idx => match dir {
-                SortDirection::Ascending => " ▲",
-                SortDirection::Descending => " ▼",
-            },
-            _ => "",
-        };
-        let title = format!("{}{}", col.title, sort_suffix);
-        let (text_w, _) = measure_text(font, &title);
-        let col_x = x + rc.x as f64 - h_off;
-        let col_w = rc.width as f64;
-
-        let text_x = match col.align {
-            ColumnAlign::Left => col_x,
-            ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
-            ColumnAlign::Right => col_x + col_w - text_w,
-        };
-        // Clip header text to its column rect so titles that exceed
-        // the column width truncate instead of overflowing into the
-        // neighbour. Matches the GTK rasteriser.
-        CGContextSaveGState(ctx);
-        CGContextClipToRect(ctx, rect(col_x, y, col_w, header_height));
-        draw_text(
-            ctx,
-            font,
-            &title,
-            text_x,
-            y + (header_height - measure_text(font, &title).1) / 2.0,
-            color_to_cg(theme.foreground),
-        );
-        CGContextRestoreGState(ctx);
-    }
-
-    // Header column separators.
-    for (col_idx, rc) in layout.columns.iter().enumerate() {
-        if col_idx + 1 >= layout.columns.len() {
-            break;
-        }
-        let sep_x = x + (rc.x + rc.width) as f64 - h_off;
-        fill_rect(ctx, sep_x - 0.5, y, 1.0, header_height, theme.separator);
-    }
-
-    // Body rows.
-    let body_y = y + header_height;
-    let visible = layout
-        .visible_rows
-        .min(table.rows.len().saturating_sub(table.scroll_offset));
-
-    for row_idx in 0..visible {
-        let abs_idx = table.scroll_offset + row_idx;
-        let row = &table.rows[abs_idx];
-        let row_y = body_y + row_idx as f64 * line_height;
-        let is_selected = table.selected_idx == Some(abs_idx);
-        let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
-
-        if is_selected {
-            fill_rect(ctx, x, row_y, w, line_height, theme.selection_bg);
-        } else if is_hovered {
-            // Half-mix hover tint: blend tab_bar_bg into row bg.
-            fill_rect(ctx, x, row_y, w, line_height, theme.tab_bar_bg);
-        }
-
-        for (col_idx, rc) in layout.columns.iter().enumerate() {
-            let styled = match row.cells.get(col_idx) {
-                Some(c) if !c.spans.is_empty() => c,
-                _ => continue,
-            };
-            if rc.width <= 0.0 {
-                continue;
-            }
-            let col_w = rc.width as f64;
-            let col_x = x + rc.x as f64 - h_off;
-            let is_muted = matches!(row.decoration, Decoration::Muted);
-
-            let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-            let (text_w, text_h) = measure_text(font, &full_text);
-            let align = table
-                .columns
-                .get(col_idx)
-                .map(|c| c.align)
-                .unwrap_or(ColumnAlign::Left);
-            let text_x = match align {
-                ColumnAlign::Left => col_x,
-                ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
-                ColumnAlign::Right => col_x + col_w - text_w,
-            };
-            let row_fg = if is_muted {
-                theme.muted_fg
-            } else {
-                theme.foreground
-            };
-            // Clip to the cell rect so text doesn't bleed past a
-            // narrow column when the user shrinks it.
-            CGContextSaveGState(ctx);
-            CGContextClipToRect(ctx, rect(col_x, row_y, col_w, line_height));
-
-            // Per-span colouring: paint each span at its measured
-            // x-offset using its own fg. Muted rows override fg
-            // globally per GTK convention.
-            let mut span_x = text_x;
-            let text_y = row_y + (line_height - text_h) / 2.0;
-            for span in &styled.spans {
-                let (sw, _) = measure_text(font, &span.text);
-                let span_fg = if is_muted {
-                    theme.muted_fg
-                } else {
-                    span.fg.unwrap_or(row_fg)
-                };
-                draw_text(ctx, font, &span.text, span_x, text_y, color_to_cg(span_fg));
-                span_x += sw;
-            }
-
-            CGContextRestoreGState(ctx);
-        }
-    }
-
-    // Vertical scrollbar — simple thumb on track.
-    let footer_h = layout.footer_height as f64;
-    if table.show_scrollbar
-        && table.rows.len() > layout.visible_rows
-        && layout.scrollbar_width > 0.0
-    {
-        let sb_x = x + w - layout.scrollbar_width as f64;
-        let track_y = body_y;
-        let track_h = (h - header_height - layout.h_scrollbar_height as f64 - footer_h).max(0.0);
-        fill_rect(
-            ctx,
-            sb_x,
-            track_y,
-            layout.scrollbar_width as f64,
-            track_h,
-            theme.tab_bar_bg,
-        );
-        // Thumb proportional to visible / total.
-        let total = table.rows.len() as f64;
-        let visible = layout.visible_rows.max(1) as f64;
-        let thumb_h = (track_h * (visible / total)).max(4.0);
-        let thumb_y = track_y
-            + (track_h - thumb_h) * (table.scroll_offset as f64 / (total - visible).max(1.0));
-        fill_rect(
-            ctx,
-            sb_x,
-            thumb_y,
-            layout.scrollbar_width as f64,
-            thumb_h,
-            theme.scrollbar_thumb,
-        );
-    }
-
-    // Horizontal scrollbar — same shape.
-    if layout.h_scrollbar_height > 0.0 && layout.content_width > 0.0 {
-        let hsb_y = y + h - footer_h - layout.h_scrollbar_height as f64;
-        let track_w = (w - layout.scrollbar_width as f64).max(1.0);
-        fill_rect(
-            ctx,
-            x,
-            hsb_y,
-            track_w,
-            layout.h_scrollbar_height as f64,
-            theme.tab_bar_bg,
-        );
-        let visible = track_w as f32;
-        let total = layout.content_width;
-        let thumb_w = (track_w * (visible as f64 / total as f64)).max(4.0);
-        let thumb_x =
-            x + (track_w - thumb_w) * (table.h_scroll as f64 / (total - visible).max(1.0) as f64);
-        fill_rect(
-            ctx,
-            thumb_x,
-            hsb_y,
-            thumb_w,
-            layout.h_scrollbar_height as f64,
-            theme.scrollbar_thumb,
-        );
-    }
-
-    // Footer — pinned summary row, laid out against the same resolved
-    // columns as the body. Divider rule + tab_bar_bg background make
-    // it visually distinct from the scrollable body (bold weight is
-    // deferred with the rest of the text-attribute pass, see module
-    // docs).
-    if let Some(footer) = &table.footer {
-        if footer_h > 0.0 {
-            // `footer_h` reserves `line_height * 2.0` (see
-            // `DataTable::layout`): a divider row plus the content
-            // row. Fill the whole band, but keep text in the bottom
-            // `line_height` sub-band, matching the TUI/GTK rasterisers.
-            let footer_band_top = y + h - footer_h;
-            let footer_y = y + h - line_height;
-            fill_rect(ctx, x, footer_band_top - 0.5, w, 1.0, theme.separator);
-            fill_rect(ctx, x, footer_band_top, w, footer_h, theme.tab_bar_bg);
-
-            for (col_idx, rc) in layout.columns.iter().enumerate() {
-                let styled = match footer.cells.get(col_idx) {
-                    Some(c) if !c.spans.is_empty() => c,
-                    _ => continue,
-                };
-                if rc.width <= 0.0 {
-                    continue;
-                }
-                let col_w = rc.width as f64;
-                let col_x = x + rc.x as f64 - h_off;
-
-                let full_text: String = styled.spans.iter().map(|s| s.text.as_str()).collect();
-                let (text_w, text_h) = measure_text(font, &full_text);
-                let align = table
-                    .columns
-                    .get(col_idx)
-                    .map(|c| c.align)
-                    .unwrap_or(ColumnAlign::Left);
-                let text_x = match align {
-                    ColumnAlign::Left => col_x,
-                    ColumnAlign::Center => col_x + (col_w - text_w) / 2.0,
-                    ColumnAlign::Right => col_x + col_w - text_w,
-                };
-
-                CGContextSaveGState(ctx);
-                CGContextClipToRect(ctx, rect(col_x, footer_y, col_w, line_height));
-
-                let mut span_x = text_x;
-                let text_y = footer_y + (line_height - text_h) / 2.0;
-                for span in &styled.spans {
-                    let (sw, _) = measure_text(font, &span.text);
-                    let span_fg = span.fg.unwrap_or(theme.foreground);
-                    draw_text(ctx, font, &span.text, span_x, text_y, color_to_cg(span_fg));
-                    span_x += sw;
-                }
-
-                CGContextRestoreGState(ctx);
-            }
-        }
-    }
-
-    CGContextRestoreGState(ctx);
-    layout
+    let mut surface = super::surface::CgSurface {
+        ctx,
+        font: Some(font),
+    };
+    let rect = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    crate::primitives::data_table::native_surface_paint::paint(
+        table,
+        &mut surface,
+        theme,
+        rect,
+        line_height as f32,
+        hovered_idx,
+    )
 }
 
 #[cfg(test)]
@@ -330,9 +87,11 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
-    use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTable, DataTableHit};
+    use crate::primitives::data_table::{
+        Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit, SortDirection,
+    };
     use crate::theme::Theme;
-    use crate::types::{StyledText, WidgetId};
+    use crate::types::{Decoration, StyledText, WidgetId};
     use crate::Backend;
 
     const W: u32 = 320;
@@ -387,10 +146,26 @@ mod tests {
         table: &DataTable,
         hovered: Option<usize>,
     ) -> (BitmapSurface, DataTableLayout) {
+        paint_via_backend_themed(table, hovered, Theme::default())
+    }
+
+    /// Like [`paint_via_backend`], but with an explicit theme — used by
+    /// tests that need a deterministic (non-translucent) tint colour to
+    /// assert an exact pixel match against, since #1084 made the
+    /// selection/hover row tints real alpha blends over whatever the
+    /// surface already held (see this module's doc). Mirrors
+    /// `macos::command_line`'s `selection_paints_highlight_behind_text`
+    /// test, which sets `selection_alpha: 1.0` for the same reason.
+    fn paint_via_backend_themed(
+        table: &DataTable,
+        hovered: Option<usize>,
+        theme: Theme,
+    ) -> (BitmapSurface, DataTableLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
+        backend.set_theme(theme);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
@@ -438,9 +213,17 @@ mod tests {
 
     #[test]
     fn selected_row_paints_selection_bg() {
+        // `selection_alpha: 1.0` makes the (now real, #1084) alpha blend
+        // an opaque replace, so the exact-colour assertion below still
+        // pins the right colour without needing to reason about
+        // compositing math against the surface's initial transparent
+        // fill.
         let table = sample_table();
-        let (surface, layout) = paint_via_backend(&table, None);
-        let theme = Theme::default();
+        let theme = Theme {
+            selection_alpha: 1.0,
+            ..Theme::default()
+        };
+        let (surface, layout) = paint_via_backend_themed(&table, None, theme);
         // selected_idx = 1 → second body row. Probe glyph-free area of
         // col 0 (after "beta").
         let (r, g, b) = probe_cell_bg(&surface, &layout, 0, 1);
@@ -454,16 +237,48 @@ mod tests {
         );
     }
 
+    /// #1084's RED-before-the-port case: pre-migration,
+    /// `macos::data_table::draw_data_table` painted the selected row's
+    /// tint as a fully opaque `fill_rect(..., theme.selection_bg)` — its
+    /// own module doc named this outright ("macOS paints a solid
+    /// `selection_bg` pixel today"). At the crate's real default
+    /// `selection_alpha` (`0.50`), painting over the surface's initial
+    /// fully-transparent-black fill must now read back *darker* than the
+    /// pure `selection_bg` colour — proof the shared `paint` is
+    /// compositing a translucent tint, not replacing the pixel outright.
+    #[test]
+    fn selected_row_tint_is_translucent_at_the_real_default_alpha() {
+        let table = sample_table();
+        let theme = Theme::default();
+        assert!(
+            (0.0..1.0).contains(&theme.selection_alpha),
+            "this test only proves something if the default alpha is translucent"
+        );
+        let (surface, layout) = paint_via_backend(&table, None);
+        let (r, g, b) = probe_cell_bg(&surface, &layout, 0, 1);
+        assert_ne!(
+            (r, g, b),
+            (
+                theme.selection_bg.r,
+                theme.selection_bg.g,
+                theme.selection_bg.b
+            ),
+            "a translucent selection tint composited over a transparent-black \
+             surface must read back darker than the pure selection colour"
+        );
+    }
+
     #[test]
     fn hover_tint_painted_when_hovered_idx_set() {
         let mut table = sample_table();
         table.selected_idx = None;
-        let (surface, layout) = paint_via_backend(&table, Some(2));
         let theme = Theme::default();
+        let (surface, layout) = paint_via_backend_themed(&table, Some(2), theme);
         let (r, g, b) = probe_cell_bg(&surface, &layout, 0, 2);
-        assert_eq!(
+        assert_ne!(
             (r, g, b),
-            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            (0, 0, 0),
+            "hovered row should paint a visible tint, not leave the transparent-black surface untouched",
         );
     }
 
