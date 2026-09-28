@@ -1195,12 +1195,16 @@ impl crate::Backend for RecordingBackend {
     fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
         unimplemented!("RecordingBackend has no Panel layout algorithm")
     }
-    fn draw_toast_stack(&mut self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
+    fn draw_toast_overlay(
+        &mut self,
+        _r: Rect,
+        _s: &crate::ToastOverlay,
+    ) -> crate::ToastStackLayout {
         self.record("draw_toast_stack");
-        unimplemented!("RecordingBackend has no ToastStack layout algorithm")
+        unimplemented!("RecordingBackend has no ToastOverlay layout algorithm")
     }
-    fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
-        unimplemented!("RecordingBackend has no ToastStack layout algorithm")
+    fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastOverlay) -> crate::ToastStackLayout {
+        unimplemented!("RecordingBackend has no ToastOverlay layout algorithm")
     }
     fn draw_pipeline_view(
         &mut self,

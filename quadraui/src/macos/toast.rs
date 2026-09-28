@@ -1,4 +1,4 @@
-//! macOS rasteriser for [`crate::ToastStack`].
+//! macOS rasteriser for [`crate::ToastOverlay`].
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
@@ -24,10 +24,10 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::primitives::layout_metrics::pixel_toast_stack_layout;
-use crate::primitives::toast::{ToastStack, ToastStackLayout};
+use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::theme::Theme;
 
-/// Compute the macOS pixel-unit layout for a [`ToastStack`].
+/// Compute the macOS pixel-unit layout for a [`ToastOverlay`].
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
 /// screen coordinates, matching `mac_menu_bar_layout` / `mac_panel_layout`)
@@ -45,7 +45,7 @@ use crate::theme::Theme;
 /// module doc).
 #[allow(clippy::too_many_arguments)]
 pub fn mac_toast_stack_layout(
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     font: &CTFont,
     origin_x: f32,
     origin_y: f32,
@@ -88,7 +88,7 @@ pub unsafe fn draw_toast_stack(
     origin_y: f64,
     viewport_width: f64,
     viewport_height: f64,
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     theme: &Theme,
     line_height: f64,
 ) -> ToastStackLayout {
@@ -116,7 +116,7 @@ mod tests {
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::layout_metrics::pixel;
-    use crate::primitives::toast::{ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity};
+    use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastHit, ToastSeverity};
     use crate::types::WidgetId;
     use crate::Backend;
 
@@ -127,8 +127,8 @@ mod tests {
         make_font("Menlo", 14.0).expect("Menlo installed")
     }
 
-    fn toast(id: &str, title: &str, severity: ToastSeverity) -> ToastItem {
-        ToastItem {
+    fn toast(id: &str, title: &str, severity: ToastSeverity) -> Toast {
+        Toast {
             id: WidgetId::new(id),
             title: title.into(),
             body: String::new(),
@@ -138,8 +138,8 @@ mod tests {
         }
     }
 
-    fn sample_stack() -> ToastStack {
-        ToastStack {
+    fn sample_stack() -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![
@@ -150,7 +150,7 @@ mod tests {
         }
     }
 
-    fn paint_via_backend(stack: &ToastStack) -> (BitmapSurface, ToastStackLayout) {
+    fn paint_via_backend(stack: &ToastOverlay) -> (BitmapSurface, ToastStackLayout) {
         paint_via_backend_at(stack, 0.0, 0.0)
     }
 
@@ -164,7 +164,7 @@ mod tests {
     /// keep resolving against raw (unshifted) click coordinates at any
     /// origin, not just `(0, 0)`.
     fn paint_via_backend_at(
-        stack: &ToastStack,
+        stack: &ToastOverlay,
         origin_x: f32,
         origin_y: f32,
     ) -> (BitmapSurface, ToastStackLayout) {
@@ -175,7 +175,7 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_toast_stack(
+            let l = b.draw_toast_overlay(
                 QRect::new(origin_x, origin_y, W as f32 - origin_x, H as f32 - origin_y),
                 stack,
             );
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn severity_tint_painted() {
-        let stack = ToastStack {
+        let stack = ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![toast("err", "Boom", ToastSeverity::Error)],
@@ -262,11 +262,11 @@ mod tests {
     /// [`paint_via_backend_at`] for the quadraui#494 non-zero-origin
     /// rationale.
     fn action_button_reserves_action_bounds_at(origin_x: f32, origin_y: f32) {
-        let stack = ToastStack {
+        let stack = ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
-            toasts: vec![ToastItem {
-                actions: vec![ToastAction {
+            toasts: vec![Toast {
+                actions: vec![ToastButton {
                     id: WidgetId::new("undo"),
                     label: "Undo".into(),
                     primary: false,
@@ -277,7 +277,7 @@ mod tests {
         };
         let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
         let t = &layout.visible_toasts[0];
-        let ab = *t.action_bounds.first().expect("action bounds present");
+        let ab = *t.action_rects.first().expect("action bounds present");
         // Hit-test the action returns Action.
         let hit = layout.hit_test(ab.x + ab.width * 0.5, ab.y + ab.height * 0.5);
         assert!(matches!(hit, ToastHit::Action(_)), "hit was {:?}", hit);
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn empty_stack_no_visible_toasts() {
-        let stack = ToastStack {
+        let stack = ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![],

@@ -1,4 +1,4 @@
-//! GTK rasteriser for [`crate::ToastStack`].
+//! GTK rasteriser for [`crate::ToastOverlay`].
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
@@ -17,10 +17,10 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::primitives::layout_metrics::pixel_toast_stack_layout;
-use crate::primitives::toast::{ToastStack, ToastStackLayout};
+use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::theme::Theme;
 
-/// Compute the GTK pixel-unit layout for a [`ToastStack`] without painting.
+/// Compute the GTK pixel-unit layout for a [`ToastOverlay`] without painting.
 ///
 /// `(origin_x, origin_y)` is baked into the returned bounds (absolute
 /// window coordinates, matching `gtk_menu_bar_layout` / `gtk_panel_layout`)
@@ -38,7 +38,7 @@ use crate::theme::Theme;
 /// `super::toolbar::PangoMeasure` never touches attributes itself.
 #[allow(clippy::too_many_arguments)]
 pub fn gtk_toast_stack_layout(
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     pango_layout: &pango::Layout,
     origin_x: f32,
     origin_y: f32,
@@ -81,7 +81,7 @@ pub fn draw_toast_stack(
     origin_y: f64,
     viewport_width: f64,
     viewport_height: f64,
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     theme: &Theme,
     line_height: f64,
 ) -> ToastStackLayout {
@@ -105,7 +105,7 @@ pub fn draw_toast_stack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toast::{ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack};
+    use crate::primitives::toast::{Toast, ToastCorner, ToastHit, ToastOverlay, ToastSeverity};
     use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
@@ -124,8 +124,8 @@ mod tests {
     /// A toast with a distinct `accent` fill (overrides the severity
     /// tint) so its painted box is trivially distinguishable from the
     /// white canvas background by colour, without scanning for glyphs.
-    fn colored_toast(id: &str, title: &str) -> ToastItem {
-        ToastItem {
+    fn colored_toast(id: &str, title: &str) -> Toast {
+        Toast {
             id: WidgetId::new(id),
             title: title.into(),
             body: String::new(),
@@ -135,8 +135,8 @@ mod tests {
         }
     }
 
-    fn stack_br(toasts: Vec<ToastItem>) -> ToastStack {
-        ToastStack {
+    fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts,

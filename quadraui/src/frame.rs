@@ -130,7 +130,7 @@ use crate::primitives::status_bar::StatusBar;
 use crate::primitives::tab_bar::TabBar;
 use crate::primitives::terminal::Terminal;
 use crate::primitives::text_display::TextDisplay;
-use crate::primitives::toast::ToastStack;
+use crate::primitives::toast::ToastOverlay;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeView;
 use crate::types::WidgetId;
@@ -236,7 +236,7 @@ pub enum Surface<'a> {
     },
     Toast {
         rect: Rect,
-        stack: &'a ToastStack,
+        stack: &'a ToastOverlay,
     },
     DataTable {
         rect: Rect,
@@ -440,7 +440,7 @@ impl<'a> ScreenLayout<'a> {
                     backend.draw_rich_text_popup(popup, layout);
                 }
                 Surface::Toast { rect, stack } => {
-                    backend.draw_toast_stack(*rect, stack);
+                    backend.draw_toast_overlay(*rect, stack);
                 }
                 Surface::DataTable {
                     rect,

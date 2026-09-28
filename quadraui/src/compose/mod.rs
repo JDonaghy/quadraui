@@ -37,7 +37,7 @@
 //!   chrome + body widget + scrollbar-gutter reservation for a sidebar
 //!   panel, composed from existing `Backend` methods (issue #1041).
 //! - [`ToastStackController`] — keyboard-focus cursor for the non-modal
-//!   [`crate::primitives::toast::ToastStack`]: Tab/Shift+Tab/Left/Right
+//!   [`crate::primitives::toast::ToastOverlay`]: Tab/Shift+Tab/Left/Right
 //!   cycle a focused toast's buttons, Up/Down move between toasts, Enter
 //!   activates, Escape dismisses (issue #1185).
 //!

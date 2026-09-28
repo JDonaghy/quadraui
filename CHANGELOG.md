@@ -55,15 +55,26 @@ release time.
 
 ### Added
 
+- `primitives::toast::{Toast, ToastOverlay, ToastButton}` (issue #1185) —
+  the VS Code-style actionable-notification shapes that supersede
+  `ToastItem` / `ToastStack` / `ToastAction`. A `Toast` carries an ordered
+  `actions: Vec<ToastButton>` (zero or more, one of which may set
+  `ToastButton::primary` for accent styling) instead of at most one
+  `Option<ToastAction>`; a `ToastOverlay` adds `focus: Option<ToastFocus>`.
+  Every backend rasteriser now wraps title/body across the box's full
+  width and lays the actions out on their own row at the bottom-right
+  (never inline with the title), with the dismiss `×` alone near the
+  top-right. `Backend::draw_toast_overlay` is the new entry point.
+  **The old names keep working** — see *Deprecated* below.
 - `compose::ToastStackController` (issue #1185) — VS Code-style keyboard
-  focus for the non-modal `ToastStack` primitive: Tab/Shift+Tab/Left/Right
+  focus for the non-modal toast overlay: Tab/Shift+Tab/Left/Right
   cycle a focused toast's buttons (dismiss `×` included), Up/Down move
   between toasts, Enter activates the focused button, Escape dismisses the
   focused toast and returns focus to the app. Follows
   `MessageDialogController`'s pattern but never owns or blocks input on the
   stack — the app decides when to give it focus (e.g. its own "focus
   notifications" command) and attaches `ToastStackController::focus()` to
-  the new `ToastStack::focus` field before painting so every backend draws
+  the new `ToastOverlay::focus` field before painting so every backend draws
   a `theme.link_fg` ring around the focused control. `examples/tui_toast_actions.rs`
   / `examples/gtk_toast_actions.rs` (paired with `examples/common/toast_actions_app.rs`)
   demonstrate a two-action toast driven by both keyboard and mouse, with a
@@ -328,24 +339,14 @@ release time.
 
 ### Changed
 
-- **Breaking (issue #1185):** `primitives::toast::ToastItem::action:
-  Option<ToastAction>` replaced with `actions: Vec<ToastAction>` (ordered,
-  zero or more, one may set the new `ToastAction::primary` field for
-  VS Code-style accent styling). `ToastStack` gained a `focus:
-  Option<ToastFocus>` field (see the new `ToastStackController` above).
-  `ToastMeasure`/`VisibleToast` moved from single `dismiss_width`/
-  `action_width` fields to toast-local `dismiss_rect: Option<Rect>` /
-  `action_rects: Vec<Rect>` — every backend rasteriser now lays actions
-  out on their own row at the bottom-right (never inline with the title)
-  with the dismiss `×` alone near the top-right, instead of both sharing
-  the title row's trailing column. Blast-radius grep against both
-  consumers (`grep -rn 'ToastAction\|ToastItem\|ToastStack' ~/src/coord-tui/src ~/src/vimcode/src`):
-  `coord-tui`'s `src/app/mod.rs` (`ToastItem { action: ..., .. }` at two
-  call sites) and `vimcode`'s `src/render.rs::build_toast_stack`
-  (`action: t.action.as_ref().map(|a| quadraui::ToastAction { .. })`)
-  both construct the old shape and will need a follow-up migration PR in
-  each repo — tracked for the coordinator per `CLAUDE.md`'s *Downstream
-  consumers* section, not filed from this PR.
+- `ToastMeasure` (issue #1185) carries toast-local `dismiss_rect:
+  Option<Rect>` / `action_rects: Vec<Rect>` instead of the single
+  `dismiss_width` / `action_width` widths, and `VisibleToast` gained
+  `action_rects: Vec<Rect>` (one entry per action). Both are outputs
+  computed by backends/`ToastOverlay::layout`, never struct-literal inputs
+  downstream — the blast-radius grep below found no consumer that builds
+  either. `VisibleToast::action_bounds` survives (deprecated) for the
+  consumers that *read* it.
 - `publish = false` removed from `quadraui/Cargo.toml` — `quadraui` is now
   publishable to crates.io. (The actual `v0.1.0` tag and `cargo publish` are
   a separate, coordinator-run release step — see `quadraui#797`.)
@@ -421,6 +422,39 @@ release time.
 
 ### Deprecated
 
+- `primitives::toast::{ToastStack, ToastItem, ToastAction}`,
+  `VisibleToast::action_bounds` and `Backend::draw_toast_stack` (issue
+  #1185) — the pre-#1185 single-action toast shapes. This is **PR 1 of the
+  rule-3 deprecate-then-remove pair** (`CLAUDE.md` *Downstream consumers*):
+  the three structs keep their exact field sets and their public paths
+  (`quadraui::ToastItem`, `quadraui::primitives::toast::ToastItem`, …), so
+  every existing struct literal still compiles, and `Backend::
+  draw_toast_stack` survives as a forwarding default that converts with
+  `ToastStack::to_overlay()` and calls `draw_toast_overlay` — same box
+  geometry, same hit regions, the single action secondary-styled, no focus
+  ring (covered by `legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay`
+  and `primitives::toast::legacy_compat_tests`). Replacements: `Toast`,
+  `ToastOverlay`, `ToastButton`, `VisibleToast::action_rects`,
+  `Backend::draw_toast_overlay`. PR 2 deletes the shims once both consumers
+  have migrated.
+
+  **Downstream impact.** Blast-radius grep of both consumers' CI branches
+  (`grep -rn 'ToastItem\|ToastStack\|ToastAction\|action_bounds\|draw_toast_stack'`
+  over `coord-tui/src` + `vimcode/src`):
+  - `coord-tui` — `src/app/mod.rs` (`ToastItem { … action: None … }` at two
+    call sites, `Vec<(ToastItem, …)>`, `ToastStack { … }`),
+    `src/app/dialogs.rs` (reads `item.title` / `item.body`),
+    `src/app/render.rs` (`backend.draw_toast_stack(…)`).
+  - `vimcode` — `src/render.rs::build_toast_stack` (`quadraui::ToastStack`
+    / `ToastItem` / `ToastAction` literals, `b.draw_toast_stack(…)`),
+    `src/gtk/testing.rs` (reads `VisibleToast::action_bounds`).
+
+  Every one of those still compiles against this PR — verified by running
+  the `downstream` job's own command, `cargo check --all-targets`, in each
+  consumer with its `quadraui` repointed at this branch: both exit 0, with
+  `deprecated` warnings only (that job sets `RUSTFLAGS: ""`, which is
+  exactly the policy split `CLAUDE.md` rule 3 describes). Consumer
+  migration PRs are a follow-up in each repo, filed by the coordinator.
 - `primitives::status_bar::StatusBar::hit_regions` and
   `hit_regions_fit_chars` — pre-D6 char-column hit-testing helpers.
   Replacement: `StatusBar::layout()` + `StatusBarLayout::hit_test()`, which

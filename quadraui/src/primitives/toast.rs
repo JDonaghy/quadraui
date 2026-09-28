@@ -14,7 +14,7 @@
 //! `corner`, VS Code-style (#1185): title/body wrap across the box's
 //! full width, growing its height up to a cap ([`MAX_BODY_LINES`])
 //! before ellipsizing; the dismiss `×` sits alone near the top-right;
-//! any [`ToastItem::actions`] sit on their own row at the bottom-right,
+//! any [`Toast::actions`] sit on their own row at the bottom-right,
 //! never inline with the title. Clicks resolve via
 //! [`ToastStackLayout::hit_test`] / [`ToastHit`]: an action button hits
 //! `ToastHit::Action`; the dismiss affordance hits `ToastHit::Dismiss`.
@@ -23,12 +23,22 @@
 //! to them, via [`crate::compose::ToastStackController`] (#1185) —
 //! they're otherwise strictly a passive notification surface, and never
 //! steal focus or block input on their own (unlike a modal
-//! [`crate::primitives::dialog::Dialog`]). `ToastStack::focus`, set from
+//! [`crate::primitives::dialog::Dialog`]). `ToastOverlay::focus`, set from
 //! the controller, is what makes a backend paint a focus ring at all.
 //!
 //! Stacking direction: bottom-corner toasts grow upward (newest nearest
-//! the corner); top-corner toasts grow downward. `Toast::layout()`
+//! the corner); top-corner toasts grow downward. `ToastOverlay::layout()`
 //! handles this based on `corner`.
+//!
+//! # Naming
+//!
+//! [`ToastOverlay`] (a corner's worth of toasts) holds [`Toast`]s, each
+//! holding [`ToastButton`]s. Their pre-#1185 single-action counterparts —
+//! [`ToastStack`], [`ToastItem`], [`ToastAction`] — are still here,
+//! `#[deprecated]`, so downstream keeps compiling while it migrates; see
+//! the *Legacy single-action shapes* section below for why the new shapes
+//! needed new names at all, and `CHANGELOG.md`'s *Deprecated* entry for
+//! the removal plan.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -36,13 +46,13 @@ use serde::{Deserialize, Serialize};
 
 /// Declarative description of a toast stack for one corner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToastStack {
+pub struct ToastOverlay {
     pub id: WidgetId,
     /// Which corner of the viewport the stack occupies.
     pub corner: ToastCorner,
     /// Toasts in temporal order — oldest first. Visual order depends on
     /// `corner` (bottom corners stack upward, top corners stack downward).
-    pub toasts: Vec<ToastItem>,
+    pub toasts: Vec<Toast>,
     /// Which control (if any) currently has keyboard focus (#1185).
     /// `None` — the common case, since toasts are non-modal and never
     /// steal focus on their own — paints with no focus ring. Set this
@@ -54,7 +64,7 @@ pub struct ToastStack {
     pub focus: Option<ToastFocus>,
 }
 
-/// Corner placement for a `ToastStack`.
+/// Corner placement for a `ToastOverlay`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ToastCorner {
     #[default]
@@ -66,7 +76,7 @@ pub enum ToastCorner {
 
 /// One toast notification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToastItem {
+pub struct Toast {
     pub id: WidgetId,
     pub title: String,
     /// Body text. Can be empty for minimal "File saved" style toasts.
@@ -75,20 +85,20 @@ pub struct ToastItem {
     /// Visual severity — backends tint the box accordingly.
     #[serde(default)]
     pub severity: ToastSeverity,
-    /// Ordered action buttons (#1185 — was `Option<ToastAction>`, at
+    /// Ordered action buttons (#1185 — was `ToastItem::action: Option<ToastAction>`, at
     /// most one). Rendered on their own row at the bottom-right of the
     /// toast box, never inline with the title. Empty = no action row;
     /// just the dismiss affordance is clickable. At most one entry
-    /// should set [`ToastAction::primary`] — see that field's doc.
+    /// should set [`ToastButton::primary`] — see that field's doc.
     #[serde(default)]
-    pub actions: Vec<ToastAction>,
+    pub actions: Vec<ToastButton>,
     /// Override severity's default tint. Most toasts use `None` and let
     /// the theme decide.
     #[serde(default)]
     pub accent: Option<Color>,
 }
 
-/// Severity level of a `ToastItem`.
+/// Severity level of a `Toast`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ToastSeverity {
     #[default]
@@ -100,7 +110,7 @@ pub enum ToastSeverity {
 
 /// Action button on a toast.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToastAction {
+pub struct ToastButton {
     pub id: WidgetId,
     pub label: String,
     /// Styled with the theme's accent (filled background) instead of the
@@ -114,14 +124,14 @@ pub struct ToastAction {
     pub primary: bool,
 }
 
-/// Keyboard-focus target within a [`ToastStack`] (#1185) — set
-/// [`ToastStack::focus`] to one of these so every backend's rasteriser
+/// Keyboard-focus target within a [`ToastOverlay`] (#1185) — set
+/// [`ToastOverlay::focus`] to one of these so every backend's rasteriser
 /// draws a visible focus ring around it. Produced by
 /// [`crate::compose::ToastStackController`]; the primitive layer only
 /// consumes it for painting, never computes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToastFocus {
-    /// Which toast (by [`ToastItem::id`]) currently has keyboard focus.
+    /// Which toast (by [`Toast::id`]) currently has keyboard focus.
     pub toast_id: WidgetId,
     /// Which control within that toast is focused.
     pub target: ToastFocusTarget,
@@ -134,8 +144,143 @@ pub enum ToastFocusTarget {
     /// The dismiss `×` affordance.
     Dismiss,
     /// One of the toast's action buttons, by index into
-    /// [`ToastItem::actions`].
+    /// [`Toast::actions`].
     Action(usize),
+}
+
+// ── Legacy single-action shapes (pre-#1185 compatibility) ───────────────────
+//
+// #1185 needed three things the pre-#1185 shapes cannot express: several
+// actions per toast, a primary/secondary distinction between them, and a
+// keyboard-focus cursor on the stack. All three are *added fields*, and a
+// struct literal — which is exactly how both downstream consumers build
+// these (`coord-tui`'s `App::push_toast`/`toast_stack`, `vimcode`'s
+// `render::build_toast_stack`) — has to name every field, so there is no
+// additive shape that keeps them compiling. CLAUDE.md's rule 3 answer is
+// to deprecate first: the pre-#1185 structs keep their names, their exact
+// field sets and their public paths (`quadraui::ToastItem`,
+// `quadraui::primitives::toast::ToastItem`, …), gain a `#[deprecated]`
+// note naming the replacement, and convert into the new shapes on the way
+// to any backend via [`Backend::draw_toast_stack`]'s forwarding default
+// (see `crate::backend::Backend::draw_toast_stack`). A follow-up PR
+// deletes this section once both consumers have migrated.
+
+/// Pre-#1185 declarative description of a toast stack for one corner.
+///
+/// Superseded by [`ToastOverlay`], which additionally carries
+/// [`ToastOverlay::focus`]. Converts with [`ToastStack::to_overlay`].
+#[deprecated(
+    since = "0.0.1",
+    note = "use `ToastOverlay` (adds `focus`, and its toasts take `actions: Vec<ToastButton>`) — see quadraui#1185"
+)]
+#[allow(deprecated)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToastStack {
+    pub id: WidgetId,
+    /// Which corner of the viewport the stack occupies.
+    pub corner: ToastCorner,
+    /// Toasts in temporal order — oldest first. Visual order depends on
+    /// `corner` (bottom corners stack upward, top corners stack downward).
+    #[allow(deprecated)]
+    pub toasts: Vec<ToastItem>,
+}
+
+/// Pre-#1185 single-action toast notification.
+///
+/// Superseded by [`Toast`], whose `actions: Vec<ToastButton>` replaces
+/// this type's `action: Option<ToastAction>`.
+#[deprecated(
+    since = "0.0.1",
+    note = "use `Toast`, whose `actions: Vec<ToastButton>` replaces `action: Option<ToastAction>` — see quadraui#1185"
+)]
+#[allow(deprecated)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToastItem {
+    pub id: WidgetId,
+    pub title: String,
+    /// Body text. Can be empty for minimal "File saved" style toasts.
+    #[serde(default)]
+    pub body: String,
+    /// Visual severity — backends tint the box accordingly.
+    #[serde(default)]
+    pub severity: ToastSeverity,
+    /// Optional action button. `None` = no action shown; just the
+    /// dismiss affordance is clickable.
+    #[serde(default)]
+    #[allow(deprecated)]
+    pub action: Option<ToastAction>,
+    /// Override severity's default tint. Most toasts use `None` and let
+    /// the theme decide.
+    #[serde(default)]
+    pub accent: Option<Color>,
+}
+
+/// Pre-#1185 action button on a toast.
+///
+/// Superseded by [`ToastButton`], which adds [`ToastButton::primary`].
+#[deprecated(
+    since = "0.0.1",
+    note = "use `ToastButton` (adds `primary`) — see quadraui#1185"
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToastAction {
+    pub id: WidgetId,
+    pub label: String,
+}
+
+#[allow(deprecated)]
+impl From<ToastAction> for ToastButton {
+    /// A legacy action is always **secondary** (`primary: false`): before
+    /// #1185 there was no primary/secondary distinction, and every
+    /// backend drew the single action as a plain label — so keeping it
+    /// secondary is what preserves the pre-#1185 look.
+    fn from(a: ToastAction) -> Self {
+        ToastButton {
+            id: a.id,
+            label: a.label,
+            primary: false,
+        }
+    }
+}
+
+#[allow(deprecated)]
+impl From<ToastItem> for Toast {
+    fn from(t: ToastItem) -> Self {
+        Toast {
+            id: t.id,
+            title: t.title,
+            body: t.body,
+            severity: t.severity,
+            actions: t.action.into_iter().map(ToastButton::from).collect(),
+            accent: t.accent,
+        }
+    }
+}
+
+#[allow(deprecated)]
+impl From<ToastStack> for ToastOverlay {
+    fn from(s: ToastStack) -> Self {
+        ToastOverlay {
+            id: s.id,
+            corner: s.corner,
+            toasts: s.toasts.into_iter().map(Toast::from).collect(),
+            // No pre-#1185 caller could express keyboard focus, so the
+            // converted overlay paints without a focus ring — the same
+            // thing every backend did before #1185.
+            focus: None,
+        }
+    }
+}
+
+#[allow(deprecated)]
+impl ToastStack {
+    /// Convert into the #1185 [`ToastOverlay`] shape, by clone — the
+    /// borrowing counterpart of `From<ToastStack>`, for the common case
+    /// where the caller only has a `&ToastStack` (e.g.
+    /// [`crate::Backend::draw_toast_stack`]'s forwarding default).
+    pub fn to_overlay(&self) -> ToastOverlay {
+        ToastOverlay::from(self.clone())
+    }
 }
 
 // ── Text wrapping (#1182) ───────────────────────────────────────────────────
@@ -337,14 +482,14 @@ mod wrap_tests {
 /// Per-toast measurement supplied by the backend.
 ///
 /// `dismiss_rect` / `action_rects` are **toast-local** (relative to the
-/// toast box's own top-left corner, not the viewport) — [`ToastStack::layout`]
+/// toast box's own top-left corner, not the viewport) — [`ToastOverlay::layout`]
 /// translates them into absolute bounds itself, the same way it already
 /// positions `width`/`height` into the stack. This lets each backend's
 /// measure closure own its own padding/row-placement geometry (VS
 /// Code-style: dismiss top-right, actions on their own row at the
 /// bottom-right — see [`toast_button_rects`], the shared helper every
 /// in-tree measure closure uses to compute both) without
-/// `ToastStack::layout` itself needing to know any padding constant.
+/// `ToastOverlay::layout` itself needing to know any padding constant.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToastMeasure {
     /// Full width of the toast box in the backend's unit.
@@ -354,7 +499,7 @@ pub struct ToastMeasure {
     /// Toast-local dismiss-affordance rect. `None` if no dismiss UI is
     /// drawn.
     pub dismiss_rect: Option<Rect>,
-    /// Toast-local action-button rects, one per [`ToastItem::actions`]
+    /// Toast-local action-button rects, one per [`Toast::actions`]
     /// entry, same order. Empty if the toast has no actions.
     pub action_rects: Vec<Rect>,
 }
@@ -384,7 +529,7 @@ impl ToastMeasure {
 /// right-to-left (`action_widths[0]` ends up leftmost in the row),
 /// never inline with the title. `action_widths` is each action's
 /// already-measured, already-padded button width, in
-/// [`ToastItem::actions`] order; the returned `Vec` is aligned 1:1 with
+/// [`Toast::actions`] order; the returned `Vec` is aligned 1:1 with
 /// it. Both rects are clamped to stay non-negative even if the box is
 /// smaller than the sum of its own padding/button widths (a degenerate
 /// but non-panicking box, matching this module's existing
@@ -428,16 +573,26 @@ pub(crate) fn toast_button_rects(
 /// Resolved position of one visible toast after layout.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleToast {
-    /// Index into `ToastStack.toasts`.
+    /// Index into `ToastOverlay.toasts`.
     pub toast_idx: usize,
     pub id: WidgetId,
     /// Full toast box bounds.
     pub bounds: Rect,
     /// Dismiss affordance (if present).
     pub dismiss_bounds: Option<Rect>,
-    /// Action-button bounds, one per [`ToastItem::actions`] entry, same
+    /// Action-button bounds, one per [`Toast::actions`] entry, same
     /// order. Empty if the toast has no actions.
-    pub action_bounds: Vec<Rect>,
+    pub action_rects: Vec<Rect>,
+    /// Bounds of the **first** action button, or `None` when the toast
+    /// has no actions — the pre-#1185 single-action field, kept so
+    /// downstream readers keep compiling (CLAUDE.md rule 3). Always
+    /// equal to `action_rects.first().copied()`; removed with the rest
+    /// of this module's legacy section once consumers migrate.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `action_rects`, which carries every action button — see quadraui#1185"
+    )]
+    pub action_bounds: Option<Rect>,
 }
 
 /// Classification of a hit-test result.
@@ -478,7 +633,7 @@ impl ToastStackLayout {
     }
 }
 
-impl ToastStack {
+impl ToastOverlay {
     /// Compute the rendering + hit-test layout for the stack.
     ///
     /// # Arguments
@@ -592,19 +747,21 @@ impl ToastStack {
             // — this loop only translates them into the stack's absolute
             // frame, same as `bounds` itself.
             let dismiss_bounds = m.dismiss_rect.map(|r| shift_rect(r, bounds.x, bounds.y));
-            let action_bounds: Vec<Rect> = m
+            let action_rects: Vec<Rect> = m
                 .action_rects
                 .iter()
                 .map(|r| shift_rect(*r, bounds.x, bounds.y))
                 .collect();
 
             let toast_id = self.toasts[i].id.clone();
+            #[allow(deprecated)]
             visible_toasts.push(VisibleToast {
                 toast_idx: i,
                 id: toast_id.clone(),
                 bounds,
                 dismiss_bounds,
-                action_bounds: action_bounds.clone(),
+                action_bounds: action_rects.first().copied(),
+                action_rects: action_rects.clone(),
             });
 
             // Register hit regions in specificity order: dismiss, actions, body.
@@ -614,9 +771,9 @@ impl ToastStack {
             // Action hit regions carry the action's own id (not the
             // toast's) so the app can dispatch the intended action
             // directly from the hit result. Zipped by position with
-            // `ToastItem::actions`, matching `action_rects`'s documented
+            // `Toast::actions`, matching `action_rects`'s documented
             // 1:1 order.
-            for (ab, act) in action_bounds.iter().zip(self.toasts[i].actions.iter()) {
+            for (ab, act) in action_rects.iter().zip(self.toasts[i].actions.iter()) {
                 hit_regions.push((*ab, ToastHit::Action(act.id.clone())));
             }
             hit_regions.push((bounds, ToastHit::Body(toast_id)));
@@ -640,7 +797,7 @@ impl ToastStack {
         // `Panel::layout`'s convention (bounds already carry the origin,
         // so paint loops use them verbatim and hosts `hit_test` with raw
         // click coordinates) rather than `TreeView`'s local-frame
-        // convention. Before this, `ToastStack::layout` had no origin
+        // convention. Before this, `ToastOverlay::layout` had no origin
         // parameter at all, so every backend's `*_toast_stack_layout`
         // silently dropped `rect.x` / `rect.y` — invisible at the origin
         // (every prior test) and a real drift for any non-zero-origin
@@ -650,11 +807,18 @@ impl ToastStack {
             for vt in &mut visible_toasts {
                 vt.bounds = shift_rect(vt.bounds, origin_x, origin_y);
                 vt.dismiss_bounds = vt.dismiss_bounds.map(|r| shift_rect(r, origin_x, origin_y));
-                vt.action_bounds = vt
-                    .action_bounds
+                vt.action_rects = vt
+                    .action_rects
                     .iter()
                     .map(|r| shift_rect(*r, origin_x, origin_y))
                     .collect();
+                // Keep the deprecated single-action mirror in the same
+                // frame as `action_rects` (it is by definition the first
+                // entry — see `VisibleToast::action_bounds`).
+                #[allow(deprecated)]
+                {
+                    vt.action_bounds = vt.action_rects.first().copied();
+                }
             }
             for (rect, _) in &mut hit_regions {
                 *rect = shift_rect(*rect, origin_x, origin_y);
@@ -767,9 +931,8 @@ impl ToastStack {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        toast_button_rects, truncate_line, wrap_text_lines, ToastFocus, ToastFocusTarget,
-        ToastItem, ToastMeasure, ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
-        MAX_BODY_LINES,
+        toast_button_rects, truncate_line, wrap_text_lines, Toast, ToastFocus, ToastFocusTarget,
+        ToastMeasure, ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast, MAX_BODY_LINES,
     };
     use crate::event::Rect;
     use crate::native_surface::NativeSurface;
@@ -786,7 +949,7 @@ pub(crate) mod native_surface_paint {
     const ACTION_GAP: f32 = 8.0;
     const TOAST_PADDING: f32 = 8.0;
 
-    /// Severity → fallback background tint, used when `ToastItem::accent`
+    /// Severity → fallback background tint, used when `Toast::accent`
     /// is `None`. Duplicated verbatim across `tui::toast` (out of scope
     /// for this `NativeSurface` migration — see the module doc's TUI
     /// note in `native_surface.rs`) — lifting these hardcoded colours
@@ -800,7 +963,7 @@ pub(crate) mod native_surface_paint {
         }
     }
 
-    /// Compute a [`ToastStack`]'s layout and paint it onto `surface` in
+    /// Compute a [`ToastOverlay`]'s layout and paint it onto `surface` in
     /// one pass, returning the resolved [`ToastStackLayout`] for the
     /// caller's click dispatch — same contract as
     /// [`crate::Backend::draw_toast_stack`]. `line_height` is the
@@ -811,7 +974,7 @@ pub(crate) mod native_surface_paint {
     /// painted.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
-        stack: &ToastStack,
+        stack: &ToastOverlay,
         surface: &mut dyn NativeSurface,
         theme: &Theme,
         origin_x: f32,
@@ -898,7 +1061,7 @@ pub(crate) mod native_surface_paint {
     /// title, optional body, a top-right dismiss `×`, and — on their own
     /// row at the bottom-right, never inline with the title (#1185) —
     /// zero or more action buttons: the one marked
-    /// [`crate::primitives::toast::ToastAction::primary`] filled with
+    /// [`crate::primitives::toast::ToastButton::primary`] filled with
     /// `theme.accent_bg`/`theme.foreground` (matching
     /// `tui::toolbar`'s focused-action pairing), the rest plain text in
     /// `theme.link_fg` (a secondary/ghost-button look, matching that
@@ -919,7 +1082,7 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn NativeSurface,
         theme: &Theme,
         vt: &VisibleToast,
-        toast: &ToastItem,
+        toast: &Toast,
         line_height: f32,
         focus: Option<&ToastFocus>,
     ) {
@@ -974,12 +1137,7 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        for (i, (ab, action)) in vt
-            .action_bounds
-            .iter()
-            .zip(toast.actions.iter())
-            .enumerate()
-        {
+        for (i, (ab, action)) in vt.action_rects.iter().zip(toast.actions.iter()).enumerate() {
             if action.primary {
                 surface.surface_fill_rect(*ab, theme.accent_bg);
             }
@@ -1002,7 +1160,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::toast::{ToastAction, ToastCorner, ToastFocusTarget};
+        use crate::primitives::toast::{ToastButton, ToastCorner, ToastFocusTarget};
         use crate::types::WidgetId;
         use crate::Image;
 
@@ -1079,8 +1237,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        fn toast(id: &str, title: &str) -> ToastItem {
-            ToastItem {
+        fn toast(id: &str, title: &str) -> Toast {
+            Toast {
                 id: WidgetId::new(id),
                 title: title.into(),
                 body: String::new(),
@@ -1090,8 +1248,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        fn stack_br(toasts: Vec<ToastItem>) -> ToastStack {
-            ToastStack {
+        fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+            ToastOverlay {
                 id: WidgetId::new("toasts"),
                 corner: ToastCorner::BottomRight,
                 toasts,
@@ -1142,7 +1300,7 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn dismiss_and_action_are_centred_in_their_sub_region() {
             let mut t = toast("t1", "Build failed");
-            t.actions = vec![ToastAction {
+            t.actions = vec![ToastButton {
                 id: WidgetId::new("open_log"),
                 label: "Open log".into(),
                 primary: false,
@@ -1153,7 +1311,7 @@ pub(crate) mod native_surface_paint {
             let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
             let vt = &layout.visible_toasts[0];
             let db = vt.dismiss_bounds.expect("dismiss bounds present");
-            let ab = vt.action_bounds[0];
+            let ab = vt.action_rects[0];
 
             let (dismiss_rect, _, _) = surface
                 .text_runs
@@ -1180,12 +1338,12 @@ pub(crate) mod native_surface_paint {
         fn multiple_actions_are_right_aligned_on_their_own_row() {
             let mut t = toast("t1", "Install Markdown Language Server?");
             t.actions = vec![
-                ToastAction {
+                ToastButton {
                     id: WidgetId::new("install"),
                     label: "Install".into(),
                     primary: true,
                 },
-                ToastAction {
+                ToastButton {
                     id: WidgetId::new("dont-ask"),
                     label: "Don't ask again".into(),
                     primary: false,
@@ -1197,9 +1355,9 @@ pub(crate) mod native_surface_paint {
             let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
             let vt = &layout.visible_toasts[0];
             let db = vt.dismiss_bounds.expect("dismiss bounds present");
-            assert_eq!(vt.action_bounds.len(), 2);
-            let install = vt.action_bounds[0];
-            let dont_ask = vt.action_bounds[1];
+            assert_eq!(vt.action_rects.len(), 2);
+            let install = vt.action_rects[0];
+            let dont_ask = vt.action_rects[1];
 
             // Same row, both below the dismiss button.
             assert_eq!(install.y, dont_ask.y);
@@ -1222,12 +1380,12 @@ pub(crate) mod native_surface_paint {
         fn primary_action_gets_accent_fill() {
             let mut t = toast("t1", "Install?");
             t.actions = vec![
-                ToastAction {
+                ToastButton {
                     id: WidgetId::new("install"),
                     label: "Install".into(),
                     primary: true,
                 },
-                ToastAction {
+                ToastButton {
                     id: WidgetId::new("skip"),
                     label: "Skip".into(),
                     primary: false,
@@ -1238,8 +1396,8 @@ pub(crate) mod native_surface_paint {
             let mut surface = RecordingSurface::default();
             let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
             let vt = &layout.visible_toasts[0];
-            let install_bounds = vt.action_bounds[0];
-            let skip_bounds = vt.action_bounds[1];
+            let install_bounds = vt.action_rects[0];
+            let skip_bounds = vt.action_rects[1];
 
             assert!(surface
                 .fills
@@ -1279,7 +1437,7 @@ pub(crate) mod native_surface_paint {
         fn focused_action_gets_a_focus_ring() {
             let t1 = toast("t1", "Saved");
             let mut t2 = toast("t2", "Install?");
-            t2.actions = vec![ToastAction {
+            t2.actions = vec![ToastButton {
                 id: WidgetId::new("install"),
                 label: "Install".into(),
                 primary: true,
@@ -1297,7 +1455,7 @@ pub(crate) mod native_surface_paint {
                 .iter()
                 .find(|vt| vt.id == WidgetId::new("t2"))
                 .expect("t2 visible");
-            let ab = t2_visible.action_bounds[0];
+            let ab = t2_visible.action_rects[0];
             assert!(surface
                 .strokes
                 .iter()
@@ -1378,7 +1536,7 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn long_title_and_body_stay_inside_bounds_and_dont_overlap_action() {
             let mut t = toast("t1", "Install Markdown Language Server?");
-            t.actions = vec![ToastAction {
+            t.actions = vec![ToastButton {
                 id: WidgetId::new("install"),
                 label: "Install".into(),
                 primary: true,
@@ -1391,7 +1549,7 @@ pub(crate) mod native_surface_paint {
             let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
 
             let vt = &layout.visible_toasts[0];
-            let ab = vt.action_bounds[0];
+            let ab = vt.action_rects[0];
             let db = vt.dismiss_bounds.expect("dismiss bounds present");
 
             // Every text run must stay within the toast's own bounds,
@@ -1460,8 +1618,8 @@ mod tests {
 
     // ── Toast primitive tests (D6 shape, new B.3 primitive) ───────────
 
-    fn make_toast(id: &str, title: &str) -> ToastItem {
-        ToastItem {
+    fn make_toast(id: &str, title: &str) -> Toast {
+        Toast {
             id: WidgetId::new(id),
             title: title.to_string(),
             body: String::new(),
@@ -1471,8 +1629,8 @@ mod tests {
         }
     }
 
-    fn make_toast_stack(corner: ToastCorner, toasts: Vec<ToastItem>) -> ToastStack {
-        ToastStack {
+    fn make_toast_stack(corner: ToastCorner, toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner,
             toasts,
@@ -1539,7 +1697,7 @@ mod tests {
     #[test]
     fn toast_layout_action_and_dismiss_regions() {
         let mut toast = make_toast("t1", "Build failed");
-        toast.actions = vec![ToastAction {
+        toast.actions = vec![ToastButton {
             id: WidgetId::new("open_log"),
             label: "Open log".to_string(),
             primary: false,
@@ -1553,9 +1711,9 @@ mod tests {
         });
         let v = &layout.visible_toasts[0];
         assert!(v.dismiss_bounds.is_some());
-        assert_eq!(v.action_bounds.len(), 1);
+        assert_eq!(v.action_rects.len(), 1);
         let db = v.dismiss_bounds.unwrap();
-        let ab = v.action_bounds[0];
+        let ab = v.action_rects[0];
         // Dismiss at the trailing (top) edge.
         assert_eq!(db.x + db.width, v.bounds.x + v.bounds.width);
         // Action row sits on its own, lower row — below the dismiss row,
@@ -1580,17 +1738,17 @@ mod tests {
     }
 
     /// #1185: a toast with two actions produces two, non-overlapping
-    /// `action_bounds` entries, aligned 1:1 with `ToastItem::actions`.
+    /// `action_bounds` entries, aligned 1:1 with `Toast::actions`.
     #[test]
     fn toast_layout_multiple_action_regions() {
         let mut toast = make_toast("t1", "Install Markdown Language Server?");
         toast.actions = vec![
-            ToastAction {
+            ToastButton {
                 id: WidgetId::new("install"),
                 label: "Install".to_string(),
                 primary: true,
             },
-            ToastAction {
+            ToastButton {
                 id: WidgetId::new("dont-ask"),
                 label: "Don't ask again".to_string(),
                 primary: false,
@@ -1607,9 +1765,9 @@ mod tests {
             ],
         });
         let v = &layout.visible_toasts[0];
-        assert_eq!(v.action_bounds.len(), 2);
-        let install = v.action_bounds[0];
-        let dont_ask = v.action_bounds[1];
+        assert_eq!(v.action_rects.len(), 2);
+        let install = v.action_rects[0];
+        let dont_ask = v.action_rects[1];
         // No overlap between the two buttons.
         assert!(install.x + install.width <= dont_ask.x);
 
@@ -1644,7 +1802,7 @@ mod tests {
     }
 
     /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// `ToastStack::layout` previously had no origin parameter at all,
+    /// `ToastOverlay::layout` previously had no origin parameter at all,
     /// so it could only ever be called with an implicit `(0, 0)`
     /// origin — a shape no `*_toast_stack_layout` backend wrapper could
     /// correct for. Confirms every returned bound (toast, dismiss,
@@ -1653,7 +1811,7 @@ mod tests {
     #[test]
     fn toast_layout_nonzero_origin_shifts_every_bound() {
         let mut toast = make_toast("t1", "Build failed");
-        toast.actions = vec![ToastAction {
+        toast.actions = vec![ToastButton {
             id: WidgetId::new("open_log"),
             label: "Open log".to_string(),
             primary: false,
@@ -1677,7 +1835,7 @@ mod tests {
             s.dismiss_bounds.unwrap().x,
             o.dismiss_bounds.unwrap().x + 7.0
         );
-        assert_eq!(s.action_bounds[0].y, o.action_bounds[0].y + 13.0);
+        assert_eq!(s.action_rects[0].y, o.action_rects[0].y + 13.0);
 
         // Round trip: an absolute hit against the shifted layout must
         // resolve the same way the origin layout resolves its local hit.
@@ -1686,5 +1844,159 @@ mod tests {
             shifted.hit_test(db.x + 5.0, db.y + 10.0),
             ToastHit::Dismiss(WidgetId::new("t1")),
         );
+    }
+}
+
+// ── Legacy (pre-#1185) compatibility tests ──────────────────────────────────
+//
+// Kept in their own module rather than folded into `tests` above so the
+// whole block — like the legacy structs themselves — can be deleted in one
+// piece once both downstream consumers have migrated (CLAUDE.md rule 3).
+#[cfg(test)]
+#[allow(deprecated)]
+mod legacy_compat_tests {
+    use super::*;
+
+    fn legacy_stack() -> ToastStack {
+        ToastStack {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![
+                ToastItem {
+                    id: WidgetId::new("t1"),
+                    title: "Install Markdown Language Server?".to_string(),
+                    body: "Recommended for .md files".to_string(),
+                    severity: ToastSeverity::Warning,
+                    action: Some(ToastAction {
+                        id: WidgetId::new("install"),
+                        label: "Install".to_string(),
+                    }),
+                    accent: None,
+                },
+                ToastItem {
+                    id: WidgetId::new("t2"),
+                    title: "File saved".to_string(),
+                    body: String::new(),
+                    severity: ToastSeverity::Info,
+                    action: None,
+                    accent: None,
+                },
+            ],
+        }
+    }
+
+    /// Every pre-#1185 field survives the conversion, the single optional
+    /// action becomes a one-entry `actions` vec, and nothing invents a
+    /// focus cursor (no legacy caller could express one).
+    #[test]
+    fn legacy_stack_converts_field_for_field() {
+        let overlay = legacy_stack().to_overlay();
+
+        assert_eq!(overlay.id, WidgetId::new("toasts"));
+        assert_eq!(overlay.corner, ToastCorner::BottomRight);
+        assert_eq!(overlay.focus, None);
+        assert_eq!(overlay.toasts.len(), 2);
+
+        let with_action = &overlay.toasts[0];
+        assert_eq!(with_action.id, WidgetId::new("t1"));
+        assert_eq!(with_action.title, "Install Markdown Language Server?");
+        assert_eq!(with_action.body, "Recommended for .md files");
+        assert_eq!(with_action.severity, ToastSeverity::Warning);
+        assert_eq!(with_action.actions.len(), 1);
+        assert_eq!(with_action.actions[0].id, WidgetId::new("install"));
+        assert_eq!(with_action.actions[0].label, "Install");
+        // Pre-#1185 had no primary/secondary distinction and drew the
+        // single action as a plain label — staying secondary is what
+        // preserves that look.
+        assert!(!with_action.actions[0].primary);
+
+        let without_action = &overlay.toasts[1];
+        assert!(without_action.actions.is_empty());
+    }
+
+    /// A converted legacy stack lays out exactly like the equivalent
+    /// hand-built [`ToastOverlay`]: same boxes, same hit regions. This is
+    /// what makes [`crate::Backend::draw_toast_stack`]'s forwarding
+    /// default a no-op change in behaviour for existing callers.
+    #[test]
+    fn converted_legacy_stack_lays_out_like_an_overlay() {
+        let converted = legacy_stack().to_overlay();
+        let hand_built = ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![
+                Toast {
+                    id: WidgetId::new("t1"),
+                    title: "Install Markdown Language Server?".to_string(),
+                    body: "Recommended for .md files".to_string(),
+                    severity: ToastSeverity::Warning,
+                    actions: vec![ToastButton {
+                        id: WidgetId::new("install"),
+                        label: "Install".to_string(),
+                        primary: false,
+                    }],
+                    accent: None,
+                },
+                Toast {
+                    id: WidgetId::new("t2"),
+                    title: "File saved".to_string(),
+                    body: String::new(),
+                    severity: ToastSeverity::Info,
+                    actions: Vec::new(),
+                    accent: None,
+                },
+            ],
+            focus: None,
+        };
+        assert_eq!(converted, hand_built);
+
+        let measure = |_: usize| ToastMeasure {
+            width: 300.0,
+            height: 64.0,
+            dismiss_rect: Some(Rect::new(276.0, 4.0, 20.0, 16.0)),
+            action_rects: vec![Rect::new(210.0, 40.0, 80.0, 20.0)],
+        };
+        let a = converted.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
+        let b = hand_built.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
+        assert_eq!(a, b);
+    }
+
+    /// The deprecated single-action mirror on [`VisibleToast`] — which
+    /// downstream reads as `Option<Rect>` — always tracks the first entry
+    /// of `action_rects`, in the same (absolute) frame, origin shift
+    /// included.
+    #[test]
+    fn visible_toast_action_bounds_mirrors_first_action_rect() {
+        let overlay = legacy_stack().to_overlay();
+        let measure = |i: usize| ToastMeasure {
+            width: 300.0,
+            height: 64.0,
+            dismiss_rect: Some(Rect::new(276.0, 4.0, 20.0, 16.0)),
+            action_rects: if i == 0 {
+                vec![Rect::new(210.0, 40.0, 80.0, 20.0)]
+            } else {
+                Vec::new()
+            },
+        };
+
+        for (origin_x, origin_y) in [(0.0, 0.0), (7.0, 13.0)] {
+            let layout = overlay.layout(origin_x, origin_y, 800.0, 600.0, 16.0, 8.0, measure);
+            for vt in &layout.visible_toasts {
+                assert_eq!(vt.action_bounds, vt.action_rects.first().copied());
+            }
+            let with_action = layout
+                .visible_toasts
+                .iter()
+                .find(|vt| vt.id == WidgetId::new("t1"))
+                .expect("the action-bearing toast is visible");
+            let ab = with_action
+                .action_bounds
+                .expect("a legacy reader still sees its single action button");
+            // …and it resolves to that action, not the body.
+            assert_eq!(
+                layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0),
+                ToastHit::Action(WidgetId::new("install")),
+            );
+        }
     }
 }

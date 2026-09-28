@@ -47,11 +47,16 @@ use quadraui::{
     RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
     SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree,
     StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame,
-    TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, ToastCorner,
-    ToastItem, ToastSeverity, ToastStack, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
+    TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
     TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
     UiEvent, WidgetId,
 };
+
+// Pre-#1185 single-action toast shapes, for the `draw_toast_stack`
+// deprecation-shim case at the bottom of `CASES` (issue #1185).
+#[allow(deprecated)]
+use quadraui::{ToastItem, ToastStack};
 
 use super::runner::{DriverFactory, DynDriver};
 
@@ -1100,13 +1105,13 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_toast_stack",
+        method: "draw_toast_overlay",
         needle: Some("c0tost"),
         paint: |b, area| {
-            let stack = ToastStack {
+            let stack = ToastOverlay {
                 id: id("toast-stack"),
                 corner: ToastCorner::BottomRight,
-                toasts: vec![ToastItem {
+                toasts: vec![Toast {
                     id: id("toast"),
                     title: "c0tost".to_string(),
                     body: String::new(),
@@ -1116,7 +1121,7 @@ pub const CASES: &[Case] = &[
                 }],
                 focus: None,
             };
-            let _ = b.draw_toast_stack(area, &stack);
+            let _ = b.draw_toast_overlay(area, &stack);
         },
     },
     Case {
@@ -1368,6 +1373,37 @@ pub const CASES: &[Case] = &[
             };
             #[allow(deprecated)]
             let _ = b.draw_sidebar_panel(area, &panel, None, None);
+        },
+    },
+    // ── Deprecated single-action toast shim (issue #1185) ─────────────
+    //
+    // Same shape and same rationale as the #819 shims above:
+    // `draw_toast_stack` is a `#[deprecated]` trait *default* that
+    // converts a pre-#1185 `ToastStack` with `ToastStack::to_overlay()`
+    // and forwards to `draw_toast_overlay`. The C0 row is the
+    // cross-backend proof that the conversion reaches a real rasteriser
+    // on every backend — not just TUI, where
+    // `legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay`
+    // pins it cell-for-cell.
+    Case {
+        method: "draw_toast_stack",
+        needle: Some("c0tosh"),
+        paint: |b, area| {
+            #[allow(deprecated)]
+            let stack = ToastStack {
+                id: id("toast-stack-shim"),
+                corner: ToastCorner::BottomRight,
+                toasts: vec![ToastItem {
+                    id: id("toast-shim"),
+                    title: "c0tosh".to_string(),
+                    body: String::new(),
+                    severity: ToastSeverity::Info,
+                    action: None,
+                    accent: None,
+                }],
+            };
+            #[allow(deprecated)]
+            let _ = b.draw_toast_stack(area, &stack);
         },
     },
 ];

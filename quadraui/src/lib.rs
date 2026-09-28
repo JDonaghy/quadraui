@@ -528,9 +528,16 @@ pub use primitives::text_input::{
     VisibleTextInputLine,
 };
 pub use primitives::toast::{
-    ToastAction, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastItem, ToastMeasure,
-    ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
+    Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastMeasure,
+    ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
 };
+// Pre-#1185 single-action toast shapes, kept re-exported at the crate
+// root under their original names so downstream `quadraui::ToastItem` /
+// `quadraui::ToastStack` / `quadraui::ToastAction` paths keep resolving
+// while consumers migrate (CLAUDE.md rule 3). Removed with the structs
+// themselves — see `primitives::toast`'s legacy section.
+#[allow(deprecated)]
+pub use primitives::toast::{ToastAction, ToastItem, ToastStack};
 pub use primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemKind, ToolbarItemMeasure,
     ToolbarLayout, VisibleToolbarItem,

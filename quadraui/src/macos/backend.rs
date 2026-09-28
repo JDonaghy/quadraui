@@ -92,7 +92,7 @@ use crate::primitives::status_bar::StatusBarLayout;
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::TextDisplayLayout;
-use crate::primitives::toast::{ToastStack, ToastStackLayout};
+use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::testing::{TextRun, ZoneRec};
@@ -2996,7 +2996,7 @@ impl Backend for MacBackend {
             self.current_line_height,
         )
     }
-    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+    fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
         // each debug_assert/expect their own frame + font internally —
         // see `Self::surface_fill_rect`/`Self::surface_measure_text` — so
@@ -3015,7 +3015,7 @@ impl Backend for MacBackend {
             line_height,
         )
     }
-    fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+    fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         let font = self
             .current_font
             .as_ref()

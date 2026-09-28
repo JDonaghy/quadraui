@@ -40,7 +40,7 @@ use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure
 use crate::primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarLayout, TabChrome, TabFrame, TabMeasure,
 };
-use crate::primitives::toast::{ToastMeasure, ToastStack, ToastStackLayout};
+use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::types::Decoration;
 use crate::WidgetId;
@@ -72,20 +72,20 @@ pub mod pixel {
     /// divider thickness.
     pub const DIVIDER: f32 = 4.0;
 
-    /// [`crate::ToastStack`] max toast width.
+    /// [`crate::ToastOverlay`] max toast width.
     pub const TOAST_WIDTH: f32 = 320.0;
-    /// [`crate::ToastStack`] margin from the viewport edge.
+    /// [`crate::ToastOverlay`] margin from the viewport edge.
     pub const TOAST_MARGIN: f32 = 12.0;
-    /// [`crate::ToastStack`] gap between stacked toasts.
+    /// [`crate::ToastOverlay`] gap between stacked toasts.
     pub const TOAST_GAP: f32 = 8.0;
-    /// [`crate::ToastStack`] vertical padding inside a toast box.
+    /// [`crate::ToastOverlay`] vertical padding inside a toast box.
     pub const TOAST_PADDING: f32 = 8.0;
-    /// [`crate::ToastStack`] width (and height — the dismiss affordance
+    /// [`crate::ToastOverlay`] width (and height — the dismiss affordance
     /// is a square) of the dismiss (`×`) affordance.
     pub const TOAST_DISMISS_WIDTH: f32 = 28.0;
-    /// [`crate::ToastStack`] extra width reserved around an action label.
+    /// [`crate::ToastOverlay`] extra width reserved around an action label.
     pub const TOAST_ACTION_PADDING: f32 = 16.0;
-    /// [`crate::ToastStack`] horizontal gap between two adjacent action
+    /// [`crate::ToastOverlay`] horizontal gap between two adjacent action
     /// buttons on the button row (#1185).
     pub const TOAST_ACTION_GAP: f32 = 8.0;
 
@@ -485,7 +485,7 @@ pub fn form_field_measure(
 
 // ── Toast ────────────────────────────────────────────────────────────
 
-/// Compute the pixel-unit layout for a [`ToastStack`] any pixel backend
+/// Compute the pixel-unit layout for a [`ToastOverlay`] any pixel backend
 /// produces (issue #1079 — `gtk_toast_stack_layout`, `mac_toast_stack_layout`,
 /// `win_toast_stack_layout` were three copies of this exact formula, only
 /// differing in the constant names and how `measure` was obtained).
@@ -503,7 +503,7 @@ pub fn form_field_measure(
 /// paint.
 #[allow(clippy::too_many_arguments)]
 pub fn pixel_toast_stack_layout(
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     measure: &dyn TextMeasure,
     origin_x: f32,
     origin_y: f32,

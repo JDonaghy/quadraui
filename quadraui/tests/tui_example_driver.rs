@@ -5315,7 +5315,7 @@ fn markdown_demo_renders_headings_and_fenced_code_block() {
 //
 // The issue's suggested scenario is "trigger a toast, assert it appears;
 // advance time, assert it disappears" — but `ToastApp` (and the
-// `ToastStack` primitive it drives) has no time-based auto-dismiss wired
+// `ToastOverlay` primitive it drives) has no time-based auto-dismiss wired
 // in; `primitives::toast`'s own doc comment says lifecycle/auto-dismiss is
 // an app concern this demo simply doesn't implement. Its real dismiss path
 // is a click on the toast's '×' affordance, routed through

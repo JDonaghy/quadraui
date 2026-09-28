@@ -14,7 +14,7 @@
 //!   [`crate::Split`] and [`crate::SplitTree`] paint with `ctx` alone (no
 //!   text); [`crate::Form`], `crate::primitives::sidebar_panel`,
 //!   [`crate::StatusBar`], [`crate::primitives::diff_view::DiffView`],
-//!   [`crate::ToastStack`] and [`crate::Panel`] paint text too and need a
+//!   [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
 //!   live `&CTFont`. [`CgSurface::font`] is `Option` so one struct covers
 //!   both — [`Self::font_or_panic`] panics only if a text verb is reached
 //!   with `font: None`, exactly mirroring what the old per-file

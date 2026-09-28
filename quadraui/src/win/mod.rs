@@ -222,7 +222,7 @@ mod text_display;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod text_input;
-/// Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (#29). Issue
+/// Direct2D / DirectWrite rasteriser for [`crate::ToastOverlay`] (#29). Issue
 /// #1078: only its deprecated paint shim is Windows-only — see its
 /// module docs.
 mod toast;

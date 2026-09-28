@@ -1,7 +1,7 @@
 //! Backend-agnostic app code for the toast example
 //! ([`tui_toast`] / [`gtk_toast`]).
 //!
-//! [`ToastApp`] demonstrates a [`ToastStack`] with toasts of varying
+//! [`ToastApp`] demonstrates a [`ToastOverlay`] with toasts of varying
 //! severity, dismiss, and action buttons.
 //!
 //! Controls:
@@ -13,12 +13,12 @@
 
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack,
+    StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
     UiEvent, WidgetId,
 };
 
 pub struct ToastApp {
-    toasts: Vec<ToastItem>,
+    toasts: Vec<Toast>,
     next_id: usize,
     last_message: String,
 }
@@ -26,7 +26,7 @@ pub struct ToastApp {
 impl ToastApp {
     pub fn new() -> Self {
         Self {
-            toasts: vec![ToastItem {
+            toasts: vec![Toast {
                 id: WidgetId::new("welcome"),
                 title: "Welcome".into(),
                 body: "Press 1-4 to add toasts".into(),
@@ -39,7 +39,7 @@ impl ToastApp {
         }
     }
 
-    fn add_toast(&mut self, severity: ToastSeverity, actions: Vec<ToastAction>) {
+    fn add_toast(&mut self, severity: ToastSeverity, actions: Vec<ToastButton>) {
         let label = match severity {
             ToastSeverity::Info => "Info",
             ToastSeverity::Success => "Success",
@@ -48,7 +48,7 @@ impl ToastApp {
         };
         let id = format!("toast-{}", self.next_id);
         self.next_id += 1;
-        self.toasts.push(ToastItem {
+        self.toasts.push(Toast {
             id: WidgetId::new(&id),
             title: format!("{label} notification"),
             body: format!("Toast #{}", self.next_id - 1),
@@ -59,8 +59,8 @@ impl ToastApp {
         self.last_message = format!("Added {label} toast");
     }
 
-    fn stack(&self) -> ToastStack {
-        ToastStack {
+    fn stack(&self) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: self.toasts.clone(),
@@ -112,7 +112,7 @@ impl AppLogic for ToastApp {
 
         // Toast stack overlays the viewport.
         let overlay_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
-        let _ = backend.draw_toast_stack(overlay_rect, &self.stack());
+        let _ = backend.draw_toast_overlay(overlay_rect, &self.stack());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -159,7 +159,7 @@ impl AppLogic for ToastApp {
             } => {
                 self.add_toast(
                     ToastSeverity::Error,
-                    vec![ToastAction {
+                    vec![ToastButton {
                         id: WidgetId::new("retry"),
                         label: "Retry".into(),
                         primary: true,
