@@ -1,4 +1,4 @@
-//! TUI rasteriser for [`crate::ToastStack`].
+//! TUI rasteriser for [`crate::ToastOverlay`].
 //!
 //! Paints toast notification boxes stacked in a viewport corner.
 //! Each toast is a small box with title, optional body, severity
@@ -9,8 +9,8 @@ use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::toast::{
-    toast_button_rects, truncate_line, wrap_text_lines, ToastFocusTarget, ToastItem, ToastMeasure,
-    ToastSeverity, ToastStack, ToastStackLayout, VisibleToast, MAX_BODY_LINES,
+    toast_button_rects, truncate_line, wrap_text_lines, Toast, ToastFocusTarget, ToastMeasure,
+    ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast, MAX_BODY_LINES,
 };
 use crate::theme::Theme;
 
@@ -42,7 +42,7 @@ const TUI_INSET: f32 = 1.0;
 
 /// Per-action button width in cells: label length plus
 /// [`TUI_ACTION_PADDING`] breathing room either side.
-fn tui_action_width(action: &crate::primitives::toast::ToastAction) -> f32 {
+fn tui_action_width(action: &crate::primitives::toast::ToastButton) -> f32 {
     action.label.chars().count() as f32 + TUI_ACTION_PADDING
 }
 
@@ -54,7 +54,7 @@ fn tui_action_width(action: &crate::primitives::toast::ToastAction) -> f32 {
 /// allows. The body doesn't drive width — it wraps instead (see
 /// [`tui_body_lines`]) — so a very long body alone doesn't blow the box
 /// out sideways.
-fn tui_toast_width(toast: &ToastItem, viewport_width: f32) -> f32 {
+fn tui_toast_width(toast: &Toast, viewport_width: f32) -> f32 {
     let title_needed = toast.title.chars().count() as f32 + TUI_BORDER_COLS + TUI_DISMISS_WIDTH;
     let action_widths: Vec<f32> = toast.actions.iter().map(tui_action_width).collect();
     let actions_needed = if action_widths.is_empty() {
@@ -74,7 +74,7 @@ fn tui_toast_width(toast: &ToastItem, viewport_width: f32) -> f32 {
 /// resolved by [`tui_toast_width`]), capped at [`MAX_BODY_LINES`] —
 /// shared by the measure closure (for height) and the paint routine (for
 /// the actual text), so they always agree (#1182).
-fn tui_body_lines(toast: &ToastItem, width: f32) -> Vec<String> {
+fn tui_body_lines(toast: &Toast, width: f32) -> Vec<String> {
     if toast.body.is_empty() {
         return Vec::new();
     }
@@ -84,7 +84,7 @@ fn tui_body_lines(toast: &ToastItem, width: f32) -> Vec<String> {
     })
 }
 
-fn toast_height(toast: &ToastItem, width: f32) -> f32 {
+fn toast_height(toast: &Toast, width: f32) -> f32 {
     let body_lines = tui_body_lines(toast, width).len();
     // 1 title row + wrapped body rows + 1 button row (if the toast has
     // actions, #1185) + top/bottom border rows.
@@ -101,13 +101,13 @@ fn severity_bg(severity: ToastSeverity, theme: &Theme) -> crate::types::Color {
     }
 }
 
-/// Compute the TUI cell-unit layout for a [`ToastStack`] without painting.
+/// Compute the TUI cell-unit layout for a [`ToastOverlay`] without painting.
 ///
 /// `area`'s origin is baked into the returned bounds (absolute buffer
 /// coordinates, matching `tui_menu_bar_layout` / `tui_panel_layout`) —
 /// hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
-pub fn tui_toast_stack_layout(stack: &ToastStack, area: Rect) -> ToastStackLayout {
+pub fn tui_toast_stack_layout(stack: &ToastOverlay, area: Rect) -> ToastStackLayout {
     let viewport_width = area.width as f32;
     stack.layout(
         area.x as f32,
@@ -141,12 +141,12 @@ pub fn tui_toast_stack_layout(stack: &ToastStack, area: Rect) -> ToastStackLayou
     )
 }
 
-/// Draw a [`ToastStack`] overlay onto `buf`. Returns the layout for
+/// Draw a [`ToastOverlay`] overlay onto `buf`. Returns the layout for
 /// host click dispatch.
 pub fn draw_toast_stack(
     buf: &mut Buffer,
     area: Rect,
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     theme: &Theme,
 ) -> ToastStackLayout {
     let layout = tui_toast_stack_layout(stack, area);
@@ -164,7 +164,7 @@ fn paint_toast(
     buf: &mut Buffer,
     area: Rect,
     vt: &VisibleToast,
-    toast: &ToastItem,
+    toast: &Toast,
     theme: &Theme,
     focus: Option<&crate::primitives::toast::ToastFocus>,
 ) {
@@ -293,12 +293,7 @@ fn paint_toast(
     // inline with the title, at most one, before this). The action
     // marked `primary` fills its row with `theme.accent_bg`; the rest
     // paint plain text in `theme.link_fg` (secondary/ghost-button look).
-    for (i, (ab, action)) in vt
-        .action_bounds
-        .iter()
-        .zip(toast.actions.iter())
-        .enumerate()
-    {
+    for (i, (ab, action)) in vt.action_rects.iter().zip(toast.actions.iter()).enumerate() {
         let ay = ab.y.round() as u16;
         let ax0 = ab.x.round() as u16;
         let aw = ab.width.round() as u16;
@@ -340,8 +335,8 @@ fn paint_toast(
 mod tests {
     use super::*;
     use crate::primitives::toast::{
-        ToastAction, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastItem, ToastSeverity,
-        ToastStack,
+        Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastOverlay,
+        ToastSeverity,
     };
     use crate::types::WidgetId;
 
@@ -349,8 +344,8 @@ mod tests {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
     }
 
-    fn info_toast(id: &str, title: &str) -> ToastItem {
-        ToastItem {
+    fn info_toast(id: &str, title: &str) -> Toast {
+        Toast {
             id: WidgetId::new(id),
             title: title.into(),
             body: String::new(),
@@ -360,8 +355,8 @@ mod tests {
         }
     }
 
-    fn stack_br(toasts: Vec<ToastItem>) -> ToastStack {
-        ToastStack {
+    fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts,
@@ -447,7 +442,7 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 60, 20);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 60, origin_y + 20));
         let mut toast = info_toast("t1", "Error occurred");
-        toast.actions = vec![ToastAction {
+        toast.actions = vec![ToastButton {
             id: WidgetId::new("retry"),
             label: "Retry".into(),
             primary: false,
@@ -456,8 +451,8 @@ mod tests {
         let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
 
         let vt = &layout.visible_toasts[0];
-        assert_eq!(vt.action_bounds.len(), 1);
-        let ab = vt.action_bounds[0];
+        assert_eq!(vt.action_rects.len(), 1);
+        let ab = vt.action_rects[0];
         let ax0 = ab.x.round() as u16;
         let aw = ab.width.round() as u16;
         let ax = ax0 + (aw.saturating_sub("Retry".chars().count() as u16)) / 2;
@@ -508,7 +503,7 @@ mod tests {
         let area = Rect::new(0, 0, 90, 20);
         let mut buf = Buffer::empty(area);
         let mut toast = info_toast("t1", "Install Markdown Language Server?");
-        toast.actions = vec![ToastAction {
+        toast.actions = vec![ToastButton {
             id: WidgetId::new("install"),
             label: "Install".into(),
             primary: true,
@@ -518,8 +513,8 @@ mod tests {
         let layout = draw_toast_stack(&mut buf, area, &stack, &Theme::default());
 
         let vt = &layout.visible_toasts[0];
-        assert_eq!(vt.action_bounds.len(), 1);
-        let ab = vt.action_bounds[0];
+        assert_eq!(vt.action_rects.len(), 1);
+        let ab = vt.action_rects[0];
         let db = vt.dismiss_bounds.expect("dismiss bounds present");
 
         // Box widened to fit the whole title + dismiss, up to the
@@ -567,12 +562,12 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut toast = info_toast("t1", "Install?");
         toast.actions = vec![
-            ToastAction {
+            ToastButton {
                 id: WidgetId::new("install"),
                 label: "Install".into(),
                 primary: true,
             },
-            ToastAction {
+            ToastButton {
                 id: WidgetId::new("skip"),
                 label: "Skip".into(),
                 primary: false,
@@ -583,9 +578,9 @@ mod tests {
         let layout = draw_toast_stack(&mut buf, area, &stack, &theme);
 
         let vt = &layout.visible_toasts[0];
-        assert_eq!(vt.action_bounds.len(), 2);
-        let install = vt.action_bounds[0];
-        let skip = vt.action_bounds[1];
+        assert_eq!(vt.action_rects.len(), 2);
+        let install = vt.action_rects[0];
+        let skip = vt.action_rects[1];
         assert_eq!(install.y, skip.y);
         assert!(install.x + install.width <= skip.x);
 

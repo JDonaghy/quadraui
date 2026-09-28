@@ -1,5 +1,5 @@
 //! `notify_or_toast` — send a system [`Notification`] where the backend
-//! has one, degrade to the in-canvas [`ToastItem`] primitive where it
+//! has one, degrade to the in-canvas [`Toast`] primitive where it
 //! doesn't (issue #955).
 //!
 //! [`BackendCaps::notifications`] is `true` only on backends with a real
@@ -14,12 +14,12 @@
 //! every call site.
 
 use crate::backend::{Backend, Notification};
-use crate::primitives::toast::{ToastAction, ToastItem, ToastSeverity};
+use crate::primitives::toast::{Toast, ToastButton, ToastSeverity};
 use crate::types::WidgetId;
 
 /// Dispatch `n` as a real system notification when `backend` supports
-/// one; otherwise return a [`ToastItem`] the caller should push onto its
-/// own [`crate::primitives::toast::ToastStack`] instead.
+/// one; otherwise return a [`Toast`] the caller should push onto its
+/// own [`crate::primitives::toast::ToastOverlay`] instead.
 ///
 /// Returns `None` when `n` was sent natively — there is nothing left for
 /// the caller to do. Returns `Some(item)` on the degrade path; the
@@ -36,15 +36,15 @@ use crate::types::WidgetId;
 /// [`WidgetId`] — falling back to the title when there is no tag, so two
 /// untagged notifications with different titles still get distinct
 /// toast ids. Every one of [`Notification::actions`] survives into
-/// [`ToastItem::actions`] (#1185 — before the toast primitive supported
+/// [`Toast::actions`] (#1185 — before the toast primitive supported
 /// more than one action button, only the first of `Notification`'s
 /// `Vec` made it across; now the shapes match 1:1, none marked
-/// [`ToastAction::primary`] since `Notification` carries no such
-/// distinction). `icon` and `silent` have no [`ToastItem`] equivalent
+/// [`ToastButton::primary`] since `Notification` carries no such
+/// distinction). `icon` and `silent` have no [`Toast`] equivalent
 /// and are dropped — a toast is always silent (no OS notification sound
 /// to suppress) and paints with the app's own chrome, not a
 /// caller-supplied icon.
-pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<ToastItem> {
+pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<Toast> {
     if backend.backend_caps().notifications {
         backend.services().send_notification(n);
         return None;
@@ -61,13 +61,13 @@ pub fn notify_or_toast(backend: &dyn Backend, n: Notification) -> Option<ToastIt
     let actions = n
         .actions()
         .iter()
-        .map(|(action_id, label)| ToastAction {
+        .map(|(action_id, label)| ToastButton {
             id: action_id.clone(),
             label: label.clone(),
             primary: false,
         })
         .collect();
-    Some(ToastItem {
+    Some(Toast {
         id,
         title: n.title,
         body: n.body,
@@ -144,7 +144,7 @@ mod tests {
     }
 
     /// #1185: every `Notification::actions` entry survives into
-    /// `ToastItem::actions`, not just the first — the toast primitive
+    /// `Toast::actions`, not just the first — the toast primitive
     /// dropped its one-action limit alongside this issue's multi-action
     /// support.
     #[test]
@@ -158,12 +158,12 @@ mod tests {
         assert_eq!(ids, vec![WidgetId::new("first"), WidgetId::new("second")]);
     }
 
-    /// The degraded [`ToastItem`] round-trips through the real layout +
+    /// The degraded [`Toast`] round-trips through the real layout +
     /// hit-test machinery — not just field equality — so this helper's
     /// output is provably clickable, not merely structurally plausible.
     #[test]
     fn degraded_toast_action_is_hit_testable() {
-        use crate::primitives::toast::{ToastCorner, ToastMeasure, ToastStack};
+        use crate::primitives::toast::{ToastCorner, ToastMeasure, ToastOverlay};
 
         let backend = RecordingBackend::new();
         let item = notify_or_toast(
@@ -171,7 +171,7 @@ mod tests {
             Notification::new("t", "b").with_action(WidgetId::new("retry"), "Retry"),
         )
         .unwrap();
-        let stack = ToastStack {
+        let stack = ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: vec![item],
@@ -184,7 +184,7 @@ mod tests {
             m
         });
         let action_bounds = *layout.visible_toasts[0]
-            .action_bounds
+            .action_rects
             .first()
             .expect("toast with an action must lay out an action rect");
         let cx = action_bounds.x + action_bounds.width / 2.0;

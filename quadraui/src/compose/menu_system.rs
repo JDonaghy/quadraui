@@ -1094,14 +1094,18 @@ mod tests {
         fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
             unimplemented!()
         }
-        fn draw_toast_stack(
+        fn draw_toast_overlay(
             &mut self,
             _r: Rect,
-            _s: &crate::ToastStack,
+            _s: &crate::ToastOverlay,
         ) -> crate::ToastStackLayout {
             unimplemented!()
         }
-        fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastStack) -> crate::ToastStackLayout {
+        fn toast_stack_layout(
+            &self,
+            _r: Rect,
+            _s: &crate::ToastOverlay,
+        ) -> crate::ToastStackLayout {
             unimplemented!()
         }
         fn draw_pipeline_view(

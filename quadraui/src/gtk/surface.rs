@@ -10,7 +10,7 @@
 //!    [`crate::Split`] and [`crate::SplitTree`] paint with `cr` alone (no
 //!    text); [`crate::Form`], `crate::primitives::sidebar_panel`,
 //!    [`crate::StatusBar`], [`crate::primitives::diff_view::DiffView`],
-//!    [`crate::ToastStack`] and [`crate::Panel`] paint text too and need a
+//!    [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
 //!    live `pango::Layout`. [`CairoSurface::layout`] is `Option` so one
 //!    struct covers both — [`Self::layout_or_panic`] panics only if a text
 //!    verb is reached with `layout: None`, exactly mirroring what the old

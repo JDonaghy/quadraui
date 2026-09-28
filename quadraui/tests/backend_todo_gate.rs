@@ -226,7 +226,7 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ("src/win/backend.rs", "fn draw_image", "\"Direct2D image rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn draw_panel", "\"Direct2D panel rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn panel_layout", "\"DirectWrite panel layout (no surface attached yet)\""),
-    ("src/win/backend.rs", "fn draw_toast_stack", "\"Direct2D toast stack rasteriser (no surface attached yet)\""),
+    ("src/win/backend.rs", "fn draw_toast_overlay", "\"Direct2D toast stack rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn toast_stack_layout", "\"DirectWrite toast stack layout (no surface attached yet)\""),
     ("src/win/backend.rs", "fn draw_pipeline_view", "\"Direct2D pipeline view rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn draw_progress", "\"Direct2D progress bar rasteriser (no surface attached yet)\""),

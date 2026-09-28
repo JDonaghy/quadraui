@@ -1,4 +1,4 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::ToastStack`] (issue #29).
+//! Direct2D / DirectWrite rasteriser for [`crate::ToastOverlay`] (issue #29).
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
@@ -40,11 +40,11 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::{pixel_toast_stack_layout, TextMeasure};
-use crate::primitives::toast::{ToastStack, ToastStackLayout};
+use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
 
-/// Compute a [`ToastStack`]'s layout without painting — the measurer twin
+/// Compute a [`ToastOverlay`]'s layout without painting — the measurer twin
 /// of the shared paint's internal layout computation. Both use the
 /// identical per-toast measurer shape, so a no-paint hit-test call always
 /// agrees with what the last paint drew. Pure geometry over [`TextMeasure`]
@@ -58,7 +58,7 @@ use crate::theme::Theme;
 pub fn win_toast_stack_layout(
     measure: &dyn TextMeasure,
     rect: Rect,
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     line_height: f32,
 ) -> ToastStackLayout {
     pixel_toast_stack_layout(
@@ -94,7 +94,7 @@ pub fn draw_toast_stack(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
     rect: Rect,
-    stack: &ToastStack,
+    stack: &ToastOverlay,
     theme: &Theme,
     line_height: f32,
 ) -> ToastStackLayout {
@@ -119,7 +119,7 @@ pub fn draw_toast_stack(
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
-    use crate::primitives::toast::{ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity};
+    use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastHit, ToastSeverity};
     use crate::types::{Color, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
@@ -133,13 +133,13 @@ mod tests {
     /// technique `gtk::toast::tests::colored_toast` uses.
     const BOX_COLOR: Color = Color::rgb(10, 20, 30);
 
-    fn colored_toast(id: &str, title: &str) -> ToastItem {
-        ToastItem {
+    fn colored_toast(id: &str, title: &str) -> Toast {
+        Toast {
             id: WidgetId::new(id),
             title: title.into(),
             body: "Details here".into(),
             severity: ToastSeverity::Info,
-            actions: vec![ToastAction {
+            actions: vec![ToastButton {
                 id: WidgetId::new(format!("{id}:act")),
                 label: "Undo".into(),
                 primary: false,
@@ -148,8 +148,8 @@ mod tests {
         }
     }
 
-    fn stack_br(toasts: Vec<ToastItem>) -> ToastStack {
-        ToastStack {
+    fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts,
@@ -210,7 +210,7 @@ mod tests {
         let dismiss_hit = layout.hit_test(db.x + db.width / 2.0, db.y + db.height / 2.0);
         assert_eq!(dismiss_hit, ToastHit::Dismiss(WidgetId::new("t1")));
 
-        let ab = *vt.action_bounds.first().expect("action bounds present");
+        let ab = *vt.action_rects.first().expect("action bounds present");
         let action_hit = layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0);
         assert_eq!(action_hit, ToastHit::Action(WidgetId::new("t1:act")));
 

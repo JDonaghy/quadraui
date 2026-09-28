@@ -22,12 +22,12 @@
 use quadraui::compose::{ToastStackController, ToastStackEvent};
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack,
+    StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
     UiEvent, WidgetId,
 };
 
 pub struct ToastActionsApp {
-    toasts: Vec<ToastItem>,
+    toasts: Vec<Toast>,
     next_id: usize,
     last_message: String,
     controller: ToastStackController,
@@ -43,8 +43,8 @@ impl ToastActionsApp {
         }
     }
 
-    fn stack(&self) -> ToastStack {
-        ToastStack {
+    fn stack(&self) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: self.toasts.clone(),
@@ -89,19 +89,19 @@ impl ToastActionsApp {
     }
 }
 
-fn install_toast(n: usize) -> ToastItem {
-    ToastItem {
+fn install_toast(n: usize) -> Toast {
+    Toast {
         id: WidgetId::new(format!("install-{n}")),
         title: "Install Markdown Language Server?".into(),
         body: "Recommended for .md files in this workspace.".into(),
         severity: ToastSeverity::Info,
         actions: vec![
-            ToastAction {
+            ToastButton {
                 id: WidgetId::new(format!("install-{n}:install")),
                 label: "Install".into(),
                 primary: true,
             },
-            ToastAction {
+            ToastButton {
                 id: WidgetId::new(format!("install-{n}:dont-ask")),
                 label: "Don't ask again".into(),
                 primary: false,
@@ -130,7 +130,7 @@ impl AppLogic for ToastActionsApp {
             &InteractionState::new(),
         );
         let overlay_rect = self.overlay_rect(backend);
-        let _ = backend.draw_toast_stack(overlay_rect, &self.stack());
+        let _ = backend.draw_toast_overlay(overlay_rect, &self.stack());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

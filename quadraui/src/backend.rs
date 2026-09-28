@@ -113,7 +113,9 @@ use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
-use crate::primitives::toast::{ToastStack, ToastStackLayout};
+#[allow(deprecated)]
+use crate::primitives::toast::ToastStack;
+use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
@@ -3268,19 +3270,42 @@ pub trait Backend: sealed::Sealed {
     /// `content_bounds` are shifted by `rect.x` / `rect.y` (issue #505).
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
 
-    /// Draw a [`ToastStack`] overlay. The backend computes the layout
+    /// Draw a [`ToastOverlay`] overlay. The backend computes the layout
     /// with its native toast dimensions (cell-width boxes for TUI,
     /// pixel boxes for GTK) and returns the [`ToastStackLayout`] so
     /// hosts can route clicks to dismiss, action, or body. Same
     /// coordinate frame as [`Self::toast_stack_layout`] (ABSOLUTE).
-    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
+    fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout;
+
+    /// Draw a pre-#1185 [`ToastStack`] — deprecated forwarding shim over
+    /// [`Self::draw_toast_overlay`].
+    ///
+    /// This is the one method on this trait with a default body, and it
+    /// is deliberately **not** a rule-7 exception (PRIMITIVE_RULES.md):
+    /// nothing implements it, in-tree or out. It exists only so the two
+    /// downstream consumers that call `backend.draw_toast_stack(rect,
+    /// &stack)` with the pre-#1185 struct-literal shape keep compiling
+    /// through #1185's field changes, with a deprecation warning naming
+    /// their fix (CLAUDE.md rule 3). It converts with
+    /// [`ToastStack::to_overlay`] — so a legacy stack paints exactly
+    /// like the equivalent overlay: same box geometry, same hit regions,
+    /// its single action secondary-styled, and no focus ring. Deleted,
+    /// together with the legacy structs, once both consumers migrate.
+    #[deprecated(
+        since = "0.0.1",
+        note = "use `draw_toast_overlay` with a `ToastOverlay` — see quadraui#1185"
+    )]
+    #[allow(deprecated)]
+    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+        self.draw_toast_overlay(rect, &stack.to_overlay())
+    }
 
     /// Compute the toast-stack layout without painting. Hosts call
     /// this in click handlers to resolve hits.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
     /// (issue #505).
-    fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout;
+    fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout;
 
     /// Draw a [`PipelineView`] (horizontal multi-stage workflow widget).
     /// The backend paints stage boxes, status icons, labels, optional

@@ -1,10 +1,10 @@
 //! `ToastStackController` — VS Code-style keyboard-focus driver for the
-//! in-canvas [`ToastStack`] primitive (#1185).
+//! in-canvas [`ToastOverlay`] primitive (#1185).
 //!
 //! Toasts are non-modal (see [`crate::primitives::toast`]'s module doc)
 //! — unlike [`crate::compose::MessageDialogController`], this controller
 //! never owns the stack or blocks input while unfocused. It is a pure
-//! keyboard-focus cursor: the app builds its own `ToastStack` each frame
+//! keyboard-focus cursor: the app builds its own `ToastOverlay` each frame
 //! (as it always has), and *optionally* hands this controller keyboard
 //! focus — with its own command or keybinding, e.g. a "focus
 //! notifications" action — at which point Tab/Shift+Tab/Left/Right cycle
@@ -16,16 +16,16 @@
 //!
 //! ```rust,ignore
 //! // App-owned state:
-//! let mut toasts: Vec<ToastItem> = vec![/* ... */];
+//! let mut toasts: Vec<Toast> = vec![/* ... */];
 //! let mut controller = ToastStackController::new();
 //!
 //! // Some app keybinding gives the stack focus:
 //! controller.give_focus(&stack);
 //!
 //! // In AppLogic::render, whenever there are toasts to show:
-//! let mut stack = ToastStack { id, corner, toasts: toasts.clone(), focus: None };
+//! let mut stack = ToastOverlay { id, corner, toasts: toasts.clone(), focus: None };
 //! stack.focus = controller.focus(); // attaches the focus ring for painting
-//! backend.draw_toast_stack(rect, &stack);
+//! backend.draw_toast_overlay(rect, &stack);
 //!
 //! // In AppLogic::handle, before any other keyboard routing (so the
 //! // controller can claim navigation keys while it has focus):
@@ -42,9 +42,9 @@
 //!
 //! - Tab / Shift+Tab and Left / Right cycle keyboard focus among the
 //!   focused toast's controls — dismiss `×` first, then each of
-//!   [`ToastItem::actions`] in order — wrapping at either end.
+//!   [`Toast::actions`] in order — wrapping at either end.
 //! - Up / Down move focus to the previous / next toast in
-//!   [`ToastStack::toasts`] (temporal, oldest-first) order, clamping at
+//!   [`ToastOverlay::toasts`] (temporal, oldest-first) order, clamping at
 //!   either end rather than wrapping, and reset the in-toast cursor back
 //!   to the dismiss button. (A corner-aware "visual stacking order"
 //!   would invert this for bottom corners; this controller intentionally
@@ -71,12 +71,12 @@
 //! # Visible focus indicator
 //!
 //! [`Self::focus`] returns the current [`ToastFocus`] (or `None`); the
-//! caller attaches it to [`ToastStack::focus`] before painting so every
+//! caller attaches it to [`ToastOverlay::focus`] before painting so every
 //! backend's rasteriser draws a `theme.link_fg` ring around the focused
 //! control — see `primitives::toast::native_surface_paint::paint_toast`
 //! and `tui::toast::paint_toast`.
 
-use crate::primitives::toast::{ToastFocus, ToastFocusTarget, ToastStack};
+use crate::primitives::toast::{ToastFocus, ToastFocusTarget, ToastOverlay};
 use crate::types::WidgetId;
 use crate::{Key, NamedKey, UiEvent};
 
@@ -108,7 +108,7 @@ pub enum ToastStackEvent {
     Ignored,
 }
 
-/// Cross-backend keyboard-focus cursor for a non-modal [`ToastStack`].
+/// Cross-backend keyboard-focus cursor for a non-modal [`ToastOverlay`].
 ///
 /// See the [module-level documentation](self) for the full usage
 /// pattern and keyboard model.
@@ -122,7 +122,7 @@ impl ToastStackController {
         Self { focus: None }
     }
 
-    /// The current focus target, if any — attach to [`ToastStack::focus`]
+    /// The current focus target, if any — attach to [`ToastOverlay::focus`]
     /// before painting so the focused control gets a visible ring.
     pub fn focus(&self) -> Option<ToastFocus> {
         self.focus.clone()
@@ -136,14 +136,14 @@ impl ToastStackController {
     /// Give the stack keyboard focus, seeding it on the newest toast's
     /// dismiss button (`stack.toasts.last()` — the temporally most
     /// recent, matching every corner's "newest nearest the user"
-    /// convention per [`crate::primitives::toast::ToastStack::layout`]'s
+    /// convention per [`crate::primitives::toast::ToastOverlay::layout`]'s
     /// own doc). Returns `false` (and leaves focus untouched) if `stack`
     /// has no toasts to focus.
     ///
     /// Call this from the app's own keybinding/command that means
     /// "focus notifications" — this controller never claims focus on
     /// its own initiative (#1185: "the app decides how focus arrives").
-    pub fn give_focus(&mut self, stack: &ToastStack) -> bool {
+    pub fn give_focus(&mut self, stack: &ToastOverlay) -> bool {
         match stack.toasts.last() {
             Some(t) => {
                 self.focus = Some(ToastFocus {
@@ -168,7 +168,7 @@ impl ToastStackController {
     /// [`UiEvent::KeyPressed`] is ever consumed — every other event
     /// variant, and every key while unfocused, is
     /// [`ToastStackEvent::Ignored`].
-    pub fn handle(&mut self, event: &UiEvent, stack: &ToastStack) -> ToastStackEvent {
+    pub fn handle(&mut self, event: &UiEvent, stack: &ToastOverlay) -> ToastStackEvent {
         let UiEvent::KeyPressed { key, modifiers, .. } = event else {
             return ToastStackEvent::Ignored;
         };
@@ -234,7 +234,7 @@ impl ToastStackController {
     /// calling `handle` after that shouldn't get stale
     /// `ToastStackEvent::Action`/`Dismiss` results for a toast that no
     /// longer exists.
-    fn resync(&mut self, stack: &ToastStack) {
+    fn resync(&mut self, stack: &ToastOverlay) {
         if let Some(f) = &self.focus {
             if !stack.toasts.iter().any(|t| t.id == f.toast_id) {
                 self.focus = None;
@@ -249,7 +249,7 @@ impl ToastStackController {
         });
     }
 
-    fn focus_toast_at(&mut self, stack: &ToastStack, idx: usize) {
+    fn focus_toast_at(&mut self, stack: &ToastOverlay, idx: usize) {
         if let Some(t) = stack.toasts.get(idx) {
             self.focus = Some(ToastFocus {
                 toast_id: t.id.clone(),
@@ -277,11 +277,11 @@ fn index_to_target(index: usize) -> ToastFocusTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toast::{ToastAction, ToastCorner, ToastItem, ToastSeverity};
+    use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastSeverity};
     use crate::Modifiers;
 
-    fn toast(id: &str) -> ToastItem {
-        ToastItem {
+    fn toast(id: &str) -> Toast {
+        Toast {
             id: WidgetId::new(id),
             title: id.to_string(),
             body: String::new(),
@@ -291,11 +291,11 @@ mod tests {
         }
     }
 
-    fn toast_with_actions(id: &str, action_ids: &[&str]) -> ToastItem {
-        ToastItem {
+    fn toast_with_actions(id: &str, action_ids: &[&str]) -> Toast {
+        Toast {
             actions: action_ids
                 .iter()
-                .map(|a| ToastAction {
+                .map(|a| ToastButton {
                     id: WidgetId::new(*a),
                     label: (*a).to_string(),
                     primary: false,
@@ -305,8 +305,8 @@ mod tests {
         }
     }
 
-    fn stack(toasts: Vec<ToastItem>) -> ToastStack {
-        ToastStack {
+    fn stack(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts,

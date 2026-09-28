@@ -4025,10 +4025,10 @@ impl Backend for GtkBackend {
         )
     }
 
-    fn draw_toast_stack(
+    fn draw_toast_overlay(
         &mut self,
         rect: QRect,
-        stack: &crate::primitives::toast::ToastStack,
+        stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
         // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
         // each require an active frame internally — see
@@ -4168,7 +4168,7 @@ impl Backend for GtkBackend {
     fn toast_stack_layout(
         &self,
         rect: QRect,
-        stack: &crate::primitives::toast::ToastStack,
+        stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
         // Layout-only path (from click handlers, outside `enter_frame_scope`)
         // still measures via a real `pango::Layout` built from the

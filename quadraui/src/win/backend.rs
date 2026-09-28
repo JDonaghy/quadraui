@@ -120,7 +120,7 @@ use crate::primitives::toolbar::ToolbarButton;
 #[allow(deprecated)]
 use crate::primitives::tab_bar::TabBarHits;
 use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
-use crate::primitives::toast::{ToastStack, ToastStackLayout};
+use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
@@ -3724,7 +3724,7 @@ impl Backend for WinBackend {
     /// [`crate::primitives::toast::native_surface_paint::paint`] now,
     /// passing `&self.current_theme` — see `super::toast`'s module doc
     /// for why the pre-#861 free function never did.
-    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+    fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
@@ -3756,7 +3756,7 @@ impl Backend for WinBackend {
     /// #29: pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
     /// attached — same posture as [`Self::status_bar_layout`].
-    fn toast_stack_layout(&self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
+    fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         #[cfg(target_os = "windows")]
         if let Some(dwrite) = &self.dwrite {
             return super::toast::win_toast_stack_layout(

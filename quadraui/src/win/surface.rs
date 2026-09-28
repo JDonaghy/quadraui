@@ -14,7 +14,7 @@
 //!   [`crate::Split`] and [`crate::SplitTree`] paint with `target` alone
 //!   (no text); [`crate::Form`], `crate::primitives::sidebar_panel`,
 //!   [`crate::StatusBar`], [`crate::primitives::diff_view::DiffView`],
-//!   [`crate::ToastStack`] and [`crate::Panel`] paint text too and need a
+//!   [`crate::ToastOverlay`] and [`crate::Panel`] paint text too and need a
 //!   live [`DWrite`]. [`D2dSurface::dwrite`] is `Option` so one struct
 //!   covers both — [`Self::dwrite_or_panic`] panics only if a text verb
 //!   is reached with `dwrite: None`, exactly mirroring what the old

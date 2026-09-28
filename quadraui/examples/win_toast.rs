@@ -2,7 +2,7 @@
 //!
 //! Win-GUI port of `tui_toast.rs` / `gtk_toast.rs` / `macos_toast.rs`.
 //! Same `ToastApp` `AppLogic` impl in `examples/common/toast_app.rs`;
-//! only the runner call differs. Demonstrates a `ToastStack` with
+//! only the runner call differs. Demonstrates a `ToastOverlay` with
 //! severity tints, dismiss, and action buttons.
 
 #[path = "common/mod.rs"]

@@ -2974,10 +2974,10 @@ impl Backend for TuiBackend {
         crate::tui::tui_panel_layout(panel, area)
     }
 
-    fn draw_toast_stack(
+    fn draw_toast_overlay(
         &mut self,
         rect: QRect,
-        stack: &crate::primitives::toast::ToastStack,
+        stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -2990,7 +2990,7 @@ impl Backend for TuiBackend {
     fn toast_stack_layout(
         &self,
         rect: QRect,
-        stack: &crate::primitives::toast::ToastStack,
+        stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_toast_stack_layout(stack, area)
@@ -3862,10 +3862,10 @@ mod tests {
             panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
         }
 
-        fn draw_toast_stack(
+        fn draw_toast_overlay(
             &mut self,
             _r: QRect,
-            stack: &crate::primitives::toast::ToastStack,
+            stack: &crate::primitives::toast::ToastOverlay,
         ) -> crate::primitives::toast::ToastStackLayout {
             stack.layout(_r.x, _r.y, _r.width, _r.height, 1.0, 1.0, |_| {
                 crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
@@ -3875,7 +3875,7 @@ mod tests {
         fn toast_stack_layout(
             &self,
             _r: QRect,
-            stack: &crate::primitives::toast::ToastStack,
+            stack: &crate::primitives::toast::ToastOverlay,
         ) -> crate::primitives::toast::ToastStackLayout {
             stack.layout(_r.x, _r.y, _r.width, _r.height, 1.0, 1.0, |_| {
                 crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
@@ -6193,6 +6193,96 @@ mod tests {
         assert!(
             !backend.take_full_repaint_requested(),
             "the request must be cleared after the first consumption"
+        );
+    }
+
+    /// #1185 rule-3 shim: a pre-#1185 `ToastStack`, drawn through the
+    /// deprecated `Backend::draw_toast_stack` default, must reach the
+    /// real TUI rasteriser and come back with exactly the layout the
+    /// equivalent `ToastOverlay` produces — same boxes, same hit
+    /// regions, its single action still clickable. That is the whole
+    /// promise made to `coord-tui` / `vimcode` while they migrate:
+    /// calling the old method is a rename away from the new one, not a
+    /// behaviour change.
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay() {
+        use crate::primitives::toast::{
+            ToastAction, ToastCorner, ToastHit, ToastItem, ToastSeverity, ToastStack,
+        };
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let legacy = ToastStack {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![ToastItem {
+                id: WidgetId::new("t1"),
+                title: "Install Markdown Language Server?".to_string(),
+                body: "Recommended for .md files".to_string(),
+                severity: ToastSeverity::Info,
+                action: Some(ToastAction {
+                    id: WidgetId::new("install"),
+                    label: "Install".to_string(),
+                }),
+                accent: None,
+            }],
+        };
+        let overlay = legacy.to_overlay();
+        let rect = QRect::new(0.0, 0.0, 80.0, 24.0);
+
+        let draw = |via_shim: bool| {
+            let mut backend = TuiBackend::new();
+            backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+            let mut layout = None;
+            terminal
+                .draw(|frame| {
+                    backend.enter_frame_scope(frame, |b| {
+                        layout = Some(if via_shim {
+                            b.draw_toast_stack(rect, &legacy)
+                        } else {
+                            b.draw_toast_overlay(rect, &overlay)
+                        });
+                    });
+                })
+                .expect("draw");
+            let painted: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            (layout.expect("the toast stack painted"), painted)
+        };
+
+        let (shim_layout, shim_painted) = draw(true);
+        let (overlay_layout, overlay_painted) = draw(false);
+
+        assert_eq!(
+            shim_layout, overlay_layout,
+            "the deprecated shim must resolve to the same layout as the overlay it converts into"
+        );
+        assert_eq!(
+            shim_painted, overlay_painted,
+            "the deprecated shim must paint the same cells as the overlay it converts into"
+        );
+        assert!(
+            shim_painted.contains("Install"),
+            "the legacy single action still paints its label: {shim_painted}"
+        );
+
+        // …and it is still routable: the action rect hit-tests to the
+        // action's own id, not the toast body.
+        let vt = shim_layout
+            .visible_toasts
+            .first()
+            .expect("one visible toast");
+        let ab = vt.action_rects.first().copied().expect("an action button");
+        assert_eq!(
+            shim_layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0),
+            ToastHit::Action(WidgetId::new("install")),
         );
     }
 }
