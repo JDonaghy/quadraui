@@ -1,6 +1,7 @@
 //! `Toast` primitive: a transient corner notification with optional
-//! severity tint and optional action button. Used for "File saved",
-//! "LSP disconnected", "3 errors in src/foo.rs", etc.
+//! severity tint and zero or more action buttons. Used for "File saved",
+//! "LSP disconnected", "3 errors in src/foo.rs", "Install Markdown
+//! Language Server?", etc.
 //!
 //! Toasts are ephemeral — the app owns their lifecycle (show, auto-dismiss
 //! after a duration, manual dismiss) and passes the primitive the current
@@ -10,11 +11,20 @@
 //! # Backend contract
 //!
 //! **Declarative + overlay.** Render toasts stacked in the configured
-//! `corner`, with each toast a box of (title, body, optional action
-//! button). Clicks resolve via [`ToastStackLayout::hit_test`] /
-//! [`ToastHit`]: the action button hits `ToastHit::Action`; the
-//! dismiss affordance hits `ToastHit::Dismiss`. Toast boxes don't take
-//! keyboard focus — they're strictly a notification surface.
+//! `corner`, VS Code-style (#1185): title/body wrap across the box's
+//! full width, growing its height up to a cap ([`MAX_BODY_LINES`])
+//! before ellipsizing; the dismiss `×` sits alone near the top-right;
+//! any [`ToastItem::actions`] sit on their own row at the bottom-right,
+//! never inline with the title. Clicks resolve via
+//! [`ToastStackLayout::hit_test`] / [`ToastHit`]: an action button hits
+//! `ToastHit::Action`; the dismiss affordance hits `ToastHit::Dismiss`.
+//!
+//! Toast boxes take keyboard focus only when an app explicitly hands it
+//! to them, via [`crate::compose::ToastStackController`] (#1185) —
+//! they're otherwise strictly a passive notification surface, and never
+//! steal focus or block input on their own (unlike a modal
+//! [`crate::primitives::dialog::Dialog`]). `ToastStack::focus`, set from
+//! the controller, is what makes a backend paint a focus ring at all.
 //!
 //! Stacking direction: bottom-corner toasts grow upward (newest nearest
 //! the corner); top-corner toasts grow downward. `Toast::layout()`
@@ -33,6 +43,15 @@ pub struct ToastStack {
     /// Toasts in temporal order — oldest first. Visual order depends on
     /// `corner` (bottom corners stack upward, top corners stack downward).
     pub toasts: Vec<ToastItem>,
+    /// Which control (if any) currently has keyboard focus (#1185).
+    /// `None` — the common case, since toasts are non-modal and never
+    /// steal focus on their own — paints with no focus ring. Set this
+    /// from [`crate::compose::ToastStackController::focus`] before
+    /// calling [`crate::Backend::draw_toast_stack`] to make the
+    /// controller's cursor visible; the primitive itself never mutates
+    /// this field (declarative, like every other field here).
+    #[serde(default)]
+    pub focus: Option<ToastFocus>,
 }
 
 /// Corner placement for a `ToastStack`.
@@ -56,10 +75,13 @@ pub struct ToastItem {
     /// Visual severity — backends tint the box accordingly.
     #[serde(default)]
     pub severity: ToastSeverity,
-    /// Optional action button. `None` = no action shown; just the
-    /// dismiss affordance is clickable.
+    /// Ordered action buttons (#1185 — was `Option<ToastAction>`, at
+    /// most one). Rendered on their own row at the bottom-right of the
+    /// toast box, never inline with the title. Empty = no action row;
+    /// just the dismiss affordance is clickable. At most one entry
+    /// should set [`ToastAction::primary`] — see that field's doc.
     #[serde(default)]
-    pub action: Option<ToastAction>,
+    pub actions: Vec<ToastAction>,
     /// Override severity's default tint. Most toasts use `None` and let
     /// the theme decide.
     #[serde(default)]
@@ -81,6 +103,39 @@ pub enum ToastSeverity {
 pub struct ToastAction {
     pub id: WidgetId,
     pub label: String,
+    /// Styled with the theme's accent (filled background) instead of the
+    /// plain secondary-button look (#1185). VS Code convention: at most
+    /// one action per toast is primary — the "do the thing" button (e.g.
+    /// "Install"), with the rest ("Don't ask again", …) staying
+    /// secondary. Backends don't enforce the "at most one" rule; a
+    /// caller that sets it on more than one action just gets more than
+    /// one accent-filled button.
+    #[serde(default)]
+    pub primary: bool,
+}
+
+/// Keyboard-focus target within a [`ToastStack`] (#1185) — set
+/// [`ToastStack::focus`] to one of these so every backend's rasteriser
+/// draws a visible focus ring around it. Produced by
+/// [`crate::compose::ToastStackController`]; the primitive layer only
+/// consumes it for painting, never computes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToastFocus {
+    /// Which toast (by [`ToastItem::id`]) currently has keyboard focus.
+    pub toast_id: WidgetId,
+    /// Which control within that toast is focused.
+    pub target: ToastFocusTarget,
+}
+
+/// Which control within a focused toast has keyboard focus — see
+/// [`ToastFocus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToastFocusTarget {
+    /// The dismiss `×` affordance.
+    Dismiss,
+    /// One of the toast's action buttons, by index into
+    /// [`ToastItem::actions`].
+    Action(usize),
 }
 
 // ── Text wrapping (#1182) ───────────────────────────────────────────────────
@@ -280,18 +335,28 @@ mod wrap_tests {
 // shorter than one with a multi-line body).
 
 /// Per-toast measurement supplied by the backend.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `dismiss_rect` / `action_rects` are **toast-local** (relative to the
+/// toast box's own top-left corner, not the viewport) — [`ToastStack::layout`]
+/// translates them into absolute bounds itself, the same way it already
+/// positions `width`/`height` into the stack. This lets each backend's
+/// measure closure own its own padding/row-placement geometry (VS
+/// Code-style: dismiss top-right, actions on their own row at the
+/// bottom-right — see [`toast_button_rects`], the shared helper every
+/// in-tree measure closure uses to compute both) without
+/// `ToastStack::layout` itself needing to know any padding constant.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToastMeasure {
     /// Full width of the toast box in the backend's unit.
     pub width: f32,
     /// Full height of the toast box.
     pub height: f32,
-    /// Width of the dismiss affordance at the trailing edge. `0.0` if
-    /// no dismiss UI is drawn.
-    pub dismiss_width: f32,
-    /// Width of the action button (at the trailing edge, before
-    /// dismiss). `0.0` if the toast has no action.
-    pub action_width: f32,
+    /// Toast-local dismiss-affordance rect. `None` if no dismiss UI is
+    /// drawn.
+    pub dismiss_rect: Option<Rect>,
+    /// Toast-local action-button rects, one per [`ToastItem::actions`]
+    /// entry, same order. Empty if the toast has no actions.
+    pub action_rects: Vec<Rect>,
 }
 
 impl ToastMeasure {
@@ -299,10 +364,65 @@ impl ToastMeasure {
         Self {
             width,
             height,
-            dismiss_width: 0.0,
-            action_width: 0.0,
+            dismiss_rect: None,
+            action_rects: Vec::new(),
         }
     }
+}
+
+/// Compute a toast's dismiss + action-button rects, toast-local
+/// (relative to the toast box's own top-left) — shared by every
+/// backend's measure closure (#1185: `native_surface_paint::paint`,
+/// `tui::toast`, `layout_metrics::pixel_toast_stack_layout`) so the `×`
+/// affordance's top-right position and the action row's right-aligned,
+/// bottom-edge placement are computed identically everywhere, whether
+/// the caller's unit is pixels or terminal cells.
+///
+/// VS Code shape: `×` sits alone near the top-right, clear of the title
+/// row below it in height so it never overlaps a wrapped multi-line
+/// title/body; actions sit on their own row at the bottom-right,
+/// right-to-left (`action_widths[0]` ends up leftmost in the row),
+/// never inline with the title. `action_widths` is each action's
+/// already-measured, already-padded button width, in
+/// [`ToastItem::actions`] order; the returned `Vec` is aligned 1:1 with
+/// it. Both rects are clamped to stay non-negative even if the box is
+/// smaller than the sum of its own padding/button widths (a degenerate
+/// but non-panicking box, matching this module's existing
+/// `.max(0.0)`-everywhere convention).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn toast_button_rects(
+    width: f32,
+    height: f32,
+    padding: f32,
+    dismiss_width: f32,
+    dismiss_height: f32,
+    action_widths: &[f32],
+    action_height: f32,
+    action_gap: f32,
+) -> (Option<Rect>, Vec<Rect>) {
+    let dismiss_rect = if dismiss_width > 0.0 && dismiss_height > 0.0 {
+        Some(Rect::new(
+            (width - padding - dismiss_width).max(0.0),
+            padding,
+            dismiss_width,
+            dismiss_height,
+        ))
+    } else {
+        None
+    };
+
+    let mut action_rects: Vec<Rect> = Vec::with_capacity(action_widths.len());
+    if !action_widths.is_empty() && action_height > 0.0 {
+        let row_y = (height - padding - action_height).max(0.0);
+        let mut x_cursor = width - padding;
+        for w in action_widths.iter().rev() {
+            x_cursor -= w;
+            action_rects.push(Rect::new(x_cursor.max(0.0), row_y, *w, action_height));
+            x_cursor -= action_gap;
+        }
+        action_rects.reverse();
+    }
+    (dismiss_rect, action_rects)
 }
 
 /// Resolved position of one visible toast after layout.
@@ -315,8 +435,9 @@ pub struct VisibleToast {
     pub bounds: Rect,
     /// Dismiss affordance (if present).
     pub dismiss_bounds: Option<Rect>,
-    /// Action button (if present).
-    pub action_bounds: Option<Rect>,
+    /// Action-button bounds, one per [`ToastItem::actions`] entry, same
+    /// order. Empty if the toast has no actions.
+    pub action_bounds: Vec<Rect>,
 }
 
 /// Classification of a hit-test result.
@@ -465,29 +586,17 @@ impl ToastStack {
 
             let bounds = Rect::new(x, y, m.width, m.height);
 
-            // Sub-regions at the trailing edge (right edge of the toast,
-            // regardless of corner side).
-            let dismiss_bounds = if m.dismiss_width > 0.0 {
-                Some(Rect::new(
-                    bounds.x + bounds.width - m.dismiss_width,
-                    bounds.y,
-                    m.dismiss_width,
-                    bounds.height,
-                ))
-            } else {
-                None
-            };
-            let action_bounds = if m.action_width > 0.0 {
-                let offset_from_right = m.dismiss_width + m.action_width;
-                Some(Rect::new(
-                    bounds.x + bounds.width - offset_from_right,
-                    bounds.y,
-                    m.action_width,
-                    bounds.height,
-                ))
-            } else {
-                None
-            };
+            // Sub-regions come pre-computed toast-local by the measure
+            // closure (#1185 — dismiss near the top-right, actions on
+            // their own row at the bottom-right; see `toast_button_rects`)
+            // — this loop only translates them into the stack's absolute
+            // frame, same as `bounds` itself.
+            let dismiss_bounds = m.dismiss_rect.map(|r| shift_rect(r, bounds.x, bounds.y));
+            let action_bounds: Vec<Rect> = m
+                .action_rects
+                .iter()
+                .map(|r| shift_rect(*r, bounds.x, bounds.y))
+                .collect();
 
             let toast_id = self.toasts[i].id.clone();
             visible_toasts.push(VisibleToast {
@@ -495,20 +604,20 @@ impl ToastStack {
                 id: toast_id.clone(),
                 bounds,
                 dismiss_bounds,
-                action_bounds,
+                action_bounds: action_bounds.clone(),
             });
 
-            // Register hit regions in specificity order: dismiss, action, body.
+            // Register hit regions in specificity order: dismiss, actions, body.
             if let Some(db) = dismiss_bounds {
                 hit_regions.push((db, ToastHit::Dismiss(toast_id.clone())));
             }
-            if let Some(ab) = action_bounds {
-                // Action carries the action's id (not the toast's) so the
-                // app can dispatch the intended action directly from the
-                // hit result.
-                if let Some(act) = &self.toasts[i].action {
-                    hit_regions.push((ab, ToastHit::Action(act.id.clone())));
-                }
+            // Action hit regions carry the action's own id (not the
+            // toast's) so the app can dispatch the intended action
+            // directly from the hit result. Zipped by position with
+            // `ToastItem::actions`, matching `action_rects`'s documented
+            // 1:1 order.
+            for (ab, act) in action_bounds.iter().zip(self.toasts[i].actions.iter()) {
+                hit_regions.push((*ab, ToastHit::Action(act.id.clone())));
             }
             hit_regions.push((bounds, ToastHit::Body(toast_id)));
 
@@ -541,7 +650,11 @@ impl ToastStack {
             for vt in &mut visible_toasts {
                 vt.bounds = shift_rect(vt.bounds, origin_x, origin_y);
                 vt.dismiss_bounds = vt.dismiss_bounds.map(|r| shift_rect(r, origin_x, origin_y));
-                vt.action_bounds = vt.action_bounds.map(|r| shift_rect(r, origin_x, origin_y));
+                vt.action_bounds = vt
+                    .action_bounds
+                    .iter()
+                    .map(|r| shift_rect(*r, origin_x, origin_y))
+                    .collect();
             }
             for (rect, _) in &mut hit_regions {
                 *rect = shift_rect(*rect, origin_x, origin_y);
@@ -654,8 +767,9 @@ impl ToastStack {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{
-        truncate_line, wrap_text_lines, ToastItem, ToastMeasure, ToastSeverity, ToastStack,
-        ToastStackLayout, VisibleToast, MAX_BODY_LINES,
+        toast_button_rects, truncate_line, wrap_text_lines, ToastFocus, ToastFocusTarget,
+        ToastItem, ToastMeasure, ToastSeverity, ToastStack, ToastStackLayout, VisibleToast,
+        MAX_BODY_LINES,
     };
     use crate::event::Rect;
     use crate::native_surface::NativeSurface;
@@ -667,6 +781,9 @@ pub(crate) mod native_surface_paint {
     const TOAST_GAP: f32 = 8.0;
     const DISMISS_WIDTH: f32 = 28.0;
     const ACTION_PADDING: f32 = 16.0;
+    /// Horizontal gap between two adjacent action buttons on the button
+    /// row (#1185).
+    const ACTION_GAP: f32 = 8.0;
     const TOAST_PADDING: f32 = 8.0;
 
     /// Severity → fallback background tint, used when `ToastItem::accent`
@@ -712,7 +829,8 @@ pub(crate) mod native_surface_paint {
             TOAST_GAP,
             |i| {
                 let toast = &stack.toasts[i];
-                let body_avail = (TOAST_WIDTH - TOAST_PADDING * 2.0).max(0.0);
+                let width = TOAST_WIDTH.min((viewport_width - TOAST_MARGIN * 2.0).max(0.0));
+                let body_avail = (width - TOAST_PADDING * 2.0).max(0.0);
                 let body_lines = if toast.body.is_empty() {
                     0
                 } else {
@@ -722,27 +840,53 @@ pub(crate) mod native_surface_paint {
                     .len()
                     .max(1)
                 };
-                let h = line_height + TOAST_PADDING * 2.0 + body_lines as f32 * line_height;
-                let action_w = toast
-                    .action
-                    .as_ref()
-                    .map(|a| {
-                        let (w, _) = surface.surface_measure_text(&a.label);
-                        w + ACTION_PADDING
-                    })
-                    .unwrap_or(0.0);
+                // Button row (#1185): a separate row below the title/body,
+                // added only when the toast has actions — never inline
+                // with the title, unlike the pre-#1185 trailing-column
+                // reservation.
+                let has_actions = !toast.actions.is_empty();
+                let button_row_h = if has_actions {
+                    TOAST_PADDING + line_height
+                } else {
+                    0.0
+                };
+                let h = line_height
+                    + TOAST_PADDING * 2.0
+                    + body_lines as f32 * line_height
+                    + button_row_h;
+                let action_widths: Vec<f32> = toast
+                    .actions
+                    .iter()
+                    .map(|a| surface.surface_measure_text(&a.label).0 + ACTION_PADDING)
+                    .collect();
+                let (dismiss_rect, action_rects) = toast_button_rects(
+                    width,
+                    h,
+                    TOAST_PADDING,
+                    DISMISS_WIDTH,
+                    // Height is a single text row, not `DISMISS_WIDTH`
+                    // (a wide *click-target*, not a tall one) — a short,
+                    // body-less, action-less toast is barely taller than
+                    // one row plus padding, and a square dismiss target
+                    // that tall would reach past the button row (#1185).
+                    line_height,
+                    &action_widths,
+                    line_height,
+                    ACTION_GAP,
+                );
                 ToastMeasure {
-                    width: TOAST_WIDTH.min((viewport_width - TOAST_MARGIN * 2.0).max(0.0)),
+                    width,
                     height: h,
-                    dismiss_width: DISMISS_WIDTH,
-                    action_width: action_w,
+                    dismiss_rect,
+                    action_rects,
                 }
             },
         );
 
         for vt in &layout.visible_toasts {
             let toast = &stack.toasts[vt.toast_idx];
-            paint_toast(surface, theme, vt, toast, line_height);
+            let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
+            paint_toast(surface, theme, vt, toast, line_height, focus);
         }
 
         layout
@@ -751,23 +895,33 @@ pub(crate) mod native_surface_paint {
     /// Paint one resolved toast box: background tint, a theme border
     /// (#1182 — previously absent on every backend, which left an Info
     /// toast's `surface_bg` fill blending into a light-theme window),
-    /// title, optional body, dismiss `×` and optional action label —
-    /// both of the latter centred horizontally within their own reserved
-    /// sub-region, at the same vertical position as the title (see this
-    /// module's doc, divergence 2).
+    /// title, optional body, a top-right dismiss `×`, and — on their own
+    /// row at the bottom-right, never inline with the title (#1185) —
+    /// zero or more action buttons: the one marked
+    /// [`crate::primitives::toast::ToastAction::primary`] filled with
+    /// `theme.accent_bg`/`theme.foreground` (matching
+    /// `tui::toolbar`'s focused-action pairing), the rest plain text in
+    /// `theme.link_fg` (a secondary/ghost-button look, matching that
+    /// field's existing "focused-popup border" role — see
+    /// `crate::theme::Theme::link_fg`'s doc). `focus`, when it names a
+    /// control on this toast, gets a `theme.link_fg` focus-ring stroke
+    /// (#1185 — every backend must draw one; see
+    /// [`crate::compose::ToastStackController`]).
     ///
     /// The title is truncated/ellipsized to the space left of the
-    /// action/dismiss buttons — never drawn under them (#1182). The body
-    /// wraps across up to [`MAX_BODY_LINES`] lines, offset below the
-    /// title by the title's own *measured* height, not the nominal
-    /// `line_height` (divergence 3), each subsequent line advancing by
-    /// `line_height`.
+    /// dismiss button — never drawn under it (#1182/#1185: the action
+    /// row moved off the title line entirely, so the title only needs
+    /// to dodge `×` now). The body wraps across up to [`MAX_BODY_LINES`]
+    /// lines at the box's full width, offset below the title by the
+    /// title's own *measured* height, not the nominal `line_height`
+    /// (divergence 3), each subsequent line advancing by `line_height`.
     fn paint_toast(
         surface: &mut dyn NativeSurface,
         theme: &Theme,
         vt: &VisibleToast,
         toast: &ToastItem,
         line_height: f32,
+        focus: Option<&ToastFocus>,
     ) {
         let bg_color = toast
             .accent
@@ -776,8 +930,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_stroke_rect(vt.bounds, theme.border_fg, 1.0);
 
         let dismiss_w = vt.dismiss_bounds.map(|d| d.width).unwrap_or(0.0);
-        let action_w = vt.action_bounds.map(|a| a.width).unwrap_or(0.0);
-        let title_avail_w = (vt.bounds.width - TOAST_PADDING * 2.0 - dismiss_w - action_w).max(0.0);
+        let title_avail_w = (vt.bounds.width - TOAST_PADDING * 2.0 - dismiss_w).max(0.0);
         let title_line = truncate_line(&toast.title, title_avail_w, &|s| {
             surface.surface_measure_text(s).0
         });
@@ -814,24 +967,33 @@ pub(crate) mod native_surface_paint {
 
         if let Some(db) = vt.dismiss_bounds {
             let (tw, _) = surface.surface_measure_text("×");
-            let rect = Rect::new(
-                db.x + (db.width - tw) / 2.0,
-                vt.bounds.y + TOAST_PADDING,
-                db.width,
-                db.height,
-            );
+            let rect = Rect::new(db.x + (db.width - tw) / 2.0, db.y, db.width, db.height);
             surface.surface_draw_text_run(rect, "×", theme.foreground);
+            if matches!(focus, Some(f) if f.target == ToastFocusTarget::Dismiss) {
+                surface.surface_stroke_rect(db, theme.link_fg, 2.0);
+            }
         }
 
-        if let (Some(ab), Some(action)) = (vt.action_bounds, &toast.action) {
+        for (i, (ab, action)) in vt
+            .action_bounds
+            .iter()
+            .zip(toast.actions.iter())
+            .enumerate()
+        {
+            if action.primary {
+                surface.surface_fill_rect(*ab, theme.accent_bg);
+            }
             let (tw, _) = surface.surface_measure_text(&action.label);
-            let rect = Rect::new(
-                ab.x + (ab.width - tw) / 2.0,
-                vt.bounds.y + TOAST_PADDING,
-                ab.width,
-                ab.height,
-            );
-            surface.surface_draw_text_run(rect, &action.label, theme.accent_fg);
+            let fg = if action.primary {
+                theme.foreground
+            } else {
+                theme.link_fg
+            };
+            let rect = Rect::new(ab.x + (ab.width - tw) / 2.0, ab.y, ab.width, ab.height);
+            surface.surface_draw_text_run(rect, &action.label, fg);
+            if matches!(focus, Some(f) if f.target == ToastFocusTarget::Action(i)) {
+                surface.surface_stroke_rect(*ab, theme.link_fg, 2.0);
+            }
         }
     }
 
@@ -840,7 +1002,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::toast::{ToastAction, ToastCorner};
+        use crate::primitives::toast::{ToastAction, ToastCorner, ToastFocusTarget};
         use crate::types::WidgetId;
         use crate::Image;
 
@@ -852,6 +1014,11 @@ pub(crate) mod native_surface_paint {
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,
             text_runs: Vec<(Rect, String, Color)>,
+            /// #1185: records `surface_stroke_rect` calls (previously a
+            /// no-op recorder — nothing asserted on strokes before the
+            /// focus-ring requirement existed) so focus-ring tests can
+            /// confirm one was drawn, and where.
+            strokes: Vec<(Rect, Color, f32)>,
             /// Overrides `surface_measure_text`'s returned height when
             /// set — lets a test make the "measured text height" and
             /// "nominal `line_height` passed into `paint`" conventions
@@ -891,7 +1058,9 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+            fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                self.strokes.push((rect, color, stroke_width));
+            }
             fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
                 self.text_runs.push((rect, text.to_string(), color));
             }
@@ -916,7 +1085,7 @@ pub(crate) mod native_surface_paint {
                 title: title.into(),
                 body: String::new(),
                 severity: ToastSeverity::Info,
-                action: None,
+                actions: Vec::new(),
                 accent: None,
             }
         }
@@ -926,6 +1095,7 @@ pub(crate) mod native_surface_paint {
                 id: WidgetId::new("toasts"),
                 corner: ToastCorner::BottomRight,
                 toasts,
+                focus: None,
             }
         }
 
@@ -972,17 +1142,18 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn dismiss_and_action_are_centred_in_their_sub_region() {
             let mut t = toast("t1", "Build failed");
-            t.action = Some(ToastAction {
+            t.actions = vec![ToastAction {
                 id: WidgetId::new("open_log"),
                 label: "Open log".into(),
-            });
+                primary: false,
+            }];
             let stack = stack_br(vec![t]);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
             let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
             let vt = &layout.visible_toasts[0];
             let db = vt.dismiss_bounds.expect("dismiss bounds present");
-            let ab = vt.action_bounds.expect("action bounds present");
+            let ab = vt.action_bounds[0];
 
             let (dismiss_rect, _, _) = surface
                 .text_runs
@@ -999,6 +1170,150 @@ pub(crate) mod native_surface_paint {
                 .expect("action label painted");
             let action_w = "Open log".chars().count() as f32 * 8.0;
             assert!((action_rect.x - (ab.x + (ab.width - action_w) / 2.0)).abs() < 0.01);
+        }
+
+        /// #1185 acceptance: two actions sit on their own row at the
+        /// bottom-right, right-to-left ordering (`actions[0]` ends up
+        /// leftmost), strictly below the dismiss `×` — never inline
+        /// with the title — and don't overlap each other.
+        #[test]
+        fn multiple_actions_are_right_aligned_on_their_own_row() {
+            let mut t = toast("t1", "Install Markdown Language Server?");
+            t.actions = vec![
+                ToastAction {
+                    id: WidgetId::new("install"),
+                    label: "Install".into(),
+                    primary: true,
+                },
+                ToastAction {
+                    id: WidgetId::new("dont-ask"),
+                    label: "Don't ask again".into(),
+                    primary: false,
+                },
+            ];
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let vt = &layout.visible_toasts[0];
+            let db = vt.dismiss_bounds.expect("dismiss bounds present");
+            assert_eq!(vt.action_bounds.len(), 2);
+            let install = vt.action_bounds[0];
+            let dont_ask = vt.action_bounds[1];
+
+            // Same row, both below the dismiss button.
+            assert_eq!(install.y, dont_ask.y);
+            assert!(install.y > db.y + db.height - 0.01);
+
+            // `install` (first action) sits left of `dont_ask`, no overlap.
+            assert!(install.x + install.width <= dont_ask.x + 0.01);
+
+            // Row is right-aligned: the rightmost button's edge is at the
+            // toast's own trailing-edge padding.
+            assert!(
+                (dont_ask.x + dont_ask.width - (vt.bounds.x + vt.bounds.width - 8.0)).abs() < 0.01
+            );
+        }
+
+        /// The action marked `primary` gets a `theme.accent_bg` fill
+        /// (VS Code's "do the thing" button); a non-primary action gets
+        /// no fill of its own.
+        #[test]
+        fn primary_action_gets_accent_fill() {
+            let mut t = toast("t1", "Install?");
+            t.actions = vec![
+                ToastAction {
+                    id: WidgetId::new("install"),
+                    label: "Install".into(),
+                    primary: true,
+                },
+                ToastAction {
+                    id: WidgetId::new("skip"),
+                    label: "Skip".into(),
+                    primary: false,
+                },
+            ];
+            let stack = stack_br(vec![t]);
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let vt = &layout.visible_toasts[0];
+            let install_bounds = vt.action_bounds[0];
+            let skip_bounds = vt.action_bounds[1];
+
+            assert!(surface
+                .fills
+                .iter()
+                .any(|(r, c)| *r == install_bounds && *c == theme.accent_bg));
+            assert!(!surface.fills.iter().any(|(r, _)| *r == skip_bounds));
+        }
+
+        /// #1185: a focused dismiss button gets a `theme.link_fg` stroke
+        /// around its own bounds.
+        #[test]
+        fn focused_dismiss_gets_a_focus_ring() {
+            let t = toast("t1", "Saved");
+            let mut stack = stack_br(vec![t]);
+            stack.focus = Some(ToastFocus {
+                toast_id: WidgetId::new("t1"),
+                target: ToastFocusTarget::Dismiss,
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let db = layout.visible_toasts[0]
+                .dismiss_bounds
+                .expect("dismiss bounds present");
+            assert!(surface
+                .strokes
+                .iter()
+                .any(|(r, c, w)| *r == db && *c == theme.link_fg && *w > 1.0));
+        }
+
+        /// #1185: a focused action button gets a `theme.link_fg` stroke
+        /// around its own bounds — a different toast/action combination
+        /// than the dismiss ring, confirming the focus target is looked
+        /// up per-toast (`ToastFocus::toast_id`), not just "the first
+        /// toast".
+        #[test]
+        fn focused_action_gets_a_focus_ring() {
+            let t1 = toast("t1", "Saved");
+            let mut t2 = toast("t2", "Install?");
+            t2.actions = vec![ToastAction {
+                id: WidgetId::new("install"),
+                label: "Install".into(),
+                primary: true,
+            }];
+            let mut stack = stack_br(vec![t1, t2]);
+            stack.focus = Some(ToastFocus {
+                toast_id: WidgetId::new("t2"),
+                target: ToastFocusTarget::Action(0),
+            });
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+            let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
+            let t2_visible = layout
+                .visible_toasts
+                .iter()
+                .find(|vt| vt.id == WidgetId::new("t2"))
+                .expect("t2 visible");
+            let ab = t2_visible.action_bounds[0];
+            assert!(surface
+                .strokes
+                .iter()
+                .any(|(r, c, w)| *r == ab && *c == theme.link_fg && *w > 1.0));
+
+            // The unfocused toast's own dismiss must not get a ring.
+            let t1_visible = layout
+                .visible_toasts
+                .iter()
+                .find(|vt| vt.id == WidgetId::new("t1"))
+                .expect("t1 visible");
+            let t1_db = t1_visible.dismiss_bounds.expect("dismiss bounds present");
+            assert!(!surface
+                .strokes
+                .iter()
+                .any(|(r, c, w)| *r == t1_db && *c == theme.link_fg && *w > 1.0));
         }
 
         #[test]
@@ -1063,10 +1378,11 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn long_title_and_body_stay_inside_bounds_and_dont_overlap_action() {
             let mut t = toast("t1", "Install Markdown Language Server?");
-            t.action = Some(ToastAction {
+            t.actions = vec![ToastAction {
                 id: WidgetId::new("install"),
                 label: "Install".into(),
-            });
+                primary: true,
+            }];
             t.body =
                 "N: don't ask again · :ExtInstall markdown-language-server for full details".into();
             let stack = stack_br(vec![t]);
@@ -1075,7 +1391,8 @@ pub(crate) mod native_surface_paint {
             let layout = paint(&stack, &mut surface, &theme, 0.0, 0.0, 400.0, 300.0, 16.0);
 
             let vt = &layout.visible_toasts[0];
-            let ab = vt.action_bounds.expect("action bounds present");
+            let ab = vt.action_bounds[0];
+            let db = vt.dismiss_bounds.expect("dismiss bounds present");
 
             // Every text run must stay within the toast's own bounds,
             // both horizontally (x + measured width) and vertically
@@ -1099,8 +1416,10 @@ pub(crate) mod native_surface_paint {
                 );
             }
 
-            // The title run specifically must end at or before the
-            // action button's left edge — no overlap.
+            // #1185: the title run must end at or before the dismiss
+            // button's left edge (never drawn under `×`) — the action
+            // row moved off the title line entirely, so it no longer
+            // constrains the title at all, unlike pre-#1185.
             let title_run = surface
                 .text_runs
                 .iter()
@@ -1108,14 +1427,23 @@ pub(crate) mod native_surface_paint {
                 .expect("truncated title painted");
             let (title_w, _) = surface.surface_measure_text(&title_run.1);
             assert!(
-                title_run.0.x + title_w <= ab.x + 0.01,
-                "title run {:?} overlaps the action button at {:?}",
+                title_run.0.x + title_w <= db.x + 0.01,
+                "title run {:?} overlaps the dismiss button at {:?}",
                 title_run,
-                ab
+                db
+            );
+
+            // The action row sits on its own line, strictly below both
+            // the title row and the dismiss button — never inline with
+            // either.
+            assert!(
+                ab.y > db.y + db.height - 0.01,
+                "action row overlaps dismiss's row"
             );
 
             // The long body needed more than one line, so the box grew
-            // taller than the single-body-line default.
+            // taller than the single-body-line default, and the button
+            // row adds further height on top of that.
             let single_line_height = 16.0 + 8.0 * 2.0 + 16.0; // line_height + 2*padding + 1 body line
             assert!(
                 vt.bounds.height > single_line_height,
@@ -1138,7 +1466,7 @@ mod tests {
             title: title.to_string(),
             body: String::new(),
             severity: ToastSeverity::Info,
-            action: None,
+            actions: Vec::new(),
             accent: None,
         }
     }
@@ -1148,6 +1476,7 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner,
             toasts,
+            focus: None,
         }
     }
 
@@ -1210,26 +1539,28 @@ mod tests {
     #[test]
     fn toast_layout_action_and_dismiss_regions() {
         let mut toast = make_toast("t1", "Build failed");
-        toast.action = Some(ToastAction {
+        toast.actions = vec![ToastAction {
             id: WidgetId::new("open_log"),
             label: "Open log".to_string(),
-        });
+            primary: false,
+        }];
         let stack = make_toast_stack(ToastCorner::BottomRight, vec![toast]);
         let layout = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| ToastMeasure {
             width: 300.0,
             height: 64.0,
-            dismiss_width: 24.0,
-            action_width: 80.0,
+            dismiss_rect: Some(Rect::new(300.0 - 24.0, 0.0, 24.0, 24.0)),
+            action_rects: vec![Rect::new(300.0 - 80.0, 64.0 - 20.0, 80.0, 20.0)],
         });
         let v = &layout.visible_toasts[0];
         assert!(v.dismiss_bounds.is_some());
-        assert!(v.action_bounds.is_some());
+        assert_eq!(v.action_bounds.len(), 1);
         let db = v.dismiss_bounds.unwrap();
-        let ab = v.action_bounds.unwrap();
-        // Dismiss at trailing edge.
+        let ab = v.action_bounds[0];
+        // Dismiss at the trailing (top) edge.
         assert_eq!(db.x + db.width, v.bounds.x + v.bounds.width);
-        // Action left of dismiss.
-        assert_eq!(ab.x + ab.width, db.x);
+        // Action row sits on its own, lower row — below the dismiss row,
+        // not inline with it (#1185).
+        assert!(ab.y >= db.y + db.height);
 
         // Hit-test on dismiss.
         match layout.hit_test(db.x + 5.0, db.y + 10.0) {
@@ -1245,6 +1576,50 @@ mod tests {
         match layout.hit_test(v.bounds.x + 5.0, v.bounds.y + 10.0) {
             ToastHit::Body(id) => assert_eq!(id.as_str(), "t1"),
             _ => panic!("expected Body hit"),
+        }
+    }
+
+    /// #1185: a toast with two actions produces two, non-overlapping
+    /// `action_bounds` entries, aligned 1:1 with `ToastItem::actions`.
+    #[test]
+    fn toast_layout_multiple_action_regions() {
+        let mut toast = make_toast("t1", "Install Markdown Language Server?");
+        toast.actions = vec![
+            ToastAction {
+                id: WidgetId::new("install"),
+                label: "Install".to_string(),
+                primary: true,
+            },
+            ToastAction {
+                id: WidgetId::new("dont-ask"),
+                label: "Don't ask again".to_string(),
+                primary: false,
+            },
+        ];
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![toast]);
+        let layout = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, |_| ToastMeasure {
+            width: 300.0,
+            height: 80.0,
+            dismiss_rect: Some(Rect::new(276.0, 0.0, 24.0, 24.0)),
+            action_rects: vec![
+                Rect::new(120.0, 60.0, 70.0, 20.0),
+                Rect::new(198.0, 60.0, 90.0, 20.0),
+            ],
+        });
+        let v = &layout.visible_toasts[0];
+        assert_eq!(v.action_bounds.len(), 2);
+        let install = v.action_bounds[0];
+        let dont_ask = v.action_bounds[1];
+        // No overlap between the two buttons.
+        assert!(install.x + install.width <= dont_ask.x);
+
+        match layout.hit_test(install.x + 1.0, install.y + 1.0) {
+            ToastHit::Action(id) => assert_eq!(id.as_str(), "install"),
+            other => panic!("expected Action(install), got {other:?}"),
+        }
+        match layout.hit_test(dont_ask.x + 1.0, dont_ask.y + 1.0) {
+            ToastHit::Action(id) => assert_eq!(id.as_str(), "dont-ask"),
+            other => panic!("expected Action(dont-ask), got {other:?}"),
         }
     }
 
@@ -1278,16 +1653,17 @@ mod tests {
     #[test]
     fn toast_layout_nonzero_origin_shifts_every_bound() {
         let mut toast = make_toast("t1", "Build failed");
-        toast.action = Some(ToastAction {
+        toast.actions = vec![ToastAction {
             id: WidgetId::new("open_log"),
             label: "Open log".to_string(),
-        });
+            primary: false,
+        }];
         let stack = make_toast_stack(ToastCorner::BottomRight, vec![toast]);
         let measure = |_: usize| ToastMeasure {
             width: 300.0,
             height: 64.0,
-            dismiss_width: 24.0,
-            action_width: 80.0,
+            dismiss_rect: Some(Rect::new(276.0, 0.0, 24.0, 24.0)),
+            action_rects: vec![Rect::new(220.0, 44.0, 80.0, 20.0)],
         };
         let origin = stack.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
         let shifted = stack.layout(7.0, 13.0, 800.0, 600.0, 16.0, 8.0, measure);
@@ -1301,10 +1677,7 @@ mod tests {
             s.dismiss_bounds.unwrap().x,
             o.dismiss_bounds.unwrap().x + 7.0
         );
-        assert_eq!(
-            s.action_bounds.unwrap().y,
-            o.action_bounds.unwrap().y + 13.0
-        );
+        assert_eq!(s.action_bounds[0].y, o.action_bounds[0].y + 13.0);
 
         // Round trip: an absolute hit against the shifted layout must
         // resolve the same way the origin layout resolves its local hit.

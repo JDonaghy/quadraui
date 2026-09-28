@@ -55,6 +55,19 @@ release time.
 
 ### Added
 
+- `compose::ToastStackController` (issue #1185) — VS Code-style keyboard
+  focus for the non-modal `ToastStack` primitive: Tab/Shift+Tab/Left/Right
+  cycle a focused toast's buttons (dismiss `×` included), Up/Down move
+  between toasts, Enter activates the focused button, Escape dismisses the
+  focused toast and returns focus to the app. Follows
+  `MessageDialogController`'s pattern but never owns or blocks input on the
+  stack — the app decides when to give it focus (e.g. its own "focus
+  notifications" command) and attaches `ToastStackController::focus()` to
+  the new `ToastStack::focus` field before painting so every backend draws
+  a `theme.link_fg` ring around the focused control. `examples/tui_toast_actions.rs`
+  / `examples/gtk_toast_actions.rs` (paired with `examples/common/toast_actions_app.rs`)
+  demonstrate a two-action toast driven by both keyboard and mouse, with a
+  `TuiDriver` black-box test in `tests/tui_example_driver.rs`.
 - `Backend::default_fonts() -> PlatformFontDefaults` (issue #1156) — each
   backend's platform-native font defaults for the editor and UI (chrome)
   roles (`Menlo 12` / system-UI 13pt on macOS, `Consolas 14` / `Segoe UI`
@@ -315,6 +328,24 @@ release time.
 
 ### Changed
 
+- **Breaking (issue #1185):** `primitives::toast::ToastItem::action:
+  Option<ToastAction>` replaced with `actions: Vec<ToastAction>` (ordered,
+  zero or more, one may set the new `ToastAction::primary` field for
+  VS Code-style accent styling). `ToastStack` gained a `focus:
+  Option<ToastFocus>` field (see the new `ToastStackController` above).
+  `ToastMeasure`/`VisibleToast` moved from single `dismiss_width`/
+  `action_width` fields to toast-local `dismiss_rect: Option<Rect>` /
+  `action_rects: Vec<Rect>` — every backend rasteriser now lays actions
+  out on their own row at the bottom-right (never inline with the title)
+  with the dismiss `×` alone near the top-right, instead of both sharing
+  the title row's trailing column. Blast-radius grep against both
+  consumers (`grep -rn 'ToastAction\|ToastItem\|ToastStack' ~/src/coord-tui/src ~/src/vimcode/src`):
+  `coord-tui`'s `src/app/mod.rs` (`ToastItem { action: ..., .. }` at two
+  call sites) and `vimcode`'s `src/render.rs::build_toast_stack`
+  (`action: t.action.as_ref().map(|a| quadraui::ToastAction { .. })`)
+  both construct the old shape and will need a follow-up migration PR in
+  each repo — tracked for the coordinator per `CLAUDE.md`'s *Downstream
+  consumers* section, not filed from this PR.
 - `publish = false` removed from `quadraui/Cargo.toml` — `quadraui` is now
   publishable to crates.io. (The actual `v0.1.0` tag and `cargo publish` are
   a separate, coordinator-run release step — see `quadraui#797`.)

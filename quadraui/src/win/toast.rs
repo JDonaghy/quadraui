@@ -139,10 +139,11 @@ mod tests {
             title: title.into(),
             body: "Details here".into(),
             severity: ToastSeverity::Info,
-            action: Some(ToastAction {
+            actions: vec![ToastAction {
                 id: WidgetId::new(format!("{id}:act")),
                 label: "Undo".into(),
-            }),
+                primary: false,
+            }],
             accent: Some(BOX_COLOR),
         }
     }
@@ -152,6 +153,7 @@ mod tests {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts,
+            focus: None,
         }
     }
 
@@ -208,7 +210,7 @@ mod tests {
         let dismiss_hit = layout.hit_test(db.x + db.width / 2.0, db.y + db.height / 2.0);
         assert_eq!(dismiss_hit, ToastHit::Dismiss(WidgetId::new("t1")));
 
-        let ab = vt.action_bounds.expect("action bounds present");
+        let ab = *vt.action_bounds.first().expect("action bounds present");
         let action_hit = layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0);
         assert_eq!(action_hit, ToastHit::Action(WidgetId::new("t1:act")));
 

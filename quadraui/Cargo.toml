@@ -612,6 +612,16 @@ path = "examples/gtk_toast.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "tui_toast_actions"
+path = "examples/tui_toast_actions.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_toast_actions"
+path = "examples/gtk_toast_actions.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_markdown"
 path = "examples/tui_markdown.rs"
 required-features = ["tui"]

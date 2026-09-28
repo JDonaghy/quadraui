@@ -31,7 +31,7 @@ impl ToastApp {
                 title: "Welcome".into(),
                 body: "Press 1-4 to add toasts".into(),
                 severity: ToastSeverity::Info,
-                action: None,
+                actions: Vec::new(),
                 accent: None,
             }],
             next_id: 1,
@@ -39,7 +39,7 @@ impl ToastApp {
         }
     }
 
-    fn add_toast(&mut self, severity: ToastSeverity, action: Option<ToastAction>) {
+    fn add_toast(&mut self, severity: ToastSeverity, actions: Vec<ToastAction>) {
         let label = match severity {
             ToastSeverity::Info => "Info",
             ToastSeverity::Success => "Success",
@@ -53,7 +53,7 @@ impl ToastApp {
             title: format!("{label} notification"),
             body: format!("Toast #{}", self.next_id - 1),
             severity,
-            action,
+            actions,
             accent: None,
         });
         self.last_message = format!("Added {label} toast");
@@ -64,6 +64,7 @@ impl ToastApp {
             id: WidgetId::new("toasts"),
             corner: ToastCorner::BottomRight,
             toasts: self.toasts.clone(),
+            focus: None,
         }
     }
 
@@ -128,28 +129,28 @@ impl AppLogic for ToastApp {
                 key: Key::Char('1'),
                 ..
             } => {
-                self.add_toast(ToastSeverity::Info, None);
+                self.add_toast(ToastSeverity::Info, Vec::new());
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Char('2'),
                 ..
             } => {
-                self.add_toast(ToastSeverity::Success, None);
+                self.add_toast(ToastSeverity::Success, Vec::new());
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Char('3'),
                 ..
             } => {
-                self.add_toast(ToastSeverity::Warning, None);
+                self.add_toast(ToastSeverity::Warning, Vec::new());
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Char('4'),
                 ..
             } => {
-                self.add_toast(ToastSeverity::Error, None);
+                self.add_toast(ToastSeverity::Error, Vec::new());
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
@@ -158,10 +159,11 @@ impl AppLogic for ToastApp {
             } => {
                 self.add_toast(
                     ToastSeverity::Error,
-                    Some(ToastAction {
+                    vec![ToastAction {
                         id: WidgetId::new("retry"),
                         label: "Retry".into(),
-                    }),
+                        primary: true,
+                    }],
                 );
                 Reaction::Redraw
             }

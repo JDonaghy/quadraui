@@ -80,10 +80,14 @@ pub mod pixel {
     pub const TOAST_GAP: f32 = 8.0;
     /// [`crate::ToastStack`] vertical padding inside a toast box.
     pub const TOAST_PADDING: f32 = 8.0;
-    /// [`crate::ToastStack`] width of the dismiss (`×`) affordance.
+    /// [`crate::ToastStack`] width (and height — the dismiss affordance
+    /// is a square) of the dismiss (`×`) affordance.
     pub const TOAST_DISMISS_WIDTH: f32 = 28.0;
     /// [`crate::ToastStack`] extra width reserved around an action label.
     pub const TOAST_ACTION_PADDING: f32 = 16.0;
+    /// [`crate::ToastStack`] horizontal gap between two adjacent action
+    /// buttons on the button row (#1185).
+    pub const TOAST_ACTION_GAP: f32 = 8.0;
 
     /// [`crate::ProgressBar`] width of the cancel (`×`) affordance.
     pub const PROGRESS_CANCEL_WIDTH: f32 = 28.0;
@@ -516,7 +520,9 @@ pub fn pixel_toast_stack_layout(
         pixel::TOAST_GAP,
         |i| {
             let toast = &stack.toasts[i];
-            let body_avail = (pixel::TOAST_WIDTH - pixel::TOAST_PADDING * 2.0).max(0.0);
+            let width =
+                pixel::TOAST_WIDTH.min((viewport_width - pixel::TOAST_MARGIN * 2.0).max(0.0));
+            let body_avail = (width - pixel::TOAST_PADDING * 2.0).max(0.0);
             let body_lines = if toast.body.is_empty() {
                 0
             } else {
@@ -529,18 +535,41 @@ pub fn pixel_toast_stack_layout(
                 .len()
                 .max(1)
             };
-            let h = line_height + pixel::TOAST_PADDING * 2.0 + body_lines as f32 * line_height;
-            let action_w = toast
-                .action
-                .as_ref()
+            // Button row (#1185): a separate row below the title/body,
+            // added only when the toast has actions.
+            let has_actions = !toast.actions.is_empty();
+            let button_row_h = if has_actions {
+                pixel::TOAST_PADDING + line_height
+            } else {
+                0.0
+            };
+            let h = line_height
+                + pixel::TOAST_PADDING * 2.0
+                + body_lines as f32 * line_height
+                + button_row_h;
+            let action_widths: Vec<f32> = toast
+                .actions
+                .iter()
                 .map(|a| measure.width_of(&a.label) + pixel::TOAST_ACTION_PADDING)
-                .unwrap_or(0.0);
+                .collect();
+            let (dismiss_rect, action_rects) = crate::primitives::toast::toast_button_rects(
+                width,
+                h,
+                pixel::TOAST_PADDING,
+                pixel::TOAST_DISMISS_WIDTH,
+                // Height is a single text row (see the matching call in
+                // `native_surface_paint::paint`'s doc for why this
+                // mustn't reuse `TOAST_DISMISS_WIDTH`, #1185).
+                line_height,
+                &action_widths,
+                line_height,
+                pixel::TOAST_ACTION_GAP,
+            );
             ToastMeasure {
-                width: pixel::TOAST_WIDTH
-                    .min((viewport_width - pixel::TOAST_MARGIN * 2.0).max(0.0)),
+                width,
                 height: h,
-                dismiss_width: pixel::TOAST_DISMISS_WIDTH,
-                action_width: action_w,
+                dismiss_rect,
+                action_rects,
             }
         },
     )

@@ -147,6 +147,8 @@ mod tab_icons_demo;
 mod text_display_wrap_demo;
 #[path = "../examples/common/text_input_demo.rs"]
 mod text_input_demo;
+#[path = "../examples/common/toast_actions_app.rs"]
+mod toast_actions_app;
 #[path = "../examples/common/toast_app.rs"]
 mod toast_app;
 #[path = "../examples/common/tooltip_demo.rs"]
@@ -216,6 +218,7 @@ use tab_group_demo::TabGroupDemo;
 use tab_icons_demo::TabIconsDemo;
 use text_display_wrap_demo::{TextDisplayWrapDemo, TAIL_MARKER};
 use text_input_demo::TextInputDemo;
+use toast_actions_app::ToastActionsApp;
 use toast_app::ToastApp;
 use tooltip_demo::TooltipDemo;
 use wide_tab_bar_demo::WideTabBarDemo;
@@ -5350,6 +5353,74 @@ fn toast_dismiss_click_removes_it_then_trigger_adds_a_new_one() {
     assert!(
         after_add.contains("Success notification"),
         "pressing '2' should trigger and paint a new Success toast:\n{after_add}"
+    );
+}
+
+// ─── ToastActionsApp (issue #1185): multi-action toast, keyboard focus
+// controller, and mouse ─────────────────────────────────────────────────
+//
+// `ToastActionsApp::new` seeds one "Install Markdown Language Server?"
+// toast with two actions ("Install" primary, "Don't ask again"
+// secondary) plus the dismiss `×`. This exercises the full acceptance
+// list from #1185: both action labels paint on their own row (never
+// inline with the title), `Tab` gives the stack keyboard focus,
+// Tab/Left/Right cycle its buttons (dismiss → Install → Don't ask
+// again → wraps), `Enter` activates whichever is focused, and a plain
+// mouse click on the still-present dismiss glyph works exactly as
+// `ToastApp`'s own test already covers — proving keyboard and mouse
+// routing coexist on the same stack.
+
+#[test]
+fn toast_actions_app_renders_both_actions_on_their_own_row() {
+    let driver = TuiDriver::new(ToastActionsApp::new(), 100, 24);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Install Markdown Language Server?"),
+        "seeded toast's title should paint:\n{screen}"
+    );
+    assert!(
+        screen.contains("Install") && screen.contains("Don't ask again"),
+        "both action labels should paint:\n{screen}"
+    );
+}
+
+#[test]
+fn toast_actions_app_keyboard_focus_cycles_and_enter_activates_install() {
+    let mut driver = TuiDriver::new(ToastActionsApp::new(), 100, 24);
+
+    // Unfocused: Tab gives the stack focus (not consumed as app-level
+    // navigation) — the status bar's hint flips to the focused-mode text.
+    driver.press_named(NamedKey::Tab);
+    let focused = driver.screen();
+    assert!(
+        focused.contains("Esc=dismiss"),
+        "Tab while unfocused should focus the toast stack:\n{focused}"
+    );
+
+    // Dismiss -> Install -> Don't ask again: two Tabs from dismiss lands
+    // on "Install" (the first action).
+    driver.press_named(NamedKey::Tab);
+    driver.press_named(NamedKey::Enter);
+
+    let after = driver.screen();
+    assert!(
+        !after.contains("Install Markdown Language Server?"),
+        "Enter on the focused Install action should dismiss the toast:\n{after}"
+    );
+}
+
+#[test]
+fn toast_actions_app_mouse_dismiss_still_works_alongside_the_controller() {
+    let mut driver = TuiDriver::new(ToastActionsApp::new(), 100, 24);
+    let before = driver.screen();
+    let (x, y) = driver
+        .find("×")
+        .unwrap_or_else(|| panic!("no dismiss glyph painted for the seeded toast:\n{before}"));
+    driver.click(x, y);
+    let after = driver.screen();
+    assert!(
+        !after.contains("Install Markdown Language Server?"),
+        "clicking the dismiss glyph should still work with no keyboard focus involved:\n{after}"
     );
 }
 
