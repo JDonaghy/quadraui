@@ -512,13 +512,35 @@ impl AppLogic for TerminalApp {
         Reaction::Continue
     }
 
-    fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+    fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
+        let mut redraw = false;
         if let Some(ref mut sess) = self.session {
             if sess.poll() {
-                return Reaction::Redraw;
+                redraw = true;
+            }
+            // OSC 0/2 window title (quadraui#339): the child program (vim,
+            // tmux, a shell prompt hook, …) may have retitled the window.
+            // `take_title_changed` is a one-shot dirty flag so this only
+            // calls into the backend when the title actually changed, not
+            // every tick. Routed through `WindowControl::set_title` — the
+            // same backend-agnostic surface `window_control_demo.rs` uses
+            // — so the GTK runner retitles its real window while TUI's own
+            // `set_title` impl re-emits OSC 0/2 for the host terminal/tmux
+            // pane, with no GTK-specific code in this engine or example.
+            if sess.take_title_changed() {
+                if let Some(title) = sess.title() {
+                    let title = title.to_string();
+                    if let Some(window) = backend.window() {
+                        let _ = window.set_title(&title);
+                    }
+                }
             }
         }
-        Reaction::Continue
+        if redraw {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
+        }
     }
 }
 
