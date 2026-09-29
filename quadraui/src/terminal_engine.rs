@@ -981,6 +981,47 @@ impl TerminalSession {
         }
     }
 
+    /// Canonical wheel-notch policy: try to forward the wheel to the PTY
+    /// child, and fall back to scrolling local scrollback when it doesn't
+    /// take it.
+    ///
+    /// This is the forward-vs-scrollback composition every consumer was
+    /// re-deriving by hand (quadraui#365): "is the child on the alt-screen
+    /// or reporting mouse events? If so, let it paginate itself. Otherwise
+    /// scroll our own scrollback by `step` rows." Equivalent to:
+    ///
+    /// ```ignore
+    /// let kind = if up { WheelUp } else { WheelDown };
+    /// if !sess.forward_mouse(kind, MouseButton::Left, 0, 0, Modifiers::default()) {
+    ///     if up { sess.scroll_up(step) } else { sess.scroll_down(step) }
+    /// }
+    /// ```
+    ///
+    /// Wheel events forward at cell `(0, 0)` — only direction feeds the
+    /// child's SGR mouse encoding for wheel notches, so no pointer position
+    /// is required from the caller.
+    ///
+    /// Returns `true` when the event was written to the child (the caller
+    /// must not also touch local scrollback), `false` when it fell back to
+    /// [`scroll_up`](Self::scroll_up) / [`scroll_down`](Self::scroll_down).
+    pub fn handle_wheel(&mut self, up: bool, step: usize) -> bool {
+        let kind = if up {
+            TerminalMouseKind::WheelUp
+        } else {
+            TerminalMouseKind::WheelDown
+        };
+        if self.forward_mouse(kind, MouseButton::Left, 0, 0, Modifiers::default()) {
+            true
+        } else {
+            if up {
+                self.scroll_up(step);
+            } else {
+                self.scroll_down(step);
+            }
+            false
+        }
+    }
+
     /// Extract all captured scrollback history as plain text.
     ///
     /// Returns one line per history row (oldest first), trailing
@@ -3266,6 +3307,60 @@ mod tests {
 
         sess.send_str("printf '\\033[?1049l'\n");
         let _ = poll_until(&mut sess, 5000, |s| !s.on_alt_screen());
+        sess.send_str("exit\n");
+    }
+
+    // ── `handle_wheel` — forward-vs-scrollback policy (quadraui#365) ─────────
+
+    /// With no mouse reporting and no alt-screen, `handle_wheel` falls back
+    /// to local scrollback: returns `false`, and `scroll_offset` moves by
+    /// exactly `step`.
+    #[test]
+    #[cfg(unix)]
+    fn handle_wheel_scrolls_locally_without_forwarding() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 10, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+        // Give it enough history to scroll into.
+        for _ in 0..20 {
+            sess.send_str("echo line\n");
+        }
+        let _ = poll_until(&mut sess, 2000, |s| s.history_len() >= 10);
+
+        assert!(!sess.should_forward_wheel());
+
+        let forwarded = sess.handle_wheel(true, 3);
+        assert!(!forwarded);
+        assert_eq!(sess.scroll_offset(), 3);
+
+        let forwarded = sess.handle_wheel(false, 2);
+        assert!(!forwarded);
+        assert_eq!(sess.scroll_offset(), 1);
+
+        sess.send_str("exit\n");
+    }
+
+    /// Once the child owns the wheel (mouse reporting on), `handle_wheel`
+    /// forwards instead of touching local scrollback: returns `true`, and
+    /// `scroll_offset` is untouched.
+    #[test]
+    #[cfg(unix)]
+    fn handle_wheel_forwards_when_child_owns_it() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 10, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+
+        sess.send_str("printf '\\033[?1000h'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.mouse_reporting_enabled()),
+            "mouse reporting did not turn on"
+        );
+
+        let before = sess.scroll_offset();
+        let forwarded = sess.handle_wheel(true, 3);
+        assert!(forwarded);
+        assert_eq!(sess.scroll_offset(), before);
+
         sess.send_str("exit\n");
     }
 

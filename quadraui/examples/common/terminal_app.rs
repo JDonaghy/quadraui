@@ -305,37 +305,18 @@ impl AppLogic for TerminalApp {
                     let term_h = Self::term_height(vp, backend.line_height());
                     let in_term = position.y >= 0.0 && position.y < term_h;
 
-                    // Try to forward the wheel to the PTY first.
-                    // `forward_mouse` returns `true` when mouse reporting is on
-                    // or the child is on the alt-screen (e.g. tmux / vim / less).
+                    // Delegate the forward-vs-scrollback policy to
+                    // `TerminalSession::handle_wheel` (quadraui#365): it
+                    // tries to forward the wheel to the PTY child first
+                    // (mouse reporting / alt-screen, e.g. tmux / vim /
+                    // less), and falls back to local scrollback otherwise.
+                    // Positive delta.y = scroll up (into history), negative
+                    // = scroll down (toward live) — 3 rows per notch.
                     if in_term && delta.y != 0.0 {
-                        let kind = if delta.y > 0.0 {
-                            TerminalMouseKind::WheelUp
-                        } else {
-                            TerminalMouseKind::WheelDown
-                        };
-                        let col = position.x.max(0.0) as u16;
-                        let row = position.y.max(0.0) as u16;
-                        if sess.forward_mouse(
-                            kind,
-                            MouseButton::Left,
-                            col,
-                            row,
-                            Modifiers::default(),
-                        ) {
-                            return Reaction::Redraw;
-                        }
+                        let up = delta.y > 0.0;
+                        sess.handle_wheel(up, 3);
+                        return Reaction::Redraw;
                     }
-
-                    // Fall back to local scrollback.
-                    // Positive y = scroll up (into history).
-                    // Negative y = scroll down (toward live).
-                    if delta.y > 0.0 {
-                        sess.scroll_up(3);
-                    } else if delta.y < 0.0 {
-                        sess.scroll_down(3);
-                    }
-                    return Reaction::Redraw;
                 }
             }
 
