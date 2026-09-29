@@ -139,6 +139,24 @@ pub fn draw_editor(
     )
 }
 
+/// Shared paint context threaded through `draw_editor_with_options`'s
+/// per-section helpers below (#1113: split the god fn). Private —
+/// this is purely an internal decomposition aid, not a new public
+/// shape, so it carries none of rule 8's downstream-impact baggage.
+struct EditorPaintCtx<'a> {
+    cr: &'a Context,
+    layout: &'a pango::Layout,
+    font_metrics: &'a pango::FontMetrics,
+    editor: &'a Editor,
+    theme: &'a Theme,
+    char_width: f64,
+    line_height: f64,
+    rect: &'a crate::Rect,
+    gutter_width: f64,
+    text_x_offset: f64,
+    editor_geom: EditorLayout,
+}
+
 /// [`draw_editor`], plus [`EditorPaintOptions`] a host can set to
 /// override otherwise-automatic paint decisions — currently just
 /// `suppress_v_scrollbar` (#968; see the module doc's "Minimap
@@ -166,7 +184,65 @@ pub fn draw_editor_with_options(
     let editor_geom =
         editor.layout_with_options(*rect, char_width as f32, line_height as f32, options);
 
-    // ── Window background ──────────────────────────────────────────────
+    let ctx = EditorPaintCtx {
+        cr,
+        layout,
+        font_metrics,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        rect,
+        gutter_width,
+        text_x_offset,
+        editor_geom,
+    };
+
+    paint_window_background(&ctx);
+    paint_line_backgrounds(&ctx);
+    paint_selection_overlays(&ctx);
+    paint_gutter(&ctx);
+
+    // ── Clip to text area (excludes gutter AND the reserved vertical
+    // scrollbar column, when present) ───────────────────────────────────
+    //
+    // Narrowed to `editor_geom.text_bounds.width` rather than the full
+    // `rect.width - gutter_width`, mirroring `tui::editor::draw_editor`'s
+    // `viewport_cols` narrowing (#968) — text/indent-guides/color-columns/
+    // diagnostic+spell underlines/bracket-match stop short of the
+    // scrollbar column instead of painting glyphs that the scrollbar
+    // then overlays.
+    cr.save().ok();
+    cr.rectangle(
+        rect.x as f64 + gutter_width,
+        rect.y as f64,
+        ctx.editor_geom.text_bounds.width as f64,
+        rect.height as f64,
+    );
+    cr.clip();
+
+    paint_text_lines(&ctx);
+
+    cr.restore().ok();
+
+    // Scrollbars are painted last among the "content" layers — after
+    // text/selections, before the cursor — mirroring
+    // `tui::editor::draw_editor`'s z-order; see module doc for the
+    // shared-geometry rationale and the minimap boundary. The content
+    // clip above already reserved this column, so this paints into
+    // pixels no glyph touched, not over them.
+    paint_scrollbars(&ctx);
+    paint_primary_cursor(&ctx);
+    paint_ai_ghost_text(&ctx);
+    paint_secondary_cursors(&ctx);
+}
+
+// ── Window background ────────────────────────────────────────────────
+fn paint_window_background(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr, editor, theme, ..
+    } = ctx;
+    let rect = ctx.rect;
     let bg = if editor.show_active_bg {
         theme.editor_active_background
     } else {
@@ -181,8 +257,19 @@ pub fn draw_editor_with_options(
         rect.height as f64,
     );
     cr.fill().ok();
+}
 
-    // ── Cursorline / Diff / DAP stopped-line backgrounds ───────────────
+// ── Cursorline / Diff / DAP stopped-line backgrounds ────────────────────
+fn paint_line_backgrounds(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr,
+        editor,
+        theme,
+        line_height,
+        ..
+    } = ctx;
+    let (cr, editor, theme, line_height) = (*cr, *editor, *theme, *line_height);
+    let rect = ctx.rect;
     for (view_idx, rl) in editor.lines.iter().enumerate() {
         let y = rect.y as f64 + view_idx as f64 * line_height;
         let bg_color = if rl.is_dap_current {
@@ -206,8 +293,22 @@ pub fn draw_editor_with_options(
             cr.fill().ok();
         }
     }
+}
 
-    // ── Selection overlays (drawn before text so text is on top) ───────
+// ── Selection overlays (drawn before text so text is on top) ────────────
+fn paint_selection_overlays(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        editor,
+        theme,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, editor, theme, line_height, text_x_offset) =
+        (*cr, *layout, *editor, *theme, *line_height, *text_x_offset);
+    let rect = ctx.rect;
     if let Some(sel) = &editor.selection {
         draw_visual_selection(
             cr,
@@ -247,305 +348,441 @@ pub fn draw_editor_with_options(
             theme.yank_highlight_alpha as f64,
         );
     }
+}
 
-    // ── Gutter (bp + git + line numbers right-aligned + diag/lightbulb) ─
-    if editor.gutter_char_width > 0 {
-        for (_view_idx, rl) in editor.lines.iter().enumerate() {
-            let view_idx = _view_idx;
-            let y = rect.y as f64 + view_idx as f64 * line_height;
-            let mut char_offset = 0usize;
+// ── Gutter (bp + git + line numbers right-aligned + diag/lightbulb) ─────
+fn paint_gutter(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        editor,
+        line_height,
+        ..
+    } = ctx;
+    let (editor, line_height) = (*editor, *line_height);
 
-            // Breakpoint column (leftmost when has_breakpoints).
-            if editor.has_breakpoints {
-                let bp_ch: String = rl.gutter_text.chars().take(1).collect();
-                let bp_color = if rl.is_dap_current || rl.is_breakpoint {
-                    theme.diagnostic_error
-                } else {
-                    theme.line_number_fg
-                };
-                layout.set_text(&bp_ch);
-                layout.set_attributes(None);
-                let (br, bg_c, bb) = cairo_rgb(bp_color);
-                cr.set_source_rgb(br, bg_c, bb);
-                cr.move_to(rect.x as f64 + 3.0, y);
-                super::painted_text::show_layout(cr, layout);
-                char_offset += 1;
-            }
-
-            // Git marker column.
-            if editor.has_git_diff {
-                let git_ch: String = rl.gutter_text.chars().skip(char_offset).take(1).collect();
-                let git_color = match rl.git_diff {
-                    Some(GitLineStatus::Added) => theme.git_added,
-                    Some(GitLineStatus::Modified) => theme.git_modified,
-                    Some(GitLineStatus::Deleted) => theme.git_deleted,
-                    None => theme.line_number_fg,
-                };
-                layout.set_text(&git_ch);
-                layout.set_attributes(None);
-                let (gr, gg, gb) = cairo_rgb(git_color);
-                cr.set_source_rgb(gr, gg, gb);
-                cr.move_to(rect.x as f64 + char_offset as f64 * char_width + 3.0, y);
-                super::painted_text::show_layout(cr, layout);
-                char_offset += 1;
-
-                // Fold + line numbers portion right-aligned.
-                let rest: String = rl.gutter_text.chars().skip(char_offset).collect();
-                layout.set_text(&rest);
-                layout.set_attributes(None);
-            } else if char_offset > 0 {
-                let rest: String = rl.gutter_text.chars().skip(char_offset).collect();
-                layout.set_text(&rest);
-                layout.set_attributes(None);
-            } else {
-                layout.set_text(&rl.gutter_text);
-                layout.set_attributes(None);
-            }
-
-            let (num_width, _) = layout.pixel_size();
-            let num_x = rect.x as f64 + gutter_width - num_width as f64 - char_width + 3.0;
-
-            let num_color = if editor.is_active && rl.is_current_line {
-                theme.line_number_active_fg
-            } else {
-                theme.line_number_fg
-            };
-            let (nr, ng, nb) = cairo_rgb(num_color);
-            cr.set_source_rgb(nr, ng, nb);
-            cr.move_to(num_x, y);
-            super::painted_text::show_layout(cr, layout);
-
-            // Diagnostic gutter dot (overrides lightbulb when both apply).
-            if let Some(severity) = editor.diagnostic_gutter.get(&rl.line_idx) {
-                let diag_color = match severity {
-                    DiagnosticSeverity::Error => theme.diagnostic_error,
-                    DiagnosticSeverity::Warning => theme.diagnostic_warning,
-                    DiagnosticSeverity::Information => theme.diagnostic_info,
-                    DiagnosticSeverity::Hint => theme.diagnostic_hint,
-                };
-                let (dr, dg, db) = cairo_rgb(diag_color);
-                cr.set_source_rgb(dr, dg, db);
-                let dot_r = line_height * 0.2;
-                let dot_cx = rect.x as f64 + 3.0 + dot_r;
-                let dot_cy = y + line_height * 0.5;
-                cr.arc(dot_cx, dot_cy, dot_r, 0.0, 2.0 * std::f64::consts::PI);
-                cr.fill().ok();
-            } else if !rl.is_wrap_continuation
-                && editor.code_action_lines.contains(&rl.line_idx)
-                && editor.lightbulb_glyph != '\0'
-            {
-                let (lr, lg, lb) = cairo_rgb(theme.lightbulb);
-                cr.set_source_rgb(lr, lg, lb);
-                let bulb_layout = layout.clone();
-                bulb_layout.set_text(&editor.lightbulb_glyph.to_string());
-                cr.move_to(rect.x as f64 + 1.0, y);
-                super::painted_text::show_layout(cr, &bulb_layout);
-            }
-        }
+    if editor.gutter_char_width == 0 {
+        return;
     }
 
-    // ── Clip to text area (excludes gutter AND the reserved vertical
-    // scrollbar column, when present) ───────────────────────────────────
-    //
-    // Narrowed to `editor_geom.text_bounds.width` rather than the full
-    // `rect.width - gutter_width`, mirroring `tui::editor::draw_editor`'s
-    // `viewport_cols` narrowing (#968) — text/indent-guides/color-columns/
-    // diagnostic+spell underlines/bracket-match stop short of the
-    // scrollbar column instead of painting glyphs that the scrollbar
-    // then overlays.
-    cr.save().ok();
-    cr.rectangle(
-        rect.x as f64 + gutter_width,
-        rect.y as f64,
-        editor_geom.text_bounds.width as f64,
-        rect.height as f64,
-    );
-    cr.clip();
-
-    // ── Render each visible line ───────────────────────────────────────
     for (view_idx, rl) in editor.lines.iter().enumerate() {
-        let y = rect.y as f64 + view_idx as f64 * line_height;
+        let y = ctx.rect.y as f64 + view_idx as f64 * line_height;
+        paint_gutter_row_number(ctx, rl, y);
+        paint_gutter_diagnostic_or_lightbulb(ctx, rl, y);
+    }
+}
 
-        layout.set_text(&rl.raw_text);
-        let attrs = build_pango_attrs(&rl.spans);
-        layout.set_attributes(Some(&attrs));
+/// Breakpoint marker, git marker, and right-aligned line number for one
+/// gutter row — the three columns that share the gutter `layout`'s
+/// running `char_offset`.
+fn paint_gutter_row_number(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        editor,
+        theme,
+        char_width,
+        gutter_width,
+        ..
+    } = ctx;
+    let (cr, layout, editor, theme, char_width, gutter_width) =
+        (*cr, *layout, *editor, *theme, *char_width, *gutter_width);
+    let rect = ctx.rect;
+    let mut char_offset = 0usize;
 
-        let (fr, fg_g, fb) = cairo_rgb(theme.foreground);
-        cr.set_source_rgb(fr, fg_g, fb);
-        cr.move_to(text_x_offset, y);
+    // Breakpoint column (leftmost when has_breakpoints).
+    if editor.has_breakpoints {
+        let bp_ch: String = rl.gutter_text.chars().take(1).collect();
+        let bp_color = if rl.is_dap_current || rl.is_breakpoint {
+            theme.diagnostic_error
+        } else {
+            theme.line_number_fg
+        };
+        layout.set_text(&bp_ch);
+        layout.set_attributes(None);
+        let (br, bg_c, bb) = cairo_rgb(bp_color);
+        cr.set_source_rgb(br, bg_c, bb);
+        cr.move_to(rect.x as f64 + 3.0, y);
         super::painted_text::show_layout(cr, layout);
+        char_offset += 1;
+    }
 
-        // Ghost continuation lines — full line in ghost colour.
-        if rl.is_ghost_continuation {
-            if let Some(ghost) = &rl.ghost_suffix {
-                let (gr, gg, gb) = cairo_rgb(theme.ghost_text_fg);
-                cr.set_source_rgb(gr, gg, gb);
-                cr.move_to(text_x_offset, y);
-                layout.set_text(ghost);
-                layout.set_attributes(None);
-                super::painted_text::show_layout(cr, layout);
-            }
-        }
+    // Git marker column.
+    if editor.has_git_diff {
+        let git_ch: String = rl.gutter_text.chars().skip(char_offset).take(1).collect();
+        let git_color = match rl.git_diff {
+            Some(GitLineStatus::Added) => theme.git_added,
+            Some(GitLineStatus::Modified) => theme.git_modified,
+            Some(GitLineStatus::Deleted) => theme.git_deleted,
+            None => theme.line_number_fg,
+        };
+        layout.set_text(&git_ch);
+        layout.set_attributes(None);
+        let (gr, gg, gb) = cairo_rgb(git_color);
+        cr.set_source_rgb(gr, gg, gb);
+        cr.move_to(rect.x as f64 + char_offset as f64 * char_width + 3.0, y);
+        super::painted_text::show_layout(cr, layout);
+        char_offset += 1;
 
-        // Inline annotation / virtual text (e.g. git blame).
-        if let Some(ann) = &rl.annotation {
-            let text_pixel_width = layout.pixel_size().0 as f64;
-            let ann_x = text_x_offset + text_pixel_width + char_width * 2.0;
-            let (ar, ag, ab) = cairo_rgb(theme.annotation_fg);
-            cr.set_source_rgb(ar, ag, ab);
-            cr.move_to(ann_x, y);
-            layout.set_text(ann);
+        // Fold + line numbers portion right-aligned.
+        let rest: String = rl.gutter_text.chars().skip(char_offset).collect();
+        layout.set_text(&rest);
+        layout.set_attributes(None);
+    } else if char_offset > 0 {
+        let rest: String = rl.gutter_text.chars().skip(char_offset).collect();
+        layout.set_text(&rest);
+        layout.set_attributes(None);
+    } else {
+        layout.set_text(&rl.gutter_text);
+        layout.set_attributes(None);
+    }
+
+    let (num_width, _) = layout.pixel_size();
+    let num_x = rect.x as f64 + gutter_width - num_width as f64 - char_width + 3.0;
+
+    let num_color = if editor.is_active && rl.is_current_line {
+        theme.line_number_active_fg
+    } else {
+        theme.line_number_fg
+    };
+    let (nr, ng, nb) = cairo_rgb(num_color);
+    cr.set_source_rgb(nr, ng, nb);
+    cr.move_to(num_x, y);
+    super::painted_text::show_layout(cr, layout);
+}
+
+/// Diagnostic gutter dot (overrides the lightbulb when both apply), or
+/// the code-action lightbulb glyph, for one gutter row.
+fn paint_gutter_diagnostic_or_lightbulb(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        editor,
+        theme,
+        line_height,
+        ..
+    } = ctx;
+    let (cr, layout, editor, theme, line_height) = (*cr, *layout, *editor, *theme, *line_height);
+    let rect = ctx.rect;
+
+    if let Some(severity) = editor.diagnostic_gutter.get(&rl.line_idx) {
+        let diag_color = match severity {
+            DiagnosticSeverity::Error => theme.diagnostic_error,
+            DiagnosticSeverity::Warning => theme.diagnostic_warning,
+            DiagnosticSeverity::Information => theme.diagnostic_info,
+            DiagnosticSeverity::Hint => theme.diagnostic_hint,
+        };
+        let (dr, dg, db) = cairo_rgb(diag_color);
+        cr.set_source_rgb(dr, dg, db);
+        let dot_r = line_height * 0.2;
+        let dot_cx = rect.x as f64 + 3.0 + dot_r;
+        let dot_cy = y + line_height * 0.5;
+        cr.arc(dot_cx, dot_cy, dot_r, 0.0, 2.0 * std::f64::consts::PI);
+        cr.fill().ok();
+    } else if !rl.is_wrap_continuation
+        && editor.code_action_lines.contains(&rl.line_idx)
+        && editor.lightbulb_glyph != '\0'
+    {
+        let (lr, lg, lb) = cairo_rgb(theme.lightbulb);
+        cr.set_source_rgb(lr, lg, lb);
+        let bulb_layout = layout.clone();
+        bulb_layout.set_text(&editor.lightbulb_glyph.to_string());
+        cr.move_to(rect.x as f64 + 1.0, y);
+        super::painted_text::show_layout(cr, &bulb_layout);
+    }
+}
+
+// ── Render each visible line (text, ghost, annotation, indent guides,
+// color columns, bracket match, diagnostic + spell underlines) ─────────
+fn paint_text_lines(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        editor,
+        line_height,
+        ..
+    } = ctx;
+    let (editor, line_height) = (*editor, *line_height);
+
+    for (view_idx, rl) in editor.lines.iter().enumerate() {
+        let y = ctx.rect.y as f64 + view_idx as f64 * line_height;
+        paint_line_text_ghost_and_annotation(ctx, rl, y);
+        paint_line_indent_guides_and_colorcolumns(ctx, rl, y);
+        paint_line_bracket_match(ctx, view_idx, y);
+
+        // Restore layout to match rendered text (needed for correct
+        // index_to_pos when font_scale != 1.0, e.g. markdown headings) —
+        // the guides/colorcolumns/bracket-match painters above don't
+        // touch `layout`'s text, but keeping this reset here (rather
+        // than trusting that) matches the pre-split behaviour exactly.
+        ctx.layout.set_text(&rl.raw_text);
+        let line_attrs = build_pango_attrs(&rl.spans);
+        ctx.layout.set_attributes(Some(&line_attrs));
+
+        paint_line_diagnostic_underlines(ctx, rl, y);
+        paint_line_spell_underlines(ctx, rl, y);
+    }
+}
+
+/// Base syntax-highlighted text, ghost continuation (full line in ghost
+/// colour), and inline annotation (e.g. git blame) — the three overlays
+/// that share `layout`'s just-set `raw_text` + span attributes.
+fn paint_line_text_ghost_and_annotation(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        theme,
+        char_width,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, theme, char_width, text_x_offset) =
+        (*cr, *layout, *theme, *char_width, *text_x_offset);
+
+    layout.set_text(&rl.raw_text);
+    let attrs = build_pango_attrs(&rl.spans);
+    layout.set_attributes(Some(&attrs));
+
+    let (fr, fg_g, fb) = cairo_rgb(theme.foreground);
+    cr.set_source_rgb(fr, fg_g, fb);
+    cr.move_to(text_x_offset, y);
+    super::painted_text::show_layout(cr, layout);
+
+    // Ghost continuation lines — full line in ghost colour.
+    if rl.is_ghost_continuation {
+        if let Some(ghost) = &rl.ghost_suffix {
+            let (gr, gg, gb) = cairo_rgb(theme.ghost_text_fg);
+            cr.set_source_rgb(gr, gg, gb);
+            cr.move_to(text_x_offset, y);
+            layout.set_text(ghost);
             layout.set_attributes(None);
             super::painted_text::show_layout(cr, layout);
         }
+    }
 
-        // Indent guides: thin vertical lines at each guide column.
-        if !rl.indent_guides.is_empty() {
-            cr.set_line_width(1.0);
-            for &guide_col in &rl.indent_guides {
-                let is_active = editor.active_indent_col == Some(guide_col);
-                let (gr, gg, gb) = if is_active {
-                    cairo_rgb(theme.indent_guide_active_fg)
-                } else {
-                    cairo_rgb(theme.indent_guide_fg)
-                };
-                cr.set_source_rgb(gr, gg, gb);
-                let gx = text_x_offset + guide_col as f64 * char_width;
-                cr.move_to(gx, y);
-                cr.line_to(gx, y + line_height);
-                cr.stroke().ok();
-            }
-        }
+    // Inline annotation / virtual text (e.g. git blame).
+    if let Some(ann) = &rl.annotation {
+        let text_pixel_width = layout.pixel_size().0 as f64;
+        let ann_x = text_x_offset + text_pixel_width + char_width * 2.0;
+        let (ar, ag, ab) = cairo_rgb(theme.annotation_fg);
+        cr.set_source_rgb(ar, ag, ab);
+        cr.move_to(ann_x, y);
+        layout.set_text(ann);
+        layout.set_attributes(None);
+        super::painted_text::show_layout(cr, layout);
+    }
+}
 
-        // Color columns: tinted background rectangle at each column.
-        if !rl.colorcolumns.is_empty() {
-            let (cr2, cg, cb) = cairo_rgb(theme.colorcolumn_bg);
-            cr.set_source_rgb(cr2, cg, cb);
-            for &cc_col in &rl.colorcolumns {
-                let cx = text_x_offset + cc_col as f64 * char_width;
-                cr.rectangle(cx, y, char_width, line_height);
-                cr.fill().ok();
-            }
-        }
+/// Indent guides (thin vertical lines) and color columns (tinted
+/// background rects) for one line.
+fn paint_line_indent_guides_and_colorcolumns(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, editor, theme, char_width, line_height, text_x_offset) = (
+        *cr,
+        *editor,
+        *theme,
+        *char_width,
+        *line_height,
+        *text_x_offset,
+    );
 
-        // Bracket match highlighting (semi-transparent rect).
-        for &(bm_view_line, bm_col) in &editor.bracket_match_positions {
-            if bm_view_line == view_idx {
-                let (br, bg_c, bb) = cairo_rgb(theme.bracket_match_bg);
-                cr.set_source_rgba(br, bg_c, bb, 0.6);
-                let bx = text_x_offset + bm_col as f64 * char_width;
-                cr.rectangle(bx, y, char_width, line_height);
-                cr.fill().ok();
-            }
-        }
-
-        // Restore layout to match rendered text (needed for correct
-        // index_to_pos when font_scale != 1.0, e.g. markdown headings).
-        layout.set_text(&rl.raw_text);
-        let line_attrs = build_pango_attrs(&rl.spans);
-        layout.set_attributes(Some(&line_attrs));
-
-        // Diagnostic underlines (wavy squiggle).
-        for dm in &rl.diagnostics {
-            let diag_color = match dm.severity {
-                DiagnosticSeverity::Error => theme.diagnostic_error,
-                DiagnosticSeverity::Warning => theme.diagnostic_warning,
-                DiagnosticSeverity::Information => theme.diagnostic_info,
-                DiagnosticSeverity::Hint => theme.diagnostic_hint,
+    // Indent guides: thin vertical lines at each guide column.
+    if !rl.indent_guides.is_empty() {
+        cr.set_line_width(1.0);
+        for &guide_col in &rl.indent_guides {
+            let is_active = editor.active_indent_col == Some(guide_col);
+            let (gr, gg, gb) = if is_active {
+                cairo_rgb(theme.indent_guide_active_fg)
+            } else {
+                cairo_rgb(theme.indent_guide_fg)
             };
-            let (dr, dg, db) = cairo_rgb(diag_color);
-            cr.set_source_rgb(dr, dg, db);
-            cr.set_line_width(1.0);
-
-            let start_byte = rl
-                .raw_text
-                .char_indices()
-                .nth(dm.start_col)
-                .map(|(i, _)| i)
-                .unwrap_or(rl.raw_text.len());
-            let end_byte = rl
-                .raw_text
-                .char_indices()
-                .nth(dm.end_col)
-                .map(|(i, _)| i)
-                .unwrap_or(rl.raw_text.len());
-
-            let start_pos = layout.index_to_pos(start_byte as i32);
-            let end_pos = layout.index_to_pos(end_byte as i32);
-            let x0 = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
-            let x1 = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
-            let underline_y = y + line_height - 2.0;
-
-            let wave_h = 1.5;
-            let wave_len = 4.0;
-            cr.move_to(x0, underline_y);
-            let mut wx = x0;
-            let mut up = true;
-            while wx < x1 {
-                let next_x = (wx + wave_len).min(x1);
-                let cy = if up {
-                    underline_y - wave_h
-                } else {
-                    underline_y + wave_h
-                };
-                cr.curve_to(
-                    wx + (next_x - wx) * 0.5,
-                    cy,
-                    wx + (next_x - wx) * 0.5,
-                    cy,
-                    next_x,
-                    underline_y,
-                );
-                wx = next_x;
-                up = !up;
-            }
+            cr.set_source_rgb(gr, gg, gb);
+            let gx = text_x_offset + guide_col as f64 * char_width;
+            cr.move_to(gx, y);
+            cr.line_to(gx, y + line_height);
             cr.stroke().ok();
-        }
-
-        // Spell error underlines (dotted).
-        for sm in &rl.spell_errors {
-            let (sr, sg, sb) = cairo_rgb(theme.spell_error);
-            cr.set_source_rgb(sr, sg, sb);
-            cr.set_line_width(1.0);
-
-            let start_byte = rl
-                .raw_text
-                .char_indices()
-                .nth(sm.start_col)
-                .map(|(i, _)| i)
-                .unwrap_or(rl.raw_text.len());
-            let end_byte = rl
-                .raw_text
-                .char_indices()
-                .nth(sm.end_col)
-                .map(|(i, _)| i)
-                .unwrap_or(rl.raw_text.len());
-
-            let start_pos = layout.index_to_pos(start_byte as i32);
-            let end_pos = layout.index_to_pos(end_byte as i32);
-            let x0 = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
-            let x1 = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
-            let underline_y = y + line_height - 2.0;
-
-            let dot_spacing = 3.0;
-            let mut dx = x0;
-            while dx < x1 {
-                cr.rectangle(dx, underline_y, 1.0, 1.0);
-                dx += dot_spacing;
-            }
-            cr.fill().ok();
         }
     }
 
-    cr.restore().ok();
+    // Color columns: tinted background rectangle at each column.
+    if !rl.colorcolumns.is_empty() {
+        let (cr2, cg, cb) = cairo_rgb(theme.colorcolumn_bg);
+        cr.set_source_rgb(cr2, cg, cb);
+        for &cc_col in &rl.colorcolumns {
+            let cx = text_x_offset + cc_col as f64 * char_width;
+            cr.rectangle(cx, y, char_width, line_height);
+            cr.fill().ok();
+        }
+    }
+}
 
-    // ── Scrollbars (painted last among the "content" layers — after
-    // text/selections, before the cursor — mirrors
-    // tui::editor::draw_editor's z-order; see module doc for the
-    // shared-geometry rationale and the minimap boundary). The content
-    // clip above already reserved this column, so this paints into
-    // pixels no glyph touched, not over them. `editor_geom` was computed
-    // up front, alongside the content clip. ──
+/// Bracket-match highlighting (semi-transparent rect) for one line.
+fn paint_line_bracket_match(ctx: &EditorPaintCtx, view_idx: usize, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, editor, theme, char_width, line_height, text_x_offset) = (
+        *cr,
+        *editor,
+        *theme,
+        *char_width,
+        *line_height,
+        *text_x_offset,
+    );
+
+    for &(bm_view_line, bm_col) in &editor.bracket_match_positions {
+        if bm_view_line == view_idx {
+            let (br, bg_c, bb) = cairo_rgb(theme.bracket_match_bg);
+            cr.set_source_rgba(br, bg_c, bb, 0.6);
+            let bx = text_x_offset + bm_col as f64 * char_width;
+            cr.rectangle(bx, y, char_width, line_height);
+            cr.fill().ok();
+        }
+    }
+}
+
+/// Diagnostic underlines (wavy squiggle) for one line. Caller has
+/// already reset `layout` to `rl.raw_text` so `index_to_pos` resolves
+/// correctly.
+fn paint_line_diagnostic_underlines(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        theme,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, theme, line_height, text_x_offset) =
+        (*cr, *layout, *theme, *line_height, *text_x_offset);
+
+    for dm in &rl.diagnostics {
+        let diag_color = match dm.severity {
+            DiagnosticSeverity::Error => theme.diagnostic_error,
+            DiagnosticSeverity::Warning => theme.diagnostic_warning,
+            DiagnosticSeverity::Information => theme.diagnostic_info,
+            DiagnosticSeverity::Hint => theme.diagnostic_hint,
+        };
+        let (dr, dg, db) = cairo_rgb(diag_color);
+        cr.set_source_rgb(dr, dg, db);
+        cr.set_line_width(1.0);
+
+        let start_byte = rl
+            .raw_text
+            .char_indices()
+            .nth(dm.start_col)
+            .map(|(i, _)| i)
+            .unwrap_or(rl.raw_text.len());
+        let end_byte = rl
+            .raw_text
+            .char_indices()
+            .nth(dm.end_col)
+            .map(|(i, _)| i)
+            .unwrap_or(rl.raw_text.len());
+
+        let start_pos = layout.index_to_pos(start_byte as i32);
+        let end_pos = layout.index_to_pos(end_byte as i32);
+        let x0 = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
+        let x1 = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
+        let underline_y = y + line_height - 2.0;
+
+        let wave_h = 1.5;
+        let wave_len = 4.0;
+        cr.move_to(x0, underline_y);
+        let mut wx = x0;
+        let mut up = true;
+        while wx < x1 {
+            let next_x = (wx + wave_len).min(x1);
+            let cy = if up {
+                underline_y - wave_h
+            } else {
+                underline_y + wave_h
+            };
+            cr.curve_to(
+                wx + (next_x - wx) * 0.5,
+                cy,
+                wx + (next_x - wx) * 0.5,
+                cy,
+                next_x,
+                underline_y,
+            );
+            wx = next_x;
+            up = !up;
+        }
+        cr.stroke().ok();
+    }
+}
+
+/// Spell error underlines (dotted) for one line. Caller has already
+/// reset `layout` to `rl.raw_text` so `index_to_pos` resolves correctly.
+fn paint_line_spell_underlines(ctx: &EditorPaintCtx, rl: &EditorLine, y: f64) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        theme,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, theme, line_height, text_x_offset) =
+        (*cr, *layout, *theme, *line_height, *text_x_offset);
+
+    for sm in &rl.spell_errors {
+        let (sr, sg, sb) = cairo_rgb(theme.spell_error);
+        cr.set_source_rgb(sr, sg, sb);
+        cr.set_line_width(1.0);
+
+        let start_byte = rl
+            .raw_text
+            .char_indices()
+            .nth(sm.start_col)
+            .map(|(i, _)| i)
+            .unwrap_or(rl.raw_text.len());
+        let end_byte = rl
+            .raw_text
+            .char_indices()
+            .nth(sm.end_col)
+            .map(|(i, _)| i)
+            .unwrap_or(rl.raw_text.len());
+
+        let start_pos = layout.index_to_pos(start_byte as i32);
+        let end_pos = layout.index_to_pos(end_byte as i32);
+        let x0 = text_x_offset + start_pos.x() as f64 / pango::SCALE as f64;
+        let x1 = text_x_offset + end_pos.x() as f64 / pango::SCALE as f64;
+        let underline_y = y + line_height - 2.0;
+
+        let dot_spacing = 3.0;
+        let mut dx = x0;
+        while dx < x1 {
+            cr.rectangle(dx, underline_y, 1.0, 1.0);
+            dx += dot_spacing;
+        }
+        cr.fill().ok();
+    }
+}
+
+// ── Scrollbars (#968) ────────────────────────────────────────────────
+fn paint_scrollbars(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr,
+        editor,
+        theme,
+        line_height,
+        editor_geom,
+        ..
+    } = ctx;
+    let (cr, editor, theme, line_height) = (*cr, *editor, *theme, *line_height);
+
     if let Some(v_track) = editor_geom.v_scrollbar_bounds {
         let sb = Scrollbar::vertical(
             "gtk:editor:v_scrollbar",
@@ -578,86 +815,153 @@ pub fn draw_editor_with_options(
         };
         crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, theme);
     }
+}
 
-    // ── Cursor (Block alpha rect / Bar 2px / Underline 12% line height) ─
-    if let Some(cursor) = &editor.cursor {
-        if let Some(rl) = editor.lines.get(cursor.pos.view_line) {
-            layout.set_text(&rl.raw_text);
-            let cursor_attrs = build_pango_attrs(&rl.spans);
-            layout.set_attributes(Some(&cursor_attrs));
+// ── Cursor (Block alpha rect / Bar 2px / Underline 12% line height) ────
+fn paint_primary_cursor(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        font_metrics,
+        editor,
+        theme,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, font_metrics, editor, theme, line_height, text_x_offset) = (
+        *cr,
+        *layout,
+        *font_metrics,
+        *editor,
+        *theme,
+        *line_height,
+        *text_x_offset,
+    );
+    let rect = ctx.rect;
 
-            let render_col =
-                if !editor.extra_selections.is_empty() && cursor.shape == CursorShape::Bar {
-                    cursor.pos.col + 1
-                } else {
-                    cursor.pos.col
-                };
-            let byte_offset: usize = rl
-                .raw_text
-                .char_indices()
-                .nth(render_col)
-                .map(|(i, _)| i)
-                .unwrap_or(rl.raw_text.len());
+    let Some(cursor) = &editor.cursor else {
+        return;
+    };
+    let Some(rl) = editor.lines.get(cursor.pos.view_line) else {
+        return;
+    };
 
-            let pos = layout.index_to_pos(byte_offset as i32);
-            let cursor_x = text_x_offset + pos.x() as f64 / pango::SCALE as f64;
-            let raw_w = pos.width() as f64 / pango::SCALE as f64;
-            let cursor_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height;
+    layout.set_text(&rl.raw_text);
+    let cursor_attrs = build_pango_attrs(&rl.spans);
+    layout.set_attributes(Some(&cursor_attrs));
 
-            let (cr_r, cr_g, cr_b) = cairo_rgb(theme.cursor);
-            let char_w = if raw_w > 0.0 {
-                raw_w
-            } else {
-                font_metrics.approximate_char_width() as f64 / pango::SCALE as f64
-            };
-            match cursor.shape {
-                CursorShape::Block => {
-                    cr.set_source_rgba(cr_r, cr_g, cr_b, theme.cursor_normal_alpha as f64);
-                    cr.rectangle(cursor_x, cursor_y, char_w, line_height);
-                    cr.fill().ok();
-                }
-                CursorShape::Bar => {
-                    cr.set_source_rgb(cr_r, cr_g, cr_b);
-                    cr.rectangle(cursor_x, cursor_y, 2.0, line_height);
-                    cr.fill().ok();
-                }
-                CursorShape::Underline => {
-                    cr.set_source_rgb(cr_r, cr_g, cr_b);
-                    let bar_h = (line_height * 0.12).max(2.0);
-                    cr.rectangle(cursor_x, cursor_y + line_height - bar_h, char_w, bar_h);
-                    cr.fill().ok();
-                }
-            }
+    let render_col = if !editor.extra_selections.is_empty() && cursor.shape == CursorShape::Bar {
+        cursor.pos.col + 1
+    } else {
+        cursor.pos.col
+    };
+    let byte_offset: usize = rl
+        .raw_text
+        .char_indices()
+        .nth(render_col)
+        .map(|(i, _)| i)
+        .unwrap_or(rl.raw_text.len());
+
+    let pos = layout.index_to_pos(byte_offset as i32);
+    let cursor_x = text_x_offset + pos.x() as f64 / pango::SCALE as f64;
+    let raw_w = pos.width() as f64 / pango::SCALE as f64;
+    let cursor_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height;
+
+    let (cr_r, cr_g, cr_b) = cairo_rgb(theme.cursor);
+    let char_w = if raw_w > 0.0 {
+        raw_w
+    } else {
+        font_metrics.approximate_char_width() as f64 / pango::SCALE as f64
+    };
+    match cursor.shape {
+        CursorShape::Block => {
+            cr.set_source_rgba(cr_r, cr_g, cr_b, theme.cursor_normal_alpha as f64);
+            cr.rectangle(cursor_x, cursor_y, char_w, line_height);
+            cr.fill().ok();
+        }
+        CursorShape::Bar => {
+            cr.set_source_rgb(cr_r, cr_g, cr_b);
+            cr.rectangle(cursor_x, cursor_y, 2.0, line_height);
+            cr.fill().ok();
+        }
+        CursorShape::Underline => {
+            cr.set_source_rgb(cr_r, cr_g, cr_b);
+            let bar_h = (line_height * 0.12).max(2.0);
+            cr.rectangle(cursor_x, cursor_y + line_height - bar_h, char_w, bar_h);
+            cr.fill().ok();
         }
     }
+}
 
-    // ── AI ghost text (after cursor on cursor line) ────────────────────
-    if let Some(cursor) = &editor.cursor {
-        if let Some(rl) = editor.lines.get(cursor.pos.view_line) {
-            if let Some(ghost) = &rl.ghost_suffix {
-                layout.set_text(&rl.raw_text);
-                let ghost_line_attrs = build_pango_attrs(&rl.spans);
-                layout.set_attributes(Some(&ghost_line_attrs));
-                let byte_offset: usize = rl
-                    .raw_text
-                    .char_indices()
-                    .nth(cursor.pos.col)
-                    .map(|(i, _)| i)
-                    .unwrap_or(rl.raw_text.len());
-                let pos = layout.index_to_pos(byte_offset as i32);
-                let ghost_x = text_x_offset + pos.x() as f64 / pango::SCALE as f64;
-                let ghost_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height;
-                let (gr, gg, gb) = cairo_rgb(theme.ghost_text_fg);
-                cr.set_source_rgb(gr, gg, gb);
-                cr.move_to(ghost_x, ghost_y);
-                layout.set_text(ghost);
-                layout.set_attributes(None);
-                super::painted_text::show_layout(cr, layout);
-            }
-        }
-    }
+// ── AI ghost text (after cursor on cursor line) ─────────────────────────
+fn paint_ai_ghost_text(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        editor,
+        theme,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, editor, theme, line_height, text_x_offset) =
+        (*cr, *layout, *editor, *theme, *line_height, *text_x_offset);
+    let rect = ctx.rect;
 
-    // ── Secondary cursors (multi-cursor) ───────────────────────────────
+    let Some(cursor) = &editor.cursor else {
+        return;
+    };
+    let Some(rl) = editor.lines.get(cursor.pos.view_line) else {
+        return;
+    };
+    let Some(ghost) = &rl.ghost_suffix else {
+        return;
+    };
+
+    layout.set_text(&rl.raw_text);
+    let ghost_line_attrs = build_pango_attrs(&rl.spans);
+    layout.set_attributes(Some(&ghost_line_attrs));
+    let byte_offset: usize = rl
+        .raw_text
+        .char_indices()
+        .nth(cursor.pos.col)
+        .map(|(i, _)| i)
+        .unwrap_or(rl.raw_text.len());
+    let pos = layout.index_to_pos(byte_offset as i32);
+    let ghost_x = text_x_offset + pos.x() as f64 / pango::SCALE as f64;
+    let ghost_y = rect.y as f64 + cursor.pos.view_line as f64 * line_height;
+    let (gr, gg, gb) = cairo_rgb(theme.ghost_text_fg);
+    cr.set_source_rgb(gr, gg, gb);
+    cr.move_to(ghost_x, ghost_y);
+    layout.set_text(ghost);
+    layout.set_attributes(None);
+    super::painted_text::show_layout(cr, layout);
+}
+
+// ── Secondary cursors (multi-cursor) ─────────────────────────────────────
+fn paint_secondary_cursors(ctx: &EditorPaintCtx) {
+    let EditorPaintCtx {
+        cr,
+        layout,
+        font_metrics,
+        editor,
+        theme,
+        line_height,
+        text_x_offset,
+        ..
+    } = ctx;
+    let (cr, layout, font_metrics, editor, theme, line_height, text_x_offset) = (
+        *cr,
+        *layout,
+        *font_metrics,
+        *editor,
+        *theme,
+        *line_height,
+        *text_x_offset,
+    );
+    let rect = ctx.rect;
+
     let extra_cursor_shape = editor
         .cursor
         .as_ref()

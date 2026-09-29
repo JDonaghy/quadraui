@@ -113,6 +113,12 @@ impl MenuSystem {
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
+    /// Process an event. Call from `handle()` before other UI routing.
+    ///
+    /// A thin dispatcher over the per-event-shape handlers below
+    /// (#1113: split the god fn) — each `handle_*` owns one gesture's
+    /// full state-machine transition so this stays a readable table of
+    /// "what shape → which handler" instead of one 360-line match arm.
     pub fn handle(
         &mut self,
         event: &UiEvent,
@@ -121,38 +127,16 @@ impl MenuSystem {
     ) -> MenuEvent {
         match event {
             // ── Keyboard ──────────────────────────────────────────
-
-            // Esc: close deepest open submenu; if none, close whole menu.
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Escape),
                 ..
-            } if self.open_item.is_some() => {
-                if !self.submenu_path.is_empty() {
-                    self.close_deepest_submenu();
-                    MenuEvent::StateChanged
-                } else {
-                    self.close(backend);
-                    MenuEvent::StateChanged
-                }
-            }
+            } if self.open_item.is_some() => self.handle_escape(backend),
 
             UiEvent::KeyPressed {
                 key: Key::Char(c),
                 modifiers: Modifiers { alt: true, .. },
                 ..
-            } => {
-                let bar = self.build_menu_bar();
-                if let Some(idx) = bar.find_alt_target(*c) {
-                    if self.open_item == Some(idx) {
-                        self.close(backend);
-                    } else {
-                        self.open_menu(idx, backend, bar_rect);
-                    }
-                    MenuEvent::StateChanged
-                } else {
-                    MenuEvent::Ignored
-                }
-            }
+            } => self.handle_alt_char(*c, backend, bar_rect),
 
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Down),
@@ -170,250 +154,31 @@ impl MenuSystem {
                 MenuEvent::Consumed
             }
 
-            // Right: open submenu if selected item has one; otherwise switch
-            // top-level menu (only at root level with no open submenus).
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Right),
                 ..
-            } if self.open_item.is_some() => {
-                let depth = self.submenu_path.len();
-                let sel = self.current_selected();
-                let has_sub = self
-                    .items_at_depth(depth)
-                    .and_then(|items| items.into_iter().nth(sel))
-                    .map(|item| item.submenu.is_some())
-                    .unwrap_or(false);
+            } if self.open_item.is_some() => self.handle_right(backend, bar_rect),
 
-                if has_sub {
-                    self.open_submenu(sel);
-                    MenuEvent::StateChanged
-                } else if depth == 0 {
-                    // At root with no submenu open → switch top-level menu.
-                    let Some(cur) = self.open_item else {
-                        return MenuEvent::Ignored;
-                    };
-                    let next = self.next_enabled_menu(cur, 1);
-                    self.close(backend);
-                    self.open_menu(next, backend, bar_rect);
-                    MenuEvent::StateChanged
-                } else {
-                    // Inside a submenu, non-submenu item → no-op.
-                    MenuEvent::Ignored
-                }
-            }
-
-            // Left: close deepest submenu if one is open; otherwise switch
-            // top-level menu (preserves pre-submenu behaviour).
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Left),
                 ..
-            } if self.open_item.is_some() => {
-                if !self.submenu_path.is_empty() {
-                    self.close_deepest_submenu();
-                    MenuEvent::StateChanged
-                } else {
-                    let Some(cur) = self.open_item else {
-                        return MenuEvent::Ignored;
-                    };
-                    let prev = self.next_enabled_menu(cur, -1);
-                    self.close(backend);
-                    self.open_menu(prev, backend, bar_rect);
-                    MenuEvent::StateChanged
-                }
-            }
+            } if self.open_item.is_some() => self.handle_left(backend, bar_rect),
 
-            // Enter: open submenu if item is a submenu parent; otherwise activate.
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Enter),
                 ..
-            } if self.open_item.is_some() => {
-                let depth = self.submenu_path.len();
-                let sel = self.current_selected();
-                let item_opt = self
-                    .items_at_depth(depth)
-                    .and_then(|items| items.into_iter().nth(sel));
-
-                match item_opt {
-                    Some(item) if item.submenu.is_some() => {
-                        self.open_submenu(sel);
-                        MenuEvent::StateChanged
-                    }
-                    Some(item) => {
-                        if let Some(id) = item.id {
-                            self.close(backend);
-                            MenuEvent::Activated(id)
-                        } else {
-                            self.close(backend);
-                            MenuEvent::Consumed
-                        }
-                    }
-                    None => {
-                        self.close(backend);
-                        MenuEvent::Consumed
-                    }
-                }
-            }
+            } if self.open_item.is_some() => self.handle_enter(backend),
 
             // ── Mouse click ───────────────────────────────────────
             UiEvent::MouseDown {
                 button: MouseButton::Left,
                 position,
                 ..
-            } => {
-                let bar = self.build_menu_bar();
-                let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
-
-                match bar_layout.hit_test(position.x, position.y) {
-                    MenuBarHit::Item(i) => {
-                        if self.open_item == Some(i) {
-                            self.close(backend);
-                        } else {
-                            self.close(backend);
-                            self.open_menu(i, backend, bar_rect);
-                        }
-                        return MenuEvent::StateChanged;
-                    }
-                    MenuBarHit::Bar => {
-                        if self.open_item.is_some() {
-                            self.close(backend);
-                            return MenuEvent::StateChanged;
-                        }
-                        return MenuEvent::Ignored;
-                    }
-                    MenuBarHit::Outside => {}
-                }
-
-                if self.open_item.is_some() {
-                    // Walk the submenu stack deepest-first so that a click on
-                    // an item in a child popup doesn't fall through to the parent.
-                    let stack = self.dropdown_stack(backend, bar_rect);
-                    for (depth_idx, (ref menu, ref layout)) in stack.iter().enumerate().rev() {
-                        match layout.hit_test(position.x, position.y) {
-                            ContextMenuHit::Item(ref id) => {
-                                // Resolve item_idx from the id.
-                                let item_idx_opt = layout
-                                    .visible_items
-                                    .iter()
-                                    .find(|v| {
-                                        v.clickable
-                                            && menu.items[v.item_idx].id.as_ref() == Some(id)
-                                    })
-                                    .map(|v| v.item_idx);
-
-                                if let Some(item_idx) = item_idx_opt {
-                                    if menu.items[item_idx].submenu.is_some() {
-                                        // Trim any deeper submenus that were open, then open
-                                        // this submenu (always open — clicking a submenu parent
-                                        // re-opens even if already visible).
-                                        self.submenu_path.truncate(depth_idx);
-                                        self.submenu_selected.truncate(depth_idx);
-                                        self.open_submenu(item_idx);
-                                        return MenuEvent::StateChanged;
-                                    } else {
-                                        let id = id.clone();
-                                        self.close(backend);
-                                        return MenuEvent::Activated(id);
-                                    }
-                                }
-                                return MenuEvent::Consumed;
-                            }
-                            ContextMenuHit::Inert => return MenuEvent::Consumed,
-                            ContextMenuHit::Empty => {
-                                // Click outside this depth — try shallower.
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Click outside all open menu levels → close.
-                    self.close(backend);
-                    return MenuEvent::StateChanged;
-                }
-                MenuEvent::Ignored
-            }
+            } => self.handle_mouse_down(*position, backend, bar_rect),
 
             // ── Mouse hover ───────────────────────────────────────
             UiEvent::MouseMoved { position, .. } => {
-                let bar = self.build_menu_bar();
-                let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
-
-                if self.open_item.is_some() {
-                    // Hovering a different top-level menu label → switch.
-                    if let MenuBarHit::Item(i) = bar_layout.hit_test(position.x, position.y) {
-                        if !bar.items[i].disabled && self.open_item != Some(i) {
-                            self.close(backend);
-                            self.open_menu(i, backend, bar_rect);
-                            return MenuEvent::StateChanged;
-                        }
-                    }
-
-                    // Walk the stack shallowest-first to find the deepest level
-                    // that the cursor is inside. When we find an item:
-                    //   • Update the selection at that level.
-                    //   • If it's a submenu parent, open its child (closing any
-                    //     previously-open sibling submenu at the same depth).
-                    //   • Close any submenus deeper than the matched level.
-                    let stack = self.dropdown_stack(backend, bar_rect);
-                    for (depth_idx, (ref menu, ref layout)) in stack.iter().enumerate() {
-                        for vis in &layout.visible_items {
-                            if !vis.clickable {
-                                continue;
-                            }
-                            if position.x >= vis.bounds.x
-                                && position.x < vis.bounds.x + vis.bounds.width
-                                && position.y >= vis.bounds.y
-                                && position.y < vis.bounds.y + vis.bounds.height
-                            {
-                                let item_idx = vis.item_idx;
-                                let has_sub = menu.items[item_idx].submenu.is_some();
-
-                                // Update selection at this depth.
-                                let sel_changed = if depth_idx == 0 {
-                                    let old = self.dropdown_selected;
-                                    self.dropdown_selected = item_idx;
-                                    old != item_idx
-                                } else {
-                                    let sub_d = depth_idx - 1;
-                                    let old =
-                                        self.submenu_selected.get(sub_d).copied().unwrap_or(0);
-                                    if let Some(s) = self.submenu_selected.get_mut(sub_d) {
-                                        *s = item_idx;
-                                    }
-                                    old != item_idx
-                                };
-
-                                if has_sub {
-                                    // Trim any deeper submenus and open this one.
-                                    self.submenu_path.truncate(depth_idx);
-                                    self.submenu_selected.truncate(depth_idx);
-                                    self.open_submenu(item_idx);
-                                    return MenuEvent::StateChanged;
-                                } else if self.submenu_path.len() > depth_idx {
-                                    // Close deeper submenus when hovering a leaf.
-                                    self.submenu_path.truncate(depth_idx);
-                                    self.submenu_selected.truncate(depth_idx);
-                                    return MenuEvent::StateChanged;
-                                } else if sel_changed {
-                                    return MenuEvent::Consumed;
-                                } else {
-                                    return MenuEvent::Ignored;
-                                }
-                            }
-                        }
-                    }
-                    MenuEvent::Ignored
-                } else {
-                    let new_focus = match bar_layout.hit_test(position.x, position.y) {
-                        MenuBarHit::Item(i) if !bar.items[i].disabled => Some(i),
-                        _ => None,
-                    };
-                    if new_focus != self.focused_item {
-                        self.focused_item = new_focus;
-                        MenuEvent::Consumed
-                    } else {
-                        MenuEvent::Ignored
-                    }
-                }
+                self.handle_mouse_moved(*position, backend, bar_rect)
             }
 
             // ── Mouse release ─────────────────────────────────────
@@ -422,7 +187,7 @@ impl MenuSystem {
             // only ever deliver `MouseUp(Left)` for a click. Without this
             // arm, an outside click on those terminals never runs the
             // "click outside all open menu levels → close" check the
-            // `MouseDown` arm's tail performs, so a dropdown never
+            // `MouseDown` handler's tail performs, so a dropdown never
             // dismisses on outside click there.
             //
             // On terminals that deliver both `Down` and `Up` normally,
@@ -437,44 +202,318 @@ impl MenuSystem {
                 button: MouseButton::Left,
                 position,
                 ..
-            } => {
-                if self.open_item.is_none() {
-                    return MenuEvent::Ignored;
-                }
-
-                let bar = self.build_menu_bar();
-                let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
-
-                // Clicks landing on the menu bar itself (open/close/switch)
-                // are `MouseDown`'s job — leave them alone here.
-                if !matches!(
-                    bar_layout.hit_test(position.x, position.y),
-                    MenuBarHit::Outside
-                ) {
-                    return MenuEvent::Ignored;
-                }
-
-                // Walk the open dropdown stack deepest-first. If the
-                // position lands inside any open level (item or inert
-                // region), that click was already handled by `MouseDown` —
-                // do nothing here to avoid double-activating.
-                let stack = self.dropdown_stack(backend, bar_rect);
-                for (_, layout) in stack.iter().rev() {
-                    if !matches!(
-                        layout.hit_test(position.x, position.y),
-                        ContextMenuHit::Empty
-                    ) {
-                        return MenuEvent::Ignored;
-                    }
-                }
-
-                // Outside the bar and every open dropdown level → close.
-                self.close(backend);
-                MenuEvent::StateChanged
-            }
+            } => self.handle_mouse_up(*position, backend, bar_rect),
 
             _ => MenuEvent::Ignored,
         }
+    }
+
+    /// Esc: close deepest open submenu; if none, close whole menu.
+    /// Caller guarantees `self.open_item.is_some()`.
+    fn handle_escape(&mut self, backend: &mut dyn Backend) -> MenuEvent {
+        if !self.submenu_path.is_empty() {
+            self.close_deepest_submenu();
+        } else {
+            self.close(backend);
+        }
+        MenuEvent::StateChanged
+    }
+
+    /// Alt+`c`: open/close/switch to the top-level menu whose label's
+    /// underlined access key matches `c`.
+    fn handle_alt_char(&mut self, c: char, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
+        let bar = self.build_menu_bar();
+        if let Some(idx) = bar.find_alt_target(c) {
+            if self.open_item == Some(idx) {
+                self.close(backend);
+            } else {
+                self.open_menu(idx, backend, bar_rect);
+            }
+            MenuEvent::StateChanged
+        } else {
+            MenuEvent::Ignored
+        }
+    }
+
+    /// Right: open submenu if selected item has one; otherwise switch
+    /// top-level menu (only at root level with no open submenus).
+    /// Caller guarantees `self.open_item.is_some()`.
+    fn handle_right(&mut self, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
+        let depth = self.submenu_path.len();
+        let sel = self.current_selected();
+        let has_sub = self
+            .items_at_depth(depth)
+            .and_then(|items| items.into_iter().nth(sel))
+            .map(|item| item.submenu.is_some())
+            .unwrap_or(false);
+
+        if has_sub {
+            self.open_submenu(sel);
+            MenuEvent::StateChanged
+        } else if depth == 0 {
+            // At root with no submenu open → switch top-level menu.
+            let Some(cur) = self.open_item else {
+                return MenuEvent::Ignored;
+            };
+            let next = self.next_enabled_menu(cur, 1);
+            self.close(backend);
+            self.open_menu(next, backend, bar_rect);
+            MenuEvent::StateChanged
+        } else {
+            // Inside a submenu, non-submenu item → no-op.
+            MenuEvent::Ignored
+        }
+    }
+
+    /// Left: close deepest submenu if one is open; otherwise switch
+    /// top-level menu (preserves pre-submenu behaviour).
+    /// Caller guarantees `self.open_item.is_some()`.
+    fn handle_left(&mut self, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
+        if !self.submenu_path.is_empty() {
+            self.close_deepest_submenu();
+            MenuEvent::StateChanged
+        } else {
+            let Some(cur) = self.open_item else {
+                return MenuEvent::Ignored;
+            };
+            let prev = self.next_enabled_menu(cur, -1);
+            self.close(backend);
+            self.open_menu(prev, backend, bar_rect);
+            MenuEvent::StateChanged
+        }
+    }
+
+    /// Enter: open submenu if item is a submenu parent; otherwise activate.
+    /// Caller guarantees `self.open_item.is_some()`.
+    fn handle_enter(&mut self, backend: &mut dyn Backend) -> MenuEvent {
+        let depth = self.submenu_path.len();
+        let sel = self.current_selected();
+        let item_opt = self
+            .items_at_depth(depth)
+            .and_then(|items| items.into_iter().nth(sel));
+
+        match item_opt {
+            Some(item) if item.submenu.is_some() => {
+                self.open_submenu(sel);
+                MenuEvent::StateChanged
+            }
+            Some(item) => {
+                if let Some(id) = item.id {
+                    self.close(backend);
+                    MenuEvent::Activated(id)
+                } else {
+                    self.close(backend);
+                    MenuEvent::Consumed
+                }
+            }
+            None => {
+                self.close(backend);
+                MenuEvent::Consumed
+            }
+        }
+    }
+
+    fn handle_mouse_down(
+        &mut self,
+        position: crate::event::Point,
+        backend: &mut dyn Backend,
+        bar_rect: Rect,
+    ) -> MenuEvent {
+        let bar = self.build_menu_bar();
+        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+
+        match bar_layout.hit_test(position.x, position.y) {
+            MenuBarHit::Item(i) => {
+                if self.open_item == Some(i) {
+                    self.close(backend);
+                } else {
+                    self.close(backend);
+                    self.open_menu(i, backend, bar_rect);
+                }
+                return MenuEvent::StateChanged;
+            }
+            MenuBarHit::Bar => {
+                if self.open_item.is_some() {
+                    self.close(backend);
+                    return MenuEvent::StateChanged;
+                }
+                return MenuEvent::Ignored;
+            }
+            MenuBarHit::Outside => {}
+        }
+
+        if self.open_item.is_some() {
+            // Walk the submenu stack deepest-first so that a click on
+            // an item in a child popup doesn't fall through to the parent.
+            let stack = self.dropdown_stack(backend, bar_rect);
+            for (depth_idx, (ref menu, ref layout)) in stack.iter().enumerate().rev() {
+                match layout.hit_test(position.x, position.y) {
+                    ContextMenuHit::Item(ref id) => {
+                        // Resolve item_idx from the id.
+                        let item_idx_opt = layout
+                            .visible_items
+                            .iter()
+                            .find(|v| v.clickable && menu.items[v.item_idx].id.as_ref() == Some(id))
+                            .map(|v| v.item_idx);
+
+                        if let Some(item_idx) = item_idx_opt {
+                            if menu.items[item_idx].submenu.is_some() {
+                                // Trim any deeper submenus that were open, then open
+                                // this submenu (always open — clicking a submenu parent
+                                // re-opens even if already visible).
+                                self.submenu_path.truncate(depth_idx);
+                                self.submenu_selected.truncate(depth_idx);
+                                self.open_submenu(item_idx);
+                                return MenuEvent::StateChanged;
+                            } else {
+                                let id = id.clone();
+                                self.close(backend);
+                                return MenuEvent::Activated(id);
+                            }
+                        }
+                        return MenuEvent::Consumed;
+                    }
+                    ContextMenuHit::Inert => return MenuEvent::Consumed,
+                    ContextMenuHit::Empty => {
+                        // Click outside this depth — try shallower.
+                        continue;
+                    }
+                }
+            }
+
+            // Click outside all open menu levels → close.
+            self.close(backend);
+            return MenuEvent::StateChanged;
+        }
+        MenuEvent::Ignored
+    }
+
+    fn handle_mouse_moved(
+        &mut self,
+        position: crate::event::Point,
+        backend: &mut dyn Backend,
+        bar_rect: Rect,
+    ) -> MenuEvent {
+        let bar = self.build_menu_bar();
+        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+
+        if self.open_item.is_some() {
+            // Hovering a different top-level menu label → switch.
+            if let MenuBarHit::Item(i) = bar_layout.hit_test(position.x, position.y) {
+                if !bar.items[i].disabled && self.open_item != Some(i) {
+                    self.close(backend);
+                    self.open_menu(i, backend, bar_rect);
+                    return MenuEvent::StateChanged;
+                }
+            }
+
+            // Walk the stack shallowest-first to find the deepest level
+            // that the cursor is inside. When we find an item:
+            //   • Update the selection at that level.
+            //   • If it's a submenu parent, open its child (closing any
+            //     previously-open sibling submenu at the same depth).
+            //   • Close any submenus deeper than the matched level.
+            let stack = self.dropdown_stack(backend, bar_rect);
+            for (depth_idx, (ref menu, ref layout)) in stack.iter().enumerate() {
+                for vis in &layout.visible_items {
+                    if !vis.clickable {
+                        continue;
+                    }
+                    if position.x >= vis.bounds.x
+                        && position.x < vis.bounds.x + vis.bounds.width
+                        && position.y >= vis.bounds.y
+                        && position.y < vis.bounds.y + vis.bounds.height
+                    {
+                        let item_idx = vis.item_idx;
+                        let has_sub = menu.items[item_idx].submenu.is_some();
+
+                        // Update selection at this depth.
+                        let sel_changed = if depth_idx == 0 {
+                            let old = self.dropdown_selected;
+                            self.dropdown_selected = item_idx;
+                            old != item_idx
+                        } else {
+                            let sub_d = depth_idx - 1;
+                            let old = self.submenu_selected.get(sub_d).copied().unwrap_or(0);
+                            if let Some(s) = self.submenu_selected.get_mut(sub_d) {
+                                *s = item_idx;
+                            }
+                            old != item_idx
+                        };
+
+                        if has_sub {
+                            // Trim any deeper submenus and open this one.
+                            self.submenu_path.truncate(depth_idx);
+                            self.submenu_selected.truncate(depth_idx);
+                            self.open_submenu(item_idx);
+                            return MenuEvent::StateChanged;
+                        } else if self.submenu_path.len() > depth_idx {
+                            // Close deeper submenus when hovering a leaf.
+                            self.submenu_path.truncate(depth_idx);
+                            self.submenu_selected.truncate(depth_idx);
+                            return MenuEvent::StateChanged;
+                        } else if sel_changed {
+                            return MenuEvent::Consumed;
+                        } else {
+                            return MenuEvent::Ignored;
+                        }
+                    }
+                }
+            }
+            MenuEvent::Ignored
+        } else {
+            let new_focus = match bar_layout.hit_test(position.x, position.y) {
+                MenuBarHit::Item(i) if !bar.items[i].disabled => Some(i),
+                _ => None,
+            };
+            if new_focus != self.focused_item {
+                self.focused_item = new_focus;
+                MenuEvent::Consumed
+            } else {
+                MenuEvent::Ignored
+            }
+        }
+    }
+
+    fn handle_mouse_up(
+        &mut self,
+        position: crate::event::Point,
+        backend: &mut dyn Backend,
+        bar_rect: Rect,
+    ) -> MenuEvent {
+        if self.open_item.is_none() {
+            return MenuEvent::Ignored;
+        }
+
+        let bar = self.build_menu_bar();
+        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+
+        // Clicks landing on the menu bar itself (open/close/switch)
+        // are `MouseDown`'s job — leave them alone here.
+        if !matches!(
+            bar_layout.hit_test(position.x, position.y),
+            MenuBarHit::Outside
+        ) {
+            return MenuEvent::Ignored;
+        }
+
+        // Walk the open dropdown stack deepest-first. If the
+        // position lands inside any open level (item or inert
+        // region), that click was already handled by `MouseDown` —
+        // do nothing here to avoid double-activating.
+        let stack = self.dropdown_stack(backend, bar_rect);
+        for (_, layout) in stack.iter().rev() {
+            if !matches!(
+                layout.hit_test(position.x, position.y),
+                ContextMenuHit::Empty
+            ) {
+                return MenuEvent::Ignored;
+            }
+        }
+
+        // Outside the bar and every open dropdown level → close.
+        self.close(backend);
+        MenuEvent::StateChanged
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
