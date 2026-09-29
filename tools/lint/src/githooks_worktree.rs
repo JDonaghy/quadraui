@@ -1,10 +1,14 @@
-//! Integration tests for `.githooks/` — the versioned git-hooks bootstrap
-//! that makes the graphify knowledge graph usable from a *linked worktree*
-//! (#512, ported from claude-coordinator PRs #1613 / #1614).
+//! Checks for `.githooks/` — the versioned git-hooks bootstrap that makes
+//! the graphify knowledge graph usable from a *linked worktree* (#512,
+//! ported from claude-coordinator PRs #1613 / #1614).
 //!
-//! These drive the *real* hooks through *real* git: build a throwaway repo,
-//! copy in the actual `.githooks/` from this checkout, wire up
-//! `core.hooksPath`, and exercise `git worktree add` / `git checkout`.
+//! Ported from `quadraui/tests/githooks_worktree.rs` by #1110 — see this
+//! crate's `main.rs` module docs for why maintainer-workflow guards like this
+//! one no longer live in `quadraui/tests/`. Unlike the other two modules in
+//! this crate, these checks don't just read docs — they drive the *real*
+//! hooks through *real* git: build a throwaway repo, copy in the actual
+//! `.githooks/` from this checkout, wire up `core.hooksPath`, and exercise
+//! `git worktree add` / `git checkout`.
 //!
 //! Every "X does not happen" assertion here is paired, in the *same*
 //! worktree, with proof that the hook mechanism actually ran — two of the
@@ -17,24 +21,17 @@
 //!
 //! ── Unix-only, deliberately and visibly (#581) ─────────────────────────
 //!
-//! The whole file is `cfg(unix)`. `.githooks/post-checkout` is a POSIX shell
-//! script whose entire job is creating **symlinks**, and these tests assert on
-//! `fs::symlink_metadata(..).file_type().is_symlink()` and on mode `100755`.
-//! None of that has meaning on Windows, where the equivalent mechanism is an
-//! NTFS **junction** and symlink creation needs Developer Mode or elevation.
+//! This whole module is `cfg(unix)`. `.githooks/post-checkout` is a POSIX
+//! shell script whose entire job is creating **symlinks**, and these checks
+//! assert on `fs::symlink_metadata(..).file_type().is_symlink()` and on mode
+//! `100755`. None of that has meaning on Windows, where the equivalent
+//! mechanism is an NTFS **junction** and symlink creation needs Developer
+//! Mode or elevation.
 //!
 //! This is a recorded gap, not a dismissal: Windows worktree junctions are
 //! called out in quadraui#580 (and in claude-coordinator's CP-7). When that
 //! lands, the right move is a junction-aware `symlink_target` plus a
-//! `cfg(windows)` sibling of this suite — NOT deleting this gate.
-//!
-//! Gating the *whole file* rather than only the five tests that failed on
-//! `windows-latest` is the point. `worktree_add_git_status_is_empty` PASSED
-//! there — because the hook never fired, so `git status` was trivially clean.
-//! That is exactly the false pass the paragraph above warns about, arriving
-//! by a route #512 didn't anticipate: not an uncommitted `.githooks/`, but a
-//! platform where the hook cannot do anything in the first place. A green
-//! result from it on Windows is misinformation, so it does not get to run.
+//! `cfg(windows)` sibling of this module — NOT deleting this gate.
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -44,14 +41,7 @@ use std::process::{Command, Output};
 
 use tempfile::TempDir;
 
-/// Root of the actual quadraui checkout this test binary was built from —
-/// one level up from the `quadraui` crate's manifest dir.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("quadraui crate has a parent directory")
-        .to_path_buf()
-}
+use crate::common::repo_root;
 
 fn real_githooks_dir() -> PathBuf {
     repo_root().join(".githooks")
@@ -88,7 +78,7 @@ fn combined_output(out: &Output) -> String {
 /// Copies the actual `.githooks/` directory into `dest`, preserving the
 /// executable bit on the hooks themselves. That bit is exactly what's under
 /// test in `hooks_are_committed_executable` below — if the copy silently
-/// dropped it, every *other* test here would also fail (git ignores
+/// dropped it, every *other* check here would also fail (git ignores
 /// non-executable hooks), which is the point: they all depend on it.
 fn copy_real_githooks_into(dest: &Path) {
     let src = real_githooks_dir();
@@ -152,8 +142,7 @@ fn symlink_target(path: &Path) -> Option<PathBuf> {
 /// The checked-in hooks must be mode `100755` — git silently ignores a
 /// non-executable hook (an advice hint at most), so a mode regression
 /// disables the whole bootstrap with no error anywhere.
-#[test]
-fn hooks_are_committed_executable() {
+pub fn hooks_are_committed_executable() {
     // Reads THIS repo's actual index, not a copy — this is what ships.
     let root = repo_root();
     let out = run_ok(&root, &["ls-files", "-s", ".githooks"]);
@@ -191,8 +180,7 @@ fn hooks_are_committed_executable() {
 /// symlink (#512 / claude-coordinator#1617: an earlier version replaced the
 /// whole directory with a symlink, which required deleting the tracked
 /// `graphify-out/.gitignore` out from under git first).
-#[test]
-fn worktree_add_links_to_base_graph() {
+pub fn worktree_add_links_to_base_graph() {
     let tmp = setup_base_repo(Some("BASE-GRAPH-V1"));
     let base = tmp.path().join("base");
     let wt = tmp.path().join("wt");
@@ -236,8 +224,7 @@ fn worktree_add_links_to_base_graph() {
 /// machine-local, absolute-path symlink — both invisible to any check that
 /// only looks at what the symlink points to, which is why this specific
 /// assertion is the whole point of the issue.
-#[test]
-fn worktree_add_git_status_is_empty() {
+pub fn worktree_add_git_status_is_empty() {
     let tmp = setup_base_repo(Some("BASE-GRAPH-V1"));
     let base = tmp.path().join("base");
     let wt = tmp.path().join("wt");
@@ -264,8 +251,7 @@ fn worktree_add_git_status_is_empty() {
 /// `graphify-out/.gitignore` is tracked, so `git worktree add` materialises
 /// a non-empty stub directory. The hook must add symlinks alongside it
 /// without ever deleting or shadowing the tracked file.
-#[test]
-fn worktree_link_preserves_the_tracked_gitignore() {
+pub fn worktree_link_preserves_the_tracked_gitignore() {
     let tmp = setup_base_repo(Some("BASE-GRAPH-V1"));
     let base = tmp.path().join("base");
     let wt = tmp.path().join("wt");
@@ -302,8 +288,7 @@ fn worktree_link_preserves_the_tracked_gitignore() {
 /// #512 / claude-coordinator#1295: the per-entry symlinks must never cause
 /// worktree cleanup to reach into the base checkout — `git worktree remove`
 /// must leave the base graph (including nested files) untouched.
-#[test]
-fn worktree_remove_leaves_base_graph_intact() {
+pub fn worktree_remove_leaves_base_graph_intact() {
     let tmp = setup_base_repo(Some("BASE-GRAPH-V1"));
     let base = tmp.path().join("base");
     let wt = tmp.path().join("wt");
@@ -340,13 +325,12 @@ fn worktree_remove_leaves_base_graph_intact() {
 /// materialised from the tracked `.gitignore`, with no `graph.json` link
 /// inside it.
 ///
-/// Anti-vacuity: after asserting "no symlink", this test seeds a base graph
+/// Anti-vacuity: after asserting "no symlink", this check seeds a base graph
 /// and triggers another checkout *in the same worktree*, and requires the
 /// symlink to now appear. Without that second half, "no symlink" would pass
 /// identically whether the hook correctly declined to link, or never ran at
 /// all — which is exactly the failure mode #512 calls out.
-#[test]
-fn worktree_add_without_base_graph_makes_no_symlink() {
+pub fn worktree_add_without_base_graph_makes_no_symlink() {
     let tmp = setup_base_repo(None);
     let base = tmp.path().join("base");
     let wt = tmp.path().join("wt");
@@ -396,8 +380,7 @@ fn worktree_add_without_base_graph_makes_no_symlink() {
 /// A real graph already present in the worktree (e.g. from a manual
 /// `/graphify` run there) must never be clobbered by the base-graph
 /// symlink, even once the base checkout gains/updates its own graph.
-#[test]
-fn real_worktree_graph_is_never_clobbered() {
+pub fn real_worktree_graph_is_never_clobbered() {
     let tmp = setup_base_repo(Some("BASE-GRAPH-V1"));
     let base = tmp.path().join("base");
     let wt = tmp.path().join("wt");
