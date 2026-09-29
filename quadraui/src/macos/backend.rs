@@ -179,6 +179,13 @@ pub struct MacBackend {
     /// `draw_*` methods recover this for text rendering +
     /// measurement. Wrapped in `Option` so apps that don't paint
     /// text can skip the setup call.
+    ///
+    /// Issue #1117: every `draw_*`/`surface_*` call site that reads this
+    /// falls back to `chrome_font` — never `None` — when it's unset,
+    /// instead of `.expect()`-panicking. A host that forgets
+    /// `set_current_font` gets editor text rendered in the chrome font
+    /// rather than an abort; `set_current_font` still overrides it the
+    /// moment it's called, same as before.
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
@@ -1886,10 +1893,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_data_table called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_data_table requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -1909,10 +1913,7 @@ impl Backend for MacBackend {
         }
     }
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::data_table_layout requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         super::data_table::mac_data_table_layout(
             table,
             font,
@@ -1984,7 +1985,7 @@ impl Backend for MacBackend {
         let font = self
             .current_font
             .clone()
-            .expect("MacBackend::draw_form requires set_current_font");
+            .unwrap_or_else(|| self.chrome_font.clone());
         let theme = self.current_theme;
         let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
         let origin = Point::new(rect.x, rect.y);
@@ -2034,10 +2035,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_palette called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_palette requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -2081,10 +2079,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_settings_chrome called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_settings_chrome requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -2594,10 +2589,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_command_line_selection called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_command_line_selection requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width as f32;
@@ -2684,10 +2676,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tooltip called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_tooltip requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
@@ -2804,10 +2793,7 @@ impl Backend for MacBackend {
         tree.vscrollbar(rect, row_h as f32)
     }
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::form_layout requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         super::form::mac_form_layout(form, rect, self.current_line_height, font)
     }
     fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
@@ -2816,10 +2802,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_editor called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_editor requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
@@ -2832,10 +2815,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_message_list called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_message_list requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -2869,10 +2849,12 @@ impl Backend for MacBackend {
             !self.current_cg().is_null(),
             "MacBackend::draw_find_replace called outside enter_frame_scope",
         );
-        debug_assert!(
-            self.current_font.is_some(),
-            "MacBackend::draw_find_replace requires set_current_font",
-        );
+        // Issue #1117: no `set_current_font` precondition here anymore —
+        // `crate::primitives::find_replace::paint` reaches text rendering
+        // through `NativeSurface`, whose `current_font`-reading methods
+        // (`surface_measure_text`/`surface_draw_text_run*`) now fall back
+        // to `chrome_font` on their own (see those methods' docs) instead
+        // of requiring this precondition.
         let theme = self.current_theme;
         crate::primitives::find_replace::paint(panel, self, &theme);
     }
@@ -2882,10 +2864,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_completions called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_completions requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::completions::draw_completions(ctx, font, completions, layout, &theme) }
@@ -3023,10 +3002,7 @@ impl Backend for MacBackend {
         )
     }
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::toast_stack_layout requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         super::toast::mac_toast_stack_layout(
             stack,
             font,
@@ -3090,10 +3066,7 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_spinner called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_spinner requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -3101,10 +3074,7 @@ impl Backend for MacBackend {
         }
     }
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::spinner_layout requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
     }
     fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
@@ -3390,10 +3360,7 @@ impl Backend for MacBackend {
             "MacBackend::draw_minimap called outside enter_frame_scope",
         );
         self.register_zone(minimap.id.clone(), rect);
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::draw_minimap requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         let dpi_scale = self.viewport.scale as f64;
         // SAFETY: ctx is non-null inside the frame scope (checked above).
@@ -3871,10 +3838,7 @@ impl NativeSurface for MacBackend {
     }
 
     fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::surface_measure_text requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let (w, h) = super::text::measure_text(font, text);
         (w as f32, h as f32)
     }
@@ -3921,10 +3885,7 @@ impl NativeSurface for MacBackend {
             !ctx.is_null(),
             "MacBackend::surface_draw_text_run called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::surface_draw_text_run requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::text::draw_text(
@@ -3962,10 +3923,7 @@ impl NativeSurface for MacBackend {
             !ctx.is_null(),
             "MacBackend::surface_draw_text_run_styled called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .as_ref()
-            .expect("MacBackend::surface_draw_text_run_styled requires set_current_font");
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::text::draw_text_scaled_x(
@@ -4004,10 +3962,10 @@ impl NativeSurface for MacBackend {
         );
         let font = match role {
             crate::FontRole::Chrome => &self.chrome_font,
-            crate::FontRole::Editor => self.current_font.as_ref().expect(
-                "MacBackend::surface_draw_text_run_with_role requires set_current_font \
-                         for FontRole::Editor",
-            ),
+            // Issue #1117: falls back to `chrome_font` — never `None` —
+            // instead of panicking when a host draws `FontRole::Editor`
+            // text before calling `set_current_font`.
+            crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
         };
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -4329,6 +4287,29 @@ mod tests {
             backend.effective_menu_style(),
             crate::backend::ResolvedMenuStyle::Custom
         );
+    }
+
+    /// Issue #1117: a fresh `MacBackend` (no [`MacBackend::set_current_font`]
+    /// call) used to `.expect()`-panic the moment anything tried to read
+    /// `current_font` — `surface_measure_text` is the one such call site
+    /// that needs no live `enter_frame_scope`/`CGContextRef` to exercise,
+    /// so it's the cheapest regression coverage for the whole cluster:
+    /// every other site this issue touched falls back to the same
+    /// `chrome_font`, seeded at construction, that this measures through.
+    #[test]
+    fn surface_measure_text_falls_back_to_chrome_font_when_editor_font_unset() {
+        let backend = MacBackend::new();
+        let (w, h) = backend.surface_measure_text("A");
+        assert!(
+            w > 0.0 && h > 0.0,
+            "must measure through the always-`Some` chrome_font, not panic or report zero: \
+             got ({w}, {h})"
+        );
+
+        // And it must actually be measuring `chrome_font`, not some
+        // hardcoded stand-in — matches the real font's own answer.
+        let (expect_w, expect_h) = super::text::measure_text(&backend.chrome_font, "A");
+        assert_eq!((w, h), (expect_w as f32, expect_h as f32));
     }
 
     /// Regression test for #930: `install_menu_bar` used to

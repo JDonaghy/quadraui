@@ -549,7 +549,11 @@ impl TuiBackend {
 
     /// Get the current frame inside [`Self::enter_frame_scope`], or
     /// `None` outside it. Trait `draw_*` methods call this and bail
-    /// (panic in dev, silent return otherwise) if `None`.
+    /// (panic in dev, silent return otherwise) if `None`. Issue #1117:
+    /// this doc used to describe the intended contract while every call
+    /// site actually used `.expect()`, which panics in every build
+    /// profile, not just debug — the call sites now match this doc via
+    /// `debug_assert!` + a graceful per-method default instead.
     fn current_frame_mut(&mut self) -> Option<&mut Frame<'static>> {
         let ptr = self.current_frame_ptr.get();
         if ptr.is_null() {
@@ -1529,9 +1533,13 @@ impl Backend for TuiBackend {
     fn draw_focus_ring(&mut self, rect: QRect) {
         let theme = self.current_theme;
         let area = q_rect_to_ratatui(rect);
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_focus_ring called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_focus_ring called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
         // #492 C0 contract §5b: a chrome-only paint (no text of its own)
         // is only "observable" via a registered zone — mirrors
@@ -1675,16 +1683,28 @@ impl Backend for TuiBackend {
     // Implementations call into the public `crate::tui::draw_*` free
     // functions; this trait impl is the thin wrapper. The frame is
     // stashed by `enter_frame_scope`; the theme by `set_current_theme`.
-    // Calling these outside `enter_frame_scope` is a programmer error
-    // and panics in dev (the `expect` makes the boundary loud).
+    // Calling these outside `enter_frame_scope` is a programmer error: a
+    // `debug_assert!` makes it loud in dev builds, per
+    // `current_frame_mut`'s doc; release builds degrade instead of
+    // aborting (issue #1117) — a void method silently skips the paint, a
+    // layout-returning method falls back to its pure `*_layout`/
+    // `*_hits`-style twin (or an already-computed local `layout`) so a
+    // host that queries geometry still gets a real answer, and
+    // `draw_minimap`/`draw_image` report `painted: false`/`Unsupported`
+    // exactly as their "no rasteriser available" paths already do
+    // elsewhere.
 
     fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_tree called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tree called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_tree(frame.buffer_mut(), area, tree, &theme, nerd_fonts);
     }
 
@@ -1692,9 +1712,13 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_list called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_list called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
     }
 
@@ -1706,9 +1730,13 @@ impl Backend for TuiBackend {
     ) -> crate::DataTableLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_data_table called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_data_table called outside enter_frame_scope"
+            );
+            return self.data_table_layout(rect, table);
+        };
         crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme, hovered_idx)
     }
 
@@ -1760,9 +1788,13 @@ impl Backend for TuiBackend {
     fn draw_form(&mut self, rect: QRect, form: &Form) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_form called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_form called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_form(frame.buffer_mut(), area, form, &theme);
     }
 
@@ -1773,9 +1805,13 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_palette called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_palette called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_palette(frame.buffer_mut(), area, palette, &theme, nerd_fonts);
     }
 
@@ -1793,9 +1829,13 @@ impl Backend for TuiBackend {
     ) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_settings_chrome called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_settings_chrome called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_settings_chrome(
             frame.buffer_mut(),
             area,
@@ -1832,9 +1872,13 @@ impl Backend for TuiBackend {
         let layout = bar.layout(area.width as f32, 1.0, MIN_GAP_CELLS, |seg| {
             crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
         });
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_status_bar called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_status_bar called outside enter_frame_scope"
+            );
+            return layout;
+        };
         crate::tui::draw_status_bar(
             frame.buffer_mut(),
             area,
@@ -1930,9 +1974,15 @@ impl Backend for TuiBackend {
         // can't disambiguate tab N's target).
         self.tab_bar_layouts
             .insert(bar.id.clone(), (rect, layout.clone()));
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_tab_bar called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tab_bar called outside enter_frame_scope"
+            );
+            // `tab_bar_layout_icons` is the pure (no-frame) twin that
+            // resolves the identical `TabBarHits` geometry — issue #1117.
+            return self.tab_bar_layout_icons(rect, bar, icons);
+        };
         crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme)
     }
 
@@ -1989,9 +2039,13 @@ impl Backend for TuiBackend {
         );
         self.tab_bar_layouts
             .insert(bar.id.clone(), (rect, layout.clone()));
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_tab_bar_icons_layout called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tab_bar_icons_layout called outside enter_frame_scope"
+            );
+            return layout;
+        };
         #[allow(deprecated)] // discarded `TabBarHits` — issue #823
         let _ =
             crate::tui::draw_tab_bar_icons(frame.buffer_mut(), area, bar, icons, &layout, &theme);
@@ -2057,9 +2111,16 @@ impl Backend for TuiBackend {
         );
         self.tab_bar_layouts
             .insert(bar.id.clone(), (rect, layout.clone()));
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_tab_bar_with_chrome called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tab_bar_with_chrome called outside enter_frame_scope"
+            );
+            // `tab_bar_layout_with_chrome` is the pure (no-frame) twin
+            // that resolves the identical `TabBarHits` geometry,
+            // brackets included — issue #1117.
+            return self.tab_bar_layout_with_chrome(rect, bar, chrome);
+        };
         crate::tui::draw_tab_bar_with_chrome(frame.buffer_mut(), area, bar, chrome, &layout, &theme)
     }
 
@@ -2120,9 +2181,13 @@ impl Backend for TuiBackend {
         );
         self.tab_bar_layouts
             .insert(bar.id.clone(), (rect, layout.clone()));
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_tab_bar_with_chrome_layout called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tab_bar_with_chrome_layout called outside enter_frame_scope"
+            );
+            return layout;
+        };
         #[allow(deprecated)] // discarded `TabBarHits` — issue #823
         let _ = crate::tui::draw_tab_bar_with_chrome(
             frame.buffer_mut(),
@@ -2150,9 +2215,13 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_activity_bar called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_activity_bar called outside enter_frame_scope"
+            );
+            return self.activity_bar_layout(rect, bar);
+        };
         crate::tui::draw_activity_bar(
             frame.buffer_mut(),
             area,
@@ -2179,9 +2248,13 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope"
+            );
+            return self.activity_bar_layout(rect, bar);
+        };
         crate::tui::draw_activity_bar_with_style(
             frame.buffer_mut(),
             area,
@@ -2465,18 +2538,26 @@ impl Backend for TuiBackend {
     fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_terminal called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_terminal called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_terminal(frame.buffer_mut(), area, term, &theme);
     }
 
     fn draw_terminal_divider(&mut self, rect: QRect) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_terminal_divider called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_terminal_divider called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_terminal_divider(frame.buffer_mut(), area.x, area.y, area.height, &theme);
         // #492: the primitive takes no `WidgetId` of its own (there is at
         // most one divider on screen at a time), so register a fixed
@@ -2488,9 +2569,13 @@ impl Backend for TuiBackend {
 
     fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
         let area = q_rect_to_ratatui(rect);
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_solid_fill called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_solid_fill called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_solid_fill(frame.buffer_mut(), area, color);
         // #492: chrome-only paint (no text of its own) — only "observable"
         // via a registered zone, mirroring `draw_terminal_divider`'s
@@ -2505,18 +2590,26 @@ impl Backend for TuiBackend {
     fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_text_display called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_text_display called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_text_display(frame.buffer_mut(), area, td, &theme);
     }
 
     fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_command_line called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_command_line called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::command_line::draw_command_line(frame.buffer_mut(), area, cmd, &theme);
     }
 
@@ -2528,9 +2621,13 @@ impl Backend for TuiBackend {
     ) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_command_line_selection called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_command_line_selection called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::command_line::draw_command_line_selection(
             frame.buffer_mut(),
             area,
@@ -2565,9 +2662,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::text_input::TextInputLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_text_input called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_text_input called outside enter_frame_scope"
+            );
+            return self.text_input_layout(rect, ti);
+        };
         crate::tui::draw_text_input(frame.buffer_mut(), area, ti, &theme)
     }
 
@@ -2591,9 +2692,13 @@ impl Backend for TuiBackend {
         chrome: &crate::TooltipChrome,
     ) {
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_tooltip called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_tooltip called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_tooltip_with_chrome(frame.buffer_mut(), tooltip, layout, chrome, &theme);
         // #542: register the tooltip's own surface so a structural-parity
         // observer (`ConformanceDriver::inventory().zones()`) can see the
@@ -2619,10 +2724,18 @@ impl Backend for TuiBackend {
         // #455: see draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&menu.id);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_context_menu called outside enter_frame_scope");
-        crate::tui::draw_context_menu(frame.buffer_mut(), menu, layout, &theme);
+        // Issue #1117: the returned `Vec` is derived from `layout` (an
+        // argument, not frame state) below regardless of whether painting
+        // happens, so a missing frame only skips the paint, not the hit
+        // data a host still needs to route clicks.
+        if let Some(frame) = self.current_frame_mut() {
+            crate::tui::draw_context_menu(frame.buffer_mut(), menu, layout, &theme);
+        } else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_context_menu called outside enter_frame_scope"
+            );
+        }
         // TUI rasteriser doesn't return hit data — derive from layout.
         // The primitive's hit_test() is the canonical way; this Vec
         // is here for trait parity with GTK.
@@ -2647,10 +2760,16 @@ impl Backend for TuiBackend {
         // #455: see draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_dialog called outside enter_frame_scope");
-        crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
+        // Issue #1117: same rationale as `draw_context_menu` just above —
+        // the returned `Vec` comes from `layout`, not frame state.
+        if let Some(frame) = self.current_frame_mut() {
+            crate::tui::draw_dialog(frame.buffer_mut(), dialog, layout, &theme);
+        } else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_dialog called outside enter_frame_scope"
+            );
+        }
         // Derive button rects from the layout (TUI rasteriser doesn't
         // return them; the primitive owns the layout).
         layout
@@ -2670,9 +2789,13 @@ impl Backend for TuiBackend {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
         let nerd_fonts = self.nerd_fonts_enabled;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_multi_section_view called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_multi_section_view called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_multi_section_view(frame.buffer_mut(), area, view, &theme, nerd_fonts);
     }
 
@@ -2725,9 +2848,13 @@ impl Backend for TuiBackend {
     ) -> crate::backend::EditorPaintResult {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_editor called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_editor called outside enter_frame_scope"
+            );
+            return crate::backend::EditorPaintResult::default();
+        };
         let tui_result = crate::tui::draw_editor(frame.buffer_mut(), area, editor, &theme);
         // Cache for `render_frame` (quadraui#466) — `draw_editor` only sees
         // the buffer, not the `Frame`, so it can't call
@@ -2798,9 +2925,13 @@ impl Backend for TuiBackend {
     ) {
         let area = q_rect_to_ratatui(rect);
         let panel_bg = self.current_theme.background;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_message_list called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_message_list called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_message_list(frame.buffer_mut(), area, list, panel_bg);
     }
 
@@ -2810,9 +2941,13 @@ impl Backend for TuiBackend {
         layout: &crate::primitives::rich_text_popup::RichTextPopupLayout,
     ) {
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_rich_text_popup called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_rich_text_popup called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_rich_text_popup(frame.buffer_mut(), popup, layout, &theme);
     }
 
@@ -2828,9 +2963,13 @@ impl Backend for TuiBackend {
         // rect; downstream consumers that want a non-zero editor offset
         // should compose into a sub-rect.
         let editor_left = area.x;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_find_replace called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_find_replace called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_find_replace(frame.buffer_mut(), area, panel, &theme, editor_left);
     }
 
@@ -2840,9 +2979,13 @@ impl Backend for TuiBackend {
         layout: &crate::primitives::completions::CompletionsLayout,
     ) {
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_completions called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_completions called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_completions(frame.buffer_mut(), completions, layout, &theme);
     }
 
@@ -2853,9 +2996,13 @@ impl Backend for TuiBackend {
     ) {
         let theme = self.current_theme;
         let cell_bg = theme.background;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_scrollbar called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_scrollbar called outside enter_frame_scope"
+            );
+            return;
+        };
         // The standalone TUI scrollbar primitive paints from its own
         // `track` bounds; `rect` is unused (the primitive owns layout).
         // Forward-compat parameter for backends that need a clip rect.
@@ -2869,9 +3016,13 @@ impl Backend for TuiBackend {
 
     fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_drop_overlay called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_drop_overlay called outside enter_frame_scope"
+            );
+            return;
+        };
         crate::tui::draw_drop_overlay(frame.buffer_mut(), overlay, &theme);
         // #492: `DropOverlay` carries no `WidgetId` (there is at most one
         // overlay active at a time), so register a fixed chrome id at
@@ -2890,9 +3041,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::menu_bar::MenuBarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_menu_bar called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_menu_bar called outside enter_frame_scope"
+            );
+            return self.menu_bar_layout(rect, bar);
+        };
         crate::tui::draw_menu_bar(frame.buffer_mut(), area, bar, &theme)
     }
 
@@ -2908,9 +3063,14 @@ impl Backend for TuiBackend {
     fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_split called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_split called outside enter_frame_scope"
+            );
+            // No zone registration either — nothing was actually painted.
+            return self.split_layout(rect, split);
+        };
         let layout = crate::tui::draw_split(frame.buffer_mut(), area, split, &theme);
         // #492: `Split` paints a divider only — no text of its own — so a
         // registered zone is the only way this frame is attributable to
@@ -2932,9 +3092,14 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::split_tree::SplitTreeLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_split_tree called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_split_tree called outside enter_frame_scope"
+            );
+            // No zone registration either — nothing was actually painted.
+            return self.split_tree_layout(rect, tree);
+        };
         let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
         // #492: dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
@@ -2959,9 +3124,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::panel::PanelLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_panel called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_panel called outside enter_frame_scope"
+            );
+            return self.panel_layout(rect, panel);
+        };
         crate::tui::draw_panel(frame.buffer_mut(), area, panel, &theme)
     }
 
@@ -2981,9 +3150,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::toast::ToastStackLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_toast_stack called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_toast_stack called outside enter_frame_scope"
+            );
+            return self.toast_stack_layout(rect, stack);
+        };
         crate::tui::draw_toast_stack(frame.buffer_mut(), area, stack, &theme)
     }
 
@@ -3003,9 +3176,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::pipeline_view::PipelineViewLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_pipeline_view called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_pipeline_view called outside enter_frame_scope"
+            );
+            return self.pipeline_view_layout(rect, view);
+        };
         crate::tui::draw_pipeline_view(frame.buffer_mut(), area, view, &theme)
     }
 
@@ -3025,9 +3202,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::progress::ProgressBarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_progress called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_progress called outside enter_frame_scope"
+            );
+            return self.progress_layout(rect, bar);
+        };
         crate::tui::draw_progress(frame.buffer_mut(), area, bar, &theme)
     }
 
@@ -3047,9 +3228,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::spinner::SpinnerLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_spinner called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_spinner called outside enter_frame_scope"
+            );
+            return self.spinner_layout(rect, spinner);
+        };
         crate::tui::draw_spinner(frame.buffer_mut(), area, spinner, &theme)
     }
 
@@ -3069,9 +3254,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::command_center::CommandCenterLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_command_center called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_command_center called outside enter_frame_scope"
+            );
+            return self.command_center_layout(rect, cc);
+        };
         crate::tui::draw_command_center(frame.buffer_mut(), area, cc, &theme)
     }
 
@@ -3093,9 +3282,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::chart::ChartLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_chart called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_chart called outside enter_frame_scope"
+            );
+            return self.chart_layout(rect, chart);
+        };
         crate::tui::draw_chart(
             frame.buffer_mut(),
             area,
@@ -3123,9 +3316,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_toolbar_interactive called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_toolbar_interactive called outside enter_frame_scope"
+            );
+            return self.toolbar_layout(rect, bar);
+        };
         crate::tui::draw_toolbar(
             frame.buffer_mut(),
             area,
@@ -3155,9 +3352,13 @@ impl Backend for TuiBackend {
             (interaction.hovered(), interaction.pressed());
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_sidebar_panel called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_sidebar_panel called outside enter_frame_scope"
+            );
+            return self.sidebar_panel_layout(rect, panel);
+        };
         crate::tui::draw_sidebar_panel(
             frame.buffer_mut(),
             area,
@@ -3184,9 +3385,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::diff_view::DiffViewLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_diff_view called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_diff_view called outside enter_frame_scope"
+            );
+            return self.diff_view_layout(rect, view);
+        };
         crate::tui::draw_diff_view(frame.buffer_mut(), area, view, &theme)
     }
 
@@ -3197,9 +3402,13 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::board::BoardLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_board called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_board called outside enter_frame_scope"
+            );
+            return self.board_layout(rect, model);
+        };
         crate::tui::draw_board(frame.buffer_mut(), area, model, &theme)
     }
 
@@ -3218,9 +3427,18 @@ impl Backend for TuiBackend {
     ) -> crate::backend::MinimapPaintResult {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let frame = self
-            .current_frame_mut()
-            .expect("TuiBackend::draw_minimap called outside enter_frame_scope");
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_minimap called outside enter_frame_scope"
+            );
+            // Mirrors `MacBackend`'s pre-#802 `painted: false` report — the
+            // real layout, nothing rasterised, no zone registered.
+            return crate::backend::MinimapPaintResult {
+                layout: self.minimap_layout(rect, minimap),
+                painted: false,
+            };
+        };
         let layout = crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme);
         self.register_zone(minimap.id.clone(), rect);
         crate::backend::MinimapPaintResult {
@@ -3244,12 +3462,16 @@ impl Backend for TuiBackend {
     ) -> crate::backend::ImagePaintResult {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let result = {
-            let frame = self
-                .current_frame_mut()
-                .expect("TuiBackend::draw_image called outside enter_frame_scope");
-            crate::tui::draw_image(frame.buffer_mut(), area, image, &theme)
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_image called outside enter_frame_scope"
+            );
+            // Mirrors the win/macOS "no rasteriser" report (issue #924) —
+            // no zone registered either, since nothing was painted.
+            return crate::backend::ImagePaintResult::Unsupported;
         };
+        let result = crate::tui::draw_image(frame.buffer_mut(), area, image, &theme);
         self.register_zone(image.id.clone(), rect);
         result
     }
@@ -6283,6 +6505,122 @@ mod tests {
         assert_eq!(
             shim_layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0),
             ToastHit::Action(WidgetId::new("install")),
+        );
+    }
+
+    // ─── Issue #1117: setup-order panics degrade instead of aborting ────
+    //
+    // `.expect()` used to fire in every build profile, not just debug —
+    // `current_frame_mut`'s own doc claimed "panic in dev, silent return
+    // otherwise" while every real call site ignored that and panicked
+    // unconditionally. The fix routes through `debug_assert!` (loud in
+    // dev, matching every sibling "outside enter_frame_scope" contract
+    // elsewhere in this file/`gtk`/`macos`) plus a per-method graceful
+    // default. `cargo test`'s default profile has `debug_assertions`
+    // on, so the panic-in-dev half is exercised by an ordinary
+    // `#[should_panic]` test below; the release half — the actual
+    // behavioural change — needs `debug_assertions` off to reach the
+    // non-panicking branch at all, so those tests are gated
+    // `cfg(not(debug_assertions))` and verified with:
+    //   RUSTFLAGS="-C debug-assertions=off" cargo test --features tui \
+    //     -p quadraui --lib tui::backend::tests::draw_ -- --ignored
+    // (they aren't `--ignored`; that invocation is just illustrative —
+    // any `cargo test` run built with debug-assertions off runs them
+    // normally). They compile to nothing, and therefore never run,
+    // under this repo's ordinary `cargo test --features tui` gate.
+
+    fn empty_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("tree:empty"),
+            rows: Vec::new(),
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            style: crate::TreeStyle::default(),
+            has_focus: false,
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "TuiBackend::draw_tree called outside enter_frame_scope")]
+    fn draw_tree_outside_frame_scope_panics_loudly_in_dev() {
+        let mut backend = TuiBackend::new();
+        // No `enter_frame_scope` — `debug_assert!` must still catch this
+        // during development, exactly as the old `.expect()` did.
+        backend.draw_tree(QRect::new(0.0, 0.0, 10.0, 5.0), &empty_tree());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn draw_tree_outside_frame_scope_is_a_silent_no_op_in_release() {
+        let mut backend = TuiBackend::new();
+        // Must not panic — the whole point of #1117.
+        backend.draw_tree(QRect::new(0.0, 0.0, 10.0, 5.0), &empty_tree());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn draw_pipeline_view_outside_frame_scope_degrades_to_pure_layout() {
+        let mut backend = TuiBackend::new();
+        let view = crate::primitives::pipeline_view::PipelineView {
+            id: WidgetId::new("pipeline"),
+            stages: Vec::new(),
+            focused_stage: None,
+        };
+        let rect = QRect::new(0.0, 0.0, 40.0, 10.0);
+
+        let degraded = backend.draw_pipeline_view(rect, &view);
+        let pure = backend.pipeline_view_layout(rect, &view);
+        assert_eq!(
+            degraded, pure,
+            "a missing frame must fall back to exactly what the pure \
+             `pipeline_view_layout` twin would have computed"
+        );
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn draw_minimap_outside_frame_scope_reports_not_painted() {
+        let mut backend = TuiBackend::new();
+        let minimap = crate::primitives::minimap::Minimap {
+            id: WidgetId::new("minimap"),
+            lines: Vec::new(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 0,
+            total_buffer_lines: 0,
+        };
+        let rect = QRect::new(0.0, 0.0, 10.0, 20.0);
+
+        let result = backend.draw_minimap(rect, &minimap);
+        assert!(
+            !result.painted,
+            "no frame means nothing was actually rasterised"
+        );
+        assert_eq!(
+            result.layout,
+            backend.minimap_layout(rect, &minimap),
+            "the reported layout must still be the real geometry, not a stub"
+        );
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn draw_image_outside_frame_scope_reports_unsupported() {
+        let mut backend = TuiBackend::new();
+        let image = crate::primitives::image::Image {
+            id: WidgetId::new("image"),
+            source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
+            intrinsic_size: None,
+            fit: crate::primitives::image::ImageFit::Contain,
+            fallback_text: "[image]".to_string(),
+        };
+        let rect = QRect::new(0.0, 0.0, 10.0, 10.0);
+
+        assert_eq!(
+            backend.draw_image(rect, &image),
+            crate::backend::ImagePaintResult::Unsupported,
+            "mirrors the win/macOS \"no rasteriser available\" report (issue #924)"
         );
     }
 }
