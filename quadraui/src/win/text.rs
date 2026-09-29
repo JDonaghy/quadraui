@@ -473,6 +473,33 @@ fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE
     Ok(metrics)
 }
 
+/// Answer whether `family` is installed in the system font collection —
+/// [`crate::Backend::has_font_family`]'s Win-GUI implementation (issue
+/// #1024). Distinct from [`register_font_from_memory`]'s private,
+/// app-registered collection: this only ever consults
+/// `GetSystemFontCollection`, the same collection
+/// [`font_face_metrics`] resolves an editor/UI font family against, so
+/// this answers "did the user install this themselves" rather than
+/// "did the app bundle it".
+pub fn has_font_family(family: &str) -> WinResult<bool> {
+    let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+    let mut collection: Option<IDWriteFontCollection> = None;
+    unsafe { factory.GetSystemFontCollection(&mut collection, false)? };
+    // Same "documented to populate on Ok(())" caveat as
+    // `font_face_metrics` above — propagate rather than assume.
+    let collection = collection.ok_or_else(|| {
+        WinError::new(
+            E_UNEXPECTED,
+            "GetSystemFontCollection returned Ok(()) but left the collection unpopulated",
+        )
+    })?;
+
+    let mut index = 0u32;
+    let mut exists = BOOL(0);
+    unsafe { collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists)? };
+    Ok(exists.as_bool())
+}
+
 /// `IDWriteTextLayout::GetMetrics` for `text` laid out against `format`
 /// with an effectively unbounded box — `(width, height)` DIPs of the
 /// tightest box the text actually occupies. Used both for the

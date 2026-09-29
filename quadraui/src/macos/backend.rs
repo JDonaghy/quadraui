@@ -1175,6 +1175,17 @@ impl Backend for MacBackend {
         super::text::register_font_from_memory(bytes).map(|name| vec![name])
     }
 
+    /// Answers via [`super::text::make_font_exact`] (issue #1024): Core
+    /// Text substitutes Helvetica for an unknown family rather than
+    /// failing, so plain `CTFontCreateWithName` success can't mean
+    /// "installed" — `make_font_exact` already carries the "resolved
+    /// font's own name must equal what was asked" check this needs, the
+    /// same one [`Self::set_editor_font`] relies on. The probe size
+    /// (12pt) is arbitrary: family existence doesn't depend on it.
+    fn has_font_family(&self, family: &str) -> Option<bool> {
+        Some(super::text::make_font_exact(family, 12.0).is_some())
+    }
+
     /// Store `family` as the Nerd-Font (or other PUA-codepoint) fallback
     /// and, if [`Self::set_current_font`] already installed a font,
     /// re-apply it immediately via [`super::text::font_with_fallback`]
