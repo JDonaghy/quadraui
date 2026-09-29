@@ -23,7 +23,7 @@
 //! ```
 
 // ── Runner (quadraui::{tui,gtk}::run) ───────────────────────────────────
-pub use crate::runner::{AppLogic, Reaction};
+pub use crate::runner::{AppLogic, Reaction, StepOutcome};
 
 // ── Backend trait + capability query ────────────────────────────────────
 pub use crate::backend::{Backend, BackendCaps};

@@ -163,7 +163,7 @@ pub use progress::draw_progress;
 pub use rich_text_popup::{
     draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
 };
-pub use run::{run, run_with, RunConfig};
+pub use run::{run, run_with, GtkRunner, RunConfig, StepOutcome};
 // #811: `draw_scrollbar` is `#[deprecated]` — see `scrollbar::draw_scrollbar`'s
 // doc for why the shim exists and why re-exporting it here (rather than
 // dropping the re-export) is the point. `#[allow(deprecated)]` for the

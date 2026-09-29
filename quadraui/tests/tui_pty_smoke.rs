@@ -908,3 +908,54 @@ mod no_mouse {
         );
     }
 }
+
+// ─── tui_embedded: `TuiRunner::step`/`pump` non-blocking entry points (#1100) ──
+
+/// Black-box proof that a host driving `TuiRunner::pump` in its *own* loop
+/// (`examples/tui_embedded.rs`, instead of handing the process over to
+/// `quadraui::tui::run`) still gets a fully working, fully torn-down TUI
+/// session over a real pty: real raw-mode/alt-screen setup, real keyboard
+/// input, and — the part `TuiDriver`'s in-memory `TestBackend` can't touch
+/// at all — real terminal teardown once the app exits.
+///
+/// `SplitApp` is the same app `tui_split`/`tui_no_mouse` drive; the only
+/// variable this module isolates is the runner entry point (`run_with`'s
+/// internal loop vs. a host-owned loop calling `pump` directly), so a
+/// regression here can only be in `TuiRunner` itself, not in `SplitApp` or
+/// the shared `dispatch_event`/`render_frame` path both entry points funnel
+/// through.
+mod embedded_runner {
+    use super::*;
+
+    /// The embedded, host-driven loop renders, accepts real keyboard input
+    /// (the `]` resize key, the same Tier-1 gesture `no_mouse` exercises),
+    /// and exits cleanly (raw mode restored, process actually terminates)
+    /// on `q` — the same observable behaviour `tui_split`'s control case
+    /// gets from `quadraui::tui::run`.
+    #[test]
+    fn tui_embedded_keyboard_and_quit_roundtrip() {
+        let mut ex = PtyExample::spawn("tui_embedded", 100, 30);
+
+        assert!(
+            ex.wait_for("ratio: 50%", WAIT),
+            "tui_embedded did not render SplitApp's initial status bar over the pty \
+             (TuiRunner::new + the host's pump loop never painted a first frame); screen:\n{}",
+            ex.screen_text()
+        );
+
+        ex.send(b"]");
+        assert!(
+            ex.wait_for("ratio: 55%", WAIT),
+            "a real keypress did not reach SplitApp through TuiRunner::pump's dispatch path; \
+             screen:\n{}",
+            ex.screen_text()
+        );
+
+        ex.send(b"q");
+        assert!(
+            ex.wait_exit(WAIT),
+            "tui_embedded did not exit after 'q' — TuiRunner::finish's terminal teardown or the \
+             host's pump loop may be hanging"
+        );
+    }
+}

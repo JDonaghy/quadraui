@@ -156,6 +156,25 @@ impl Reaction {
     }
 }
 
+/// What happened during one non-blocking `step`/`pump` call — the
+/// single-iteration, host-owns-the-loop entry points issue #1100 adds
+/// alongside each backend's all-owning `run`/`run_with` (`crate::tui::run`'s
+/// [`crate::tui::TuiRunner`], `crate::gtk::run`'s `GtkRunner`). Defined once
+/// here, shared by every backend, the same way [`Reaction`] already is —
+/// see either runner type's doc for the full step/pump contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StepOutcome {
+    /// The app is still running. Call `step`/`pump` again whenever the
+    /// host's own loop is ready to give quadraui another turn.
+    Continue,
+    /// The app requested exit — or the runner was dropped, or a panic
+    /// unwound through it — and backend-specific teardown (TUI: terminal
+    /// mode restoration; GTK: window destruction) has already happened.
+    /// Calling `step`/`pump` again is safe (idempotent) but a no-op.
+    Exited,
+}
+
 /// Trait an app implements to plug into [`crate::tui::run`] /
 /// [`crate::gtk::run`].
 ///

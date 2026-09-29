@@ -195,7 +195,7 @@ impl<A: AppLogic> TuiVtDriver<A> {
     ///
     /// Consumes any pending [`crate::Backend::request_full_repaint`]
     /// request (issue #1037) the same way the live runner's
-    /// `tui::run::run_inner` frame loop and `TuiDriver::render` do — so a
+    /// `tui::run::TuiRunner::run_one` frame loop and `TuiDriver::render` do — so a
     /// `request_full_repaint()` call under this driver forces the same
     /// "next frame repaints every cell unconditionally" ANSI byte stream a
     /// real terminal session would receive, rather than being silently
@@ -791,7 +791,7 @@ mod tests {
 
     /// Issue #1037 (review follow-up): `TuiVtDriver::render` must consume a
     /// pending [`crate::Backend::request_full_repaint`] request the same
-    /// way `TuiDriver::render` and the live runner's `run_inner` frame loop
+    /// way `TuiDriver::render` and the live runner's `TuiRunner::run_one` frame loop
     /// do — `Terminal::clear()` before the next `paint_frame` — mirroring
     /// `tui::testing::tests::render_actually_clears_stale_content_outside_the_diff_cache`
     /// one layer down, over the real ANSI byte stream this driver exists to
