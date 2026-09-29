@@ -649,7 +649,7 @@ fn collect_post_resize_output(rx: &Receiver<Vec<u8>>) -> Vec<Vec<u8>> {
 /// a later expand — the public API exposes no formatted scrollback dump. The
 /// common case (the live prompt / on-screen command output) round-trips
 /// losslessly, which is the regression #437 chased.
-fn reflow_screen(parser: &mut vt100::Parser, rows: u16, cols: u16) {
+fn reflow_screen<CB: vt100::Callbacks>(parser: &mut vt100::Parser<CB>, rows: u16, cols: u16) {
     let (cur_rows, cur_cols) = parser.screen().size();
     if (rows, cols) == (cur_rows, cur_cols) {
         return;
@@ -702,7 +702,11 @@ fn reflow_screen(parser: &mut vt100::Parser, rows: u16, cols: u16) {
 /// Costs nothing in the common case: the scan is skipped entirely unless the
 /// width is actually shrinking, and no bytes are fed to the parser unless a
 /// glyph really does straddle the new boundary.
-fn set_size_without_orphaning_wide_cells(parser: &mut vt100::Parser, rows: u16, cols: u16) {
+fn set_size_without_orphaning_wide_cells<CB: vt100::Callbacks>(
+    parser: &mut vt100::Parser<CB>,
+    rows: u16,
+    cols: u16,
+) {
     let (cur_rows, cur_cols) = parser.screen().size();
     // Growing (or keeping) the width can never split a glyph; rows are dropped
     // whole, so a height change is safe too.
@@ -765,6 +769,37 @@ fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
     (cols.max(MIN_VT100_COLS), rows.max(MIN_VT100_ROWS))
 }
 
+/// [`vt100::Callbacks`] implementation that records OSC 0/1/2 window-title
+/// requests instead of discarding them.
+///
+/// vt100 0.16.2 reports these via callback methods rather than storing them
+/// on [`vt100::Screen`] itself (see `set_window_title`/`set_window_icon_name`
+/// in the upstream `Callbacks` trait), so [`TerminalSession`] carries one of
+/// these alongside its parser and reads it back after each [`poll`](TerminalSession::poll).
+///
+/// Tracks a dirty flag so callers can cheaply ask "did the title change
+/// since I last looked?" without diffing strings themselves — see
+/// [`TerminalSession::take_title_changed`].
+#[derive(Debug, Default)]
+struct TitleCallbacks {
+    /// Most recent window title set via OSC 0 or OSC 2. `None` until the
+    /// child program sets one.
+    title: Option<String>,
+    /// `true` when [`title`](Self::title) has changed since the last
+    /// [`TerminalSession::take_title_changed`] call.
+    changed: bool,
+}
+
+impl vt100::Callbacks for TitleCallbacks {
+    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
+        let title = String::from_utf8_lossy(title).into_owned();
+        if self.title.as_deref() != Some(title.as_str()) {
+            self.title = Some(title);
+            self.changed = true;
+        }
+    }
+}
+
 /// A single PTY-backed terminal session: PTY process, reader thread,
 /// vt100 parser, and scrollback ring buffer.
 ///
@@ -781,7 +816,11 @@ fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
 /// and live rows accordingly.
 pub struct TerminalSession {
     /// VT100 screen parser — always at `scrollback = 0` (live view).
-    parser: vt100::Parser,
+    ///
+    /// Carries a [`TitleCallbacks`] so OSC 0/1/2 window-title requests are
+    /// captured; read back via [`title()`](Self::title) /
+    /// [`take_title_changed()`](Self::take_title_changed).
+    parser: vt100::Parser<TitleCallbacks>,
     /// Write half of the PTY master — sends keyboard input to the shell.
     writer: Box<dyn Write + Send>,
     /// PTY master — kept alive for `resize()` calls (SIGWINCH).
@@ -894,7 +933,7 @@ impl TerminalSession {
         // 1 000-line internal vt100 scrollback — used only to read back
         // the rows that just scrolled off the live screen into `history`.
         // We never call `set_scrollback()` for user-facing scrolling.
-        let parser = vt100::Parser::new(rows, cols, 1000);
+        let parser = vt100::Parser::new_with_callbacks(rows, cols, 1000, TitleCallbacks::default());
 
         Ok(Self {
             parser,
@@ -992,6 +1031,35 @@ impl TerminalSession {
     /// first if you only need a boolean; this method returns the actual numeric code.
     pub fn exit_code(&self) -> Option<u32> {
         self.exit_code
+    }
+
+    // ── Window title (OSC 0/1/2) ─────────────────────────────────────────────
+
+    /// The most recent window title set by the child program via an OSC 0 or
+    /// OSC 2 escape sequence (e.g. `vim`, `tmux`, or a shell's own prompt
+    /// hook), or `None` if it has never set one.
+    ///
+    /// This is a plain accessor — it does not consume the change. Backends
+    /// that want to react only when the title actually changes (e.g. to set
+    /// a native window title once per change rather than every frame)
+    /// should use [`take_title_changed`](Self::take_title_changed) instead.
+    ///
+    /// Kept as an additive accessor rather than a `UiEvent` variant so
+    /// non-`#[non_exhaustive]` consumers (`coord-tui`, `vimcode`) don't need
+    /// to add a match arm — see issue #339.
+    pub fn title(&self) -> Option<&str> {
+        self.parser.callbacks().title.as_deref()
+    }
+
+    /// `true` exactly once per title change: returns whether
+    /// [`title()`](Self::title) has changed since the last call to this
+    /// method, clearing the dirty flag as a side effect.
+    ///
+    /// Call this once per [`poll()`](Self::poll)-driven frame; a caller
+    /// (e.g. the GTK runner) can use it to cheaply gate a native window
+    /// title update instead of setting it on every frame.
+    pub fn take_title_changed(&mut self) -> bool {
+        std::mem::take(&mut self.parser.callbacks_mut().changed)
     }
 
     /// Returns `true` when the cursor should be rendered visible.
@@ -3186,6 +3254,51 @@ mod tests {
             poll_until(&mut sess, 5000, |s| !s.bracketed_paste_enabled()),
             "bracketed paste should be disabled after the child emits ESC[?2004l"
         );
+
+        sess.send_str("exit\n");
+    }
+
+    /// [`TerminalSession::title`] tracks OSC 0/OSC 2 window-title requests
+    /// (quadraui #339), and [`TerminalSession::take_title_changed`] is a
+    /// one-shot dirty flag consumed by the read.
+    #[test]
+    #[cfg(unix)]
+    fn title_tracks_osc_0_and_take_title_changed_is_one_shot() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+
+        // No title until the child sets one.
+        assert_eq!(sess.title(), None);
+        assert!(!sess.take_title_changed());
+
+        // OSC 0 sets the window title (`\033]0;<text>\007`) — same sequence
+        // vim/tmux/shell prompt hooks emit. `\033` is a POSIX printf octal
+        // escape.
+        sess.send_str("printf '\\033]0;hello-quadraui\\007'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.title() == Some("hello-quadraui")),
+            "title() should track the child's OSC 0 sequence"
+        );
+
+        // The dirty flag fires exactly once per change...
+        assert!(
+            sess.take_title_changed(),
+            "take_title_changed should report the change once"
+        );
+        // ...and is consumed by the read.
+        assert!(
+            !sess.take_title_changed(),
+            "take_title_changed should not re-fire until the title changes again"
+        );
+
+        // Re-setting to a *different* title dirties it again.
+        sess.send_str("printf '\\033]2;second-title\\007'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.title() == Some("second-title")),
+            "title() should track a later OSC 2 sequence too"
+        );
+        assert!(sess.take_title_changed());
 
         sess.send_str("exit\n");
     }
