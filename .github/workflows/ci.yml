@@ -24,6 +24,28 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  repo-lint:
+    # #1110: maintainer-workflow guards about *this repo's own* CLAUDE.md/
+    # ci.yml wording, `.githooks/` worktree behaviour, and example-manifest
+    # hygiene used to live as `quadraui/tests/{quality_gate_docs,
+    # downstream_gate_docs,githooks_worktree,example_manifest}.rs` — plain
+    # `#[test]` fns auto-discovered by `cargo test`, so they ran on *every*
+    # `cargo test` in the `quadraui` crate, including an outside
+    # contributor's very first one on a fork. A CLAUDE.md wording drift that
+    # says nothing about their diff failed their build anyway. `tools/lint`
+    # (crate `quadraui-repo-lint`) moves the same assertions into a plain
+    # binary with no `#[test]` functions calling into repo policy, so
+    # `cargo test` (at any scope, by anyone) no longer executes them — this
+    # job is what still enforces them, the same way `example-coverage` below
+    # runs `tools/example_coverage.py` explicitly rather than as a test.
+    name: repo-lint (maintainer-workflow guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p quadraui-repo-lint
+
   patch-guard:
     # #795: quadraui used to carry a `[patch.crates-io]` stanza (root
     # Cargo.toml) vendoring a locally-patched vt100 0.16.2 to loosen its

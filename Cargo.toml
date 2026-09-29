@@ -1,5 +1,5 @@
 [workspace]
-members = ["quadraui", "kubeui-core", "kubeui", "kubeui-gtk"]
+members = ["quadraui", "kubeui-core", "kubeui", "kubeui-gtk", "tools/lint"]
 resolver = "2"
 
 [workspace.package]

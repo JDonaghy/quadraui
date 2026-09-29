@@ -2,7 +2,11 @@
 //! an explicit `[[example]]` entry in `quadraui/Cargo.toml` whose
 //! `required-features` names the backend it actually calls into (#595).
 //!
-//! Why this is a *test* and not a review checklist: cargo's example
+//! Ported from `quadraui/tests/example_manifest.rs` by #1110 — see this
+//! crate's `main.rs` module docs for why maintainer-workflow guards like this
+//! one no longer live in `quadraui/tests/`.
+//!
+//! Why this is a *check* and not a review checklist: cargo's example
 //! autodiscovery is silently permissive. Drop `examples/gtk_foo.rs` into the
 //! tree with no `[[example]]` stanza and cargo happily picks it up — with
 //! **no** `required-features` — so `cargo test --features tui` tries to
@@ -21,20 +25,17 @@
 //!   "demos are mandatory") sees nothing — the mismatch only bites the
 //!   *other* backend's job.
 //!
-//! This test reads the real manifest and the real directory listing, so it
-//! fails at the moment the pair is added, in whichever feature set the
-//! worker happened to run.
+//! This check reads the real manifest and the real directory listing, so it
+//! fails at the moment the pair is added, in whichever feature set CI
+//! happens to run.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// The `quadraui` crate root — where `Cargo.toml` and `examples/` live.
-fn crate_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
+use crate::common::quadraui_dir;
 
-/// One `[[example]]` stanza, reduced to the fields this test cares about.
+/// One `[[example]]` stanza, reduced to the fields this check cares about.
 #[derive(Debug, Default)]
 struct ExampleEntry {
     name: String,
@@ -136,12 +137,12 @@ fn required_backend_for(file: &str) -> Option<&'static str> {
 }
 
 fn entries_by_path() -> BTreeMap<String, ExampleEntry> {
-    let manifest = fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+    let manifest = fs::read_to_string(quadraui_dir().join("Cargo.toml")).expect("read Cargo.toml");
     let entries = parse_example_entries(&manifest);
     assert!(
         !entries.is_empty(),
         "parsed zero [[example]] stanzas out of quadraui/Cargo.toml — the \
-         parser in this test has drifted from the manifest format, so every \
+         parser in this check has drifted from the manifest format, so every \
          other assertion here would pass vacuously"
     );
     let mut by_path = BTreeMap::new();
@@ -159,10 +160,9 @@ fn entries_by_path() -> BTreeMap<String, ExampleEntry> {
 /// The regression #595 hit: a new `examples/*.rs` with no `[[example]]`
 /// stanza is autodiscovered with no `required-features` and compiled under
 /// every feature set.
-#[test]
-fn every_example_file_has_a_manifest_entry() {
+pub fn every_example_file_has_a_manifest_entry() {
     let by_path = entries_by_path();
-    let missing: Vec<String> = example_files(&crate_root())
+    let missing: Vec<String> = example_files(&quadraui_dir())
         .into_iter()
         .filter(|f| !by_path.contains_key(f))
         .collect();
@@ -182,12 +182,11 @@ fn every_example_file_has_a_manifest_entry() {
 /// Every stanza must actually gate on its backend — an entry that exists but
 /// declares no `required-features` (or the wrong one) fails identically to
 /// having no entry at all.
-#[test]
-fn every_example_entry_requires_its_backend_feature() {
+pub fn every_example_entry_requires_its_backend_feature() {
     let by_path = entries_by_path();
     let mut problems = Vec::new();
 
-    for file in example_files(&crate_root()) {
+    for file in example_files(&quadraui_dir()) {
         let Some(entry) = by_path.get(&file) else {
             continue; // reported by every_example_file_has_a_manifest_entry
         };
@@ -216,12 +215,17 @@ fn every_example_entry_requires_its_backend_feature() {
     );
 }
 
-/// Anti-vacuity + parser sanity: the stanza shape this test relies on is the
-/// one the manifest actually uses, and a missing/ungated stanza is really
-/// detected rather than skipped.
-#[test]
-fn parser_detects_missing_and_ungated_entries() {
-    let manifest = r#"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Anti-vacuity + parser sanity: the stanza shape this check relies on is
+    /// the one the manifest actually uses, and a missing/ungated stanza is
+    /// really detected rather than skipped. Pure logic, no filesystem —
+    /// stays a `#[test]` unlike the two `pub fn` checks above.
+    #[test]
+    fn parser_detects_missing_and_ungated_entries() {
+        let manifest = r#"
 [package]
 name = "demo"
 
@@ -242,41 +246,42 @@ required-features = ["tui", "terminal"]
 [dev-dependencies]
 serde_json = "1.0"
 "#;
-    let entries = parse_example_entries(manifest);
-    assert_eq!(entries.len(), 3, "parsed: {entries:?}");
+        let entries = parse_example_entries(manifest);
+        assert_eq!(entries.len(), 3, "parsed: {entries:?}");
 
-    assert_eq!(entries[0].name, "tui_ok");
-    assert_eq!(entries[0].path, "examples/tui_ok.rs");
-    assert_eq!(entries[0].required_features, vec!["tui".to_string()]);
+        assert_eq!(entries[0].name, "tui_ok");
+        assert_eq!(entries[0].path, "examples/tui_ok.rs");
+        assert_eq!(entries[0].required_features, vec!["tui".to_string()]);
 
-    // The exact shape #595 shipped: a stanza with no feature gate at all.
-    assert!(entries[1].required_features.is_empty());
-    assert!(!entries[1]
-        .required_features
-        .iter()
-        .any(|f| f == required_backend_for("examples/gtk_ungated.rs").unwrap()));
+        // The exact shape #595 shipped: a stanza with no feature gate at all.
+        assert!(entries[1].required_features.is_empty());
+        assert!(!entries[1]
+            .required_features
+            .iter()
+            .any(|f| f == required_backend_for("examples/gtk_ungated.rs").unwrap()));
 
-    // Multi-feature lists parse as lists, not as one blob.
-    assert_eq!(
-        entries[2].required_features,
-        vec!["tui".to_string(), "terminal".to_string()]
-    );
+        // Multi-feature lists parse as lists, not as one blob.
+        assert_eq!(
+            entries[2].required_features,
+            vec!["tui".to_string(), "terminal".to_string()]
+        );
 
-    // A trailing `[dev-dependencies]` table must not leak keys into the last
-    // stanza.
-    assert_eq!(entries[2].path, "examples/tui_terminal.rs");
+        // A trailing `[dev-dependencies]` table must not leak keys into the last
+        // stanza.
+        assert_eq!(entries[2].path, "examples/tui_terminal.rs");
 
-    assert_eq!(
-        required_backend_for("examples/msv_sc_panel.rs"),
-        Some("tui")
-    );
-    assert_eq!(
-        required_backend_for("examples/macos_demo.rs"),
-        Some("macos")
-    );
-    // #19 added the first `win_*` example. Without this arm the prefix fell
-    // through to `None`, which only asserts "some feature is declared" — a
-    // `win_*` example gated on `["tui"]` would have passed.
-    assert_eq!(required_backend_for("examples/win_demo.rs"), Some("win"));
-    assert_eq!(required_backend_for("examples/whatever.rs"), None);
+        assert_eq!(
+            required_backend_for("examples/msv_sc_panel.rs"),
+            Some("tui")
+        );
+        assert_eq!(
+            required_backend_for("examples/macos_demo.rs"),
+            Some("macos")
+        );
+        // #19 added the first `win_*` example. Without this arm the prefix fell
+        // through to `None`, which only asserts "some feature is declared" — a
+        // `win_*` example gated on `["tui"]` would have passed.
+        assert_eq!(required_backend_for("examples/win_demo.rs"), Some("win"));
+        assert_eq!(required_backend_for("examples/whatever.rs"), None);
+    }
 }

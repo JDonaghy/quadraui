@@ -2852,6 +2852,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "quadraui-repo-lint"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

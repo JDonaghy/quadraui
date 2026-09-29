@@ -3,8 +3,12 @@
 //! *Downstream consumers* section says, and must keep the three properties
 //! CLAUDE.md calls load-bearing.
 //!
-//! Why this is a *test* and not a review checklist, exactly as with
-//! `quality_gate_docs.rs`: that job's failure mode is silence. Every one of
+//! Ported from `quadraui/tests/downstream_gate_docs.rs` by #1110 — see this
+//! crate's `main.rs` module docs for why maintainer-workflow guards like this
+//! one no longer live in `quadraui/tests/`.
+//!
+//! Why this is a *check* and not a review checklist, exactly as with
+//! `quality_gate_docs`: that job's failure mode is silence. Every one of
 //! its checks is `continue-on-error: true` by design (a consumer may be red
 //! for its own reasons), so the job's own conclusion is computed by a final
 //! `Evaluate` step from step outcomes. A step that never runs — because it
@@ -16,7 +20,7 @@
 //! directory that still exists in that repo but now holds only
 //! `tests/acceptance/`.
 //!
-//! **What this test cannot do:** notice that a consumer moved. Nothing in
+//! **What this check cannot do:** notice that a consumer moved. Nothing in
 //! this repo knows that. What it *can* do is stop ci.yml and CLAUDE.md from
 //! disagreeing about who the consumers are and how they are checked, so
 //! that when a human or agent updates one, the other cannot silently rot —
@@ -25,15 +29,8 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
 
-/// Repo root — `quadraui/`'s parent, where `CLAUDE.md` and `.github/` live.
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("quadraui crate dir always has a parent (the repo root)")
-        .to_path_buf()
-}
+use crate::common::repo_root;
 
 fn ci_yml() -> String {
     fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
@@ -46,7 +43,7 @@ fn claude_md() -> String {
 
 /// The `downstream:` job's own lines, from its key to the next job key at
 /// the same (4-space) indent, or EOF. Line-based rather than YAML-parsed on
-/// purpose: this crate has no YAML dev-dependency, and the properties below
+/// purpose: this crate has no YAML dependency, and the properties below
 /// are all textual anyway.
 fn downstream_job(ci: &str) -> Vec<&str> {
     let mut lines = Vec::new();
@@ -71,7 +68,7 @@ fn downstream_job(ci: &str) -> Vec<&str> {
         "no `downstream:` job found in ci.yml — it was renamed or removed. \
          That job is the only thing standing between a breaking `pub` change \
          and two consumers' CI (CLAUDE.md, *Downstream consumers*); fix this \
-         parser or restore the job rather than deleting this test."
+         parser or restore the job rather than deleting this check."
     );
     lines
 }
@@ -92,8 +89,7 @@ fn consumer_repos(text: &str) -> BTreeSet<String> {
     found
 }
 
-#[test]
-fn downstream_job_and_claude_md_name_the_same_consumers() {
+pub fn downstream_job_and_claude_md_name_the_same_consumers() {
     let ci = ci_yml();
     let job: String = downstream_job(&ci).join("\n");
 
@@ -131,8 +127,7 @@ fn downstream_job_and_claude_md_name_the_same_consumers() {
     );
 }
 
-#[test]
-fn downstream_job_keeps_its_three_load_bearing_properties() {
+pub fn downstream_job_keeps_its_three_load_bearing_properties() {
     let ci = ci_yml();
     let lines = downstream_job(&ci);
     let job: String = lines.join("\n");

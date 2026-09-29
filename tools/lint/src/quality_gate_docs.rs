@@ -7,28 +7,18 @@
 //! have to be copied by hand at all, and which must therefore keep setting
 //! all of them and keep running the command the doc says it runs.
 //!
+//! Ported from `quadraui/tests/quality_gate_docs.rs` by #1110: this is a
+//! maintainer-workflow guard about *this repo's own* docs/CI wording, not
+//! about quadraui the library, so an outside contributor's ordinary
+//! `cargo test` on the `quadraui` crate should never fail because of it. See
+//! this crate's `main.rs` module docs for the full rationale.
+//!
 //! The Win-GUI checks below read `quadraui/docs/TESTING.md` rather than the
 //! repo-root `CLAUDE.md` deliberately: CLAUDE.md is the repo's own
 //! coordinator-owned rulebook (only the coordinator edits it — see
 //! CLAUDE.md's own "Development Workflow" section), so the authoritative,
 //! worker-editable copy of this command lives in TESTING.md instead. Keep
 //! it that way rather than pointing these assertions back at CLAUDE.md.
-//!
-//! Why this is a *test* and not a review checklist: the gate block is the
-//! first thing every agent and every human copies before committing, and it
-//! is pure prose — nothing compiles it, so it rots silently and is still
-//! trusted while it rots.
-//!
-//! That already cost real time. CLAUDE.md documented a bare
-//! `cargo test --features tui` at the workspace root long after ci.yml had
-//! moved to `cargo test --features tui --workspace --exclude kubeui-gtk`.
-//! The bare form selects *every* workspace member, so it drags in
-//! `kubeui-gtk` → `gtk4` → `glib-sys` → `pkg-config`. On any machine
-//! without pkg-config and the GTK4 `-dev` packages that dies in a build
-//! script before compiling a single line of quadraui — a hard failure that
-//! says nothing at all about the diff under test. Issue #19's smoke test
-//! was reported failing twice for exactly that reason while the code was
-//! green the whole time.
 //!
 //! The invariant is deliberately one-directional: every `cargo` line in
 //! CLAUDE.md's gate must appear in ci.yml, but *not* the reverse. ci.yml
@@ -38,21 +28,14 @@
 //! into a forced CLAUDE.md edit, which is not the failure being guarded.
 
 use std::fs;
-use std::path::PathBuf;
 
-/// Repo root — `quadraui/`'s parent, where `CLAUDE.md` and `.github/` live.
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("quadraui crate dir always has a parent (the repo root)")
-        .to_path_buf()
-}
+use crate::common::repo_root;
 
 /// `quadraui/docs/TESTING.md` — the worker-editable home of the Win-GUI
 /// `cargo xwin test` command (see this file's module docs for why this is
 /// not `CLAUDE.md`).
 fn testing_md() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/TESTING.md");
+    let path = crate::common::quadraui_dir().join("docs/TESTING.md");
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()))
 }
 
@@ -96,8 +79,7 @@ fn documented_gate_commands(claude_md: &str) -> Vec<String> {
     commands
 }
 
-#[test]
-fn claude_md_quality_gate_commands_are_all_run_by_ci() {
+pub fn claude_md_quality_gate_commands_are_all_run_by_ci() {
     let root = repo_root();
     let claude_md =
         fs::read_to_string(root.join("CLAUDE.md")).expect("CLAUDE.md exists at repo root");
@@ -111,7 +93,7 @@ fn claude_md_quality_gate_commands_are_all_run_by_ci() {
     let documented = documented_gate_commands(&claude_md);
 
     // Guard the parser itself: if the heading is ever renamed or the fence
-    // reformatted, this test must fail loudly rather than vacuously pass on
+    // reformatted, this check must fail loudly rather than vacuously pass on
     // an empty command list.
     assert!(
         documented.len() >= 6,
@@ -137,8 +119,7 @@ fn claude_md_quality_gate_commands_are_all_run_by_ci() {
     );
 }
 
-#[test]
-fn claude_md_quality_gate_never_recommends_a_bare_workspace_test() {
+pub fn claude_md_quality_gate_never_recommends_a_bare_workspace_test() {
     let claude_md = fs::read_to_string(repo_root().join("CLAUDE.md")).expect("CLAUDE.md exists");
     let documented = documented_gate_commands(&claude_md);
 
@@ -230,8 +211,7 @@ const REQUIRED_XWIN_TEST_ENV: &[(&str, &str)] = &[
     ),
 ];
 
-#[test]
-fn testing_md_win_gui_test_command_carries_every_required_env_var() {
+pub fn testing_md_win_gui_test_command_carries_every_required_env_var() {
     let testing_md = testing_md();
     let invocations = bash_fenced_invocations(&testing_md);
 
@@ -303,8 +283,7 @@ fn scripted_win_test_command(script: &str) -> Option<String> {
 /// same list the `docs/TESTING.md` assertion uses, so the doc and the script
 /// cannot drift apart: adding a fourth trap to `REQUIRED_XWIN_TEST_ENV` fails
 /// both until both are updated.
-#[test]
-fn win_test_script_sets_every_required_env_var() {
+pub fn win_test_script_sets_every_required_env_var() {
     let script = win_test_script();
 
     for (var, consequence) in REQUIRED_XWIN_TEST_ENV {
@@ -331,8 +310,7 @@ fn win_test_script_sets_every_required_env_var() {
 /// *same* cargo invocation. If they diverge, the doc stops describing the
 /// script and one of the two silently tests something else (a different
 /// target triple, a different feature set, a different package).
-#[test]
-fn win_test_script_and_testing_md_run_the_same_cargo_command() {
+pub fn win_test_script_and_testing_md_run_the_same_cargo_command() {
     let documented = bash_fenced_invocations(&testing_md())
         .iter()
         .find_map(|c| cargo_xwin_test_tail(c))
@@ -360,25 +338,31 @@ fn win_test_script_and_testing_md_run_the_same_cargo_command() {
     );
 }
 
-/// A wrapper nobody can execute is a wrapper nobody uses. `cfg(unix)` because
-/// this test target is also compiled and run for `x86_64-pc-windows-msvc`
-/// (that is the very run this script drives), where the mode bits are absent
-/// and meaningless.
-#[test]
-#[cfg(unix)]
-fn win_test_script_is_executable() {
-    use std::os::unix::fs::PermissionsExt;
+/// A wrapper nobody can execute is a wrapper nobody uses. Skipped outside
+/// unix at run time (rather than `#[cfg(unix)]`-compiled-out, since this is a
+/// plain function, not a `#[test]`): the mode bits this checks are meaningless
+/// on Windows, and this binary is not restricted to any one host OS the way
+/// the `#[cfg(unix)]` test file it replaces was.
+pub fn win_test_script_is_executable() {
+    if !cfg!(unix) {
+        println!("  (skipped: {WIN_TEST_SCRIPT}'s executable bit only has meaning on unix)");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
 
-    let path = repo_root().join(WIN_TEST_SCRIPT);
-    let mode = fs::metadata(&path)
-        .unwrap_or_else(|e| panic!("{WIN_TEST_SCRIPT} exists: {e}"))
-        .permissions()
-        .mode();
+        let path = repo_root().join(WIN_TEST_SCRIPT);
+        let mode = fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("{WIN_TEST_SCRIPT} exists: {e}"))
+            .permissions()
+            .mode();
 
-    assert!(
-        mode & 0o111 != 0,
-        "{WIN_TEST_SCRIPT} is not executable (mode {mode:o}); docs/TESTING.md \
-         tells the reader to run `{WIN_TEST_SCRIPT}` directly. Restore the bit \
-         with `git update-index --chmod=+x {WIN_TEST_SCRIPT}`."
-    );
+        assert!(
+            mode & 0o111 != 0,
+            "{WIN_TEST_SCRIPT} is not executable (mode {mode:o}); docs/TESTING.md \
+             tells the reader to run `{WIN_TEST_SCRIPT}` directly. Restore the bit \
+             with `git update-index --chmod=+x {WIN_TEST_SCRIPT}`."
+        );
+    }
 }
