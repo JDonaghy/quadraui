@@ -207,6 +207,25 @@ pub fn draw_editor(
             CursorShape::Block => {
                 let color = bg.blend(theme.cursor, theme.cursor_normal_alpha as f64);
                 let _ = fill_rect(target, Rect::new(x, y, cell_width, line_height), color);
+                // Re-paint the glyph under the cursor in background
+                // colour so it reads against the cursor fill — mirrors
+                // `macos::editor::draw_editor`'s `CursorShape::Block` arm
+                // (issue #1197). `cursor.pos.col` indexes the raw
+                // (unscrolled) buffer line, matching `CursorPos::col`'s
+                // doc; the glyph is painted back at the same scrolled
+                // screen `(x, y)` the block fill just used.
+                if let Some(line) = editor.lines.get(cursor.pos.view_line) {
+                    let raw = line.raw_text.trim_end_matches('\n');
+                    if let Some(ch) = raw.chars().nth(cursor.pos.col) {
+                        let ch = ch.to_string();
+                        let _ = dwrite.draw_text(
+                            target,
+                            &ch,
+                            Rect::new(x, y, cell_width, line_height),
+                            theme.background,
+                        );
+                    }
+                }
             }
             CursorShape::Bar => {
                 let _ = fill_rect(target, Rect::new(x, y, 2.0, line_height), theme.cursor);
@@ -614,6 +633,59 @@ mod tests {
             (row3.r, row3.g, row3.b),
             (theme.background.r, theme.background.g, theme.background.b),
             "row 3 (diff padding) must never be tinted by a selection"
+        );
+    }
+
+    /// Regression for #1197: the block cursor must not permanently hide
+    /// the glyph underneath it — `CursorShape::Block`'s `fill_rect`
+    /// opaquely covers the character, so the arm must re-paint it on top
+    /// in `theme.background`, mirroring `macos::editor::draw_editor`'s own
+    /// `CursorShape::Block` arm (and its
+    /// `block_cursor_paints_theme_cursor_color` test). Buffer text and
+    /// cursor column match vimcode#1559's own repro (`"1789518172522"`,
+    /// cursor on column 0).
+    ///
+    /// Scans the cursor cell for any pixel that reads `theme.background`
+    /// rather than guessing exact glyph ink placement — real DirectWrite
+    /// glyph positioning isn't predictable off a live Windows font pass,
+    /// same posture as `paints_without_panicking_and_gutter_is_visible`'s
+    /// gutter scan. Before the fix, `CursorShape::Block` fills the whole
+    /// cell with a single opaque `theme.cursor`-blended colour and this
+    /// scan finds nothing.
+    #[test]
+    fn block_cursor_repaints_glyph_in_background_colour() {
+        let surface = HeadlessSurface::new(200, 100).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Consolas", 10.0, None).expect("create DWrite");
+        let lines = vec![plain_line(0, "1789518172522")];
+        let mut e = editor(lines);
+        e.cursor = Some(EditorCursor {
+            pos: CursorPos {
+                view_line: 0,
+                col: 0,
+            },
+            shape: CursorShape::Block,
+        });
+
+        surface
+            .paint(|target| {
+                draw_editor(target, &dwrite, &e, CELL_W, LINE_H);
+            })
+            .expect("paint editor");
+
+        let theme = Theme::default();
+        let text_x = (e.gutter_char_width as f32 * CELL_W) as u32;
+        let found = (text_x..text_x + CELL_W as u32).any(|x| {
+            (0..LINE_H as u32).any(|y| {
+                let px = surface.pixel_at(x, y);
+                (px.r, px.g, px.b) == (theme.background.r, theme.background.g, theme.background.b)
+            })
+        });
+        assert!(
+            found,
+            "block cursor should re-paint the covered glyph in \
+             theme.background somewhere inside the cursor cell (col 0, \
+             row 0) — got no such pixel, cursor fill likely still hides \
+             the glyph entirely"
         );
     }
 }
