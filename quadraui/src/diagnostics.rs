@@ -122,10 +122,23 @@ pub fn clear_sink() {
 /// warnings`. The allow is scoped by `cfg_attr` to precisely that case
 /// rather than applied unconditionally, so dead-code detection stays
 /// live in every configuration where a call site actually compiles.
+///
+/// **The gate is per-profile as well as per-feature (#1118).** The three
+/// modal-paint call sites (`tui`/`gtk`/`macos` `end_frame`) are each
+/// additionally `#[cfg(debug_assertions)]` — the #455 check is a
+/// debug-build-only diagnostic — so `--features tui` alone (or
+/// `--features gtk,tui`) compiles *zero* `emit` callers in any profile
+/// with assertions off. That is not hypothetical: it is exactly what
+/// `cargo bench` does, and CI's "Benches build + run, verify-only" steps
+/// hit it in both the `tui` and `gtk` jobs. Hence
+/// `all(debug_assertions, any(feature = "tui", feature = "gtk"))` rather
+/// than a bare `any(…)` for those two. `terminal`, `win` and
+/// macOS-on-macOS stay profile-independent because
+/// `terminal_engine.rs`'s vt100-panic reporting and `desktop.rs`'s
+/// `report_caught_panic_once` are live in release builds too.
 #[cfg_attr(
     not(any(
-        feature = "tui",
-        feature = "gtk",
+        all(debug_assertions, any(feature = "tui", feature = "gtk")),
         feature = "terminal",
         feature = "win",
         all(feature = "macos", target_os = "macos")

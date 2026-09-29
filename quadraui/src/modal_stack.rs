@@ -222,11 +222,22 @@ impl ModalStack {
     /// by `cfg_attr` to exactly that configuration so the lint keeps
     /// working wherever a caller is actually compiled. Same reasoning, and
     /// the same shape, as `diagnostics::emit`.
+    ///
+    /// The gate is **per-profile as well as per-feature (#1118)**: all
+    /// three call sites are additionally `#[cfg(debug_assertions)]`
+    /// (the #455 check is a debug-build-only diagnostic), so *any*
+    /// assertions-off profile compiles this with zero callers no matter
+    /// which backend features are on — which is what `cargo bench` builds,
+    /// and what CI's "Benches build + run, verify-only" steps (`tui` and
+    /// `gtk` jobs) exercise under the workflow-wide `-D warnings`.
     #[cfg_attr(
-        not(any(
-            feature = "tui",
-            feature = "gtk",
-            all(feature = "macos", target_os = "macos")
+        not(all(
+            debug_assertions,
+            any(
+                feature = "tui",
+                feature = "gtk",
+                all(feature = "macos", target_os = "macos")
+            )
         )),
         allow(dead_code)
     )]
