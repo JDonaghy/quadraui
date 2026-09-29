@@ -550,6 +550,13 @@ pub(crate) fn copy_wide_truncated(dst: &mut [u16], text: &str) {
 
 #[cfg(target_os = "windows")]
 fn win_clipboard_read() -> Option<String> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every exit
+    // path (the inner closure's early returns only skip the *decode*, the
+    // `CloseClipboard()` after it always runs). `GlobalLock` is checked
+    // for null before the resulting pointer is read, and the slice built
+    // from it is bounded by `GlobalSize` — a live lock on a handle this
+    // process just got from `GetClipboardData`, so both the pointer and
+    // the length it's paired with come from the same OS call.
     unsafe {
         // Checked before `OpenClipboard` — an empty/non-text clipboard is
         // the normal "nothing to paste" case, not an error worth holding
@@ -586,6 +593,14 @@ fn win_clipboard_read() -> Option<String> {
 /// `write_text` itself still discards it.
 #[cfg(target_os = "windows")]
 fn win_clipboard_write(text: &str) -> ServiceResult<()> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path
+    // through this function (the early `return` on `OpenClipboard`
+    // failure is before the clipboard is ever opened; every other exit
+    // falls through to the trailing `CloseClipboard()`). `GlobalLock`'s
+    // pointer is checked for null before the `copy_nonoverlapping` write
+    // through it, and the write is bounded by `bytes` — the exact size
+    // just passed to the paired `GlobalAlloc`. `hglobal` ownership after
+    // `SetClipboardData` follows the comment at that call site below.
     unsafe {
         if OpenClipboard(None).is_err() {
             return Err(BackendError::PlatformFailure {
@@ -635,6 +650,14 @@ fn win_clipboard_write(text: &str) -> ServiceResult<()> {
 /// case).
 #[cfg(target_os = "windows")]
 fn win_clipboard_read_file_list() -> ServiceResult<Vec<PathBuf>> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path
+    // that opens the clipboard (both early `Err` returns above are
+    // before `OpenClipboard`; the inner closure's own early returns only
+    // skip building `files`, and the trailing `CloseClipboard()` always
+    // runs after it). `DragQueryFileW`'s two-call idiom (no buffer to
+    // learn the length, then a buffer sized for it) is the documented
+    // Win32 pattern this mirrors `GetWindowTextW`-style elsewhere in this
+    // module.
     unsafe {
         // Checked before `OpenClipboard`, same "don't hold the clipboard
         // open just to discover it's the wrong format" posture as
@@ -686,6 +709,10 @@ fn win_clipboard_read_file_list() -> ServiceResult<Vec<PathBuf>> {
 /// open/mutate/close cycle.
 #[cfg(target_os = "windows")]
 fn win_clipboard_clear() -> ServiceResult<()> {
+    // SAFETY: `OpenClipboard`/`CloseClipboard` are paired on every path —
+    // the early `Err` return is before `OpenClipboard`, and the only
+    // other exit falls through to the trailing `CloseClipboard()`. No
+    // pointers or buffers cross the FFI boundary here.
     unsafe {
         if OpenClipboard(None).is_err() {
             return Err(BackendError::PlatformFailure {
@@ -725,6 +752,11 @@ pub(crate) fn ensure_com_initialized() {
     }
     COM_INITIALIZED.with(|done| {
         if !done.get() {
+            // SAFETY: `CoInitializeEx` has no preconditions beyond being
+            // called on the thread it initializes (it is); the
+            // `thread_local` guard above ensures this runs at most once
+            // per thread, matching the "never call `CoUninitialize`"
+            // posture this function's own doc comment describes.
             let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
             done.set(true);
         }
@@ -744,6 +776,13 @@ fn configure_file_dialog(
     opts: &FileDialogOptions,
     initial_name: Option<&str>,
 ) -> windows::core::Result<()> {
+    // SAFETY: `dialog` is a live COM interface pointer the caller owns
+    // for the duration of this call. Every `PCWSTR::from_raw` below
+    // points at a `wide_nul_terminated` buffer that outlives its use —
+    // `title`/`dir`/`name` are locals borrowed for the single `Set*`
+    // call that consumes them synchronously, and `buffers` (backing
+    // `specs`) is kept alive through the `SetFileTypes` call that reads
+    // it, per the comment at that call site.
     unsafe {
         if let Some(ref title) = opts.title {
             dialog.SetTitle(PCWSTR::from_raw(wide_nul_terminated(title).as_ptr()))?;
@@ -798,6 +837,12 @@ fn configure_file_dialog(
 /// `SIGDN_FILESYSPATH`, freeing the COM-allocated string afterward.
 #[cfg(target_os = "windows")]
 fn shell_item_path(item: &IShellItem) -> Option<PathBuf> {
+    // SAFETY: `item` is a live COM interface pointer the caller owns.
+    // `GetDisplayName` returns a `PWSTR` this process now owns and must
+    // free — `pwstr.to_string()` reads it before that ownership is given
+    // up, and `CoTaskMemFree` is called exactly once immediately after,
+    // matching `GetDisplayName`'s documented "caller frees with
+    // `CoTaskMemFree`" contract.
     unsafe {
         let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let text = pwstr.to_string().ok();
@@ -809,6 +854,10 @@ fn shell_item_path(item: &IShellItem) -> Option<PathBuf> {
 #[cfg(target_os = "windows")]
 fn win_show_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option<PathBuf> {
     ensure_com_initialized();
+    // SAFETY: COM is initialized on this thread by the call above.
+    // `CoCreateInstance` returns a COM interface this scope owns and
+    // releases when `dialog` drops; `Show`/`GetResult` are ordinary COM
+    // calls through that live pointer.
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None::<&IUnknown>, CLSCTX_INPROC_SERVER).ok()?;
@@ -832,6 +881,9 @@ fn win_show_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option
 #[cfg(target_os = "windows")]
 fn win_show_folder_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option<PathBuf> {
     ensure_com_initialized();
+    // SAFETY: same as `win_show_open_dialog`'s borrow above — COM is
+    // initialized on this thread first, and `dialog` is a live,
+    // scope-owned COM interface for every call below.
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None::<&IUnknown>, CLSCTX_INPROC_SERVER).ok()?;
@@ -847,6 +899,9 @@ fn win_show_folder_open_dialog(owner: Option<HWND>, opts: &FileDialogOptions) ->
 #[cfg(target_os = "windows")]
 fn win_show_save_dialog(owner: Option<HWND>, opts: &FileDialogOptions) -> Option<PathBuf> {
     ensure_com_initialized();
+    // SAFETY: same as `win_show_open_dialog`'s borrow above — COM is
+    // initialized on this thread first, and `dialog` is a live,
+    // scope-owned COM interface for every call below.
     unsafe {
         let dialog: IFileSaveDialog =
             CoCreateInstance(&FileSaveDialog, None::<&IUnknown>, CLSCTX_INPROC_SERVER).ok()?;
@@ -983,6 +1038,13 @@ fn win_show_message_dialog(
     };
 
     let mut chosen: i32 = 0;
+    // SAFETY: `config`'s `pszMainInstruction`/`pszContent` and every
+    // `pButtons` entry's `pszButtonText` point at `title_wide`/
+    // `body_wide`/`label_wides`, all locals that outlive this call
+    // (dropped only when this function returns, after
+    // `TaskDialogIndirect` — which is blocking, per this function's own
+    // doc comment — has already completed). `chosen` is a plain stack
+    // `i32` the call writes through.
     unsafe {
         TaskDialogIndirect(&config, Some(&mut chosen), None, None).ok()?;
     }
@@ -1018,6 +1080,16 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
     let Some(hwnd) = owner else {
         return;
     };
+    // SAFETY: `hwnd` came from the caller as a live window handle.
+    // `LoadIconW(None, ..)` loads a shared system icon (no handle to
+    // free). `data.szInfo`/`szInfoTitle` are only ever written through
+    // `copy_wide_truncated`, which bounds every write to the fixed-size
+    // array itself — never a raw pointer. The spawned thread below
+    // reconstructs its own `HWND` from a plain `isize`, which is sound
+    // because `HWND` is itself just a wrapped pointer value with no
+    // per-thread state; it and the moved `uid` only feed a
+    // `Shell_NotifyIconW(NIM_DELETE, ..)` call that needs no live
+    // reference back into this function's stack.
     unsafe {
         let icon_resource = if n.urgent { IDI_ERROR } else { IDI_INFORMATION };
         let icon = LoadIconW(None, icon_resource).unwrap_or(HICON(std::ptr::null_mut()));
@@ -1105,6 +1177,19 @@ fn win_send_notification(owner: Option<HWND>, n: &Notification) {
 fn win_reveal_in_file_manager(path: &Path) -> ServiceResult<()> {
     ensure_com_initialized();
     let wide = wide_nul_terminated(&path.to_string_lossy());
+    // SAFETY: `wide` outlives the single `ILCreateFromPathW` call that
+    // reads it. `full_pidl`/`folder_pidl` are checked for null before
+    // use; `pidl_last` points into `full_pidl`'s buffer (per
+    // `ILFindLastID`'s contract) and is never dereferenced after
+    // `full_pidl` is freed — the doc comment above explains why
+    // `folder_pidl` is truncated instead of `full_pidl` to keep that
+    // pointer valid through the `SHOpenFolderAndSelectItems` call. Both
+    // PIDLs are freed exactly once each via `ILFree`, on every path
+    // (including the two early `Err` branches, which only skip the
+    // `SHOpenFolderAndSelectItems` call — `folder_pidl`/`full_pidl` are
+    // still allocated by then and still need freeing, which the
+    // `result` variable computed by the `if`/`else` lets the two
+    // trailing `ILFree` calls handle uniformly).
     unsafe {
         let full_pidl = ILCreateFromPathW(PCWSTR::from_raw(wide.as_ptr()));
         if full_pidl.is_null() {
@@ -1143,6 +1228,9 @@ fn win_reveal_in_file_manager(path: &Path) -> ServiceResult<()> {
 
 #[cfg(target_os = "windows")]
 fn win_beep() -> ServiceResult<()> {
+    // SAFETY: `MessageBeep` takes no pointers and has no preconditions
+    // beyond a valid sound-type flag; `MB_OK` is one of the documented
+    // constants.
     unsafe { MessageBeep(MB_OK) }.map_err(|e| BackendError::PlatformFailure {
         context: format!("MessageBeep: {e}"),
     })

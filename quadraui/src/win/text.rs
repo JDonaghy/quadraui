@@ -116,6 +116,10 @@ impl DWrite {
         size_pt: f32,
         fallback: Option<&IDWriteFontFallback>,
     ) -> WinResult<(Self, f32, f32)> {
+        // SAFETY: `DWriteCreateFactory` takes no pointers here beyond the
+        // factory-type enum; the returned `IDWriteFactory` is a COM
+        // interface `Self` owns for its whole lifetime (released via
+        // `windows-rs`'s `Drop`).
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let size_dip = pt_to_dip(size_pt);
         let text_format =
@@ -138,7 +142,11 @@ impl DWrite {
         // zero pixels for it. `NO_WRAP` makes `draw_text`'s rect-sized
         // labels immune to that off-by-a-float-epsilon: overflow simply
         // clips at the right edge instead of reflowing.
+        // SAFETY: `text_format`/`bold_text_format` are the live interfaces
+        // just created above; `SetWordWrapping` takes a plain enum value,
+        // no pointers.
         unsafe { text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+        // SAFETY: same as the `text_format` call immediately above.
         unsafe { bold_text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         if let Some(fallback) = fallback {
             // Font fallback is a "nice to have that beats tofu," not a
@@ -277,6 +285,10 @@ fn create_text_format(
     size_dip: f32,
     weight: DWRITE_FONT_WEIGHT,
 ) -> WinResult<IDWriteTextFormat> {
+    // SAFETY: `factory` is the caller's live interface; `HSTRING::from`
+    // builds owned, self-contained strings passed by value (not raw
+    // pointers with a borrowed lifetime), and `None` for the font
+    // collection asks for the system collection.
     unsafe {
         factory.CreateTextFormat(
             &HSTRING::from(family),
@@ -309,6 +321,10 @@ fn apply_fallback_to_format(
     fallback: &IDWriteFontFallback,
 ) -> WinResult<()> {
     let format1: IDWriteTextFormat1 = format.cast()?;
+    // SAFETY: `format1` is the just-cast live interface (`cast` is a
+    // `QueryInterface` on the same underlying COM object, per this
+    // function's own doc comment); `fallback` is the caller's live
+    // interface, only borrowed for this call.
     unsafe { format1.SetFontFallback(fallback) }
 }
 
@@ -329,14 +345,27 @@ fn apply_fallback_to_format(
 /// rasteriser already assumes DirectWrite APIs at least this new (see
 /// `apply_fallback_to_format`'s doc), so this is not a new floor.
 pub fn register_font_from_memory(bytes: &[u8]) -> WinResult<(IDWriteFontCollection1, Vec<String>)> {
+    // SAFETY: `DWriteCreateFactory` takes no pointers here beyond the
+    // factory-type enum; the returned `IDWriteFactory5` is a live COM
+    // interface owned by this scope for the rest of the function.
     let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+    // SAFETY: `factory` is the live interface from above.
     let loader = unsafe { factory.CreateInMemoryFontFileLoader()? };
     // The loader must be registered on the factory before a file
     // reference it creates can be resolved — see
     // `IDWriteFactory::RegisterFontFileLoader`'s docs. Left registered
     // for the process lifetime, matching this method's own contract.
+    // SAFETY: `factory`/`loader` are both live interfaces from above.
     unsafe { factory.RegisterFontFileLoader(&loader)? };
     let factory_base: IDWriteFactory = factory.cast()?;
+    // SAFETY: `factory_base` is the just-cast live interface;
+    // `loader` is the registered loader from above; `bytes` is the
+    // caller's slice, and `bytes.as_ptr()`/`bytes.len()` are read
+    // together from the same still-live `&[u8]` borrow, so the pointer
+    // and length agree. `CreateInMemoryFontFileReference` copies the
+    // font data into its own storage (the whole point of the "in
+    // memory" loader) rather than retaining `bytes`' pointer past this
+    // call, per `IDWriteInMemoryFontFileLoader`'s documented contract.
     let file: IDWriteFontFile = unsafe {
         loader.CreateInMemoryFontFileReference(
             &factory_base,
@@ -346,15 +375,25 @@ pub fn register_font_from_memory(bytes: &[u8]) -> WinResult<(IDWriteFontCollecti
         )?
     };
 
+    // SAFETY: `factory` is still the live interface from above.
     let builder = unsafe { factory.CreateFontSetBuilder()? };
+    // SAFETY: `builder` is the interface just created; `file` is the
+    // live `IDWriteFontFile` from above, only borrowed for this call.
     unsafe { builder.AddFontFile(&file)? };
+    // SAFETY: `builder` is still live, now with `file` added above.
     let font_set = unsafe { builder.CreateFontSet()? };
+    // SAFETY: `factory` is still live; `font_set` is the live set just
+    // built.
     let collection = unsafe { factory.CreateFontCollectionFromFontSet(&font_set)? };
 
+    // SAFETY: `collection` is the live interface from above.
     let count = unsafe { collection.GetFontFamilyCount() };
     let mut names = Vec::with_capacity(count as usize);
     for i in 0..count {
+        // SAFETY: `collection` is still live; `i` is in `0..count`, the
+        // exact range `GetFontFamilyCount` just reported as valid.
         let family = unsafe { collection.GetFontFamily(i)? };
+        // SAFETY: `family` is the live interface just returned.
         let localized = unsafe { family.GetFamilyNames()? };
         names.push(read_localized_string(&localized, 0)?);
     }
@@ -365,9 +404,15 @@ pub fn register_font_from_memory(bytes: &[u8]) -> WinResult<(IDWriteFontCollecti
 /// two-call length-then-fill pattern every DirectWrite string-table
 /// accessor uses) as a Rust `String`.
 fn read_localized_string(strings: &IDWriteLocalizedStrings, index: u32) -> WinResult<String> {
+    // SAFETY: `strings` is the caller's live interface; `index` is
+    // whatever the caller passed through — out-of-range is a documented
+    // `Err`, not UB, per `IDWriteLocalizedStrings::GetStringLength`.
     let len = unsafe { strings.GetStringLength(index)? };
     // +1 for the NUL terminator `GetString` writes into the buffer.
     let mut buf = vec![0u16; len as usize + 1];
+    // SAFETY: `buf` is sized to `len + 1` immediately above — exactly
+    // what `GetString`'s own docs require (the string plus its NUL
+    // terminator) for the same `index`/`strings` just queried.
     unsafe { strings.GetString(index, &mut buf)? };
     Ok(String::from_utf16_lossy(&buf[..len as usize]))
 }
@@ -399,9 +444,16 @@ pub fn build_nerd_font_fallback(
     family: &str,
     collection: Option<&IDWriteFontCollection1>,
 ) -> WinResult<IDWriteFontFallback> {
+    // SAFETY: `DWriteCreateFactory` takes no pointers here beyond the
+    // factory-type enum; the returned `IDWriteFactory2` is a live COM
+    // interface owned by this scope for the rest of the function.
     let factory: IDWriteFactory2 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
+    // SAFETY: `factory` is the live interface from above.
     let system_fallback = unsafe { factory.GetSystemFontFallback()? };
+    // SAFETY: `factory` is still live.
     let builder = unsafe { factory.CreateFontFallbackBuilder()? };
+    // SAFETY: `builder` is the interface just created; `system_fallback`
+    // is the live fallback from above, only borrowed for this call.
     unsafe { builder.AddMappings(&system_fallback)? };
 
     let ranges = [DWRITE_UNICODE_RANGE {
@@ -421,6 +473,12 @@ pub fn build_nerd_font_fallback(
         Some(c) => Some(c.cast()?),
         None => None,
     };
+    // SAFETY: `builder` is the live interface built above; `ranges` and
+    // `family_ptrs` are local arrays (`family_ptrs`'s pointer comes from
+    // `family_wide`, a local `HSTRING` that outlives this call);
+    // `base_collection` is either `None` or a live, just-cast interface;
+    // `PCWSTR::null()` for the optional locale-fallback name needs no
+    // backing buffer.
     unsafe {
         builder.AddMapping(
             &ranges,
@@ -431,6 +489,8 @@ pub fn build_nerd_font_fallback(
             1.0,
         )?
     };
+    // SAFETY: `builder` is still the live interface, now with every
+    // mapping added above.
     unsafe { builder.CreateFontFallback() }
 }
 
@@ -441,6 +501,9 @@ pub fn build_nerd_font_fallback(
 /// a system default font.
 fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE_FONT_METRICS> {
     let mut collection: Option<IDWriteFontCollection> = None;
+    // SAFETY: `factory` is the caller's live interface; `collection` is
+    // a plain stack `Option` the call writes through; `false` (don't
+    // check for updates) needs no pointer.
     unsafe { factory.GetSystemFontCollection(&mut collection, false)? };
     // `GetSystemFontCollection` is documented to populate `collection`
     // whenever it returns `Ok(())`, but that's an assumption about the FFI
@@ -456,10 +519,20 @@ fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE
 
     let mut index = 0u32;
     let mut exists = BOOL(0);
+    // SAFETY: `collection` is the live interface confirmed populated
+    // above; `HSTRING::from` builds an owned string passed by value;
+    // `index`/`exists` are plain stack out-params the call writes
+    // through.
     unsafe { collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists)? };
     let index = if exists.as_bool() { index } else { 0 };
 
+    // SAFETY: `collection` is still live; `index` is either the index
+    // `FindFamilyName` just confirmed exists, or `0` — always in range
+    // for a non-empty system collection (this function's own doc: "falls
+    // back to the collection's first family").
     let font_family = unsafe { collection.GetFontFamily(index)? };
+    // SAFETY: `font_family` is the live interface just returned; the
+    // three enum values need no pointers.
     let font = unsafe {
         font_family.GetFirstMatchingFont(
             DWRITE_FONT_WEIGHT_NORMAL,
@@ -467,8 +540,11 @@ fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE
             DWRITE_FONT_STYLE_NORMAL,
         )?
     };
+    // SAFETY: `font` is the live interface from above.
     let face = unsafe { font.CreateFontFace()? };
     let mut metrics = DWRITE_FONT_METRICS::default();
+    // SAFETY: `face` is the live interface from above; `metrics` is a
+    // plain stack struct the call writes through.
     unsafe { face.GetMetrics(&mut metrics) };
     Ok(metrics)
 }
@@ -482,8 +558,14 @@ fn font_face_metrics(factory: &IDWriteFactory, family: &str) -> WinResult<DWRITE
 /// this answers "did the user install this themselves" rather than
 /// "did the app bundle it".
 pub fn has_font_family(family: &str) -> WinResult<bool> {
+    // SAFETY: `DWriteCreateFactory` takes no pointers here beyond the
+    // factory-type enum; the returned `IDWriteFactory` is a live COM
+    // interface owned by this scope for the rest of the function.
     let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
     let mut collection: Option<IDWriteFontCollection> = None;
+    // SAFETY: `factory` is the live interface from above; `collection`
+    // is a plain stack `Option` the call writes through; `false` needs
+    // no pointer.
     unsafe { factory.GetSystemFontCollection(&mut collection, false)? };
     // Same "documented to populate on Ok(())" caveat as
     // `font_face_metrics` above — propagate rather than assume.
@@ -496,6 +578,10 @@ pub fn has_font_family(family: &str) -> WinResult<bool> {
 
     let mut index = 0u32;
     let mut exists = BOOL(0);
+    // SAFETY: `collection` is the live interface confirmed populated
+    // above; `HSTRING::from` builds an owned string passed by value;
+    // `index`/`exists` are plain stack out-params the call writes
+    // through.
     unsafe { collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists)? };
     Ok(exists.as_bool())
 }
@@ -511,8 +597,13 @@ fn measure_text(
     text: &str,
 ) -> WinResult<(f32, f32)> {
     let wide: Vec<u16> = text.encode_utf16().collect();
+    // SAFETY: `factory` is the caller's live interface; `wide` is a
+    // local `Vec<u16>` that outlives this synchronous call; `format` is
+    // the caller's live interface, only borrowed for this call.
     let layout = unsafe { factory.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)? };
     let mut metrics = Default::default();
+    // SAFETY: `layout` is the live interface from above; `metrics` is a
+    // plain stack struct the call writes through.
     unsafe { layout.GetMetrics(&mut metrics)? };
     Ok((metrics.width, metrics.height))
 }
@@ -549,6 +640,9 @@ fn draw_text(
         crate::testing::record_text_run(text, rect);
     }
     let wide: Vec<u16> = text.encode_utf16().collect();
+    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
+    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
+    // `None` for brush properties asks for the default (opaque) brush.
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
     let layout_rect = D2D_RECT_F {
         left: rect.x,
@@ -556,6 +650,10 @@ fn draw_text(
         right: rect.x + rect.width,
         bottom: rect.y + rect.height,
     };
+    // SAFETY: `target` is still the live render target; `wide` is a
+    // local `Vec<u16>` that outlives this synchronous call; `format` is
+    // the caller's live interface; `layout_rect`/`brush` are the locals
+    // built immediately above, both borrowed only for this call.
     unsafe {
         target.DrawText(
             &wide,
@@ -589,6 +687,9 @@ pub(crate) fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
 /// the headless test surface; this version assumes the caller is already
 /// inside a frame (or a `HeadlessSurface::paint` closure).
 pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) -> WinResult<()> {
+    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
+    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
+    // `None` for brush properties asks for the default (opaque) brush.
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
     let rect_f = D2D_RECT_F {
         left: rect.x,
@@ -596,6 +697,9 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
         right: rect.x + rect.width,
         bottom: rect.y + rect.height,
     };
+    // SAFETY: `target` is still the live render target; `rect_f`/`brush`
+    // are the locals built immediately above, both borrowed only for
+    // this call.
     unsafe { target.FillRectangle(&rect_f, &brush) };
     Ok(())
 }
@@ -615,6 +719,9 @@ pub(crate) fn fill_rounded_rect(
     radius: f32,
     color: Color,
 ) -> WinResult<()> {
+    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
+    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
+    // `None` for brush properties asks for the default (opaque) brush.
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
     let r = radius.min(rect.width / 2.0).min(rect.height / 2.0).max(0.0);
     let rounded = D2D1_ROUNDED_RECT {
@@ -627,6 +734,9 @@ pub(crate) fn fill_rounded_rect(
         radiusX: r,
         radiusY: r,
     };
+    // SAFETY: `target` is still the live render target; `rounded`/`brush`
+    // are the locals built immediately above, both borrowed only for
+    // this call.
     unsafe { target.FillRoundedRectangle(&rounded, &brush) };
     Ok(())
 }
@@ -662,6 +772,9 @@ pub(crate) fn stroke_rect(
     color: Color,
     stroke_width: f32,
 ) -> WinResult<()> {
+    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
+    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
+    // `None` for brush properties asks for the default (opaque) brush.
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
     let inset = (stroke_width / 2.0)
         .min(rect.width / 2.0)
@@ -673,6 +786,9 @@ pub(crate) fn stroke_rect(
         right: rect.x + rect.width - inset,
         bottom: rect.y + rect.height - inset,
     };
+    // SAFETY: `target` is still the live render target; `rect_f`/`brush`
+    // are the locals built above, both borrowed only for this call;
+    // `None` for stroke style asks for Direct2D's default solid stroke.
     unsafe { target.DrawRectangle(&rect_f, &brush, stroke_width, None) };
     Ok(())
 }
@@ -694,11 +810,18 @@ pub(crate) fn push_clip(target: &ID2D1RenderTarget, rect: Rect) {
         right: rect.x + rect.width,
         bottom: rect.y + rect.height,
     };
+    // SAFETY: `target` is the caller's live render target; `rect_f` is a
+    // plain stack struct built immediately above, borrowed only for this
+    // call — infallible on `ID2D1RenderTarget` per this function's own
+    // doc comment.
     unsafe { target.PushAxisAlignedClip(&rect_f, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
 }
 
 /// Pop the clip most recently pushed by [`push_clip`].
 pub(crate) fn pop_clip(target: &ID2D1RenderTarget) {
+    // SAFETY: `target` is the caller's live render target; the caller
+    // owes the "every push balanced by a pop" invariant this function's
+    // own doc comment (and `push_clip`'s) describes.
     unsafe { target.PopAxisAlignedClip() };
 }
 
@@ -716,7 +839,14 @@ pub(crate) fn draw_line(
     color: Color,
     stroke_width: f32,
 ) -> WinResult<()> {
+    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
+    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
+    // `None` for brush properties asks for the default (opaque) brush.
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    // SAFETY: `target` is still the live render target; `brush` is the
+    // live interface just created; `Vector2`s are plain stack structs;
+    // `None` for stroke style asks for Direct2D's default solid stroke,
+    // per this function's own doc comment.
     unsafe {
         target.DrawLine(
             Vector2 { X: x0, Y: y0 },
@@ -762,6 +892,9 @@ pub(crate) fn with_translation<F: FnOnce() -> R, R>(
         M31: dx,
         M32: dy,
     };
+    // SAFETY: `target` is the caller's live render target; `translated`
+    // is a plain stack struct borrowed only for this call — infallible
+    // on `ID2D1RenderTarget`, per this function's own doc comment.
     unsafe { target.SetTransform(&translated) };
     let result = f();
     let identity = windows_numerics::Matrix3x2 {
@@ -772,6 +905,10 @@ pub(crate) fn with_translation<F: FnOnce() -> R, R>(
         M31: 0.0,
         M32: 0.0,
     };
+    // SAFETY: same as the `translated` call above — `target` is still
+    // the live render target, `identity` a plain stack struct borrowed
+    // only for this call, restoring the bracket this function's doc
+    // comment guarantees.
     unsafe { target.SetTransform(&identity) };
     result
 }
@@ -808,6 +945,9 @@ pub(crate) fn with_horizontal_scale<F: FnOnce()>(
         M31: anchor_x * (1.0 - scale_x),
         M32: 0.0,
     };
+    // SAFETY: `target` is the caller's live render target; `scaled` is a
+    // plain stack struct borrowed only for this call — infallible on
+    // `ID2D1RenderTarget`, per this function's own doc comment.
     unsafe { target.SetTransform(&scaled) };
     f();
     let identity = windows_numerics::Matrix3x2 {
@@ -818,6 +958,10 @@ pub(crate) fn with_horizontal_scale<F: FnOnce()>(
         M31: 0.0,
         M32: 0.0,
     };
+    // SAFETY: same as the `scaled` call above — `target` is still the
+    // live render target, `identity` a plain stack struct borrowed only
+    // for this call, restoring the bracket this function's doc comment
+    // guarantees.
     unsafe { target.SetTransform(&identity) };
 }
 
@@ -892,6 +1036,9 @@ mod tests {
                     M31: 0.0,
                     M32: 0.0,
                 };
+                // SAFETY: `target` is the live render target
+                // `Self::paint` passes in; `m` is a plain stack struct
+                // the call writes through.
                 unsafe { target.GetTransform(&mut m) };
                 assert_eq!(
                     (m.M11, m.M12, m.M21, m.M22, m.M31, m.M32),
@@ -920,6 +1067,9 @@ mod tests {
                         M31: 0.0,
                         M32: 0.0,
                     };
+                    // SAFETY: `target` is the live render target
+                    // `Self::paint` passes in; `m` is a plain stack
+                    // struct the call writes through.
                     unsafe { target.GetTransform(&mut m) };
                     // x' = x * M11 + M31
                     let map_x = |x: f32| x * m.M11 + m.M31;

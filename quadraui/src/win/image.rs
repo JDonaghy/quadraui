@@ -95,6 +95,11 @@ fn decode_bitmap(target: &ID2D1RenderTarget, source: &ImageSource) -> Option<ID2
     };
 
     ensure_com_initialized();
+    // SAFETY: COM is initialized on this thread by the call above (see
+    // the module doc's "Why COM must be initialized first"). `factory`
+    // is a live COM interface this scope owns and releases on drop;
+    // every other call below is an ordinary COM call through it or
+    // through an interface it returned.
     let factory: IWICImagingFactory = unsafe {
         CoCreateInstance(
             &CLSID_WICImagingFactory,
@@ -103,18 +108,32 @@ fn decode_bitmap(target: &ID2D1RenderTarget, source: &ImageSource) -> Option<ID2
         )
         .ok()?
     };
+    // SAFETY: `bytes` is a local `Vec<u8>` that outlives this call;
+    // `SHCreateMemStream` copies it into its own backing store rather
+    // than borrowing the slice, per the documented API contract.
     let stream = unsafe { SHCreateMemStream(Some(&bytes)) }?;
+    // SAFETY: `stream` is the live `IStream` returned above; `null()` for
+    // the vendor GUID asks WIC to sniff the format from content, matching
+    // this function's own doc comment on why `Path`/`Bytes` are decoded
+    // identically.
     let decoder = unsafe {
         factory.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
     }
     .ok()?;
+    // SAFETY: `decoder` is the live `IWICBitmapDecoder` from the call
+    // above; frame index 0 is always present for a decoder that
+    // succeeded (WIC guarantees at least one frame on success).
     let frame = unsafe { decoder.GetFrame(0) }.ok()?;
 
     // Direct2D bitmaps want a premultiplied-alpha BGRA buffer; the source
     // frame could be indexed, grayscale, straight-alpha, ... — the format
     // converter normalises whatever WIC decoded to the one format
     // `CreateBitmapFromWicBitmap` is guaranteed to accept.
+    // SAFETY: `factory` is still the live interface from above.
     let converter = unsafe { factory.CreateFormatConverter() }.ok()?;
+    // SAFETY: `converter` is the interface just returned; `frame` is the
+    // live `IWICBitmapFrameDecode` from above and only borrowed for the
+    // duration of this synchronous `Initialize` call.
     unsafe {
         converter.Initialize(
             &frame,
@@ -127,6 +146,10 @@ fn decode_bitmap(target: &ID2D1RenderTarget, source: &ImageSource) -> Option<ID2
     }
     .ok()?;
 
+    // SAFETY: `target` is the caller's live `ID2D1RenderTarget`;
+    // `converter` was just initialized above into the one pixel format
+    // this call is guaranteed to accept, per the comment on
+    // `converter.Initialize` above.
     unsafe { target.CreateBitmapFromWicBitmap(&converter, None) }.ok()
 }
 
@@ -149,6 +172,11 @@ pub fn draw_image(target: &ID2D1RenderTarget, rect: Rect, image: &Image) -> Imag
     };
 
     push_clip(target, rect);
+    // SAFETY: `target` is the caller's live `ID2D1RenderTarget`; `bitmap`
+    // came from `decode_bitmap` above, bound to this same `target` (see
+    // the module doc's "No decode cache here yet" note on why a bitmap
+    // must stay bound to the target that created it). `dest_f` is a
+    // plain stack struct borrowed for the duration of this call.
     unsafe {
         target.DrawBitmap(
             &bitmap,

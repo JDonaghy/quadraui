@@ -183,6 +183,10 @@ impl HeadlessSurface {
             let height = height.max(1);
 
             let factory: ID2D1Factory =
+                // SAFETY: `D2D1CreateFactory` takes no pointers here beyond
+                // `None` for the optional factory options; the returned
+                // `ID2D1Factory` is a COM interface this struct owns for its
+                // whole lifetime (released via `windows-rs`'s `Drop`).
                 unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
 
             // `D2D1_ALPHA_MODE_IGNORE`: DC render targets only support
@@ -197,6 +201,11 @@ impl HeadlessSurface {
                 },
                 ..Default::default()
             };
+            // SAFETY: `factory` is the live interface just created above;
+            // `render_props` is a plain stack struct borrowed for the
+            // duration of this synchronous call. The returned
+            // `ID2D1DCRenderTarget` is stored in `Self::target`, kept
+            // alive alongside `factory` for the struct's whole lifetime.
             let target = unsafe { factory.CreateDCRenderTarget(&render_props)? };
 
             // Negative `biHeight` = top-down DIB, so `pixel_at`'s row math
@@ -216,19 +225,35 @@ impl HeadlessSurface {
                 ..Default::default()
             };
 
+            // SAFETY: `None` asks for a memory DC compatible with the
+            // current screen — a virtual/basic display device every host
+            // has (see the module doc's "Software, not hardware" section
+            // on why this needs no physically attached monitor). `hdc` is
+            // freed on every path below (both `Err` arms explicitly, and
+            // `Self::drop` on the success path).
             let hdc = unsafe { CreateCompatibleDC(None) };
             let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+            // SAFETY: `hdc` was just created above; `bmi` describes a
+            // top-down (negative `biHeight`) 32bpp DIB, per the
+            // comment above it; `bits` is a plain stack pointer the
+            // call writes through.
             let bitmap = match unsafe {
                 CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
             } {
                 Ok(bitmap) => bitmap,
                 Err(err) => {
+                    // SAFETY: `hdc` is the handle created above and not
+                    // used again after this — the only exit on this path.
                     unsafe {
                         let _ = DeleteDC(hdc);
                     }
                     return Err(err);
                 }
             };
+            // SAFETY: `hdc` and `bitmap` are both live handles from
+            // above; selecting `bitmap` into `hdc` is what makes
+            // `hdc`'s subsequent drawing (via `BindDC` below) target
+            // this DIB's pixel buffer instead of the DC's default.
             unsafe { SelectObject(hdc, bitmap.into()) };
 
             let rect = RECT {
@@ -237,7 +262,17 @@ impl HeadlessSurface {
                 right: width as i32,
                 bottom: height as i32,
             };
+            // SAFETY: `target` is the live render target created above;
+            // `hdc` has `bitmap` selected into it (just above), so
+            // `BindDC` binds Direct2D's output to that same pixel
+            // buffer; `rect` is a plain stack struct borrowed for the
+            // duration of this call.
             if let Err(err) = unsafe { target.BindDC(hdc, &rect) } {
+                // SAFETY: `bitmap`/`hdc` are both still-live handles from
+                // above; `BindDC` failed, so nothing downstream holds a
+                // reference to either — this is the sole owner and the
+                // only remaining chance to free them before returning
+                // `Err`.
                 unsafe {
                     let _ = DeleteObject(bitmap.into());
                     let _ = DeleteDC(hdc);
@@ -286,8 +321,17 @@ impl HeadlessSurface {
     /// closure parameter's type has no non-Windows stand-in.
     #[cfg(target_os = "windows")]
     pub fn paint(&self, paint: impl FnOnce(&ID2D1DCRenderTarget)) -> WinResult<()> {
+        // SAFETY: `self.target` is the live render target owned by
+        // `self` for its whole lifetime; `BeginDraw`/`EndDraw` are
+        // correctly paired — `EndDraw` always runs immediately after
+        // `paint` returns, on every path, matching this function's own
+        // doc comment on the bracketed frame lifecycle.
         unsafe { self.target.BeginDraw() };
         paint(&self.target);
+        // SAFETY: pairs the `BeginDraw` immediately above; `None, None`
+        // asks for no per-tag error detail, which this function's
+        // return value doesn't need (callers only care about the
+        // aggregate `Result`).
         unsafe { self.target.EndDraw(None, None) }
     }
 
@@ -298,6 +342,11 @@ impl HeadlessSurface {
         {
             self.paint(|target| {
                 let brush =
+                    // SAFETY: `target` is the live render target
+                    // `Self::paint` passes in, mid-`BeginDraw`/`EndDraw`;
+                    // `color_to_d2d` builds a plain stack `D2D1_COLOR_F`
+                    // borrowed only for this call; `None` for brush
+                    // properties asks for the default (opaque) brush.
                     match unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None) } {
                         Ok(brush) => brush,
                         Err(_) => return,
@@ -308,6 +357,10 @@ impl HeadlessSurface {
                     right: rect.x + rect.width,
                     bottom: rect.y + rect.height,
                 };
+                // SAFETY: `target` is still the live render target from
+                // above; `rect_f` is a plain stack struct and `brush` the
+                // live interface just created, both borrowed only for
+                // this call.
                 unsafe { target.FillRectangle(&rect_f, &brush) };
             })
         }
@@ -345,6 +398,13 @@ impl HeadlessSurface {
             // BGRA in memory (DXGI_FORMAT_B8G8R8A8_UNORM), 4 bytes/pixel,
             // top-down rows (see the negative `biHeight` above).
             let offset = (y as isize * self.width as isize + x as isize) * 4;
+            // SAFETY: `self.bits` points at the `CreateDIBSection` pixel
+            // buffer from `Self::new`, which is `4 * width * height`
+            // bytes and lives as long as `self.bitmap` does — i.e. for
+            // the lifetime of `self` (see `Self::bits`'s field doc).
+            // `x < self.width && y < self.height` is asserted just
+            // above, so `offset` and `offset + 3` (the last byte
+            // `px.add(2)` reads) are both within that buffer.
             unsafe {
                 let px = self.bits.offset(offset);
                 let b = *px;
@@ -370,6 +430,11 @@ impl Drop for HeadlessSurface {
         // never returns `Ok`, so there is nothing to release — see the
         // module doc.
         #[cfg(target_os = "windows")]
+        // SAFETY: `self.bitmap`/`self.hdc` are the live GDI handles
+        // created in `Self::new` and never freed anywhere else on the
+        // success path (the comment above explains why `target`/
+        // `factory` don't need the same treatment); `Drop::drop` runs at
+        // most once, so this is the sole, final release of both.
         unsafe {
             let _ = DeleteObject(self.bitmap.into());
             let _ = DeleteDC(self.hdc);
@@ -890,6 +955,9 @@ mod tests {
     fn a_rect_that_does_not_cover_the_whole_surface_leaves_the_rest_cleared() {
         let surface = HeadlessSurface::new(32, 32).expect("create headless surface");
         surface
+            // SAFETY: `target` is the live render target `Self::paint`
+            // passes in, mid-`BeginDraw`/`EndDraw`; the `D2D1_COLOR_F` is
+            // a plain stack literal borrowed only for this call.
             .paint(|target| unsafe {
                 target.Clear(Some(&D2D1_COLOR_F {
                     r: 0.0,
@@ -1057,6 +1125,12 @@ mod tests {
             dpiX: 96.0,
             dpiY: 96.0,
         };
+        // SAFETY: `foreign_surface.target()` is a live render target
+        // (deliberately a *different* one from `surface` under test — see
+        // this test's doc comment on why); `None`/`0` for the source data
+        // asks Direct2D to allocate an uninitialized 1x1 bitmap rather
+        // than copy from a caller buffer, which needs no pointer at all;
+        // `bitmap_props` is a plain stack struct borrowed for this call.
         let foreign_bitmap: ID2D1Bitmap = unsafe {
             foreign_surface
                 .target()
@@ -1077,6 +1151,13 @@ mod tests {
         {
             use crate::Backend;
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            // SAFETY: `surface.target()` is the live render target under
+            // test, mid-`BeginDraw`/`EndDraw` via `backend.begin_frame`/
+            // `end_frame`; `foreign_bitmap` is the live (but
+            // wrong-resource-domain) bitmap from above — drawing it is
+            // deliberately expected to record a deferred error, per this
+            // test's doc comment, not to be a sound paint. `None` for the
+            // optional dest/src rects draws the whole 1x1 bitmap.
             unsafe {
                 surface.target().DrawBitmap(
                     &foreign_bitmap,

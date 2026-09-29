@@ -63,7 +63,12 @@ use std::path::{Path, PathBuf};
 ///   undocumented blocks are confined to `text.rs`, `tray.rs`,
 ///   `services.rs`, `testing.rs`, and `image.rs`, left for follow-up
 ///   chunks.
-const MAX_UNDOCUMENTED_UNSAFE_BLOCKS: usize = 121;
+/// - 2026-09-29 (#1224, #1115 chunk 2): `text.rs`, `tray.rs`,
+///   `services.rs`, `testing.rs`, and `image.rs` fully documented —
+///   every remaining `unsafe {}` block in `src/win/` now carries a
+///   `SAFETY:` comment. This is the last chunk of #1115; the ceiling
+///   drops to `0`.
+const MAX_UNDOCUMENTED_UNSAFE_BLOCKS: usize = 0;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

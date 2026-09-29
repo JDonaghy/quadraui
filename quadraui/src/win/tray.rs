@@ -140,8 +140,16 @@ pub(crate) fn set_icon(
         ..Default::default()
     };
     let message = if state.added { NIM_MODIFY } else { NIM_ADD };
+    // SAFETY: `data` is a plain stack struct borrowed for the duration of
+    // this synchronous call; `data.hIcon` is `hicon`, which — per MSDN's
+    // documented `Shell_NotifyIconW` contract cited on `WinTrayState::icon`
+    // above — must stay valid until replaced or removed, which is exactly
+    // what `state.icon` tracks for the caller.
     let ok = unsafe { Shell_NotifyIconW(message, &data) }.as_bool();
     if !ok {
+        // SAFETY: `hicon` was built by `decode_hicon` above and never
+        // handed to the shell (the call just failed), so this scope is
+        // its sole owner and the only one that can free it.
         unsafe {
             let _ = DestroyIcon(hicon);
         }
@@ -156,6 +164,11 @@ pub(crate) fn set_icon(
     // destroy immediately, unlike `hicon` above (which must survive the
     // `Shell_NotifyIconW` call it's passed to).
     if let Some(old) = state.icon.replace(hicon) {
+        // SAFETY: `old` was just replaced out of `state.icon` above, so
+        // nothing else in this process still holds it, and the comment
+        // immediately above establishes the shell's own copy (inside
+        // `CreateIconIndirect`'s internal representation) doesn't need it
+        // either.
         unsafe {
             let _ = DestroyIcon(old);
         }
@@ -180,6 +193,10 @@ pub(crate) fn set_tooltip(
     };
     copy_wide_truncated(&mut data.szTip, tooltip);
     let message = if state.added { NIM_MODIFY } else { NIM_ADD };
+    // SAFETY: `data` is a plain stack struct, only borrowed for the
+    // duration of this synchronous call; `data.szTip` is a fixed-size
+    // inline array `copy_wide_truncated` already bounded its write to —
+    // no pointer to a shorter-lived buffer crosses the FFI boundary here.
     let ok = unsafe { Shell_NotifyIconW(message, &data) }.as_bool();
     if !ok {
         return Err(BackendError::PlatformFailure {
@@ -240,24 +257,41 @@ pub(crate) fn attached_menu(state: &WinTrayState) -> Option<ContextMenu> {
 #[cfg(target_os = "windows")]
 pub(crate) fn track_menu(hwnd: HWND, menu: &ContextMenu) -> Option<WidgetId> {
     let mut ids: Vec<WidgetId> = Vec::new();
+    // SAFETY: `CreatePopupMenu` takes no arguments and returns a fresh
+    // `HMENU` this scope owns until the matching `DestroyMenu` below.
     let hmenu = unsafe { CreatePopupMenu() }.ok()?;
     for item in &menu.items {
         append_hmenu_item(hmenu, item, &mut ids);
     }
 
+    // SAFETY: `hwnd` is the caller's live window handle — required per
+    // this function's own doc comment on why `SetForegroundWindow` runs
+    // before `TrackPopupMenuEx`.
     unsafe {
         let _ = SetForegroundWindow(hwnd);
     }
     let mut cursor = POINT::default();
+    // SAFETY: `cursor` is a plain stack `POINT` `GetCursorPos` writes
+    // through; no other precondition.
     let got_cursor = unsafe { GetCursorPos(&mut cursor) }.is_ok();
 
     let flags = (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY).0;
     let cmd = if got_cursor {
+        // SAFETY: `hmenu` was just populated above and is still live;
+        // `hwnd` is the same live window handle used above. `TPM_RETURNCMD`
+        // (set in `flags`) makes this call blocking and synchronous, per
+        // this function's own doc comment, so `hmenu`/`hwnd` only need to
+        // outlive this one call.
         unsafe { TrackPopupMenuEx(hmenu, flags, cursor.x, cursor.y, hwnd, None) }.0
     } else {
         0
     };
 
+    // SAFETY: `hmenu` is still the live handle created above; every
+    // nested submenu `HMENU` built by `append_hmenu_item` was already
+    // attached to it via `AppendMenuW(MF_POPUP, ..)`, and `DestroyMenu`
+    // recursively destroys attached submenus (MSDN), so this one call
+    // tears down the whole tree.
     unsafe {
         let _ = DestroyMenu(hmenu);
     }
@@ -279,6 +313,11 @@ pub(crate) fn track_menu(hwnd: HWND, menu: &ContextMenu) -> Option<WidgetId> {
 #[cfg(target_os = "windows")]
 fn append_hmenu_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetId>) {
     if item.is_separator() {
+        // SAFETY: `hmenu` is the caller's live menu handle (created and
+        // owned by `track_menu`, which this function never outlives —
+        // it's only ever called from within that stack frame or a
+        // recursive call still nested inside it). `PCWSTR::null()` needs
+        // no backing buffer.
         unsafe {
             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
         }
@@ -289,11 +328,20 @@ fn append_hmenu_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetI
     let wide = win_wide_nul_terminated(&title);
 
     if let Some(nested) = item.submenu.as_ref() {
+        // SAFETY: `CreatePopupMenu` takes no arguments; the returned
+        // `HMENU` becomes `hmenu`'s submenu via `AppendMenuW(MF_POPUP,
+        // ..)` below, which is what makes `track_menu`'s single
+        // `DestroyMenu(hmenu)` recursively free it too (see that call
+        // site's comment) — this function never frees it itself.
         let submenu = unsafe { CreatePopupMenu() };
         let Ok(submenu) = submenu else { return };
         for child in nested {
             append_hmenu_item(submenu, child, ids);
         }
+        // SAFETY: `hmenu` is the live parent handle from the caller;
+        // `submenu` was just created above and is attached here rather
+        // than leaked; `wide` is a local that outlives this single
+        // synchronous call.
         unsafe {
             let _ = AppendMenuW(
                 hmenu,
@@ -315,6 +363,11 @@ fn append_hmenu_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetI
         if let Some(true) = item.checked {
             flags |= MF_CHECKED;
         }
+        // SAFETY: `hmenu` is the live handle from the caller; `wide` is a
+        // local outliving this single synchronous call; `cmd_id` is
+        // `ids.len()` after the push above, matching the 1-based
+        // `ids[cmd - 1]` recovery this function's own doc comment
+        // describes.
         unsafe {
             let _ = AppendMenuW(hmenu, flags, cmd_id, PCWSTR::from_raw(wide.as_ptr()));
         }
@@ -346,6 +399,9 @@ pub(crate) fn decode_hicon(source: &ImageSource) -> Option<HICON> {
     };
 
     ensure_com_initialized();
+    // SAFETY: COM is initialized on this thread by the call above (see
+    // `ensure_com_initialized`'s doc); `factory` is a live COM interface
+    // this scope owns and releases on drop.
     let factory: IWICImagingFactory = unsafe {
         CoCreateInstance(
             &CLSID_WICImagingFactory,
@@ -354,17 +410,31 @@ pub(crate) fn decode_hicon(source: &ImageSource) -> Option<HICON> {
         )
     }
     .ok()?;
+    // SAFETY: `bytes` is a local `Vec<u8>` that outlives this call;
+    // `SHCreateMemStream` copies it into its own backing store rather
+    // than borrowing the slice, same as `image::decode_bitmap`'s
+    // identical call.
     let stream = unsafe { SHCreateMemStream(Some(&bytes)) }?;
+    // SAFETY: `stream` is the live `IStream` returned above; `null()`
+    // for the vendor GUID asks WIC to sniff the format from content,
+    // matching this function's own doc comment on decode-failure
+    // handling being format-agnostic.
     let decoder = unsafe {
         factory.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
     }
     .ok()?;
+    // SAFETY: `decoder` is the live `IWICBitmapDecoder` from above; frame
+    // index 0 is always present for a decoder that succeeded.
     let frame = unsafe { decoder.GetFrame(0) }.ok()?;
 
     // Same premultiplied-BGRA normalisation `super::image::decode_bitmap`
     // runs before handing frames to Direct2D — `CreateDIBSection`'s
     // 32bpp DIB wants exactly this byte layout too.
+    // SAFETY: `factory` is still the live interface from above.
     let converter = unsafe { factory.CreateFormatConverter() }.ok()?;
+    // SAFETY: `converter` is the interface just returned; `frame` is the
+    // live `IWICBitmapFrameDecode` from above, only borrowed for the
+    // duration of this synchronous `Initialize` call.
     unsafe {
         converter.Initialize(
             &frame,
@@ -379,12 +449,19 @@ pub(crate) fn decode_hicon(source: &ImageSource) -> Option<HICON> {
 
     let mut width = 0u32;
     let mut height = 0u32;
+    // SAFETY: `width`/`height` are plain stack `u32`s `GetSize` writes
+    // through; `converter` is still the live, just-initialized interface
+    // from above.
     unsafe { converter.GetSize(&mut width, &mut height) }.ok()?;
     if width == 0 || height == 0 {
         return None;
     }
     let stride = (width as usize) * 4;
     let mut pixels = vec![0u8; stride * height as usize];
+    // SAFETY: `pixels` is sized to exactly `stride * height` bytes above,
+    // matching the `stride` this call is told to use; `null()` for the
+    // source rect asks for the whole frame, which is exactly what
+    // `pixels` was sized for.
     unsafe { converter.CopyPixels(std::ptr::null(), stride as u32, &mut pixels) }.ok()?;
 
     build_hicon_from_bgra(&pixels, width, height)
@@ -412,22 +489,41 @@ fn build_hicon_from_bgra(pixels: &[u8], width: u32, height: u32) -> Option<HICON
         ..Default::default()
     };
 
+    // SAFETY: `None` asks for a memory DC compatible with the current
+    // screen — the documented way to get a DC for `CreateDIBSection`
+    // without needing a specific window's DC. The returned `hdc` is
+    // freed on every path below (`DeleteDC` right after the
+    // `CreateDIBSection` call, whichever branch it takes).
     let hdc = unsafe { CreateCompatibleDC(None) };
     let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
     let hbm_color =
+        // SAFETY: `hdc` was just created above; `bmi` describes a top-down
+        // (negative `biHeight`) 32bpp DIB matching `decode_hicon`'s pixel
+        // layout, mirroring `super::testing::HeadlessSurface::new`'s
+        // proven-correct shape per this function's own doc comment;
+        // `bits` is a plain stack pointer the call writes through.
         match unsafe { CreateDIBSection(Some(hdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) } {
             Ok(bitmap) => bitmap,
             Err(_) => {
+                // SAFETY: `hdc` is the handle created above and not used
+                // again after this — the only exit path for the `Err` arm.
                 unsafe {
                     let _ = DeleteDC(hdc);
                 }
                 return None;
             }
         };
+    // SAFETY: `hdc` is only needed for the `CreateDIBSection` call above,
+    // which has already completed; the returned `hbm_color` bitmap
+    // remains valid independently of the DC that created it (MSDN:
+    // `CreateDIBSection`'s bitmap outlives its creating DC).
     unsafe {
         let _ = DeleteDC(hdc);
     }
     if bits.is_null() {
+        // SAFETY: `hbm_color` was just returned by `CreateDIBSection`
+        // above and nothing else references it yet on this early-return
+        // path.
         unsafe {
             let _ = DeleteObject(hbm_color.into());
         }
@@ -446,6 +542,11 @@ fn build_hicon_from_bgra(pixels: &[u8], width: u32, height: u32) -> Option<HICON
     // transparency — see this module's doc.
     let mask_stride = width.div_ceil(16) * 2;
     let mask_bits = vec![0u8; (mask_stride * height) as usize];
+    // SAFETY: `mask_bits` is sized to exactly `mask_stride * height`
+    // bytes above — the buffer `CreateBitmap` reads for a 1-bpp,
+    // `width`x`height` monochrome bitmap at that same stride — and
+    // outlives this single synchronous call (`CreateBitmap` copies the
+    // bits in; it doesn't retain the pointer).
     let hbm_mask = unsafe {
         CreateBitmap(
             width as i32,
@@ -463,12 +564,19 @@ fn build_hicon_from_bgra(pixels: &[u8], width: u32, height: u32) -> Option<HICON
         hbmMask: hbm_mask,
         hbmColor: hbm_color,
     };
+    // SAFETY: `icon_info` is a plain stack struct borrowed for the
+    // duration of this call; `hbmMask`/`hbmColor` are the live bitmaps
+    // created above.
     let hicon = unsafe { CreateIconIndirect(&icon_info) }.ok();
 
     // MSDN (`CreateIconIndirect`): the function copies both bitmaps into
     // the icon's own internal representation, so the caller is free (and
     // expected) to delete them immediately afterward regardless of
     // whether the call succeeded.
+    // SAFETY: per the MSDN note above, `CreateIconIndirect` has already
+    // made its own internal copies of both bitmaps by the time it
+    // returns, so freeing `hbm_color`/`hbm_mask` here — on both success
+    // and failure — cannot invalidate `hicon`.
     unsafe {
         let _ = DeleteObject(hbm_color.into());
         let _ = DeleteObject(hbm_mask.into());
