@@ -2699,6 +2699,121 @@ mod tests {
             "depth must return to 0 once each guarded call completes"
         );
     }
+
+    /// Issue #1213 — the live regression test the reviewer asked for
+    /// (option 1 of the two the issue itself offered): drives the *real*
+    /// `win32::run_inner` → `CreateWindowExW` → `WinBackend::attach_surface`
+    /// → `install_menu_bar_now` → `SetMenu` → nested `WM_SIZE` →
+    /// `win32::wndproc` sequence end to end, on real Windows hardware, via
+    /// the crate's own public [`run_with`] entry point — not a hand-rolled
+    /// model of it (unlike
+    /// [`reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed`]
+    /// above, which only proves `ModalPumpGuard`'s own semantics in
+    /// isolation and would keep passing even if `run_inner`'s `let _guard
+    /// = ModalPumpGuard::new(&ws.pump_depth);` line were deleted — see
+    /// that test's doc for why it doesn't regression-guard this bug on
+    /// its own).
+    ///
+    /// Before this fix (observed on real hardware against `cc2b80d` /
+    /// `928f2b5`, matching the issue's own isolation table): any
+    /// `AppLogic::setup` that calls `Backend::install_menu_bar` crashed
+    /// **every** window-creation `CreateWindowExW` call with `RefCell
+    /// already borrowed`, escalating to `panic in a function that cannot
+    /// unwind` because `wndproc` is a C-ABI `WNDPROC` that cannot unwind
+    /// across the `NtUserSetMenu` → `KiUserCallbackDispatcher` →
+    /// `CallWindowProcW` boundary — i.e. this whole test process would
+    /// abort outright, not merely fail an assertion, if the guard
+    /// regressed.
+    ///
+    /// `MenuBarSmokeApp::setup` calls `install_menu_bar` unconditionally,
+    /// so `WinBackend::pending_menu_bar` is `Some` by the time
+    /// `run_inner`'s `attach_surface` call runs — the exact
+    /// `pending_menu_bar.is_some()` path `WinBackend::attach_surface`'s
+    /// #1213 doc describes. `QUADRAUI_WIN_SMOKE_MS` (see this module's
+    /// "Headless smoke mode" doc) makes `run_with` self-terminate after a
+    /// short deadline instead of blocking on a user closing the window,
+    /// so this runs unattended exactly like `ci.yml`'s real-Windows leg
+    /// runs every other `win_*` smoke check — see `CLAUDE.md`'s "Win-GUI:
+    /// building and testing for real".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn install_menu_bar_during_setup_does_not_panic_a_live_window_creation() {
+        use crate::primitives::menu_bar::{MenuBar, MenuBarItem};
+        use crate::types::WidgetId;
+        use crate::Reaction;
+
+        // `mod win32`'s own `SMOKE_MS_VAR` const (`"QUADRAUI_WIN_SMOKE_MS"`)
+        // is private to that module, unreachable from here — this test
+        // lives at the top level (`mod tests`), the same scope
+        // `RunConfig`/`run_with` are public from — so the literal name is
+        // duplicated rather than imported. `env::set_var`/`remove_var` are
+        // process-global (same caveat `desktop::smoke_config_tests`'
+        // `ENV_LOCK` documents) — this test is the only one in the crate
+        // that sets this var via `run_with`'s real entry point
+        // (`win::testing::WinDriver` and the `HeadlessSurface`-based tests
+        // never touch it at all — see this module's doc), so there is no
+        // other writer to race against.
+        const SMOKE_MS_VAR: &str = "QUADRAUI_WIN_SMOKE_MS";
+        std::env::set_var(SMOKE_MS_VAR, "300");
+
+        struct MenuBarSmokeApp;
+
+        impl AppLogic for MenuBarSmokeApp {
+            type AreaId = ();
+
+            fn setup(&mut self, backend: &mut dyn Backend) {
+                // The exact call path the issue's "Ask" section names:
+                // `AppLogic::setup`-time `install_menu_bar`, replayed by
+                // `WinBackend::attach_surface` once `run_inner` creates
+                // the real window below.
+                backend.install_menu_bar(&MenuBar {
+                    id: WidgetId::new("menubar"),
+                    items: vec![MenuBarItem {
+                        id: WidgetId::new("file"),
+                        label: "&File".to_string(),
+                        disabled: false,
+                        submenu: None,
+                    }],
+                    open_item: None,
+                    focused_item: None,
+                });
+            }
+
+            fn render(&self, _backend: &mut dyn Backend, _area: Self::AreaId) {}
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        // A title unique to this test (not `"quadraui"`/`"kubeui"`, which
+        // other tests/examples in this crate and its consumers use) keeps
+        // `instance_identity`/`window_class_name`'s scoping (#957) from
+        // colliding with a concurrently-running process of some other
+        // quadraui-based app on the same machine.
+        let config =
+            super::RunConfig::new("quadraui-issue-1213-live-menu-bar-reentrancy-smoke-test");
+
+        // If `ModalPumpGuard::new(&ws.pump_depth)` were missing from
+        // `run_inner`'s `attach_surface` call (the regression this issue
+        // fixes), the nested `WM_SIZE` `SetMenu` fires from inside
+        // `NtUserSetMenu` would double-borrow `ws.state` and this call
+        // would never return — the process aborts first (see this test's
+        // doc). Reaching the assertions below at all is therefore already
+        // most of the proof; the `ExitCode` check confirms the smoke
+        // timer's own `smoke_size_ok` check (a real client rect read back
+        // after the menu bar shrank it) also found nothing wrong.
+        let exit_code = super::run_with(MenuBarSmokeApp, config);
+
+        std::env::remove_var(SMOKE_MS_VAR);
+
+        assert_eq!(
+            exit_code,
+            std::process::ExitCode::SUCCESS,
+            "a live window that installs a menu bar during setup must create and size itself \
+             cleanly, not just avoid the RefCell panic"
+        );
+    }
 }
 
 /// Coverage for #728 — Ctrl-V/Ctrl-Shift-V clipboard-paste interception in
