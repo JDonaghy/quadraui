@@ -1020,7 +1020,7 @@ mod tests {
     /// `message_list_section_paints_row_text` above.
     #[test]
     fn terminal_section_paints_cell_glyphs() {
-        use crate::primitives::terminal::{Terminal, TerminalCell};
+        use crate::primitives::terminal::{Terminal, TerminalCell, TerminalCursorShape};
         use crate::types::Color;
 
         fn cell(ch: char) -> TerminalCell {
@@ -1036,6 +1036,8 @@ mod tests {
                 is_cursor: false,
                 is_find_match: false,
                 is_find_active: false,
+                cursor_shape: TerminalCursorShape::Block,
+                cursor_blinking: false,
             }
         }
 

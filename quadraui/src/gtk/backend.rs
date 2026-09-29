@@ -5098,7 +5098,7 @@ impl NativeSurface for GtkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MenuBarItem, TerminalCell, WidgetId};
+    use crate::{MenuBarItem, TerminalCell, TerminalCursorShape, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
     /// `Backend` through `<B>`. Same shape as the one in
@@ -8300,6 +8300,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         };
         let term = TerminalPrim {
             id: WidgetId::new("test:term-sb"),
@@ -8874,6 +8876,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         }]
     }
 

@@ -3526,7 +3526,10 @@ mod tests {
     use crate::backend::{
         Clipboard, FileDialogOptions, MessageDialogChoice, MessageDialogOptions, Notification,
     };
-    use crate::{ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, WidgetId};
+    use crate::{
+        ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, TerminalCursorShape,
+        WidgetId,
+    };
 
     /// Records every draw call so tests can assert what the trait
     /// boundary actually delivers.
@@ -5961,6 +5964,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         };
         let term = TerminalPrim {
             id: WidgetId::new("t"),

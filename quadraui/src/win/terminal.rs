@@ -27,7 +27,7 @@
 #[cfg(test)]
 mod tests {
     use crate::event::Rect;
-    use crate::primitives::terminal::{Terminal, TerminalCell};
+    use crate::primitives::terminal::{Terminal, TerminalCell, TerminalCursorShape};
     use crate::terminal_style::wide_glyph_x_scale;
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
@@ -52,6 +52,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         }
     }
 

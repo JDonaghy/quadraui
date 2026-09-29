@@ -5,6 +5,19 @@
 //! the overlay ladder shared with the GTK and macOS rasterisers (#500):
 //! cursor inverts fg/bg, selection uses `theme.selection_bg`, find-match
 //! and find-active use the highlight colours on [`Theme`].
+//!
+//! # Cursor shape (quadraui#338, best-effort)
+//!
+//! [`crate::primitives::terminal::TerminalCursorShape::Block`] is painted entirely by
+//! [`resolve_cell_style`]'s colour invert — no extra work here.
+//! `Underline`/`Bar` don't invert (see that fn's doc), so this rasteriser
+//! layers `Modifier::UNDERLINED` on top when
+//! [`crate::terminal_style::cursor_accent_visible`] says the accent
+//! should show. A ratatui cell has no sub-cell geometry, so **`Bar`
+//! renders identically to `Underline`** here — pixel-based rasterisers
+//! (GTK/macOS/win, via [`crate::primitives::terminal`]'s shared `paint`)
+//! are the ones that draw a true thin vertical bar; this is the
+//! documented embedded-TUI limitation, not a bug.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -12,7 +25,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::terminal::Terminal;
-use crate::terminal_style::resolve_cell_style;
+use crate::terminal_style::{cursor_accent_visible, resolve_cell_style};
 use crate::theme::Theme;
 
 use super::{draw_scrollbar, ratatui_color};
@@ -68,11 +81,16 @@ pub fn draw_terminal(buf: &mut Buffer, area: Rect, term: &Terminal, theme: &Them
             if cell.italic {
                 modifier |= Modifier::ITALIC;
             }
-            if cell.underline {
+            let cursor_underline = cursor_accent_visible(cell);
+            if cell.underline || cursor_underline {
                 modifier |= Modifier::UNDERLINED;
             }
             buf_cell.modifier = modifier;
-            buf_cell.underline_color = RatatuiColor::Reset;
+            buf_cell.underline_color = if cursor_underline {
+                draw_fg
+            } else {
+                RatatuiColor::Reset
+            };
         }
     }
 
@@ -132,7 +150,7 @@ pub fn draw_terminal_divider(buf: &mut Buffer, x: u16, y: u16, height: u16, them
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::terminal::{TerminalCell, TerminalScrollbar};
+    use crate::primitives::terminal::{TerminalCell, TerminalCursorShape, TerminalScrollbar};
     use crate::types::Color;
 
     fn blank_cell() -> TerminalCell {
@@ -148,6 +166,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         }
     }
 
@@ -158,6 +178,96 @@ mod tests {
             cells: vec![row; rows],
             scrollbar: sb,
         }
+    }
+
+    // ── Cursor shape (quadraui#338, best-effort) ────────────────────────
+
+    /// A `Block` cursor still paints as a full colour invert — this
+    /// rasteriser's pre-#338 default behaviour is unchanged.
+    #[test]
+    fn block_cursor_paints_inverted_with_no_underline() {
+        let fg = ratatui_color(Color::rgb(200, 200, 200));
+        let bg = ratatui_color(Color::rgb(0, 0, 0));
+        let mut c = blank_cell();
+        c.is_cursor = true;
+        let term = Terminal {
+            id: "t".into(),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let area = Rect::new(0, 0, 1, 1);
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(area);
+        draw_terminal(&mut buf, area, &term, &theme);
+
+        let cell = &buf[(0, 0)];
+        assert_eq!(cell.fg, bg, "inverted: cell fg becomes its own bg");
+        assert_eq!(cell.bg, fg, "inverted: cell bg becomes its own fg");
+        assert!(!cell.modifier.contains(Modifier::UNDERLINED));
+    }
+
+    /// `Underline`/`Bar` cursors don't invert (colours stay the cell's
+    /// own) but do force `Modifier::UNDERLINED`, with `underline_color`
+    /// set to the cell's own foreground — the best-effort approximation
+    /// this rasteriser uses since a ratatui cell has no sub-cell
+    /// geometry for a real thin bar (see this module's doc).
+    #[test]
+    fn underline_and_bar_cursor_paint_uninverted_with_underline_modifier() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(0, 0, 0);
+        let theme = Theme::default();
+
+        for shape in [TerminalCursorShape::Underline, TerminalCursorShape::Bar] {
+            let mut c = blank_cell();
+            c.fg = fg;
+            c.bg = bg;
+            c.is_cursor = true;
+            c.cursor_shape = shape;
+            let term = Terminal {
+                id: "t".into(),
+                cells: vec![vec![c]],
+                scrollbar: None,
+            };
+            let area = Rect::new(0, 0, 1, 1);
+            let mut buf = Buffer::empty(area);
+            draw_terminal(&mut buf, area, &term, &theme);
+
+            let cell = &buf[(0, 0)];
+            assert_eq!(
+                cell.fg,
+                ratatui_color(fg),
+                "{shape:?}: colours should not invert"
+            );
+            assert_eq!(cell.bg, ratatui_color(bg));
+            assert!(
+                cell.modifier.contains(Modifier::UNDERLINED),
+                "{shape:?}: best-effort accent is an underline modifier"
+            );
+            assert_eq!(cell.underline_color, ratatui_color(fg));
+        }
+    }
+
+    /// A blinking cursor's accent is a wall-clock toggle
+    /// (`cursor_blink_visible`) — this only pins that a *steady*
+    /// (`cursor_blinking: false`) `Underline` cursor is unconditionally
+    /// visible, since a real blink assertion would be flaky against the
+    /// system clock.
+    #[test]
+    fn steady_underline_cursor_is_always_visible() {
+        let mut c = blank_cell();
+        c.is_cursor = true;
+        c.cursor_shape = TerminalCursorShape::Underline;
+        c.cursor_blinking = false;
+        let term = Terminal {
+            id: "t".into(),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let area = Rect::new(0, 0, 1, 1);
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(area);
+        draw_terminal(&mut buf, area, &term, &theme);
+        assert!(buf[(0, 0)].modifier.contains(Modifier::UNDERLINED));
     }
 
     #[test]
