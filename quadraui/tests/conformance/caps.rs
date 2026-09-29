@@ -522,10 +522,13 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // fall back to `Theme::default()`, and `set_ui_font` builds a chrome
     // `IDWriteTextFormat` alongside the editor one. `set_nerd_fonts` is
     // no longer here either (#804): `WinBackend` now stores the flag and
-    // `draw_tree` honours it, matching TUI/GTK/macOS.
+    // `draw_tree` honours it, matching TUI/GTK/macOS. `register_zone` is
+    // no longer here either (#1199): `WinBackend` now stores zones in a
+    // real `Vec` and reads them back in `nc_hit_test`'s `WM_NCHITTEST`
+    // classification, the same way `draw_focus_ring`/`draw_solid_fill`
+    // always expected `register_zone` to work.
     ("win", "scales_text_rows", "stub backend — see #19"),
     ("win", "editor_col_at_x", "stub backend — see #19"),
-    ("win", "register_zone", "stub backend — see #19"),
     (
         "win",
         "tab_bar_layout_with_chrome",

@@ -251,8 +251,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetMenu, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
     ShowWindow, GWL_STYLE, HMENU, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW,
     IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE,
-    SW_RESTORE, SW_SHOW, WS_CAPTION, WS_OVERLAPPEDWINDOW,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_CAPTION, WS_OVERLAPPEDWINDOW,
 };
 
 #[cfg(target_os = "windows")]
@@ -780,6 +780,20 @@ pub struct WinBackend {
     /// `PostMessageW` nudge needs a real host to actually wake a live
     /// message loop.
     user_events: std::sync::Arc<crate::runtime::UserEventQueue>,
+    /// Zones registered this frame via [`Backend::register_zone`] —
+    /// `WinBackend`'s twin of `GtkBackend::zones`/`MacBackend::zones`.
+    /// Previously left on the trait's no-op default (tracked as a stub
+    /// gap in `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`, "stub
+    /// backend — see #19"), which silently dropped every zone this
+    /// backend's own rasterisers already tried to register
+    /// (`draw_focus_ring`'s `"chrome:focus-ring"`, `draw_solid_fill`'s
+    /// `"chrome:solid-fill"`) and left [`Self::nc_hit_test`] (issue #1199)
+    /// with nothing to classify a `WM_NCHITTEST` point against. Cleared at
+    /// the start of every frame by [`Self::begin_frame`], same lifecycle
+    /// as `GtkBackend::zones`. Not `target_os`-gated: the zone list itself
+    /// is a plain `Vec` with no WinAPI dependency, same rationale as
+    /// `events`/`user_events` above.
+    zones: Vec<crate::testing::ZoneRec>,
 }
 
 impl WinBackend {
@@ -842,6 +856,7 @@ impl WinBackend {
             last_error: None,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
+            zones: Vec::new(),
         }
     }
 
@@ -1270,6 +1285,65 @@ impl WinBackend {
         }
     }
 
+    // ── Custom-caption hit testing (issue #1199) ─────────────────────────
+
+    /// Reserved [`WidgetId`] a host registers (via [`Backend::register_zone`])
+    /// for the drawn title-bar band it wants Windows to treat as a native
+    /// caption — the drag-to-move / double-click-to-maximize row. Matches
+    /// [`crate::compose::app_shell::AppShell`]'s own `"app-shell:title-bar"`
+    /// zone id, so a host built on `AppShell` gets [`Self::nc_hit_test`]
+    /// for free; a bespoke host (one that doesn't use `AppShell`) opts in
+    /// with one `register_zone` call of its own each frame.
+    pub const TITLE_BAR_DRAG_ZONE: &'static str = "app-shell:title-bar";
+
+    /// Classify a client-area point (DIPs, same units [`Backend::viewport`]
+    /// reports) for `win::run`'s `WM_NCHITTEST` handler:
+    ///
+    /// - `None` — the point isn't inside [`Self::TITLE_BAR_DRAG_ZONE`] at
+    ///   all (no zone registered this frame, or the point falls outside
+    ///   it). The caller should leave `DefWindowProcW`'s own answer alone
+    ///   — resize border, below-the-band content, native caption buttons,
+    ///   etc.
+    /// - `Some(true)` — the point is in the band and not covered by any
+    ///   more specific zone, so it should report `HTCAPTION`: dragging it
+    ///   moves the window and double-clicking it maximizes/restores,
+    ///   exactly like a native titlebar (`DefWindowProcW`'s own
+    ///   non-client move loop handles both once this returns `HTCAPTION`
+    ///   — see the `Backend::toggle_window_maximize` override's doc for
+    ///   why no `begin_window_drag`/`begin_window_resize` call is needed
+    ///   here).
+    /// - `Some(false)` — the point is in the band but also inside another
+    ///   registered zone strictly smaller than the band (a button, the
+    ///   command-centre search box, or any other interactive widget a
+    ///   host paints into the row) — report `HTCLIENT` instead, so the
+    ///   click reaches that widget as an ordinary `UiEvent::MouseDown`
+    ///   rather than being swallowed by the OS move/maximize gesture.
+    ///
+    /// Zones whose bounds are *not* strictly smaller than the band (e.g.
+    /// `AppShell`'s own `"app-shell:window"` whole-window zone, which
+    /// necessarily contains every point in the band too) are never
+    /// treated as an exclusion — otherwise every point in the band would
+    /// read as "covered by another zone" and this would always answer
+    /// `Some(false)`, exactly the double-titlebar bug this issue exists
+    /// to fix.
+    pub fn nc_hit_test(&self, x: f32, y: f32) -> Option<bool> {
+        let point = Point::new(x, y);
+        let band = self
+            .zones
+            .iter()
+            .find(|z| z.id.as_str() == Self::TITLE_BAR_DRAG_ZONE)?;
+        if !band.bounds.contains(point) {
+            return None;
+        }
+        let band_area = band.bounds.width * band.bounds.height;
+        let excluded = self.zones.iter().any(|z| {
+            z.id.as_str() != Self::TITLE_BAR_DRAG_ZONE
+                && z.bounds.contains(point)
+                && z.bounds.width * z.bounds.height < band_area
+        });
+        Some(!excluded)
+    }
+
     // ── Paint-time text-run recording (quadraui#721) ────────────────────
 
     /// Enable/disable the paint-time text-run recording that backs
@@ -1557,6 +1631,12 @@ impl Backend for WinBackend {
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`'s
         // identical `begin_frame` clear (#741).
         self.core.begin_frame();
+        // Clear last frame's `register_zone` entries (#1199, closing the
+        // `register_zone` stub gap) — a zone a widget stops painting must
+        // stop resolving hit tests (including [`Self::nc_hit_test`]'s
+        // `WM_NCHITTEST` classification) too. Mirrors `GtkBackend::begin_frame`'s
+        // identical `self.zones.clear()`.
+        self.zones.clear();
         // Install the shared paint-time text-run recording sink for the
         // duration of this frame — drained into `self.text_runs` by
         // `end_frame` below. Mirrors `MacBackend::enter_frame_scope`'s
@@ -2010,6 +2090,21 @@ impl Backend for WinBackend {
         self.cancel_text_selection_drag_impl();
     }
 
+    // ─── Zone registration (#1199, closing the register_zone stub gap) ──
+
+    /// Overrides the trait's no-op default — closes `tests/conformance/
+    /// caps.rs`'s `("win", "register_zone", "stub backend — see #19")`
+    /// `ACCEPTED_DEFAULTS` entry. Every `draw_*` rasteriser on this
+    /// backend that already called `self.register_zone(...)`
+    /// (`draw_focus_ring`, `draw_solid_fill`) used to have that call
+    /// silently swallowed by the trait default; this is the first thing
+    /// on `WinBackend` that reads `self.zones` back, via
+    /// [`Self::nc_hit_test`]'s `WM_NCHITTEST` classification (issue
+    /// #1199). Mirrors `GtkBackend::register_zone`/`MacBackend::register_zone`.
+    fn register_zone(&mut self, id: WidgetId, bounds: Rect) {
+        self.zones.push(crate::testing::ZoneRec { id, bounds });
+    }
+
     // ─── Modal-overlay tracking ───────────────────────────────────────
 
     fn modal_stack_handle(&self) -> Rc<RefCell<ModalStack>> {
@@ -2226,12 +2321,69 @@ impl Backend for WinBackend {
                 // as `UiEvent::MenuActivated` from `win::run`'s `wndproc`
                 // `WM_COMMAND` arm.
                 native_menu: true,
+                // `window_chrome` (issue #1199): `toggle_window_maximize`
+                // is overridden below (real `IsZoomed`/`ShowWindow`
+                // calls), and `win::run`'s `wndproc` now handles
+                // `WM_NCCALCSIZE`/`WM_NCHITTEST` to fold a host's drawn
+                // title-bar band into the native caption the way
+                // `GtkBackend`'s CSD titlebar already does — see
+                // [`Self::nc_hit_test`]'s doc for the classification and
+                // `App::render_content`'s doc (vimcode `src/app.rs`) for
+                // the consumer-side branch this un-gates. Declaring this
+                // before `win::run` grew that handling would have just
+                // stacked a second, always-drawn band under the real
+                // native caption instead of replacing it — see this
+                // issue's own text for why the two land together.
+                window_chrome: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }
         #[cfg(not(target_os = "windows"))]
         {
             crate::backend::BackendCaps::empty()
+        }
+    }
+
+    // ─── Window chrome (issue #1199) ────────────────────────────────────
+    //
+    // Unlike `GtkBackend`/`MacBackend`, Win-GUI keeps its native
+    // `WS_OVERLAPPEDWINDOW` non-client frame (`win::run`'s window creation
+    // — this issue's other half handles only `WM_NCCALCSIZE`/
+    // `WM_NCHITTEST`, not `WS_POPUP`/undecorated CSD). Windows itself
+    // still owns drag-to-move and double-click-to-maximize for any point
+    // `WM_NCHITTEST` classifies as `HTCAPTION` (`win::run`'s `wndproc`,
+    // via `Self::nc_hit_test`) — `DefWindowProcW`'s own non-client move
+    // loop handles both without this backend ever calling
+    // `Backend::begin_window_drag`/`begin_window_resize`, so only
+    // `toggle_window_maximize` below is overridden: a host that wants a
+    // "Maximize" menu item or keybinding alongside the pointer gesture has
+    // something real to call. `CAP_CONTRACTS`'s `window_chrome` entry is
+    // `Proof::Any` — one overridden method is enough to make the
+    // `backend_caps` declaration honest.
+
+    /// `IsZoomed`/`ShowWindow(SW_MAXIMIZE/SW_RESTORE)` — mirrors
+    /// `GtkBackend::toggle_window_maximize`/`MacBackend::toggle_window_maximize`.
+    /// Returns `false` when this backend owns no window yet (matching
+    /// every other backend's `begin_window_drag`-family contract).
+    fn toggle_window_maximize(&mut self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            let Some(hwnd) = self.hwnd else {
+                return false;
+            };
+            let target = if unsafe { IsZoomed(hwnd) }.as_bool() {
+                SW_RESTORE
+            } else {
+                SW_MAXIMIZE
+            };
+            unsafe {
+                let _ = ShowWindow(hwnd, target);
+            }
+            true
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
         }
     }
 
@@ -5931,6 +6083,155 @@ mod tests {
             b.focused_activity_bar_id().is_none(),
             "focused_activity_bar must be cleared by begin_frame"
         );
+    }
+
+    // ─── #1199: window_chrome ───────────────────────────────────────────
+
+    /// `CAP_CONTRACTS`'s `window_chrome` entry is `Proof::Any` — this is
+    /// the one method that makes `backend_caps().window_chrome: true`
+    /// honest (see that struct literal's doc). No window on any test
+    /// host (real Windows CI included — this unit test never calls
+    /// `attach_surface`), so this stays `false` the same way
+    /// `MacBackend::toggle_window_maximize_false_without_window` does.
+    #[test]
+    fn toggle_window_maximize_false_without_window() {
+        let mut b = WinBackend::new();
+        assert!(!Backend::toggle_window_maximize(&mut b));
+    }
+
+    #[test]
+    fn backend_caps_declares_window_chrome() {
+        let b = WinBackend::new();
+        #[cfg(target_os = "windows")]
+        assert!(
+            b.backend_caps().window_chrome,
+            "issue #1199: WinBackend must declare window_chrome now that \
+             toggle_window_maximize is overridden and win::run handles \
+             WM_NCCALCSIZE/WM_NCHITTEST"
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            !b.backend_caps().window_chrome,
+            "off-Windows backend_caps() is BackendCaps::empty() — see that method's doc"
+        );
+    }
+
+    /// `register_zone` used to be the trait's no-op default (`tests/
+    /// conformance/caps.rs`'s `("win", "register_zone", …)` `ACCEPTED_DEFAULTS`
+    /// entry) — this is the regression pin for closing that gap.
+    #[test]
+    fn register_zone_records_the_zone() {
+        let mut b = WinBackend::new();
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new("demo:zone"),
+            Rect::new(1.0, 2.0, 3.0, 4.0),
+        );
+        assert_eq!(b.zones.len(), 1);
+        assert_eq!(b.zones[0].id, WidgetId::new("demo:zone"));
+        assert_eq!(b.zones[0].bounds, Rect::new(1.0, 2.0, 3.0, 4.0));
+    }
+
+    /// `begin_frame` must clear last frame's zones the same way it clears
+    /// `focused_activity_bar` above — a zone a widget stops painting must
+    /// stop resolving `nc_hit_test` too.
+    #[test]
+    fn begin_frame_clears_zones() {
+        let mut b = WinBackend::new();
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new("demo:zone"),
+            Rect::new(0.0, 0.0, 1.0, 1.0),
+        );
+        assert_eq!(b.zones.len(), 1);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            b.begin_frame(Viewport::new(80.0, 24.0, 1.0));
+        }));
+        assert!(
+            b.zones.is_empty(),
+            "begin_frame must clear last frame's zones"
+        );
+    }
+
+    /// No `TITLE_BAR_DRAG_ZONE` registered this frame — every point
+    /// answers `None`, so `win::run`'s `WM_NCHITTEST` handler leaves
+    /// `DefWindowProcW`'s own answer alone.
+    #[test]
+    fn nc_hit_test_none_with_no_band_registered() {
+        let b = WinBackend::new();
+        assert_eq!(b.nc_hit_test(10.0, 10.0), None);
+    }
+
+    /// A point outside the registered band is `None` even once a band
+    /// exists — same "leave DefWindowProcW alone" contract.
+    #[test]
+    fn nc_hit_test_none_outside_the_band() {
+        let mut b = WinBackend::new();
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE),
+            Rect::new(0.0, 0.0, 800.0, 32.0),
+        );
+        assert_eq!(b.nc_hit_test(10.0, 100.0), None);
+    }
+
+    /// The empty part of the drawn band reports `Some(true)` (`HTCAPTION`)
+    /// — the Test section's acceptance scenario, first half.
+    #[test]
+    fn nc_hit_test_caption_in_the_empty_band() {
+        let mut b = WinBackend::new();
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE),
+            Rect::new(0.0, 0.0, 800.0, 32.0),
+        );
+        assert_eq!(b.nc_hit_test(400.0, 16.0), Some(true));
+    }
+
+    /// A smaller zone registered inside the band (an inline min/max/close
+    /// button, the command-centre search box) excludes its own footprint
+    /// — `Some(false)` (`HTCLIENT`), so the click reaches the widget as a
+    /// normal `UiEvent::MouseDown` instead of starting an OS move/maximize
+    /// gesture. Second half of the Test section's acceptance scenario.
+    #[test]
+    fn nc_hit_test_client_on_an_inline_button() {
+        let mut b = WinBackend::new();
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE),
+            Rect::new(0.0, 0.0, 800.0, 32.0),
+        );
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new("titlebar:minimize-button"),
+            Rect::new(700.0, 4.0, 24.0, 24.0),
+        );
+        // Inside the button.
+        assert_eq!(b.nc_hit_test(712.0, 16.0), Some(false));
+        // Outside the button but still in the band.
+        assert_eq!(b.nc_hit_test(100.0, 16.0), Some(true));
+    }
+
+    /// A coarser zone that contains the whole band (e.g. `AppShell`'s own
+    /// `"app-shell:window"` whole-window zone) must **not** be treated as
+    /// an exclusion — otherwise every point in the band would read as
+    /// "covered by another zone" and this would always answer
+    /// `Some(false)`, the exact double-titlebar bug this issue exists to
+    /// fix. Only zones strictly *smaller* than the band count.
+    #[test]
+    fn nc_hit_test_ignores_zones_at_least_as_large_as_the_band() {
+        let mut b = WinBackend::new();
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new("app-shell:window"),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        Backend::register_zone(
+            &mut b,
+            WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE),
+            Rect::new(0.0, 0.0, 800.0, 32.0),
+        );
+        assert_eq!(b.nc_hit_test(400.0, 16.0), Some(true));
     }
 
     /// #702: `PointerShape` -> Win32 `IDC_*` cursor-resource mapping

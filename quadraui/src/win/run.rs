@@ -818,13 +818,14 @@ mod win32 {
         GetClientRect, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage,
         RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
         SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-        CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
-        SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE,
-        WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
-        WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
-        WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
+        NCCALCSIZE_PARAMS, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
+        WM_CHAR, WM_CLOSE, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
+        WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+        WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST,
+        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE,
+        WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
+        WS_OVERLAPPEDWINDOW,
     };
     // #834: `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
@@ -2027,6 +2028,93 @@ mod win32 {
                     let _ = ValidateRect(Some(hwnd), None);
                 }
                 LRESULT(0)
+            }
+            WM_NCCALCSIZE => {
+                // Issue #1199: fold a host's drawn title-bar band into
+                // the native caption instead of stacking a second, always
+                // -drawn row underneath a still-real native one — the
+                // custom-caption half of this issue's ask (the other half
+                // is `WM_NCHITTEST`, below).
+                //
+                // `wparam != 0` is the "validate/adjust the proposed
+                // client rect" form (the one this window ever receives —
+                // Windows only sends the `wparam == 0` "just tell me the
+                // client rect" form to windows that ask for it
+                // explicitly, which `run_inner` never does); the
+                // `NCCALCSIZE_PARAMS` it points at is in/out, and
+                // `rgrc[0]` starts out holding the *proposed new window
+                // rect* (screen coordinates) before any adjustment.
+                if wparam.0 != 0 {
+                    // SAFETY: `WM_NCCALCSIZE`'s contract guarantees
+                    // `lparam` points at a live `NCCALCSIZE_PARAMS` for
+                    // the duration of this call when `wparam != 0`.
+                    let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+                    // Capture the window's own outer top edge before
+                    // `DefWindowProcW` shrinks `rgrc[0]` for the standard
+                    // caption + resize-border reservation.
+                    let outer_top = params.rgrc[0].top;
+                    unsafe {
+                        DefWindowProcW(hwnd, msg, wparam, lparam);
+                    }
+                    // Push `top` back out to that outer edge — zeroing
+                    // the caption-height reservation entirely (this
+                    // issue's "keeps the window's outer bounds but
+                    // zeroes the caption height") while leaving whatever
+                    // `DefWindowProcW` just did to `left`/`right`/`bottom`
+                    // (the resize-border inset) alone. The client area —
+                    // and so the app's own drawn band, painted at its
+                    // top — now extends all the way to the window's top
+                    // edge instead of stopping below a reserved native
+                    // caption strip.
+                    params.rgrc[0].top = outer_top;
+                    LRESULT(0)
+                } else {
+                    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+                }
+            }
+            WM_NCHITTEST => {
+                // Issue #1199: the `WM_NCHITTEST` half of the
+                // custom-caption extension. Ask Windows for its own
+                // answer first — it still owns the resize-border edges
+                // (`WM_NCCALCSIZE` above only reclaimed the caption
+                // strip, not the sizing-frame inset) and anything else
+                // outside the client area — and only reclassify an
+                // ordinary `HTCLIENT` answer into `HTCAPTION` when the
+                // point falls inside a host-registered title-bar drag
+                // band that isn't itself covered by a smaller
+                // (button/search-box) zone. See
+                // `WinBackend::nc_hit_test`'s doc for the exact
+                // classification this defers to.
+                let default = unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+                if default.0 as u32 != HTCLIENT {
+                    return default;
+                }
+                // `lparam` carries **screen** coordinates for this
+                // message (same as `WM_MOUSEWHEEL` above) —
+                // `ScreenToClient` converts before handing off to
+                // `WinBackend::nc_hit_test`, which (like every other
+                // consumer of a `Rect` in this crate) expects DIPs.
+                let (screen_x, screen_y) = point_from_lparam(lparam.0);
+                let mut pt = POINT {
+                    x: screen_x as i32,
+                    y: screen_y as i32,
+                };
+                unsafe {
+                    let _ = ScreenToClient(hwnd, &mut pt);
+                }
+                let scale = ws.state.borrow().backend.viewport().scale;
+                // Guards the same way `win::events::to_dip` does — an
+                // (in-practice-impossible) zero scale degrades to
+                // unscaled rather than producing `inf`/`NaN`.
+                let (dip_x, dip_y) = if scale == 0.0 {
+                    (pt.x as f32, pt.y as f32)
+                } else {
+                    (pt.x as f32 / scale, pt.y as f32 / scale)
+                };
+                match ws.state.borrow().backend.nc_hit_test(dip_x, dip_y) {
+                    Some(true) => LRESULT(HTCAPTION as isize),
+                    Some(false) | None => default,
+                }
             }
             WM_SETCURSOR => {
                 // #702: Windows asks "what cursor belongs here?" via this
