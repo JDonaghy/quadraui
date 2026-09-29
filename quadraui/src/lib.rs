@@ -84,8 +84,7 @@
 //!   units). `cargo run --example tui_demo`.
 //! - **`examples/gtk_demo.rs`** — same demo rendered with GTK4 +
 //!   Cairo + Pango (pixel units, two-pass paint). Requires the
-//!   `gtk-example` feature: `cargo run --example gtk_demo
-//!   --features gtk-example`.
+//!   `gtk` feature: `cargo run --example gtk_demo --features gtk`.
 //! - **`docs/UI_CRATE_DESIGN.md`** — original design sketch and the §10
 //!   plugin invariants every primitive must honour. Predates
 //!   implementation (see its own status banner) — treat it as a decision

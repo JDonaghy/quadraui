@@ -114,11 +114,6 @@ gtk = [
 # feature's comments above — same crates, same reasons.
 win = ["dep:windows", "dep:windows-numerics", "dep:trash", "dep:keyring"]
 
-# Legacy alias kept so `cargo run --example gtk_demo --features gtk-example`
-# keeps working as a deprecated spelling. Prefer `--features gtk` going
-# forward — both gtk_demo and gtk_app now go through `quadraui::gtk::run`.
-gtk-example = ["gtk"]
-
 # Public macOS rasterisers in `quadraui::macos` (AppKit + Core Graphics + Core Text).
 # The objc2-family deps are platform-gated below, but that's not the only
 # gate: `lib.rs` also cfg's `mod macos` on `target_os = "macos"`, so on a
@@ -156,7 +151,7 @@ serde = { version = "1.0", features = ["derive"] }
 # `src/primitives/*`); this promotes it to a real dependency so the same
 # crate/version is available outside `#[cfg(test)]` too.
 serde_json = "1.0"
-# Optional — pulled in by the `gtk` / `gtk-example` features.
+# Optional — pulled in by the `gtk` feature.
 gtk4 = { version = "0.11", features = ["v4_10"], optional = true }
 # Bumped alongside gtk4 (#796): pangocairo/pango/glib are one version
 # family with gtk4-rs — pairing gtk4 0.11 with pangocairo 0.18 resolves

@@ -442,7 +442,7 @@ engine's defaults). Demonstrates:
 ### `examples/gtk_demo.rs` — GTK4 / Cairo + Pango (~430 lines)
 
 ```bash
-cargo run --example gtk_demo --features gtk-example
+cargo run --example gtk_demo --features gtk
 ```
 
 (Requires GTK4 development libraries — `libgtk-4-dev` on Debian /
