@@ -83,11 +83,15 @@ use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
+#[cfg(target_os = "windows")]
+use crate::primitives::context_menu::ContextMenuItem;
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::{Form, FormLayout};
+#[cfg(all(test, target_os = "windows"))]
+use crate::primitives::menu_bar::MenuBarItem;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 // Only referenced (as a bare name) inside `draw_form`'s
 // `target_os = "windows"` arm, which pattern-matches
@@ -242,11 +246,13 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowLongPtrW, GetWindowRect, IsZoomed, LoadCursorW, PostMessageW,
-    SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-    ShowWindow, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_CAPTION, WS_OVERLAPPEDWINDOW,
+    AppendMenuW, CreateMenu, CreatePopupMenu, DestroyMenu, GetClientRect, GetWindowLongPtrW,
+    GetWindowRect, IsZoomed, LoadCursorW, PostMessageW, SetCursor, SetForegroundWindow, SetMenu,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, GWL_STYLE, HMENU,
+    HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE,
+    MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_CAPTION,
+    WS_OVERLAPPEDWINDOW,
 };
 
 #[cfg(target_os = "windows")]
@@ -550,6 +556,17 @@ pub struct WinBackend {
     /// AppKit's `toggleFullScreen:` are. `None` outside fullscreen.
     #[cfg(target_os = "windows")]
     fullscreen_saved: Option<(RECT, isize)>,
+    /// The currently-installed native `HMENU`, set by
+    /// [`Self::install_menu_bar_now`] (issue #1200). Kept so a later
+    /// [`Backend::install_menu_bar`] call can `DestroyMenu` it before
+    /// installing the replacement — unlike `SetImage`-style APIs,
+    /// `SetMenu` does **not** destroy the menu it replaces; leaving the
+    /// old `HMENU` un-destroyed would leak one native menu handle per
+    /// re-install. `None` until the first successful install. `cfg`-gated
+    /// like `surface`/`hwnd` above: an `HMENU` is a raw WinAPI handle
+    /// with nothing to check off Windows.
+    #[cfg(target_os = "windows")]
+    menu_handle: Option<HMENU>,
     /// Live, thread-safe mirror of `hwnd`'s raw handle value, read fresh
     /// on every invocation of the closure [`Self::waker`] hands out
     /// (issue #831 review fix). `HWND` itself isn't `Send`, so it can't
@@ -676,6 +693,32 @@ pub struct WinBackend {
     /// `current_pointer_shape` below — so `set_theme`/`current_theme`
     /// stay testable on every host, not only `target_os = "windows"`.
     current_theme: crate::theme::Theme,
+    /// `WM_COMMAND`'s assigned command id (1-based, in append order) →
+    /// `WidgetId`, rebuilt by every [`Self::install_menu_bar_now`] call
+    /// (issue #1200). `win::run`'s `wndproc` reads this via
+    /// [`Self::menu_command_id`] to resolve a `WM_COMMAND`'s
+    /// `LOWORD(wparam)` into the `UiEvent::MenuActivated` it dispatches.
+    /// Plain `Vec<WidgetId>` (not `HashMap`), matching
+    /// `super::tray::track_menu`'s identical id-assignment scheme.
+    /// `cfg`-gated (unlike `current_theme` above): every reader and
+    /// every writer of this field lives inside a `target_os = "windows"`
+    /// arm (`install_menu_bar`'s body, `install_menu_bar_now`,
+    /// `menu_command_id`) — there is no portable code path that ever
+    /// touches it, so leaving it un-gated would just be a `-D warnings`
+    /// dead-code failure on every other host.
+    #[cfg(target_os = "windows")]
+    menu_command_ids: Vec<WidgetId>,
+    /// The [`MenuBar`] passed to the most recent
+    /// [`Backend::install_menu_bar`] call, replayed by
+    /// [`Self::attach_surface`] once a real `HWND` exists (issue #1200).
+    /// `install_menu_bar` is documented to run from `AppLogic::setup`,
+    /// which — per `win::run::run_inner`'s "backend + app setup happens
+    /// before the window exists" ordering (see that fn's doc) — runs
+    /// *before* there is any `HWND` for `SetMenu` to attach to. `None`
+    /// until the first `install_menu_bar` call. `cfg`-gated for the same
+    /// reason as `menu_command_ids` above.
+    #[cfg(target_os = "windows")]
+    pending_menu_bar: Option<MenuBar>,
     /// The `PointerShape` [`Backend::set_cursor`] last applied — read back
     /// by `win::run`'s `WM_SETCURSOR` handler (#702) so the pointer glyph
     /// stays put across every `WM_SETCURSOR` Windows sends for the
@@ -766,6 +809,8 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             fullscreen_saved: None,
             #[cfg(target_os = "windows")]
+            menu_handle: None,
+            #[cfg(target_os = "windows")]
             hwnd_raw: std::sync::Arc::new(std::sync::atomic::AtomicIsize::new(0)),
             #[cfg(target_os = "windows")]
             dwrite: None,
@@ -786,6 +831,10 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             registered_font_bytes: Vec::new(),
             current_theme: crate::theme::Theme::default(),
+            #[cfg(target_os = "windows")]
+            menu_command_ids: Vec::new(),
+            #[cfg(target_os = "windows")]
+            pending_menu_bar: None,
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
             text_runs: Vec::new(),
@@ -946,6 +995,15 @@ impl WinBackend {
             self.nerd_font_fallback.as_ref(),
         )?;
         self.chrome_dwrite = Some(chrome_dwrite);
+
+        // Issue #1200: replay a menu bar installed during `AppLogic::setup`
+        // — `install_menu_bar` stashes it in `pending_menu_bar` when no
+        // `hwnd` exists yet (setup runs before the window does), so the
+        // very first live `SetMenu` call happens here instead, once
+        // there's a real window to attach to.
+        if self.pending_menu_bar.is_some() {
+            self.install_menu_bar_now(hwnd);
+        }
 
         Ok(())
     }
@@ -1909,6 +1967,35 @@ impl Backend for WinBackend {
         self.core.set_menu_style(style);
     }
 
+    // ─── Native menu installation (issue #1200) ─────────────────────────
+
+    /// Win32 `SetMenu` + `WM_COMMAND` — the Win-GUI twin of
+    /// `MacBackend::install_menu_bar`'s `NSMenu` installer. Builds a
+    /// native `HMENU` tree from `bar` via [`Self::install_menu_bar_now`]
+    /// and attaches it to the window.
+    ///
+    /// `AppLogic::setup` — the trait doc's documented call site — runs
+    /// *before* `win::run::run_inner` creates the window (see
+    /// [`Self::pending_menu_bar`]'s doc), so this always stashes `bar`
+    /// first and only calls through immediately when a `hwnd` already
+    /// exists (a runtime re-install after the window is up);
+    /// [`Self::attach_surface`] replays the stash the moment a `hwnd`
+    /// becomes available, so a `setup()`-time call still shows a menu on
+    /// the very first frame.
+    fn install_menu_bar(&mut self, bar: &crate::primitives::menu_bar::MenuBar) {
+        #[cfg(target_os = "windows")]
+        {
+            self.pending_menu_bar = Some(bar.clone());
+            if let Some(hwnd) = self.hwnd {
+                self.install_menu_bar_now(hwnd);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = bar;
+        }
+    }
+
     // ─── Text selection (#741) ──────────────────────────────────────────
 
     /// Overrides the trait's no-op default — see [`Self::text_regions`]
@@ -2131,6 +2218,14 @@ impl Backend for WinBackend {
                 // for the real `Shell_NotifyIconW`/`TrackPopupMenuEx`
                 // calls backing each method.
                 tray: true,
+                // `native_menu` (issue #1200): `install_menu_bar` is
+                // overridden above and now builds a real `HMENU` tree
+                // (`CreateMenu`/`CreatePopupMenu`/`AppendMenuW`) and
+                // attaches it via `SetMenu` — see
+                // `Self::install_menu_bar_now`'s doc. Activations arrive
+                // as `UiEvent::MenuActivated` from `win::run`'s `wndproc`
+                // `WM_COMMAND` arm.
+                native_menu: true,
                 ..crate::backend::BackendCaps::empty()
             }
         }
@@ -4656,6 +4751,164 @@ impl WinBackend {
     #[cfg(target_os = "windows")]
     pub(crate) fn tray_menu(&self) -> Option<crate::primitives::context_menu::ContextMenu> {
         super::tray::attached_menu(&self.tray)
+    }
+
+    /// Actually build the native `HMENU` tree for
+    /// [`Self::pending_menu_bar`] and attach it to `hwnd` via `SetMenu`
+    /// (issue #1200). Called both from
+    /// [`Backend::install_menu_bar`][crate::backend::Backend::install_menu_bar]
+    /// (when `self.hwnd` is already `Some` — a runtime re-install after
+    /// the window is up) and from [`Self::attach_surface`] (replaying an
+    /// `install_menu_bar` call that arrived during `AppLogic::setup`,
+    /// before any `HWND` existed).
+    ///
+    /// Top-level items with no declared `submenu` are appended disabled
+    /// (`MF_GRAYED`) rather than skipped, so the bar's item count still
+    /// matches `bar.items` — a label with nothing to open is inert, not
+    /// missing.
+    ///
+    /// Silently gives up (leaving any previously-installed menu in
+    /// place) if `CreateMenu`/`SetMenu` fails — there is no error
+    /// channel back to the caller (the trait method returns `()`,
+    /// matching every other backend's `install_menu_bar`), so this
+    /// degrades the same way [`Self::draw_tree`]'s "no surface yet"
+    /// fallback does rather than panicking.
+    #[cfg(target_os = "windows")]
+    fn install_menu_bar_now(&mut self, hwnd: HWND) {
+        let Some(bar) = self.pending_menu_bar.clone() else {
+            return;
+        };
+        let Ok(hmenu) = (unsafe { CreateMenu() }) else {
+            return;
+        };
+
+        let mut ids: Vec<WidgetId> = Vec::new();
+        for top in &bar.items {
+            let wide = win_wide_nul_terminated(&top.label);
+            match top.submenu.as_ref() {
+                Some(items) => {
+                    let Ok(submenu) = (unsafe { CreatePopupMenu() }) else {
+                        continue;
+                    };
+                    for item in items {
+                        win_append_menu_bar_item(submenu, item, &mut ids);
+                    }
+                    let mut flags = MF_POPUP | MF_STRING;
+                    if top.disabled {
+                        flags |= MF_GRAYED;
+                    }
+                    unsafe {
+                        let _ = AppendMenuW(
+                            hmenu,
+                            flags,
+                            submenu.0 as usize,
+                            windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                        );
+                    }
+                }
+                None => unsafe {
+                    let _ = AppendMenuW(
+                        hmenu,
+                        MF_STRING | MF_GRAYED,
+                        0,
+                        windows::core::PCWSTR::from_raw(wide.as_ptr()),
+                    );
+                },
+            }
+        }
+
+        if (unsafe { SetMenu(hwnd, Some(hmenu)) }).is_err() {
+            unsafe {
+                let _ = DestroyMenu(hmenu);
+            }
+            return;
+        }
+        self.menu_command_ids = ids;
+        // `SetMenu` does not destroy the menu it replaces — tear down
+        // the previous `HMENU` (if any) now that the new one is live, so
+        // a re-install doesn't leak one native menu handle per call. See
+        // `menu_handle`'s field doc.
+        if let Some(old) = self.menu_handle.replace(hmenu) {
+            unsafe {
+                let _ = DestroyMenu(old);
+            }
+        }
+    }
+
+    /// Resolve a `WM_COMMAND`'s decoded command id (`win::run`'s
+    /// `win_menu_command_id`) back to the `WidgetId` it was assigned by
+    /// the most recent [`Self::install_menu_bar_now`] call (issue
+    /// #1200) — `win::run`'s `wndproc` `WM_COMMAND` arm's only caller.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn menu_command_id(&self, cmd_id: u16) -> Option<WidgetId> {
+        self.menu_command_ids.get(cmd_id as usize - 1).cloned()
+    }
+}
+
+/// Append one [`ContextMenuItem`] (and any nested submenu) to `hmenu`,
+/// assigning each leaf a 1-based command id and pushing its `WidgetId`
+/// onto `ids` at the matching index — `ids[cmd_id - 1]` recovers the
+/// activated item's id from a live `WM_COMMAND`, the same role
+/// `super::tray::append_hmenu_item`'s identical `ids` parameter plays
+/// for `TrackPopupMenuEx`'s `TPM_RETURNCMD` result. Not shared with that
+/// function directly: `install_menu_bar`'s `HMENU` is long-lived
+/// (attached via `SetMenu`, torn down only on the next
+/// `install_menu_bar` call or window destroy) while tray's is built and
+/// destroyed fresh on every click — different enough lifetimes that
+/// coupling the two isn't worth it for ~30 lines of near-identical
+/// `AppendMenuW` calls.
+#[cfg(target_os = "windows")]
+fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetId>) {
+    if item.is_separator() {
+        unsafe {
+            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+        }
+        return;
+    }
+
+    let title: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
+    let wide = win_wide_nul_terminated(&title);
+
+    if let Some(nested) = item.submenu.as_ref() {
+        let Ok(submenu) = (unsafe { CreatePopupMenu() }) else {
+            return;
+        };
+        for child in nested {
+            win_append_menu_bar_item(submenu, child, ids);
+        }
+        let mut flags = MF_POPUP | MF_STRING;
+        if item.disabled {
+            flags |= MF_GRAYED;
+        }
+        unsafe {
+            let _ = AppendMenuW(
+                hmenu,
+                flags,
+                submenu.0 as usize,
+                windows::core::PCWSTR::from_raw(wide.as_ptr()),
+            );
+        }
+        return;
+    }
+
+    if item.id.is_some() {
+        ids.push(item.id.clone().expect("checked Some above"));
+        let cmd_id = ids.len();
+        let mut flags = MF_STRING;
+        if item.disabled {
+            flags |= MF_GRAYED;
+        }
+        if let Some(true) = item.checked {
+            flags |= MF_CHECKED;
+        }
+        unsafe {
+            let _ = AppendMenuW(
+                hmenu,
+                flags,
+                cmd_id,
+                windows::core::PCWSTR::from_raw(wide.as_ptr()),
+            );
+        }
     }
 }
 
@@ -7511,5 +7764,191 @@ mod tests {
         let (w2, h2) = NativeSurface::surface_measure_text_styled(&backend, "hello", true);
         assert_eq!(w2, 5.0 * backend.current_char_width);
         assert_eq!(h2, backend.current_line_height);
+    }
+
+    /// Issue #1200: `install_menu_bar` runs from `AppLogic::setup`, which
+    /// — per `win::run::run_inner`'s "backend + app setup happens before
+    /// the window exists" ordering — is called while `self.hwnd` is
+    /// still `None`. It must stash `bar` in `pending_menu_bar` rather
+    /// than silently dropping it (the trait default's behaviour), so
+    /// [`WinBackend::attach_surface`] can replay it the moment a real
+    /// `HWND` shows up. No `HMENU` is built yet at this point — there is
+    /// no window to attach one to — so `menu_command_ids` must stay
+    /// empty.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn install_menu_bar_before_a_window_exists_stashes_the_bar_for_later() {
+        let mut backend = WinBackend::new();
+        assert!(backend.hwnd.is_none());
+
+        let bar = MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![MenuBarItem {
+                id: WidgetId::new("file"),
+                label: "&File".to_string(),
+                disabled: false,
+                submenu: Some(vec![ContextMenuItem {
+                    id: Some(WidgetId::new("file.save")),
+                    label: crate::types::StyledText::plain("Save"),
+                    ..Default::default()
+                }]),
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+
+        Backend::install_menu_bar(&mut backend, &bar);
+
+        assert_eq!(backend.pending_menu_bar, Some(bar));
+        assert!(
+            backend.menu_command_ids.is_empty(),
+            "no HWND existed yet, so no HMENU/SetMenu call should have run"
+        );
+    }
+
+    /// Issue #1200: a real `SetMenu` install, then a synthesized
+    /// `WM_COMMAND` decoded and resolved the same way `win::run`'s
+    /// `wndproc` `WM_COMMAND` arm does — asserting on the resulting
+    /// `WidgetId`, not merely that `SetMenu` was called (the #587/#592
+    /// "assert on effect, not on state populated" lesson). This can't
+    /// drive the real C-ABI `wndproc` directly (it's private inside
+    /// `win::run`'s windows-only `mod win32`, reachable only via a live
+    /// `DispatchMessageW` loop — see that module's doc), so it exercises
+    /// the same two functions the `WM_COMMAND` arm glues together
+    /// (`win::run::win_menu_command_id` then
+    /// `WinBackend::menu_command_id`) against a real `HMENU` built by a
+    /// real `install_menu_bar` call on a real (if never-shown) window —
+    /// only the final `dispatch`-into-`app.handle` hop is stubbed out,
+    /// and that hop is already covered generically by
+    /// `win::run::tests`' `dispatch_event` coverage.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wm_command_resolves_back_to_the_activated_items_widget_id() {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HINSTANCE;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, CW_USEDEFAULT,
+            WINDOW_EX_STYLE, WNDCLASSEXW,
+        };
+
+        unsafe extern "system" fn test_wndproc(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> windows::Win32::Foundation::LRESULT {
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+
+        let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null()) }
+            .expect("GetModuleHandleW(None) always succeeds for the current process")
+            .into();
+        let class_name = win_wide_nul_terminated("quadraui_test_1200_menu_bar_wndclass");
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(test_wndproc),
+            hInstance: hinstance,
+            lpszClassName: PCWSTR::from_raw(class_name.as_ptr()),
+            ..Default::default()
+        };
+        // Ignore the return value: a second test in this same process
+        // re-registering the same class name fails
+        // (`ERROR_CLASS_ALREADY_EXISTS`), which is harmless here — only
+        // the handle `CreateWindowExW` resolves by name matters, not
+        // which call minted the class.
+        unsafe {
+            let _ = RegisterClassExW(&wc);
+        }
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR::from_raw(class_name.as_ptr()),
+                PCWSTR::null(),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                None,
+                None,
+                Some(hinstance),
+                None,
+            )
+        }
+        .expect(
+            "CreateWindowExW for an unshown top-level test window must succeed on real \
+             Windows hardware",
+        );
+
+        let mut backend = WinBackend::new();
+        backend.hwnd = Some(hwnd);
+
+        let item_id = WidgetId::new("file.save");
+        let bar = MenuBar {
+            id: WidgetId::new("menubar"),
+            items: vec![
+                MenuBarItem {
+                    id: WidgetId::new("file"),
+                    label: "&File".to_string(),
+                    disabled: false,
+                    submenu: Some(vec![ContextMenuItem {
+                        id: Some(item_id.clone()),
+                        label: crate::types::StyledText::plain("Save"),
+                        ..Default::default()
+                    }]),
+                },
+                // A second top-level item makes sure command ids keep
+                // incrementing across items rather than resetting per
+                // top-level submenu.
+                MenuBarItem {
+                    id: WidgetId::new("edit"),
+                    label: "&Edit".to_string(),
+                    disabled: false,
+                    submenu: Some(vec![ContextMenuItem {
+                        id: Some(WidgetId::new("edit.undo")),
+                        label: crate::types::StyledText::plain("Undo"),
+                        ..Default::default()
+                    }]),
+                },
+            ],
+            open_item: None,
+            focused_item: None,
+        };
+
+        Backend::install_menu_bar(&mut backend, &bar);
+
+        // Simulate the `WM_COMMAND` Windows would post for a click on
+        // "Save" (the first leaf item appended, so command id 1):
+        // `wparam`'s low word is the command id, high word 0 (menu, not
+        // an accelerator/control notification) — exactly
+        // `win::run::wndproc`'s `WM_COMMAND` arm's own decode.
+        let cmd_id = crate::win::run::win_menu_command_id(1)
+            .expect("wparam 1 (HIWORD 0, LOWORD 1) must decode to command id 1");
+        assert_eq!(
+            backend.menu_command_id(cmd_id),
+            Some(item_id),
+            "WM_COMMAND's wparam must resolve back to the activated leaf item's WidgetId"
+        );
+
+        // The second top-level item's leaf must resolve to command id 2,
+        // not collide with or reset after the first.
+        let cmd_id_2 =
+            crate::win::run::win_menu_command_id(2).expect("wparam 2 decodes to command id 2");
+        assert_eq!(
+            backend.menu_command_id(cmd_id_2),
+            Some(WidgetId::new("edit.undo"))
+        );
+
+        // A `wparam` whose high word is nonzero (an accelerator/control
+        // notification, not a menu click) must decode to `None` —
+        // `win::run`'s `WM_COMMAND` arm skips the lookup entirely in
+        // that case.
+        assert_eq!(crate::win::run::win_menu_command_id(1 << 16 | 1), None);
+
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 }

@@ -255,6 +255,70 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     }
 }
 
+/// Decode `WM_COMMAND`'s `wparam` into the command id
+/// `WinBackend::install_menu_bar_now` assigned to a leaf menu item, or
+/// `None` if this `WM_COMMAND` isn't a menu selection at all (issue
+/// #1200). Per the `WM_COMMAND` contract, `HIWORD(wparam)` is `0` only
+/// for a menu selection — `1` marks an accelerator-table entry (this
+/// backend has no native `ACCEL` table; every accelerator routes
+/// through `WM_KEYDOWN`/`register_accelerator` instead, so that case
+/// never arises in practice) and any other value is a control
+/// notification code from a child `HWND`, which this backend never
+/// creates. `LOWORD(wparam)` is the command id itself.
+///
+/// Pure decode (no `HWND`/table lookup) so it's unit-testable off
+/// Windows — mirrors `win::tray::tray_click_button`'s identical "pure
+/// decode, `wndproc` arm does the live lookup" split. Not itself
+/// `#[cfg(target_os = "windows")]`: same posture as [`dispatch_event`]
+/// above — its only caller (`mod win32`'s `WM_COMMAND` arm) is
+/// windows-gated, so this stays `#[allow(dead_code)]` on every other
+/// host rather than cfg-gated, keeping it type-checked (and
+/// unit-testable, below) everywhere.
+#[allow(dead_code)]
+pub(crate) fn win_menu_command_id(wparam: usize) -> Option<u16> {
+    let hiword = (wparam >> 16) & 0xFFFF;
+    if hiword != 0 {
+        return None;
+    }
+    Some((wparam & 0xFFFF) as u16)
+}
+
+/// Coverage for [`win_menu_command_id`] (issue #1200) — pure decode, runs
+/// on every host per that function's doc, mirroring
+/// `win::tray::tests::tray_click_button_*`'s identical split.
+#[cfg(test)]
+mod menu_command_id_tests {
+    use super::win_menu_command_id;
+
+    #[test]
+    fn low_word_is_the_command_id_when_high_word_is_zero() {
+        assert_eq!(win_menu_command_id(1), Some(1));
+        assert_eq!(win_menu_command_id(42), Some(42));
+        assert_eq!(win_menu_command_id(0xFFFF), Some(0xFFFF));
+    }
+
+    #[test]
+    fn nonzero_high_word_is_not_a_menu_selection() {
+        // HIWORD 1: accelerator-table entry.
+        assert_eq!(win_menu_command_id(1 << 16 | 7), None);
+        // HIWORD anything else: a control notification code.
+        assert_eq!(win_menu_command_id(0x0300 << 16 | 7), None);
+    }
+
+    #[test]
+    fn zero_wparam_decodes_to_command_id_zero() {
+        // Command id 0 is never assigned by `install_menu_bar_now`
+        // (`super::tray::append_hmenu_item`'s 1-based scheme, mirrored
+        // by `win::backend::win_append_menu_bar_item`) — the live
+        // `menu_command_id` lookup correctly finds nothing for it, but
+        // the *decode* step here is agnostic to that and returns
+        // `Some(0)` for a literal all-zero `wparam`, matching the raw
+        // `WM_COMMAND` bit layout with no menu-specific interpretation
+        // baked in.
+        assert_eq!(win_menu_command_id(0), Some(0));
+    }
+}
+
 /// Route a `MouseDown` through the shared pointer-routing pipeline
 /// ([`crate::dispatch::route_pointer`], issue #1088) before handing the
 /// resulting event(s) to [`dispatch_event`] — the Win-GUI twin of
@@ -756,7 +820,7 @@ mod win32 {
         SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
         CW_USEDEFAULT, GWLP_USERDATA, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
         SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE, WM_CHAR, WM_CLOSE,
-        WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS,
+        WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS,
         WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
         WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
         WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
@@ -1818,6 +1882,25 @@ mod win32 {
                     msg == WM_MOUSEHWHEEL,
                 );
                 dispatch(ws, hwnd, event);
+                LRESULT(0)
+            }
+            WM_COMMAND => {
+                // Issue #1200: fires when the user picks an item from the
+                // native menu bar `WinBackend::install_menu_bar` attached
+                // via `SetMenu`. `win_menu_command_id` (pure, defined
+                // above `mod win32` so it's unit-testable off Windows)
+                // decodes `wparam` into the assigned command id, ignoring
+                // anything that isn't a genuine menu selection (see that
+                // function's doc); the live lookup back to the item's
+                // `WidgetId` needs `WinBackend::menu_command_id`, which
+                // only exists on this platform, so it stays here rather
+                // than moving into the pure decode step.
+                if let Some(cmd_id) = super::win_menu_command_id(wparam.0) {
+                    let id = ws.state.borrow().backend.menu_command_id(cmd_id);
+                    if let Some(id) = id {
+                        dispatch(ws, hwnd, UiEvent::MenuActivated(id));
+                    }
+                }
                 LRESULT(0)
             }
             WM_KEYDOWN => {
