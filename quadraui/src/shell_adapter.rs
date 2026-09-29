@@ -170,6 +170,9 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     // got the `AppShell` struct default (1.5 line-heights) instead of the
     // height it configured (#547).
     shell = shell.with_title_bar(config.title_bar_height_lh);
+    if let Some(min_px) = config.title_bar_min_px {
+        shell = shell.with_title_bar_min_px(min_px);
+    }
     shell.set_title_bar_visible(config.has_title_bar);
 
     // Bottom panel does NOT share this defect, despite the parallel shape:
@@ -575,6 +578,23 @@ mod tests {
             .title_bar_bounds
             .expect("row reserved from construction");
         assert_eq!(tb.height, 1.0);
+    }
+
+    /// #1045: `ShellConfig::with_title_bar_min_px` reaches the built
+    /// `AppShell` so a floor set on the config actually floors the
+    /// resolved title-bar height, not just stores a field nobody reads.
+    #[test]
+    fn title_bar_min_px_reaches_the_built_app_shell() {
+        let config = ShellConfig::new("t", Vec::new())
+            .with_title_bar(1.5)
+            .with_title_bar_min_px(34.0);
+
+        let adapter = build_shell_adapter(NoopApp, config);
+        // `line_height = 6.0` resolves `1.5 * 6.0 = 9.0`, well under the
+        // 34.0 floor — the floor must win.
+        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
+        let tb = layout.title_bar_bounds.expect("row reserved");
+        assert_eq!(tb.height, 34.0);
     }
 
     /// #914: `ShellConfig::with_panel_icon` overrides survive

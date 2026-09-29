@@ -1432,6 +1432,117 @@ impl GtkBackend {
     ) -> Option<AcceleratorId> {
         self.core.match_keypress(key, modifiers)
     }
+
+    /// Shared body of [`Backend::draw_status_bar_interactive`] /
+    /// [`Backend::draw_status_bar_interactive_scaled`] (issue #1045 item
+    /// 2). `font_scale` multiplies the chrome font's point size for this
+    /// paint only — `1.0` is the unscaled case, byte-for-byte the
+    /// pre-#1045 body of `draw_status_bar_interactive`.
+    fn status_bar_paint_scaled(
+        &mut self,
+        rect: QRect,
+        bar: &StatusBar,
+        interaction: &crate::interaction::InteractionState,
+        font_scale: f32,
+    ) -> crate::StatusBarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+        let mut ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        if font_scale != 1.0 {
+            // Pango sizes are in `PANGO_SCALE`-ths of a point — scale the
+            // raw integer so a caller-friendly `f32` multiplier (e.g.
+            // `0.85`) survives the round-trip without losing precision to
+            // an intermediate point-size conversion. `.max(1)` guards
+            // against a degenerate `font_scale` (e.g. `0.0`) collapsing
+            // the description to Pango's own "unset" sentinel (`0`),
+            // which would fall back to some other ambient size instead of
+            // painting (nearly) nothing, the honest behaviour a caller
+            // asking for size `~0` should get.
+            let scaled = ((ui_font_desc.size() as f32) * font_scale).round() as i32;
+            ui_font_desc.set_size(scaled.max(1));
+        }
+        // #624: status bar segments are chrome, painted in `ui_font` —
+        // save the editor font that's on the shared layout, swap in
+        // `ui_font` for the paint (and the shared `paint`'s own internal
+        // width measurement, which shares this same layout via
+        // `NativeSurface::surface_measure_text_styled`), then restore the
+        // editor font so later draws in this frame aren't left painting
+        // chrome-sized text.
+        let saved_font = {
+            let (_cr, layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
+            let saved = layout.font_description();
+            layout.set_font_description(Some(&ui_font_desc));
+            saved
+        };
+        let theme = self.current_theme;
+        // #1179: was `self.current_line_height`, so a caller that hands
+        // this a `rect` taller than the current line height got a
+        // background fill short of `rect.height`, leaving an unpainted
+        // strip. `paint` fills exactly the height it's given — pass the
+        // rect's own height, matching `WinBackend`'s already-correct call
+        // and `MacBackend`'s #1179 fix.
+        let line_height = rect.height;
+        let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
+            bar,
+            self,
+            &theme,
+            rect.x,
+            rect.y,
+            rect.width,
+            line_height,
+            hovered_id,
+            pressed_id,
+        );
+        {
+            let (_cr, layout) = self
+                .current_frame_refs()
+                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
+            layout.set_font_description(saved_font.as_ref());
+        }
+        // Record each visible segment's label into the painted-text map
+        // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
+        // from `bar` via the segment's side + index, since
+        // `VisibleStatusSegment` carries the resolved bounds but not the
+        // label itself.
+        //
+        // `seg.bounds` (from `StatusBar::layout`, shared with
+        // `TuiBackend`/`GtkBackend::status_bar_layout`) is bar-local:
+        // `x` relative to this bar's own left edge, `y` always `0`
+        // relative to its own top — never offset by the `rect` this
+        // particular bar was painted into (`bar.layout` never even
+        // receives `rect.x`/`rect.y`). `painted_text`'s contract is
+        // *absolute* surface coordinates (what `find`/`click_text`
+        // hand straight to `Self::click`), so translate by `rect`'s
+        // origin here, mirroring `Self::draw_data_table`'s
+        // `rect.x + rc.x` / absolute `row_y` (defined earlier in this
+        // impl). Without this, every
+        // status bar painted at a nonzero `rect.y` (e.g. one row among
+        // several, as `panel_app`'s per-line content rendering does)
+        // recorded its text at `y = 0` — the top of the surface — so a
+        // multi-row caller's `find()` could locate the right text but
+        // return the wrong row's y (quadraui#488).
+        for seg in &bar_layout.visible_segments {
+            let text = match seg.side {
+                crate::primitives::status_bar::StatusSegmentSide::Left => {
+                    bar.left_segments.get(seg.segment_idx).map(|s| &s.text)
+                }
+                crate::primitives::status_bar::StatusSegmentSide::Right => {
+                    bar.right_segments.get(seg.segment_idx).map(|s| &s.text)
+                }
+            };
+            if let Some(text) = text {
+                let bounds = QRect::new(
+                    rect.x + seg.bounds.x,
+                    rect.y + seg.bounds.y,
+                    seg.bounds.width,
+                    seg.bounds.height,
+                );
+                self.record_painted_text(text, bounds);
+            }
+        }
+        bar_layout
+    }
 }
 
 /// Measure the true (fractional) monospace advance width for `layout`'s
@@ -2492,91 +2603,31 @@ impl Backend for GtkBackend {
         bar: &StatusBar,
         interaction: &crate::interaction::InteractionState,
     ) -> crate::StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        // #624: status bar segments are chrome, painted in `ui_font` —
-        // save the editor font that's on the shared layout, swap in
-        // `ui_font` for the paint (and the shared `paint`'s own internal
-        // width measurement, which shares this same layout via
-        // `NativeSurface::surface_measure_text_styled`), then restore the
-        // editor font so later draws in this frame aren't left painting
-        // chrome-sized text.
-        let saved_font = {
-            let (_cr, layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
-            let saved = layout.font_description();
-            layout.set_font_description(Some(&ui_font_desc));
-            saved
-        };
-        let theme = self.current_theme;
-        // #1179: was `self.current_line_height`, so a caller that hands
-        // this a `rect` taller than the current line height got a
-        // background fill short of `rect.height`, leaving an unpainted
-        // strip. `paint` fills exactly the height it's given — pass the
-        // rect's own height, matching `WinBackend`'s already-correct call
-        // and `MacBackend`'s #1179 fix.
-        let line_height = rect.height;
-        let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
-            bar,
-            self,
-            &theme,
-            rect.x,
-            rect.y,
-            rect.width,
-            line_height,
-            hovered_id,
-            pressed_id,
-        );
-        {
-            let (_cr, layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_status_bar called outside enter_frame_scope");
-            layout.set_font_description(saved_font.as_ref());
-        }
-        // Record each visible segment's label into the painted-text map
-        // GtkDriver::find scans (quadraui#447, GD-2) — resolve the text
-        // from `bar` via the segment's side + index, since
-        // `VisibleStatusSegment` carries the resolved bounds but not the
-        // label itself.
-        //
-        // `seg.bounds` (from `StatusBar::layout`, shared with
-        // `TuiBackend`/`GtkBackend::status_bar_layout`) is bar-local:
-        // `x` relative to this bar's own left edge, `y` always `0`
-        // relative to its own top — never offset by the `rect` this
-        // particular bar was painted into (`bar.layout` never even
-        // receives `rect.x`/`rect.y`). `painted_text`'s contract is
-        // *absolute* surface coordinates (what `find`/`click_text`
-        // hand straight to `Self::click`), so translate by `rect`'s
-        // origin here, mirroring `Self::draw_data_table`'s
-        // `rect.x + rc.x` / absolute `row_y` (defined earlier in this
-        // impl). Without this, every
-        // status bar painted at a nonzero `rect.y` (e.g. one row among
-        // several, as `panel_app`'s per-line content rendering does)
-        // recorded its text at `y = 0` — the top of the surface — so a
-        // multi-row caller's `find()` could locate the right text but
-        // return the wrong row's y (quadraui#488).
-        for seg in &bar_layout.visible_segments {
-            let text = match seg.side {
-                crate::primitives::status_bar::StatusSegmentSide::Left => {
-                    bar.left_segments.get(seg.segment_idx).map(|s| &s.text)
-                }
-                crate::primitives::status_bar::StatusSegmentSide::Right => {
-                    bar.right_segments.get(seg.segment_idx).map(|s| &s.text)
-                }
-            };
-            if let Some(text) = text {
-                let bounds = QRect::new(
-                    rect.x + seg.bounds.x,
-                    rect.y + seg.bounds.y,
-                    seg.bounds.width,
-                    seg.bounds.height,
-                );
-                self.record_painted_text(text, bounds);
-            }
-        }
-        bar_layout
+        self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
     }
+
+    /// Issue #1045 item 2: same paint as [`Self::draw_status_bar_interactive`],
+    /// scaling only this call's chrome font size — see
+    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for the
+    /// full rationale. Both this and the unscaled method above funnel
+    /// through [`Self::status_bar_paint_scaled`] so a fix to one applies to
+    /// both; `1.0` there is exactly this call with no scaling applied.
+    fn draw_status_bar_interactive_scaled(
+        &mut self,
+        rect: QRect,
+        bar: &StatusBar,
+        interaction: &crate::interaction::InteractionState,
+        font_scale: f32,
+    ) -> crate::StatusBarLayout {
+        self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
+    }
+
+    // `status_bar_paint_scaled` — the shared body both methods above
+    // funnel through — is defined in the earlier inherent `impl
+    // GtkBackend` block (issue #1045 item 2), not here: a trait impl
+    // block may only contain that trait's own items, so a private helper
+    // has to live in a separate `impl GtkBackend` block rather than
+    // splitting this one in half.
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
@@ -6871,6 +6922,72 @@ mod tests {
             ui_font_width > small_editor_width * 1.5,
             "changing ui_font alone must visibly widen the painted segment: \
              default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
+        );
+    }
+
+    /// Issue #1045 item 2: `draw_status_bar_interactive_scaled` paints
+    /// narrower text at a smaller `font_scale`, and an unscaled paint
+    /// immediately after a scaled one must come back to exactly its own
+    /// pre-scaled width — proving the per-call scale doesn't leak into
+    /// the backend's ambient `ui_font` for later paints this frame.
+    #[test]
+    fn gtk_backend_draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints(
+    ) {
+        let (surface, font, _) = ui_font_test_surface_and_contexts();
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        pango_ctx.set_font_description(&font);
+        let layout = pango::Layout::new(&pango_ctx);
+
+        let bar = StatusBar {
+            id: WidgetId::new("test:status-bar"),
+            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                text: "READY".to_string(),
+                fg: crate::types::Color::rgb(255, 255, 255),
+                bg: crate::types::Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
+
+        let mut backend = GtkBackend::new();
+        Backend::set_ui_font(&mut backend, "Sans 40");
+        let (unscaled_w, scaled_w, unscaled_w_again) =
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                let unscaled_w = b
+                    .draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
+                    .visible_segments[0]
+                    .bounds
+                    .width;
+                let scaled_w = b
+                    .draw_status_bar_interactive_scaled(
+                        rect,
+                        &bar,
+                        &crate::InteractionState::new(),
+                        0.5,
+                    )
+                    .visible_segments[0]
+                    .bounds
+                    .width;
+                let unscaled_w_again = b
+                    .draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
+                    .visible_segments[0]
+                    .bounds
+                    .width;
+                (unscaled_w, scaled_w, unscaled_w_again)
+            });
+
+        assert!(
+            scaled_w < unscaled_w * 0.75,
+            "font_scale=0.5 should paint noticeably narrower: {scaled_w} vs {unscaled_w}",
+        );
+        assert!(
+            (unscaled_w_again - unscaled_w).abs() < 0.5,
+            "an unscaled paint after a scaled one must match the original unscaled width \
+             — ui_font state must be restored, not left scaled: \
+             {unscaled_w_again} vs {unscaled_w}",
         );
     }
 

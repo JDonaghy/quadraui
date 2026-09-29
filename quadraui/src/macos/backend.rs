@@ -1049,6 +1049,77 @@ impl MacBackend {
             super::text_selection::draw_selection_highlight(ctx, &rects, color);
         }
     }
+
+    /// Shared body of [`Backend::draw_status_bar_interactive`] /
+    /// [`Backend::draw_status_bar_interactive_scaled`] (issue #1045 item
+    /// 2). `font_scale` multiplies `chrome_font`'s point size for this
+    /// paint only — `1.0` is the unscaled case, byte-for-byte the
+    /// pre-#1045 body of `draw_status_bar_interactive`.
+    ///
+    /// Temporarily swaps `chrome_font`/`chrome_line_height`/
+    /// `chrome_char_width` (restored in every case, including the
+    /// `font_scale == 1.0` no-op path, which skips the swap entirely
+    /// rather than swap-then-immediately-restore the same values) rather
+    /// than calling [`Self::set_chrome_font`] — that setter also
+    /// re-applies [`Self::nerd_font_fallback_family`]'s cascade, which
+    /// `chrome_font` already carries; re-running it here would append the
+    /// fallback family to the family list a second time.
+    fn status_bar_paint_scaled(
+        &mut self,
+        rect: Rect,
+        bar: &StatusBar,
+        interaction: &crate::interaction::InteractionState,
+        font_scale: f32,
+    ) -> StatusBarLayout {
+        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
+        let saved = if font_scale != 1.0 {
+            let scaled_font = self
+                .chrome_font
+                .clone_with_font_size(self.chrome_font.pt_size() * font_scale as f64);
+            let metrics = super::text::font_metrics(&scaled_font);
+            let saved_font = std::mem::replace(&mut self.chrome_font, scaled_font);
+            let saved_lh = self.chrome_line_height;
+            let saved_cw = self.chrome_char_width;
+            self.chrome_line_height = metrics.line_height;
+            self.chrome_char_width = metrics.char_width;
+            Some((saved_font, saved_lh, saved_cw))
+        } else {
+            None
+        };
+        // Issue #963: the status bar is chrome, not editor content, so it
+        // paints through `ChromeSurface` (routes text through
+        // `chrome_font`/`chrome_line_height`) rather than `self` directly
+        // (which would paint through `current_font`, the *editor* font,
+        // via `MacBackend`'s own `NativeSurface` impl below).
+        let theme = self.current_theme;
+        // #1179: was `self.chrome_line_height`, so a caller that hands
+        // this a `rect` taller than the chrome font's own line height
+        // (e.g. vimcode's fixed-height breadcrumb row) got a background
+        // fill short of `rect.height` — the theme's clear colour (or,
+        // pre-#1179, a hard-coded dark literal) showed through the
+        // leftover strip. `paint` fills exactly the height it's given,
+        // so pass the rect's own height, matching `WinBackend`'s
+        // already-correct call.
+        let line_height = rect.height;
+        let mut surface = ChromeSurface { backend: self };
+        let layout = crate::primitives::status_bar::native_surface_paint::paint(
+            bar,
+            &mut surface,
+            &theme,
+            rect.x,
+            rect.y,
+            rect.width,
+            line_height,
+            hovered_id,
+            pressed_id,
+        );
+        if let Some((saved_font, saved_lh, saved_cw)) = saved {
+            self.chrome_font = saved_font;
+            self.chrome_line_height = saved_lh;
+            self.chrome_char_width = saved_cw;
+        }
+        layout
+    }
 }
 
 impl Default for MacBackend {
@@ -2107,40 +2178,25 @@ impl Backend for MacBackend {
         bar: &StatusBar,
         interaction: &crate::interaction::InteractionState,
     ) -> StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each debug_assert their own `!ctx.is_null()` internally — see
-        // `Self::surface_fill_rect` — so this method needs no separate
-        // ctx/font fetch of its own, matching `Self::draw_panel`'s #859
-        // shape.
-        //
-        // Issue #963: the status bar is chrome, not editor content, so it
-        // paints through `ChromeSurface` (routes text through
-        // `chrome_font`/`chrome_line_height`) rather than `self` directly
-        // (which would paint through `current_font`, the *editor* font,
-        // via `MacBackend`'s own `NativeSurface` impl below).
-        let theme = self.current_theme;
-        // #1179: was `self.chrome_line_height`, so a caller that hands
-        // this a `rect` taller than the chrome font's own line height
-        // (e.g. vimcode's fixed-height breadcrumb row) got a background
-        // fill short of `rect.height` — the theme's clear colour (or,
-        // pre-#1179, a hard-coded dark literal) showed through the
-        // leftover strip. `paint` fills exactly the height it's given,
-        // so pass the rect's own height, matching `WinBackend`'s
-        // already-correct call.
-        let line_height = rect.height;
-        let mut surface = ChromeSurface { backend: self };
-        crate::primitives::status_bar::native_surface_paint::paint(
-            bar,
-            &mut surface,
-            &theme,
-            rect.x,
-            rect.y,
-            rect.width,
-            line_height,
-            hovered_id,
-            pressed_id,
-        )
+        self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
+    }
+
+    /// Issue #1045 item 2: same paint as [`Self::draw_status_bar_interactive`],
+    /// scaling only this call's chrome font size — see
+    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for the
+    /// full rationale. Both this and the unscaled method above funnel
+    /// through [`Self::status_bar_paint_scaled`] (defined in the earlier
+    /// inherent `impl MacBackend` block — a trait impl block may only
+    /// contain that trait's own items) so a fix to one applies to both;
+    /// `1.0` there is exactly the unscaled call with no scaling applied.
+    fn draw_status_bar_interactive_scaled(
+        &mut self,
+        rect: Rect,
+        bar: &StatusBar,
+        interaction: &crate::interaction::InteractionState,
+        font_scale: f32,
+    ) -> StatusBarLayout {
+        self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
     }
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar(
@@ -7398,6 +7454,86 @@ mod tests {
         assert!(
             w_huge_chrome > w_small_chrome * 2.0,
             "status bar width must grow with set_ui_font: {w_small_chrome} vs {w_huge_chrome}"
+        );
+    }
+
+    /// Issue #1045 item 2: `draw_status_bar_interactive_scaled` paints
+    /// narrower text at a smaller `font_scale`, and — critically — must
+    /// not leave the ambient chrome font perturbed for the *next* call:
+    /// an unscaled `draw_status_bar_interactive` painted immediately
+    /// after a scaled call must come back to exactly its own pre-scaled
+    /// width, proving the swap in `status_bar_paint_scaled` is fully
+    /// undone rather than leaking into later paints this frame.
+    #[test]
+    fn draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints() {
+        use super::super::headless::BitmapSurface;
+        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+        use crate::Backend;
+
+        const W: u32 = 600;
+        const H: u32 = 40;
+
+        fn sample_bar() -> StatusBar {
+            StatusBar {
+                id: WidgetId::new("status"),
+                left_segments: vec![StatusBarSegment {
+                    text: "Save".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(10, 10, 10),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            }
+        }
+
+        let surface = BitmapSurface::new(W, H);
+        let mut b = MacBackend::new();
+        Backend::set_ui_font(&mut b, "Menlo 40");
+        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let bar = sample_bar();
+        let unscaled_w = std::cell::RefCell::new(0.0f32);
+        let scaled_w = std::cell::RefCell::new(0.0f32);
+        let unscaled_w_again = std::cell::RefCell::new(0.0f32);
+        b.enter_frame_scope(surface.context_ptr(), |backend| {
+            let l1 = backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+            );
+            *unscaled_w.borrow_mut() = l1.visible_segments[0].bounds.width;
+
+            let l2 = backend.draw_status_bar_interactive_scaled(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+                0.5,
+            );
+            *scaled_w.borrow_mut() = l2.visible_segments[0].bounds.width;
+
+            let l3 = backend.draw_status_bar_interactive(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &bar,
+                &crate::InteractionState::new(),
+            );
+            *unscaled_w_again.borrow_mut() = l3.visible_segments[0].bounds.width;
+        });
+        b.end_frame();
+
+        let unscaled_w = unscaled_w.into_inner();
+        let scaled_w = scaled_w.into_inner();
+        let unscaled_w_again = unscaled_w_again.into_inner();
+
+        assert!(
+            scaled_w < unscaled_w * 0.75,
+            "font_scale=0.5 should paint noticeably narrower: {scaled_w} vs {unscaled_w}",
+        );
+        assert!(
+            (unscaled_w_again - unscaled_w).abs() < 0.01,
+            "an unscaled paint after a scaled one must match the original unscaled width \
+             exactly — chrome font state must be restored, not left scaled: \
+             {unscaled_w_again} vs {unscaled_w}",
         );
     }
 
