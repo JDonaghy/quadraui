@@ -2371,6 +2371,12 @@ pub trait Backend: sealed::Sealed {
     /// new method alongside the old one, rather than a signature change,
     /// is what keeps every existing in-tree and downstream call site
     /// compiling unchanged.
+    ///
+    /// `font_scale` is expected to be a small positive multiplier (e.g.
+    /// `0.5`–`2.0`); implementations clamp a degenerate value (`0.0` or
+    /// negative) to a small positive floor rather than handing it
+    /// unchecked to the native font API — see the GTK and macOS backends'
+    /// own `status_bar_paint_scaled` for the specific floor each uses.
     fn draw_status_bar_interactive_scaled(
         &mut self,
         rect: Rect,
@@ -2380,6 +2386,7 @@ pub trait Backend: sealed::Sealed {
     ) -> StatusBarLayout {
         self.draw_status_bar_interactive(rect, bar, interaction)
     }
+
     /// Draw a status bar with hover/pressed supplied positionally.
     ///
     /// # Deprecated (issue #819)

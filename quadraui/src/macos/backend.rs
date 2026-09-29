@@ -1073,9 +1073,17 @@ impl MacBackend {
     ) -> StatusBarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         let saved = if font_scale != 1.0 {
-            let scaled_font = self
-                .chrome_font
-                .clone_with_font_size(self.chrome_font.pt_size() * font_scale as f64);
+            // `.max(0.1)` guards against a degenerate `font_scale` (e.g.
+            // `0.0` or negative) handing `clone_with_font_size` a
+            // zero/negative point size — `CTFont` has no documented
+            // fallback for that, so without a floor the behaviour would be
+            // backend-inconsistent with GTK's own `.max(1)` guard on its
+            // (integer, `PANGO_SCALE`-ths-of-a-point) size for the same
+            // input. `0.1pt` mirrors GTK's intent of "paint (nearly)
+            // nothing, honestly" rather than silently falling back to some
+            // ambient size.
+            let scaled_size = (self.chrome_font.pt_size() * font_scale as f64).max(0.1);
+            let scaled_font = self.chrome_font.clone_with_font_size(scaled_size);
             let metrics = super::text::font_metrics(&scaled_font);
             let saved_font = std::mem::replace(&mut self.chrome_font, scaled_font);
             let saved_lh = self.chrome_line_height;
