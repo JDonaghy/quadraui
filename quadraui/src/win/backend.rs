@@ -1018,6 +1018,27 @@ impl WinBackend {
         // there's a real window to attach to.
         if self.pending_menu_bar.is_some() {
             self.install_menu_bar_now(hwnd);
+            // Issue #1213: `SetMenu` above recalculates `hwnd`'s
+            // non-client area (adding a menu bar shrinks the client
+            // rect by its height), and Win32 normally announces that
+            // via a synchronous nested `WM_SIZE` fired from inside
+            // `SetMenu` itself — but `win::run::run_inner` deliberately
+            // arms a `ModalPumpGuard` around this whole `attach_surface`
+            // call so that nested message bounces to `DefWindowProcW`
+            // instead of re-entering `wndproc` while this function's
+            // caller still holds `RunState`'s borrow (which is what used
+            // to panic — see `run_inner`'s doc at the `attach_surface`
+            // call site). That means the resize this function's *own*
+            // `render_props`/`hwnd_props` above already computed (from
+            // the pre-menu-bar client rect) is now stale, and nothing
+            // else will correct it. Re-read the client rect and resync
+            // explicitly rather than relying on the swallowed message.
+            let mut rect = RECT::default();
+            if unsafe { GetClientRect(hwnd, &mut rect) }.is_ok() {
+                let width = (rect.right - rect.left).max(1) as u32;
+                let height = (rect.bottom - rect.top).max(1) as u32;
+                let _ = self.resize_surface(width, height);
+            }
         }
 
         Ok(())
