@@ -58,6 +58,10 @@ use sidebar_panel_body_demo::SidebarPanelBodyDemo;
 mod context_menu_style_demo;
 use context_menu_style_demo::ContextMenuStyleDemo;
 
+#[path = "../examples/common/submenu_app.rs"]
+mod submenu_app;
+use submenu_app::SubmenuApp;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -1167,5 +1171,106 @@ fn context_menu_style_demo_gtk_escape_dismisses() {
     assert!(
         !driver.screen_contains("Last action"),
         "dismissal must not report an activated action"
+    );
+}
+
+// ─── SubmenuApp: pull-right cascading submenus on GTK (#371, GTK twin of
+// #370's TUI work) ───────────────────────────────────────────────────────
+//
+// Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely
+// through `Backend::draw_context_menu` / `MenuSystem`, so this is the
+// coordinate-free proof that GTK's shared `native_surface_paint::paint`
+// now renders the `▶` affordance and that the cascading open/close/click
+// state machine (already backend-agnostic in `compose::MenuSystem` and
+// the example's own `CtxState`) behaves the same as it does on TUI.
+
+const SUBMENU_W: i32 = 500;
+const SUBMENU_H: i32 = 400;
+
+#[test]
+fn submenu_context_menu_click_opens_nested_level_and_activates_leaf() {
+    let mut driver = GtkDriver::new(SubmenuApp::new(), SUBMENU_W, SUBMENU_H);
+
+    driver.dispatch(UiEvent::MouseDown {
+        widget: None,
+        button: MouseButton::Right,
+        position: Point::new(60.0, 60.0),
+        modifiers: Modifiers::default(),
+    });
+    assert!(
+        driver.screen_contains("Refactor"),
+        "right-click should paint the root context menu: {:?}",
+        driver.painted_texts()
+    );
+
+    let (x, y) = driver
+        .find("Refactor")
+        .expect("Refactor (a submenu parent) should be locatable");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Rename") && driver.screen_contains("Extract"),
+        "clicking a submenu-parent item should open its pull-right child: {:?}",
+        driver.painted_texts()
+    );
+
+    let (rx, ry) = driver
+        .find("Rename")
+        .expect("Rename should be locatable once the submenu is open");
+    driver.click(rx, ry);
+
+    assert!(
+        driver.screen_contains("activated: rename"),
+        "clicking a leaf in the nested submenu should activate it: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("Cut"),
+        "activating an item should close the whole menu stack: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn submenu_menu_bar_dropdown_opens_two_nested_levels() {
+    let mut driver = GtkDriver::new(SubmenuApp::new(), SUBMENU_W, SUBMENU_H);
+
+    let (x, y) = driver
+        .find("View")
+        .expect("menu bar item should be painted with locatable bounds");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Export"),
+        "View dropdown should be open: {:?}",
+        driver.painted_texts()
+    );
+
+    let (ex, ey) = driver
+        .find("Export")
+        .expect("Export (depth-1 submenu parent) should be locatable");
+    driver.click(ex, ey);
+    assert!(
+        driver.screen_contains("PNG") && driver.screen_contains("SVG"),
+        "clicking Export should open its pull-right child: {:?}",
+        driver.painted_texts()
+    );
+
+    let (px, py) = driver
+        .find("PNG")
+        .expect("PNG (depth-2 submenu parent) should be locatable");
+    driver.click(px, py);
+    assert!(
+        driver.screen_contains("Lossless") && driver.screen_contains("Compressed"),
+        "clicking PNG should open a third nested level: {:?}",
+        driver.painted_texts()
+    );
+
+    let (lx, ly) = driver
+        .find("Lossless")
+        .expect("Lossless should be locatable at the third nested level");
+    driver.click(lx, ly);
+    assert!(
+        driver.screen_contains("activated: export-png-lossless"),
+        "activating the deepest leaf should report its id: {:?}",
+        driver.painted_texts()
     );
 }
