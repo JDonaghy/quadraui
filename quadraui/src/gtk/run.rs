@@ -539,6 +539,7 @@ pub use crate::runner::StepOutcome;
 pub struct GtkRunner {
     gapp: Application,
     context: glib::MainContext,
+    smoke_failed: Rc<Cell<bool>>,
 }
 
 impl GtkRunner {
@@ -579,6 +580,12 @@ impl GtkRunner {
         // itself has no separate registration-error return path.
         let _ = gapp.register(gtk4::gio::Cancellable::NONE);
 
+        // Retain a clone here (mirroring `run_with`'s own `smoke_failed`
+        // clone) so callers can read whether headless smoke mode failed
+        // after driving this runner to `StepOutcome::Exited` — see
+        // [`Self::smoke_failed`].
+        let smoke_failed_handle = smoke_failed.clone();
+
         activate(
             &gapp,
             app,
@@ -592,6 +599,7 @@ impl GtkRunner {
         Self {
             gapp,
             context: glib::MainContext::default(),
+            smoke_failed: smoke_failed_handle,
         }
     }
 
@@ -608,6 +616,23 @@ impl GtkRunner {
         } else {
             StepOutcome::Exited
         }
+    }
+
+    /// Whether headless smoke mode (`QUADRAUI_GTK_SMOKE_MS`) detected a
+    /// failure — a tiny-window regression (the #437 class) or a clipboard
+    /// round-trip mismatch, set by `schedule_smoke_check`. Mirrors
+    /// `run_with`'s own post-`gapp.run()` `smoke_failed.get()` check
+    /// (issue #1100 review): [`run`]/[`run_with`] fold this into their
+    /// returned `std::process::ExitCode` automatically, but `step`/`pump`
+    /// return a [`StepOutcome`] with no room for a failure signal, so an
+    /// embedding host must poll this explicitly once the runner reaches
+    /// [`StepOutcome::Exited`] (headless smoke mode always forces the
+    /// window closed after `QUADRAUI_GTK_SMOKE_MS`, so `Exited` is
+    /// guaranteed to arrive) and set its own process exit code from it —
+    /// see `examples/gtk_embedded.rs` for the pairing with
+    /// `scripts/gtk_smoke.sh`.
+    pub fn smoke_failed(&self) -> bool {
+        self.smoke_failed.get()
     }
 
     /// One non-blocking pass: `glib::MainContext::iteration(false)` —

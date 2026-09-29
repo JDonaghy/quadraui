@@ -168,8 +168,8 @@ pub enum StepOutcome {
     /// The app is still running. Call `step`/`pump` again whenever the
     /// host's own loop is ready to give quadraui another turn.
     Continue,
-    /// The app requested exit — or the runner was dropped, or a panic
-    /// unwound through it — and backend-specific teardown (TUI: terminal
+    /// The app requested exit — or a panic unwound through a previous
+    /// `step`/`pump` call — and backend-specific teardown (TUI: terminal
     /// mode restoration; GTK: window destruction) has already happened.
     /// Calling `step`/`pump` again is safe (idempotent) but a no-op.
     Exited,

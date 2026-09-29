@@ -30,9 +30,13 @@
 //! `QUADRAUI_GTK_SMOKE_PASTE` exactly like `run`/`run_with` do (both funnel
 //! through the same `activate` function), so the smoke script's forced
 //! window close after `QUADRAUI_GTK_SMOKE_MS` still drives this example's
-//! `pump` loop to [`quadraui::gtk::StepOutcome::Exited`] and a clean
-//! process exit — proving the embedding path tears the window down the
-//! same way the all-owning one does.
+//! `pump` loop to [`quadraui::gtk::StepOutcome::Exited`]. Unlike
+//! `run`/`run_with` (whose `std::process::ExitCode` already folds in
+//! `smoke_failed`), a non-blocking `pump` loop has to check
+//! [`GtkRunner::smoke_failed`] itself once it reaches `Exited` and set the
+//! process exit code from it — done below — so `gtk_smoke.sh`'s "exit 0
+//! only if the window opened at a sane size and the clipboard round-tripped"
+//! contract holds for this embedding path too, not just the all-owning one.
 
 #[path = "common/mod.rs"]
 mod common;
@@ -41,7 +45,7 @@ use std::time::Duration;
 
 use quadraui::gtk::{GtkRunner, StepOutcome};
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let mut runner = GtkRunner::new(common::SplitApp::new());
     loop {
         // A real embedding host would do its own work here between turns
@@ -50,7 +54,14 @@ fn main() {
         // the same shape a libuv idle handle or an `asyncio` task would
         // drive it from.
         if runner.pump(Duration::from_millis(50)) == StepOutcome::Exited {
-            return;
+            // Mirrors `run_with`'s post-`gapp.run()` `smoke_failed.get()`
+            // check (issue #1100 review) — see `GtkRunner::smoke_failed`'s
+            // doc.
+            return if runner.smoke_failed() {
+                std::process::ExitCode::FAILURE
+            } else {
+                std::process::ExitCode::SUCCESS
+            };
         }
     }
 }
