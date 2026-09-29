@@ -311,10 +311,16 @@ impl AppLogic for TerminalApp {
                     // (mouse reporting / alt-screen, e.g. tmux / vim /
                     // less), and falls back to local scrollback otherwise.
                     // Positive delta.y = scroll up (into history), negative
-                    // = scroll down (toward live) — 3 rows per notch.
+                    // = scroll down (toward live) — 3 rows per notch. The
+                    // real pointer cell is forwarded so alt-screen
+                    // consumers like tmux route the wheel to the pane
+                    // under the cursor, same as the MouseDown/MouseUp arms
+                    // below.
                     if in_term && delta.y != 0.0 {
                         let up = delta.y > 0.0;
-                        sess.handle_wheel(up, 3);
+                        let col = position.x.max(0.0) as u16;
+                        let row = position.y.max(0.0) as u16;
+                        sess.handle_wheel(up, 3, col, row);
                         return Reaction::Redraw;
                     }
                 }

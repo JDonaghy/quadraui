@@ -992,34 +992,36 @@ impl TerminalSession {
     ///
     /// ```ignore
     /// let kind = if up { WheelUp } else { WheelDown };
-    /// if !sess.forward_mouse(kind, MouseButton::Left, 0, 0, Modifiers::default()) {
+    /// if !sess.forward_mouse(kind, MouseButton::Left, col, row, Modifiers::default()) {
     ///     if up { sess.scroll_up(step) } else { sess.scroll_down(step) }
     /// }
     /// ```
     ///
-    /// Wheel events forward at cell `(0, 0)` — only direction feeds the
-    /// child's SGR mouse encoding for wheel notches, so no pointer position
-    /// is required from the caller.
+    /// `col`/`row` are the cell the pointer is over (0-based, clamped to
+    /// the viewport by the caller). SGR-1006 always encodes the pointer
+    /// position on the wire ([`encode_mouse_sgr`]), and real alt-screen
+    /// consumers — tmux is the canonical example — use it to route wheel
+    /// input to the pane under the cursor, so the caller must supply the
+    /// real position rather than a fixed `(0, 0)`.
     ///
     /// Returns `true` when the event was written to the child (the caller
     /// must not also touch local scrollback), `false` when it fell back to
     /// [`scroll_up`](Self::scroll_up) / [`scroll_down`](Self::scroll_down).
-    pub fn handle_wheel(&mut self, up: bool, step: usize) -> bool {
+    pub fn handle_wheel(&mut self, up: bool, step: usize, col: u16, row: u16) -> bool {
         let kind = if up {
             TerminalMouseKind::WheelUp
         } else {
             TerminalMouseKind::WheelDown
         };
-        if self.forward_mouse(kind, MouseButton::Left, 0, 0, Modifiers::default()) {
-            true
-        } else {
+        let forwarded = self.forward_mouse(kind, MouseButton::Left, col, row, Modifiers::default());
+        if !forwarded {
             if up {
                 self.scroll_up(step);
             } else {
                 self.scroll_down(step);
             }
-            false
         }
+        forwarded
     }
 
     /// Extract all captured scrollback history as plain text.
@@ -3075,6 +3077,23 @@ mod tests {
         assert_eq!(bytes, b"\x1b[<81;1;1M");
     }
 
+    /// Wheel events encode the pointer's column/row on the wire just like
+    /// clicks do (quadraui#365 review) — real alt-screen consumers (tmux is
+    /// the canonical example) use this to route a wheel notch to the pane
+    /// under the cursor, so a caller must never collapse it to `(0, 0)`.
+    #[test]
+    fn encode_mouse_sgr_wheel_up_encodes_nonzero_position() {
+        let bytes = encode_mouse_sgr(
+            TerminalMouseKind::WheelUp,
+            MouseButton::Left,
+            5,
+            10,
+            Modifiers::default(),
+        );
+        // 1-indexed on the wire: col 5 -> 6, row 10 -> 11.
+        assert_eq!(bytes, b"\x1b[<64;6;11M");
+    }
+
     /// Motion event with left button held → bit 5 (32) set + button 0 = 32.
     #[test]
     fn encode_mouse_sgr_motion_with_left() {
@@ -3329,11 +3348,14 @@ mod tests {
 
         assert!(!sess.should_forward_wheel());
 
-        let forwarded = sess.handle_wheel(true, 3);
+        // Distinct, nonzero col/row on each call to prove they're accepted
+        // (and would be threaded through to the child) even though this
+        // path falls back to local scrollback.
+        let forwarded = sess.handle_wheel(true, 3, 12, 4);
         assert!(!forwarded);
         assert_eq!(sess.scroll_offset(), 3);
 
-        let forwarded = sess.handle_wheel(false, 2);
+        let forwarded = sess.handle_wheel(false, 2, 7, 9);
         assert!(!forwarded);
         assert_eq!(sess.scroll_offset(), 1);
 
@@ -3357,7 +3379,7 @@ mod tests {
         );
 
         let before = sess.scroll_offset();
-        let forwarded = sess.handle_wheel(true, 3);
+        let forwarded = sess.handle_wheel(true, 3, 12, 4);
         assert!(forwarded);
         assert_eq!(sess.scroll_offset(), before);
 
