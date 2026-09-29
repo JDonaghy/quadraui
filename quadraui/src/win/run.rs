@@ -838,7 +838,7 @@ mod win32 {
 
     use crate::backend::Backend;
     use crate::desktop::{
-        smoke_clipboard_round_trip_ok, smoke_size_ok, ModalPumpDepth, SmokeConfig,
+        smoke_clipboard_round_trip_ok, smoke_size_ok, ModalPumpDepth, ModalPumpGuard, SmokeConfig,
     };
     use crate::event::{classify_open_args, UiEvent};
     use crate::primitives::image::ImageSource;
@@ -1276,6 +1276,27 @@ mod win32 {
             // path only stores the pointer in `GWLP_USERDATA`, never
             // dereferences it.
             let ws: &WindowState<A> = unsafe { &*state_ptr };
+            // #1213: `attach_surface` replays a `setup()`-time
+            // `install_menu_bar` via `WinBackend::install_menu_bar_now`,
+            // whose `SetMenu` call can synchronously re-enter `wndproc`
+            // with a nested `WM_SIZE` (Win32 recalculates the
+            // non-client area from inside `SetMenu`, per MSDN) *before*
+            // `SetMenu` itself returns — i.e. before this call below
+            // returns, while `ws.state` is still borrowed on this same
+            // stack. That is the same "arrives from a synchronous Win32
+            // API call, not the main pump" hazard `ModalPumpGuard`
+            // already guards every `guarded_call` against (see
+            // `wndproc`'s `pump_depth.is_pumping()` check), but this
+            // call happens during window creation, before the first
+            // `guarded_call` has ever run — nothing had armed
+            // `pump_depth` yet, so the nested `WM_SIZE` sailed through
+            // to a second, panicking `ws.state.borrow_mut()`. Arm the
+            // guard explicitly here so that nested message bounces to
+            // `DefWindowProcW` instead. `WinBackend::attach_surface`
+            // resyncs the render target's size itself once
+            // `install_menu_bar_now` returns, so the client-rect change
+            // this swallows isn't lost — see that function's doc.
+            let _guard = ModalPumpGuard::new(&ws.pump_depth);
             ws.state.borrow_mut().backend.attach_surface(hwnd)
         };
         if let Err(e) = attach_result {
@@ -2573,6 +2594,86 @@ mod tests {
             1,
             "the skipped reentrant call must not have mutated state"
         );
+    }
+
+    /// Issue #1213: reproduces the *other* reentrancy hazard `wndproc`
+    /// must survive — one that [`reentrant_call_is_skipped_not_double_borrowed`]
+    /// above does not cover. That test's outer borrow goes through
+    /// [`guarded_call`] itself, so `pump_depth` is armed by the same
+    /// helper that later checks it. `win32::run_inner`'s initial
+    /// `attach_surface` call is different: it takes `ws.state.borrow_mut()`
+    /// *directly* (window creation happens before any `wndproc` dispatch
+    /// has ever run `guarded_call`), and `WinBackend::install_menu_bar_now`
+    /// (called from inside that borrow, replaying a `setup()`-time
+    /// `install_menu_bar`) can trigger a synchronous nested `WM_SIZE` via
+    /// `SetMenu` — Win32 recalculates the non-client area from inside
+    /// that call, per MSDN — before `attach_surface` itself returns.
+    ///
+    /// Without a `ModalPumpGuard` armed around the outer direct borrow,
+    /// nothing stops `wndproc`'s `WM_SIZE` arm (which itself borrows
+    /// `ws.state` directly, not via `guarded_call` — see that arm's own
+    /// code) from attempting a second `borrow_mut()` on the same
+    /// `RefCell` while the outer one is still live, panicking with
+    /// "already mutably borrowed" — the exact crash observed on real
+    /// hardware (`RefCell already borrowed` at the `WM_SIZE` arm, called
+    /// from `NtUserSetMenu`). `run_inner` now wraps that initial
+    /// `attach_surface` call in a `ModalPumpGuard` (mirroring
+    /// `guarded_call`'s own protection) so `wndproc`'s
+    /// `pump_depth.is_pumping()` top-of-function check — modeled here as
+    /// `fake_wndproc_arm` — bounces the nested message to a
+    /// `DefWindowProcW` stand-in instead of ever re-touching `state`.
+    #[test]
+    fn reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed() {
+        let state = RefCell::new(0i32);
+        let depth = ModalPumpDepth::new();
+
+        // A closure standing in for `wndproc`'s `WM_SIZE` arm: it must
+        // check `is_pumping()` (the same check `wndproc` runs before
+        // ever matching on `msg`) and defer to `DefWindowProcW` (`None`
+        // here) instead of touching `state` when a pump is already in
+        // flight on this thread.
+        let fake_wndproc_arm = |state: &RefCell<i32>, depth: &ModalPumpDepth| -> Option<i32> {
+            if depth.is_pumping() {
+                return None;
+            }
+            let mut v = state.borrow_mut();
+            *v += 100;
+            Some(*v)
+        };
+
+        // Mirrors `run_inner`'s
+        // `let _guard = ModalPumpGuard::new(&ws.pump_depth); ws.state.borrow_mut().backend.attach_surface(hwnd)` —
+        // a direct borrow, not routed through `guarded_call`, wrapped in
+        // its own `ModalPumpGuard`.
+        let outer_result = {
+            let _guard = ModalPumpGuard::new(&depth);
+            let mut s = state.borrow_mut();
+            *s += 1;
+
+            // Mirrors `SetMenu` synchronously re-entering `wndproc` with
+            // a nested `WM_SIZE` while the borrow above (`attach_surface`'s
+            // `&mut self`) is still live.
+            let nested = fake_wndproc_arm(&state, &depth);
+            assert_eq!(
+                nested, None,
+                "a nested message arriving while the outer direct borrow is \
+                 live must be deferred, never touch `state` a second time"
+            );
+
+            *s
+        };
+        assert_eq!(
+            outer_result, 1,
+            "the outer direct-borrow call must still complete normally"
+        );
+        assert!(
+            !depth.is_pumping(),
+            "depth must return to 0 once the guard around the outer call drops"
+        );
+
+        // Once the guard is gone, the same fake `wndproc` arm behaves
+        // like an ordinary, non-reentrant message and runs normally.
+        assert_eq!(fake_wndproc_arm(&state, &depth), Some(101));
     }
 
     #[test]
