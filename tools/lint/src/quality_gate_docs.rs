@@ -339,14 +339,18 @@ pub fn win_test_script_and_testing_md_run_the_same_cargo_command() {
 }
 
 /// A wrapper nobody can execute is a wrapper nobody uses. Skipped outside
-/// unix at run time (rather than `#[cfg(unix)]`-compiled-out, since this is a
+/// unix (its check body is `#[cfg(unix)]`-compiled-out there, but this is a
 /// plain function, not a `#[test]`): the mode bits this checks are meaningless
 /// on Windows, and this binary is not restricted to any one host OS the way
 /// the `#[cfg(unix)]` test file it replaces was.
 pub fn win_test_script_is_executable() {
-    if !cfg!(unix) {
+    // Two cfg-split bodies rather than `if !cfg!(unix) { return; }` + a
+    // `#[cfg(unix)]` block: on Windows that block compiles out, leaving the
+    // early `return` as the function's tail and tripping clippy's
+    // `needless_return` under `-D warnings` on the windows-latest CI leg.
+    #[cfg(not(unix))]
+    {
         println!("  (skipped: {WIN_TEST_SCRIPT}'s executable bit only has meaning on unix)");
-        return;
     }
     #[cfg(unix)]
     {
