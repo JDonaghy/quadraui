@@ -262,6 +262,32 @@ jobs:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (tui feature)
         run: cargo clippy --features tui --workspace --exclude kubeui-gtk -- -D warnings
+      # Benches (#1118): `cargo build`/`cargo test` don't build bench
+      # targets by default (verified: neither the plain `cargo test
+      # --workspace` step above nor a bare `cargo test -p quadraui` runs
+      # them — `--benches`/`--all-targets` is required), so without this
+      # step the `quadraui/benches/*.rs` files would never actually run in
+      # CI at all. Named `--bench` flags (not a bare `-p quadraui`, and not
+      # `--benches`): a bare `cargo bench -p quadraui` also rebuilds and
+      # *runs* the entire lib unit-test suite as a side effect (same
+      # `cfg(test)` plumbing `#[bench]` historically relied on) — pure
+      # duplication of the "Test (tui feature)" step above, and it would
+      # drag in *every* `#[cfg(test)]` failure (flaky or otherwise, gtk or
+      # not) as a false-positive benches-job failure. Three explicit
+      # `--bench` flags select only the three bench binaries. `-- --test`
+      # is criterion's own "verify, don't measure" mode (criterion detects
+      # the `--test` argument `cargo test`/`cargo bench --test`-style
+      # invocations pass and runs each benchmark function exactly once
+      # instead of criterion's full statistical sampling) — that's what
+      # keeps this fast enough to run on every PR. No regression gate is
+      # wired up yet (scope note on #1118): this step only proves the
+      # bench code still compiles and executes end-to-end against the real
+      # TUI rasterisers, not that performance hasn't regressed.
+      # ubuntu-only (`if`): the windows-latest leg gains nothing running
+      # the same portable-core bench code a second time.
+      - name: Benches build + run, verify-only (tui feature)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo bench -p quadraui --bench data_table_bench --bench tree_bench --bench editor_bench --features tui -- --test
       # win compile gate (#538). `win`'s Cargo dependency on `windows` is
       # gated to `target.'cfg(target_os = "windows")'`, and every real
       # WinAPI call `src/win/{backend,run}.rs` makes is itself wrapped in
@@ -566,6 +592,19 @@ jobs:
           RUSTFLAGS: "-D warnings -A deprecated"
       - name: Clippy (gtk + tui features)
         run: cargo clippy --features gtk,tui --workspace --exclude kubeui -- -D warnings
+      # Benches (#1118): same "not built by a plain `cargo build`/`cargo
+      # test`" gap, same "named `--bench` flags, not a bare `-p quadraui`"
+      # (a bare invocation also runs the whole lib unit-test suite as a
+      # side effect — picks up any `#[cfg(test)]` failure, gtk-flake or
+      # not, as a false-positive benches-job failure), and same criterion
+      # `-- --test` verify-only mode as the `tui` job's own "Benches build
+      # + run, verify-only" step — see that step's comment for the full
+      # rationale. `gtk,tui` (not just `gtk`) runs each bench's `paint`
+      # stage against both the TUI and the headless in-memory-Cairo GTK
+      # rasterisers in one pass, matching the issue's "per backend" ask.
+      # No regression gate yet (scope note).
+      - name: Benches build + run, verify-only (gtk + tui features)
+        run: cargo bench -p quadraui --bench data_table_bench --bench tree_bench --bench editor_bench --features gtk,tui -- --test
       # `gtk_terminal` declares `required-features = ["gtk", "terminal"]`
       # in Cargo.toml, so the plain `--features gtk,tui` build/test/clippy
       # steps above (no `terminal`) silently skip it — the same gap
