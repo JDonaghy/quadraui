@@ -1218,3 +1218,58 @@ mod tests {
         );
     }
 }
+
+/// Property tests for [`strip_json_comments`] (quadraui#1130): it runs on
+/// foreign input (a VS Code theme file someone downloaded), so "never
+/// panics" and "never mangles comment-free JSON" need to hold for more
+/// than the hand-picked fixtures in `mod tests` above.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No input, however malformed (an unterminated string, an
+        /// unterminated block comment, a lone `/`), may panic.
+        #[test]
+        fn strip_json_comments_never_panics(s in ".{0,2000}") {
+            let _ = strip_json_comments(&s);
+        }
+
+        /// Same, but from raw bytes reinterpreted lossily, so invalid
+        /// UTF-8 byte sequences are covered too — `strip_json_comments`
+        /// walks `char`s, and its char-boundary bookkeeping is exactly
+        /// the kind of logic that panics ("byte index not a char
+        /// boundary") when it's wrong, rather than misbehaving quietly.
+        #[test]
+        fn strip_json_comments_never_panics_on_lossy_bytes(bytes in prop::collection::vec(any::<u8>(), 0..2000)) {
+            let s = String::from_utf8_lossy(&bytes);
+            let _ = strip_json_comments(&s);
+        }
+
+        /// A string with no `//`, `/*`, or `"` in it at all has nothing
+        /// for the stripper to act on — round-trips byte-for-byte.
+        #[test]
+        fn strip_json_comments_is_identity_when_nothing_to_strip(
+            s in "[^/\"]{0,200}"
+        ) {
+            prop_assert_eq!(strip_json_comments(&s), s);
+        }
+
+        /// A `//`-style line comment appended after a JSON value must
+        /// disappear entirely, leaving only the value plus the space
+        /// that preceded `//` and the trailing newline — an exact
+        /// expected output, not just "the comment text is gone" (which
+        /// a comment body that happens to overlap `value` could satisfy
+        /// vacuously).
+        #[test]
+        fn strip_json_comments_removes_line_comments(
+            value in "[a-zA-Z0-9_]{1,20}",
+            comment in "[^\\n\"/]{0,40}",
+        ) {
+            let input = format!("{value} // {comment}\n");
+            let stripped = strip_json_comments(&input);
+            prop_assert_eq!(stripped, format!("{value} \n"));
+        }
+    }
+}

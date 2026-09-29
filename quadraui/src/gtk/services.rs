@@ -1747,6 +1747,15 @@ mod tests {
     fn send_notification_without_a_window_is_a_no_op() {
         let services = GtkPlatformServices::new();
         services.send_notification(Notification::new("t", "b"));
+        // The early-return path taken above never touches `window` —
+        // assert it's still exactly what `new()` left it as, so a
+        // future refactor that accidentally starts constructing a
+        // window on this path (rather than bailing out first) fails
+        // this test instead of only being caught by a live-display run.
+        assert!(
+            services.window.borrow().is_none(),
+            "no window was ever set, so send_notification must not have created one"
+        );
     }
 
     #[test]

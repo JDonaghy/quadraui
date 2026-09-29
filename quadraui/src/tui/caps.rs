@@ -853,3 +853,54 @@ mod tests {
         assert_eq!(detect_system_theme_from(env(&[("COLORFGBG", "")])), None);
     }
 }
+
+/// Property tests for [`parse_decrqm_reply`] (quadraui#1130): the bytes it
+/// parses come straight off a real terminal's reply to a DECRQM query — a
+/// foreign, unvalidated byte stream this crate does not control — so
+/// "never panics, and only ever returns a `Ps` digit that was actually in
+/// the reply" needs to hold for more than the hand-picked fixtures in
+/// `mod tests` above.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No byte sequence, however malformed or non-UTF-8, may panic —
+        /// this is a real terminal's reply, and a well-formed *positive*
+        /// reply must resolve to `false`-by-default (module doc), so a
+        /// crash here would be strictly worse than the "unsupported"
+        /// fallback it's meant to prevent.
+        #[test]
+        fn parse_decrqm_reply_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..200)) {
+            let _ = parse_decrqm_reply(&bytes);
+        }
+
+        /// Whenever a `Ps` digit *is* parsed, it is a genuine 0-9 ASCII
+        /// digit or run of digits that fits `u8` — never a value invented
+        /// from unrelated bytes elsewhere in the reply.
+        #[test]
+        fn parse_decrqm_reply_only_returns_a_digit_actually_present(
+            mode in 0u32..9999,
+            ps in 0u16..999, // deliberately allow out-of-u8-range Ps too
+        ) {
+            let reply = format!("\x1b[?{mode};{ps}$y");
+            let parsed = parse_decrqm_reply(reply.as_bytes());
+            match u8::try_from(ps) {
+                Ok(ps_u8) => prop_assert_eq!(parsed, Some(ps_u8)),
+                Err(_) => prop_assert_eq!(parsed, None), // overflowed u8::parse
+            }
+        }
+
+        /// [`decrqm_reply_supports_mode`] is a pure classifier over
+        /// `Option<u8>` — must never panic on any value, and its "mode
+        /// active" answer is exactly the two documented cases (1, 3).
+        #[test]
+        fn decrqm_reply_supports_mode_matches_its_documented_cases(ps in any::<Option<u8>>()) {
+            prop_assert_eq!(
+                decrqm_reply_supports_mode(ps),
+                matches!(ps, Some(1) | Some(3))
+            );
+        }
+    }
+}

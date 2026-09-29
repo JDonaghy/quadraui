@@ -178,12 +178,12 @@ mod tests {
     }
 
     #[test]
-    fn default_sink_is_silent() {
+    fn default_sink_does_not_panic() {
         let _g = guard();
         clear_sink();
         // No sink installed: emit must not panic and must not be
         // observable — there's nothing to assert *against* here beyond
-        // "this doesn't crash," which is the point.
+        // "this doesn't crash," which is the point (hence the name).
         emit("quadraui: nobody is listening");
     }
 

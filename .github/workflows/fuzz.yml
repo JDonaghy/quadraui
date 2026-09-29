@@ -1,0 +1,75 @@
+name: Fuzz
+
+# Scheduled/manual only — deliberately NOT wired to `push`/`pull_request`
+# (quadraui#1130). A fuzz run's entire value is continuous, coverage-guided
+# exploration on a timescale no per-PR check budget can afford (each job
+# below runs every target for several minutes; `cargo test`'s `proptest`
+# suites already give every PR the same "never panics on untrusted input"
+# properties, bounded to a few hundred cases each, in well under a second —
+# see `quadraui/docs/TESTING.md` and the `proptests` module in each of the
+# files this workflow's targets mirror). Adding this to `ci.yml` would only
+# slow down every PR for coverage the scheduled run already provides more
+# thoroughly.
+on:
+  schedule:
+    # 03:00 UTC daily — off-peak, and frequent enough that a fuzz-found
+    # crash is caught within a day of whatever change introduced it.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per target (quadraui/fuzz/fuzz_targets/*.rs) rather than
+        # a loop in a single job, so a crash in one target still lets the
+        # others finish and report — and so each target's log is its own
+        # job in the Actions UI instead of one scrolled-together wall of
+        # output.
+        target:
+          - strip_json_comments
+          - theme_from_vscode_json
+          - markdown
+          - vt100_parser
+    steps:
+      - uses: actions/checkout@v4
+
+      # `cargo fuzz` needs nightly (unstable `-Z sanitizer` flags) — a
+      # separate toolchain from the `1.97.1` `rust-toolchain.toml` pins
+      # for the rest of the repo. `dtolnay/rust-toolchain@nightly` ignores
+      # that file's override by installing into `+nightly` explicitly
+      # rather than the directory-default toolchain, so this job does not
+      # need to (and must not) touch the pin the rest of CI relies on.
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: quadraui/fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: quadraui/fuzz
+        # 5 minutes per target per day is a deliberately modest budget —
+        # this is meant to run forever in the background, not to be a
+        # one-shot exhaustive search. Widen via `workflow_dispatch` inputs
+        # if a specific target needs a longer soak after a suspected
+        # regression.
+        run: |
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=300 -print_final_stats=1
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: quadraui/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

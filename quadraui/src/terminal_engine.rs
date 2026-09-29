@@ -439,6 +439,25 @@ fn reflow_screen(parser: &mut vt100::Parser, rows: u16, cols: u16) {
     parser.process(&dump);
 }
 
+/// Floor for `rows` handed to `vt100::Parser::new`/`Screen::set_size`.
+///
+/// vt100 0.16.2 panics (`attempt to subtract with overflow`, `grid.rs:683`)
+/// constructing or resizing a grid with `rows < 2` — an upstream bug, not
+/// anything this file does wrong. A terminal pane's rect can legitimately
+/// shrink to a single visible row — or momentarily to zero, before a
+/// drag-resize settles — so every caller-supplied `rows` is floored to
+/// this at both call sites that construct/resize the parser
+/// ([`TerminalSession::spawn`], [`TerminalSession::resize`]) rather than
+/// trusted. Found by this file's own `vt100_parser_never_panics`
+/// property test (quadraui#1130) before any real caller ever hit it.
+const MIN_VT100_ROWS: u16 = 2;
+
+/// Floor for `cols`, for the same reason as [`MIN_VT100_ROWS`] but a
+/// different upstream panic site (`attempt to subtract with overflow`,
+/// `screen.rs:730`, reachable with `cols == 1` and certain multi-byte
+/// input regardless of `rows`) — found by the same property test.
+const MIN_VT100_COLS: u16 = 2;
+
 /// A single PTY-backed terminal session: PTY process, reader thread,
 /// vt100 parser, and scrollback ring buffer.
 ///
@@ -517,6 +536,9 @@ impl TerminalSession {
         cwd: &Path,
         history_capacity: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        // See `MIN_VT100_ROWS`/`MIN_VT100_COLS`'s docs — vt100 panics below these.
+        let rows = rows.max(MIN_VT100_ROWS);
+        let cols = cols.max(MIN_VT100_COLS);
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -970,6 +992,9 @@ impl TerminalSession {
     ///   the width again before those bytes were parsed. Waiting for
     ///   quiescence bounds that window deterministically.
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        // See `MIN_VT100_ROWS`/`MIN_VT100_COLS`'s docs — vt100 panics below these.
+        let rows = rows.max(MIN_VT100_ROWS);
+        let cols = cols.max(MIN_VT100_COLS);
         // No-op guard: avoid a needless resize + SIGWINCH storm when the
         // caller re-sends the current size (common when a backend recomputes
         // the same cell dimensions every frame during a drag).
@@ -1838,6 +1863,56 @@ mod tests {
             p.process(boundary_line.as_bytes()); // must not panic
             let _ = p.screen().cell(0, 0);
         }
+    }
+
+    // ── Regression: vt100 rows<2 / cols<2 grid panics (quadraui#1130) ───────
+    //
+    // Found by this file's `vt100_parser_never_panics*` property tests: vt100
+    // 0.16.2 panics constructing or resizing a grid with `rows < 2`
+    // (`grid.rs:683`, "attempt to subtract with overflow") *and*, via a
+    // different code path, with `cols == 1` and certain multi-byte input
+    // regardless of `rows` (`screen.rs:730`, same panic message).
+    // `MIN_VT100_ROWS`/`MIN_VT100_COLS` floor every caller-supplied
+    // dimension before it ever reaches vt100 — see their docs for why a
+    // real caller can plausibly hit this (a pane dragged down to a single
+    // row/column, or momentarily to zero mid-resize).
+
+    #[test]
+    fn spawn_with_a_single_row_does_not_panic() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut sess = TerminalSession::spawn(80, 1, "/bin/sh", &cwd, 1000)
+            .expect("spawn must succeed even with rows clamped internally");
+        // The clamp is real, not just "didn't crash": the live grid must
+        // actually be `MIN_VT100_ROWS` rows, not the requested 1.
+        assert_eq!(sess.rows(), MIN_VT100_ROWS);
+        sess.send_str("exit\n");
+    }
+
+    #[test]
+    fn spawn_with_a_single_column_does_not_panic() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut sess = TerminalSession::spawn(1, 24, "/bin/sh", &cwd, 1000)
+            .expect("spawn must succeed even with cols clamped internally");
+        assert_eq!(sess.cols(), MIN_VT100_COLS);
+        sess.send_str("exit\n");
+    }
+
+    #[test]
+    fn resize_to_a_single_row_does_not_panic() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
+        sess.resize(80, 1);
+        assert_eq!(sess.rows(), MIN_VT100_ROWS);
+        sess.send_str("exit\n");
+    }
+
+    #[test]
+    fn resize_to_a_single_column_does_not_panic() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
+        sess.resize(1, 24);
+        assert_eq!(sess.cols(), MIN_VT100_COLS);
+        sess.send_str("exit\n");
     }
 
     // ── Regression: destructive resize corrupts content (#437) ──────────────
@@ -3490,5 +3565,91 @@ mod tests {
         // non-deterministic, so we just verify it was included.
 
         sess.send_str("exit\n");
+    }
+}
+
+/// Property tests for the vt100 parser this engine wraps (quadraui#1130).
+/// Everything fed to [`vt100::Parser::process`] is untrusted, foreign
+/// data by construction — it's whatever bytes the child shell/program
+/// running inside the PTY chooses to write, including a hostile or
+/// buggy program deliberately or accidentally emitting malformed escape
+/// sequences — so "never panics" needs to hold over the arbitrary byte
+/// space, not just the hand-picked regression fixtures in `mod tests`
+/// above (e.g. the #377 wide-char column-boundary case).
+///
+/// Deliberately drives a bare `vt100::Parser` rather than a full
+/// [`TerminalSession`] — the latter needs a real PTY-spawned child
+/// process per case, which is far too slow for proptest's
+/// hundreds-of-cases-per-property default and adds nothing: the parser
+/// itself, not the PTY plumbing around it, is what actually walks the
+/// untrusted byte stream.
+///
+/// `rows`/`cols` are bounded below by [`MIN_VT100_ROWS`]/[`MIN_VT100_COLS`],
+/// not `1`: this property test is *how* both upstream vt100 panics (see
+/// those consts' docs) were originally found, by generating grid sizes
+/// with no floor at all. That's now a pinned regression
+/// (`spawn_with_a_single_row_does_not_panic` /
+/// `spawn_with_a_single_column_does_not_panic` /
+/// `resize_to_a_single_row_does_not_panic` /
+/// `resize_to_a_single_column_does_not_panic` in `mod tests` above)
+/// covering the boundary this crate actually controls — where
+/// `TerminalSession` clamps *before* constructing the parser. Re-widening
+/// the range here would just rediscover the same, already-filed upstream
+/// vt100 bugs on every run instead of testing anything this crate can fix.
+#[cfg(test)]
+mod proptests {
+    use super::{MIN_VT100_COLS, MIN_VT100_ROWS};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No byte sequence, however malformed (a truncated CSI, an
+        /// out-of-range SGR parameter, a lone high continuation byte, a
+        /// wide-char glyph landing exactly on a column boundary — the
+        /// #377 regression class), may panic the parser at any
+        /// reasonable terminal size.
+        #[test]
+        fn vt100_parser_never_panics(
+            rows in MIN_VT100_ROWS..60,
+            cols in MIN_VT100_COLS..200,
+            bytes in prop::collection::vec(any::<u8>(), 0..2000),
+        ) {
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.process(&bytes);
+        }
+
+        /// Same, but the byte stream is valid UTF-8 text (still
+        /// arbitrary — no attempt to keep it well-formed *terminal*
+        /// output) — the shape a foreign program's plain-text output,
+        /// as opposed to raw garbage, actually takes.
+        #[test]
+        fn vt100_parser_never_panics_on_arbitrary_utf8(
+            rows in MIN_VT100_ROWS..60,
+            cols in MIN_VT100_COLS..200,
+            s in ".{0,2000}",
+        ) {
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.process(s.as_bytes());
+        }
+
+        /// A resize mid-stream (`set_size`, the same call
+        /// [`TerminalSession::resize`] makes on SIGWINCH) followed by
+        /// more arbitrary bytes must not panic either — this is the
+        /// exact scenario `reflow_screen`'s module doc and the #377
+        /// fixtures above both call out as the highest-risk path
+        /// (wide-char cells re-wrapping at a new width).
+        #[test]
+        fn vt100_parser_never_panics_across_a_resize(
+            rows in MIN_VT100_ROWS..60,
+            cols in MIN_VT100_COLS..200,
+            new_rows in MIN_VT100_ROWS..60,
+            new_cols in MIN_VT100_COLS..200,
+            before in prop::collection::vec(any::<u8>(), 0..1000),
+            after in prop::collection::vec(any::<u8>(), 0..1000),
+        ) {
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            parser.process(&before);
+            parser.screen_mut().set_size(new_rows, new_cols);
+            parser.process(&after);
+        }
     }
 }

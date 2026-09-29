@@ -5367,7 +5367,7 @@ mod tests {
     /// constructed directly, never handed to `gtk::run`), `waker()` must
     /// not panic — it silently has nothing to wake.
     #[test]
-    fn waker_is_a_safe_no_op_before_wake_callback_is_installed() {
+    fn waker_does_not_panic_before_wake_callback_is_installed() {
         let backend = GtkBackend::new();
         let waker = Backend::waker(&backend);
         waker(crate::UserPayload::new(1_i32));
@@ -5378,7 +5378,7 @@ mod tests {
     /// timeout_add_local_once` only *schedules* the one-shot timer; it
     /// returns immediately without running the main loop, so this is
     /// safe to call from a plain unit test with no GTK application or
-    /// running loop behind it, same posture as `waker_is_a_safe_no_op_
+    /// running loop behind it, same posture as `waker_does_not_panic_
     /// before_wake_callback_is_installed` above.
     ///
     /// Deliberately doesn't pump `glib::MainContext::default()` to prove

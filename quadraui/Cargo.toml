@@ -487,6 +487,13 @@ windows-numerics = { version = "0.3", optional = true }
 [dev-dependencies]
 # For runnable examples that demonstrate the TUI backend pattern.
 crossterm = "0.29"
+# Property-based round-trip / never-panics tests for the parsers that take
+# untrusted or foreign input (quadraui#1130): JSONC comment stripping,
+# `Theme::from_vscode_json`, markdown → `StyledText`, the vt100 terminal
+# engine, and DECRQM/SGR-mouse escape decoding. `proptest-derive` isn't
+# needed — every strategy below is built from primitives (`any::<...>()`,
+# `prop::string`, `.prop_map`), not `#[derive(Arbitrary)]` on our own types.
+proptest = "1"
 # For isolated temp-directory creation in compose-controller tests
 # that touch the filesystem.
 tempfile = "3"

@@ -247,7 +247,19 @@ mod tests {
             50.0,
             20.0,
         );
-        // Must not panic (a zero-size fill_rect is a no-op D2D call).
-        let _ = paint(&sb);
+        // Must not panic (a zero-size fill_rect is a no-op D2D call), and
+        // must genuinely paint nothing: probe a few points across the
+        // surface and confirm they're all still the plain background
+        // `paint()` filled before invoking the scrollbar rasteriser.
+        let surface = paint(&sb);
+        let theme = Theme::default();
+        for (x, y) in [(4, 4), (4, H / 2), (4, H - 4)] {
+            let c = surface.pixel_at(x, y);
+            assert_eq!(
+                (c.r, c.g, c.b),
+                (theme.background.r, theme.background.g, theme.background.b),
+                "a zero-size track should paint nothing, leaving the background untouched at ({x}, {y})",
+            );
+        }
     }
 }
