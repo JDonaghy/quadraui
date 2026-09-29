@@ -629,7 +629,7 @@ pub use dispatch::{
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,
 };
 pub use modal_stack::{ModalEntry, ModalStack};
-pub use runner::{AppLogic, Reaction};
+pub use runner::{AppLogic, Reaction, StepOutcome};
 
 /// Crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

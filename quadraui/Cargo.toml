@@ -857,6 +857,16 @@ path = "examples/tui_no_mouse.rs"
 required-features = ["tui"]
 
 [[example]]
+name = "tui_embedded"
+path = "examples/tui_embedded.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_embedded"
+path = "examples/gtk_embedded.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_split_tree"
 path = "examples/tui_split_tree.rs"
 required-features = ["tui"]

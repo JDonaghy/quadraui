@@ -460,6 +460,197 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     std::process::ExitCode::from(glib_code)
 }
 
+// `StepOutcome` — what happened during one non-blocking `step`/`pump` call
+// — is defined once in `crate::runner` and shared by every backend's
+// embedding-friendly runner (issue #1100: `GtkRunner` here,
+// `crate::tui::run::TuiRunner` on TUI); re-exported (not just imported) so
+// any in-crate caller that reaches it through this module keeps working.
+pub use crate::runner::StepOutcome;
+
+/// Non-blocking / bounded-wait entry points for a host that owns its own
+/// event loop (issue #1100) — the GTK counterpart of
+/// [`crate::tui::run::TuiRunner`].
+///
+/// [`run`]/[`run_with`] each own the whole process: `Application::run()`
+/// blocks the calling thread inside GLib's main loop until the app quits.
+/// That's the right shape for a process whose only job is running one
+/// quadraui window, but it can't be embedded inside a host that already
+/// owns its own loop and needs to interleave quadraui's work with its own
+/// — the same hosts `TuiRunner`'s doc names (Node's libuv reactor, a .NET
+/// `SynchronizationContext`, Python's `asyncio` loop, a game engine's
+/// per-frame tick).
+///
+/// [`GtkRunner::new`]/[`GtkRunner::new_with`] build the exact same
+/// `Application` + window + `DrawingArea` + event-controller wiring
+/// [`run_with`] does — both call the same [`activate`] function directly
+/// (rather than `run_with`'s `Application::connect_activate` +
+/// `Application::run()`), so nothing about the live window, its signal
+/// handlers, or its render path differs between the two entry points.
+/// What differs is only how the GLib main loop gets serviced afterwards:
+///
+/// - [`GtkRunner::step`] — one non-blocking pass:
+///   `glib::MainContext::iteration(false)`, GLib's own primitive for
+///   "process whatever's immediately ready and return, blocking on
+///   nothing".
+/// - [`GtkRunner::pump`] — one pass bounded to at most `timeout`: arms a
+///   one-shot `glib::timeout_add_local_once` for `timeout`, then calls
+///   `glib::MainContext::iteration(true)` — GLib's own blocking-until-
+///   something's-ready primitive — so the call returns either once a real
+///   GTK/GLib source fires (a key press, a redraw, a background
+///   `Backend::waker` wake) or once the bound timer does, whichever is
+///   first.
+///
+/// Both return a [`StepOutcome`], mirroring `TuiRunner`: `Continue` while
+/// the window is still open, `Exited` once it's gone. Checked via
+/// `Application::windows().is_empty()` rather than a dedicated flag —
+/// every exit path in this module (`Reaction::Exit`/`EventOutcome::Exit`
+/// via [`GtkSink::request_exit`], the OS close button once the app's
+/// `WindowClose` handling allows it through, headless smoke mode's forced
+/// timeout) already tears the window down via `window.destroy()` or lets
+/// `window.close()` proceed, both of which remove it from that list — see
+/// [`GtkSink::request_exit`]'s doc for why `destroy()`, not `close()`, is
+/// the one every *programmatic* exit uses.
+///
+/// A background thread's [`Backend::waker`] call needs no extra wiring to
+/// reach a `GtkRunner`-driven loop: `GtkBackend::waker()` posts through
+/// `glib::MainContext::invoke`, which schedules its wake callback onto the
+/// exact same default `MainContext` `step`/`pump` iterate — unlike TUI,
+/// GTK *can* interrupt a blocking `pump(timeout)` wait early this way,
+/// since `MainContext::invoke` wakes the context's underlying poll
+/// immediately rather than TUI's crossterm read having to wait out a
+/// fixed timeout regardless (see [`Backend::waker`]'s "simplest of the
+/// four" note).
+///
+/// Scope note: unlike `run`/`run_with`, `GtkRunner` doesn't wire
+/// `Application::connect_open` (`argv` file/URL open-with activation,
+/// issue #957) — an embedding host already owns its own process's argv
+/// handling, so that signal has no obvious owner here. Everything else
+/// `activate` wires (keyboard, mouse, scroll, resize, HiDPI, file drop,
+/// window-close veto, headless smoke mode) is unchanged.
+///
+/// `GtkRunner` has no `Drop`-based teardown the way `TuiRunner` does:
+/// there's no global terminal mode to restore, and the window/`Application`
+/// object graph is kept alive by GTK's own `Rc`-like GObject refcounting
+/// (the event-controller closures each hold their own clones), independent
+/// of whether anything is still calling `step`/`pump`. A host that stops
+/// pumping without driving the app to [`StepOutcome::Exited`] leaves the
+/// window exactly as open as it was — nothing leaks beyond what any
+/// abandoned GTK `Application` would.
+pub struct GtkRunner {
+    gapp: Application,
+    context: glib::MainContext,
+}
+
+impl GtkRunner {
+    /// Build a runner with the default [`RunConfig`] (generic app id and
+    /// window title). Builds the `Application`, window, and `DrawingArea`,
+    /// and calls `app.setup()` — exactly what [`run`] does before handing
+    /// control to `Application::run()`.
+    pub fn new<A: AppLogic + 'static>(app: A) -> Self {
+        Self::new_with(app, RunConfig::default())
+    }
+
+    /// Like [`Self::new`], but with an explicit [`RunConfig`] (app id +
+    /// window title, quadraui#234).
+    pub fn new_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> Self {
+        let app = Rc::new(RefCell::new(app));
+        let backend = Rc::new(RefCell::new(GtkBackend::new()));
+        // quadraui#450 (GD-5): `None` unless `QUADRAUI_GTK_SMOKE_MS` is set —
+        // see the module doc's "Headless smoke mode" section. Honoured here
+        // too, so `GtkRunner` gets the same xvfb-run-friendly headless
+        // smoke behaviour `run_with` does, with no separate opt-in.
+        let smoke = SmokeConfig::from_env(SMOKE_MS_VAR, SMOKE_PASTE_VAR);
+        let smoke_failed = Rc::new(Cell::new(false));
+
+        let mut flags = gtk4::gio::ApplicationFlags::HANDLES_OPEN;
+        if !config.single_instance {
+            flags |= gtk4::gio::ApplicationFlags::NON_UNIQUE;
+        }
+        let gapp = Application::builder()
+            .application_id(config.app_id)
+            .flags(flags)
+            .build();
+        // `Application::run()` registers before ever emitting `activate` —
+        // mirrored here since this path calls `activate` directly instead
+        // of going through `connect_activate`/`run()`. Best-effort: a
+        // registration failure (e.g. no D-Bus session) shouldn't prevent
+        // an embedded window from working at all — `run_with` doesn't
+        // surface this failure mode differently either, since `run()`
+        // itself has no separate registration-error return path.
+        let _ = gapp.register(gtk4::gio::Cancellable::NONE);
+
+        activate(
+            &gapp,
+            app,
+            backend,
+            smoke,
+            smoke_failed,
+            config.title,
+            config.icon_name,
+        );
+
+        Self {
+            gapp,
+            context: glib::MainContext::default(),
+        }
+    }
+
+    /// Whether the app's window is still open — see the type-level doc's
+    /// "Both return a `StepOutcome`" paragraph for why this list, not a
+    /// dedicated flag, is the source of truth.
+    fn window_open(&self) -> bool {
+        !self.gapp.windows().is_empty()
+    }
+
+    fn outcome(&self) -> StepOutcome {
+        if self.window_open() {
+            StepOutcome::Continue
+        } else {
+            StepOutcome::Exited
+        }
+    }
+
+    /// One non-blocking pass: `glib::MainContext::iteration(false)` —
+    /// dispatches whatever's immediately ready (a queued redraw, an
+    /// already-delivered input event, an expired timer), never blocks.
+    pub fn step(&mut self) -> StepOutcome {
+        if self.window_open() {
+            self.context.iteration(false);
+        }
+        self.outcome()
+    }
+
+    /// One pass, blocking for up to `timeout` if nothing is ready yet.
+    /// Arms a one-shot timer for `timeout` and calls
+    /// `glib::MainContext::iteration(true)` exactly once — GLib's own
+    /// "block until something's ready" primitive — so this returns as soon
+    /// as *either* a real source fires *or* the bound timer does, never
+    /// later than `timeout`.
+    pub fn pump(&mut self, timeout: Duration) -> StepOutcome {
+        if !self.window_open() {
+            return StepOutcome::Exited;
+        }
+
+        let timed_out = Rc::new(Cell::new(false));
+        let timed_out_cb = timed_out.clone();
+        let timer_id = glib::source::timeout_add_local_once(timeout, move || {
+            timed_out_cb.set(true);
+        });
+
+        self.context.iteration(true);
+
+        // If a real source — not our own bound timer — is what woke this
+        // call, cancel the still-pending timer rather than leaving it to
+        // fire later and wake some future, unrelated `iteration()` call
+        // for no reason.
+        if !timed_out.get() {
+            timer_id.remove();
+        }
+
+        self.outcome()
+    }
+}
+
 fn activate<A: AppLogic + 'static>(
     gapp: &Application,
     app: Rc<RefCell<A>>,

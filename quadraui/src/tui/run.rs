@@ -152,10 +152,53 @@ pub fn run<A: AppLogic>(app: A) -> io::Result<()> {
 /// `examples/tui_no_mouse.rs` for a runnable demo and
 /// `tests/tui_pty_smoke.rs`'s `no_mouse` module for the black-box proof
 /// that mouse capture is actually withheld over a real pty.
-pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
-    use ratatui::crossterm::event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    };
+pub fn run_with<A: AppLogic>(app: A, config: RunConfig) -> io::Result<()> {
+    let mut runner = TuiRunner::new_with(app, config)?;
+
+    // Run the app inside `catch_unwind` so a panic in app code doesn't
+    // leave the terminal in a broken state. `runner` is *borrowed* into
+    // the closure below, not moved into it, so it's still here afterwards
+    // regardless of whether the closure returned or panicked — that's
+    // what lets the explicit `runner.finish()` below run on every exit
+    // path, panic included.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
+        match runner.pump(POLL_TIMEOUT_CEILING)? {
+            StepOutcome::Continue => {}
+            StepOutcome::Exited => return Ok(()),
+        }
+    }));
+
+    // Idempotent (see `TuiRunner::finish`): a no-op if the loop above
+    // already exited cleanly and tore the terminal down itself on its way
+    // out; the safety net for a panic, which leaves `runner.finished`
+    // false.
+    runner.finish();
+
+    match result {
+        Ok(io_result) => io_result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Terminal state produced by [`setup_terminal`] — shared by the blocking
+/// [`run_with`] and non-blocking [`TuiRunner`] (issue #1100), so the
+/// negotiation (raw mode, alternate screen, mouse capture, bracketed
+/// paste, kitty keyboard protocol, SGR-Pixels mouse mode) can't drift
+/// between the two.
+struct TerminalSetup {
+    terminal: Rc<RefCell<Terminal<LiveBackend>>>,
+    backend: TuiBackend,
+    kbd_enhanced: bool,
+    sgr_pixel_mouse: bool,
+}
+
+/// Negotiate the real terminal (raw mode, alternate screen, mouse
+/// capture, bracketed paste, best-effort kitty keyboard protocol,
+/// best-effort SGR-Pixels mouse mode) and construct the live
+/// [`TuiBackend`] and ratatui [`Terminal`]. Extracted out of [`run_with`]
+/// (issue #1100) — see [`TerminalSetup`]'s doc.
+fn setup_terminal(config: RunConfig) -> io::Result<TerminalSetup> {
+    use ratatui::crossterm::event::{EnableBracketedPaste, EnableMouseCapture};
 
     // ── Terminal setup ──────────────────────────────────────────
     enable_raw_mode()?;
@@ -250,26 +293,43 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
     let dialog_surface: Rc<RefCell<dyn crate::tui::services::DialogSurface>> = terminal.clone();
     backend.tui_services().set_dialog_surface(dialog_surface);
 
-    // Run the app inside `catch_unwind` so a panic in app code
-    // doesn't leave the terminal in a broken state.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_inner(&terminal, &mut backend, &mut app)
-    }));
+    Ok(TerminalSetup {
+        terminal,
+        backend,
+        kbd_enhanced,
+        sgr_pixel_mouse,
+    })
+}
 
-    // ── Terminal tear-down (always) ─────────────────────────────
+/// Restore the terminal to its pre-[`setup_terminal`] state: pop the
+/// kitty keyboard enhancement flags, disable SGR-Pixels mouse mode,
+/// disable raw mode, disable mouse capture / bracketed paste, leave the
+/// alternate screen, and show the cursor — the exact reverse of
+/// [`setup_terminal`]'s negotiation. Every step is best-effort (`let _ =`):
+/// a terminal that refused one of these on the way in isn't going to
+/// error usefully on the way out either, and a caller tearing down mid-
+/// panic (see [`run_with`]) needs this to never itself panic.
+fn teardown_terminal(
+    terminal: &Rc<RefCell<Terminal<LiveBackend>>>,
+    kbd_enhanced: bool,
+    sgr_pixel_mouse: bool,
+    mouse: bool,
+) {
+    use ratatui::crossterm::event::{DisableBracketedPaste, DisableMouseCapture};
+
     let mut terminal = terminal.borrow_mut();
     if kbd_enhanced {
         let _ = pop_keyboard_enhancement(terminal.backend_mut());
     }
     if sgr_pixel_mouse {
         // `?1016l` ahead of `DisableMouseCapture`, mirroring the enable
-        // order (quadraui#1048) — this inner `catch_unwind` block runs on
-        // every exit path (including a panic), so a session that turned
-        // pixel mode on always turns it back off.
+        // order (quadraui#1048) — this runs on every exit path (including
+        // a panic), so a session that turned pixel mode on always turns
+        // it back off.
         let _ = disable_sgr_pixel_mouse(terminal.backend_mut());
     }
     let _ = disable_raw_mode();
-    if config.mouse {
+    if mouse {
         let _ = execute!(
             terminal.backend_mut(),
             DisableMouseCapture,
@@ -284,161 +344,317 @@ pub fn run_with<A: AppLogic>(mut app: A, config: RunConfig) -> io::Result<()> {
         );
     }
     let _ = terminal.show_cursor();
-    drop(terminal);
-
-    match result {
-        Ok(io_result) => io_result,
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
 }
 
-fn run_inner<A: AppLogic>(
-    terminal: &Rc<RefCell<Terminal<LiveBackend>>>,
-    backend: &mut TuiBackend,
-    app: &mut A,
-) -> io::Result<()> {
-    // ── Seed the viewport from the real terminal size BEFORE setup ──
-    //
-    // `TuiBackend::new()` seeds `Viewport::default()` (80×24). If
-    // `app.setup()` reads `backend.viewport()` to size a side effect
-    // — e.g. `TerminalApp` spawns its PTY at the viewport's cell
-    // dimensions — it would otherwise always get 80×24 and only snap to
-    // the real size on the first `WindowResized` event, leaving the pane
-    // under-filled until the user's first interaction (quadraui#437, the
-    // TUI counterpart of the original tiny-window bug). Sync the real
-    // size up front so `setup()` sees true dimensions.
-    let size = terminal.borrow().size()?;
-    backend.begin_frame(crate::Viewport::new(
-        size.width as f32,
-        size.height as f32,
-        1.0,
-    ));
+// `StepOutcome` — what happened during one non-blocking `step`/`pump` call
+// — is defined once in `crate::runner` and shared by every backend's
+// embedding-friendly runner (issue #1100: `TuiRunner` here,
+// `crate::gtk::run::GtkRunner` on GTK), the same way `Reaction` already is;
+// re-exported (not just imported) so existing in-crate callers that reach
+// it through this module keep working.
+pub use crate::runner::StepOutcome;
 
-    // ── App setup hook ─────────────────────────────────────────
-    app.setup(backend);
-
-    // ── Frame loop ─────────────────────────────────────────────
-    let mut needs_redraw = true;
+/// Non-blocking / bounded-wait entry points for a host that owns its own
+/// event loop (issue #1100).
+///
+/// [`run`]/[`run_with`] each own the whole process: they block forever
+/// (subject only to [`Reaction::Exit`]) inside a loop that waits on
+/// crossterm, renders, and dispatches. That's the right shape for a
+/// process whose only job is running one quadraui app, but it can't be
+/// embedded inside a host that already owns its own loop and needs to
+/// interleave quadraui's work with its own — Node's libuv reactor, a .NET
+/// `SynchronizationContext`, Python's `asyncio` loop, a game engine's
+/// per-frame tick. `TuiRunner` is the exact same setup, frame paint, and
+/// event dispatch [`run_with`] uses (`run_with` is now written in terms of
+/// it — see its body), split into a constructor plus two single-iteration
+/// entry points a host calls at whatever cadence suits it:
+///
+/// - [`TuiRunner::step`] — never blocks. Repaints if needed, drains
+///   whatever events are already queued ([`Backend::poll_events`]),
+///   dispatches them, ticks, and returns. The counterpart of a
+///   non-blocking `crossterm::event::poll(Duration::ZERO)` iteration.
+/// - [`TuiRunner::pump`] — like `step`, but if nothing is queued yet,
+///   blocks for up to `timeout` waiting for the first native event (or a
+///   background [`Backend::waker`] payload) before giving up — bounded
+///   the same way `crossterm::event::poll(timeout)` is.
+///
+/// Both return a [`StepOutcome`] rather than looping internally, so the
+/// host decides what "call it again" means: a libuv idle handle, an
+/// `asyncio` task rescheduled on its own loop, a fixed per-frame budget in
+/// a game loop.
+///
+/// A background thread's [`Backend::waker`] call needs no extra wiring to
+/// reach a `TuiRunner`-driven loop: TUI's `waker()` implementation simply
+/// pushes the payload into a queue that [`Backend::poll_events`]/
+/// [`Backend::wait_events`] already drain unconditionally on every call
+/// (see that method's doc) — the same drain `step`/`pump` use internally.
+/// A host polling via `step()` on its own timer observes the payload on
+/// its next call; a host blocked in `pump(timeout)` observes it once
+/// `timeout` elapses at the latest (TUI has no way to interrupt
+/// crossterm's blocking read early — see [`Backend::waker`]'s "simplest of
+/// the four" note — so a host that wants tighter wake latency than its own
+/// poll cadence should keep `timeout` short rather than relying on an
+/// early wake).
+///
+/// Terminal teardown (raw mode, alternate screen, mouse capture, kitty/
+/// SGR-Pixels negotiation) happens automatically the moment `step`/`pump`
+/// observes [`Reaction::Exit`] (surfaced as [`StepOutcome::Exited`]), and
+/// again — idempotently — on [`Drop`], so a host that stops calling
+/// `step`/`pump` early (abandons the runner, or lets a panic unwind
+/// through it) still gets its terminal back.
+pub struct TuiRunner<A: AppLogic> {
+    terminal: Rc<RefCell<Terminal<LiveBackend>>>,
+    backend: TuiBackend,
+    app: A,
+    needs_redraw: bool,
     // Trailing-edge resize debounce state (quadraui#437, shared utility
-    // extracted in #496 — see `crate::runtime::ResizeDebouncer`). We hold
-    // the most recent viewport from a burst of `WindowResized` events in
-    // `resize_debouncer` and dispatch a single settled resize once
-    // `RESIZE_SETTLE` elapses with no newer one — the deadline itself is
-    // TUI's own `Instant`-poll mechanism (see `ResizeDebouncer`'s doc for
-    // why the timing stays per-backend).
-    let mut resize_debouncer = ResizeDebouncer::new();
-    let mut resize_deadline: Option<Instant> = None;
-    loop {
+    // extracted in #496 — see `crate::runtime::ResizeDebouncer`). Holds
+    // the most recent viewport from a burst of `WindowResized` events and
+    // dispatches a single settled resize once `RESIZE_SETTLE` elapses with
+    // no newer one.
+    resize_debouncer: ResizeDebouncer,
+    resize_deadline: Option<Instant>,
+    kbd_enhanced: bool,
+    sgr_pixel_mouse: bool,
+    mouse: bool,
+    finished: bool,
+}
+
+impl<A: AppLogic> TuiRunner<A> {
+    /// Build a runner with the default [`RunConfig`] (mouse capture
+    /// enabled). Negotiates the terminal (see [`setup_terminal`]), seeds
+    /// the viewport from the real terminal size, and calls `app.setup()`
+    /// before returning — exactly what [`run`]/[`run_with`] do before
+    /// entering their internal loop.
+    pub fn new(app: A) -> io::Result<Self> {
+        Self::new_with(app, RunConfig::default())
+    }
+
+    /// Like [`Self::new`], but with an explicit [`RunConfig`] — e.g.
+    /// [`RunConfig::no_mouse`].
+    pub fn new_with(mut app: A, config: RunConfig) -> io::Result<Self> {
+        let mouse = config.mouse;
+        let TerminalSetup {
+            terminal,
+            mut backend,
+            kbd_enhanced,
+            sgr_pixel_mouse,
+        } = setup_terminal(config)?;
+
+        // Seed the viewport from the real terminal size BEFORE `setup()`.
+        // `TuiBackend::new()` alone seeds a fixed `Viewport::default()`
+        // (80×24); if `app.setup()` reads `backend.viewport()` to size a
+        // side effect (e.g. spawning an embedded PTY at the viewport's
+        // cell dimensions) it would otherwise always see 80×24 until the
+        // first `WindowResized` event (quadraui#437, the TUI counterpart
+        // of the original tiny-window bug).
+        let size = terminal.borrow().size()?;
+        backend.begin_frame(crate::Viewport::new(
+            size.width as f32,
+            size.height as f32,
+            1.0,
+        ));
+
+        app.setup(&mut backend);
+
+        Ok(Self {
+            terminal,
+            backend,
+            app,
+            needs_redraw: true,
+            resize_debouncer: ResizeDebouncer::new(),
+            resize_deadline: None,
+            kbd_enhanced,
+            sgr_pixel_mouse,
+            mouse,
+            finished: false,
+        })
+    }
+
+    /// Shared access to the app — e.g. for a host inspecting state between
+    /// `step`/`pump` calls.
+    pub fn app(&self) -> &A {
+        &self.app
+    }
+
+    /// Mutable access to the app.
+    pub fn app_mut(&mut self) -> &mut A {
+        &mut self.app
+    }
+
+    /// Shared access to the backend.
+    pub fn backend(&self) -> &TuiBackend {
+        &self.backend
+    }
+
+    /// Mutable access to the backend — e.g. to call
+    /// [`Backend::request_frame_in`] directly from host code.
+    pub fn backend_mut(&mut self) -> &mut TuiBackend {
+        &mut self.backend
+    }
+
+    /// One non-blocking pass: repaint if needed, drain whatever events are
+    /// already queued (never blocks), dispatch them, tick, and return. See
+    /// the type-level doc for the full contract.
+    pub fn step(&mut self) -> io::Result<StepOutcome> {
+        self.run_one(None)
+    }
+
+    /// One pass, blocking for up to `timeout` if nothing is queued yet.
+    /// See the type-level doc for the full contract.
+    pub fn pump(&mut self, timeout: Duration) -> io::Result<StepOutcome> {
+        self.run_one(Some(timeout))
+    }
+
+    fn run_one(&mut self, block_for: Option<Duration>) -> io::Result<StepOutcome> {
+        if self.finished {
+            return Ok(StepOutcome::Exited);
+        }
+
         // Issue #1037: a pending `Backend::request_full_repaint` forces a
-        // redraw even if nothing else asked for one this iteration — an
-        // app might call it on its own outside any `Reaction::Redraw`
-        // path. `take_full_repaint_requested` both answers "was one
-        // pending" and clears it, so the `Terminal::clear()` below fires
-        // exactly once per request, not on every subsequent redraw.
-        let full_repaint = backend.take_full_repaint_requested();
-        needs_redraw |= full_repaint;
-        if needs_redraw {
-            let mut guard = terminal.borrow_mut();
+        // redraw even if nothing else asked for one this iteration — see
+        // `Backend::request_full_repaint`'s doc.
+        let full_repaint = self.backend.take_full_repaint_requested();
+        self.needs_redraw |= full_repaint;
+        if self.needs_redraw {
+            let mut guard = self.terminal.borrow_mut();
             if full_repaint {
-                // Resets ratatui's diff cache so this frame repaints
-                // every cell unconditionally — see
-                // `Backend::request_full_repaint`'s doc for why TUI is
-                // the one backend that needs this.
                 guard.clear()?;
             }
-            render_frame(&mut guard, backend, app)?;
+            render_frame(&mut guard, &mut self.backend, &self.app)?;
             drop(guard);
-            needs_redraw = false;
+            self.needs_redraw = false;
         }
 
-        // Drain events. `wait_events` blocks for up to `timeout` —
-        // quadraui#832: no longer a fixed `POLL_TIMEOUT_CEILING` every
-        // iteration. Shortened to the nearer of (a) any pending
-        // `Backend::request_frame_in`/`Reaction::RedrawAfter` deadline and
-        // (b) the still-pending debounced-resize deadline below, so
-        // neither loses its old promptness now that the idle case can
-        // wait much longer.
-        let mut timeout = backend.frame_poll_timeout(POLL_TIMEOUT_CEILING);
-        if let Some(d) = resize_deadline {
-            timeout = timeout.min(d.saturating_duration_since(Instant::now()));
-        }
-        let events = backend.wait_events(timeout);
+        // `step` (`block_for: None`) never blocks — `Backend::poll_events`
+        // drains whatever's already queued. `pump` (`block_for:
+        // Some(ceiling)`) blocks for up to the nearer of `ceiling`, any
+        // pending `Backend::request_frame_in`/`Reaction::RedrawAfter`
+        // deadline, and the still-pending debounced-resize deadline below
+        // — quadraui#832's shortened-timeout logic, unchanged from the
+        // pre-#1100 `run_inner` loop this replaces.
+        let events = match block_for {
+            Some(ceiling) => {
+                let mut timeout = self.backend.frame_poll_timeout(ceiling);
+                if let Some(d) = self.resize_deadline {
+                    timeout = timeout.min(d.saturating_duration_since(Instant::now()));
+                }
+                self.backend.wait_events(timeout)
+            }
+            None => self.backend.poll_events(),
+        };
         // Clear an elapsed frame deadline *before* dispatching this
         // batch's events or calling `tick` — see
         // `crate::runtime::FrameScheduler::clear_if_due`'s doc for why the
         // order matters (a fresh request made by either must survive
         // this).
-        backend.clear_frame_deadline_if_due();
+        self.backend.clear_frame_deadline_if_due();
+
         for event in events {
-            // Debounce PTY-thrashing resize storms: coalesce the burst to
-            // the latest size and defer dispatch until the drag settles.
-            // Painting stays live because `render_frame` re-reads the real
-            // terminal size every frame.
-            if let UiEvent::WindowResized { viewport } = event {
-                // quadraui#1048: a font-size change resizes the terminal in
-                // *pixels* without necessarily changing its row/column
-                // count, silently invalidating the cached
-                // `TuiBackend::cell_pixel_size` divisor SGR-Pixels mouse
-                // scaling depends on — re-query on every resize, not just
-                // at startup. A terminal that stops reporting a usable
-                // pixel size mid-session (e.g. a `window_size()` that starts
-                // returning 0) degrades cleanly back to cell-mode-shaped
-                // (identity) division rather than keeping a stale divisor.
-                if backend.sgr_pixel_mouse() {
-                    match query_cell_pixel_size() {
-                        Some(size) => backend.set_cell_pixel_size(size),
-                        None => {
-                            // The terminal stopped reporting a usable pixel
-                            // size mid-session. It is still in `?1016h` mode
-                            // and will keep emitting *pixel*-scale reports —
-                            // resetting only our own state without also
-                            // sending `?1016l` would leave us dividing raw
-                            // pixel offsets by the identity divisor, putting
-                            // every subsequent click/drag in the wrong place
-                            // (quadraui#1048 review). Turn the mode off at
-                            // the terminal itself, mirroring the teardown
-                            // path above.
-                            let _ = disable_sgr_pixel_mouse(terminal.borrow_mut().backend_mut());
-                            backend.set_sgr_pixel_mouse(false);
-                            backend.set_cell_pixel_size(crate::TerminalCellSize::new(1.0, 1.0));
-                        }
-                    }
-                }
-                resize_debouncer.note(viewport);
-                resize_deadline = Some(Instant::now() + RESIZE_SETTLE);
-                needs_redraw = true;
-                continue;
-            }
-            match dispatch_event(event, backend, app) {
-                EventOutcome::Continue => {}
-                EventOutcome::Redraw => needs_redraw = true,
-                EventOutcome::RedrawAfter(d) => backend.request_frame_in(d),
-                EventOutcome::Exit => return Ok(()),
+            if let Some(outcome) = self.handle_native_event(event)? {
+                return Ok(outcome);
             }
         }
 
         // Fire the debounced resize once the drag has settled.
-        if resize_deadline.is_some_and(|d| Instant::now() >= d) {
-            resize_deadline = None;
-            if let Some(viewport) = resize_debouncer.take() {
-                match dispatch_event(UiEvent::WindowResized { viewport }, backend, app) {
-                    EventOutcome::Continue => {}
-                    EventOutcome::Redraw => needs_redraw = true,
-                    EventOutcome::RedrawAfter(d) => backend.request_frame_in(d),
-                    EventOutcome::Exit => return Ok(()),
+        if self.resize_deadline.is_some_and(|d| Instant::now() >= d) {
+            self.resize_deadline = None;
+            if let Some(viewport) = self.resize_debouncer.take() {
+                if let Some(outcome) = self.dispatch_and_map(UiEvent::WindowResized { viewport })? {
+                    return Ok(outcome);
                 }
             }
         }
 
-        // Periodic tick — called after every event batch (including
-        // timeout-triggered empty batches). Lets apps drive timer
-        // logic without synthetic event injection.
-        match app.tick(backend) {
+        // Periodic tick — called after every event batch (including an
+        // empty one, whether from an empty `poll_events` drain or a
+        // `pump` timeout). Lets apps drive timer logic without synthetic
+        // event injection.
+        match self.app.tick(&mut self.backend) {
             Reaction::Continue => {}
-            Reaction::Redraw => needs_redraw = true,
-            Reaction::RedrawAfter(d) => backend.request_frame_in(d),
-            Reaction::Exit => return Ok(()),
+            Reaction::Redraw => self.needs_redraw = true,
+            Reaction::RedrawAfter(d) => self.backend.request_frame_in(d),
+            Reaction::Exit => return Ok(self.finish()),
         }
+
+        Ok(StepOutcome::Continue)
+    }
+
+    /// Debounce a `WindowResized` burst the same way the pre-#1100
+    /// `run_inner` loop did (quadraui#437): coalesce to the latest size
+    /// and defer dispatch until the drag settles (painting stays live
+    /// regardless — [`render_frame`] re-reads the real terminal size every
+    /// frame). Everything else dispatches through
+    /// [`Self::dispatch_and_map`].
+    fn handle_native_event(&mut self, event: UiEvent) -> io::Result<Option<StepOutcome>> {
+        if let UiEvent::WindowResized { viewport } = event {
+            // quadraui#1048: a font-size change resizes the terminal in
+            // *pixels* without necessarily changing its row/column count,
+            // silently invalidating the cached `TuiBackend::cell_pixel_size`
+            // divisor SGR-Pixels mouse scaling depends on — re-query on
+            // every resize, not just at startup.
+            if self.backend.sgr_pixel_mouse() {
+                match query_cell_pixel_size() {
+                    Some(size) => self.backend.set_cell_pixel_size(size),
+                    None => {
+                        // The terminal stopped reporting a usable pixel
+                        // size mid-session but is still in `?1016h` mode —
+                        // turn it off at the terminal itself (mirroring
+                        // teardown), not just in our own state, so we
+                        // don't keep dividing raw pixel offsets by the
+                        // identity divisor.
+                        let _ = disable_sgr_pixel_mouse(self.terminal.borrow_mut().backend_mut());
+                        self.backend.set_sgr_pixel_mouse(false);
+                        self.backend
+                            .set_cell_pixel_size(crate::TerminalCellSize::new(1.0, 1.0));
+                    }
+                }
+            }
+            self.resize_debouncer.note(viewport);
+            self.resize_deadline = Some(Instant::now() + RESIZE_SETTLE);
+            self.needs_redraw = true;
+            return Ok(None);
+        }
+        self.dispatch_and_map(event)
+    }
+
+    fn dispatch_and_map(&mut self, event: UiEvent) -> io::Result<Option<StepOutcome>> {
+        match dispatch_event(event, &mut self.backend, &mut self.app) {
+            EventOutcome::Continue => Ok(None),
+            EventOutcome::Redraw => {
+                self.needs_redraw = true;
+                Ok(None)
+            }
+            EventOutcome::RedrawAfter(d) => {
+                self.backend.request_frame_in(d);
+                Ok(None)
+            }
+            EventOutcome::Exit => Ok(Some(self.finish())),
+        }
+    }
+
+    /// Idempotent terminal teardown. Called internally the moment
+    /// `Reaction::Exit`/`EventOutcome::Exit` is observed, and again (as a
+    /// no-op by then) from [`Drop`] — the safety net for a host that
+    /// abandons the runner, or a panic that unwinds through it, without
+    /// ever seeing [`StepOutcome::Exited`].
+    fn finish(&mut self) -> StepOutcome {
+        if !self.finished {
+            teardown_terminal(
+                &self.terminal,
+                self.kbd_enhanced,
+                self.sgr_pixel_mouse,
+                self.mouse,
+            );
+            self.finished = true;
+        }
+        StepOutcome::Exited
+    }
+}
+
+impl<A: AppLogic> Drop for TuiRunner<A> {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 

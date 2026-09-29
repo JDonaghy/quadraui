@@ -213,7 +213,7 @@ impl<A: AppLogic> TuiDriver<A> {
     ///
     /// Consumes any pending [`crate::Backend::request_full_repaint`]
     /// request (issue #1037) the same way the live runner's
-    /// `tui::run::run_inner` frame loop does — `Terminal::clear()` before
+    /// `tui::run::TuiRunner::run_one` frame loop does — `Terminal::clear()` before
     /// this frame's `render_frame` call — so a driver test can exercise
     /// the same "next frame paints as if blank" behaviour a real terminal
     /// session gets, with no real terminal to observe the clear on
@@ -364,7 +364,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// and matches the returned `Reaction` the same four ways
     /// [`Self::dispatch`] matches an `EventOutcome`: nothing on
     /// `Continue`, repaint on `Redraw`, `Backend::request_frame_in` on
-    /// `RedrawAfter`, latch `exited` on `Exit`. See `tui::run::run_inner`.
+    /// `RedrawAfter`, latch `exited` on `Exit`. See `tui::run::TuiRunner::run_one`.
     ///
     /// Time-driven app state — a spinner frame, a caret blink, a
     /// countdown, a background-job poll — lives entirely in `tick`, so
