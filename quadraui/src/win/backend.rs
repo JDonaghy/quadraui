@@ -3559,10 +3559,11 @@ impl Backend for WinBackend {
     /// #1085: paint via the shared
     /// [`crate::primitives::board::native_surface_paint::paint`] once a
     /// surface is attached — mirrors [`Self::draw_diff_view`]. See that
-    /// fn's doc for the three named divergences (column-header overflow;
-    /// card-title wrapping; rounded vs. straight card borders) found
-    /// while unifying `gtk::board::draw_board`, `macos::board::draw_board`
-    /// and `win::board::draw_board` into one implementation. See
+    /// fn's doc for the four named divergences (column-header overflow;
+    /// card-title wrapping; rounded vs. straight card borders;
+    /// per-element font size) found while unifying
+    /// `gtk::board::draw_board`, `macos::board::draw_board` and
+    /// `win::board::draw_board` into one implementation. See
     /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_board(&mut self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {

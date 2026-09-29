@@ -3330,11 +3330,11 @@ impl Backend for MacBackend {
     /// lands, this method is already here and the lane does not regress.
     /// #1085: paint via the shared
     /// [`crate::primitives::board::native_surface_paint::paint`] — see
-    /// that fn's doc for the three named divergences (column-header
-    /// overflow; card-title wrapping; rounded vs. straight card borders)
-    /// found while unifying `gtk::board::draw_board`,
-    /// `macos::board::draw_board` and `win::board::draw_board` into one
-    /// implementation.
+    /// that fn's doc for the four named divergences (column-header
+    /// overflow; card-title wrapping; rounded vs. straight card borders;
+    /// per-element font size) found while unifying
+    /// `gtk::board::draw_board`, `macos::board::draw_board` and
+    /// `win::board::draw_board` into one implementation.
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout {
         let theme = self.current_theme;
         crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
