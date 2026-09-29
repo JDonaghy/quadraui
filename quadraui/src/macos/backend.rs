@@ -4308,7 +4308,7 @@ mod tests {
 
         // And it must actually be measuring `chrome_font`, not some
         // hardcoded stand-in — matches the real font's own answer.
-        let (expect_w, expect_h) = super::text::measure_text(&backend.chrome_font, "A");
+        let (expect_w, expect_h) = crate::macos::text::measure_text(&backend.chrome_font, "A");
         assert_eq!((w, h), (expect_w as f32, expect_h as f32));
     }
 

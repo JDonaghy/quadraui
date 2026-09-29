@@ -6541,7 +6541,11 @@ mod tests {
         }
     }
 
+    // Gated on `debug_assertions` to mirror its release-mode sibling below:
+    // the loud-panic contract only exists while `debug_assert!` is live, so
+    // an ungated `#[should_panic]` here fails any `cargo test --release`.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "TuiBackend::draw_tree called outside enter_frame_scope")]
     fn draw_tree_outside_frame_scope_panics_loudly_in_dev() {
         let mut backend = TuiBackend::new();
