@@ -792,6 +792,8 @@ pub const CASES: &[Case] = &[
                 dim: false,
                 selected: false,
                 is_cursor: false,
+                cursor_shape: quadraui::TerminalCursorShape::Block,
+                cursor_blinking: false,
                 is_find_match: false,
                 is_find_active: false,
             };

@@ -515,8 +515,8 @@ pub use primitives::tab_bar::{
     VisibleTab,
 };
 pub use primitives::terminal::{
-    Terminal, TerminalCell, TerminalCellSize, TerminalEvent, TerminalHit, TerminalLayout,
-    TerminalScrollbar, TerminalSplitHit, TerminalSplitLayout,
+    Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalEvent, TerminalHit,
+    TerminalLayout, TerminalScrollbar, TerminalSplitHit, TerminalSplitLayout,
 };
 pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,

@@ -66,7 +66,7 @@ use std::sync::mpsc::{self, Receiver};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::event::{Key, MouseButton, NamedKey};
-use crate::primitives::terminal::{Terminal, TerminalCell, TerminalScrollbar};
+use crate::primitives::terminal::{Terminal, TerminalCell, TerminalCursorShape, TerminalScrollbar};
 use crate::types::{Color, Modifiers, WidgetId};
 
 // ── Internal history cell ─────────────────────────────────────────────────────
@@ -770,38 +770,107 @@ fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
 }
 
 /// [`vt100::Callbacks`] implementation that records OSC 0/2 window-title
-/// requests instead of discarding them.
+/// requests and DECSCUSR cursor-shape requests instead of discarding
+/// them.
 ///
-/// vt100 0.16.2 reports these via callback methods rather than storing them
-/// on [`vt100::Screen`] itself (see `set_window_title`/`set_window_icon_name`
-/// in the upstream `Callbacks` trait), so [`TerminalSession`] carries one of
-/// these alongside its parser and reads it back after each [`poll`](TerminalSession::poll).
+/// vt100 0.16.2 reports the title via a callback method rather than
+/// storing it on [`vt100::Screen`] itself (see `set_window_title`/
+/// `set_window_icon_name` in the upstream `Callbacks` trait); it doesn't
+/// track DECSCUSR (`ESC [ Ps SP q`) at all — that sequence has an
+/// intermediate byte (`SP`, `0x20`) vt100's own `csi_dispatch` doesn't
+/// recognise for any final byte, so it falls through to
+/// [`unhandled_csi`](vt100::Callbacks::unhandled_csi) instead
+/// (quadraui#338). [`TerminalSession`] carries one of these alongside
+/// its parser and reads both back after each [`poll`](TerminalSession::poll)
+/// via [`TerminalSession::title`]/[`TerminalSession::cursor_shape`]/
+/// [`TerminalSession::cursor_blinking`].
 ///
-/// Only overrides `set_window_title`, which upstream's `osc_dispatch` fires
-/// for OSC 0 and OSC 2. A bare OSC 1 (icon-name-only) sequence calls
-/// `set_window_icon_name` instead, which this type doesn't override, so it
-/// is intentionally *not* captured here.
+/// `set_window_title` only overrides for OSC 0/2 — a bare OSC 1
+/// (icon-name-only) sequence calls `set_window_icon_name` instead, which
+/// this type doesn't override, so it is intentionally *not* captured
+/// here.
 ///
-/// Tracks a dirty flag so callers can cheaply ask "did the title change
-/// since I last looked?" without diffing strings themselves — see
-/// [`TerminalSession::take_title_changed`].
+/// Tracks a dirty flag for the title so callers can cheaply ask "did the
+/// title change since I last looked?" without diffing strings themselves
+/// — see [`TerminalSession::take_title_changed`]. The cursor fields have
+/// no such flag: they're read fresh every [`TerminalSession::to_terminal`]
+/// call, which is cheap (two field reads), unlike a title-driven native
+/// window retitle.
 #[derive(Debug, Default)]
-struct TitleCallbacks {
+struct EngineCallbacks {
     /// Most recent window title set via OSC 0 or OSC 2. `None` until the
     /// child program sets one.
     title: Option<String>,
     /// `true` when [`title`](Self::title) has changed since the last
     /// [`TerminalSession::take_title_changed`] call.
     changed: bool,
+    /// Most recent DECSCUSR shape. Defaults to
+    /// [`TerminalCursorShape::Block`] — DECSCUSR's own `Ps` values `0`/`1`
+    /// both mean "blinking block", which is also the sequence-free
+    /// starting state real terminals use.
+    cursor_shape: TerminalCursorShape,
+    /// Most recent DECSCUSR blink flag (`Ps` odd = blinking, even =
+    /// steady). Defaults to `false` (steady) — unlike real terminals'
+    /// blinking-block default, a child that never sends DECSCUSR at all
+    /// gets a steady cursor here so a driver/test harness with no PTY
+    /// churn doesn't have to fight a wall-clock blink toggle to see a
+    /// stable snapshot.
+    cursor_blinking: bool,
 }
 
-impl vt100::Callbacks for TitleCallbacks {
+impl vt100::Callbacks for EngineCallbacks {
     fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
         let title = String::from_utf8_lossy(title).into_owned();
         if self.title.as_deref() != Some(title.as_str()) {
             self.title = Some(title);
             self.changed = true;
         }
+    }
+
+    fn unhandled_csi(
+        &mut self,
+        _screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        // DECSCUSR: `ESC [ Ps SP q` — intermediate byte is a literal
+        // space (0x20), final byte `q`. `Ps` defaults to `0` when
+        // omitted (a bare `ESC [ SP q`), matching every other ANSI/DEC
+        // parameter default.
+        if i1 == Some(b' ') && c == 'q' {
+            let ps = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
+            if let Some((shape, blinking)) = decscusr_shape(ps) {
+                self.cursor_shape = shape;
+                self.cursor_blinking = blinking;
+            }
+            // An out-of-range `Ps` (7+) is left as a no-op — xterm itself
+            // ignores DECSCUSR values it doesn't recognise rather than
+            // resetting to a default, and there's no signal here that
+            // distinguishes "child sent garbage" from "child sent a
+            // future extension this crate doesn't know about" — either
+            // way, keeping the last-known-good shape is the safer guess.
+        }
+    }
+}
+
+/// Map a DECSCUSR `Ps` value to `(shape, blinking)`, per the standard
+/// six-value table (`ESC [ Ps SP q`, xterm `Ss` extension — the same
+/// table [`ratatui::crossterm::cursor::SetCursorStyle`]'s `Display` impl
+/// writes out) plus `Ps = 0`, which xterm defines as identical to `Ps =
+/// 1`. Returns `None` for any other value — see the `unhandled_csi`
+/// call site's doc for why those are ignored rather than reset to a
+/// default.
+fn decscusr_shape(ps: u16) -> Option<(TerminalCursorShape, bool)> {
+    match ps {
+        0 | 1 => Some((TerminalCursorShape::Block, true)),
+        2 => Some((TerminalCursorShape::Block, false)),
+        3 => Some((TerminalCursorShape::Underline, true)),
+        4 => Some((TerminalCursorShape::Underline, false)),
+        5 => Some((TerminalCursorShape::Bar, true)),
+        6 => Some((TerminalCursorShape::Bar, false)),
+        _ => None,
     }
 }
 
@@ -822,10 +891,11 @@ impl vt100::Callbacks for TitleCallbacks {
 pub struct TerminalSession {
     /// VT100 screen parser — always at `scrollback = 0` (live view).
     ///
-    /// Carries a [`TitleCallbacks`] so OSC 0/2 window-title requests are
-    /// captured; read back via [`title()`](Self::title) /
-    /// [`take_title_changed()`](Self::take_title_changed).
-    parser: vt100::Parser<TitleCallbacks>,
+    /// Carries an [`EngineCallbacks`] so OSC 0/2 window-title requests and
+    /// DECSCUSR cursor-shape requests are captured; read back via
+    /// [`title()`](Self::title) / [`take_title_changed()`](Self::take_title_changed) /
+    /// [`cursor_shape()`](Self::cursor_shape) / [`cursor_blinking()`](Self::cursor_blinking).
+    parser: vt100::Parser<EngineCallbacks>,
     /// Write half of the PTY master — sends keyboard input to the shell.
     writer: Box<dyn Write + Send>,
     /// PTY master — kept alive for `resize()` calls (SIGWINCH).
@@ -938,7 +1008,8 @@ impl TerminalSession {
         // 1 000-line internal vt100 scrollback — used only to read back
         // the rows that just scrolled off the live screen into `history`.
         // We never call `set_scrollback()` for user-facing scrolling.
-        let parser = vt100::Parser::new_with_callbacks(rows, cols, 1000, TitleCallbacks::default());
+        let parser =
+            vt100::Parser::new_with_callbacks(rows, cols, 1000, EngineCallbacks::default());
 
         Ok(Self {
             parser,
@@ -1077,6 +1148,32 @@ impl TerminalSession {
     /// relying on cell-level `is_cursor` flags alone.
     pub fn cursor_visible(&self) -> bool {
         !self.exited && self.scroll_offset == 0
+    }
+
+    // ── Cursor shape (DECSCUSR, quadraui#338) ───────────────────────────────
+
+    /// The child program's most recent DECSCUSR (`ESC [ Ps SP q`) cursor
+    /// shape request — `Block` until the child sends one. `vim`/`zsh`
+    /// and other readline-style line editors switch this to `Bar` on
+    /// entering insert mode and back to `Block` on returning to normal
+    /// mode; see [`decscusr_shape`] for the full `Ps` → shape table.
+    ///
+    /// [`to_terminal()`](Self::to_terminal) stamps this onto the cursor
+    /// cell's [`TerminalCell::cursor_shape`](crate::TerminalCell::cursor_shape)
+    /// automatically — most callers don't need to read this directly
+    /// unless they're also steering a real hardware cursor
+    /// (`Backend::set_caret_shape`) outside the cell-grid paint path.
+    pub fn cursor_shape(&self) -> TerminalCursorShape {
+        self.parser.callbacks().cursor_shape
+    }
+
+    /// Whether the child's most recent DECSCUSR request asked for a
+    /// *blinking* cursor variant (odd `Ps`) rather than steady (even
+    /// `Ps`) — `false` (steady) until the child sends a DECSCUSR
+    /// sequence at all. See [`TerminalCell::cursor_blinking`](crate::TerminalCell::cursor_blinking)'s
+    /// doc for how rasterisers use this.
+    pub fn cursor_blinking(&self) -> bool {
+        self.parser.callbacks().cursor_blinking
     }
 
     // ── Text scrape ───────────────────────────────────────────────────────────
@@ -1777,6 +1874,11 @@ impl TerminalSession {
         let cols_count = self.cols as usize;
         let scroll_offset = self.scroll_offset;
         let hist_len = self.history.len();
+        // Read once per snapshot rather than per cell — the DECSCUSR
+        // state (quadraui#338) applies to at most one cell (the cursor
+        // cell, if any), same as `cursor_row`/`cursor_col` above.
+        let cur_shape = self.cursor_shape();
+        let cur_blinking = self.cursor_blinking();
 
         // Selection coordinates are always in display-row space (0 = visible
         // top), matching the coordinate system expected by a host's
@@ -1926,6 +2028,12 @@ impl TerminalSession {
                             is_cursor,
                             is_find_match: false,
                             is_find_active: false,
+                            cursor_shape: if is_cursor {
+                                cur_shape
+                            } else {
+                                TerminalCursorShape::default()
+                            },
+                            cursor_blinking: is_cursor && cur_blinking,
                         }
                     })
                     .collect()
@@ -4214,6 +4322,133 @@ mod tests {
         );
 
         sess.send_str("exit\n");
+    }
+
+    // ── DECSCUSR cursor shape / blink (quadraui#338) ────────────────────────
+
+    /// [`decscusr_shape`] maps every one of the six standard `Ps` values,
+    /// plus the `0` == `1` alias, to the right `(shape, blinking)` pair.
+    /// Pure unit test — no parser or PTY involved.
+    #[test]
+    fn decscusr_shape_maps_all_standard_ps_values() {
+        assert_eq!(
+            decscusr_shape(0),
+            Some((TerminalCursorShape::Block, true)),
+            "Ps=0 (omitted) aliases Ps=1 per xterm"
+        );
+        assert_eq!(decscusr_shape(1), Some((TerminalCursorShape::Block, true)));
+        assert_eq!(decscusr_shape(2), Some((TerminalCursorShape::Block, false)));
+        assert_eq!(
+            decscusr_shape(3),
+            Some((TerminalCursorShape::Underline, true))
+        );
+        assert_eq!(
+            decscusr_shape(4),
+            Some((TerminalCursorShape::Underline, false))
+        );
+        assert_eq!(decscusr_shape(5), Some((TerminalCursorShape::Bar, true)));
+        assert_eq!(decscusr_shape(6), Some((TerminalCursorShape::Bar, false)));
+    }
+
+    /// A `Ps` value outside the standard `0..=6` range is ignored (`None`),
+    /// not mapped to a fallback shape — see the `unhandled_csi` call
+    /// site's doc for why the caller keeps the last-known-good state
+    /// instead of resetting it.
+    #[test]
+    fn decscusr_shape_ignores_out_of_range_ps() {
+        assert_eq!(decscusr_shape(7), None);
+        assert_eq!(decscusr_shape(999), None);
+    }
+
+    /// A session that never receives any DECSCUSR sequence reports the
+    /// documented defaults: `Block`, steady.
+    #[test]
+    #[cfg(unix)]
+    fn cursor_shape_defaults_to_steady_block() {
+        let cwd = std::env::temp_dir();
+        let sess =
+            TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+        assert_eq!(sess.cursor_shape(), TerminalCursorShape::Block);
+        assert!(!sess.cursor_blinking());
+    }
+
+    /// `cursor_shape()`/`cursor_blinking()` track a real child's DECSCUSR
+    /// requests end to end through the PTY → vt100 →
+    /// `EngineCallbacks::unhandled_csi` path — this is the exact
+    /// sequence `zsh`/`vim` send switching into and back out of insert
+    /// mode (quadraui#338's acceptance criterion).
+    #[test]
+    #[cfg(unix)]
+    fn cursor_shape_tracks_decscusr() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
+
+        // Ps=6: steady bar — the "entering insert mode" sequence.
+        sess.send_str("printf '\\033[6 q'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.cursor_shape()
+                == TerminalCursorShape::Bar),
+            "cursor shape should become Bar after ESC[6 q"
+        );
+        assert!(!sess.cursor_blinking(), "Ps=6 is the steady bar variant");
+
+        // Ps=4: steady underline.
+        sess.send_str("printf '\\033[4 q'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.cursor_shape()
+                == TerminalCursorShape::Underline),
+            "cursor shape should become Underline after ESC[4 q"
+        );
+
+        // Ps=1: blinking block — the "back to normal mode" sequence.
+        sess.send_str("printf '\\033[1 q'\n");
+        assert!(
+            poll_until(&mut sess, 5000, |s| s.cursor_shape()
+                == TerminalCursorShape::Block
+                && s.cursor_blinking()),
+            "cursor shape should become blinking Block after ESC[1 q"
+        );
+
+        sess.send_str("exit\n");
+    }
+
+    /// `to_terminal()`'s cell grid stamps the session's DECSCUSR state
+    /// onto the cursor cell — and *only* the cursor cell — matching the
+    /// existing `is_cursor` contract. Pure unit test: injects
+    /// `EngineCallbacks` state directly via `unhandled_csi` on a bare
+    /// `vt100::Parser`, no PTY needed.
+    #[test]
+    #[cfg(unix)]
+    fn build_rows_stamps_cursor_shape_only_on_the_cursor_cell() {
+        let cwd = std::env::temp_dir();
+        // A minimal session is still the easiest way to get a fully
+        // initialised `TerminalSession` (real PTY, but no output waited
+        // on) — mirrors the "Selection-in-scrollback" tests' rationale
+        // above.
+        let mut sess =
+            TerminalSession::spawn(10, 3, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+        // Poke the callback state directly rather than round-tripping
+        // through a real PTY write — this test is about `build_rows`'
+        // wiring, not DECSCUSR parsing itself (covered above).
+        sess.parser.callbacks_mut().cursor_shape = TerminalCursorShape::Bar;
+        sess.parser.callbacks_mut().cursor_blinking = true;
+
+        let snapshot = sess.to_terminal(WidgetId::new("t"), None);
+        let (cursor_row, cursor_col) = sess.parser.screen().cursor_position();
+        for (r, row) in snapshot.cells.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                if cell.is_cursor {
+                    assert_eq!(r as u16, cursor_row);
+                    assert_eq!(c as u16, cursor_col);
+                    assert_eq!(cell.cursor_shape, TerminalCursorShape::Bar);
+                    assert!(cell.cursor_blinking);
+                } else {
+                    assert_eq!(cell.cursor_shape, TerminalCursorShape::Block);
+                    assert!(!cell.cursor_blinking);
+                }
+            }
+        }
     }
 
     /// Verify that `screen_text()` returns non-empty content after the shell

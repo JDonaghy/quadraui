@@ -78,20 +78,25 @@
 //! now only computes it and hands the four numbers to its own paint
 //! primitive (`cr.rectangle` / `CGContextFillRect` / `FillRectangle`).
 
-use crate::primitives::terminal::TerminalCell;
+use crate::primitives::terminal::{TerminalCell, TerminalCursorShape};
 use crate::text_util::display_width;
 use crate::theme::Theme;
 use crate::types::Color;
+use crate::Rect;
 
 /// Resolve the `(background, foreground)` colours to paint one terminal
 /// cell, applying the cursor / find / selection overlay precedence
 /// ladder once for every backend.
 ///
 /// Precedence, highest first:
-/// 1. `is_cursor` — invert: bg becomes the cell's own fg, fg becomes the
-///    cell's own bg. `dim` is ignored here — the cursor block is already
-///    a strong visual overlay, so faint text under it would be
-///    contradictory (full-intensity fg suddenly reads as low-contrast).
+/// 1. `is_cursor` with [`TerminalCursorShape::Block`] (quadraui#338) —
+///    invert: bg becomes the cell's own fg, fg becomes the cell's own
+///    bg. `dim` is ignored here — the cursor block is already a strong
+///    visual overlay, so faint text under it would be contradictory
+///    (full-intensity fg suddenly reads as low-contrast). Gated on
+///    [`cursor_blink_visible`]: a blinking cursor cell falls through to
+///    the rest of the ladder during its "off" phase instead of always
+///    inverting.
 /// 2. `is_find_active` — bg becomes [`Theme::find_active_bg`], fg
 ///    becomes [`Theme::find_active_fg`].
 /// 3. `is_find_match` — bg becomes [`Theme::find_match_bg`]; fg is left
@@ -99,6 +104,17 @@ use crate::types::Color;
 /// 4. `selected` — bg becomes `theme.selection_bg`; fg is left as the
 ///    cell's own.
 /// 5. none of the above — the cell's own `bg` / `fg`, unchanged.
+///
+/// A cursor with [`TerminalCursorShape::Underline`] or
+/// [`TerminalCursorShape::Bar`] does **not** short-circuit this ladder —
+/// unlike `Block`, inverting the *whole* cell for a thin accent would
+/// just look like another solid block. Those two shapes instead fall
+/// through to steps 2-5 for colour, and the accent itself is painted
+/// separately: pixel-based rasterisers via [`cursor_accent_rect`] (see
+/// [`crate::primitives::terminal`]'s `paint`), the TUI rasteriser via a
+/// best-effort `Modifier::UNDERLINED` overlay (`tui::terminal::draw_terminal`)
+/// — see that primitive's "Embedded TUI applicability" note on why TUI
+/// can't distinguish `Bar` from `Underline` in a character-cell grid.
 ///
 /// After the ladder above resolves `(bg, fg)`, `cell.dim` (SGR 2,
 /// faint — quadraui#345) blends `fg` 50% toward the *resolved* `bg`
@@ -110,9 +126,14 @@ use crate::types::Color;
 /// the resolved background is theme-correct on both dark and light
 /// themes with zero new `NativeSurface` surface area.
 pub fn resolve_cell_style(cell: &TerminalCell, theme: &Theme) -> (Color, Color) {
-    let (bg, fg) = if cell.is_cursor {
+    if cell.is_cursor
+        && cell.cursor_shape == TerminalCursorShape::Block
+        && cursor_blink_visible(cell.cursor_blinking)
+    {
         return (cell.fg, cell.bg);
-    } else if cell.is_find_active {
+    }
+
+    let (bg, fg) = if cell.is_find_active {
         (theme.find_active_bg(), theme.find_active_fg())
     } else if cell.is_find_match {
         (theme.find_match_bg(), cell.fg)
@@ -126,6 +147,85 @@ pub fn resolve_cell_style(cell: &TerminalCell, theme: &Theme) -> (Color, Color) 
         (bg, dim_fg(fg, bg))
     } else {
         (bg, fg)
+    }
+}
+
+/// Half-period, in milliseconds, of a blinking cursor's on/off cycle —
+/// used by [`cursor_blink_visible`]. Matches the ~530ms interval common
+/// among real terminal emulators (e.g. xterm's default `cursorBlinkXOR`
+/// timing) closely enough that the two are visually indistinguishable;
+/// exact parity isn't required since DECSCUSR itself never specifies a
+/// rate.
+const CURSOR_BLINK_HALF_PERIOD_MS: u128 = 530;
+
+/// Whether a cursor overlay should be visible *right now*.
+///
+/// `blinking = false` (the common case — most programs never send a
+/// blinking DECSCUSR variant) always returns `true`: steady cursors are
+/// always on. `blinking = true` reads the wall clock and toggles every
+/// [`CURSOR_BLINK_HALF_PERIOD_MS`], so repeated calls across paint
+/// frames produce a real blink with no state threaded through
+/// `Terminal`/`TerminalCell` — the "paint-time toggle driven by the
+/// runtime tick" this primitive's module doc describes (quadraui#338).
+///
+/// Deliberately impure (reads [`std::time::SystemTime::now`]) — callers
+/// that need a deterministic snapshot for a test should construct a
+/// `TerminalCell` with `cursor_blinking: false` instead of trying to
+/// pin the wall clock.
+pub fn cursor_blink_visible(blinking: bool) -> bool {
+    if !blinking {
+        return true;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    (now_ms / CURSOR_BLINK_HALF_PERIOD_MS).is_multiple_of(2)
+}
+
+/// Whether a pixel-based rasteriser should paint a separate accent shape
+/// (underline / bar) for `cell` right now — `true` only for a cursor
+/// cell whose shape isn't `Block` (which is rendered entirely through
+/// [`resolve_cell_style`]'s colour invert) and that isn't mid-blink-off.
+pub fn cursor_accent_visible(cell: &TerminalCell) -> bool {
+    cell.is_cursor
+        && cell.cursor_shape != TerminalCursorShape::Block
+        && cursor_blink_visible(cell.cursor_blinking)
+}
+
+/// Thickness, in surface-native units (px for GTK/Direct2D/Core
+/// Graphics), of a bar/underline cursor accent — thin enough to read as
+/// a line rather than a second block at typical terminal font sizes.
+pub const CURSOR_ACCENT_THICKNESS: f32 = 2.0;
+
+/// Geometry for a bar/underline cursor accent inside one cell's box,
+/// for pixel-based rasterisers (GTK/macOS/win, via
+/// [`crate::primitives::terminal`]'s shared `paint`). `cell_x`/`cell_y`
+/// are the cell's top-left corner, `cell_w`/`line_height` its box size
+/// — the same values the caller already computed for the background
+/// fill. Returns `None` for [`TerminalCursorShape::Block`] (no separate
+/// accent; see [`resolve_cell_style`]).
+pub fn cursor_accent_rect(
+    shape: TerminalCursorShape,
+    cell_x: f32,
+    cell_y: f32,
+    cell_w: f32,
+    line_height: f32,
+) -> Option<Rect> {
+    match shape {
+        TerminalCursorShape::Block => None,
+        TerminalCursorShape::Underline => Some(Rect::new(
+            cell_x,
+            cell_y + (line_height - CURSOR_ACCENT_THICKNESS).max(0.0),
+            cell_w,
+            CURSOR_ACCENT_THICKNESS.min(line_height),
+        )),
+        TerminalCursorShape::Bar => Some(Rect::new(
+            cell_x,
+            cell_y,
+            CURSOR_ACCENT_THICKNESS.min(cell_w),
+            line_height,
+        )),
     }
 }
 
@@ -240,6 +340,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         }
     }
 
@@ -388,6 +490,135 @@ mod tests {
         c.is_cursor = true;
         let theme = Theme::default();
         assert_eq!(resolve_cell_style(&c, &theme), (fg, bg));
+    }
+
+    // ── Cursor shape (quadraui#338) ─────────────────────────────────────
+
+    /// `Underline`/`Bar` cursor cells do NOT invert — unlike `Block`,
+    /// they fall through to the rest of the overlay ladder (here: no
+    /// other overlay set, so the cell's own colours). The shape's visual
+    /// distinctness comes from the separate accent painted by
+    /// `cursor_accent_rect`/the TUI underline overlay, not a colour
+    /// change here.
+    #[test]
+    fn underline_and_bar_cursor_do_not_invert() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(10, 10, 10);
+        let theme = Theme::default();
+
+        let mut underline = cell('a', fg, bg);
+        underline.is_cursor = true;
+        underline.cursor_shape = TerminalCursorShape::Underline;
+        assert_eq!(resolve_cell_style(&underline, &theme), (bg, fg));
+
+        let mut bar = cell('a', fg, bg);
+        bar.is_cursor = true;
+        bar.cursor_shape = TerminalCursorShape::Bar;
+        assert_eq!(resolve_cell_style(&bar, &theme), (bg, fg));
+    }
+
+    /// Unlike `Block`, a non-inverting cursor shape lets the rest of the
+    /// ladder apply — a `Bar` cursor sitting on a find-active match still
+    /// shows the find-active highlight for colour purposes.
+    #[test]
+    fn bar_cursor_does_not_block_lower_precedence_overlays() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(10, 10, 10);
+        let mut c = cell('a', fg, bg);
+        c.is_cursor = true;
+        c.cursor_shape = TerminalCursorShape::Bar;
+        c.is_find_active = true;
+        let theme = Theme::default();
+        assert_eq!(
+            resolve_cell_style(&c, &theme),
+            (theme.find_active_bg(), theme.find_active_fg())
+        );
+    }
+
+    /// A steady (non-blinking) cursor is always visible, regardless of
+    /// wall-clock time — `cursor_blink_visible(false)` is a constant
+    /// `true`, keeping every existing (non-blinking) call site's
+    /// behaviour exactly unchanged.
+    #[test]
+    fn steady_cursor_always_blink_visible() {
+        assert!(cursor_blink_visible(false));
+        assert!(cursor_blink_visible(false));
+    }
+
+    /// `cursor_accent_visible` is `false` for a `Block` cursor (painted
+    /// entirely via colour invert, no separate accent) and for any
+    /// non-cursor cell, `true` for a steady `Bar`/`Underline` cursor.
+    #[test]
+    fn cursor_accent_visible_gates_on_shape_and_is_cursor() {
+        let fg = Color::rgb(200, 200, 200);
+        let bg = Color::rgb(10, 10, 10);
+
+        let mut not_cursor = cell('a', fg, bg);
+        not_cursor.cursor_shape = TerminalCursorShape::Bar;
+        assert!(!cursor_accent_visible(&not_cursor));
+
+        let mut block = cell('a', fg, bg);
+        block.is_cursor = true;
+        assert!(!cursor_accent_visible(&block));
+
+        let mut bar = cell('a', fg, bg);
+        bar.is_cursor = true;
+        bar.cursor_shape = TerminalCursorShape::Bar;
+        assert!(cursor_accent_visible(&bar));
+
+        let mut underline = cell('a', fg, bg);
+        underline.is_cursor = true;
+        underline.cursor_shape = TerminalCursorShape::Underline;
+        assert!(cursor_accent_visible(&underline));
+    }
+
+    /// `cursor_accent_rect` returns `None` for `Block` (no separate
+    /// accent — see `resolve_cell_style`) and a geometrically sane rect
+    /// for `Underline`/`Bar`: a thin strip pinned to the bottom edge for
+    /// `Underline`, to the left edge for `Bar`, both fully inside the
+    /// cell's box.
+    #[test]
+    fn cursor_accent_rect_geometry() {
+        let (cell_x, cell_y, cell_w, line_h) = (10.0, 20.0, 8.0, 16.0);
+
+        assert_eq!(
+            cursor_accent_rect(TerminalCursorShape::Block, cell_x, cell_y, cell_w, line_h),
+            None
+        );
+
+        let underline = cursor_accent_rect(
+            TerminalCursorShape::Underline,
+            cell_x,
+            cell_y,
+            cell_w,
+            line_h,
+        )
+        .expect("Underline has an accent rect");
+        assert_eq!(underline.x, cell_x);
+        assert_eq!(underline.width, cell_w);
+        assert!(underline.y >= cell_y && underline.y + underline.height <= cell_y + line_h);
+
+        let bar = cursor_accent_rect(TerminalCursorShape::Bar, cell_x, cell_y, cell_w, line_h)
+            .expect("Bar has an accent rect");
+        assert_eq!(bar.x, cell_x);
+        assert_eq!(bar.y, cell_y);
+        assert_eq!(bar.height, line_h);
+        assert!(bar.width <= cell_w);
+    }
+
+    /// A degenerate (zero-size) cell box must not produce a negative-size
+    /// or out-of-bounds accent rect — `cursor_accent_rect` clamps the
+    /// accent thickness to the box itself.
+    #[test]
+    fn cursor_accent_rect_clamps_to_a_tiny_cell() {
+        let underline = cursor_accent_rect(TerminalCursorShape::Underline, 0.0, 0.0, 1.0, 1.0)
+            .expect("Underline has an accent rect");
+        assert!(underline.height <= 1.0);
+        assert!(underline.y >= 0.0);
+
+        let bar = cursor_accent_rect(TerminalCursorShape::Bar, 0.0, 0.0, 1.0, 1.0)
+            .expect("Bar has an accent rect");
+        assert!(bar.width <= 1.0);
     }
 
     #[test]

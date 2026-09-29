@@ -47,7 +47,7 @@
 mod tests {
     use crate::event::{Rect as QRect, Viewport};
     use crate::gtk::backend::GtkBackend;
-    use crate::primitives::terminal::{Terminal, TerminalCell};
+    use crate::primitives::terminal::{Terminal, TerminalCell, TerminalCursorShape};
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
     use crate::Backend;
@@ -79,6 +79,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         }
     }
 
@@ -180,6 +182,115 @@ mod tests {
             (r, g, b),
             (cyan.r, cyan.g, cyan.b),
             "narrow cells must still advance by exactly char_width"
+        );
+    }
+
+    // ── Cursor shape accent (quadraui#338) ──────────────────────────────
+    //
+    // These paint through the same shared `primitives::terminal::paint`
+    // both `GtkBackend::draw_terminal` and `win`/`macos` use — see that
+    // fn's own `cursor_accent_visible`/`cursor_accent_rect` call for the
+    // logic under test. The probed cell's text is a blank space so no
+    // glyph ink can land on the probed pixels (matching this module's
+    // other pixel-probe tests' convention), isolating the accent fill
+    // from glyph rasterisation.
+
+    /// A `Bar` cursor paints a thin accent stripe at the cell's *left*
+    /// edge in the cell's own foreground colour, and does **not** invert
+    /// the rest of the cell (unlike `Block`).
+    #[test]
+    fn bar_cursor_paints_a_left_edge_accent_stripe() {
+        let fg = Color::rgb(255, 0, 0);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell(' ', fg, bg);
+        c.is_cursor = true;
+        c.cursor_shape = TerminalCursorShape::Bar;
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        // Inside the ~2px accent stripe at the cell's left edge.
+        let (r, g, b) = pixel(&data, stride, 1, 5);
+        assert_eq!(
+            (r, g, b),
+            (fg.r, fg.g, fg.b),
+            "bar cursor accent should paint at the cell's left edge"
+        );
+        // Well past the stripe, still inside the (10px-wide) cell: the
+        // cell's own (uninverted) background, not the accent colour.
+        let (r2, g2, b2) = pixel(&data, stride, 8, 5);
+        assert_eq!(
+            (r2, g2, b2),
+            (bg.r, bg.g, bg.b),
+            "bar cursor must not invert the rest of the cell"
+        );
+    }
+
+    /// An `Underline` cursor paints a thin accent stripe at the cell's
+    /// *bottom* edge, and likewise does not invert the rest of the cell.
+    #[test]
+    fn underline_cursor_paints_a_bottom_edge_accent_stripe() {
+        let fg = Color::rgb(0, 255, 0);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell(' ', fg, bg);
+        c.is_cursor = true;
+        c.cursor_shape = TerminalCursorShape::Underline;
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        // Inside the ~2px accent stripe at the cell's bottom edge
+        // (LINE_H = 20.0).
+        let (r, g, b) = pixel(&data, stride, 5, 19);
+        assert_eq!(
+            (r, g, b),
+            (fg.r, fg.g, fg.b),
+            "underline cursor accent should paint at the cell's bottom edge"
+        );
+        // Near the top of the same cell: the cell's own background.
+        let (r2, g2, b2) = pixel(&data, stride, 5, 2);
+        assert_eq!(
+            (r2, g2, b2),
+            (bg.r, bg.g, bg.b),
+            "underline cursor must not invert the rest of the cell"
+        );
+    }
+
+    /// A `Block` cursor (the default/pre-#338 shape) still inverts the
+    /// whole cell — no separate accent stripe.
+    #[test]
+    fn block_cursor_still_inverts_whole_cell() {
+        let fg = Color::rgb(255, 0, 0);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell(' ', fg, bg);
+        c.is_cursor = true;
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        let (r, g, b) = pixel(&data, stride, 5, 10);
+        assert_eq!(
+            (r, g, b),
+            (fg.r, fg.g, fg.b),
+            "block cursor should invert: the whole cell shows the cell's own fg as its background"
         );
     }
 

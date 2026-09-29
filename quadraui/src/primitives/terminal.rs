@@ -124,15 +124,59 @@ pub struct TerminalCell {
     #[serde(default)]
     pub selected: bool,
     /// Cell holds the VT100 cursor position. Backends typically render
-    /// this with inverted colours.
+    /// this with inverted colours — except when [`cursor_shape`](Self::cursor_shape)
+    /// is [`TerminalCursorShape::Underline`] or [`TerminalCursorShape::Bar`],
+    /// where inverting the whole cell would look like a solid block again;
+    /// see [`crate::terminal_style::resolve_cell_style`]'s doc for the
+    /// shape-dependent color rule and [`crate::terminal_style::cursor_accent_rect`]
+    /// for the separate accent geometry pixel-based rasterisers paint on top.
     #[serde(default)]
     pub is_cursor: bool,
+    /// Shape of the VT100 cursor at this cell, from the child program's
+    /// most recent DECSCUSR request (`ESC [ Ps SP q`) — see
+    /// [`crate::terminal_engine::TerminalSession::cursor_shape`]
+    /// (quadraui#338). Meaningful only when [`is_cursor`](Self::is_cursor)
+    /// is `true`; every other cell carries the default (`Block`).
+    #[serde(default)]
+    pub cursor_shape: TerminalCursorShape,
+    /// `true` when the child requested a *blinking* DECSCUSR variant
+    /// (odd `Ps` values `1`/`3`/`5`) rather than steady (`2`/`4`/`6`).
+    /// Meaningful only when [`is_cursor`](Self::is_cursor) is `true`.
+    /// Pixel-based rasterisers (GTK/macOS/win, via
+    /// [`crate::terminal_style::cursor_blink_visible`]) toggle the
+    /// cursor's visibility on a wall-clock timer when this is set; the
+    /// TUI rasteriser ignores it (best-effort, quadraui#338).
+    #[serde(default)]
+    pub cursor_blinking: bool,
     /// Cell is part of a non-active find match (dim highlight).
     #[serde(default)]
     pub is_find_match: bool,
     /// Cell is part of the currently-selected find match (bright highlight).
     #[serde(default)]
     pub is_find_active: bool,
+}
+
+/// Shape of the VT100 cursor, as steered by the child program's DECSCUSR
+/// (`ESC [ Ps SP q`) request — see
+/// [`crate::terminal_engine::TerminalSession::cursor_shape`] (quadraui#338).
+///
+/// Distinct from [`crate::primitives::editor::CursorShape`] (issue
+/// #1015), even though the three variants happen to share the same
+/// DECSCUSR vocabulary: a shell's insert-mode bar cursor and an editor's
+/// insert-mode bar cursor are unrelated primitives' concepts, so this
+/// crate keeps them as separate types rather than reusing one across
+/// `Terminal` and `Editor` (`docs/DECISIONS.md`'s primitive-distinctness
+/// principle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TerminalCursorShape {
+    /// Filled block — the default when the child never sends DECSCUSR.
+    #[default]
+    Block,
+    /// Underline.
+    Underline,
+    /// Thin vertical bar, common in shells' insert-mode line editors
+    /// (e.g. zsh/vim insert mode).
+    Bar,
 }
 
 impl TerminalCell {
@@ -504,7 +548,8 @@ mod native_surface_paint {
     use super::Terminal;
     use crate::native_surface::NativeSurface;
     use crate::terminal_style::{
-        divider_geometry, resolve_cell_style, wide_cell_advance, wide_glyph_x_scale,
+        cursor_accent_rect, cursor_accent_visible, divider_geometry, resolve_cell_style,
+        wide_cell_advance, wide_glyph_x_scale,
     };
     use crate::theme::Theme;
     use crate::Rect;
@@ -598,6 +643,20 @@ mod native_surface_paint {
                     );
                 }
 
+                // Underline/Bar cursor accent (quadraui#338) — `Block`
+                // is already fully painted above via `resolve_cell_style`'s
+                // colour invert, so `cursor_accent_rect` returns `None`
+                // for it and this is a no-op. `cell.fg` (the cell's own,
+                // un-inverted foreground) is the accent colour, mirroring
+                // how the `Block` invert uses it as the new background.
+                if cursor_accent_visible(cell) {
+                    if let Some(accent) =
+                        cursor_accent_rect(cell.cursor_shape, cell_x, row_y, cell_w, line_height)
+                    {
+                        surface.surface_fill_rect(accent, cell.fg);
+                    }
+                }
+
                 cell_x += cell_w;
                 col += cols_advanced;
             }
@@ -627,7 +686,7 @@ mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
-        use crate::primitives::terminal::TerminalCell;
+        use crate::primitives::terminal::{TerminalCell, TerminalCursorShape};
         use crate::types::{Color, WidgetId};
         use crate::Image;
 
@@ -718,6 +777,8 @@ mod native_surface_paint {
                 is_cursor: false,
                 is_find_match: false,
                 is_find_active: false,
+                cursor_shape: TerminalCursorShape::Block,
+                cursor_blinking: false,
             }
         }
 
@@ -874,6 +935,109 @@ mod native_surface_paint {
                 color,
                 Color::rgb(100, 100, 100),
                 "dim cell's glyph color must be blended 50% toward its background"
+            );
+        }
+
+        /// A `Bar`/`Underline` cursor cell (quadraui#338) paints its
+        /// normal (uninverted) background fill *plus* a second, smaller
+        /// accent fill in the cell's own foreground colour — unlike
+        /// `Block`, which paints only the (inverted) background fill
+        /// with no accent. This is the shared logic every pixel backend
+        /// (GTK/macOS/win) gets for free through this one `paint` fn.
+        #[test]
+        fn cursor_shape_accent_paints_a_second_smaller_fill() {
+            let fg = Color::rgb(200, 30, 30);
+            let bg = Color::rgb(10, 10, 10);
+
+            for shape in [TerminalCursorShape::Underline, TerminalCursorShape::Bar] {
+                let term = Terminal {
+                    id: WidgetId::new("term"),
+                    cells: vec![vec![TerminalCell {
+                        is_cursor: true,
+                        cursor_shape: shape,
+                        ..cell(' ', fg, bg)
+                    }]],
+                    scrollbar: None,
+                };
+                let theme = Theme::default();
+                let mut surface = RecordingSurface::default();
+
+                paint(
+                    &term,
+                    &mut surface,
+                    &theme,
+                    0.0,
+                    0.0,
+                    200.0,
+                    100.0,
+                    20.0,
+                    10.0,
+                    None,
+                );
+
+                // Exactly two fills: the normal (uninverted) cell
+                // background, plus the accent stripe in the cell's fg.
+                assert_eq!(
+                    surface.fills.len(),
+                    2,
+                    "{shape:?}: expected a background fill plus one accent fill, got {:?}",
+                    surface.fills,
+                );
+                assert!(
+                    surface
+                        .fills
+                        .iter()
+                        .any(|&(r, c)| c == bg && r.width == 10.0 && r.height == 20.0),
+                    "{shape:?}: the full 10x20 cell background should still be the cell's own \
+                     (uninverted) bg, got {:?}",
+                    surface.fills,
+                );
+                assert!(
+                    surface
+                        .fills
+                        .iter()
+                        .any(|&(r, c)| c == fg && (r.width < 10.0 || r.height < 20.0)),
+                    "{shape:?}: expected a smaller accent fill in the cell's fg colour, got {:?}",
+                    surface.fills,
+                );
+            }
+        }
+
+        /// A `Block` cursor cell paints only the (inverted) background
+        /// fill — no second accent fill, unlike `Underline`/`Bar` above.
+        #[test]
+        fn block_cursor_shape_paints_no_accent_fill() {
+            let fg = Color::rgb(200, 30, 30);
+            let bg = Color::rgb(10, 10, 10);
+            let term = Terminal {
+                id: WidgetId::new("term"),
+                cells: vec![vec![TerminalCell {
+                    is_cursor: true,
+                    ..cell(' ', fg, bg)
+                }]],
+                scrollbar: None,
+            };
+            let theme = Theme::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(
+                &term,
+                &mut surface,
+                &theme,
+                0.0,
+                0.0,
+                200.0,
+                100.0,
+                20.0,
+                10.0,
+                None,
+            );
+
+            assert_eq!(
+                surface.fills.len(),
+                1,
+                "Block cursor should paint exactly one (inverted) background fill, got {:?}",
+                surface.fills,
             );
         }
 
@@ -1204,6 +1368,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         }
     }
 
@@ -1312,6 +1478,8 @@ mod tests {
                         is_cursor: false,
                         is_find_match: false,
                         is_find_active: false,
+                        cursor_shape: TerminalCursorShape::Block,
+                        cursor_blinking: false,
                     },
                     TerminalCell {
                         // Base char + combining acute accent — a
@@ -1328,6 +1496,8 @@ mod tests {
                         is_cursor: true,
                         is_find_match: false,
                         is_find_active: false,
+                        cursor_shape: TerminalCursorShape::Block,
+                        cursor_blinking: false,
                     },
                 ],
                 vec![TerminalCell {
@@ -1342,6 +1512,8 @@ mod tests {
                     is_cursor: false,
                     is_find_match: true,
                     is_find_active: false,
+                    cursor_shape: TerminalCursorShape::Block,
+                    cursor_blinking: false,
                 }],
             ],
             scrollbar: None,
@@ -1367,6 +1539,8 @@ mod tests {
                 is_cursor: false,
                 is_find_match: false,
                 is_find_active: false,
+                cursor_shape: TerminalCursorShape::Block,
+                cursor_blinking: false,
             }]],
             scrollbar: Some(TerminalScrollbar {
                 total_lines: 500,
@@ -1419,6 +1593,8 @@ mod tests {
             is_cursor: false,
             is_find_match: false,
             is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
         };
         Terminal {
             id: WidgetId::new("term"),
