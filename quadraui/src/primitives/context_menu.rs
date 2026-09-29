@@ -571,7 +571,20 @@ pub(crate) mod native_surface_paint {
                 label_fg,
             );
 
-            if let Some(shortcut) = shortcut_text(item, platform) {
+            if item.submenu.is_some() {
+                // Submenu-parent: show a `▶` pull-right affordance at the
+                // far-right column instead of a keyboard-shortcut hint —
+                // mirrors `crate::tui::draw_context_menu` (#370). Submenu
+                // parents open a child menu rather than dispatching an
+                // action, so a shortcut hint would never fire anyway.
+                const SUBMENU_ARROW: &str = "\u{25b6}";
+                let (aw, ah) = surface.surface_measure_text(SUBMENU_ARROW);
+                surface.surface_draw_text_run(
+                    Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
+                    SUBMENU_ARROW,
+                    label_fg,
+                );
+            } else if let Some(shortcut) = shortcut_text(item, platform) {
                 if !shortcut.is_empty() {
                     let (sw, sh) = surface.surface_measure_text(&shortcut);
                     surface.surface_draw_text_run(

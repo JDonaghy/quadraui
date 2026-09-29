@@ -844,6 +844,11 @@ path = "examples/gtk_menu_bar.rs"
 required-features = ["gtk"]
 
 [[example]]
+name = "gtk_submenu"
+path = "examples/gtk_submenu.rs"
+required-features = ["gtk"]
+
+[[example]]
 name = "tui_split"
 path = "examples/tui_split.rs"
 required-features = ["tui"]
