@@ -769,13 +769,18 @@ fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
     (cols.max(MIN_VT100_COLS), rows.max(MIN_VT100_ROWS))
 }
 
-/// [`vt100::Callbacks`] implementation that records OSC 0/1/2 window-title
+/// [`vt100::Callbacks`] implementation that records OSC 0/2 window-title
 /// requests instead of discarding them.
 ///
 /// vt100 0.16.2 reports these via callback methods rather than storing them
 /// on [`vt100::Screen`] itself (see `set_window_title`/`set_window_icon_name`
 /// in the upstream `Callbacks` trait), so [`TerminalSession`] carries one of
 /// these alongside its parser and reads it back after each [`poll`](TerminalSession::poll).
+///
+/// Only overrides `set_window_title`, which upstream's `osc_dispatch` fires
+/// for OSC 0 and OSC 2. A bare OSC 1 (icon-name-only) sequence calls
+/// `set_window_icon_name` instead, which this type doesn't override, so it
+/// is intentionally *not* captured here.
 ///
 /// Tracks a dirty flag so callers can cheaply ask "did the title change
 /// since I last looked?" without diffing strings themselves — see
@@ -817,7 +822,7 @@ impl vt100::Callbacks for TitleCallbacks {
 pub struct TerminalSession {
     /// VT100 screen parser — always at `scrollback = 0` (live view).
     ///
-    /// Carries a [`TitleCallbacks`] so OSC 0/1/2 window-title requests are
+    /// Carries a [`TitleCallbacks`] so OSC 0/2 window-title requests are
     /// captured; read back via [`title()`](Self::title) /
     /// [`take_title_changed()`](Self::take_title_changed).
     parser: vt100::Parser<TitleCallbacks>,
@@ -1033,7 +1038,7 @@ impl TerminalSession {
         self.exit_code
     }
 
-    // ── Window title (OSC 0/1/2) ─────────────────────────────────────────────
+    // ── Window title (OSC 0/2) ────────────────────────────────────────────────
 
     /// The most recent window title set by the child program via an OSC 0 or
     /// OSC 2 escape sequence (e.g. `vim`, `tmux`, or a shell's own prompt
