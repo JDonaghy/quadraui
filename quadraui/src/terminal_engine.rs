@@ -458,6 +458,20 @@ const MIN_VT100_ROWS: u16 = 2;
 /// input regardless of `rows`) — found by the same property test.
 const MIN_VT100_COLS: u16 = 2;
 
+/// Floor a caller-supplied `(cols, rows)` pair to the smallest grid vt100
+/// can construct or resize to without panicking.
+///
+/// Both [`TerminalSession::spawn`] and [`TerminalSession::resize`] funnel
+/// their dimensions through this before anything reaches
+/// `vt100::Parser::new`/`Screen::set_size`; see
+/// [`MIN_VT100_ROWS`]/[`MIN_VT100_COLS`] for which upstream panic each
+/// bound dodges. Pulled out as a standalone function so the floor itself
+/// is testable on every platform — the end-to-end `spawn`/`resize`
+/// assertions need a real PTY child and so are `cfg(unix)`-only.
+fn clamp_vt100_size(cols: u16, rows: u16) -> (u16, u16) {
+    (cols.max(MIN_VT100_COLS), rows.max(MIN_VT100_ROWS))
+}
+
 /// A single PTY-backed terminal session: PTY process, reader thread,
 /// vt100 parser, and scrollback ring buffer.
 ///
@@ -537,8 +551,7 @@ impl TerminalSession {
         history_capacity: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // See `MIN_VT100_ROWS`/`MIN_VT100_COLS`'s docs — vt100 panics below these.
-        let rows = rows.max(MIN_VT100_ROWS);
-        let cols = cols.max(MIN_VT100_COLS);
+        let (cols, rows) = clamp_vt100_size(cols, rows);
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -993,8 +1006,7 @@ impl TerminalSession {
     ///   quiescence bounds that window deterministically.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         // See `MIN_VT100_ROWS`/`MIN_VT100_COLS`'s docs — vt100 panics below these.
-        let rows = rows.max(MIN_VT100_ROWS);
-        let cols = cols.max(MIN_VT100_COLS);
+        let (cols, rows) = clamp_vt100_size(cols, rows);
         // No-op guard: avoid a needless resize + SIGWINCH storm when the
         // caller re-sends the current size (common when a backend recomputes
         // the same cell dimensions every frame during a drag).
@@ -1876,8 +1888,53 @@ mod tests {
     // dimension before it ever reaches vt100 — see their docs for why a
     // real caller can plausibly hit this (a pane dragged down to a single
     // row/column, or momentarily to zero mid-resize).
+    //
+    // Two tiers, because the clamp is portable but the proof that
+    // `spawn`/`resize` actually apply it is not: `clamp_vt100_size` and the
+    // bare-parser no-panic checks run on every platform, while the four
+    // end-to-end `TerminalSession` tests need a real PTY child (`/bin/sh`)
+    // and so are `cfg(unix)`, matching every other PTY test in this file.
 
     #[test]
+    fn clamp_vt100_size_floors_degenerate_dimensions() {
+        // Zero — the momentary size a pane can report mid-drag.
+        assert_eq!(
+            clamp_vt100_size(0, 0),
+            (MIN_VT100_COLS, MIN_VT100_ROWS),
+            "a zero-sized pane must be floored on both axes"
+        );
+        // One row / one column — the two distinct upstream panic sites.
+        assert_eq!(clamp_vt100_size(80, 1), (80, MIN_VT100_ROWS));
+        assert_eq!(clamp_vt100_size(1, 24), (MIN_VT100_COLS, 24));
+        // At and above the floor the caller's request is passed through
+        // untouched — the clamp must not quietly resize a healthy pane.
+        assert_eq!(
+            clamp_vt100_size(MIN_VT100_COLS, MIN_VT100_ROWS),
+            (MIN_VT100_COLS, MIN_VT100_ROWS)
+        );
+        assert_eq!(clamp_vt100_size(200, 60), (200, 60));
+    }
+
+    /// The floor is only worth anything if vt100 survives *at* it: build and
+    /// resize a parser at exactly `MIN_VT100_ROWS` x `MIN_VT100_COLS`, and
+    /// feed it the multi-byte input that triggers the `cols == 1`
+    /// `screen.rs:730` overflow. Bare parser, no PTY — runs everywhere.
+    #[test]
+    fn vt100_survives_at_the_clamped_floor() {
+        let (cols, rows) = clamp_vt100_size(0, 0);
+        let mut p = vt100::Parser::new(rows, cols, 0);
+        p.process("あéa\r\n\u{1b}[31mx".as_bytes());
+        p.screen_mut().set_size(rows, cols);
+        p.process("あ".as_bytes());
+        assert_eq!(
+            p.screen().size(),
+            (MIN_VT100_ROWS, MIN_VT100_COLS),
+            "the floored grid must survive construction, resize and wide-char input"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn spawn_with_a_single_row_does_not_panic() {
         let cwd = std::env::current_dir().expect("cwd");
         let mut sess = TerminalSession::spawn(80, 1, "/bin/sh", &cwd, 1000)
@@ -1889,6 +1946,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_with_a_single_column_does_not_panic() {
         let cwd = std::env::current_dir().expect("cwd");
         let mut sess = TerminalSession::spawn(1, 24, "/bin/sh", &cwd, 1000)
@@ -1898,6 +1956,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn resize_to_a_single_row_does_not_panic() {
         let cwd = std::env::current_dir().expect("cwd");
         let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
@@ -1907,6 +1966,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn resize_to_a_single_column_does_not_panic() {
         let cwd = std::env::current_dir().expect("cwd");
         let mut sess = TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("spawn failed");
@@ -3588,10 +3648,10 @@ mod tests {
 /// not `1`: this property test is *how* both upstream vt100 panics (see
 /// those consts' docs) were originally found, by generating grid sizes
 /// with no floor at all. That's now a pinned regression
-/// (`spawn_with_a_single_row_does_not_panic` /
-/// `spawn_with_a_single_column_does_not_panic` /
-/// `resize_to_a_single_row_does_not_panic` /
-/// `resize_to_a_single_column_does_not_panic` in `mod tests` above)
+/// (`clamp_vt100_size_floors_degenerate_dimensions` /
+/// `vt100_survives_at_the_clamped_floor` on every platform, plus the
+/// `cfg(unix)` PTY pair `spawn_with_a_single_{row,column}_does_not_panic` /
+/// `resize_to_a_single_{row,column}_does_not_panic` in `mod tests` above)
 /// covering the boundary this crate actually controls — where
 /// `TerminalSession` clamps *before* constructing the parser. Re-widening
 /// the range here would just rediscover the same, already-filed upstream
