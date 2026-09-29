@@ -896,22 +896,151 @@ mod tests {
         assert_eq!(cb.read_file_list(), Err(BackendError::Unsupported));
     }
 
+    /// A string no other writer of the one systemwide clipboard produces,
+    /// so [`clear_empties_the_local_clipboard`] can tell "my text
+    /// survived `clear()`" (a real bug) apart from "somebody else's text
+    /// landed after my `clear()`" (interference — see that test's doc).
+    const CLEAR_TEST_SENTINEL: &str = "some text #954 (tui clear test)";
+
     /// `clear()` real round trip through the local `arboard` leg — skips
     /// gracefully (rather than failing) when this environment has no
     /// local desktop clipboard at all (headless CI, pure SSH session),
     /// since that's a real gap this test isn't trying to paper over.
+    ///
+    /// # The systemwide clipboard has other writers (quadraui#1129)
+    ///
+    /// There is exactly **one** desktop clipboard per session, and this
+    /// is not the only `#[test]` fn that writes it. `TuiDriver` wraps a
+    /// real [`crate::tui::backend::TuiBackend`], whose `services()` is
+    /// the real [`TuiPlatformServices`] — so every driver test that
+    /// copies a selection (`tui::run::tests::ctrl_c_with_selection_emits_text_copied`,
+    /// `ctrl_a_then_ctrl_c_copies_full_region`, and
+    /// `tests/tui_example_driver.rs`'s `panel_drag_*` / `clipboard_demo_*`
+    /// cases) writes the *real* clipboard too, on a `cargo test` worker
+    /// thread running concurrently with this one. A blank-ish selection
+    /// copies as just its row separators, which is how this assertion
+    /// first failed on macOS with `left: Some("\n\n\n\n")`.
+    ///
+    /// [`crate::macos::lock_real_pasteboard`]'s "one mutex, taken by
+    /// every real-pasteboard test" invariant cannot be reused here, for
+    /// two independent reasons:
+    ///
+    /// 1. `mod macos` is gated on `all(feature = "macos", target_os = "macos")`
+    ///    (`lib.rs`), and the failing gate is `cargo test --features tui`
+    ///    — the lock simply isn't compiled in this build.
+    /// 2. A `Mutex` is process-local, and `tests/tui_example_driver.rs`
+    ///    is a *separate test binary* that cargo runs in parallel with
+    ///    the lib tests. No in-process lock can exclude it (nor anything
+    ///    else on the developer's desktop that touches the clipboard
+    ///    mid-run).
+    ///
+    /// So this test is written to be *correct under interference* rather
+    /// than to pretend it owns the clipboard:
+    ///
+    /// - It primes through the same `arboard` handle `clear()` operates
+    ///   on instead of [`TuiClipboard::write_text`]. `clear()` is
+    ///   deliberately arboard-only (see its doc), so the other two legs
+    ///   add no coverage here — and the OSC 52 leg actively harms: a
+    ///   terminal that honours `OSC 52` (iTerm2, kitty, WezTerm) applies
+    ///   it *asynchronously*, so it can re-set the clipboard to the
+    ///   sentinel after `clear()` has already run and fail this test for
+    ///   a reason that has nothing to do with `clear()`. (`write_text`'s
+    ///   three legs are covered by
+    ///   `tests/tui_example_driver.rs::clipboard_demo_ctrl_c_writes_through_all_three_legs_and_confirms`
+    ///   and the `emit_osc52_to` unit tests.)
+    /// - After `clear()`, `None` is the outcome on an idle desktop, and a
+    ///   *different* string means another writer claimed the clipboard
+    ///   afterwards. What `clear()` must never leave behind is the
+    ///   sentinel itself, which no other writer produces — that is the
+    ///   assertion, and it still fails loudly if `clear()` ever no-ops.
     #[allow(clippy::print_stderr)]
     #[test]
     fn clear_empties_the_local_clipboard() {
         let cb = TuiClipboard::new();
-        cb.write_text("some text #954 (tui clear test)");
-        if cb.read_text().is_none() {
-            eprintln!("skipping: no local desktop clipboard in this environment");
-            return;
+
+        // Prime via the arboard handle itself — scoped so the borrow is
+        // released before `clear()` borrows it again.
+        {
+            let mut inner = cb.inner.borrow_mut();
+            let Some(handle) = inner.as_mut() else {
+                eprintln!("skipping: no local desktop clipboard in this environment");
+                return;
+            };
+            if let Err(e) = handle.set_text(CLEAR_TEST_SENTINEL) {
+                eprintln!("skipping: local clipboard rejected a write ({e})");
+                return;
+            }
         }
-        cb.clear()
-            .expect("clear should succeed once write_text/read_text already proved a local clipboard is live");
-        assert_eq!(cb.read_text(), None);
+
+        match cb.read_text() {
+            None => {
+                // The handle exists and `set_text` reported success, so
+                // this is either an environment where the write silently
+                // doesn't take (no real desktop clipboard behind the
+                // handle) or another writer wiped it in between. Neither
+                // leaves anything for `clear()` to be judged on.
+                eprintln!(
+                    "skipping: the sentinel wasn't readable back — no usable desktop \
+                     clipboard here, or another writer wiped it first"
+                );
+                return;
+            }
+            Some(text) if text != CLEAR_TEST_SENTINEL => {
+                eprintln!(
+                    "skipping: another writer claimed the systemwide clipboard before \
+                     clear() could run (read back {text:?}) — nothing to assert about clear()"
+                );
+                return;
+            }
+            Some(_) => {}
+        }
+
+        cb.clear().expect(
+            "clear should succeed once set_text/read_text already proved a local clipboard is live",
+        );
+
+        let after = cb.read_text();
+        assert!(
+            !sentinel_survived_clear(after.as_deref()),
+            "clear() must drop the text it was given; the sentinel is still on the clipboard"
+        );
+        if let Some(text) = after {
+            eprintln!(
+                "note: another writer re-populated the clipboard after clear() ({text:?}); \
+                 clear() still dropped this test's own text"
+            );
+        }
+    }
+
+    /// The verdict [`clear_empties_the_local_clipboard`] applies to what
+    /// the clipboard holds *after* `clear()`: only the sentinel itself
+    /// surviving is a `clear()` failure. `None` is the idle-desktop
+    /// outcome, and any *other* string is another writer's, which means
+    /// `clear()` did drop ours before that write landed (quadraui#1129 —
+    /// see the caller's doc for why interference is unavoidable here).
+    fn sentinel_survived_clear(after: Option<&str>) -> bool {
+        after == Some(CLEAR_TEST_SENTINEL)
+    }
+
+    /// quadraui#1129: pins [`sentinel_survived_clear`]'s three cases
+    /// deterministically, with no real clipboard involved — the flake it
+    /// fixes is environment-dependent, this discrimination is not.
+    #[test]
+    fn only_the_sentinel_surviving_clear_counts_as_a_clear_failure() {
+        assert!(
+            sentinel_survived_clear(Some(CLEAR_TEST_SENTINEL)),
+            "a no-op clear() leaves the sentinel behind — that must still fail loudly"
+        );
+        assert!(
+            !sentinel_survived_clear(None),
+            "an empty clipboard is exactly what clear() promises"
+        );
+        assert!(
+            !sentinel_survived_clear(Some("\n\n\n\n")),
+            "the row separators of a blank selection copied by a concurrent TuiDriver \
+             test — the literal value that made #1129's macOS run red — is interference, \
+             not a clear() failure"
+        );
     }
 }
 
