@@ -507,6 +507,43 @@ quote = "1"
 # call-site-only with no line info) — needed so a failure names a line a
 # human can jump to instead of just a byte-order description.
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# criterion benches (issue #1118): 100k-row DataTable/Tree + 4k-line
+# Editor `frame_build`/`layout`/`paint` stages, one bench binary per
+# workload under `benches/`. `default-features = false` +
+# `features = ["html_reports"]` drops the `rayon` default (no benefit
+# on a single measurement thread, and one less transitive dep to build
+# in CI) while keeping the HTML report generator any local
+# `cargo bench` run wants. Unconditional (not feature-gated): the
+# `frame_build`/`layout` stage of every bench is backend-neutral and
+# must build with zero quadraui features active; only each bench's
+# `paint` stage is internally `#[cfg(feature = "tui"/"gtk")]`-gated —
+# see each bench file's module doc.
+criterion = { version = "0.5", default-features = false, features = [
+    "html_reports",
+] }
+
+# Issue #1118: `frame_build`/`layout`/`paint` benches for a 100k-row
+# DataTable, a 100k-row TreeView, and a 4k-line Editor. No
+# `required-features`, deliberately: each bench's core (`frame_build` +
+# `layout`) stage is backend-neutral and must build under
+# `cargo build`'s default (no quadraui features) resolution too — only
+# the `paint` stage is internally `#[cfg(feature = "tui"/"gtk")]`-gated,
+# see each file's module doc. `harness = false` hands `main()` to
+# criterion's own runner instead of libtest.
+[[bench]]
+name = "data_table_bench"
+path = "benches/data_table_bench.rs"
+harness = false
+
+[[bench]]
+name = "tree_bench"
+path = "benches/tree_bench.rs"
+harness = false
+
+[[bench]]
+name = "editor_bench"
+path = "benches/editor_bench.rs"
+harness = false
 
 [[example]]
 name = "tui_tooltip"
