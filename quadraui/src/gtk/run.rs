@@ -767,44 +767,85 @@ fn activate<A: AppLogic + 'static>(
         app_mut.setup(&mut *backend_mut);
     }
 
-    // ── Draw callback ──────────────────────────────────────────────
+    // ── Per-signal controller wiring ──────────────────────────────────
     //
-    // Set the editor's Pango font on the layout (app-configurable via
-    // `Backend::set_editor_font` — see #422) and seed
-    // `current_line_height` / `current_char_width` on the backend from
-    // the resolved font metrics so trait `draw_*` methods that consume
-    // those (e.g. `draw_status_bar` for clip height) line up with the
-    // actual rendered text height.
-    //
-    // Apps that want a custom editor font call `backend.set_editor_font`
-    // (from `AppLogic::setup` for a static font, or any time their
-    // preference changes) via the trait — no direct `GtkBackend` access
-    // required. `ShellApp` consumers set it declaratively via
-    // `ShellConfig::with_editor_font`.
-    {
-        let app = app.clone();
-        let backend = backend.clone();
-        let pump_depth = pump_depth.clone();
-        da.set_draw_func(move |_da, cr, w, h| {
-            // #427 re-entrancy guard: skip this repaint entirely rather
-            // than double-borrow `backend` while a file dialog's nested
-            // pump (further up the call stack) already holds it. Worst
-            // case this frame stays stale until the dialog closes and a
-            // normal redraw fires; that beats aborting the process.
-            if pump_depth.is_pumping() {
-                return;
-            }
-            let mut backend_mut = backend.borrow_mut();
-            let app_ref = app.borrow();
-            render_frame(&mut backend_mut, &*app_ref, cr, w, h);
-        });
-    }
+    // Each `setup_*` below owns one GTK signal's full closure — cloning
+    // whatever shared `Rc<RefCell<_>>` handles it needs and attaching
+    // itself to `da`/`window` — so `activate` reads as a flat list of
+    // "which signal, wired to what" instead of one signal-per-block
+    // 900-line function (#1113: split the god fn). The re-entrancy
+    // guards (`pump_depth.is_pumping()`, the `#902` `try_dispatch*`
+    // backstops) and the shared-state threading (`cursor_pos` between
+    // motion/scroll, `events_handle` for the close-request deferral)
+    // are unchanged — see the module doc's "Re-entrancy" section, which
+    // every `setup_*` function's doc comment below points back to.
+    setup_draw_func(&da, &app, &backend, &pump_depth);
+    setup_key_controller(&window, &da, &app, &backend, &pump_depth);
 
-    // ── Keyboard ───────────────────────────────────────────────────
-    //
-    // Intercepts Ctrl-C when a text selection is active: copies the
-    // selected text to the clipboard via arboard and delivers a
-    // `TextCopied` event so apps can confirm (mirrors the TUI runner).
+    // Shared with `setup_scroll_controller` below so scroll events carry
+    // the actual pointer position — GTK's `EventControllerScroll` only
+    // delivers `(dx, dy)` in its own callback.
+    let cursor_pos = Rc::new(Cell::new((0.0_f64, 0.0_f64)));
+
+    setup_click_controller(&da, &window, &app, &backend, &pump_depth);
+    setup_motion_controller(&da, &window, &app, &backend, &pump_depth, &cursor_pos);
+    setup_scroll_controller(&da, &window, &app, &backend, &pump_depth, &cursor_pos);
+    setup_resize_controller(&da, &window, &app, &backend, &pump_depth);
+    setup_hidpi_controller(&da, &window, &app, &backend, &pump_depth);
+    setup_file_drop_controller(&da, &window, &app, &backend, &pump_depth);
+    setup_close_request(&window, &da, &app, &backend, &pump_depth, &events_handle);
+    setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
+
+    window.present();
+
+    // quadraui#450 (GD-5): opt-in, zero-cost unless `QUADRAUI_GTK_SMOKE_MS`
+    // is set — see the module doc's "Headless smoke mode" section.
+    if let Some(cfg) = smoke {
+        schedule_smoke_check(cfg, da, backend, app, window, smoke_failed);
+    }
+}
+
+/// Wires `da`'s `set_draw_func` — enters `render_frame` every repaint,
+/// skipping the frame entirely under the `#427` re-entrancy guard (a
+/// file dialog's nested pump further up the call stack already holds
+/// `backend`). See `activate`'s "Re-entrancy" module-doc section.
+fn setup_draw_func<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
+    let app = app.clone();
+    let backend = backend.clone();
+    let pump_depth = pump_depth.clone();
+    da.set_draw_func(move |_da, cr, w, h| {
+        // #427 re-entrancy guard: skip this repaint entirely rather
+        // than double-borrow `backend` while a file dialog's nested
+        // pump (further up the call stack) already holds it. Worst
+        // case this frame stays stale until the dialog closes and a
+        // normal redraw fires; that beats aborting the process.
+        if pump_depth.is_pumping() {
+            return;
+        }
+        let mut backend_mut = backend.borrow_mut();
+        let app_ref = app.borrow();
+        render_frame(&mut backend_mut, &*app_ref, cr, w, h);
+    });
+}
+
+/// Wires the window's keyboard controller. All key-press pre-processing
+/// (ActivityBar focus intercept, Tab/Shift+Tab cycling, `Global`
+/// accelerators, Ctrl-C/V/A interception) lives in the shared
+/// `dispatch_event` (see the module doc's "Shared with the headless
+/// test driver" section) so the live GTK path and `GtkDriver` can't
+/// drift apart.
+fn setup_key_controller<A: AppLogic + 'static>(
+    window: &ApplicationWindow,
+    da: &DrawingArea,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
     let key_ctrl = EventControllerKey::new();
     {
         let backend = backend.clone();
@@ -824,13 +865,6 @@ fn activate<A: AppLogic + 'static>(
                 return glib::Propagation::Proceed;
             };
 
-            // All key-press pre-processing — ActivityBar keyboard-focus
-            // intercept, Tab/Shift+Tab focus cycling (#830), `Global`
-            // accelerator matching (#445), Ctrl-C/V/A
-            // interception — lives in the shared `dispatch_event` (see the
-            // module doc's "Shared with the headless test driver" section)
-            // so the live GTK path and `GtkDriver::press`/`type_char`
-            // (quadraui#446) can't drift apart.
             // #902 backstop: `backend`/`app` already borrowed by an outer
             // `dispatch_event` further up this stack (not a nested pump,
             // which `pump_depth` above already ruled out) — degrade like
@@ -849,193 +883,219 @@ fn activate<A: AppLogic + 'static>(
         });
     }
     window.add_controller(key_ctrl);
+}
 
-    // ── Mouse click ────────────────────────────────────────────────
-    //
-    // Routes mouse-down through `dispatch_click` so registered text
-    // regions receive selection drags. Pre-processes the returned events
-    // for selection-state management before forwarding to the app, mirroring
-    // the TUI runner's text-selection pre-processing.
+/// Wires `da`'s left-click gesture. Routes mouse-down through
+/// `route_pointer` (#1088) so registered text regions receive selection
+/// drags and scrollbar clicks begin scrollbar drags, then forwards the
+/// resulting events through the shared `dispatch_event` funnel.
+/// Mouse-up discards any armed window-drag request (#400) that never
+/// crossed the move threshold, then forwards through the same funnel.
+fn setup_click_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
     let click = GestureClick::builder().button(0).build();
-    {
-        let backend = backend.clone();
-        let app = app.clone();
-        let da_for_redraw = da.clone();
-        let window_for_close = window.clone();
-        let pump_depth = pump_depth.clone();
-        click.connect_pressed(move |gesture, _n_press, x, y| {
-            // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.is_pumping() {
-                return;
-            }
-            let gdk_button = gesture.current_button();
-            let modifier = gesture.current_event_state();
-            let button = gdk_button_to_quadraui(gdk_button);
-            let modifiers = gdk_modifiers_to_quadraui(modifier);
-            let position = Point::new(x as f32, y as f32);
-
-            // Stash the raw GDK press context (device + button + timestamp)
-            // before this press gets translated to a portable `UiEvent`, so
-            // `Backend::begin_window_drag` can later arm a deferred
-            // window-drag request with it (#400; see
-            // `GtkBackend::armed_window_drag` for why it's deferred rather
-            // than calling GDK's native window-drag immediately). Runs for
-            // both single- and double-press events (both fire
-            // `connect_pressed`); harmless if the app never calls
-            // `begin_window_drag`.
-            if let Some(event) = gesture.current_event() {
-                if let Some(device) = event.device() {
-                    // #902 backstop: best-effort — if `backend` is already
-                    // borrowed (see the `#902` section above
-                    // `dispatch_event`), skip the stash. Worst case a
-                    // subsequent `begin_window_drag` has nothing armed to
-                    // commit; strictly better than aborting the process.
-                    if let Ok(mut backend_mut) = backend.try_borrow_mut() {
-                        backend_mut.stash_window_press(
-                            device,
-                            gdk_button as i32,
-                            x,
-                            y,
-                            event.time(),
-                        );
-                    }
-                }
-            }
-
-            // #902 backstop — see the `#902` section above `dispatch_event`.
-            let Ok(mut backend_mut) = backend.try_borrow_mut() else {
-                return;
-            };
-
-            // Route through `route_pointer` (issue #1088) so text-region
-            // clicks begin a TextSelection drag and scrollbar clicks begin
-            // scrollbar drags — regardless of GDK's own press count.
-            // Double-click folding used to be decided right here from
-            // `n_press == 2`, bypassing `dispatch_click` (and so
-            // `TextRegion`/modal routing) for the second press entirely;
-            // #813 moves it into `dispatch_event`'s shared
-            // `fold_double_click` step below, applied uniformly to whatever
-            // `route_pointer` returns, the same as macOS/Windows.
-            let events = {
-                let stack_rc = backend_mut.modal_stack_handle();
-                let drag_rc = backend_mut.drag_state_handle();
-                let stack = stack_rc.borrow();
-                let mut drag = drag_rc.borrow_mut();
-                route_pointer(
-                    &stack,
-                    &mut drag,
-                    backend_mut.text_selection_state_mut(),
-                    UiEvent::MouseDown {
-                        widget: None,
-                        button,
-                        position,
-                        modifiers,
-                    },
-                )
-            };
-
-            let mut needs_redraw = false;
-            for ev in events {
-                // `dispatch_event` folds the double-click itself (as its
-                // first pre-processing step) — pass the raw `MouseDown`
-                // dispatch_click returned straight through.
-                //
-                // #902 backstop: `app` already borrowed by an outer
-                // `dispatch_event` further up this stack — stop draining
-                // this batch rather than panicking; see the `#902` section
-                // above `dispatch_event`.
-                let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
-                    break;
-                };
-                match outcome {
-                    EventOutcome::Continue => {}
-                    EventOutcome::Redraw => needs_redraw = true,
-                    EventOutcome::RedrawAfter(delay) => backend_mut.request_frame_in(delay),
-                    EventOutcome::Exit => {
-                        // `destroy()`, not `close()` (quadraui#501
-                        // review — same fix as `GtkSink::request_exit`):
-                        // this `Exit` came from the app's own handling
-                        // of a click/drag event, not from the OS
-                        // close-request signal, so re-routing it through
-                        // `close()` would emit `close-request` and
-                        // re-dispatch a synthetic `WindowClose` the app
-                        // never asked about — vetoing its own exit for
-                        // any app with no `WindowClose` opinion (the
-                        // unhandled catch-all default).
-                        window_for_close.destroy();
-                        return;
-                    }
-                }
-            }
-            if needs_redraw {
-                da_for_redraw.queue_draw();
-            }
-        });
-    }
-    {
-        let backend = backend.clone();
-        let app = app.clone();
-        let da_for_redraw = da.clone();
-        let window_for_close = window.clone();
-        let pump_depth = pump_depth.clone();
-        click.connect_released(move |gesture, _n_press, x, y| {
-            // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.is_pumping() {
-                return;
-            }
-            // #902 backstop — see the `#902` section above `dispatch_event`.
-            let Ok(mut backend_mut) = backend.try_borrow_mut() else {
-                return;
-            };
-            // #400: if the button goes up before the pointer ever moved
-            // past the drag threshold, this was a plain click (or the
-            // first half of a double-click), not a drag. Discard the
-            // armed window-drag request rather than leaving it to be
-            // accidentally committed by a later, unrelated hover-motion
-            // event. See `GtkBackend::armed_window_drag` for the full
-            // rationale.
-            backend_mut.discard_armed_window_drag();
-            let position = Point::new(x as f32, y as f32);
-            let button: MouseButton = gdk_button_to_quadraui(gesture.current_button());
-            let events = {
-                let stack_rc = backend_mut.modal_stack_handle();
-                let drag_rc = backend_mut.drag_state_handle();
-                let stack = stack_rc.borrow();
-                let mut drag = drag_rc.borrow_mut();
-                route_pointer(
-                    &stack,
-                    &mut drag,
-                    backend_mut.text_selection_state_mut(),
-                    UiEvent::MouseUp {
-                        widget: None,
-                        button,
-                        position,
-                    },
-                )
-            };
-            for ev in events {
-                // #902 backstop — see the `#902` section above
-                // `dispatch_event`.
-                let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
-                    break;
-                };
-                apply_event_outcome(outcome, &backend_mut, &da_for_redraw, &window_for_close);
-            }
-        });
-    }
+    setup_click_pressed(&click, da, window, app, backend, pump_depth);
+    setup_click_released(&click, da, window, app, backend, pump_depth);
     da.add_controller(click);
+}
 
-    // ── Motion ─────────────────────────────────────────────────────
-    //
-    // Routes mouse-move through `dispatch_mouse_drag` so text-selection
-    // drags emit `TextSelectionChanged` events. The runner pre-processes
-    // `TextSelectionChanged` to update backend selection state before
-    // forwarding to the app.
-    //
-    // `cursor_pos` is shared with the scroll controller below so that
-    // scroll events carry the actual pointer position. GTK's
-    // `EventControllerScroll` only delivers (dx, dy) in its callback.
-    let cursor_pos = Rc::new(Cell::new((0.0_f64, 0.0_f64)));
+/// `connect_pressed` half of [`setup_click_controller`]. Routes through
+/// `route_pointer` (issue #1088) so text-region clicks begin a
+/// TextSelection drag and scrollbar clicks begin scrollbar drags —
+/// regardless of GDK's own press count. Double-click folding used to be
+/// decided right here from `n_press == 2`, bypassing `dispatch_click`
+/// (and so `TextRegion`/modal routing) for the second press entirely;
+/// #813 moved it into `dispatch_event`'s shared `fold_double_click`
+/// step, applied uniformly to whatever `route_pointer` returns, the
+/// same as macOS/Windows.
+fn setup_click_pressed<A: AppLogic + 'static>(
+    click: &GestureClick,
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
+    let backend = backend.clone();
+    let app = app.clone();
+    let da_for_redraw = da.clone();
+    let window_for_close = window.clone();
+    let pump_depth = pump_depth.clone();
+    click.connect_pressed(move |gesture, _n_press, x, y| {
+        // #427 re-entrancy guard — see `setup_key_controller`.
+        if pump_depth.is_pumping() {
+            return;
+        }
+        let gdk_button = gesture.current_button();
+        let modifier = gesture.current_event_state();
+        let button = gdk_button_to_quadraui(gdk_button);
+        let modifiers = gdk_modifiers_to_quadraui(modifier);
+        let position = Point::new(x as f32, y as f32);
+
+        // Stash the raw GDK press context (device + button + timestamp)
+        // before this press gets translated to a portable `UiEvent`, so
+        // `Backend::begin_window_drag` can later arm a deferred
+        // window-drag request with it (#400; see
+        // `GtkBackend::armed_window_drag` for why it's deferred rather
+        // than calling GDK's native window-drag immediately). Runs for
+        // both single- and double-press events (both fire
+        // `connect_pressed`); harmless if the app never calls
+        // `begin_window_drag`.
+        if let Some(event) = gesture.current_event() {
+            if let Some(device) = event.device() {
+                // #902 backstop: best-effort — if `backend` is already
+                // borrowed (see the `#902` section above
+                // `dispatch_event`), skip the stash. Worst case a
+                // subsequent `begin_window_drag` has nothing armed to
+                // commit; strictly better than aborting the process.
+                if let Ok(mut backend_mut) = backend.try_borrow_mut() {
+                    backend_mut.stash_window_press(device, gdk_button as i32, x, y, event.time());
+                }
+            }
+        }
+
+        // #902 backstop — see the `#902` section above `dispatch_event`.
+        let Ok(mut backend_mut) = backend.try_borrow_mut() else {
+            return;
+        };
+
+        let events = {
+            let stack_rc = backend_mut.modal_stack_handle();
+            let drag_rc = backend_mut.drag_state_handle();
+            let stack = stack_rc.borrow();
+            let mut drag = drag_rc.borrow_mut();
+            route_pointer(
+                &stack,
+                &mut drag,
+                backend_mut.text_selection_state_mut(),
+                UiEvent::MouseDown {
+                    widget: None,
+                    button,
+                    position,
+                    modifiers,
+                },
+            )
+        };
+
+        let mut needs_redraw = false;
+        for ev in events {
+            // `dispatch_event` folds the double-click itself (as its
+            // first pre-processing step) — pass the raw `MouseDown`
+            // dispatch_click returned straight through.
+            //
+            // #902 backstop: `app` already borrowed by an outer
+            // `dispatch_event` further up this stack — stop draining
+            // this batch rather than panicking; see the `#902` section
+            // above `dispatch_event`.
+            let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
+                break;
+            };
+            match outcome {
+                EventOutcome::Continue => {}
+                EventOutcome::Redraw => needs_redraw = true,
+                EventOutcome::RedrawAfter(delay) => backend_mut.request_frame_in(delay),
+                EventOutcome::Exit => {
+                    // `destroy()`, not `close()` (quadraui#501
+                    // review — same fix as `GtkSink::request_exit`):
+                    // this `Exit` came from the app's own handling
+                    // of a click/drag event, not from the OS
+                    // close-request signal, so re-routing it through
+                    // `close()` would emit `close-request` and
+                    // re-dispatch a synthetic `WindowClose` the app
+                    // never asked about — vetoing its own exit for
+                    // any app with no `WindowClose` opinion (the
+                    // unhandled catch-all default).
+                    window_for_close.destroy();
+                    return;
+                }
+            }
+        }
+        if needs_redraw {
+            da_for_redraw.queue_draw();
+        }
+    });
+}
+
+/// `connect_released` half of [`setup_click_controller`]. Discards any
+/// armed window-drag request (#400) that never crossed the move
+/// threshold — see `GtkBackend::armed_window_drag` — then forwards
+/// through the shared `dispatch_event` funnel.
+fn setup_click_released<A: AppLogic + 'static>(
+    click: &GestureClick,
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
+    let backend = backend.clone();
+    let app = app.clone();
+    let da_for_redraw = da.clone();
+    let window_for_close = window.clone();
+    let pump_depth = pump_depth.clone();
+    click.connect_released(move |gesture, _n_press, x, y| {
+        // #427 re-entrancy guard — see `setup_key_controller`.
+        if pump_depth.is_pumping() {
+            return;
+        }
+        // #902 backstop — see the `#902` section above `dispatch_event`.
+        let Ok(mut backend_mut) = backend.try_borrow_mut() else {
+            return;
+        };
+        // #400: if the button goes up before the pointer ever moved past
+        // the drag threshold, this was a plain click (or the first half
+        // of a double-click), not a drag. Discard the armed window-drag
+        // request rather than leaving it to be accidentally committed by
+        // a later, unrelated hover-motion event.
+        backend_mut.discard_armed_window_drag();
+        let position = Point::new(x as f32, y as f32);
+        let button: MouseButton = gdk_button_to_quadraui(gesture.current_button());
+        let events = {
+            let stack_rc = backend_mut.modal_stack_handle();
+            let drag_rc = backend_mut.drag_state_handle();
+            let stack = stack_rc.borrow();
+            let mut drag = drag_rc.borrow_mut();
+            route_pointer(
+                &stack,
+                &mut drag,
+                backend_mut.text_selection_state_mut(),
+                UiEvent::MouseUp {
+                    widget: None,
+                    button,
+                    position,
+                },
+            )
+        };
+        for ev in events {
+            // #902 backstop — see the `#902` section above
+            // `dispatch_event`.
+            let Some(outcome) = try_dispatch_borrowed(&mut backend_mut, &app, ev) else {
+                break;
+            };
+            apply_event_outcome(outcome, &backend_mut, &da_for_redraw, &window_for_close);
+        }
+    });
+}
+
+/// Wires `da`'s motion controller. Routes mouse-move through
+/// `route_pointer` so text-selection drags emit `TextSelectionChanged`
+/// events, and commits any armed window-drag (#400) once the pointer
+/// crosses the move threshold. `cursor_pos` is shared with
+/// `setup_scroll_controller` so scroll events carry the actual pointer
+/// position.
+fn setup_motion_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+    cursor_pos: &Rc<Cell<(f64, f64)>>,
+) {
     let motion = EventControllerMotion::new();
     {
         let backend = backend.clone();
@@ -1047,7 +1107,7 @@ fn activate<A: AppLogic + 'static>(
         motion.connect_motion(move |ctrl, x, y| {
             cursor_pos.set((x, y));
 
-            // #427 re-entrancy guard — see the key-press handler above.
+            // #427 re-entrancy guard — see `setup_key_controller`.
             if pump_depth.is_pumping() {
                 return;
             }
@@ -1142,8 +1202,19 @@ fn activate<A: AppLogic + 'static>(
         });
     }
     da.add_controller(motion);
+}
 
-    // ── Scroll ─────────────────────────────────────────────────────
+/// Wires `da`'s scroll controller, reading the shared `cursor_pos` so
+/// wheel events carry the actual pointer position (GTK's
+/// `EventControllerScroll` only ever delivers `(dx, dy)` itself).
+fn setup_scroll_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+    cursor_pos: &Rc<Cell<(f64, f64)>>,
+) {
     let scroll = EventControllerScroll::new(EventControllerScrollFlags::BOTH_AXES);
     {
         let backend = backend.clone();
@@ -1151,8 +1222,9 @@ fn activate<A: AppLogic + 'static>(
         let da_for_redraw = da.clone();
         let window_for_close = window.clone();
         let pump_depth = pump_depth.clone();
+        let cursor_pos = cursor_pos.clone();
         scroll.connect_scroll(move |_ctrl, dx, dy| {
-            // #427 re-entrancy guard — see the key-press handler above.
+            // #427 re-entrancy guard — see `setup_key_controller`.
             if pump_depth.is_pumping() {
                 return glib::Propagation::Proceed;
             }
@@ -1181,334 +1253,304 @@ fn activate<A: AppLogic + 'static>(
         });
     }
     da.add_controller(scroll);
+}
 
-    // ── Resize ─────────────────────────────────────────────────────
-    //
-    // `Backend::begin_frame(viewport)` (in `set_draw_func` above) keeps
-    // `backend.viewport()` in sync with the DA's allocated size on every
-    // *render*, but apps with side effects on resize — not just
-    // re-painting — never learned about it: GTK didn't deliver
-    // `UiEvent::WindowResized` at all (quadraui#437; see
-    // `gdk_resize_to_uievent`'s doc comment). `DrawingArea::connect_resize`
-    // fires with the widget's real allocated pixel size both on first
-    // realization (correcting the `DEFAULT_WINDOW_WIDTH`/`HEIGHT` seed
-    // above) and on every subsequent resize, mirroring how the TUI
-    // runner delivers `WindowResized` from crossterm's `Resize` event.
-    //
-    // The dispatch of `UiEvent::WindowResized` itself is **debounced**
-    // (quadraui#437 follow-up) using the same `RESIZE_SETTLE` window the
-    // TUI runner's poll-loop debounce uses — see
-    // `crate::runtime::RESIZE_SETTLE`'s doc for the full rationale
-    // (PTY/SIGWINCH corruption from resizing on every intermediate
-    // frame of a drag). `resize_timer` below is GTK's own mechanism for
-    // it: cancel-and-reschedule a `glib::SourceId` per `connect_resize`
-    // signal, rather than TUI's `ResizeDebouncer` + `Instant`-poll (GTK's
-    // timer already gives exactly-once-after-settle semantics natively,
-    // and re-reads the DA's live size at fire time instead of storing a
-    // pending value). Painting itself is unaffected and stays perfectly
-    // live — `set_draw_func` re-reads the DA's actual allocated size
-    // every frame regardless of whether the debounced event has fired
-    // yet.
+/// Wires `da`'s resize signal. `Backend::begin_frame(viewport)` (in
+/// `setup_draw_func`) keeps `backend.viewport()` in sync with the DA's
+/// allocated size on every *render*, but apps with side effects on
+/// resize — not just re-painting — need `UiEvent::WindowResized`
+/// dispatched too (quadraui#437). The dispatch itself is **debounced**
+/// via a cancel-and-reschedule `glib::SourceId` (mirroring the TUI
+/// runner's `RESIZE_SETTLE` window) so a live resize drag doesn't spam
+/// PTY/SIGWINCH on every intermediate frame; painting stays perfectly
+/// live regardless, since `set_draw_func` re-reads the DA's actual
+/// allocated size every frame.
+fn setup_resize_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
     let resize_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
-    {
+    let backend = backend.clone();
+    let app = app.clone();
+    let da_for_redraw = da.clone();
+    let window_for_close = window.clone();
+    let pump_depth = pump_depth.clone();
+    da.connect_resize(move |da, _width, _height| {
+        // #427 re-entrancy guard — see `setup_key_controller`.
+        if pump_depth.is_pumping() {
+            return;
+        }
+        // Force a FULL-widget invalidation on every resize edge, not
+        // just at the debounced settle below (quadraui#437). This is the
+        // render-path half of the "stale ~ / > prompt fragments stuck on
+        // rows that should be blank after a shrink→expand" ghosting.
+        //
+        // GTK repaints a growing window with *partial* damage regions —
+        // typically only the newly-exposed strip at the right/bottom
+        // edge — and reuses the cached render node for the rest. The
+        // `set_draw_func` opens every frame by clearing the whole DA to
+        // the theme background, but Cairo honours GTK's clip, so that
+        // "full" clear only ever covers the damaged strip. The undamaged
+        // middle keeps its pre-resize render node, so any glyph the
+        // pre-resize grid painted there survives — the ghost. A bare
+        // `queue_draw()` (no region) invalidates the entire widget, so
+        // the next `set_draw_func` runs unclipped and the whole-DA clear
+        // actually clears the whole DA. GTK coalesces repeated per-edge
+        // invalidations into one repaint per frame, so this stays cheap
+        // during a live drag. The PTY resize / SIGWINCH stays debounced
+        // below — only the *paint* is forced eager here.
+        da.queue_draw();
+        // Cancel any pending debounced dispatch — this signal
+        // supersedes it. `remove()` is a no-op-safe consume; the
+        // source may have already fired (Cell held `None`).
+        if let Some(id) = resize_timer.take() {
+            id.remove();
+        }
         let backend = backend.clone();
         let app = app.clone();
-        let da_for_redraw = da.clone();
-        let window_for_close = window.clone();
+        let da_for_redraw = da_for_redraw.clone();
+        let window_for_close = window_for_close.clone();
         let pump_depth = pump_depth.clone();
-        let resize_timer = resize_timer.clone();
-        da.connect_resize(move |da, _width, _height| {
-            // #427 re-entrancy guard — see the key-press handler above.
+        let resize_timer_inner = resize_timer.clone();
+        let id = glib::source::timeout_add_local_once(RESIZE_SETTLE, move || {
+            // The fired timer is no longer "pending" — clear so a
+            // future resize doesn't try to cancel a dead source.
+            resize_timer_inner.set(None);
+            // #427 re-entrancy guard, re-checked at fire time —
+            // a dialog pump may have started after this timer was
+            // scheduled.
             if pump_depth.is_pumping() {
                 return;
             }
-            // Force a FULL-widget invalidation on every resize edge, not
-            // just at the debounced settle below (quadraui#437). This is the
-            // render-path half of the "stale ~ / > prompt fragments stuck on
-            // rows that should be blank after a shrink→expand" ghosting.
-            //
-            // GTK repaints a growing window with *partial* damage regions —
-            // typically only the newly-exposed strip at the right/bottom
-            // edge — and reuses the cached render node for the rest. The
-            // `set_draw_func` above opens every frame by clearing the whole
-            // DA to the theme background, but Cairo honours GTK's clip, so
-            // that "full" clear only ever covers the damaged strip. The
-            // undamaged middle keeps its pre-resize render node, so any
-            // glyph the pre-resize grid painted there survives — the ghost.
-            // A bare `queue_draw()` (no region) invalidates the entire
-            // widget, so the next `set_draw_func` runs unclipped and the
-            // whole-DA clear actually clears the whole DA. GTK coalesces
-            // repeated per-edge invalidations into one repaint per frame, so
-            // this stays cheap during a live drag. The PTY resize / SIGWINCH
-            // stays debounced below — only the *paint* is forced eager here.
-            da.queue_draw();
-            // Cancel any pending debounced dispatch — this signal
-            // supersedes it. `remove()` is a no-op-safe consume; the
-            // source may have already fired (Cell held `None`).
-            if let Some(id) = resize_timer.take() {
-                id.remove();
-            }
-            let backend = backend.clone();
-            let app = app.clone();
-            let da_for_redraw = da_for_redraw.clone();
-            let window_for_close = window_for_close.clone();
-            let pump_depth = pump_depth.clone();
-            let resize_timer_inner = resize_timer.clone();
-            let id = glib::source::timeout_add_local_once(RESIZE_SETTLE, move || {
-                // The fired timer is no longer "pending" — clear so a
-                // future resize doesn't try to cancel a dead source.
-                resize_timer_inner.set(None);
-                // #427 re-entrancy guard, re-checked at fire time —
-                // a dialog pump may have started after this timer was
-                // scheduled.
-                if pump_depth.is_pumping() {
-                    return;
-                }
-                // Query the DA's *current* (settled) allocated size
-                // rather than replaying the size captured when this
-                // timer was scheduled — later `connect_resize` calls
-                // during the same drag reschedule (see above), so by
-                // the time this fires the widget has already reached
-                // its final size.
-                let width = da_for_redraw.width();
-                let height = da_for_redraw.height();
-                let scale = da_for_redraw.scale_factor() as f32;
-                let ev = gdk_resize_to_uievent(width, height, scale);
-                // #902 backstop — see the `#902` section above
-                // `dispatch_event`. Skipping here means the tracked scale
-                // (`set_dpi_scale`, run as `try_dispatch_with`'s `pre`
-                // step) doesn't update this tick either; the next resize
-                // or `notify::scale-factor` firing corrects it.
-                let Some(outcome) = try_dispatch_with(
-                    &backend,
-                    &app,
-                    |backend_mut| {
-                        // #834: keep the tracked scale current on every
-                        // resize too, not just the dedicated
-                        // `notify::scale-factor` handler below — a resize
-                        // and a DPI change can arrive in the same GTK
-                        // signal burst (dragging a window across a
-                        // monitor boundary resizes it too on some
-                        // compositors).
-                        backend_mut.set_dpi_scale(scale);
-                    },
-                    ev,
-                ) else {
-                    return;
-                };
-                apply_event_outcome(
-                    outcome,
-                    &backend.borrow(),
-                    &da_for_redraw,
-                    &window_for_close,
-                );
-            });
-            resize_timer.set(Some(id));
-        });
-    }
-
-    // ── HiDPI runtime change (issue #834) ───────────────────────────
-    //
-    // `DrawingArea::scale_factor()` is only ever read once, at
-    // resize-settle time, before this issue — a pure DPI change with no
-    // accompanying resize (dragging the window to a different-DPI
-    // monitor without resizing it, or an external monitor's scaling
-    // setting changing live) never fired `connect_resize` at all, so
-    // `UiEvent::DpiChanged` was never dispatched and `GtkBackend`'s
-    // tracked scale went stale. `notify::scale-factor` is the GObject
-    // property-change signal GTK fires specifically for this case
-    // (`gtk4::Widget::connect_scale_factor_notify`), independent of any
-    // size change. No debounce: unlike a live resize drag, a DPI change
-    // doesn't arrive as a rapid-fire burst.
-    {
-        let backend = backend.clone();
-        let app = app.clone();
-        let da_for_dpi = da.clone();
-        let window_for_dpi = window.clone();
-        let pump_depth = pump_depth.clone();
-        da.connect_scale_factor_notify(move |da| {
-            // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.is_pumping() {
-                return;
-            }
-            let scale = da.scale_factor() as f32;
-            // #902 backstop — see the `#902` section above `dispatch_event`.
+            // Query the DA's *current* (settled) allocated size
+            // rather than replaying the size captured when this
+            // timer was scheduled — later `connect_resize` calls
+            // during the same drag reschedule (see above), so by
+            // the time this fires the widget has already reached
+            // its final size.
+            let width = da_for_redraw.width();
+            let height = da_for_redraw.height();
+            let scale = da_for_redraw.scale_factor() as f32;
+            let ev = gdk_resize_to_uievent(width, height, scale);
+            // #902 backstop — see the `#902` section above
+            // `dispatch_event`. Skipping here means the tracked scale
+            // (`set_dpi_scale`, run as `try_dispatch_with`'s `pre`
+            // step) doesn't update this tick either; the next resize
+            // or `notify::scale-factor` firing corrects it.
             let Some(outcome) = try_dispatch_with(
                 &backend,
                 &app,
-                |backend_mut| backend_mut.set_dpi_scale(scale),
-                UiEvent::DpiChanged(scale),
+                |backend_mut| {
+                    // #834: keep the tracked scale current on every
+                    // resize too, not just the dedicated
+                    // `notify::scale-factor` handler below — a resize
+                    // and a DPI change can arrive in the same GTK
+                    // signal burst (dragging a window across a
+                    // monitor boundary resizes it too on some
+                    // compositors).
+                    backend_mut.set_dpi_scale(scale);
+                },
+                ev,
             ) else {
                 return;
             };
-            apply_event_outcome(outcome, &backend.borrow(), &da_for_dpi, &window_for_dpi);
+            apply_event_outcome(
+                outcome,
+                &backend.borrow(),
+                &da_for_redraw,
+                &window_for_close,
+            );
         });
-    }
+        resize_timer.set(Some(id));
+    });
+}
 
-    // ── OS file drop (issue #834) ────────────────────────────────────
-    //
-    // `gtk::DropTarget` is a `gtk::EventController` (added to the `da`
-    // the same way the click/motion/scroll controllers above are), not
-    // a separate widget — GTK4's drag-and-drop model routes a drop to
-    // whichever controller on the target widget declares it accepts the
-    // dragged `GType`. `gdk::FileList` is the type GTK/GNOME apps (file
-    // managers, browsers) drop file references as; `NSFilenamesPboardType`
-    // and `WM_DROPFILES`'s `HDROP` are the equivalent native shapes the
-    // macOS/Win wiring decodes.
-    {
-        let backend = backend.clone();
-        let app = app.clone();
-        let da_for_drop = da.clone();
-        let window_for_drop = window.clone();
-        let pump_depth = pump_depth.clone();
-        let drop_target = gtk4::DropTarget::new(
-            gtk4::gdk::FileList::static_type(),
-            gtk4::gdk::DragAction::COPY,
-        );
-        drop_target.connect_drop(move |_target, value, x, y| {
-            // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.is_pumping() {
-                return false;
-            }
-            let Ok(file_list) = value.get::<gtk4::gdk::FileList>() else {
-                return false;
-            };
-            let paths: Vec<std::path::PathBuf> =
-                file_list.files().iter().filter_map(|f| f.path()).collect();
-            if paths.is_empty() {
-                return false;
-            }
-            let ev = gtk_drop_to_uievent(paths, x, y);
-            // #902 backstop — see the `#902` section above `dispatch_event`.
-            let Some(outcome) = try_dispatch(&backend, &app, ev) else {
-                return false;
-            };
-            apply_event_outcome(outcome, &backend.borrow(), &da_for_drop, &window_for_drop);
-            true
-        });
-        da.add_controller(drop_target);
-    }
+/// Wires `da`'s `notify::scale-factor` signal (issue #834) — the GObject
+/// property-change signal GTK fires for a *pure* DPI change (dragging
+/// the window to a different-DPI monitor, or a live scaling-setting
+/// change) with no accompanying resize, which `setup_resize_controller`
+/// alone would never observe. No debounce: unlike a live resize drag, a
+/// DPI change doesn't arrive as a rapid-fire burst.
+fn setup_hidpi_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
+    let backend = backend.clone();
+    let app = app.clone();
+    let da_for_dpi = da.clone();
+    let window_for_dpi = window.clone();
+    let pump_depth = pump_depth.clone();
+    da.connect_scale_factor_notify(move |da| {
+        // #427 re-entrancy guard — see `setup_key_controller`.
+        if pump_depth.is_pumping() {
+            return;
+        }
+        let scale = da.scale_factor() as f32;
+        // #902 backstop — see the `#902` section above `dispatch_event`.
+        let Some(outcome) = try_dispatch_with(
+            &backend,
+            &app,
+            |backend_mut| backend_mut.set_dpi_scale(scale),
+            UiEvent::DpiChanged(scale),
+        ) else {
+            return;
+        };
+        apply_event_outcome(outcome, &backend.borrow(), &da_for_dpi, &window_for_dpi);
+    });
+}
 
-    // ── Window close (quadraui#501) ───────────────────────────────
-    //
-    // Until now GTK never asked the app before tearing the window down:
-    // the OS "×" button / Alt-F4 / window-manager close went straight to
-    // GLib's default `close-request` handling with no `UiEvent` in
-    // between, so an app had no way to veto an unsaved-changes close or
-    // even *know* the window was closing. `WinBackend::wnd_proc`'s
-    // `WM_CLOSE` arm (`win/run.rs`) already documents the intended
-    // contract — "matching the GTK runner's `Reaction::Exit =>
-    // window.close()`" — this wiring is the GTK half that comment
-    // assumed already existed. `connect_close_request` fires before the
-    // window is destroyed and lets the handler return
-    // `glib::Propagation::Stop` to cancel it.
-    //
-    // Dispatch `UiEvent::WindowClose` through the same `dispatch_event`
-    // funnel every other native signal uses, then only let the close
-    // proceed if the app's own reaction was `Exit` — same rule Win uses.
-    // An app that doesn't return `Exit` (the default for an unhandled
-    // event, and any app that wants to show a confirmation dialog first)
-    // implicitly vetoes the close. Never route this outcome through
-    // `apply_event_outcome`/`request_exit`: that calls `window.close()`,
-    // which would re-enter this same `close-request` handler.
-    //
-    // That re-entrancy hazard cuts the other way too, and *did* bite
-    // (quadraui#501 review): `GtkSink::request_exit` — the target of
-    // every *other* `Reaction::Exit`/`EventOutcome::Exit` in this file,
-    // e.g. an app's own "press q to quit" key handler — used to call
-    // `window.close()` as well. Once this handler existed, that
-    // `close()` re-entered it as a *second*, synthetic `WindowClose`
-    // dispatch the app never asked for; an app with no `WindowClose`
-    // opinion (the unhandled-catch-all default, true of every existing
-    // example) would veto its own already-decided exit. Same trap
-    // caught `schedule_smoke_check`'s forced-close-after-timeout, which
-    // needs to close the window unconditionally regardless of what the
-    // app returns. Both now call `window.destroy()` instead of
-    // `window.close()` — `destroy()` tears the window down directly
-    // without emitting `close-request`, so it cannot loop back through
-    // this veto. Only a real external close request (OS "×" / Alt-F4 /
-    // window manager) should ever reach this handler.
-    {
-        let backend = backend.clone();
-        let app = app.clone();
-        let da_for_redraw = da.clone();
-        let pump_depth = pump_depth.clone();
-        let events_handle = events_handle.clone();
-        window.connect_close_request(move |_window| {
-            // #427 re-entrancy guard — see the key-press handler above.
-            if pump_depth.is_pumping() {
-                return glib::Propagation::Proceed;
-            }
-            // #902: this is the handler the reported abort actually hit —
-            // `pump_depth` only ever sees a *nested modal pump* (#427);
-            // it's still 0 here when app code, synchronously inside an
-            // outer `dispatch_event` call further up this very stack,
-            // calls `window.close()`. GTK turns that into a second,
-            // synchronous `close-request` emission that re-enters this
-            // closure while `backend`/`app` are still borrowed by the
-            // outer call — see the module doc's "Re-entrancy: two
-            // independent sources, one invariant (quadraui#902)" section
-            // for the full call chain.
-            //
-            // Unlike every other handler above, this one can't just skip
-            // the event on a double-borrow: `WindowClose` is exactly what
-            // a consumer needs to see to decide whether to actually exit,
-            // and dropping it silently would turn an in-dispatch
-            // `close()` call into a permanent no-op. So defer instead:
-            // push straight onto `events_handle` — a plain
-            // `Rc<RefCell<VecDeque<UiEvent>>>` with its own, independent
-            // borrow state, so this can't double-borrow no matter how
-            // deep the reentrant stack is (see `events_handle`'s capture
-            // above `activate`'s `pump_depth`) — and refuse the close
-            // *this* turn, same as the ordinary `EventOutcome::Continue`
-            // arm below. The queued `WindowClose` reaches the app
-            // cleanly a tick later via the 33ms drain loop, once every
-            // outstanding borrow from this stack has unwound; if the app
-            // wants to exit it drives that itself through
-            // `Reaction::Exit` → `request_exit` → `window.destroy()`,
-            // which — unlike `close()` — cannot loop back through this
-            // handler.
-            let outcome = match try_dispatch(&backend, &app, UiEvent::WindowClose) {
-                Some(outcome) => outcome,
-                None => {
-                    events_handle.borrow_mut().push_back(UiEvent::WindowClose);
-                    return glib::Propagation::Stop;
-                }
-            };
-            match outcome {
-                EventOutcome::Exit => glib::Propagation::Proceed,
-                EventOutcome::Redraw => {
-                    da_for_redraw.queue_draw();
-                    glib::Propagation::Stop
-                }
-                EventOutcome::RedrawAfter(delay) => {
-                    backend.borrow_mut().request_frame_in(delay);
-                    glib::Propagation::Stop
-                }
-                EventOutcome::Continue => glib::Propagation::Stop,
-            }
-        });
-    }
+/// Wires `da`'s OS file-drop target (issue #834). `gtk::DropTarget` is a
+/// `gtk::EventController` added to `da` the same way the click/motion/
+/// scroll controllers are, not a separate widget — GTK4's DnD model
+/// routes a drop to whichever controller on the target widget declares
+/// it accepts the dragged `GType`. `gdk::FileList` is the type GTK/GNOME
+/// apps (file managers, browsers) drop file references as.
+fn setup_file_drop_controller<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+) {
+    let backend = backend.clone();
+    let app = app.clone();
+    let da_for_drop = da.clone();
+    let window_for_drop = window.clone();
+    let pump_depth = pump_depth.clone();
+    let drop_target = gtk4::DropTarget::new(
+        gtk4::gdk::FileList::static_type(),
+        gtk4::gdk::DragAction::COPY,
+    );
+    drop_target.connect_drop(move |_target, value, x, y| {
+        // #427 re-entrancy guard — see `setup_key_controller`.
+        if pump_depth.is_pumping() {
+            return false;
+        }
+        let Ok(file_list) = value.get::<gtk4::gdk::FileList>() else {
+            return false;
+        };
+        let paths: Vec<std::path::PathBuf> =
+            file_list.files().iter().filter_map(|f| f.path()).collect();
+        if paths.is_empty() {
+            return false;
+        }
+        let ev = gtk_drop_to_uievent(paths, x, y);
+        // #902 backstop — see the `#902` section above `dispatch_event`.
+        let Some(outcome) = try_dispatch(&backend, &app, ev) else {
+            return false;
+        };
+        apply_event_outcome(outcome, &backend.borrow(), &da_for_drop, &window_for_drop);
+        true
+    });
+    da.add_controller(drop_target);
+}
 
-    // ── Backend event-queue drain (low-rate idle) ─────────────────
-    //
-    // Producer-side event controllers above already dispatch
-    // synchronously through `app.handle` and trigger redraws. The
-    // backend's queue exists as a forward-compat seam — any future
-    // signal handlers that push directly to `events_handle()` get
-    // drained here on each idle tick.
-    //
-    // Issue #831: this closure is also `GtkBackend::waker`'s wake target
-    // (via `set_wake_callback` below), not just the periodic timer's body
-    // — pulled into a named `Rc<dyn Fn()>` so a background-thread wake and
-    // the ordinary 33ms poll funnel through one dispatch path instead of
-    // two that could drift. See `GtkBackend::waker`'s doc for why the
-    // invoked-on-wake path can't just reimplement this inline: it only has
-    // `&self` on the backend, no handle to `app`/`da`/`window` of its own.
+/// Wires the window's `close-request` signal (quadraui#501) — the OS "×"
+/// / Alt-F4 / window-manager close, previously never dispatched as a
+/// `UiEvent` at all, so an app had no way to veto an unsaved-changes
+/// close or even know the window was closing.
+///
+/// Dispatches `UiEvent::WindowClose` through the same `dispatch_event`
+/// funnel every other native signal uses, then only lets the close
+/// proceed if the app's own reaction was `Exit` — same rule Win uses. An
+/// app that doesn't return `Exit` implicitly vetoes the close. Never
+/// routes this outcome through `apply_event_outcome`/`request_exit`:
+/// that calls `window.close()`, which would re-enter this same
+/// `close-request` handler — see the module doc's "Re-entrancy: two
+/// independent sources, one invariant (quadraui#902)" section for the
+/// full call chain this guards against, including why the `None` arm
+/// below defers onto `events_handle` instead of dropping the event.
+fn setup_close_request<A: AppLogic + 'static>(
+    window: &ApplicationWindow,
+    da: &DrawingArea,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+    events_handle: &Rc<RefCell<std::collections::VecDeque<UiEvent>>>,
+) {
+    let backend = backend.clone();
+    let app = app.clone();
+    let da_for_redraw = da.clone();
+    let pump_depth = pump_depth.clone();
+    let events_handle = events_handle.clone();
+    window.connect_close_request(move |_window| {
+        // #427 re-entrancy guard — see `setup_key_controller`.
+        if pump_depth.is_pumping() {
+            return glib::Propagation::Proceed;
+        }
+        // #902: this is the handler the reported abort actually hit —
+        // `pump_depth` only ever sees a *nested modal pump* (#427); it's
+        // still 0 here when app code, synchronously inside an outer
+        // `dispatch_event` call further up this very stack, calls
+        // `window.close()`. GTK turns that into a second, synchronous
+        // `close-request` emission that re-enters this closure while
+        // `backend`/`app` are still borrowed by the outer call.
+        //
+        // Unlike every other handler, this one can't just skip the
+        // event on a double-borrow: `WindowClose` is exactly what a
+        // consumer needs to see to decide whether to actually exit, and
+        // dropping it silently would turn an in-dispatch `close()` call
+        // into a permanent no-op. So defer instead: push straight onto
+        // `events_handle` — a plain `Rc<RefCell<VecDeque<UiEvent>>>`
+        // with its own, independent borrow state, so this can't
+        // double-borrow no matter how deep the reentrant stack is — and
+        // refuse the close *this* turn, same as the ordinary
+        // `EventOutcome::Continue` arm below. The queued `WindowClose`
+        // reaches the app cleanly a tick later via the idle drain loop,
+        // once every outstanding borrow from this stack has unwound; if
+        // the app wants to exit it drives that itself through
+        // `Reaction::Exit` → `request_exit` → `window.destroy()`, which
+        // — unlike `close()` — cannot loop back through this handler.
+        let outcome = match try_dispatch(&backend, &app, UiEvent::WindowClose) {
+            Some(outcome) => outcome,
+            None => {
+                events_handle.borrow_mut().push_back(UiEvent::WindowClose);
+                return glib::Propagation::Stop;
+            }
+        };
+        match outcome {
+            EventOutcome::Exit => glib::Propagation::Proceed,
+            EventOutcome::Redraw => {
+                da_for_redraw.queue_draw();
+                glib::Propagation::Stop
+            }
+            EventOutcome::RedrawAfter(delay) => {
+                backend.borrow_mut().request_frame_in(delay);
+                glib::Propagation::Stop
+            }
+            EventOutcome::Continue => glib::Propagation::Stop,
+        }
+    });
+}
+
+/// Wires the low-rate idle drain of the backend's event queue, plus the
+/// periodic `AppLogic::tick` call. Producer-side controllers above
+/// already dispatch synchronously through `app.handle` and trigger
+/// redraws; the backend's queue exists as a forward-compat seam — any
+/// signal handler that pushes directly to `events_handle()` gets
+/// drained here on each idle tick.
+///
+/// Issue #831: the drain closure is also `GtkBackend::waker`'s wake
+/// target (installed here via `set_wake_callback`), not just the
+/// periodic timer's body — a named `Rc<dyn Fn()>` so a background-thread
+/// wake and the ordinary poll funnel through one dispatch path instead
+/// of two that could drift.
+fn setup_event_drain<A: AppLogic + 'static>(
+    da: &DrawingArea,
+    window: &ApplicationWindow,
+    app: &Rc<RefCell<A>>,
+    backend: &Rc<RefCell<GtkBackend>>,
+    pump_depth: &crate::desktop::ModalPumpDepth,
+    events_handle: &Rc<RefCell<std::collections::VecDeque<UiEvent>>>,
+) {
     let drain_da = da.clone();
     let drain_window = window.clone();
-    // Cloned (rather than moved) so `app`/`backend` stay available below
-    // for the quadraui#450 headless smoke-mode hook.
     let drain_app = app.clone();
     let drain_backend = backend.clone();
     let drain_pump_depth = pump_depth.clone();
@@ -1516,9 +1558,9 @@ fn activate<A: AppLogic + 'static>(
     let drain_and_tick: Rc<dyn Fn()> = Rc::new(move || {
         // #427 re-entrancy guard: this is the callback that produced the
         // original crash report. A file dialog's nested `pump_until_ready`
-        // loop (invoked from `app.handle` above, while `backend` is still
-        // held mutably borrowed by that call) services *this* source too
-        // — without the guard, `backend.borrow_mut()` below double-borrows
+        // loop (invoked from `app.handle`, while `backend` is still held
+        // mutably borrowed by that call) services *this* source too —
+        // without the guard, `backend.borrow_mut()` below double-borrows
         // and panics inside a non-unwindable GLib callback frame, aborting
         // the process. Skip this tick entirely and let the next one
         // (after the dialog closes, or the next `waker()` call) pick up
@@ -1528,9 +1570,8 @@ fn activate<A: AppLogic + 'static>(
         }
         // #902 backstop: `poll_events` needs `&mut GtkBackend` same as
         // every dispatch below — degrade instead of panicking if some
-        // other re-entrant source (see the `#902` section above
-        // `dispatch_event`) already holds it. The next tick (33ms later,
-        // or the next `waker()` call) retries.
+        // other re-entrant source already holds it. The next tick (or
+        // the next `waker()` call) retries.
         let Ok(mut drain_backend_mut) = drain_backend.try_borrow_mut() else {
             return;
         };
@@ -1538,13 +1579,11 @@ fn activate<A: AppLogic + 'static>(
         drop(drain_backend_mut);
         let mut events_iter = events.into_iter();
         while let Some(ev) = events_iter.next() {
-            // #902 backstop — see the `#902` section above
-            // `dispatch_event`. Stop draining this tick rather than
+            // #902 backstop. Stop draining this tick rather than
             // panicking; `ev` and anything left in `events_iter` were
             // already drained from the backend's own queue above, so
             // requeue them onto `events_handle` (a separate `RefCell`,
-            // safe to push to here — see `events_handle`'s capture above
-            // `pump_depth`) rather than losing them outright.
+            // safe to push to here) rather than losing them outright.
             let Some((mut backend_mut, mut app_mut)) = try_borrow_both(&drain_backend, &drain_app)
             else {
                 let mut q = drain_events_handle.borrow_mut();
@@ -1563,8 +1602,7 @@ fn activate<A: AppLogic + 'static>(
         // logic without synthetic event injection.
         //
         // #902 backstop: skip the tick, rather than panic, if `backend`/
-        // `app` are already borrowed — see the `#902` section above
-        // `dispatch_event`.
+        // `app` are already borrowed.
         if let Some((mut backend_mut, mut app_mut)) = try_borrow_both(&drain_backend, &drain_app) {
             let tick_reaction = app_mut.tick(&mut *backend_mut);
             drop(backend_mut);
@@ -1598,21 +1636,10 @@ fn activate<A: AppLogic + 'static>(
     // instead of relying on this fallback's coarseness; that path arms a
     // real one-shot timer via `GtkBackend::request_frame_in`, independent
     // of this one.
-    {
-        let drain_and_tick = Rc::clone(&drain_and_tick);
-        glib::timeout_add_local(crate::runtime::IDLE_POLL_CEILING, move || {
-            drain_and_tick();
-            glib::ControlFlow::Continue
-        });
-    }
-
-    window.present();
-
-    // quadraui#450 (GD-5): opt-in, zero-cost unless `QUADRAUI_GTK_SMOKE_MS`
-    // is set — see the module doc's "Headless smoke mode" section.
-    if let Some(cfg) = smoke {
-        schedule_smoke_check(cfg, da, backend, app, window, smoke_failed);
-    }
+    glib::timeout_add_local(crate::runtime::IDLE_POLL_CEILING, move || {
+        drain_and_tick();
+        glib::ControlFlow::Continue
+    });
 }
 
 /// Schedules the one-shot headless smoke-mode check (quadraui#450, GD-5;

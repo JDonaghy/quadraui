@@ -104,600 +104,872 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
     })
 }
 
+/// Shared paint context for one form-field row, threaded through the
+/// per-[`FieldKind`] `draw_field_*` helpers below so each stays a
+/// small function with a handful of args instead of a giant match arm
+/// closing over a dozen locals (#1113: split the `draw_form` god fn).
+struct RowCtx<'a> {
+    area: Rect,
+    y: u16,
+    default_fg: ratatui::style::Color,
+    row_bg: ratatui::style::Color,
+    field_fg: ratatui::style::Color,
+    dim_fg: ratatui::style::Color,
+    accent_fg: ratatui::style::Color,
+    label_end: usize,
+    no_label: bool,
+    is_focused: bool,
+    theme: &'a Theme,
+}
+
 /// Draw a [`Form`] into `area` on `buf`.
 pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let bg = ratatui_color(theme.tab_bar_bg);
-    let fg = ratatui_color(theme.foreground);
-    let hdr_fg = ratatui_color(theme.header_fg);
-    let hdr_bg = ratatui_color(theme.header_bg);
-    let sel_bg = ratatui_color(theme.selected_bg);
-    let dim_fg = ratatui_color(theme.muted_fg);
-    let accent_fg = ratatui_color(theme.accent_fg);
-    let error_fg = ratatui_color(theme.error_fg);
-    let warning_fg = ratatui_color(theme.warning_fg);
-
+    let colors = FormColors::from_theme(theme);
     let layout = tui_form_layout(form, area);
 
     for visible_field in &layout.visible_fields {
         let field = &form.fields[visible_field.field_idx];
         let y = area.y + visible_field.bounds.y.round() as u16;
-
-        let is_focused = form.has_focus
-            && form
-                .focused_field
-                .as_ref()
-                .is_some_and(|id| id == &field.id);
-        let is_header = matches!(field.kind, FieldKind::Label);
-
-        let (default_fg, row_bg) = match (is_header, is_focused) {
-            // quadraui#1180: `fg` (`theme.foreground`, the editor-body text
-            // colour) has no guaranteed contrast against `selected_bg` — on
-            // `vscode-light` both are near-black on mid-blue and the focused
-            // row goes unreadable. `hdr_fg` (`theme.header_fg`) is `Theme`'s
-            // documented on-selection foreground; `Tree` and
-            // `native_surface_paint::paint` already pair it with
-            // `selected_bg` the same way for their focused row.
-            (_, true) => (hdr_fg, sel_bg),
-            (true, false) => (hdr_fg, hdr_bg),
-            (false, false) => (fg, bg),
-        };
-
-        for x in area.x..area.x + area.width {
-            set_cell(buf, x, y, ' ', default_fg, row_bg);
-        }
-
-        let field_fg = if field.disabled { dim_fg } else { default_fg };
-
-        let label_col = 1usize;
-        let label_end = draw_styled_text(
-            buf,
-            area,
-            y,
-            label_col,
-            &field.label,
-            field_fg,
-            row_bg,
-            Decoration::Normal,
-            dim_fg,
-        );
-        let no_label = field.label.visible_width() == 0;
+        let ctx = build_row_ctx(buf, area, y, form, field, theme, &colors);
 
         match &field.kind {
             FieldKind::Label => {
                 // No separate input — label spans the row.
             }
-            FieldKind::Toggle { value } => {
-                let glyph = if *value { "[x]" } else { "[ ]" };
-                let w = glyph.chars().count();
-                let start_col = if no_label {
-                    1
-                } else {
-                    (area.width as usize).saturating_sub(w + 2)
-                };
-                if start_col > label_end + 1 || no_label {
-                    let input_fg = if *value { accent_fg } else { field_fg };
-                    for (col, ch) in (start_col..).zip(glyph.chars()) {
-                        if col >= area.width as usize {
-                            break;
-                        }
-                        set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
-                    }
-                }
-            }
+            FieldKind::Toggle { value } => draw_field_toggle(buf, &ctx, *value),
             FieldKind::TextInput {
                 value,
                 placeholder,
                 cursor,
                 selection_anchor,
-            } => {
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    value.as_str()
-                };
-                let input_fg = if value.is_empty() { dim_fg } else { field_fg };
-
-                let (start_col, desired) = if no_label {
-                    let sc = 1usize;
-                    let avail = (area.width as usize).saturating_sub(sc + 2);
-                    (sc, shown.chars().count().min(avail))
-                } else {
-                    let max_input = (area.width as usize * 2 / 3).max(10);
-                    let d = shown.chars().count().min(max_input);
-                    let sc = (area.width as usize).saturating_sub(d + 2);
-                    (sc, d)
-                };
-
-                let (sel_lo, sel_hi) = if value.is_empty() {
-                    (0, 0)
-                } else {
-                    match (cursor, selection_anchor) {
-                        (Some(c), Some(a)) if c != a => (*c.min(a), *c.max(a)),
-                        _ => (0, 0),
-                    }
-                };
-
-                if start_col > label_end + 1 || no_label {
-                    if start_col > 0 && start_col - 1 < area.width as usize {
-                        set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
-                    }
-                    let mut col = start_col;
-                    let mut byte = 0usize;
-                    for ch in shown.chars().take(desired) {
-                        if col >= area.width as usize {
-                            break;
-                        }
-                        let in_selection = sel_hi > sel_lo && byte >= sel_lo && byte < sel_hi;
-                        let (ch_fg, ch_bg) = if in_selection {
-                            (row_bg, input_fg)
-                        } else {
-                            (input_fg, row_bg)
-                        };
-                        set_cell(buf, area.x + col as u16, y, ch, ch_fg, ch_bg);
-                        col += 1;
-                        byte += ch.len_utf8();
-                    }
-                    let bracket_col = if no_label {
-                        (area.width as usize).saturating_sub(1)
-                    } else {
-                        col
-                    };
-                    if bracket_col < area.width as usize {
-                        set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
-                    }
-
-                    if let Some(cur) = cursor {
-                        if !value.is_empty() {
-                            let mut byte = 0usize;
-                            let mut char_idx = 0usize;
-                            for ch in shown.chars().take(desired) {
-                                if byte >= *cur {
-                                    break;
-                                }
-                                byte += ch.len_utf8();
-                                char_idx += 1;
-                            }
-                            let cursor_col = start_col + char_idx;
-                            if cursor_col < area.width as usize {
-                                let ch = shown.chars().nth(char_idx).unwrap_or(' ');
-                                set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
-                            }
-                        }
-                    }
-                }
-            }
-            FieldKind::Button => {
-                for x in area.x..area.x + (label_end as u16).min(area.width) {
-                    set_cell(buf, x, y, ' ', default_fg, row_bg);
-                }
-                let width = field.label.visible_width() + 4;
-                let start_col = if no_label {
-                    1
-                } else {
-                    (area.width as usize).saturating_sub(width + 1)
-                };
-                if start_col < area.width as usize {
-                    let brk_fg = if is_focused { accent_fg } else { dim_fg };
-                    let text_fg = if field.disabled { dim_fg } else { field_fg };
-                    set_cell(buf, area.x + start_col as u16, y, '<', brk_fg, row_bg);
-                    let after_lt = draw_styled_text(
-                        buf,
-                        area,
-                        y,
-                        start_col + 2,
-                        &field.label,
-                        text_fg,
-                        row_bg,
-                        Decoration::Normal,
-                        dim_fg,
-                    );
-                    if after_lt < area.width as usize {
-                        set_cell(buf, area.x + after_lt as u16, y, ' ', brk_fg, row_bg);
-                    }
-                    if after_lt + 1 < area.width as usize {
-                        set_cell(buf, area.x + (after_lt + 1) as u16, y, '>', brk_fg, row_bg);
-                    }
-                }
-            }
-            FieldKind::ReadOnly { value } => {
-                let w = value.visible_width();
-                let start_col = if no_label {
-                    1
-                } else {
-                    (area.width as usize).saturating_sub(w + 2)
-                };
-                if start_col > label_end + 1 || no_label {
-                    // quadraui#1180: was unconditionally painted in `dim_fg`
-                    // (`theme.muted_fg`), so a focused (`selected_bg`)
-                    // `ReadOnly` row's value stayed in the same dim colour
-                    // as an unfocused one — unreadable on `selected_bg`,
-                    // unlike every other field kind here, which derives its
-                    // value colour from `field_fg` (focus/disabled-aware).
-                    // Mirrors the `native_surface_paint::paint` fix.
-                    draw_styled_text(
-                        buf,
-                        area,
-                        y,
-                        start_col,
-                        value,
-                        field_fg,
-                        row_bg,
-                        Decoration::Normal,
-                        dim_fg,
-                    );
-                }
-            }
+            } => draw_field_text_input(buf, &ctx, value, placeholder, *cursor, *selection_anchor),
+            FieldKind::Button => draw_field_button(buf, &ctx, field),
+            FieldKind::ReadOnly { value } => draw_field_read_only(buf, &ctx, value),
             FieldKind::Slider {
-                value,
-                min,
-                max,
-                step: _,
-            } => {
-                let range = (*max - *min).max(f32::EPSILON);
-                let frac = ((*value - *min) / range).clamp(0.0, 1.0);
-                let track_cells: usize = 12;
-                let filled = (frac * track_cells as f32).round() as usize;
-                let value_str = format!("{value:.2}");
-                let total = track_cells + 2 + value_str.chars().count() + 2;
-                let start_col = (area.width as usize).saturating_sub(total + 2);
-                if start_col > label_end + 1 {
-                    let mut col = start_col;
-                    set_cell(buf, area.x + col as u16, y, '[', dim_fg, row_bg);
-                    col += 1;
-                    for i in 0..track_cells {
-                        let ch = if i < filled { '=' } else { '-' };
-                        let fg = if i < filled { accent_fg } else { dim_fg };
-                        set_cell(buf, area.x + col as u16, y, ch, fg, row_bg);
-                        col += 1;
-                    }
-                    set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
-                    col += 2;
-                    for ch in value_str.chars() {
-                        if col >= area.width as usize {
-                            break;
-                        }
-                        set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
-                        col += 1;
-                    }
-                }
-            }
-            FieldKind::ColorPicker { value } => {
-                let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
-                let total = 2 + hex.chars().count();
-                let start_col = (area.width as usize).saturating_sub(total + 2);
-                if start_col > label_end + 1 {
-                    let swatch_fg = ratatui::style::Color::Rgb(value.r, value.g, value.b);
-                    set_cell(
-                        buf,
-                        area.x + start_col as u16,
-                        y,
-                        '\u{25A0}',
-                        swatch_fg,
-                        row_bg,
-                    );
-                    for (col, ch) in (start_col + 2..).zip(hex.chars()) {
-                        if col >= area.width as usize {
-                            break;
-                        }
-                        set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
-                    }
-                }
-            }
+                value, min, max, ..
+            } => draw_field_slider(buf, &ctx, *value, *min, *max),
+            FieldKind::ColorPicker { value } => draw_field_color_picker(buf, &ctx, *value),
             FieldKind::Dropdown {
                 options,
                 selected_idx,
-            } => {
-                let chosen = options.get(*selected_idx).cloned().unwrap_or_default();
-                let label_w = chosen.visible_width();
-                let total = label_w + 4;
-                let start_col = (area.width as usize).saturating_sub(total + 1);
-                if start_col > label_end + 1 {
-                    draw_styled_text(
-                        buf,
-                        area,
-                        y,
-                        start_col + 1,
-                        &chosen,
-                        field_fg,
-                        row_bg,
-                        Decoration::Normal,
-                        dim_fg,
-                    );
-                    let chev_col = start_col + 1 + label_w + 1;
-                    if chev_col < area.width as usize {
-                        set_cell(buf, area.x + chev_col as u16, y, '\u{25BE}', dim_fg, row_bg);
-                    }
-                }
-            }
+            } => draw_field_dropdown(buf, &ctx, options, *selected_idx),
             FieldKind::ToggleGroup { toggles } => {
-                for (item_id, item_rect) in &visible_field.item_bounds {
-                    let toggle = toggles.iter().find(|t| &t.id == item_id);
-                    if let Some(toggle) = toggle {
-                        let col = area.x as f32 + item_rect.x;
-                        let toggle_fg = if toggle.value && !field.disabled {
-                            accent_fg
-                        } else {
-                            dim_fg
-                        };
-                        for (i, ch) in toggle.label.chars().enumerate() {
-                            let cx = col as u16 + i as u16;
-                            if cx < area.x + area.width {
-                                set_cell(buf, cx, y, ch, toggle_fg, row_bg);
-                            }
-                        }
-                    }
-                }
+                draw_field_toggle_group(buf, &ctx, visible_field, field, toggles)
             }
             FieldKind::ButtonRow { buttons } => {
-                for (item_id, item_rect) in &visible_field.item_bounds {
-                    let button = buttons.iter().find(|b| &b.id == item_id);
-                    if let Some(button) = button {
-                        let col = area.x as f32 + item_rect.x;
-                        let btn_fg = if button.disabled || field.disabled {
-                            dim_fg
-                        } else {
-                            field_fg
-                        };
-                        let brk_fg = if button.disabled || field.disabled {
-                            dim_fg
-                        } else {
-                            accent_fg
-                        };
-                        let mut cx = col as u16;
-                        if cx < area.x + area.width {
-                            set_cell(buf, cx, y, '[', brk_fg, row_bg);
-                        }
-                        cx += 1;
-                        if let Some(ref icon) = button.icon {
-                            let glyph = icon.fallback.as_str();
-                            for ch in glyph.chars() {
-                                if cx < area.x + area.width {
-                                    set_cell(buf, cx, y, ch, btn_fg, row_bg);
-                                }
-                                cx += 1;
-                            }
-                            if cx < area.x + area.width && !button.label.is_empty() {
-                                set_cell(buf, cx, y, ' ', btn_fg, row_bg);
-                                cx += 1;
-                            }
-                        }
-                        for ch in button.label.chars() {
-                            if cx < area.x + area.width {
-                                set_cell(buf, cx, y, ch, btn_fg, row_bg);
-                            }
-                            cx += 1;
-                        }
-                        if cx < area.x + area.width {
-                            set_cell(buf, cx, y, ']', brk_fg, row_bg);
-                        }
-                    }
-                }
+                draw_field_button_row(buf, &ctx, visible_field, field, buttons)
             }
-            FieldKind::Toolbar(toolbar) => {
-                // Delegate painting entirely to the toolbar rasteriser.
-                // The toolbar occupies the portion of the row after the
-                // label (items_start_x). We derive the start column from
-                // the first item's form-local x coordinate.
-                let start_col = visible_field
-                    .item_bounds
-                    .first()
-                    .map(|(_, r)| r.x.round() as u16)
-                    .unwrap_or(0);
-                let toolbar_area = Rect::new(
-                    area.x + start_col,
-                    y,
-                    area.width.saturating_sub(start_col),
-                    1,
-                );
-                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
-            }
+            FieldKind::Toolbar(toolbar) => draw_field_toolbar(buf, &ctx, visible_field, toolbar),
             FieldKind::TextArea {
                 value,
                 placeholder,
                 cursor,
                 visible_rows,
-            } => {
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    value.as_str()
-                };
-                let input_fg = if value.is_empty() { dim_fg } else { field_fg };
-                let rows = *visible_rows;
-
-                // Paint each row of the text area.
-                let avail_w = (area.width as usize).saturating_sub(2); // inside brackets
-                let mut chars_iter = shown.chars();
-                for row in 0..rows {
-                    let row_y = y + row as u16;
-                    if row_y >= area.y + area.height {
-                        break;
-                    }
-                    // Clear the row background (rows > 0 weren't cleared by
-                    // the initial row-clear above).
-                    if row > 0 {
-                        for x in area.x..area.x + area.width {
-                            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
-                        }
-                    }
-
-                    // Left bracket on first column.
-                    set_cell(buf, area.x, row_y, '[', dim_fg, row_bg);
-
-                    // Content characters for this row.
-                    let mut col = 1usize;
-                    for _ in 0..avail_w {
-                        if let Some(ch) = chars_iter.next() {
-                            if col < area.width as usize {
-                                set_cell(buf, area.x + col as u16, row_y, ch, input_fg, row_bg);
-                            }
-                            col += 1;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Right bracket at last column.
-                    let bracket_col = (area.width as usize).saturating_sub(1);
-                    if bracket_col < area.width as usize {
-                        set_cell(buf, area.x + bracket_col as u16, row_y, ']', dim_fg, row_bg);
-                    }
-                }
-
-                // Cursor rendering on the first row (same logic as TextInput).
-                if let Some(cur) = cursor {
-                    if !value.is_empty() {
-                        let mut byte = 0usize;
-                        let mut char_idx = 0usize;
-                        for ch in value.chars().take(avail_w) {
-                            if byte >= *cur {
-                                break;
-                            }
-                            byte += ch.len_utf8();
-                            char_idx += 1;
-                        }
-                        let cursor_col = 1 + char_idx;
-                        if cursor_col < area.width as usize {
-                            let ch = value.chars().nth(char_idx).unwrap_or(' ');
-                            set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
-                        }
-                    }
-                }
-            }
+            } => draw_field_text_area(buf, &ctx, value, placeholder, *cursor, *visible_rows),
             FieldKind::PasswordInput {
                 value,
                 placeholder,
                 cursor,
                 mask_char,
-            } => {
-                // Mask the value: replace each character with mask_char.
-                let masked: String = value.chars().map(|_| *mask_char).collect();
-                let shown = if value.is_empty() {
-                    placeholder.as_str()
-                } else {
-                    masked.as_str()
-                };
-                let input_fg = if value.is_empty() { dim_fg } else { field_fg };
-
-                let (start_col, desired) = if no_label {
-                    let sc = 1usize;
-                    let avail = (area.width as usize).saturating_sub(sc + 2);
-                    (sc, shown.chars().count().min(avail))
-                } else {
-                    let max_input = (area.width as usize * 2 / 3).max(10);
-                    let d = shown.chars().count().min(max_input);
-                    let sc = (area.width as usize).saturating_sub(d + 2);
-                    (sc, d)
-                };
-
-                if start_col > label_end + 1 || no_label {
-                    if start_col > 0 && start_col - 1 < area.width as usize {
-                        set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
-                    }
-                    let mut col = start_col;
-                    for ch in shown.chars().take(desired) {
-                        if col >= area.width as usize {
-                            break;
-                        }
-                        set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
-                        col += 1;
-                    }
-                    let bracket_col = if no_label {
-                        (area.width as usize).saturating_sub(1)
-                    } else {
-                        col
-                    };
-                    if bracket_col < area.width as usize {
-                        set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
-                    }
-
-                    // Cursor (byte offset into original value, rendered at
-                    // the masked character position).
-                    if let Some(cur) = cursor {
-                        if !value.is_empty() {
-                            let mut byte = 0usize;
-                            let mut char_idx = 0usize;
-                            for ch in value.chars().take(desired) {
-                                if byte >= *cur {
-                                    break;
-                                }
-                                byte += ch.len_utf8();
-                                char_idx += 1;
-                            }
-                            let cursor_col = start_col + char_idx;
-                            if cursor_col < area.width as usize {
-                                let ch = masked.chars().nth(char_idx).unwrap_or(' ');
-                                set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
-                            }
-                        }
-                    }
-                }
-            }
+            } => draw_field_password_input(buf, &ctx, value, placeholder, *cursor, *mask_char),
             FieldKind::SegmentedControl {
                 options,
                 selected_idx,
-            } => {
-                // Render as [opt1|opt2|opt3] using item_bounds for positioning.
-                // If item_bounds are available, use them; otherwise fall back to
-                // sequential rendering.
-                if !visible_field.item_bounds.is_empty() {
-                    // Opening bracket before first item.
-                    let first_x = visible_field.item_bounds[0].1.x;
-                    let bracket_x = (area.x as f32 + first_x - 1.0).max(area.x as f32);
-                    if (bracket_x as u16) < area.x + area.width {
-                        set_cell(buf, bracket_x as u16, y, '[', dim_fg, row_bg);
-                    }
+            } => draw_field_segmented_control(buf, &ctx, visible_field, options, *selected_idx),
+        }
 
-                    for (i, (_item_id, item_rect)) in visible_field.item_bounds.iter().enumerate() {
-                        let opt = options.get(i).map(|s| s.as_str()).unwrap_or("");
-                        let opt_fg = if i == *selected_idx {
-                            accent_fg
-                        } else {
-                            dim_fg
-                        };
-                        let col = area.x as f32 + item_rect.x;
-                        for (j, ch) in opt.chars().enumerate() {
-                            let cx = col as u16 + j as u16;
-                            if cx < area.x + area.width {
-                                set_cell(buf, cx, y, ch, opt_fg, row_bg);
-                            }
-                        }
+        paint_validation_indicator(buf, area, y, ctx.row_bg, field, theme);
+    }
+}
 
-                        // Separator '|' after each option except the last.
-                        if i + 1 < options.len() {
-                            let sep_x = col as u16 + opt.chars().count() as u16;
-                            if sep_x < area.x + area.width {
-                                set_cell(buf, sep_x, y, '|', dim_fg, row_bg);
-                            }
-                        }
-                    }
+/// Theme colours `draw_form` resolves once per call and threads into
+/// every row via [`build_row_ctx`] — kept as a small struct (rather than
+/// nine positional args) per #1113's "option structs for arg lists".
+struct FormColors {
+    bg: ratatui::style::Color,
+    fg: ratatui::style::Color,
+    hdr_fg: ratatui::style::Color,
+    hdr_bg: ratatui::style::Color,
+    sel_bg: ratatui::style::Color,
+    dim_fg: ratatui::style::Color,
+    accent_fg: ratatui::style::Color,
+}
 
-                    // Closing bracket after last item.
-                    if let Some((_last_id, last_rect)) = visible_field.item_bounds.last() {
-                        let last_opt_len = options.last().map(|s| s.chars().count()).unwrap_or(0);
-                        let close_x = area.x as f32 + last_rect.x + last_opt_len as f32;
-                        if (close_x as u16) < area.x + area.width {
-                            set_cell(buf, close_x as u16, y, ']', dim_fg, row_bg);
-                        }
+impl FormColors {
+    fn from_theme(theme: &Theme) -> Self {
+        Self {
+            bg: ratatui_color(theme.tab_bar_bg),
+            fg: ratatui_color(theme.foreground),
+            hdr_fg: ratatui_color(theme.header_fg),
+            hdr_bg: ratatui_color(theme.header_bg),
+            sel_bg: ratatui_color(theme.selected_bg),
+            dim_fg: ratatui_color(theme.muted_fg),
+            accent_fg: ratatui_color(theme.accent_fg),
+        }
+    }
+}
+
+/// Paints one field row's background + label, and builds the [`RowCtx`]
+/// the `draw_field_*` dispatch table below consumes. Split out of
+/// `draw_form`'s loop body (#1113: split the god fn) — this is the
+/// per-row "prelude" every `FieldKind` arm shares before its own paint.
+fn build_row_ctx<'a>(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    form: &Form,
+    field: &crate::primitives::form::FormField,
+    theme: &'a Theme,
+    colors: &FormColors,
+) -> RowCtx<'a> {
+    let is_focused = form.has_focus
+        && form
+            .focused_field
+            .as_ref()
+            .is_some_and(|id| id == &field.id);
+    let is_header = matches!(field.kind, FieldKind::Label);
+
+    let (default_fg, row_bg) = match (is_header, is_focused) {
+        // quadraui#1180: `fg` (`theme.foreground`, the editor-body text
+        // colour) has no guaranteed contrast against `selected_bg` — on
+        // `vscode-light` both are near-black on mid-blue and the focused
+        // row goes unreadable. `hdr_fg` (`theme.header_fg`) is `Theme`'s
+        // documented on-selection foreground; `Tree` and
+        // `native_surface_paint::paint` already pair it with
+        // `selected_bg` the same way for their focused row.
+        (_, true) => (colors.hdr_fg, colors.sel_bg),
+        (true, false) => (colors.hdr_fg, colors.hdr_bg),
+        (false, false) => (colors.fg, colors.bg),
+    };
+
+    for x in area.x..area.x + area.width {
+        set_cell(buf, x, y, ' ', default_fg, row_bg);
+    }
+
+    let field_fg = if field.disabled {
+        colors.dim_fg
+    } else {
+        default_fg
+    };
+
+    let label_col = 1usize;
+    let label_end = draw_styled_text(
+        buf,
+        area,
+        y,
+        label_col,
+        &field.label,
+        field_fg,
+        row_bg,
+        Decoration::Normal,
+        colors.dim_fg,
+    );
+    let no_label = field.label.visible_width() == 0;
+
+    RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        field_fg,
+        dim_fg: colors.dim_fg,
+        accent_fg: colors.accent_fg,
+        label_end,
+        no_label,
+        is_focused,
+        theme,
+    }
+}
+
+/// Render a colored prefix character at column 0 on the field's first
+/// row when validation is set. This avoids adding extra rows that
+/// would break TUI layout (all non-`TextArea` fields are 1 cell tall).
+fn paint_validation_indicator(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    row_bg: ratatui::style::Color,
+    field: &crate::primitives::form::FormField,
+    theme: &Theme,
+) {
+    let Some(ref vs) = field.validation else {
+        return;
+    };
+    let (indicator, v_fg) = match vs {
+        ValidationState::Error(_) => ('!', ratatui_color(theme.error_fg)),
+        ValidationState::Warning(_) => ('\u{26A0}', ratatui_color(theme.warning_fg)),
+    };
+    set_cell(buf, area.x, y, indicator, v_fg, row_bg);
+}
+
+fn draw_field_toggle(buf: &mut Buffer, ctx: &RowCtx, value: bool) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        accent_fg,
+        label_end,
+        no_label,
+        ..
+    } = *ctx;
+
+    let glyph = if value { "[x]" } else { "[ ]" };
+    let w = glyph.chars().count();
+    let start_col = if no_label {
+        1
+    } else {
+        (area.width as usize).saturating_sub(w + 2)
+    };
+    if start_col > label_end + 1 || no_label {
+        let input_fg = if value { accent_fg } else { field_fg };
+        for (col, ch) in (start_col..).zip(glyph.chars()) {
+            if col >= area.width as usize {
+                break;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
+        }
+    }
+}
+
+fn draw_field_text_input(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    value: &str,
+    placeholder: &str,
+    cursor: Option<usize>,
+    selection_anchor: Option<usize>,
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        label_end,
+        no_label,
+        ..
+    } = *ctx;
+
+    let shown = if value.is_empty() { placeholder } else { value };
+    let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+
+    let (start_col, desired) = if no_label {
+        let sc = 1usize;
+        let avail = (area.width as usize).saturating_sub(sc + 2);
+        (sc, shown.chars().count().min(avail))
+    } else {
+        let max_input = (area.width as usize * 2 / 3).max(10);
+        let d = shown.chars().count().min(max_input);
+        let sc = (area.width as usize).saturating_sub(d + 2);
+        (sc, d)
+    };
+
+    let (sel_lo, sel_hi) = if value.is_empty() {
+        (0, 0)
+    } else {
+        match (cursor, selection_anchor) {
+            (Some(c), Some(a)) if c != a => (c.min(a), c.max(a)),
+            _ => (0, 0),
+        }
+    };
+
+    if start_col > label_end + 1 || no_label {
+        if start_col > 0 && start_col - 1 < area.width as usize {
+            set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
+        }
+        let mut col = start_col;
+        let mut byte = 0usize;
+        for ch in shown.chars().take(desired) {
+            if col >= area.width as usize {
+                break;
+            }
+            let in_selection = sel_hi > sel_lo && byte >= sel_lo && byte < sel_hi;
+            let (ch_fg, ch_bg) = if in_selection {
+                (row_bg, input_fg)
+            } else {
+                (input_fg, row_bg)
+            };
+            set_cell(buf, area.x + col as u16, y, ch, ch_fg, ch_bg);
+            col += 1;
+            byte += ch.len_utf8();
+        }
+        let bracket_col = if no_label {
+            (area.width as usize).saturating_sub(1)
+        } else {
+            col
+        };
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
+        }
+
+        if let Some(cur) = cursor {
+            if !value.is_empty() {
+                let mut byte = 0usize;
+                let mut char_idx = 0usize;
+                for ch in shown.chars().take(desired) {
+                    if byte >= cur {
+                        break;
                     }
+                    byte += ch.len_utf8();
+                    char_idx += 1;
+                }
+                let cursor_col = start_col + char_idx;
+                if cursor_col < area.width as usize {
+                    let ch = shown.chars().nth(char_idx).unwrap_or(' ');
+                    set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
+                }
+            }
+        }
+    }
+}
+
+fn draw_field_button(buf: &mut Buffer, ctx: &RowCtx, field: &crate::primitives::form::FormField) {
+    let RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        field_fg,
+        dim_fg,
+        accent_fg,
+        label_end,
+        no_label,
+        is_focused,
+        ..
+    } = *ctx;
+
+    for x in area.x..area.x + (label_end as u16).min(area.width) {
+        set_cell(buf, x, y, ' ', default_fg, row_bg);
+    }
+    let width = field.label.visible_width() + 4;
+    let start_col = if no_label {
+        1
+    } else {
+        (area.width as usize).saturating_sub(width + 1)
+    };
+    if start_col < area.width as usize {
+        let brk_fg = if is_focused { accent_fg } else { dim_fg };
+        let text_fg = if field.disabled { dim_fg } else { field_fg };
+        set_cell(buf, area.x + start_col as u16, y, '<', brk_fg, row_bg);
+        let after_lt = draw_styled_text(
+            buf,
+            area,
+            y,
+            start_col + 2,
+            &field.label,
+            text_fg,
+            row_bg,
+            Decoration::Normal,
+            dim_fg,
+        );
+        if after_lt < area.width as usize {
+            set_cell(buf, area.x + after_lt as u16, y, ' ', brk_fg, row_bg);
+        }
+        if after_lt + 1 < area.width as usize {
+            set_cell(buf, area.x + (after_lt + 1) as u16, y, '>', brk_fg, row_bg);
+        }
+    }
+}
+
+fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::StyledText) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        label_end,
+        no_label,
+        ..
+    } = *ctx;
+
+    let w = value.visible_width();
+    let start_col = if no_label {
+        1
+    } else {
+        (area.width as usize).saturating_sub(w + 2)
+    };
+    if start_col > label_end + 1 || no_label {
+        // quadraui#1180: was unconditionally painted in `dim_fg`
+        // (`theme.muted_fg`), so a focused (`selected_bg`)
+        // `ReadOnly` row's value stayed in the same dim colour
+        // as an unfocused one — unreadable on `selected_bg`,
+        // unlike every other field kind here, which derives its
+        // value colour from `field_fg` (focus/disabled-aware).
+        // Mirrors the `native_surface_paint::paint` fix.
+        draw_styled_text(
+            buf,
+            area,
+            y,
+            start_col,
+            value,
+            field_fg,
+            row_bg,
+            Decoration::Normal,
+            dim_fg,
+        );
+    }
+}
+
+fn draw_field_slider(buf: &mut Buffer, ctx: &RowCtx, value: f32, min: f32, max: f32) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        accent_fg,
+        label_end,
+        ..
+    } = *ctx;
+
+    let range = (max - min).max(f32::EPSILON);
+    let frac = ((value - min) / range).clamp(0.0, 1.0);
+    let track_cells: usize = 12;
+    let filled = (frac * track_cells as f32).round() as usize;
+    let value_str = format!("{value:.2}");
+    let total = track_cells + 2 + value_str.chars().count() + 2;
+    let start_col = (area.width as usize).saturating_sub(total + 2);
+    if start_col > label_end + 1 {
+        let mut col = start_col;
+        set_cell(buf, area.x + col as u16, y, '[', dim_fg, row_bg);
+        col += 1;
+        for i in 0..track_cells {
+            let ch = if i < filled { '=' } else { '-' };
+            let fg = if i < filled { accent_fg } else { dim_fg };
+            set_cell(buf, area.x + col as u16, y, ch, fg, row_bg);
+            col += 1;
+        }
+        set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
+        col += 2;
+        for ch in value_str.chars() {
+            if col >= area.width as usize {
+                break;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+            col += 1;
+        }
+    }
+}
+
+fn draw_field_color_picker(buf: &mut Buffer, ctx: &RowCtx, value: crate::types::Color) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        label_end,
+        ..
+    } = *ctx;
+
+    let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
+    let total = 2 + hex.chars().count();
+    let start_col = (area.width as usize).saturating_sub(total + 2);
+    if start_col > label_end + 1 {
+        let swatch_fg = ratatui::style::Color::Rgb(value.r, value.g, value.b);
+        set_cell(
+            buf,
+            area.x + start_col as u16,
+            y,
+            '\u{25A0}',
+            swatch_fg,
+            row_bg,
+        );
+        for (col, ch) in (start_col + 2..).zip(hex.chars()) {
+            if col >= area.width as usize {
+                break;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+        }
+    }
+}
+
+fn draw_field_dropdown(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    options: &[crate::types::StyledText],
+    selected_idx: usize,
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        label_end,
+        ..
+    } = *ctx;
+
+    let chosen = options.get(selected_idx).cloned().unwrap_or_default();
+    let label_w = chosen.visible_width();
+    let total = label_w + 4;
+    let start_col = (area.width as usize).saturating_sub(total + 1);
+    if start_col > label_end + 1 {
+        draw_styled_text(
+            buf,
+            area,
+            y,
+            start_col + 1,
+            &chosen,
+            field_fg,
+            row_bg,
+            Decoration::Normal,
+            dim_fg,
+        );
+        let chev_col = start_col + 1 + label_w + 1;
+        if chev_col < area.width as usize {
+            set_cell(buf, area.x + chev_col as u16, y, '\u{25BE}', dim_fg, row_bg);
+        }
+    }
+}
+
+fn draw_field_toggle_group(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    field: &crate::primitives::form::FormField,
+    toggles: &[crate::primitives::form::ToggleGroupItem],
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        dim_fg,
+        accent_fg,
+        ..
+    } = *ctx;
+
+    for (item_id, item_rect) in &visible_field.item_bounds {
+        let toggle = toggles.iter().find(|t| &t.id == item_id);
+        if let Some(toggle) = toggle {
+            let col = area.x as f32 + item_rect.x;
+            let toggle_fg = if toggle.value && !field.disabled {
+                accent_fg
+            } else {
+                dim_fg
+            };
+            for (i, ch) in toggle.label.chars().enumerate() {
+                let cx = col as u16 + i as u16;
+                if cx < area.x + area.width {
+                    set_cell(buf, cx, y, ch, toggle_fg, row_bg);
+                }
+            }
+        }
+    }
+}
+
+fn draw_field_button_row(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    field: &crate::primitives::form::FormField,
+    buttons: &[crate::primitives::form::ButtonRowItem],
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        accent_fg,
+        ..
+    } = *ctx;
+
+    for (item_id, item_rect) in &visible_field.item_bounds {
+        let button = buttons.iter().find(|b| &b.id == item_id);
+        if let Some(button) = button {
+            let col = area.x as f32 + item_rect.x;
+            let btn_fg = if button.disabled || field.disabled {
+                dim_fg
+            } else {
+                field_fg
+            };
+            let brk_fg = if button.disabled || field.disabled {
+                dim_fg
+            } else {
+                accent_fg
+            };
+            let mut cx = col as u16;
+            if cx < area.x + area.width {
+                set_cell(buf, cx, y, '[', brk_fg, row_bg);
+            }
+            cx += 1;
+            if let Some(ref icon) = button.icon {
+                let glyph = icon.fallback.as_str();
+                for ch in glyph.chars() {
+                    if cx < area.x + area.width {
+                        set_cell(buf, cx, y, ch, btn_fg, row_bg);
+                    }
+                    cx += 1;
+                }
+                if cx < area.x + area.width && !button.label.is_empty() {
+                    set_cell(buf, cx, y, ' ', btn_fg, row_bg);
+                    cx += 1;
+                }
+            }
+            for ch in button.label.chars() {
+                if cx < area.x + area.width {
+                    set_cell(buf, cx, y, ch, btn_fg, row_bg);
+                }
+                cx += 1;
+            }
+            if cx < area.x + area.width {
+                set_cell(buf, cx, y, ']', brk_fg, row_bg);
+            }
+        }
+    }
+}
+
+fn draw_field_toolbar(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    toolbar: &crate::primitives::toolbar::Toolbar,
+) {
+    let RowCtx { area, y, theme, .. } = *ctx;
+
+    // Delegate painting entirely to the toolbar rasteriser.
+    // The toolbar occupies the portion of the row after the
+    // label (items_start_x). We derive the start column from
+    // the first item's form-local x coordinate.
+    let start_col = visible_field
+        .item_bounds
+        .first()
+        .map(|(_, r)| r.x.round() as u16)
+        .unwrap_or(0);
+    let toolbar_area = Rect::new(
+        area.x + start_col,
+        y,
+        area.width.saturating_sub(start_col),
+        1,
+    );
+    super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
+}
+
+fn draw_field_text_area(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    value: &str,
+    placeholder: &str,
+    cursor: Option<usize>,
+    visible_rows: usize,
+) {
+    let RowCtx {
+        area,
+        y,
+        default_fg,
+        row_bg,
+        field_fg,
+        dim_fg,
+        ..
+    } = *ctx;
+
+    let shown = if value.is_empty() { placeholder } else { value };
+    let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+    let rows = visible_rows;
+
+    // Paint each row of the text area.
+    let avail_w = (area.width as usize).saturating_sub(2); // inside brackets
+    let mut chars_iter = shown.chars();
+    for row in 0..rows {
+        let row_y = y + row as u16;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        // Clear the row background (rows > 0 weren't cleared by
+        // the initial row-clear above).
+        if row > 0 {
+            for x in area.x..area.x + area.width {
+                set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+            }
+        }
+
+        // Left bracket on first column.
+        set_cell(buf, area.x, row_y, '[', dim_fg, row_bg);
+
+        // Content characters for this row.
+        let mut col = 1usize;
+        for _ in 0..avail_w {
+            if let Some(ch) = chars_iter.next() {
+                if col < area.width as usize {
+                    set_cell(buf, area.x + col as u16, row_y, ch, input_fg, row_bg);
+                }
+                col += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Right bracket at last column.
+        let bracket_col = (area.width as usize).saturating_sub(1);
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, row_y, ']', dim_fg, row_bg);
+        }
+    }
+
+    // Cursor rendering on the first row (same logic as TextInput).
+    if let Some(cur) = cursor {
+        if !value.is_empty() {
+            let mut byte = 0usize;
+            let mut char_idx = 0usize;
+            for ch in value.chars().take(avail_w) {
+                if byte >= cur {
+                    break;
+                }
+                byte += ch.len_utf8();
+                char_idx += 1;
+            }
+            let cursor_col = 1 + char_idx;
+            if cursor_col < area.width as usize {
+                let ch = value.chars().nth(char_idx).unwrap_or(' ');
+                set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
+            }
+        }
+    }
+}
+
+fn draw_field_password_input(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    value: &str,
+    placeholder: &str,
+    cursor: Option<usize>,
+    mask_char: char,
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        field_fg,
+        dim_fg,
+        label_end,
+        no_label,
+        ..
+    } = *ctx;
+
+    // Mask the value: replace each character with mask_char.
+    let masked: String = value.chars().map(|_| mask_char).collect();
+    let shown = if value.is_empty() {
+        placeholder
+    } else {
+        masked.as_str()
+    };
+    let input_fg = if value.is_empty() { dim_fg } else { field_fg };
+
+    let (start_col, desired) = if no_label {
+        let sc = 1usize;
+        let avail = (area.width as usize).saturating_sub(sc + 2);
+        (sc, shown.chars().count().min(avail))
+    } else {
+        let max_input = (area.width as usize * 2 / 3).max(10);
+        let d = shown.chars().count().min(max_input);
+        let sc = (area.width as usize).saturating_sub(d + 2);
+        (sc, d)
+    };
+
+    if start_col > label_end + 1 || no_label {
+        if start_col > 0 && start_col - 1 < area.width as usize {
+            set_cell(buf, area.x + (start_col - 1) as u16, y, '[', dim_fg, row_bg);
+        }
+        let mut col = start_col;
+        for ch in shown.chars().take(desired) {
+            if col >= area.width as usize {
+                break;
+            }
+            set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
+            col += 1;
+        }
+        let bracket_col = if no_label {
+            (area.width as usize).saturating_sub(1)
+        } else {
+            col
+        };
+        if bracket_col < area.width as usize {
+            set_cell(buf, area.x + bracket_col as u16, y, ']', dim_fg, row_bg);
+        }
+
+        // Cursor (byte offset into original value, rendered at
+        // the masked character position).
+        if let Some(cur) = cursor {
+            if !value.is_empty() {
+                let mut byte = 0usize;
+                let mut char_idx = 0usize;
+                for ch in value.chars().take(desired) {
+                    if byte >= cur {
+                        break;
+                    }
+                    byte += ch.len_utf8();
+                    char_idx += 1;
+                }
+                let cursor_col = start_col + char_idx;
+                if cursor_col < area.width as usize {
+                    let ch = masked.chars().nth(char_idx).unwrap_or(' ');
+                    set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
+                }
+            }
+        }
+    }
+}
+
+fn draw_field_segmented_control(
+    buf: &mut Buffer,
+    ctx: &RowCtx,
+    visible_field: &crate::primitives::form::VisibleFormField,
+    options: &[String],
+    selected_idx: usize,
+) {
+    let RowCtx {
+        area,
+        y,
+        row_bg,
+        dim_fg,
+        accent_fg,
+        ..
+    } = *ctx;
+
+    // Render as [opt1|opt2|opt3] using item_bounds for positioning.
+    // If item_bounds are available, use them; otherwise fall back to
+    // sequential rendering.
+    if !visible_field.item_bounds.is_empty() {
+        // Opening bracket before first item.
+        let first_x = visible_field.item_bounds[0].1.x;
+        let bracket_x = (area.x as f32 + first_x - 1.0).max(area.x as f32);
+        if (bracket_x as u16) < area.x + area.width {
+            set_cell(buf, bracket_x as u16, y, '[', dim_fg, row_bg);
+        }
+
+        for (i, (_item_id, item_rect)) in visible_field.item_bounds.iter().enumerate() {
+            let opt = options.get(i).map(|s| s.as_str()).unwrap_or("");
+            let opt_fg = if i == selected_idx { accent_fg } else { dim_fg };
+            let col = area.x as f32 + item_rect.x;
+            for (j, ch) in opt.chars().enumerate() {
+                let cx = col as u16 + j as u16;
+                if cx < area.x + area.width {
+                    set_cell(buf, cx, y, ch, opt_fg, row_bg);
+                }
+            }
+
+            // Separator '|' after each option except the last.
+            if i + 1 < options.len() {
+                let sep_x = col as u16 + opt.chars().count() as u16;
+                if sep_x < area.x + area.width {
+                    set_cell(buf, sep_x, y, '|', dim_fg, row_bg);
                 }
             }
         }
 
-        // ── Validation indicator ─────────────────────────────────────
-        // Render a colored prefix character at column 0 on the field's
-        // first row. This avoids adding extra rows that would break TUI
-        // layout (all non-TextArea fields are 1 cell tall).
-        if let Some(ref vs) = field.validation {
-            let (indicator, v_fg) = match vs {
-                ValidationState::Error(_) => ('!', error_fg),
-                ValidationState::Warning(_) => ('\u{26A0}', warning_fg),
-            };
-            set_cell(buf, area.x, y, indicator, v_fg, row_bg);
+        // Closing bracket after last item.
+        if let Some((_last_id, last_rect)) = visible_field.item_bounds.last() {
+            let last_opt_len = options.last().map(|s| s.chars().count()).unwrap_or(0);
+            let close_x = area.x as f32 + last_rect.x + last_opt_len as f32;
+            if (close_x as u16) < area.x + area.width {
+                set_cell(buf, close_x as u16, y, ']', dim_fg, row_bg);
+            }
         }
     }
 }
