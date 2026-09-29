@@ -105,7 +105,6 @@ impl ToolbarHoverTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Rect;
     use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure};
 
     fn mk_action(id: &str, label: &str) -> ToolbarButton {
@@ -176,12 +175,5 @@ mod tests {
         assert!(t.hovered_id().is_none());
         // Clearing an already-empty tracker is a no-op (returns false).
         assert!(!t.clear());
-    }
-
-    #[test]
-    fn _layout_unused_warning_silencer() {
-        // Reference Rect so the import isn't flagged unused on builds
-        // that disable some test arms.
-        let _r = Rect::new(0.0, 0.0, 1.0, 1.0);
     }
 }

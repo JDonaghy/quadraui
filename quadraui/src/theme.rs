@@ -358,7 +358,17 @@ impl Theme {
     /// still gets the intended blended colour.
     pub fn from_vscode_json(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        let data = crate::text_util::strip_json_comments(&data);
+        Self::from_vscode_json_str(&data)
+    }
+
+    /// The parsing half of [`Self::from_vscode_json`], split out so it
+    /// can be driven directly by property tests (quadraui#1130) without
+    /// touching the filesystem for every case. No I/O, no `pub`
+    /// surface added — same fallibility contract as the path-taking
+    /// wrapper: `None` on anything that isn't valid JSONC or doesn't
+    /// parse as a JSON object.
+    fn from_vscode_json_str(data: &str) -> Option<Self> {
+        let data = crate::text_util::strip_json_comments(data);
         let val: serde_json::Value = serde_json::from_str(&data).ok()?;
         let colors = val.get("colors");
 
@@ -1425,5 +1435,60 @@ mod tests {
             Theme::light_default().inactive_selected_bg,
             Theme::default().inactive_selected_bg
         );
+    }
+}
+
+/// Property tests: `from_vscode_json_str` parses arbitrary (foreign,
+/// untrusted) file content — a VS Code theme is just a JSON file someone
+/// downloaded — so it must degrade to `None` rather than panic on any
+/// input whatsoever, not just the hand-picked fixtures above (#1130).
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No input string, however malformed, may panic — this is the
+        /// crate's only exposure to a VS Code theme file, and a theme
+        /// file is exactly the kind of thing a user downloads from a
+        /// marketplace and hands to us without vetting it first.
+        #[test]
+        fn from_vscode_json_str_never_panics(s in ".{0,2000}") {
+            let _ = Theme::from_vscode_json_str(&s);
+        }
+
+        /// Same, but seeded from bytes reinterpreted with `from_utf8_lossy`
+        /// rather than `proptest`'s own (valid-UTF8-only) string strategy,
+        /// so invalid/truncated multi-byte sequences — the shape a
+        /// genuinely hostile or corrupted file would take — are covered
+        /// too, not just well-formed-but-weird Unicode.
+        #[test]
+        fn from_vscode_json_str_never_panics_on_lossy_bytes(bytes in prop::collection::vec(any::<u8>(), 0..2000)) {
+            let s = String::from_utf8_lossy(&bytes);
+            let _ = Theme::from_vscode_json_str(&s);
+        }
+
+        /// A well-formed JSON object whose `colors` values are arbitrary
+        /// strings (not necessarily valid `#rrggbb[aa]` hex) must still
+        /// parse without panicking — `Color::from_hex` /
+        /// `Color::try_from_hex_over` reject anything malformed by
+        /// returning `None`, which `from_vscode_json_str` must tolerate
+        /// per-key rather than aborting the whole theme.
+        #[test]
+        fn from_vscode_json_str_tolerates_garbage_colour_values(
+            bg in ".{0,20}",
+            fg in ".{0,20}",
+            sel in ".{0,20}",
+        ) {
+            let json = serde_json::json!({
+                "colors": {
+                    "editor.background": bg,
+                    "editor.foreground": fg,
+                    "editor.selectionBackground": sel,
+                }
+            })
+            .to_string();
+            let _ = Theme::from_vscode_json_str(&json);
+        }
     }
 }

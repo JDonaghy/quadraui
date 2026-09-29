@@ -6606,7 +6606,7 @@ mod tests {
 
     #[test]
     #[cfg(not(debug_assertions))]
-    fn draw_tree_outside_frame_scope_is_a_silent_no_op_in_release() {
+    fn draw_tree_outside_frame_scope_does_not_panic_in_release() {
         let mut backend = TuiBackend::new();
         // Must not panic — the whole point of #1117.
         backend.draw_tree(QRect::new(0.0, 0.0, 10.0, 5.0), &empty_tree());
@@ -6676,5 +6676,51 @@ mod tests {
             crate::backend::ImagePaintResult::Unsupported,
             "mirrors the win/macOS \"no rasteriser available\" report (issue #924)"
         );
+    }
+}
+
+/// Property tests for the SGR mouse-report decode path (quadraui#1130):
+/// `cb`/`x`/`y` come from a real terminal's escape-sequence reply — bytes
+/// this crate does not control, parsed as plain decimal numbers by
+/// `try_reassemble_sgr_mouse`'s caller before reaching here — so this
+/// must never panic on any `u16` triple, not just the well-formed button
+/// codes the hand-picked fixtures above exercise.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::primitives::terminal::TerminalCellSize;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Every `(cb, x, y, is_release)` combination — including `Cb`
+        /// values with no assigned button/modifier meaning and `x`/`y`
+        /// at the very top of `u16` (`saturating_sub(1)` must not
+        /// underflow-panic) — must decode without panicking.
+        #[test]
+        fn decode_sgr_mouse_report_never_panics(
+            cb in any::<u16>(),
+            x in any::<u16>(),
+            y in any::<u16>(),
+            is_release in any::<bool>(),
+        ) {
+            let cell_size = TerminalCellSize::new(1.0, 1.0);
+            let _ = decode_sgr_mouse_report(cb, x, y, is_release, cell_size);
+        }
+
+        /// Same, but with a degenerate (zero) cell size — the divide that
+        /// turns pixel coordinates back into fractional cells
+        /// (`super::events::crossterm_mouse_to_uievent_scaled`) must not
+        /// panic (float division by zero is `inf`/`NaN` in Rust, not a
+        /// panic, but this pins that it stays that way rather than a
+        /// future refactor introducing an integer path).
+        #[test]
+        fn decode_sgr_mouse_report_never_panics_with_zero_cell_size(
+            cb in any::<u16>(),
+            x in any::<u16>(),
+            y in any::<u16>(),
+        ) {
+            let cell_size = TerminalCellSize::new(0.0, 0.0);
+            let _ = decode_sgr_mouse_report(cb, x, y, false, cell_size);
+        }
     }
 }

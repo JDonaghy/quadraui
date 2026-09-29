@@ -24,7 +24,7 @@ cd kubeui && cargo build
 cd kubeui-gtk && cargo build  # if GTK is available
 ```
 
-## CI matrix (`.github/workflows/ci.yml`, `.github/workflows/macos.yml`)
+## CI matrix (`.github/workflows/ci.yml`, `.github/workflows/macos.yml`, `.github/workflows/fuzz.yml`)
 
 The commands above are the local minimum; CI runs a wider matrix on every
 push/PR to `main` or `develop`. This section is kept in sync with the
@@ -40,6 +40,7 @@ this list in the same PR.
 | `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs`); a build of the `gtk_terminal` example (`--features gtk,terminal`, #483, same `required-features` gap as `tui_terminal` above); the gtk+tui conformance matrix, uploaded as an artifact |
 | `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout — see the job's comments for how (#528) |
 | `macos (build, test, clippy)` (separate workflow, `macos.yml`) | macos-latest, **`pull_request` gated on a `quadraui/src/**` path filter (#598, widened by #792), plus `workflow_dispatch`/weekly `schedule`**, with a per-ref `concurrency` group cancelling superseded runs | `cargo build`/`test`/`clippy --features macos` — the only place `src/macos`'s tests (including `MacDriver`'s, quadraui#493, and the Tier-1 `backends()` row it adds to `tests/conformance.rs`) run; the Tier-1 conformance matrix (`--features macos --test conformance -- --nocapture`), uploaded as `conformance-matrix-macos` (no Tier-0/C0 artifact yet — `MacBackend` has no C0 driver, see `c0_paint_smoke`'s doc); a Homebrew `gtk4` install followed by `cargo test --features macos,tui,gtk --test cross_backend_parity` (#792 item 3) — the only leg where the macOS twin test in that file (`pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state`) actually runs, since the whole file is `cfg(all(feature = "tui", feature = "gtk"))` at the top. The path filter is load-bearing, not incidental (see the workflow's own header comment): a PR that doesn't touch `quadraui/src/**` gets no check at all, but one that does — macOS-specific or not, per #792's fix for the #537 failure mode — gets a *real*, merge-blocking macos-latest build+test+clippy — `#484`'s progress bar. Still weekly (Mondays 06:00 UTC) / manual-dispatch otherwise, for the same "don't let a regression sit undiscovered" reason as before #598 |
+| `fuzz` (separate workflow, `fuzz.yml`, quadraui#1130) | ubuntu-latest, **`schedule` (daily 03:00 UTC) + `workflow_dispatch` only — never `push`/`pull_request`** | `cargo +nightly fuzz run <target>` (via `cargo-fuzz`, installed fresh each run) for each target in `quadraui/fuzz/fuzz_targets/`, 5 minutes each, one job per target (`fail-fast: false`) so one crash doesn't hide the others' results. Crash artifacts upload via `actions/upload-artifact` on failure. See "Property tests and fuzzing" below for what's covered and why this never blocks a PR |
 
 Not yet covered by CI at all: real `WinBackend` *rasterisers* running on
 Windows — every `Backend::draw_*`/`*_layout` method is still a `todo!()`
@@ -50,6 +51,71 @@ Direct2D render target a test can paint into and read pixels back from)
 ahead of the rasterisers that will need it — see the `tui` job row above
 for the three `continue-on-error` windows-latest steps and the rollout
 plan that flips each to blocking once proven stable.
+
+## Property tests and fuzzing (quadraui#1130)
+
+The paint/click round-trips and example-driver tests below prove
+*behavioural* correctness against hand-picked scenarios. They say nothing
+about the crate's small set of parsers that take **untrusted or foreign
+input** — a VS Code theme file downloaded from a marketplace
+(`Theme::from_vscode_json` / `text_util::strip_json_comments`), a
+markdown document from a chat transcript or README
+(`compose::markdown::render_markdown_to_styled`), or whatever bytes a
+child process writes into an embedded terminal's PTY (the `vt100` parser
+`terminal_engine::TerminalSession` wraps). A hand-picked fixture can only
+cover the malformed shapes someone thought to write; these need the
+arbitrary-input space instead.
+
+**Two layers, same split as the rest of this doc's CI-vs-local posture:**
+
+1. **`proptest` — in-tree, every PR, bounded.** Each of the files above
+   has a `#[cfg(test)] mod proptests` block (`src/text_util.rs`,
+   `src/theme.rs`, `src/compose/markdown.rs`, `src/terminal_engine.rs`,
+   plus `src/tui/caps.rs`'s `parse_decrqm_reply` and
+   `src/tui/backend.rs`'s SGR-mouse-report decode) asserting "never
+   panics" and, where the function has one, a real round-trip/invariant
+   property — not just the absence of a crash. These run as part of the
+   ordinary `cargo test` in the quality gate above: hundreds of
+   generated cases per property, sub-second, no extra tooling.
+2. **`cargo-fuzz` — scheduled, unbounded, coverage-guided.** `quadraui/fuzz/`
+   is a standalone `cargo-fuzz` crate (its own `Cargo.toml`/`Cargo.lock`,
+   opted out of the root workspace — see that `Cargo.toml`'s comments)
+   with one libFuzzer target per parser that has a reachable `pub` entry
+   point: `strip_json_comments`, `theme_from_vscode_json` (round-tripped
+   through a real temp file, since `Theme::from_vscode_json` only takes a
+   `Path`), `markdown`, and `vt100_parser` (drives the `vt100` crate
+   directly — see that target's doc for why). Run via
+   `.github/workflows/fuzz.yml`, `schedule`/`workflow_dispatch` only,
+   **never** `push`/`pull_request` — a fuzz run's value is continuous
+   background exploration on a timescale no per-PR budget affords, and
+   bolting it onto `ci.yml` would only slow down every PR for coverage
+   the scheduled run already gives more thoroughly. Run locally with:
+   ```bash
+   cd quadraui/fuzz
+   cargo +nightly fuzz run strip_json_comments  # or any other target
+   ```
+
+**Why no fuzz target for DECRQM/kitty-keyboard decoding.** `parse_decrqm_reply`
+(`src/tui/caps.rs`) is `pub(crate)`, not `pub` — a separate fuzz crate
+outside `quadraui`'s own crate boundary cannot reach it without a new
+public export, and CLAUDE.md's downstream-impact discipline (see the root
+`CLAUDE.md`'s "Downstream consumers" section) argues against adding `pub`
+surface whose only consumer is a fuzz harness. Its `proptest` coverage in
+`src/tui/caps.rs::proptests` is the whole story for that parser — an
+in-crate property test has no such visibility restriction.
+
+**A property test already found a real bug this way.** The initial,
+unbounded `vt100_parser_never_panics*` properties (`rows`/`cols` with no
+floor) found two upstream `vt100` 0.16.2 panics — `rows < 2` and,
+separately, `cols == 1` with certain multi-byte input — that a real host
+resizing an embedded-terminal pane down to a single row or column could
+have hit in production. `terminal_engine.rs`'s `MIN_VT100_ROWS`/
+`MIN_VT100_COLS` consts now floor every caller-supplied dimension before
+it reaches `vt100::Parser::new`/`Screen::set_size`, pinned by
+`spawn_with_a_single_row_does_not_panic` and its three siblings in that
+file's `mod tests`. This is the point of property testing a parser you
+don't own: it doesn't have to be *your* bug for it to be worth defending
+against.
 
 ## Coverage taxonomy
 

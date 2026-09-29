@@ -7947,7 +7947,7 @@ mod tests {
     /// the whole point is that this now degrades instead of aborting on
     /// *every* host, not just Windows — see the module-level issue doc.
     #[test]
-    fn win_backend_survives_full_frame_with_no_surface_attached() {
+    fn win_backend_does_not_panic_with_no_surface_attached_across_a_full_frame() {
         let mut backend = WinBackend::new();
         let viewport = Viewport::new(400.0, 300.0, 1.0);
         Backend::begin_frame(&mut backend, viewport);

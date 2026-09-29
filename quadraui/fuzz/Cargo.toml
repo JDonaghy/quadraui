@@ -1,0 +1,69 @@
+[package]
+name = "quadraui-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Standalone cargo-fuzz crate (quadraui#1130) — deliberately *not* a member
+# of the root workspace (`../../Cargo.toml`'s `[workspace] members`, which
+# this empty `[workspace]` table opts out of, matching every other
+# `cargo fuzz init` layout). It has its own `Cargo.lock`, and its odd
+# `RUSTFLAGS`/nightly/sanitizer requirements never leak into the ordinary
+# `cargo build`/`test`/`clippy` quality-gate commands documented in
+# `quadraui/docs/TESTING.md` — those never descend into `fuzz/` at all.
+# Run via `.github/workflows/fuzz.yml` (scheduled/`workflow_dispatch`, not
+# per-PR — a fuzz run's whole point is continuous background coverage on a
+# timescale no PR check budget can afford) or locally with
+# `cargo +nightly fuzz run <target>` from inside this directory.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Same `vt100` dependency `../src/terminal_engine.rs` uses (kept in step
+# with `../Cargo.toml`'s own `vt100 = { version = "0.16", ... }` pin) — see
+# `fuzz_targets/vt100_parser.rs`'s doc for why this target drives the
+# parser directly instead of through `quadraui::terminal_engine`.
+vt100 = "0.16"
+# For `fuzz_targets/theme_from_vscode_json.rs`: `Theme::from_vscode_json`
+# only takes a `Path`, so the fuzz target round-trips fuzz input through a
+# real temp file to reach it via the actual public API.
+tempfile = "3"
+
+[dependencies.quadraui]
+path = ".."
+# `terminal` pulls in the `vt100_parser` target's `TerminalSession` sibling
+# code for context/consistency even though that target depends on the
+# `vt100` crate directly, not through `quadraui`; the other three targets
+# only need the always-on core.
+features = ["terminal"]
+
+[[bin]]
+name = "strip_json_comments"
+path = "fuzz_targets/strip_json_comments.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "theme_from_vscode_json"
+path = "fuzz_targets/theme_from_vscode_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown"
+path = "fuzz_targets/markdown.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vt100_parser"
+path = "fuzz_targets/vt100_parser.rs"
+test = false
+doc = false
+bench = false

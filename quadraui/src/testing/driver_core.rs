@@ -366,8 +366,14 @@ mod tests {
         all(feature = "win", target_os = "windows")
     ))]
     fn backend_mut_gives_mutable_access() {
-        let mut core: DriverCore<FakeBackend, FakeApp> = DriverCore::new(FakeApp(1), FakeBackend);
-        let _: &mut FakeBackend = core.backend_mut();
+        // `FakeBackend` carries no state to mutate, so use `FakeApp` (a
+        // plain `u32` newtype) in the backend slot instead — the same
+        // trick `parts_mut_gives_disjoint_mutable_access_to_both_fields`
+        // below uses — so the "mutable" half of the claim is actually
+        // observed through a later read, not just type-checked.
+        let mut core: DriverCore<FakeApp, FakeApp> = DriverCore::new(FakeApp(1), FakeApp(0));
+        core.backend_mut().0 = 42;
+        assert_eq!(core.backend().0, 42);
     }
 
     #[test]

@@ -2056,3 +2056,67 @@ mod tests {
         assert_eq!(url, "http://example.com");
     }
 }
+
+/// Property tests (quadraui#1130): a markdown document is untrusted,
+/// foreign input by definition — chat transcripts, README files, AI
+/// output — so these hold over arbitrary strings, not just the
+/// hand-picked fixtures in `mod tests` above.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No input, however malformed (an unterminated code fence, a
+        /// dangling `[`, a `#` with no following text, raw control
+        /// bytes), may panic.
+        #[test]
+        fn render_markdown_never_panics(s in ".{0,4000}") {
+            let theme = Theme::default();
+            let _ = render_markdown_to_styled(&s, &theme);
+        }
+
+        /// Same, but from raw bytes reinterpreted lossily, so invalid
+        /// UTF-8 sequences (which `String::from_utf8_lossy` turns into
+        /// U+FFFD replacement characters at arbitrary byte offsets) are
+        /// covered too — exactly the shape multi-byte-boundary parsing
+        /// bugs hide in.
+        #[test]
+        fn render_markdown_never_panics_on_lossy_bytes(bytes in prop::collection::vec(any::<u8>(), 0..4000)) {
+            let s = String::from_utf8_lossy(&bytes);
+            let theme = Theme::default();
+            let _ = render_markdown_to_styled(&s, &theme);
+        }
+
+        /// The three per-line vectors are length-aligned by contract (see
+        /// this module's doc, "Side-channels") — must hold for every
+        /// input, not just the fixtures that happen to be tested above.
+        #[test]
+        fn render_markdown_keeps_line_vectors_aligned(s in ".{0,4000}") {
+            let theme = Theme::default();
+            let r = render_markdown_to_styled(&s, &theme);
+            prop_assert_eq!(r.lines.len(), r.line_text.len());
+            prop_assert_eq!(r.lines.len(), r.line_scales.len());
+        }
+
+        /// Every recorded link's `(line_idx, byte_range)` must be a
+        /// genuinely valid index into `line_text` — in bounds, and its
+        /// byte range on char boundaries — or a consumer that slices
+        /// `line_text[line_idx][range]` (as `blockquote_link_inside_quote_tracked`
+        /// above does) panics on whatever pathological input first
+        /// breaks that contract.
+        #[test]
+        fn render_markdown_link_ranges_are_valid_into_line_text(s in ".{0,4000}") {
+            let theme = Theme::default();
+            let r = render_markdown_to_styled(&s, &theme);
+            for (line_idx, range, _url) in &r.links {
+                prop_assert!(*line_idx < r.line_text.len());
+                let line = &r.line_text[*line_idx];
+                prop_assert!(range.start <= range.end);
+                prop_assert!(range.end <= line.len());
+                prop_assert!(line.is_char_boundary(range.start));
+                prop_assert!(line.is_char_boundary(range.end));
+            }
+        }
+    }
+}

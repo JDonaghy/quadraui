@@ -1269,9 +1269,14 @@ mod tests {
     fn scroll_offset_estimate_survives_degenerate_geometry() {
         let mut ws = ws(&["a", "b", "c"]);
         ws.activate("c");
-        // A zero/negative char width must not divide by zero or panic.
-        let _ = ws.estimate_scroll_offset(0.0, 0.0);
-        let _ = ws.estimate_scroll_offset(-5.0, 1.0);
+        // A zero/negative char width must not divide by zero or panic,
+        // and must clamp to the same estimate a `char_width` of exactly
+        // `1.0` (the fallback `estimate_scroll_offset` substitutes for
+        // any non-positive value) would have produced — not some other
+        // garbage value that happens not to crash.
+        let fallback = ws.estimate_scroll_offset(0.0, 1.0);
+        assert_eq!(ws.estimate_scroll_offset(0.0, 0.0), fallback);
+        assert_eq!(ws.estimate_scroll_offset(-5.0, 1.0), fallback);
     }
 
     #[test]

@@ -164,9 +164,10 @@ mod tests {
     /// glyph in the same accent colour and label is exercised without
     /// panicking (glyph identity itself isn't a Direct2D-observable
     /// property this test can assert on without pixel-perfect glyph
-    /// probing).
+    /// probing — hence the `_does_not_panic` name rather than a claim
+    /// this asserts the accent colour was actually used).
     #[test]
-    fn accent_colour_is_used_when_set() {
+    fn accent_colour_paints_without_panicking() {
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let mut spinner = spinner(9);
         spinner.accent = Some(Color::rgb(255, 0, 0));
