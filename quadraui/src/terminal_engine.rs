@@ -429,14 +429,78 @@ fn reflow_screen(parser: &mut vt100::Parser, rows: u16, cols: u16) {
     // non-reflow resize. (`alternate_screen()` reads the parser immutably; the
     // borrow ends before the `screen_mut()` below.)
     if cols == cur_cols || parser.screen().alternate_screen() {
-        parser.screen_mut().set_size(rows, cols);
+        set_size_without_orphaning_wide_cells(parser, rows, cols);
         return;
     }
     // Width change on the normal screen: snapshot → resize → replay so each
     // logical line re-wraps at the new width instead of being truncated.
+    // The snapshot is taken *before* the scrub inside the resize below, so a
+    // wide glyph the scrub has to erase is still carried across and re-wrapped
+    // at the new width rather than lost.
     let dump = parser.screen().contents_formatted();
-    parser.screen_mut().set_size(rows, cols);
+    set_size_without_orphaning_wide_cells(parser, rows, cols);
     parser.process(&dump);
+}
+
+/// [`vt100::Screen::set_size`], plus the repair vt100 0.16.2 forgets to make
+/// when a **width shrink** cuts a double-width glyph in half (quadraui#1130).
+///
+/// vt100 stores a wide glyph as two cells: a first half (`Cell::is_wide()`) and
+/// a continuation half (`Cell::is_wide_continuation()`). `Grid::set_size`
+/// narrows each row with a plain `Vec::resize`, which simply drops the cells
+/// past the new width — unlike `Row::truncate`, which clears a first half whose
+/// partner it is about to drop. So shrinking to a width that lands exactly
+/// *between* a wide glyph's two halves leaves a first half orphaned at the new
+/// final column with nothing after it.
+///
+/// That cell is then a landmine, and every route out of it is an upstream
+/// `unwrap()` on an out-of-range column:
+///
+/// - writing a character over it panics at `screen.rs:870` (it looks for the
+///   continuation half at `col + 1` to blank it), and
+/// - *erasing* it panics too (`Row::clear_wide` indexes the same `col + 1`), so
+///   it cannot be cleaned up after the fact — not even by `ED`/`EL`, which is
+///   exactly what replaying a `contents_formatted` dump starts with. That is
+///   why [`reflow_screen`]'s snapshot→resize→replay was affected as well as the
+///   plain height-only / alternate-screen path.
+///
+/// The fix is therefore to *prevent* the orphan rather than repair it: while
+/// both halves are still in range, erase (`CSI X`) any first half sitting on
+/// the column that is about to become the last one. The shrink then truncates a
+/// blank pair instead of splitting a glyph. `DECSC`/`DECRC` bracket the scrub so
+/// the cursor position, origin mode and pending-wrap state survive it.
+///
+/// Costs nothing in the common case: the scan is skipped entirely unless the
+/// width is actually shrinking, and no bytes are fed to the parser unless a
+/// glyph really does straddle the new boundary.
+fn set_size_without_orphaning_wide_cells(parser: &mut vt100::Parser, rows: u16, cols: u16) {
+    let (cur_rows, cur_cols) = parser.screen().size();
+    // Growing (or keeping) the width can never split a glyph; rows are dropped
+    // whole, so a height change is safe too.
+    // (`checked_sub` rather than `cols - 1`: a zero width is already fatal
+    // one line down inside vt100 — see `MIN_VT100_COLS` — but this helper
+    // must not be the thing that panics first, and there is no boundary
+    // cell to scrub when there is no last column.)
+    if let Some(last_col) = cols.checked_sub(1).filter(|_| cols < cur_cols) {
+        let mut scrub = Vec::new();
+        for row in 0..cur_rows {
+            let straddles = parser
+                .screen()
+                .cell(row, last_col)
+                .is_some_and(vt100::Cell::is_wide);
+            if straddles {
+                // CUP to (row, new last column), then ECH 1. Both 1-based.
+                scrub.extend_from_slice(format!("\x1b[{};{}H\x1b[X", row + 1, cols).as_bytes());
+            }
+        }
+        if !scrub.is_empty() {
+            let mut bytes = b"\x1b7".to_vec();
+            bytes.append(&mut scrub);
+            bytes.extend_from_slice(b"\x1b8");
+            parser.process(&bytes);
+        }
+    }
+    parser.screen_mut().set_size(rows, cols);
 }
 
 /// Floor for `rows` handed to `vt100::Parser::new`/`Screen::set_size`.
@@ -2074,6 +2138,97 @@ mod tests {
         );
     }
 
+    /// Pinned regression for quadraui#1130: the shrink must not leave a
+    /// double-width glyph's first half orphaned at the new final column.
+    ///
+    /// These are the exact inputs proptest shrank the Windows CI failure to
+    /// (`vt100_parser_never_panics_across_a_resize`, run
+    /// 36607044052) — a TAB, 24 spaces and U+3000 IDEOGRAPHIC SPACE on a
+    /// 2×65 grid, narrowed to 2×33 so the glyph straddles column 33, then a
+    /// single space written over it. Before
+    /// `set_size_without_orphaning_wide_cells` this panicked inside vt100 at
+    /// `screen.rs:870` (`Option::unwrap` on the out-of-range continuation
+    /// cell). No PTY, so it runs on every platform — Windows is where it
+    /// actually fired.
+    #[test]
+    fn reflow_shrink_does_not_orphan_a_wide_glyph_at_the_boundary() {
+        let mut p = vt100::Parser::new(2, 65, 0);
+        let mut before = vec![b'\t'];
+        before.extend_from_slice(&[b' '; 24]);
+        before.extend_from_slice("\u{3000}".as_bytes());
+        p.process(&before);
+        assert!(
+            p.screen().cell(0, 32).is_some_and(vt100::Cell::is_wide),
+            "fixture drifted: the wide glyph must sit on the truncation boundary"
+        );
+
+        reflow_screen(&mut p, 2, 33);
+
+        // The orphan is gone: the cell that survived the truncation is no
+        // longer a first half missing its partner.
+        let (_, cols) = p.screen().size();
+        assert_eq!(cols, 33);
+        for row in 0..2 {
+            assert!(
+                !p.screen()
+                    .cell(row, cols - 1)
+                    .is_some_and(vt100::Cell::is_wide),
+                "row {row} still ends in an orphaned wide first half"
+            );
+        }
+        // …and writing over it no longer panics (this was the CI failure).
+        p.process(b"\x1b[1;33H ");
+    }
+
+    /// Same boundary, but on the **alternate** screen — `reflow_screen`
+    /// deliberately skips the snapshot→replay reflow there (full-screen apps
+    /// repaint themselves), so that branch needs its own coverage that the
+    /// scrub still runs. quadraui#1130.
+    #[test]
+    fn reflow_shrink_does_not_orphan_a_wide_glyph_on_the_alternate_screen() {
+        let mut p = vt100::Parser::new(2, 65, 0);
+        p.process(b"\x1b[?1049h");
+        let mut before = vec![b'\t'];
+        before.extend_from_slice(&[b' '; 24]);
+        before.extend_from_slice("\u{3000}".as_bytes());
+        p.process(&before);
+        assert!(p.screen().alternate_screen());
+
+        reflow_screen(&mut p, 2, 33);
+
+        let (_, cols) = p.screen().size();
+        assert!(
+            !p.screen()
+                .cell(0, cols - 1)
+                .is_some_and(vt100::Cell::is_wide),
+            "alternate screen still ends in an orphaned wide first half"
+        );
+        p.process(b"\x1b[1;33H ");
+    }
+
+    /// The scrub is not allowed to move the cursor: it brackets its repair
+    /// with DECSC/DECRC precisely so a resize stays invisible to the child.
+    /// quadraui#1130.
+    #[test]
+    fn reflow_shrink_scrub_restores_the_cursor() {
+        let mut p = vt100::Parser::new(4, 65, 0);
+        let mut before = vec![b'\t'];
+        before.extend_from_slice(&[b' '; 24]);
+        before.extend_from_slice("\u{3000}".as_bytes());
+        p.process(&before);
+        // Park the cursor somewhere the scrub would clobber if it leaked.
+        p.process(b"\x1b[3;5H");
+        assert_eq!(p.screen().cursor_position(), (2, 4));
+
+        reflow_screen(&mut p, 4, 33);
+
+        assert_eq!(
+            p.screen().cursor_position(),
+            (2, 4),
+            "resize must not move the cursor"
+        );
+    }
+
     #[test]
     fn resize_shrink_then_expand_preserves_content() {
         // Several full-width lines. Shrink hard on width, then expand back —
@@ -3658,7 +3813,7 @@ mod tests {
 /// vt100 bugs on every run instead of testing anything this crate can fix.
 #[cfg(test)]
 mod proptests {
-    use super::{MIN_VT100_COLS, MIN_VT100_ROWS};
+    use super::{reflow_screen, MIN_VT100_COLS, MIN_VT100_ROWS};
     use proptest::prelude::*;
 
     proptest! {
@@ -3691,25 +3846,79 @@ mod proptests {
             parser.process(s.as_bytes());
         }
 
-        /// A resize mid-stream (`set_size`, the same call
-        /// [`TerminalSession::resize`] makes on SIGWINCH) followed by
-        /// more arbitrary bytes must not panic either — this is the
-        /// exact scenario `reflow_screen`'s module doc and the #377
-        /// fixtures above both call out as the highest-risk path
-        /// (wide-char cells re-wrapping at a new width).
+        /// A resize mid-stream followed by more arbitrary bytes must not
+        /// panic either — this is the exact scenario [`reflow_screen`]'s
+        /// doc comment and the #377 fixtures above both call out as the
+        /// highest-risk path (wide-char cells re-wrapping at a new width).
+        ///
+        /// Drives [`reflow_screen`] — the *crate's* resize entry point,
+        /// the one and only thing [`TerminalSession::resize`] calls — and
+        /// deliberately not `vt100::Screen::set_size` underneath it. The
+        /// bare upstream call is known-broken on a width shrink and this
+        /// crate stopped making it: see
+        /// [`set_size_without_orphaning_wide_cells`], whose repair is what
+        /// this property pins. Asserting the property against raw
+        /// `set_size` would only re-derive that upstream bug on every run,
+        /// the same dead end [`MIN_VT100_ROWS`]'s doc describes for grid
+        /// dimensions.
+        ///
+        /// `alternate` covers both branches of `reflow_screen`'s gate:
+        /// `false` takes the snapshot→resize→replay reflow, `true` the
+        /// plain non-reflow resize a full-screen app gets. Both were
+        /// affected by the orphaned-wide-cell bug.
         #[test]
         fn vt100_parser_never_panics_across_a_resize(
             rows in MIN_VT100_ROWS..60,
             cols in MIN_VT100_COLS..200,
             new_rows in MIN_VT100_ROWS..60,
             new_cols in MIN_VT100_COLS..200,
+            alternate in any::<bool>(),
             before in prop::collection::vec(any::<u8>(), 0..1000),
             after in prop::collection::vec(any::<u8>(), 0..1000),
         ) {
             let mut parser = vt100::Parser::new(rows, cols, 0);
+            if alternate {
+                parser.process(b"\x1b[?1049h");
+            }
             parser.process(&before);
-            parser.screen_mut().set_size(new_rows, new_cols);
+            reflow_screen(&mut parser, new_rows, new_cols);
             parser.process(&after);
+        }
+
+        /// The orphaned-wide-cell shrink (quadraui#1130) narrowed to its
+        /// essentials and re-randomised: a double-width glyph parked so
+        /// that the shrink lands between its two halves, on every
+        /// (old width, new width) pair that can straddle it.
+        ///
+        /// The generic property above finds this too, but only on a lucky
+        /// seed — it was a ~5% hit rate there, which is why it reached CI
+        /// green on Linux and red on Windows. This one hits it every run.
+        #[test]
+        fn reflow_survives_a_wide_glyph_split_by_the_new_width(
+            rows in MIN_VT100_ROWS..8,
+            new_cols in 4u16..40,
+            extra in 0u16..12,
+            alternate in any::<bool>(),
+        ) {
+            let cols = new_cols + 1 + extra;
+            let mut parser = vt100::Parser::new(rows, cols, 0);
+            if alternate {
+                parser.process(b"\x1b[?1049h");
+            }
+            // Pad so the wide glyph's first half lands exactly on the
+            // column that is about to become the last one, and its
+            // continuation half on the first column to be truncated.
+            let mut bytes = vec![b' '; usize::from(new_cols) - 1];
+            bytes.extend_from_slice("\u{3000}".as_bytes());
+            parser.process(&bytes);
+            prop_assert!(
+                parser.screen().cell(0, new_cols - 1).is_some_and(vt100::Cell::is_wide),
+                "fixture must park a wide first half on the truncation boundary"
+            );
+            reflow_screen(&mut parser, rows, new_cols);
+            // Writing over the (formerly) orphaned cell is what panicked.
+            parser.process(b"\x1b[1;1H");
+            parser.process(&vec![b'x'; usize::from(new_cols) * 2]);
         }
     }
 }

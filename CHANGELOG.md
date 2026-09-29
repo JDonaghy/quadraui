@@ -378,6 +378,20 @@ release time.
 
 ### Fixed
 
+- `terminal_engine::TerminalSession::resize` no longer panics when a
+  **width shrink** lands exactly between the two halves of a double-width
+  (CJK/emoji) glyph (issue #1130). vt100 0.16.2's `Screen::set_size`
+  narrows rows with a plain `Vec` truncation, which drops a wide glyph's
+  continuation half while leaving its first half behind; the orphan is a
+  landmine that panics upstream both when written over
+  (`screen.rs:870`) and when *erased* (`Row::clear_wide`), so it cannot
+  be repaired afterwards — including by the `ED`/`EL` that replaying a
+  `contents_formatted` dump begins with, which is why the internal
+  `reflow_screen` snapshot→resize→replay path was hit as well as the
+  plain height-only / alternate-screen one. quadraui now erases such a
+  glyph *before* the shrink, while both halves are still addressable.
+  Found by this crate's own new vt100 property tests; no public API
+  change.
 - `TreeController::right_click` on empty tree space below the last row
   (issue #1045 item 4) now emits `TreeControllerEvent::ContextMenuRequested`
   with an empty `path` instead of swallowing the click as plain
