@@ -1000,6 +1000,11 @@ mod win32 {
     /// is the standard idiom (matches `IS_KEY_DOWN`-style macros other
     /// Win32 bindings define for this).
     fn key_is_down(vk: VIRTUAL_KEY) -> bool {
+        // SAFETY: `GetKeyState` takes a plain `i32` virtual-key code and
+        // returns a status word by value — no pointer, no handle, no
+        // precondition beyond being called on a thread with a message
+        // queue (true for every caller here, all of which run inside
+        // `wndproc` or its dispatch helpers).
         unsafe { GetKeyState(vk.0 as i32) < 0 }
     }
 
@@ -1038,7 +1043,31 @@ mod win32 {
             "Local\\quadraui-single-instance-{:016x}\0",
             super::instance_identity(title)
         ));
+        // SAFETY: `name` is a `Vec<u16>` built by `wide()` just above and
+        // still in scope for the duration of this call, so `name.as_ptr()`
+        // stays valid; `CreateMutexW(None, false, ...)` requests no
+        // security-attributes override and no initial ownership, so there
+        // is no handle-ownership precondition on the caller beyond
+        // eventually letting the returned `HANDLE` drop.
+        //
+        // `_handle` is deliberately dropped immediately rather than kept
+        // alive in a `static` or leaked on the heap — that is intentional,
+        // not an oversight (see this function's doc comment above:
+        // "deliberately never closed"). `windows::Win32::Foundation::HANDLE`
+        // is `Copy`/non-owning in this crate's bindings — dropping the
+        // Rust value does **not** call `CloseHandle`, so the underlying
+        // kernel mutex object stays alive and held by this process exactly
+        // as long as the process itself runs, which is what a
+        // single-instance guard needs. Windows closes every handle a
+        // process still holds when it exits, so there is no leak in the
+        // OS-resource sense either — only in the sense that no Rust value
+        // holds onto it, which is the desired lifetime here.
         match unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) } {
+            // SAFETY: `GetLastError()` reads the calling thread's
+            // thread-local last-error code, set by the `CreateMutexW` call
+            // immediately above and not yet clobbered by any other Win32
+            // call on this thread — no pointer, no handle, nothing to
+            // uphold beyond that ordering.
             Ok(_handle) => (unsafe { GetLastError() }) != ERROR_ALREADY_EXISTS,
             Err(_) => true,
         }
@@ -1065,6 +1094,11 @@ mod win32 {
     /// "guarantee delivery".
     fn forward_argv_to_existing_instance(title: &str) {
         let class_name = window_class_name(title);
+        // SAFETY: `class_name` is a `Vec<u16>` from `window_class_name`,
+        // still in scope so `class_name.as_ptr()` stays valid for the
+        // duration of the call; `FindWindowW` performs no write through
+        // either pointer argument and `PCWSTR::null()` is the documented
+        // way to say "don't filter on window title".
         let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) }) else {
             return;
         };
@@ -1092,6 +1126,17 @@ mod win32 {
             cbData: (payload_wide.len() * size_of::<u16>()) as u32,
             lpData: payload_wide.as_ptr() as *mut c_void,
         };
+        // SAFETY: `hwnd` came from the successful `FindWindowW` just above
+        // and `SendMessageW` blocks until the receiver has processed the
+        // message (see this function's doc comment), so `hwnd` cannot be
+        // destroyed out from under this call by anything on *this*
+        // thread. `cds` (and the `payload_wide` buffer its `lpData` points
+        // into) are stack-local and outlive the call, which is all
+        // `WM_COPYDATA` requires — the receiving `wndproc` only reads
+        // `*lparam` synchronously during dispatch, per `WM_COPYDATA`'s
+        // documented contract, and never retains the pointer.
+        // `SetForegroundWindow`/`ShowWindow` below take only `hwnd`, still
+        // valid for the same reason.
         unsafe {
             SendMessageW(
                 hwnd,
@@ -1123,6 +1168,11 @@ mod win32 {
         // option), both make this call fail harmlessly — either way the
         // process keeps running at whatever awareness level is already
         // active rather than aborting startup over it.
+        //
+        // SAFETY: `SetProcessDpiAwarenessContext` takes a plain enum value
+        // (no pointer, no handle) and has no precondition beyond "call it
+        // before creating any window", which this function does — `run`
+        // is the very first thing `RunConfig::run` invokes.
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
@@ -1137,6 +1187,15 @@ mod win32 {
             return std::process::ExitCode::SUCCESS;
         }
 
+        // SAFETY: `run_inner`'s contract (its `# Safety` doc above) is
+        // "must run on the thread that will pump the returned message
+        // loop to completion". `run` itself never spawns a thread — it is
+        // the public `run(app)`/`run_with(app, config)` entry point
+        // (bottom of this file) called directly on the caller's thread,
+        // and everything below this point (window creation, `wndproc`
+        // dispatch, the `GetMessageW` loop) happens inline within this
+        // same call, so the thread that reaches here is exactly the
+        // thread that pumps the loop.
         match unsafe { run_inner(app, &config.title, config.app_icon.as_ref()) } {
             // `Ok(smoke_ok)`: `smoke_ok` is `true` unless
             // `QUADRAUI_WIN_SMOKE_MS` was set *and* `run_smoke_check`
@@ -1177,6 +1236,11 @@ mod win32 {
         title: &str,
         app_icon: Option<&ImageSource>,
     ) -> windows::core::Result<bool> {
+        // SAFETY: `GetModuleHandleW(PCWSTR::null())` is the documented
+        // idiom for "give me this process's own module handle" — the
+        // null pointer is an explicit sentinel the API defines, not a
+        // dereference, and the returned `HMODULE` is process-lifetime
+        // (never needs freeing).
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null())?.into() };
 
         // Issue #957 (review fix): scoped by `title` via
@@ -1196,6 +1260,11 @@ mod win32 {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc::<A>),
             hInstance: hinstance,
+            // SAFETY: `LoadCursorW(None, IDC_ARROW)` loads a built-in
+            // system cursor by its predefined `PCWSTR` id (`None` means
+            // "no module — this is a system resource, not an app
+            // resource"); the returned `HCURSOR` is a shared system handle
+            // that outlives the process and needs no explicit release.
             hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
@@ -1205,6 +1274,14 @@ mod win32 {
         // it in `windows-rs`, so this reaches for `GetLastError()` via
         // `Error::from_thread()` the same way the crate's own `Result`
         // wrappers do internally.
+        //
+        // SAFETY: `wc` is a fully-initialized `WNDCLASSEXW` on the stack,
+        // still in scope; `RegisterClassExW` reads it synchronously and
+        // does not retain the pointer past the call. `class_name.as_ptr()`
+        // (via `lpszClassName`) stays valid because `class_name` outlives
+        // this call. `wndproc::<A>` is `extern "system"`-callable with the
+        // exact signature `WNDPROC` requires — enforced by the compiler at
+        // the `Some(wndproc::<A>)` assignment above, not by this call.
         if unsafe { RegisterClassExW(&wc) } == 0 {
             return Err(WinError::from_thread());
         }
@@ -1234,6 +1311,16 @@ mod win32 {
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
         }));
 
+        // SAFETY: `class_name`/`window_title` are `Vec<u16>`s that outlive
+        // this call, so their `as_ptr()`s stay valid; `state_ptr` (passed
+        // as `lpCreateParams`) was just leaked via `Box::into_raw` above
+        // and is not otherwise aliased yet. `CreateWindowExW` synchronously
+        // dispatches `WM_NCCREATE`/`WM_CREATE` to `wndproc::<A>` (registered
+        // above) before returning; `wndproc`'s `WM_NCCREATE` arm (below)
+        // stores `lpCreateParams` into `GWLP_USERDATA` and never
+        // dereferences it during that same call, so `state_ptr` doesn't
+        // need to be readable-as-`WindowState<A>` until *after*
+        // `CreateWindowExW` returns.
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -1313,6 +1400,11 @@ mod win32 {
             // frees `state_ptr` only after the message loop has exited —
             // so freeing it here, after `DestroyWindow` returns, is safe.
             let _ = unsafe { DestroyWindow(hwnd) };
+            // SAFETY: `DestroyWindow` above has returned, so its
+            // synchronous `wndproc` dispatch (the reason this box must
+            // stay alive, per the comment above) is complete — nothing
+            // left running on this thread still holds `state_ptr`, and
+            // it was never handed to another thread.
             drop(unsafe { Box::from_raw(state_ptr) });
             return Err(e);
         }
@@ -1321,6 +1413,10 @@ mod win32 {
         // every `HWND`. Without this, `WM_DROPFILES` never
         // arrives at all (rather than arriving with an empty `HDROP`),
         // so a missing call here is silent, not a visible failure.
+        //
+        // SAFETY: `hwnd` is the just-created, still-live window from
+        // `CreateWindowExW` above; `DragAcceptFiles` takes only a handle
+        // and a bool, no pointer.
         unsafe {
             DragAcceptFiles(hwnd, true);
         }
@@ -1347,6 +1443,11 @@ mod win32 {
         // documents for DirectWrite's font-file loader.
         if let Some(source) = app_icon {
             if let Some(hicon) = decode_hicon(source) {
+                // SAFETY: `hwnd` is the live window from `CreateWindowExW`
+                // above; `hicon` is a valid `HICON` `decode_hicon` just
+                // produced and (per the comment above) is intentionally
+                // kept alive for the process lifetime, so it is still
+                // valid for both `WM_SETICON` sends below.
                 unsafe {
                     SendMessageW(
                         hwnd,
@@ -1364,6 +1465,9 @@ mod win32 {
             }
         }
 
+        // SAFETY: `hwnd` is the live window created above; both calls
+        // take only a handle (plus, for `ShowWindow`, a plain show-command
+        // enum) — no pointer.
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         // Forces the first `WM_PAINT` synchronously rather than waiting
         // for it to reach the front of the message queue, so "opens a
@@ -1371,6 +1475,8 @@ mod win32 {
         // acceptance criterion) is true by the time this function
         // returns control to the message loop below, not just
         // eventually.
+        //
+        // SAFETY: same as `ShowWindow` immediately above.
         let _ = unsafe { UpdateWindow(hwnd) };
 
         // #702: arm the one-shot smoke-check timer, if enabled. See the
@@ -1381,6 +1487,11 @@ mod win32 {
             // `state_ptr` is valid and not concurrently referenced here.
             let ws: &WindowState<A> = unsafe { &*state_ptr };
             if let Some(cfg) = &ws.smoke {
+                // SAFETY: `hwnd` is the live window; `SetTimer` with
+                // `lpTimerFunc: None` posts `WM_TIMER` through the normal
+                // message queue to `wndproc` rather than calling a raw
+                // function pointer, so there is no callback-signature
+                // precondition here.
                 unsafe {
                     SetTimer(Some(hwnd), SMOKE_TIMER_ID, cfg.after_ms as u32, None);
                 }
@@ -1407,6 +1518,11 @@ mod win32 {
                     // so the message loop below still runs, sees it
                     // immediately, and exits cleanly instead of this
                     // function skipping straight past it.
+                    //
+                    // SAFETY: `hwnd` is still the live window; `dispatch`
+                    // just above only borrowed `ws.state` transiently
+                    // (via `guarded_call`), and that borrow has already
+                    // ended by the time control reaches here.
                     unsafe {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -1419,10 +1535,20 @@ mod win32 {
             // `GetMessageW` returns `-1` on error, `0` on `WM_QUIT`,
             // nonzero otherwise — `BOOL` isn't `bool` here, hence the
             // explicit `.0` comparison instead of a truthiness check.
+            //
+            // SAFETY: `msg` is a stack-local `MSG::default()` above, live
+            // for the whole loop; `GetMessageW` writes it and this thread
+            // is the one pumping messages for `hwnd` (this function's own
+            // `# Safety` contract).
             let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) }.0;
             if ret <= 0 {
                 break;
             }
+            // SAFETY: `msg` was just populated by the successful
+            // `GetMessageW` above (`ret > 0`); both calls take it by
+            // reference and `DispatchMessageW` routes it back into
+            // `wndproc::<A>` on this same thread, which is exactly what
+            // `state_ptr` (stored in `GWLP_USERDATA`) is alive for.
             unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -1511,6 +1637,10 @@ mod win32 {
             super::EventOutcome::Exit => Reaction::Exit,
         };
         if reaction == Reaction::Redraw {
+            // SAFETY: `hwnd` is a caller-supplied still-live window (every
+            // call site passes the `hwnd` `wndproc` was itself invoked
+            // with); `InvalidateRect` takes only handles/rects, no raw
+            // pointer arithmetic.
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
@@ -1538,6 +1668,8 @@ mod win32 {
             return Reaction::Continue;
         };
         match reaction {
+            // SAFETY: same as `dispatch_with`'s identical call above —
+            // `hwnd` is caller-supplied and still live.
             Reaction::Redraw => unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             },
@@ -1569,6 +1701,9 @@ mod win32 {
         };
 
         let mut rect = RECT::default();
+        // SAFETY: `rect` is stack-local and outlives the call; `hwnd` is
+        // caller-supplied and still live (this only runs from the
+        // `WM_TIMER` handler while `wndproc` is dispatching for it).
         let (width, height) = unsafe {
             let _ = GetClientRect(hwnd, &mut rect);
             (rect.right - rect.left, rect.bottom - rect.top)
@@ -1694,19 +1829,46 @@ mod win32 {
             // OS's own contract for this message.
             let cs = lparam.0 as *const CREATESTRUCTW;
             if !cs.is_null() {
+                // SAFETY: `cs` was just null-checked and, per the comment
+                // above, the OS guarantees it points at a live
+                // `CREATESTRUCTW` for the duration of this `WM_NCCREATE`
+                // dispatch; `lpCreateParams` is a plain field read.
                 let create_params = unsafe { (*cs).lpCreateParams };
+                // SAFETY: `hwnd` is this call's own window (`WM_NCCREATE`
+                // is dispatched with the window that's still being
+                // created); `SetWindowLongPtrW` stores an opaque `isize`
+                // — no dereference happens here, only later reads via
+                // `GetWindowLongPtrW` below, gated by this function's own
+                // `# Safety` contract on what that stored value means.
                 unsafe {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, create_params as isize);
                 }
             }
+            // SAFETY: `hwnd`/`msg`/`wparam`/`lparam` are this call's own
+            // parameters, forwarded unchanged — `DefWindowProcW` is the
+            // OS's own fallback handler and imposes no precondition beyond
+            // "a live `wndproc` invocation", true by construction here.
+            // Every other `DefWindowProcW` call in this function has the
+            // same argument shape and the same justification; later ones
+            // in this file just say "see `WM_NCCREATE`'s `DefWindowProcW`
+            // above" rather than repeating this paragraph.
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
 
+        // SAFETY: `hwnd` is this call's own window; `GWLP_USERDATA`
+        // either still holds the `0` `WNDCLASSEXW`/`CreateWindowExW`
+        // implicitly initialize it to, or the `*const WindowState<A>` the
+        // `WM_NCCREATE` arm above stored — both are valid `isize` values
+        // to read back, per `GetWindowLongPtrW`'s own contract. The cast
+        // to `*const WindowState<A>` that follows is not itself unsafe;
+        // it's only dereferenced past the `is_null()` check below.
         let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState<A>;
         if state_ptr.is_null() {
             // Messages Windows can send before `WM_NCCREATE` populates
             // `GWLP_USERDATA` (rare, but the contract allows it) — no
             // app/backend to dispatch to yet.
+            //
+            // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` above.
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
         // SAFETY: see this function's contract above.
@@ -1721,6 +1883,7 @@ mod win32 {
         // non-reentrant message (once the outer guarded call returns)
         // handles normally.
         if ws.pump_depth.is_pumping() {
+            // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` above.
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
 
@@ -1755,6 +1918,10 @@ mod win32 {
                 // `WM_TIMER`, once the drag settles for `RESIZE_SETTLE`,
                 // actually fires and dispatches.
                 ws.resize_debouncer.borrow_mut().note(viewport);
+                // SAFETY: `hwnd` is this dispatch's own window; `SetTimer`
+                // with `lpTimerFunc: None` posts `WM_TIMER` through the
+                // normal message queue rather than invoking a raw function
+                // pointer.
                 unsafe {
                     SetTimer(
                         Some(hwnd),
@@ -1763,6 +1930,8 @@ mod win32 {
                         None,
                     );
                 }
+                // SAFETY: `hwnd` is this dispatch's own window;
+                // `InvalidateRect` takes only handles/rects.
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -1784,7 +1953,15 @@ mod win32 {
                 // size on the new monitor).
                 let suggested = lparam.0 as *const RECT;
                 if !suggested.is_null() {
+                    // SAFETY: `suggested` was just null-checked and, per
+                    // `WM_DPICHANGED`'s documented contract, `lparam`
+                    // points at a live `RECT` for the duration of this
+                    // dispatch; `*suggested` is a plain-old-data copy, not
+                    // a retained reference.
                     let r = unsafe { *suggested };
+                    // SAFETY: `hwnd` is this dispatch's own window; `r`
+                    // (copied above) supplies plain integer coordinates,
+                    // no pointer.
                     unsafe {
                         let _ = SetWindowPos(
                             hwnd,
@@ -1892,6 +2069,9 @@ mod win32 {
                     x: screen_x as i32,
                     y: screen_y as i32,
                 };
+                // SAFETY: `hwnd` is this dispatch's own window; `pt` is
+                // stack-local and outlives the call, `ScreenToClient`
+                // writes through it in place.
                 unsafe {
                     let _ = ScreenToClient(hwnd, &mut pt);
                 }
@@ -1991,6 +2171,9 @@ mod win32 {
                 if let Some(event) = wm_keydown_to_uievent(vk, modifiers, repeat) {
                     dispatch(ws, hwnd, event);
                 }
+                // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
+                // this function) — forwarded unchanged, deliberately, per
+                // the comment above.
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
             WM_SYSCHAR => {
@@ -2007,6 +2190,9 @@ mod win32 {
                         dispatch(ws, hwnd, event);
                     }
                 }
+                // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
+                // this function) — forwarded unchanged, deliberately, per
+                // the comment above.
                 unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
             WM_SETFOCUS => {
@@ -2045,6 +2231,10 @@ mod win32 {
                 // involved, so this validates the update region directly
                 // instead of the usual `BeginPaint`/`EndPaint` pair (the
                 // standard pattern for D2D-only `WM_PAINT` handlers).
+                //
+                // SAFETY: `hwnd` is this dispatch's own window;
+                // `ValidateRect(hwnd, None)` validates the whole client
+                // area, no pointer beyond the handle.
                 unsafe {
                     let _ = ValidateRect(Some(hwnd), None);
                 }
@@ -2074,6 +2264,14 @@ mod win32 {
                     // `DefWindowProcW` shrinks `rgrc[0]` for the standard
                     // caption + resize-border reservation.
                     let outer_top = params.rgrc[0].top;
+                    // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top
+                    // of this function) — forwarded unchanged; `params`
+                    // above is a live borrow of the same `*mut
+                    // NCCALCSIZE_PARAMS` this call also writes through
+                    // (that's the point — this lets `DefWindowProcW` do
+                    // its own in-place adjustment before `outer_top` is
+                    // reapplied below), which is fine since nothing reads
+                    // `params` again until after this call returns.
                     unsafe {
                         DefWindowProcW(hwnd, msg, wparam, lparam);
                     }
@@ -2090,6 +2288,8 @@ mod win32 {
                     params.rgrc[0].top = outer_top;
                     LRESULT(0)
                 } else {
+                    // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW`
+                    // (top of this function) — forwarded unchanged.
                     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
                 }
             }
@@ -2106,6 +2306,11 @@ mod win32 {
                 // (button/search-box) zone. See
                 // `WinBackend::nc_hit_test`'s doc for the exact
                 // classification this defers to.
+                // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
+                // this function) — forwarded unchanged; the return value
+                // is inspected here (not just discarded) but that's an
+                // ordinary use of the `LRESULT` the call already hands
+                // back, not an extra unsafety.
                 let default = unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
                 if default.0 as u32 != HTCLIENT {
                     return default;
@@ -2120,6 +2325,8 @@ mod win32 {
                     x: screen_x as i32,
                     y: screen_y as i32,
                 };
+                // SAFETY: `hwnd` is this dispatch's own window; `pt` is
+                // stack-local and outlives the call.
                 unsafe {
                     let _ = ScreenToClient(hwnd, &mut pt);
                 }
@@ -2155,6 +2362,8 @@ mod win32 {
                     ws.state.borrow().backend.apply_current_cursor();
                     LRESULT(1)
                 } else {
+                    // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW`
+                    // (top of this function) — forwarded unchanged.
                     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
                 }
             }
@@ -2169,16 +2378,32 @@ mod win32 {
                 // `Reaction::RedrawAfter`/`EventOutcome::RedrawAfter`.
                 // Any other timer id is none of this runner's business
                 // and falls through to `DefWindowProcW` untouched.
+                //
+                // SAFETY: (every `unsafe` block in this arm) `hwnd` is
+                // this dispatch's own, still-live window. `KillTimer`
+                // takes only a handle and a timer id — it is a documented
+                // no-op, not an error, if that id isn't currently armed
+                // (e.g. two timers racing to fire the same tick), so
+                // there's no "must be armed" precondition to uphold.
+                // `DestroyWindow` re-enters `wndproc` synchronously on
+                // this thread for `WM_DESTROY`/`WM_NCDESTROY`, same as
+                // every other in-loop `Reaction::Exit`/exit-timer call
+                // site in this function — `ws`/`state_ptr` stay valid
+                // throughout because `run_inner` only frees them after
+                // `GetMessageW`'s loop (driven by this same `hwnd`) exits.
                 if wparam.0 == SMOKE_TIMER_ID {
+                    // SAFETY: see this arm's opening comment above.
                     unsafe {
                         let _ = KillTimer(Some(hwnd), SMOKE_TIMER_ID);
                     }
                     run_smoke_check(ws, hwnd);
+                    // SAFETY: see this arm's opening comment above.
                     unsafe {
                         let _ = DestroyWindow(hwnd);
                     }
                     LRESULT(0)
                 } else if wparam.0 == RESIZE_TIMER_ID {
+                    // SAFETY: see this arm's opening comment above.
                     unsafe {
                         let _ = KillTimer(Some(hwnd), RESIZE_TIMER_ID);
                     }
@@ -2189,6 +2414,7 @@ mod win32 {
                     }
                     LRESULT(0)
                 } else if wparam.0 == FRAME_TIMER_ID {
+                    // SAFETY: see this arm's opening comment above.
                     unsafe {
                         let _ = KillTimer(Some(hwnd), FRAME_TIMER_ID);
                     }
@@ -2198,12 +2424,15 @@ mod win32 {
                     // wants to be woken again (the chained-rearm pattern
                     // `Reaction::RedrawAfter`'s doc describes).
                     if tick(ws, hwnd) == Reaction::Exit {
+                        // SAFETY: see this arm's opening comment above.
                         unsafe {
                             let _ = DestroyWindow(hwnd);
                         }
                     }
                     LRESULT(0)
                 } else {
+                    // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW`
+                    // (top of this function) — forwarded unchanged.
                     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
                 }
             }
@@ -2220,6 +2449,12 @@ mod win32 {
                 let events = ws.state.borrow_mut().backend.drain_user_events();
                 for event in events {
                     if dispatch(ws, hwnd, event) == Reaction::Exit {
+                        // SAFETY: `hwnd` is this dispatch's own, still-live
+                        // window; `DestroyWindow` re-enters `wndproc`
+                        // synchronously for `WM_DESTROY`/`WM_NCDESTROY` on
+                        // this thread — same shape as `WM_TIMER`'s exit
+                        // paths above, `ws`/`state_ptr` stay valid for the
+                        // same `run_inner`-lifetime reason.
                         unsafe {
                             let _ = DestroyWindow(hwnd);
                         }
@@ -2253,6 +2488,8 @@ mod win32 {
                         if dispatch(ws, hwnd, UiEvent::ContextMenuItemActivated(id))
                             == Reaction::Exit
                         {
+                            // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
+                            // `DestroyWindow` above.
                             unsafe {
                                 let _ = DestroyWindow(hwnd);
                             }
@@ -2260,6 +2497,8 @@ mod win32 {
                         }
                     }
                     if dispatch(ws, hwnd, UiEvent::ContextMenuDismissed) == Reaction::Exit {
+                        // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
+                        // `DestroyWindow` above.
                         unsafe {
                             let _ = DestroyWindow(hwnd);
                         }
@@ -2267,6 +2506,8 @@ mod win32 {
                 } else if dispatch(ws, hwnd, crate::win::tray::plain_click_event(button))
                     == Reaction::Exit
                 {
+                    // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
+                    // `DestroyWindow` above.
                     unsafe {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -2314,10 +2555,10 @@ mod win32 {
                     return LRESULT(0);
                 }
                 let code_units = cds.cbData as usize / size_of::<u16>();
-                // SAFETY: `cds.lpData`/`cds.cbData` describe the same
-                // live buffer `cds` itself points into, per the same
-                // `WM_COPYDATA` contract above.
                 let units =
+                    // SAFETY: `cds.lpData`/`cds.cbData` describe the same
+                    // live buffer `cds` itself points into, per the same
+                    // `WM_COPYDATA` contract above.
                     unsafe { std::slice::from_raw_parts(cds.lpData.cast::<u16>(), code_units) };
                 let payload = String::from_utf16_lossy(units);
                 // Decoded via `super::decode_copydata_argv` (review fix,
@@ -2336,6 +2577,10 @@ mod win32 {
                 // The whole point of forwarding rather than silently
                 // dropping a second launch: the user should see *this*
                 // window respond, not wonder why nothing happened.
+                //
+                // SAFETY: `hwnd` is this dispatch's own, still-live
+                // window; both calls take only a handle (plus, for
+                // `ShowWindow`, a plain show-command enum).
                 unsafe {
                     let _ = SetForegroundWindow(hwnd);
                     let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -2353,6 +2598,8 @@ mod win32 {
                 // decision below is Alt+F4's veto decision too, with no
                 // separate Alt+F4 code path to keep in sync.
                 if dispatch(ws, hwnd, UiEvent::WindowClose) == Reaction::Exit {
+                    // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
+                    // `DestroyWindow` above.
                     unsafe {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -2364,11 +2611,19 @@ mod win32 {
                 LRESULT(0)
             }
             WM_DESTROY => {
+                // SAFETY: `PostQuitMessage` posts to the calling thread's
+                // own message queue by value (an exit code) — no pointer,
+                // no handle, no precondition beyond having a message
+                // queue, which every `wndproc`-dispatching thread has.
                 unsafe {
                     PostQuitMessage(0);
                 }
                 LRESULT(0)
             }
+            // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` (top of
+            // this function) — forwarded unchanged; this is the final
+            // catch-all for every message this `wndproc` doesn't
+            // otherwise handle.
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
     }

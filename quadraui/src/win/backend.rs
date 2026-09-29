@@ -943,9 +943,16 @@ impl WinBackend {
     #[cfg(target_os = "windows")]
     pub(crate) fn attach_surface(&mut self, hwnd: HWND) -> WinResult<()> {
         let factory: ID2D1Factory =
+            // SAFETY: `D2D1CreateFactory` takes a plain enum and an
+            // `Option<*const D2D1_FACTORY_OPTIONS>`; `None` is the
+            // documented "use defaults" sentinel, not a dereferenced
+            // pointer.
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
 
         let mut rect = RECT::default();
+        // SAFETY: `hwnd` is the caller's live window (this is called once,
+        // right after `CreateWindowExW` succeeds — see this function's
+        // doc); `rect` is stack-local and outlives the call.
         unsafe { GetClientRect(hwnd, &mut rect)? };
         let width = (rect.right - rect.left).max(1) as u32;
         let height = (rect.bottom - rect.top).max(1) as u32;
@@ -962,6 +969,9 @@ impl WinBackend {
             pixelSize: D2D_SIZE_U { width, height },
             ..Default::default()
         };
+        // SAFETY: `render_props`/`hwnd_props` are stack-local structs read
+        // synchronously by this call; `hwnd_props.hwnd` is the same live
+        // `hwnd` this function was called with.
         let target = unsafe { factory.CreateHwndRenderTarget(&render_props, &hwnd_props)? };
 
         self.dpi_scale = dpi_scale_for_window(hwnd);
@@ -1034,6 +1044,9 @@ impl WinBackend {
             // else will correct it. Re-read the client rect and resync
             // explicitly rather than relying on the swallowed message.
             let mut rect = RECT::default();
+            // SAFETY: `hwnd` is still the live window `attach_surface`
+            // was called with; `rect` is stack-local and outlives the
+            // call.
             if unsafe { GetClientRect(hwnd, &mut rect) }.is_ok() {
                 let width = (rect.right - rect.left).max(1) as u32;
                 let height = (rect.bottom - rect.top).max(1) as u32;
@@ -1194,6 +1207,11 @@ impl WinBackend {
         if let Some(surface) = &self.surface {
             if let RenderTarget::Hwnd(target) = &surface.target {
                 let size = D2D_SIZE_U { width, height };
+                // SAFETY: `target` is a live `ID2D1HwndRenderTarget` COM
+                // object (this crate's `windows-rs` bindings hold a strong
+                // reference for as long as `self.surface` does); `Resize`
+                // takes `size` by const reference and has no other
+                // precondition.
                 unsafe { target.Resize(&size)? };
             }
         }
@@ -1295,6 +1313,11 @@ impl WinBackend {
     /// both call sites need to exist.
     #[cfg(target_os = "windows")]
     pub(crate) fn apply_current_cursor(&self) {
+        // SAFETY: `LoadCursorW(None, ...)` loads a built-in system cursor
+        // by predefined id — see `run.rs::run_inner`'s identical call for
+        // the same reasoning; `SetCursor` takes the resulting `HCURSOR`
+        // (or `None` on load failure, itself a documented valid input
+        // meaning "no cursor") by value.
         unsafe {
             let _ = SetCursor(
                 LoadCursorW(
@@ -1524,6 +1547,9 @@ impl WinBackend {
 /// this wrapper is only the `GetDpiForWindow` call that can't be.
 #[cfg(target_os = "windows")]
 fn dpi_scale_for_window(hwnd: HWND) -> f32 {
+    // SAFETY: `GetDpiForWindow` takes only a handle and returns a `u32` by
+    // value — `hwnd` is the caller's live window, and there is no other
+    // precondition.
     crate::win::msg::dpi_ratio(unsafe { GetDpiForWindow(hwnd) })
 }
 
@@ -1672,6 +1698,13 @@ impl Backend for WinBackend {
             // `BeginDraw`/`Clear` are infallible on `ID2D1RenderTarget`
             // (device-lost errors only surface later, from `EndDraw` —
             // handled in `end_frame` below).
+            //
+            // SAFETY: `surface.target` is a live `ID2D1RenderTarget` COM
+            // object for as long as `self.surface` holds it; `BeginDraw`
+            // takes no arguments and its only precondition (must be
+            // paired with a later `EndDraw`, never called twice without
+            // one in between) is upheld by `end_frame` below being this
+            // frame's only other caller.
             unsafe {
                 surface.target.BeginDraw();
             }
@@ -1681,6 +1714,10 @@ impl Backend for WinBackend {
             // of `rect.height` — must show the theme's background, not
             // a fixed dark shade, on light themes too.
             let clear_color = super::text::color_to_d2d(self.current_theme.background);
+            // SAFETY: same live `surface.target` as `BeginDraw` above,
+            // now inside the `BeginDraw`/`EndDraw` bracket that call
+            // opened; `clear_color` is a stack-local `D2D1_COLOR_F`
+            // passed by reference for the duration of the call.
             unsafe {
                 surface.target.Clear(Some(&clear_color));
             }
@@ -1726,6 +1763,12 @@ impl Backend for WinBackend {
             // gives a host with a sink installed (`src/diagnostics.rs`)
             // a chance to log it even if nothing ever polls
             // `last_error()`.
+            //
+            // SAFETY: `surface.target` is the same live COM object
+            // `begin_frame`'s `BeginDraw` call opened a draw bracket on;
+            // `EndDraw(None, None)` (no tag pointers requested back) is
+            // the documented way to close it without the optional
+            // per-primitive-tag diagnostics.
             if unsafe { surface.target.EndDraw(None, None) }.is_err() {
                 self.surface = None;
                 self.last_error = Some(BackendError::SurfaceLost);
@@ -2014,6 +2057,13 @@ impl Backend for WinBackend {
             std::sync::Arc::new(move |payload: UserPayload| {
                 queue.push(payload.into_arc());
                 if let Some(hwnd) = live_hwnd(&hwnd_raw) {
+                    // SAFETY: `hwnd` came from `live_hwnd`, which reads
+                    // `hwnd_raw` fresh on every call — see the doc comment
+                    // above for why round-tripping through `isize` this
+                    // way is valid even from a background thread, and why
+                    // `PostMessageW` (documented as thread-safe to call
+                    // against another thread's window) is the right
+                    // primitive here rather than `SendMessageW`.
                     unsafe {
                         let _ =
                             PostMessageW(Some(hwnd), WM_QUADRAUI_USER_EVENT, WPARAM(0), LPARAM(0));
@@ -2053,6 +2103,12 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         {
             if let Some(hwnd) = self.hwnd {
+                // SAFETY: this runs synchronously on the thread that owns
+                // the message loop (per the doc comment above), so
+                // `self.hwnd` is a live window read on its own thread;
+                // `lpTimerFunc: None` posts `WM_TIMER` through the normal
+                // message queue rather than invoking a raw function
+                // pointer.
                 unsafe {
                     SetTimer(
                         Some(hwnd),
@@ -2411,11 +2467,16 @@ impl Backend for WinBackend {
             let Some(hwnd) = self.hwnd else {
                 return false;
             };
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; both calls take only a handle (plus, for
+            // `ShowWindow`, a plain show-command enum).
             let target = if unsafe { IsZoomed(hwnd) }.as_bool() {
                 SW_RESTORE
             } else {
                 SW_MAXIMIZE
             };
+            // SAFETY: same as `IsZoomed` above — `hwnd` is still
+            // `self.hwnd`.
             unsafe {
                 let _ = ShowWindow(hwnd, target);
             }
@@ -4497,6 +4558,10 @@ impl WindowControl for WinBackend {
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             let wide = win_wide_nul_terminated(title);
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `wide` is a `\0`-terminated `Vec<u16>` still in
+            // scope, so `wide.as_ptr()` stays valid for the duration of
+            // this synchronous call.
             unsafe { SetWindowTextW(hwnd, windows::core::PCWSTR::from_raw(wide.as_ptr())) }.map_err(
                 |e| BackendError::PlatformFailure {
                     context: format!("SetWindowTextW: {e}"),
@@ -4515,6 +4580,10 @@ impl WindowControl for WinBackend {
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             let scale = self.dpi_scale;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `SetWindowPos` takes only handles and plain
+            // integers/flags here (`hWndInsertAfter: None` since
+            // `SWP_NOZORDER` makes it ignored anyway).
             unsafe {
                 SetWindowPos(
                     hwnd,
@@ -4565,6 +4634,8 @@ impl WindowControl for WinBackend {
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             let mut rect = RECT::default();
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `rect` is stack-local and outlives the call.
             unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| {
                 BackendError::PlatformFailure {
                     context: format!("GetWindowRect: {e}"),
@@ -4589,6 +4660,9 @@ impl WindowControl for WinBackend {
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             let scale = self.dpi_scale;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; only handles and plain integers/flags cross this
+            // call.
             unsafe {
                 SetWindowPos(
                     hwnd,
@@ -4616,6 +4690,8 @@ impl WindowControl for WinBackend {
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             let mut window_rect = RECT::default();
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `window_rect` is stack-local and outlives the call.
             unsafe { GetWindowRect(hwnd, &mut window_rect) }.map_err(|e| {
                 BackendError::PlatformFailure {
                     context: format!("GetWindowRect: {e}"),
@@ -4626,6 +4702,9 @@ impl WindowControl for WinBackend {
             let h = window_rect.bottom - window_rect.top;
             let mw = monitor_rect.right - monitor_rect.left;
             let mh = monitor_rect.bottom - monitor_rect.top;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; only handles and plain integers/flags cross this
+            // call.
             unsafe {
                 SetWindowPos(
                     hwnd,
@@ -4665,16 +4744,25 @@ impl WindowControl for WinBackend {
                     return Ok(());
                 }
                 let mut rect = RECT::default();
+                // SAFETY: (every `unsafe` block in this arm) `hwnd` is
+                // `self.hwnd`, this backend's own live window, for the
+                // whole call; `rect` is stack-local; `GetWindowLongPtrW`/
+                // `SetWindowLongPtrW` exchange plain `isize` bitmasks (no
+                // pointer), and `SetWindowPos` below takes only handles
+                // and integers.
                 unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| {
                     BackendError::PlatformFailure {
                         context: format!("GetWindowRect: {e}"),
                     }
                 })?;
+                // SAFETY: see this arm's opening comment above.
                 let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
                 self.fullscreen_saved = Some((rect, style));
                 let stripped = style & !(WS_OVERLAPPEDWINDOW.0 as isize);
+                // SAFETY: see this arm's opening comment above.
                 unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, stripped) };
                 let monitor_rect = win_monitor_rect(hwnd)?;
+                // SAFETY: see this arm's opening comment above.
                 unsafe {
                     SetWindowPos(
                         hwnd,
@@ -4693,7 +4781,14 @@ impl WindowControl for WinBackend {
                 let Some((rect, style)) = self.fullscreen_saved.take() else {
                     return Ok(());
                 };
+                // SAFETY: `hwnd` is `self.hwnd`; `style` is the exact
+                // `isize` bitmask `GetWindowLongPtrW` returned when this
+                // window entered fullscreen (saved above), so restoring
+                // it verbatim is exactly what `SetWindowLongPtrW`
+                // documents this call for.
                 unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, style) };
+                // SAFETY: `hwnd` is `self.hwnd`; only handles and plain
+                // integers/flags cross this call.
                 unsafe {
                     SetWindowPos(
                         hwnd,
@@ -4723,6 +4818,8 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `IsZoomed` takes only a handle.
             Ok(unsafe { IsZoomed(hwnd) }.as_bool())
         }
         #[cfg(not(target_os = "windows"))]
@@ -4740,6 +4837,10 @@ impl WindowControl for WinBackend {
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
             let insert_after = if on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `insert_after` is one of the two predefined
+            // `HWND_TOPMOST`/`HWND_NOTOPMOST` sentinel values, not a
+            // window handle that needs to be independently live.
             unsafe {
                 SetWindowPos(
                     hwnd,
@@ -4775,13 +4876,19 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: (every `unsafe` block in this arm) `hwnd` is
+            // `self.hwnd`, this backend's own live window; `GetWindowLongPtrW`/
+            // `SetWindowLongPtrW` exchange plain `isize` bitmasks, and
+            // `SetWindowPos` below takes only handles and integers/flags.
             let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
             let new_style = if decorated {
                 style | (WS_CAPTION.0 as isize)
             } else {
                 style & !(WS_CAPTION.0 as isize)
             };
+            // SAFETY: see this arm's opening comment above.
             unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, new_style) };
+            // SAFETY: see this arm's opening comment above.
             unsafe {
                 SetWindowPos(
                     hwnd,
@@ -4808,6 +4915,9 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `ShowWindow` takes only a handle and a plain
+            // show-command enum.
             unsafe {
                 let _ = ShowWindow(hwnd, SW_MINIMIZE);
             }
@@ -4826,6 +4936,9 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `ShowWindow` takes only a handle and a plain
+            // show-command enum.
             unsafe {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
@@ -4841,6 +4954,9 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `ShowWindow` takes only a handle and a plain
+            // show-command enum.
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
@@ -4856,6 +4972,9 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `ShowWindow` takes only a handle and a plain
+            // show-command enum.
             unsafe {
                 let _ = ShowWindow(hwnd, SW_SHOW);
             }
@@ -4871,6 +4990,8 @@ impl WindowControl for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let hwnd = self.hwnd.ok_or(BackendError::Unsupported)?;
+            // SAFETY: `hwnd` is `self.hwnd`, this backend's own live
+            // window; `SetForegroundWindow` takes only a handle.
             unsafe {
                 let _ = SetForegroundWindow(hwnd);
             }
@@ -4970,6 +5091,10 @@ impl WinBackend {
         let Some(bar) = self.pending_menu_bar.clone() else {
             return;
         };
+        // SAFETY: `CreateMenu` takes no arguments — there is no
+        // precondition beyond the ordinary COM/Win32 threading model
+        // (this runs on the thread that owns `hwnd`, the same thread
+        // every other call in this function assumes).
         let Ok(hmenu) = (unsafe { CreateMenu() }) else {
             return;
         };
@@ -4979,6 +5104,8 @@ impl WinBackend {
             let wide = win_wide_nul_terminated(&top.label);
             match top.submenu.as_ref() {
                 Some(items) => {
+                    // SAFETY: same as `CreateMenu` above — no arguments,
+                    // no precondition beyond thread affinity.
                     let Ok(submenu) = (unsafe { CreatePopupMenu() }) else {
                         continue;
                     };
@@ -4995,6 +5122,13 @@ impl WinBackend {
                     // `DestroyMenu(hmenu)` below only recursively tears
                     // down submenus actually attached to it. Destroy it
                     // explicitly on that path.
+                    //
+                    // SAFETY: `hmenu` is the live `HMENU` from `CreateMenu`
+                    // above; `submenu` is the live `HMENU` from
+                    // `CreatePopupMenu` just above; `wide` is a
+                    // `\0`-terminated `Vec<u16>` still in scope, so
+                    // `wide.as_ptr()` stays valid for the duration of this
+                    // synchronous call.
                     if (unsafe {
                         AppendMenuW(
                             hmenu,
@@ -5005,11 +5139,19 @@ impl WinBackend {
                     })
                     .is_err()
                     {
+                        // SAFETY: `submenu` is the same live `HMENU` from
+                        // just above; `AppendMenuW` failing above means it
+                        // was never attached to `hmenu`, so destroying it
+                        // here is exactly what the comment above this `if`
+                        // documents.
                         unsafe {
                             let _ = DestroyMenu(submenu);
                         }
                     }
                 }
+                // SAFETY: `hmenu` is the live `HMENU` from `CreateMenu`
+                // above; `wide` is a `\0`-terminated `Vec<u16>` still in
+                // scope.
                 None => unsafe {
                     let _ = AppendMenuW(
                         hmenu,
@@ -5021,7 +5163,11 @@ impl WinBackend {
             }
         }
 
+        // SAFETY: `hwnd` is this call's own parameter, the live window
+        // being installed onto; `hmenu` is the live `HMENU` built above.
         if (unsafe { SetMenu(hwnd, Some(hmenu)) }).is_err() {
+            // SAFETY: `hmenu` is the same live `HMENU`; `SetMenu` failing
+            // above means it was never attached, so nothing else owns it.
             unsafe {
                 let _ = DestroyMenu(hmenu);
             }
@@ -5033,6 +5179,10 @@ impl WinBackend {
         // a re-install doesn't leak one native menu handle per call. See
         // `menu_handle`'s field doc.
         if let Some(old) = self.menu_handle.replace(hmenu) {
+            // SAFETY: `old` was this struct's previously-installed
+            // `HMENU`, now detached from `hwnd` by the `SetMenu` call
+            // above (which replaces, not appends) — nothing else holds a
+            // reference to it, so it's safe to tear down.
             unsafe {
                 let _ = DestroyMenu(old);
             }
@@ -5043,6 +5193,9 @@ impl WinBackend {
         // (and typically a no-op, since the window usually isn't shown
         // yet) when called before the window's first `ShowWindow`, so
         // this is unconditional rather than gated on visibility.
+        //
+        // SAFETY: `hwnd` is this call's own parameter, the live window
+        // `SetMenu` above just installed the new menu onto.
         unsafe {
             let _ = DrawMenuBar(hwnd);
         }
@@ -5086,6 +5239,9 @@ impl WinBackend {
 #[cfg(target_os = "windows")]
 fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<WidgetId>) {
     if item.is_separator() {
+        // SAFETY: `hmenu` is the caller's live `HMENU`; `PCWSTR::null()`
+        // is the documented sentinel for "no text" (a separator has
+        // none), not a dereferenced pointer.
         unsafe {
             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
         }
@@ -5096,6 +5252,9 @@ fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<
     let wide = win_wide_nul_terminated(&title);
 
     if let Some(nested) = item.submenu.as_ref() {
+        // SAFETY: `CreatePopupMenu` takes no arguments — no precondition
+        // beyond thread affinity, same as `install_menu_bar_now`'s
+        // identical call.
         let Ok(submenu) = (unsafe { CreatePopupMenu() }) else {
             return;
         };
@@ -5109,6 +5268,10 @@ fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<
         // See the matching comment in `install_menu_bar_now`: if this
         // `AppendMenuW` fails, `submenu` is never attached to `hmenu` and
         // would otherwise leak — destroy it explicitly on that path.
+        //
+        // SAFETY: `hmenu` is the caller's live `HMENU`; `submenu` is the
+        // live `HMENU` from `CreatePopupMenu` above; `wide` is a
+        // `\0`-terminated `Vec<u16>` still in scope.
         if (unsafe {
             AppendMenuW(
                 hmenu,
@@ -5119,6 +5282,8 @@ fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<
         })
         .is_err()
         {
+            // SAFETY: `submenu` is the same live `HMENU`; `AppendMenuW`
+            // failing above means it was never attached to `hmenu`.
             unsafe {
                 let _ = DestroyMenu(submenu);
             }
@@ -5136,6 +5301,8 @@ fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<
         if let Some(true) = item.checked {
             flags |= MF_CHECKED;
         }
+        // SAFETY: `hmenu` is the caller's live `HMENU`; `wide` is a
+        // `\0`-terminated `Vec<u16>` still in scope.
         unsafe {
             let _ = AppendMenuW(
                 hmenu,
@@ -5164,11 +5331,21 @@ use crate::desktop::wide_nul_terminated as win_wide_nul_terminated;
 /// correctness one) and [`WindowControl::set_fullscreen`].
 #[cfg(target_os = "windows")]
 fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
+    // SAFETY: `hwnd` is the caller's live window; `MonitorFromWindow`
+    // with `MONITOR_DEFAULTTONEAREST` never fails (it falls back to the
+    // nearest monitor rather than erroring), so there is no failure mode
+    // to guard against here beyond the type system already requiring a
+    // live `HWND`.
     let hmonitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
+    // SAFETY: `hmonitor` came from `MonitorFromWindow` just above;
+    // `info.cbSize` is set to `MONITORINFO`'s size immediately above —
+    // the documented Win32 idiom for telling `GetMonitorInfoW` which
+    // struct variant was passed (mirrors `services.rs::win_displays`'s
+    // identical `MONITORINFOEXW` idiom).
     unsafe { GetMonitorInfoW(hmonitor, &mut info) }
         .ok()
         .map_err(|e| BackendError::PlatformFailure {
@@ -8270,9 +8447,15 @@ mod tests {
             wparam: WPARAM,
             lparam: LPARAM,
         ) -> windows::Win32::Foundation::LRESULT {
+            // SAFETY: `hwnd`/`msg`/`wparam`/`lparam` are this call's own
+            // parameters, forwarded unchanged — same as every
+            // `DefWindowProcW` forward in `win::run::wndproc`.
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
 
+        // SAFETY: `GetModuleHandleW(PCWSTR::null())` is the documented
+        // idiom for "this process's own module handle" — same as
+        // `win::run::run_inner`'s identical call.
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(PCWSTR::null()) }
             .expect("GetModuleHandleW(None) always succeeds for the current process")
             .into();
@@ -8289,10 +8472,21 @@ mod tests {
         // (`ERROR_CLASS_ALREADY_EXISTS`), which is harmless here — only
         // the handle `CreateWindowExW` resolves by name matters, not
         // which call minted the class.
+        //
+        // SAFETY: `wc` is a fully-initialized `WNDCLASSEXW` on the stack,
+        // still in scope; `RegisterClassExW` reads it synchronously and
+        // does not retain the pointer. `class_name.as_ptr()` (via
+        // `lpszClassName`) stays valid because `class_name` outlives this
+        // call.
         unsafe {
             let _ = RegisterClassExW(&wc);
         }
 
+        // SAFETY: `class_name` is a `Vec<u16>` that outlives this call, so
+        // `class_name.as_ptr()` stays valid; `hinstance` came from the
+        // successful `GetModuleHandleW` above; `lpCreateParams: None`
+        // means this test window never populates `GWLP_USERDATA`, which
+        // is fine since `test_wndproc` above never reads it.
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -8379,6 +8573,11 @@ mod tests {
         // that case.
         assert_eq!(crate::win::run::win_menu_command_id(1 << 16 | 1), None);
 
+        // SAFETY: `hwnd` is this test's own still-live window from
+        // `CreateWindowExW` above; `test_wndproc` (unlike the real
+        // `win::run::wndproc`) never reads `GWLP_USERDATA`, so there is
+        // no boxed state that must outlive this call the way
+        // `run_inner`'s shutdown path requires.
         unsafe {
             let _ = DestroyWindow(hwnd);
         }
