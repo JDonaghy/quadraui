@@ -659,6 +659,42 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 //    lose their rounded-pill corners; `BOARD_CARD_CORNER_RADIUS_PX` is no
 //    longer consumed by any rasteriser (TUI has no notion of rounded
 //    corners either, so this makes all four backends agree).
+// 4. **Per-element font size.** Pre-port `gtk::board::draw_board` varied
+//    Pango point size per text run (`TITLE_FONT_SIZE = 11.0` for the
+//    column header and card title, `BADGE_FONT_SIZE = 9.0` /
+//    `HINT_FONT_SIZE = 9.0` for the badge row and hint strip, each set
+//    via a `set_pango_size` helper that mutated a fresh
+//    `pango::FontDescription` per call). `macos::board::draw_board` and
+//    `win::board::draw_board` never had that: both modules' own
+//    pre-port doc comments already disclosed painting every element
+//    with the backend's single ambient font/`CTFont`/`DWrite` text
+//    format as a "divergence from the GTK twin (deliberate)", because
+//    per-element sizing needs a format/attribute cache neither
+//    rasteriser had. `NativeSurface` has no per-call font-size verb at
+//    all (only `scale_x`/bold/italic/underline via
+//    `surface_draw_text_run_styled` — confirmed against
+//    `native_surface.rs`), so `paint` below paints every run — header,
+//    title, badges, hint — at the ambient surface font on every
+//    backend: the macOS/Windows (2-of-3) behaviour, GTK now matching
+//    rather than the reverse. GTK's default ambient font at the point
+//    `draw_board` is called is `editor_font` (11pt Monospace by
+//    default — see `GtkBackend::enter_frame_scope`), which happens to
+//    equal the old `TITLE_FONT_SIZE`, so the header and title are
+//    visually unchanged at defaults; only the badge/hint text grows
+//    from 9pt to the ambient size. Because a *user* can set an
+//    arbitrarily large `editor_font`/`ui_font` (accessibility, demo
+//    projection, etc.), `paint` no longer assumes any text run fits
+//    the fixed `BADGE_Y_OFF`/`HINT_Y_OFF`/`HINT_H` pixel geometry those
+//    constants were tuned for at 9pt: the badge row and the hint strip
+//    are each now wrapped in their own `surface_push_clip`/
+//    `surface_pop_clip` bracket (nested inside the card's own bracket
+//    from divergences 1/2), so oversized text is clipped to its own
+//    band instead of bleeding into the title or past the bottom of the
+//    hint's background strip. See
+//    `badge_row_and_hint_strip_are_each_clipped_to_their_own_band`
+//    below for the regression (observed RED before the extra clip
+//    brackets were added — a tall badge/hint measurement painted past
+//    its intended strip with only the outer card clip in place).
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -678,6 +714,12 @@ pub(crate) mod native_surface_paint {
     const TITLE_Y_OFF: f32 = 6.0;
     /// Vertical offset of the badge row from the card top.
     const BADGE_Y_OFF: f32 = 26.0;
+    /// Height of the badge-row clip band — see divergence 4 above. Tuned
+    /// generously past the 9pt badge text these offsets were originally
+    /// measured for, so the default 11pt ambient font (divergence 4)
+    /// still fits with headroom; a much larger user-configured ambient
+    /// font clips rather than bleeding into the title above it.
+    const BADGE_ROW_H: f32 = 18.0;
     /// Vertical offset of the hint strip from the card bottom.
     const HINT_Y_OFF: f32 = 18.0;
     /// Height of the hint strip.
@@ -778,24 +820,41 @@ pub(crate) mod native_surface_paint {
                 );
 
                 // ── Badge row ────────────────────────────────────────────
+                // Divergence 4: clipped to its own band (not just the
+                // outer card bracket above) so an ambient font larger
+                // than the 9pt these fixed offsets were tuned for clips
+                // instead of bleeding up into the title.
                 let badge_y = cb.y + BADGE_Y_OFF;
-                let mut badge_x = cb.x + h_pad;
-                for badge in &card.badges {
-                    let badge_str = format!("{}{} ", badge_icon(badge.status), badge.label);
-                    let (bw, bh) = surface.surface_measure_text(&badge_str);
-                    let color = badge_fg_color(badge.status, theme);
-                    surface.surface_draw_text_run(
-                        Rect::new(badge_x, badge_y, bw.max(1.0), bh.max(1.0)),
-                        &badge_str,
-                        color,
+                if !card.badges.is_empty() {
+                    let badge_band = Rect::new(
+                        cb.x,
+                        badge_y - 2.0,
+                        cb.width,
+                        BADGE_ROW_H.min((cb.height - (badge_y - cb.y) + 2.0).max(0.0)),
                     );
-                    badge_x += bw;
-                    if badge_x > cb.x + cb.width - h_pad {
-                        break;
+                    surface.surface_push_clip(badge_band);
+                    let mut badge_x = cb.x + h_pad;
+                    for badge in &card.badges {
+                        let badge_str = format!("{}{} ", badge_icon(badge.status), badge.label);
+                        let (bw, bh) = surface.surface_measure_text(&badge_str);
+                        let color = badge_fg_color(badge.status, theme);
+                        surface.surface_draw_text_run(
+                            Rect::new(badge_x, badge_y, bw.max(1.0), bh.max(1.0)),
+                            &badge_str,
+                            color,
+                        );
+                        badge_x += bw;
+                        if badge_x > cb.x + cb.width - h_pad {
+                            break;
+                        }
                     }
+                    surface.surface_pop_clip();
                 }
 
                 // ── Hint ─────────────────────────────────────────────────
+                // Divergence 4: the strip's own clip bracket keeps a
+                // taller-than-9pt ambient-font hint from painting past
+                // the bottom of its own background fill.
                 if let Some(hint) = &card.hint {
                     let hint_y = cb.y + cb.height - HINT_Y_OFF;
                     if hint_y > badge_y + 10.0 {
@@ -803,7 +862,8 @@ pub(crate) mod native_surface_paint {
                         let strip =
                             Rect::new(cb.x + 2.0, hint_y - 2.0, (cb.width - 4.0).max(0.0), HINT_H);
                         surface.surface_fill_rect(strip, theme.card_hint_bg);
-                        // Text.
+                        // Text, clipped to the strip it's painted over.
+                        surface.surface_push_clip(strip);
                         surface.surface_draw_text_run(
                             Rect::new(
                                 cb.x + h_pad,
@@ -814,6 +874,7 @@ pub(crate) mod native_surface_paint {
                             hint,
                             theme.card_hint_fg,
                         );
+                        surface.surface_pop_clip();
                     }
                 }
 
@@ -953,9 +1014,9 @@ pub(crate) mod native_surface_paint {
         }
 
         /// Regression for divergence 2/3: the card title/badges/hint all
-        /// paint inside a single push/pop clip bracket around the whole
-        /// card, and the card border is a straight `surface_stroke_rect`
-        /// call (never `surface_fill_rounded_rect`).
+        /// paint inside the card's own push/pop clip bracket, and the
+        /// card border is a straight `surface_stroke_rect` call (never
+        /// `surface_fill_rounded_rect`).
         #[test]
         fn card_paints_a_straight_border_inside_one_clip_bracket() {
             let model = sample_model();
@@ -971,9 +1032,118 @@ pub(crate) mod native_surface_paint {
                 surface.strokes.iter().any(|(r, _)| *r == cb),
                 "card border must be a straight surface_stroke_rect over the card bounds",
             );
-            // 1 header clip + 1 card clip.
-            assert_eq!(surface.clip_pushes.len(), 2);
-            assert_eq!(surface.clip_pops, 2);
+            // 1 header clip + 1 card clip + 1 badge-row clip (divergence
+            // 4 below — `sample_model`'s card has one badge, no hint).
+            assert_eq!(surface.clip_pushes.len(), 3);
+            assert_eq!(surface.clip_pops, 3);
+        }
+
+        /// Regression for divergence 4: an ambient font taller than the
+        /// 9pt `BADGE_Y_OFF`/`HINT_Y_OFF`/`HINT_H` geometry was tuned for
+        /// must not paint badge/hint text past its own band — each gets
+        /// its own clip bracket nested inside the card's. Observed RED
+        /// before those brackets were added: `paint` pushed only the
+        /// outer card clip, so a tall measured badge/hint run had
+        /// nothing bounding it to its own strip.
+        #[test]
+        fn badge_row_and_hint_strip_are_each_clipped_to_their_own_band() {
+            /// Reports a much taller glyph box than `RecordingSurface`'s
+            /// default 14px — simulates a large user-configured ambient
+            /// font (divergence 4's whole point: `paint` has no way to
+            /// shrink badge/hint text back down to 9pt).
+            struct TallTextSurface(RecordingSurface);
+
+            impl NativeSurface for TallTextSurface {
+                fn surface_begin_frame(&mut self, v: Viewport) {
+                    self.0.surface_begin_frame(v)
+                }
+                fn surface_end_frame(&mut self) {
+                    self.0.surface_end_frame()
+                }
+                fn surface_viewport(&self) -> Viewport {
+                    self.0.surface_viewport()
+                }
+                fn surface_line_height(&self) -> f32 {
+                    self.0.surface_line_height()
+                }
+                fn surface_char_width(&self) -> f32 {
+                    self.0.surface_char_width()
+                }
+                fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+                    let (w, _h) = self.0.surface_measure_text(text);
+                    (w, 40.0)
+                }
+                fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                    self.0.surface_fill_rect(rect, color)
+                }
+                fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+                    self.0.surface_fill_rounded_rect(rect, radius, color)
+                }
+                fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+                    self.0.surface_stroke_rect(rect, color, stroke_width)
+                }
+                fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+                    self.0.surface_draw_text_run(rect, text, color)
+                }
+                fn surface_draw_line(
+                    &mut self,
+                    from: crate::Point,
+                    to: crate::Point,
+                    color: Color,
+                    stroke_width: f32,
+                ) {
+                    self.0.surface_draw_line(from, to, color, stroke_width)
+                }
+                fn surface_push_clip(&mut self, rect: Rect) {
+                    self.0.surface_push_clip(rect)
+                }
+                fn surface_pop_clip(&mut self) {
+                    self.0.surface_pop_clip()
+                }
+                fn surface_draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult {
+                    self.0.surface_draw_image(rect, image)
+                }
+            }
+
+            let mut model = sample_model();
+            model.columns[0].cards[0].hint = Some("blocked".into());
+            let mut surface = TallTextSurface(RecordingSurface::default());
+            let layout = paint(
+                &model,
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 220.0, 300.0),
+            );
+            let cb = layout.columns[0].cards[0].bounds;
+            let badge_y = cb.y + BADGE_Y_OFF;
+            let hint_y = cb.y + cb.height - HINT_Y_OFF;
+
+            // Card clip + badge-row clip + hint-strip clip, nested
+            // inside the (already-verified) header + card brackets.
+            assert_eq!(surface.0.clip_pushes.len(), 4);
+            assert_eq!(surface.0.clip_pops, 4);
+
+            let badge_clip = surface
+                .0
+                .clip_pushes
+                .iter()
+                .find(|r| (r.y - (badge_y - 2.0)).abs() < 0.01)
+                .expect("badge row must push its own clip band");
+            assert!(
+                badge_clip.height <= BADGE_ROW_H,
+                "badge-row clip band must stay within BADGE_ROW_H regardless of measured text height"
+            );
+
+            let hint_clip = surface
+                .0
+                .clip_pushes
+                .iter()
+                .find(|r| (r.y - (hint_y - 2.0)).abs() < 0.01)
+                .expect("hint strip must push its own clip over its background fill");
+            assert!(
+                (hint_clip.height - HINT_H).abs() < 0.01,
+                "hint clip must match the fixed HINT_H strip, not the taller measured text"
+            );
         }
 
         #[test]

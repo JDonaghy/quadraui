@@ -2,11 +2,11 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::board::native_surface_paint::paint`] (#1085,
-//! `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the three
+//! `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the four
 //! named divergences (column-header overflow; card-title wrapping;
-//! rounded vs. straight card borders) found while unifying
-//! `gtk::board::draw_board`, `macos::board::draw_board` and
-//! `win::board::draw_board` into one implementation. This module now
+//! rounded vs. straight card borders; per-element font size) found
+//! while unifying `gtk::board::draw_board`, `macos::board::draw_board`
+//! and `win::board::draw_board` into one implementation. This module now
 //! only carries [`gtk_board_layout`] (still real, backend-specific pure
 //! geometry — no painting involved) and the deprecated [`draw_board`]
 //! compatibility shim over the shared [`super::surface::CairoSurface`]
