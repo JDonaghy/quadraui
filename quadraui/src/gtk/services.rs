@@ -1324,9 +1324,63 @@ mod tests {
     /// calls `require_gtk()` and then constructs a real GTK object —
     /// fold its assertions into `build_file_dialog_behaviors` instead, or
     /// this panic comes back.
+    ///
+    /// # macOS main-thread affinity (#1129)
+    ///
+    /// On macOS, gtk4-rs's `gtk4::init()` asserts main-thread affinity
+    /// itself, *before* it can fail gracefully: `rt.rs::set_initialized`
+    /// calls the C `pthread_main_np()` and hard-panics with "Attempted to
+    /// initialize GTK on OSX from non-main thread" rather than returning
+    /// `Err`. Rust's default test harness never runs a `#[test]` fn on
+    /// the process's actual OS main thread (that thread stays inside the
+    /// harness, dispatching tests to a worker pool), so unconditionally
+    /// calling `gtk4::init()` here would panic on every macOS run instead
+    /// of degrading to the same "no display" skip this guard already
+    /// gives headless Linux boxes. [`is_main_thread`] checks the same
+    /// `pthread_main_np()` symbol gtk4-rs itself calls (declared directly
+    /// rather than pulling in the `libc` crate, which the `gtk` feature
+    /// doesn't otherwise depend on) so this guard can report `false`
+    /// *before* ever touching `gtk4::init()` on a non-main thread.
     fn require_gtk() -> bool {
         static INIT: OnceLock<bool> = OnceLock::new();
-        *INIT.get_or_init(|| gtk4::init().is_ok())
+        *INIT.get_or_init(|| {
+            #[cfg(target_os = "macos")]
+            if !is_main_thread() {
+                return false;
+            }
+            gtk4::init().is_ok()
+        })
+    }
+
+    /// True when called from the process's actual OS main thread.
+    /// Declares the same C symbol gtk4-rs's own `rt.rs` calls internally
+    /// (`pthread_main_np`, macOS-only — see [`require_gtk`]'s doc)
+    /// instead of adding a `libc` dependency to the `gtk` feature for one
+    /// FFI call.
+    #[cfg(target_os = "macos")]
+    fn is_main_thread() -> bool {
+        unsafe extern "C" {
+            fn pthread_main_np() -> i32;
+        }
+        unsafe { pthread_main_np() != 0 }
+    }
+
+    /// quadraui#1129: `require_gtk()` must degrade to a graceful `false`
+    /// on macOS instead of panicking inside `gtk4::init()` — `cargo test`
+    /// never runs a `#[test]` fn on the process's real OS main thread, so
+    /// this is a deterministic assertion here (not an environment-gap
+    /// no-op like `build_file_dialog_behaviors`'s display skip): the
+    /// guard itself must not panic regardless of which test thread wins
+    /// the `OnceLock` race.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn require_gtk_does_not_panic_off_main_thread_on_macos() {
+        assert!(
+            !require_gtk(),
+            "cargo test never runs on the OS main thread, so require_gtk() \
+             must report false here instead of calling gtk4::init() and \
+             hitting gtk4-rs's own main-thread panic"
+        );
     }
 
     /// Covers every `build_file_dialog` behavior that requires
