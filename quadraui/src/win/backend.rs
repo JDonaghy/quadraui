@@ -246,13 +246,13 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateMenu, CreatePopupMenu, DestroyMenu, GetClientRect, GetWindowLongPtrW,
-    GetWindowRect, IsZoomed, LoadCursorW, PostMessageW, SetCursor, SetForegroundWindow, SetMenu,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, GWL_STYLE, HMENU,
-    HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE,
-    MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WS_CAPTION,
-    WS_OVERLAPPEDWINDOW,
+    AppendMenuW, CreateMenu, CreatePopupMenu, DestroyMenu, DrawMenuBar, GetClientRect,
+    GetWindowLongPtrW, GetWindowRect, IsZoomed, LoadCursorW, PostMessageW, SetCursor,
+    SetForegroundWindow, SetMenu, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+    ShowWindow, GWL_STYLE, HMENU, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOW, WS_CAPTION, WS_OVERLAPPEDWINDOW,
 };
 
 #[cfg(target_os = "windows")]
@@ -4797,13 +4797,25 @@ impl WinBackend {
                     if top.disabled {
                         flags |= MF_GRAYED;
                     }
-                    unsafe {
-                        let _ = AppendMenuW(
+                    // If this `AppendMenuW` fails, `submenu` never gets
+                    // attached to `hmenu` and would otherwise be an
+                    // orphaned `HMENU` — nothing else destroys it because
+                    // `DestroyMenu(hmenu)` below only recursively tears
+                    // down submenus actually attached to it. Destroy it
+                    // explicitly on that path.
+                    if (unsafe {
+                        AppendMenuW(
                             hmenu,
                             flags,
                             submenu.0 as usize,
                             windows::core::PCWSTR::from_raw(wide.as_ptr()),
-                        );
+                        )
+                    })
+                    .is_err()
+                    {
+                        unsafe {
+                            let _ = DestroyMenu(submenu);
+                        }
                     }
                 }
                 None => unsafe {
@@ -4833,15 +4845,37 @@ impl WinBackend {
                 let _ = DestroyMenu(old);
             }
         }
+        // Per MSDN, `SetMenu` on a window that is already visible does
+        // not by itself repaint the menu bar — the caller must follow up
+        // with `DrawMenuBar` for the change to actually show up. Harmless
+        // (and typically a no-op, since the window usually isn't shown
+        // yet) when called before the window's first `ShowWindow`, so
+        // this is unconditional rather than gated on visibility.
+        unsafe {
+            let _ = DrawMenuBar(hwnd);
+        }
     }
 
     /// Resolve a `WM_COMMAND`'s decoded command id (`win::run`'s
     /// `win_menu_command_id`) back to the `WidgetId` it was assigned by
     /// the most recent [`Self::install_menu_bar_now`] call (issue
     /// #1200) — `win::run`'s `wndproc` `WM_COMMAND` arm's only caller.
+    ///
+    /// Command ids are assigned 1-based (see
+    /// `win_append_menu_bar_item`), so `cmd_id == 0` never corresponds to
+    /// an entry in `menu_command_ids` — it is not merely "not found", it
+    /// is a value this table never produces. Guard it explicitly with
+    /// `checked_sub` rather than `cmd_id as usize - 1`: `WM_COMMAND` is
+    /// an ordinary window message any process on the same desktop
+    /// session can `PostMessage`/`SendMessage` with an arbitrary
+    /// `wparam`, so `win_menu_command_id` returning `Some(0)` (see
+    /// `zero_wparam_decodes_to_command_id_zero`) must resolve to `None`
+    /// here rather than underflow-panic in debug/test builds (the
+    /// crate's default profile has overflow checks enabled).
     #[cfg(target_os = "windows")]
     pub(crate) fn menu_command_id(&self, cmd_id: u16) -> Option<WidgetId> {
-        self.menu_command_ids.get(cmd_id as usize - 1).cloned()
+        let index = (cmd_id as usize).checked_sub(1)?;
+        self.menu_command_ids.get(index).cloned()
     }
 }
 
@@ -4880,13 +4914,22 @@ fn win_append_menu_bar_item(hmenu: HMENU, item: &ContextMenuItem, ids: &mut Vec<
         if item.disabled {
             flags |= MF_GRAYED;
         }
-        unsafe {
-            let _ = AppendMenuW(
+        // See the matching comment in `install_menu_bar_now`: if this
+        // `AppendMenuW` fails, `submenu` is never attached to `hmenu` and
+        // would otherwise leak — destroy it explicitly on that path.
+        if (unsafe {
+            AppendMenuW(
                 hmenu,
                 flags,
                 submenu.0 as usize,
                 windows::core::PCWSTR::from_raw(wide.as_ptr()),
-            );
+            )
+        })
+        .is_err()
+        {
+            unsafe {
+                let _ = DestroyMenu(submenu);
+            }
         }
         return;
     }
@@ -7804,6 +7847,24 @@ mod tests {
             backend.menu_command_ids.is_empty(),
             "no HWND existed yet, so no HMENU/SetMenu call should have run"
         );
+    }
+
+    /// Review finding (issue #1200 iteration 1): `WM_COMMAND` is an
+    /// ordinary window message any process on the same desktop session
+    /// can `PostMessage`/`SendMessage` with an arbitrary `wparam` —
+    /// `win::run::win_menu_command_id` legitimately decodes an all-zero
+    /// `wparam` to `Some(0)` (see `zero_wparam_decodes_to_command_id_zero`
+    /// in `win::run`'s tests). Command ids assigned by
+    /// `win_append_menu_bar_item` are 1-based, so `cmd_id == 0` must
+    /// resolve to `None` here rather than underflow-panic on
+    /// `cmd_id as usize - 1` (the crate's default `dev`/`cargo test`
+    /// profile has overflow checks enabled) — this must hold even with
+    /// no menu ever installed, i.e. `menu_command_ids` empty.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn menu_command_id_zero_resolves_to_none_without_panicking() {
+        let backend = WinBackend::new();
+        assert_eq!(backend.menu_command_id(0), None);
     }
 
     /// Issue #1200: a real `SetMenu` install, then a synthesized

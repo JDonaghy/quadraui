@@ -1600,10 +1600,16 @@ pub trait Backend: sealed::Sealed {
     /// (Hide / Quit etc.) is auto-prepended. Activations arrive on the
     /// event queue as [`UiEvent::MenuActivated`].
     ///
-    /// TUI / GTK / Win-GUI: no-op default. Apps that want an in-window
-    /// menu keep calling `draw_menu_bar` from their render path; native
-    /// installers for Win32 (`SetMenu`) and GTK (`set_menu_bar`) land
-    /// in follow-up tickets when consumers need them.
+    /// Win-GUI (`WinBackend`) walks `bar.items` → `HMENU` / popup-`HMENU`
+    /// hierarchy built via `CreateMenu`/`CreatePopupMenu`/`AppendMenuW`
+    /// and attaches it with `SetMenu` (issue #1200). Activations arrive
+    /// the same way, decoded from `WM_COMMAND` back to the originating
+    /// `WidgetId`.
+    ///
+    /// TUI / GTK: no-op default. Apps that want an in-window menu keep
+    /// calling `draw_menu_bar` from their render path; a native GTK
+    /// installer (`set_menu_bar`) lands in a follow-up ticket when a
+    /// consumer needs it.
     ///
     /// Apps typically call this once during `AppLogic::setup`. Re-calling
     /// replaces the previously-installed menu wholesale.
