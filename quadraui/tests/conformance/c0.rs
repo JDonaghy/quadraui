@@ -115,6 +115,34 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
+        // #1045 item 2: same content as `draw_status_bar_interactive`
+        // above, but through the scaled entry point so C0 exercises the
+        // `font_scale` parameter reaching the backend (even though the
+        // default impl ignores it and forwards unscaled).
+        method: "draw_status_bar_interactive_scaled",
+        needle: Some("c0statscaled"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = StatusBar {
+                id: id("status-bar-scaled"),
+                left_segments: vec![StatusBarSegment {
+                    text: " c0statscaled ".to_string(),
+                    fg: Color::rgb(220, 220, 220),
+                    bg: Color::rgb(37, 37, 38),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            let _ = b.draw_status_bar_interactive_scaled(
+                Rect::new(0.0, 0.0, area.width, lh),
+                &bar,
+                &InteractionState::new(),
+                0.85,
+            );
+        },
+    },
+    Case {
         method: "draw_tab_bar",
         needle: Some("c0tabs"),
         paint: |b, area| {
