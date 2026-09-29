@@ -5755,6 +5755,56 @@ mod tests {
         assert_eq!(Backend::scrollbar_reserve(&backend), 0.0);
     }
 
+    /// Issue #1045 item 2: TUI is a fixed-cell backend with no font size
+    /// to scale, so it doesn't override
+    /// `Backend::draw_status_bar_interactive_scaled` — this pins that the
+    /// trait's own default (ignore `font_scale`, forward unscaled) is
+    /// what actually runs, by checking a scaled call paints byte-for-byte
+    /// the same layout an unscaled call does.
+    #[test]
+    fn tui_backend_draw_status_bar_interactive_scaled_uses_the_unscaled_default() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let bar = crate::primitives::status_bar::StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                text: "READY".into(),
+                fg: crate::Color::rgb(255, 255, 255),
+                bg: crate::Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let rect = QRect::new(0.0, 0.0, 40.0, 1.0);
+        let interaction = crate::InteractionState::new();
+
+        let mut unscaled_backend = TuiBackend::new();
+        let mut scaled_backend = TuiBackend::new();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
+        let unscaled_result = std::cell::RefCell::new(None);
+        let scaled_result = std::cell::RefCell::new(None);
+        terminal
+            .draw(|frame| {
+                let unscaled = unscaled_backend.enter_frame_scope(frame, |b| {
+                    b.draw_status_bar_interactive(rect, &bar, &interaction)
+                });
+                *unscaled_result.borrow_mut() = Some(unscaled);
+                let scaled = scaled_backend.enter_frame_scope(frame, |b| {
+                    b.draw_status_bar_interactive_scaled(rect, &bar, &interaction, 0.5)
+                });
+                *scaled_result.borrow_mut() = Some(scaled);
+            })
+            .expect("draw");
+
+        assert_eq!(
+            unscaled_result.into_inner().unwrap(),
+            scaled_result.into_inner().unwrap(),
+            "TUI has no font to scale; the default impl must ignore font_scale entirely"
+        );
+    }
+
     /// A pixel backend must not quantize — `snap_height` returns the input
     /// unchanged via the trait's default impl. `MockBackend` doesn't
     /// override `snap_height`, so it stands in for "any backend that only

@@ -196,6 +196,20 @@ pub struct AppShell {
     // ── Chrome slot config ───────────────────────────────────────
     has_title_bar: bool,
     title_bar_height_lh: f32,
+    /// Fixed-pixel floor under the line-height-derived title-bar height,
+    /// set via [`Self::with_title_bar_min_px`]. `None` (the default)
+    /// leaves `title_bar_height_lh * line_height` in charge with no floor
+    /// — the pre-existing behaviour.
+    ///
+    /// Unlike [`Self::activity_bar_width_px`] (a hard override that wins
+    /// outright), this is a *floor*: the resolved height is
+    /// `max(title_bar_height_lh * line_height, title_bar_min_px)`. A
+    /// title bar reserved in line-height multiples still grows with a
+    /// larger editor font, it just never shrinks below the floor when the
+    /// font gets small — e.g. pinning it above macOS's native
+    /// traffic-light cluster height regardless of how far a user shrinks
+    /// `settings.font_size` at runtime (quadraui#1045).
+    title_bar_min_px: Option<f32>,
     has_bottom_panel: bool,
     bottom_panel_height_lh: f32,
     min_bottom_panel_height_lh: f32,
@@ -271,6 +285,7 @@ impl AppShell {
             hovered_activity_idx: None,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
+            title_bar_min_px: None,
             has_bottom_panel: false,
             bottom_panel_height_lh: 10.0,
             min_bottom_panel_height_lh: 3.0,
@@ -383,6 +398,26 @@ impl AppShell {
     pub fn with_title_bar(mut self, height_lh: f32) -> Self {
         self.has_title_bar = true;
         self.title_bar_height_lh = height_lh;
+        self
+    }
+
+    /// Pin a fixed-pixel floor under the title bar's line-height-derived
+    /// height, overriding it only when the multiple would otherwise
+    /// resolve smaller — mirroring [`Self::with_activity_bar_width_px`]'s
+    /// pattern (#657), but as a floor rather than a hard override, since
+    /// unlike the activity bar's fixed-size icons, title-bar chrome (menu
+    /// labels, inline window controls) is expected to keep scaling with
+    /// the editor font above the floor.
+    ///
+    /// `None` (the default) leaves `title_bar_height_lh * line_height` in
+    /// sole charge, unchanged from before this method existed. Set this
+    /// when a host needs the band to never shrink under some real
+    /// platform constraint it can't otherwise express in line-height
+    /// units — e.g. staying clear of macOS's native traffic-light cluster
+    /// even after a user shrinks `settings.font_size` at runtime
+    /// (quadraui#1045).
+    pub fn with_title_bar_min_px(mut self, min_px: f32) -> Self {
+        self.title_bar_min_px = Some(min_px);
         self
     }
 
@@ -1153,7 +1188,9 @@ impl AppShell {
         let mut band_h = area.height;
 
         let title_bar_bounds = if self.has_title_bar {
-            let h = (self.title_bar_height_lh * lh).round();
+            let h = (self.title_bar_height_lh * lh)
+                .round()
+                .max(self.title_bar_min_px.unwrap_or(0.0));
             let r = Rect::new(area.x, band_y, area.width, h);
             band_y += h;
             band_h -= h;
@@ -1564,6 +1601,39 @@ mod tests {
             .with_activity_bar_width(3.0)
             .with_activity_bar_width_px(48.0);
         assert_eq!(s.layout(area(), 20.0).activity_bar_bounds.width, 48.0);
+    }
+
+    // ── Title bar min-px floor (#1045) ──────────────────────────────
+
+    /// With no floor set, the title bar's height is exactly the
+    /// line-height multiple — unchanged pre-#1045 behaviour.
+    #[test]
+    fn title_bar_height_tracks_line_height_by_default() {
+        let s = shell().with_title_bar(1.5);
+        let h = s.layout(area(), 20.0).title_bar_bounds.unwrap().height;
+        assert_eq!(h, 30.0);
+    }
+
+    /// `with_title_bar_min_px` is a floor, not an override: when the
+    /// line-height-derived height already clears it, the multiple still
+    /// wins — unlike `with_activity_bar_width_px`, which always wins.
+    #[test]
+    fn with_title_bar_min_px_does_not_shrink_a_height_already_above_it() {
+        let s = shell().with_title_bar(1.5).with_title_bar_min_px(20.0);
+        let h = s.layout(area(), 20.0).title_bar_bounds.unwrap().height;
+        assert_eq!(h, 30.0);
+    }
+
+    /// When a small `line_height` would resolve the multiple under the
+    /// floor, the floor wins instead — the #1045 use case: a user shrinks
+    /// `settings.font_size` at runtime and the title bar must not shrink
+    /// past some real platform constraint (e.g. macOS's traffic-light
+    /// cluster height).
+    #[test]
+    fn with_title_bar_min_px_floors_a_height_that_would_otherwise_shrink_below_it() {
+        let s = shell().with_title_bar(1.5).with_title_bar_min_px(34.0);
+        let h = s.layout(area(), 6.0).title_bar_bounds.unwrap().height;
+        assert_eq!(h, 34.0);
     }
 
     // ── Layout — sidebar hidden ─────────────────────────────────────

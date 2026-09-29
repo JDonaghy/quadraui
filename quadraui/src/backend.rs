@@ -2341,6 +2341,51 @@ pub trait Backend: sealed::Sealed {
         bar: &StatusBar,
         interaction: &InteractionState,
     ) -> StatusBarLayout;
+
+    /// Like [`Self::draw_status_bar_interactive`], but scales the chrome
+    /// font this one call paints with, without touching the ambient
+    /// [`Self::set_ui_font`] state every *other* status bar (or any other
+    /// [`crate::font_role::ChromePrimitive::StatusBar`] paint) draws in
+    /// this frame (issue #1045 item 2).
+    ///
+    /// `font_scale` multiplies the backend's current UI font's point
+    /// size for this call only — `1.0` behaves identically to
+    /// [`Self::draw_status_bar_interactive`]; `0.85` paints ~15% smaller,
+    /// e.g. a breadcrumb strip that wants to sit visually subordinate to
+    /// a full-size status bar without either one needing its own
+    /// `set_ui_font` call (which would perturb every other chrome
+    /// primitive too — see [`Self::set_ui_font`]'s own doc).
+    ///
+    /// Before this method existed, a host had no portable way to render
+    /// *one* status bar at a different size at all: neither
+    /// `draw_status_bar_interactive` nor the primitive's own `StatusBar`
+    /// data carried a font-size knob, unlike [`Self::draw_dialog`] /
+    /// [`Self::draw_rich_text_popup`], both of which already vary a
+    /// per-line/per-call scale independent of the ambient chrome font.
+    /// `vimcode`'s `render::BREADCRUMB_ROW_HEIGHT_PX` doc names this
+    /// exact gap — its breadcrumb *row height* is already independent of
+    /// `settings.font_size` (a fixed pixel constant), but the breadcrumb
+    /// *text* painted into that row still tracked it because this method
+    /// did not exist yet.
+    ///
+    /// Default: ignores `font_scale` and forwards to
+    /// [`Self::draw_status_bar_interactive`] unscaled — the honest
+    /// default for TUI (a fixed-cell backend has no font size to scale)
+    /// and any future backend that hasn't wired real per-call scaling
+    /// yet. Additive over `draw_status_bar_interactive`, not a
+    /// replacement for it — see `CLAUDE.md`'s public-API rule 2 for why a
+    /// new method alongside the old one, rather than a signature change,
+    /// is what keeps every existing in-tree and downstream call site
+    /// compiling unchanged.
+    fn draw_status_bar_interactive_scaled(
+        &mut self,
+        rect: Rect,
+        bar: &StatusBar,
+        interaction: &InteractionState,
+        _font_scale: f32,
+    ) -> StatusBarLayout {
+        self.draw_status_bar_interactive(rect, bar, interaction)
+    }
     /// Draw a status bar with hover/pressed supplied positionally.
     ///
     /// # Deprecated (issue #819)

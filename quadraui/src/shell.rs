@@ -41,6 +41,12 @@ pub struct ShellConfig {
     pub position: ShellPosition,
     pub has_title_bar: bool,
     pub title_bar_height_lh: f32,
+    /// Fixed-pixel floor under `title_bar_height_lh * line_height`. `None`
+    /// (the default) leaves the line-height multiple in sole charge — see
+    /// [`AppShell::with_title_bar_min_px`] for the full rationale and why
+    /// this is a floor rather than [`Self::activity_bar_width_px`]'s hard
+    /// override. Set via [`Self::with_title_bar_min_px`] (quadraui#1045).
+    pub title_bar_min_px: Option<f32>,
     /// Ask the backend not to also draw its own native titlebar band on
     /// top of an app-painted one (#947). `false` (the default) leaves
     /// every backend's previous window-creation behavior unchanged.
@@ -174,6 +180,7 @@ impl ShellConfig {
             position: ShellPosition::Left,
             has_title_bar: false,
             title_bar_height_lh: 1.5,
+            title_bar_min_px: None,
             client_side_titlebar: false,
             has_bottom_panel: false,
             bottom_panel_height_lh: 10.0,
@@ -222,6 +229,15 @@ impl ShellConfig {
     pub fn with_title_bar(mut self, height_lh: f32) -> Self {
         self.has_title_bar = true;
         self.title_bar_height_lh = height_lh;
+        self
+    }
+
+    /// Pin a fixed-pixel floor under the title bar's line-height-derived
+    /// height — see [`AppShell::with_title_bar_min_px`] for the full
+    /// rationale (quadraui#1045). `None` (the default) leaves
+    /// `title_bar_height_lh * line_height` in sole charge.
+    pub fn with_title_bar_min_px(mut self, min_px: f32) -> Self {
+        self.title_bar_min_px = Some(min_px);
         self
     }
 
@@ -900,6 +916,22 @@ mod tests {
     fn shell_config_with_activity_bar_width_px_sets_the_override() {
         let config = ShellConfig::new("test", Vec::new()).with_activity_bar_width_px(48.0);
         assert_eq!(config.activity_bar_width_px, Some(48.0));
+    }
+
+    /// #1045: a fresh `ShellConfig` has no title-bar-min-px floor —
+    /// nothing that predates this field changes behavior.
+    #[test]
+    fn shell_config_title_bar_min_px_defaults_to_none() {
+        let config = ShellConfig::new("test", Vec::new());
+        assert_eq!(config.title_bar_min_px, None);
+    }
+
+    /// #1045: `with_title_bar_min_px` stores the floor for
+    /// `build_shell_adapter` to pass through to `AppShell`.
+    #[test]
+    fn shell_config_with_title_bar_min_px_sets_the_floor() {
+        let config = ShellConfig::new("test", Vec::new()).with_title_bar_min_px(34.0);
+        assert_eq!(config.title_bar_min_px, Some(34.0));
     }
 
     /// #914: a fresh `ShellConfig` has no panel-icon overrides — nothing

@@ -55,6 +55,25 @@ release time.
 
 ### Added
 
+- `Backend::draw_status_bar_interactive_scaled` (issue #1045 item 2) — a
+  per-call chrome-font-size override for one `StatusBar` paint, without
+  perturbing the ambient `set_ui_font` state every other status bar (or
+  chrome primitive) draws in the same frame. `font_scale` multiplies the
+  backend's current UI font's point size for this call only; `1.0`
+  behaves identically to `draw_status_bar_interactive`. Real per-call
+  scaling ships on GTK (Pango `FontDescription` size swap) and macOS
+  (`CTFont::clone_with_font_size`); the trait default (ignore `font_scale`,
+  forward unscaled) covers TUI's fixed-cell grid and Win-GUI's existing
+  status-bar font gap (tracked separately, unchanged by this issue).
+- `ShellConfig::with_title_bar_min_px` / `AppShell::with_title_bar_min_px`
+  (issue #1045 item 3) — a fixed-pixel floor under the title bar's
+  line-height-derived height, mirroring `with_activity_bar_width_px`'s
+  pattern (#657) but as a floor rather than a hard override: the resolved
+  height is `max(title_bar_height_lh * line_height, title_bar_min_px)`, so
+  the band keeps scaling with the editor font above the floor and only
+  stops shrinking once a user-set font size would otherwise take it
+  below some real platform constraint (e.g. macOS's traffic-light
+  cluster height).
 - `primitives::toast::{Toast, ToastOverlay, ToastButton}` (issue #1185) —
   the VS Code-style actionable-notification shapes that supersede
   `ToastItem` / `ToastStack` / `ToastAction`. A `Toast` carries an ordered
@@ -359,6 +378,18 @@ release time.
 
 ### Fixed
 
+- `TreeController::right_click` on empty tree space below the last row
+  (issue #1045 item 4) now emits `TreeControllerEvent::ContextMenuRequested`
+  with an empty `path` instead of swallowing the click as plain
+  `Consumed` — a host had no portable way to offer a context menu on the
+  blank area below the last row at all before this (`vimcode` carried its
+  own `route_tree_empty_space_context_menu` shared workaround for exactly
+  this gap). A consumer distinguishes the two cases via `path.is_empty()`
+  and falls back to a container-level menu (e.g. the tree's root/cwd).
+  Additive, not breaking: `TreeControllerEvent`'s variant set is
+  unchanged, and every existing row-targeted `ContextMenuRequested`
+  handler that resolves via `path.first()` (or equivalent) keeps working
+  unchanged, since an empty `path` simply resolves to nothing there.
 - `macos::multi_section_view::draw_multi_section_view`'s rustdoc regained
   its `# Safety` section, dropped while its doc comment was being
   rewritten during issue #913. The

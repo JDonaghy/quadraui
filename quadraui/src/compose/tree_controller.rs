@@ -54,7 +54,17 @@ pub enum TreeControllerEvent {
     EditCancelled { path: TreePath },
     /// The text buffer changed during inline editing.
     EditChanged { path: TreePath, text: String },
-    /// Right-click on a row. Consumer should build and show a context menu.
+    /// Right-click on a row, or on empty tree space below the last row
+    /// (quadraui#1045 item 4). Consumer should build and show a context
+    /// menu. `path` is empty (`TreePath::new()`, i.e. `Vec::new()`) for
+    /// the empty-space case — there is no row to identify, so a consumer
+    /// distinguishes the two by checking `path.is_empty()` and falls back
+    /// to a container-level menu (e.g. the tree's root/cwd) rather than a
+    /// per-row one. This is additive: every pre-#1045 caller that already
+    /// resolves a *row*-targeted menu via `path.first()` (or equivalent)
+    /// keeps working unchanged, since an empty `path` simply resolves to
+    /// nothing there — see `TreeController::right_click`'s doc for why
+    /// empty space used to be silently swallowed as `Consumed` instead.
     ContextMenuRequested { path: TreePath, position: Point },
 }
 
@@ -721,6 +731,16 @@ impl TreeController {
         }
     }
 
+    /// Right-click hit-test. A row/chevron hit resolves to a per-row
+    /// [`TreeControllerEvent::ContextMenuRequested`], same as before.
+    ///
+    /// A hit on the blank area below the last row (`TreeViewHit::Empty`)
+    /// used to resolve to plain `Consumed` — a host had no portable way
+    /// to offer a context menu there at all (quadraui#1045 item 4:
+    /// vimcode carried its own `route_tree_empty_space_context_menu`
+    /// shared workaround for exactly this gap). It now emits the same
+    /// `ContextMenuRequested` event with an empty `path` — see that
+    /// variant's own doc for the empty-`path` convention this establishes.
     fn right_click(
         &mut self,
         backend: &mut dyn Backend,
@@ -739,7 +759,10 @@ impl TreeController {
                 self.selected_path = Some(path.clone());
                 TreeControllerEvent::ContextMenuRequested { path, position }
             }
-            TreeViewHit::Empty => TreeControllerEvent::Consumed,
+            TreeViewHit::Empty => TreeControllerEvent::ContextMenuRequested {
+                path: TreePath::new(),
+                position,
+            },
         }
     }
 
@@ -1515,5 +1538,96 @@ mod tests {
             TreeControllerEvent::RowToggleExpand { path: vec![0] },
             "chevron click on Header branch should emit RowToggleExpand"
         );
+    }
+
+    // ── Right-click / context menu (quadraui#1045 item 4) ────────────
+
+    /// Right-clicking a real row still resolves the pre-#1045 behaviour:
+    /// `ContextMenuRequested` carrying that row's own (non-empty) path.
+    #[test]
+    fn right_click_on_row_emits_context_menu_requested_with_that_rows_path() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("item", 5));
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        // RecordingBackend: line_height=1.0 — y=0.5 lands on row 0.
+        let ev = tc.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Right,
+                position: Point::new(10.0, 0.5),
+                modifiers: Modifiers::default(),
+                widget: None,
+            },
+            &mut RecordingBackend::new(),
+            rect,
+        );
+        assert_eq!(
+            ev,
+            TreeControllerEvent::ContextMenuRequested {
+                path: vec![0],
+                position: Point::new(10.0, 0.5),
+            },
+        );
+        assert_eq!(tc.selected_path(), Some(&vec![0]));
+    }
+
+    /// Right-clicking the blank area below the last row used to swallow
+    /// the click as plain `Consumed`, leaving a host with no portable way
+    /// to offer a context menu there (quadraui#1045 item 4 — vimcode
+    /// carried its own `route_tree_empty_space_context_menu` workaround
+    /// for exactly this gap). It now emits `ContextMenuRequested` too,
+    /// with an empty `path` a consumer can check via `path.is_empty()` to
+    /// fall back to a container-level (e.g. root/cwd) menu.
+    #[test]
+    fn right_click_on_empty_space_below_last_row_emits_context_menu_requested_with_empty_path() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("item", 5));
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        // 5 rows at line_height=1.0 occupy y in [0, 5) — y=10 is empty space.
+        let pos = Point::new(10.0, 10.0);
+        let ev = tc.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Right,
+                position: pos,
+                modifiers: Modifiers::default(),
+                widget: None,
+            },
+            &mut RecordingBackend::new(),
+            rect,
+        );
+        assert_eq!(
+            ev,
+            TreeControllerEvent::ContextMenuRequested {
+                path: Vec::new(),
+                position: pos,
+            },
+            "right-click on empty space should now offer a context menu, not just Consumed"
+        );
+        // Empty space carries no row to select — unaffected by this click.
+        assert_eq!(tc.selected_path(), None);
+    }
+
+    /// Right-clicking outside the tree's own rect entirely still misses —
+    /// `Ignored`, not swallowed into an empty-space context menu. Distinct
+    /// from the empty-space case above, which is *inside* `rect` but below
+    /// the last row.
+    #[test]
+    fn right_click_outside_rect_is_ignored() {
+        let mut tc = TreeController::new("t");
+        tc.set_rows(fake_rows("item", 5));
+        tc.set_show_scrollbar(false);
+        let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+        let ev = tc.handle(
+            &UiEvent::MouseDown {
+                button: MouseButton::Right,
+                position: Point::new(200.0, 200.0),
+                modifiers: Modifiers::default(),
+                widget: None,
+            },
+            &mut RecordingBackend::new(),
+            rect,
+        );
+        assert_eq!(ev, TreeControllerEvent::Ignored);
     }
 }
