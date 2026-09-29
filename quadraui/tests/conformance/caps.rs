@@ -459,6 +459,19 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "the default *is* uniform-monospace division (`EditorLayout::col_at_x`), which is exact \
          for a cell grid — GTK overrides it only because Pango advance widths vary",
     ),
+    // TUI: `has_font_family` (issue #1024) answers "does the platform have
+    // this font installed", which a terminal emulator's hosting process
+    // cannot answer — the terminal's own font choice is invisible to
+    // whatever it's running. `None` (the trait default) *is* the honest
+    // "don't know" answer here, not a missing implementation; GTK/macOS/Win
+    // all override it because each can genuinely enumerate installed
+    // families (Fontconfig / Core Text / DirectWrite).
+    (
+        "tui",
+        "has_font_family",
+        "a terminal emulator's own font is invisible to the process it hosts — `None` (\"don't \
+         know\") is the honest answer, not a missing implementation (quadraui#1024)",
+    ),
     // ── GTK, macOS, Win: `snap_height` is deliberately unimplemented on
     // every pixel backend. The trait's default (identity) *is* the right
     // answer for them — they paint fractional heights exactly, unlike

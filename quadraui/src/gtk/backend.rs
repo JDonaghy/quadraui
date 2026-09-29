@@ -1872,6 +1872,13 @@ impl Backend for GtkBackend {
         super::app_font::register_font_from_memory(bytes)
     }
 
+    /// Answers via Fontconfig's own match/substitution algorithm — see
+    /// `crate::gtk::app_font::has_font_family`'s doc for why a plain
+    /// `FcFontMatch` can't be used directly (issue #1024).
+    fn has_font_family(&self, family: &str) -> Option<bool> {
+        Some(super::app_font::has_font_family(family))
+    }
+
     fn poll_events(&mut self) -> Vec<UiEvent> {
         // Drain the queue without blocking. Stage 4 wires up the
         // signal-callback producers; until then this is always empty.
@@ -5175,6 +5182,21 @@ mod tests {
         assert!(
             b.register_font_from_memory(&garbage).is_none(),
             "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    // ── issue #1024: has_font_family ──────────────────────────────────────
+
+    /// A family name nothing is installed under must report `Some(false)`
+    /// — a real, answered "no", not `None` ("don't know"). GTK is one of
+    /// the backends that can enumerate installed families, so it must
+    /// never take the trait's `None` default.
+    #[test]
+    fn gtk_backend_has_font_family_is_some_false_for_a_name_nothing_is_installed_under() {
+        let b = GtkBackend::new();
+        assert_eq!(
+            b.has_font_family("Definitely Not A Real Font Family Quadraui 1024"),
+            Some(false)
         );
     }
 

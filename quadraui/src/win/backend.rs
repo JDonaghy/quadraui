@@ -1834,6 +1834,25 @@ impl Backend for WinBackend {
         }
     }
 
+    /// Answers via [`crate::win::text::has_font_family`] (issue #1024):
+    /// DirectWrite's system font collection lookup (`FindFamilyName`),
+    /// distinct from `register_font_from_memory`'s private,
+    /// app-registered collection. `Err` (a DirectWrite factory/
+    /// collection failure, not "family not found" — that's `Ok(false)`)
+    /// degrades to `None`, same "don't fail, don't know" posture as
+    /// every other fallible-but-non-critical Win-GUI query.
+    fn has_font_family(&self, family: &str) -> Option<bool> {
+        #[cfg(target_os = "windows")]
+        {
+            crate::win::text::has_font_family(family).ok()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = family;
+            None
+        }
+    }
+
     /// Build a Nerd-Font (or other PUA-codepoint) fallback for `family`
     /// via [`crate::win::text::build_nerd_font_fallback`] and store it
     /// for the next [`Self::attach_surface`]/[`Self::attach_headless`]
@@ -7672,6 +7691,36 @@ mod tests {
         assert!(
             painted_something,
             "draw_text must paint something other than the sentinel background"
+        );
+    }
+
+    // ── #1024: has_font_family ───────────────────────────────────────────
+
+    /// "Segoe UI" ships on every supported Windows version — a real
+    /// system-installed family that `has_font_family` must report as
+    /// present via `FindFamilyName`, not just "resolved to something".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn has_font_family_finds_a_real_system_family() {
+        let backend = WinBackend::new();
+        assert_eq!(
+            backend.has_font_family("Segoe UI"),
+            Some(true),
+            "Segoe UI ships on every supported Windows version"
+        );
+    }
+
+    /// A family name nothing is installed under must report `Some(false)`
+    /// — a successful DirectWrite lookup that found nothing, not `None`
+    /// ("don't know"). Conflating the two would be exactly the bug this
+    /// issue's `Backend::has_font_family` doc warns callers not to make.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn has_font_family_is_some_false_for_a_name_nothing_is_installed_under() {
+        let backend = WinBackend::new();
+        assert_eq!(
+            backend.has_font_family("Definitely Not A Real Font Family Quadraui 1024"),
+            Some(false)
         );
     }
 

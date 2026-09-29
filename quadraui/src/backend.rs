@@ -1326,6 +1326,42 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::set_ui_font`] does.
     fn set_nerd_font_fallback(&mut self, _family: &str) {}
 
+    /// Answer whether `family` is already installed on this platform as
+    /// a system font — the "the user installed their own Nerd Font"
+    /// case, which no other method here answers (issue #1024).
+    /// [`Self::register_font_from_memory`] only reports fonts the *app*
+    /// bundled and registered itself; this is its complement, a query
+    /// against whatever the platform's own font manager already knows
+    /// about, with no registration side effect.
+    ///
+    /// A caller deciding whether to enable Nerd-Font-glyph rendering
+    /// (icon fonts, PUA codepoints) should check, in order: an
+    /// app-bundled [`Self::register_font_from_memory`] call already
+    /// succeeded (take priority — that font is guaranteed complete and
+    /// versioned with the app); else this method for a
+    /// system-installed one; else fall back to plain glyphs. This
+    /// replaces the `cfg!(target_os = ...)` guess vimcode's
+    /// `core/settings.rs` used to make before either backend answer
+    /// existed — a fixed-cell TUI genuinely cannot answer this (the
+    /// terminal emulator's own font is invisible to the process it
+    /// hosts), so the *user's own setting* decides there instead of a
+    /// platform guess.
+    ///
+    /// Returns `Some(true)`/`Some(false)` on a backend that can
+    /// enumerate installed font families (GTK via Fontconfig, macOS via
+    /// Core Text, Win-GUI via DirectWrite's system font collection).
+    /// Returns `None` when the question is unanswerable — today, only
+    /// the TUI backend, which takes this default. `None` means "don't
+    /// know", never "false": a caller must not conflate the two, the
+    /// same distinction [`Self::register_font_from_memory`] already
+    /// draws between "not a font" and "not attempted".
+    ///
+    /// Default: `None`, matching every other fixed-cell method in this
+    /// section.
+    fn has_font_family(&self, _family: &str) -> Option<bool> {
+        None
+    }
+
     // ─── Text selection ────────────────────────────────────────────────
     /// Register a selectable text region for the current frame.
     ///

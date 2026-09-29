@@ -180,6 +180,81 @@ fn pattern_family_name(pattern: *mut fontconfig_sys::FcPattern) -> Option<String
     Some(c.to_string_lossy().into_owned())
 }
 
+/// Answer whether `family` is genuinely installed, via Fontconfig's own
+/// match/substitution algorithm — [`crate::Backend::has_font_family`]'s
+/// GTK implementation (issue #1024).
+///
+/// `FcFontMatch` never fails to produce *a* result: hand it an unknown
+/// family and Fontconfig's default-substitution chain still resolves to
+/// *something* (typically the configured default sans-serif), the same
+/// "always substitutes, never fails" behaviour
+/// `crate::macos::text::make_font_exact`'s doc describes for
+/// `CTFontCreateWithName`. So a bare match can't distinguish "installed"
+/// from "substituted" — this builds a pattern requesting exactly
+/// `family`, runs it through `FcConfigSubstitute`/`FcDefaultSubstitute`/
+/// `FcFontMatch` the same way any real Fontconfig client resolves a
+/// font, and then compares the *matched* pattern's own `FC_FAMILY`
+/// against what was asked (ASCII-case-insensitively — Fontconfig's own
+/// family matching is case-insensitive), mirroring `make_font_exact`'s
+/// "the resolved font's own name must equal the request" check.
+pub(crate) fn has_font_family(family: &str) -> bool {
+    let requested = family.trim();
+    if requested.is_empty() {
+        return false;
+    }
+    let Ok(c_family) = CString::new(requested) else {
+        return false;
+    };
+
+    // SAFETY: same lazily-created, process-owned `FcConfig` as
+    // `register_font_from_memory` above — never freed by this module.
+    let config = unsafe { fontconfig_sys::FcConfigGetCurrent() };
+    if config.is_null() {
+        return false;
+    }
+
+    // SAFETY: `FcPatternCreate` returns either a freshly allocated,
+    // owned pattern or null on allocation failure (checked below).
+    let pattern = unsafe { fontconfig_sys::FcPatternCreate() };
+    if pattern.is_null() {
+        return false;
+    }
+    // SAFETY: `pattern` is the live, non-null, owned pattern just
+    // created above; `FC_FAMILY` is a `'static` NUL-terminated constant;
+    // `c_family` outlives this call. `FcConfigSubstitute`/
+    // `FcDefaultSubstitute` both take the same live `pattern` and
+    // `config` this function already validated non-null.
+    unsafe {
+        fontconfig_sys::FcPatternAddString(
+            pattern,
+            fontconfig_sys::constants::FC_FAMILY.as_ptr(),
+            c_family.as_ptr().cast(),
+        );
+        fontconfig_sys::FcConfigSubstitute(config, pattern, fontconfig_sys::FcMatchPattern);
+        fontconfig_sys::FcDefaultSubstitute(pattern);
+    }
+
+    let mut result: fontconfig_sys::FcResult = fontconfig_sys::FcResultNoMatch;
+    // SAFETY: `config`/`pattern` are both live and non-null; `&mut
+    // result` is a valid out-param `FcFontMatch` always writes through
+    // before returning.
+    let matched = unsafe { fontconfig_sys::FcFontMatch(config, pattern, &mut result) };
+    // SAFETY: `pattern` was allocated by `FcPatternCreate` above;
+    // `FcFontMatch` does not take ownership of its pattern argument, so
+    // this function (which created it) is responsible for freeing it.
+    unsafe { fontconfig_sys::FcPatternDestroy(pattern) };
+
+    if matched.is_null() {
+        return false;
+    }
+    let resolved = pattern_family_name(matched);
+    // SAFETY: `matched` is the pattern `FcFontMatch` returned ownership
+    // of to this caller (per Fontconfig's own `FcFontMatch` contract).
+    unsafe { fontconfig_sys::FcPatternDestroy(matched) };
+
+    resolved.is_some_and(|name| name.eq_ignore_ascii_case(requested))
+}
+
 /// Nudge Pango's default Cairo font map to notice the config change
 /// `register_font_from_memory` just made, so a [`gtk4::pango::Layout`]
 /// built after this call resolves the new family immediately rather
@@ -300,6 +375,46 @@ mod tests {
         let a = unique_temp_font_path();
         let b = unique_temp_font_path();
         assert_ne!(a, b, "consecutive calls must not reuse the same temp path");
+    }
+
+    /// A family name guaranteed not to exist should never resolve as
+    /// "installed" — the whole point of comparing the matched pattern's
+    /// own family back against the request, not just trusting that
+    /// `FcFontMatch` returned something (issue #1024).
+    #[test]
+    fn has_font_family_is_false_for_a_name_nothing_is_installed_under() {
+        assert!(!has_font_family(
+            "Definitely Not A Real Font Family Quadraui 1024"
+        ));
+    }
+
+    /// Empty/whitespace-only input is a degenerate case of the same
+    /// rejection — there is no family to look up.
+    #[test]
+    fn has_font_family_is_false_for_empty_or_blank_input() {
+        assert!(!has_font_family(""));
+        assert!(!has_font_family("   "));
+    }
+
+    /// A family this same process just registered via
+    /// `register_font_from_memory` must be reported as installed —
+    /// otherwise `has_font_family` would be blind to exactly the
+    /// app-bundled case `Backend::register_font_from_memory` already
+    /// covers, undermining the "check register_font_from_memory first,
+    /// then has_font_family" ordering this issue's `Backend` doc
+    /// recommends. Manual/`#[ignore]`d like `manual_smoke_real_font`
+    /// above: no font file ships in this repo.
+    #[test]
+    #[ignore]
+    fn manual_smoke_has_font_family_sees_a_just_registered_app_font() {
+        let path = std::env::var("QUADRAUI_SMOKE_FONT").expect("set QUADRAUI_SMOKE_FONT");
+        let bytes = std::fs::read(&path).expect("read font");
+        let names = register_font_from_memory(&bytes).expect("register_font_from_memory");
+        let family = names.first().expect("at least one family name");
+        assert!(
+            has_font_family(family),
+            "just-registered family {family:?} should be reported as installed"
+        );
     }
 
     /// Manual, `#[ignore]`d-test-only round trip against a *real* font
