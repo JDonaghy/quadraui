@@ -34,7 +34,7 @@ this list in the same PR.
 | Job | Runner(s) | What it covers |
 |---|---|---|
 | `rustfmt` | ubuntu-latest | `cargo fmt --all --check` |
-| `repo-lint` | ubuntu-latest | `cargo run -p quadraui-repo-lint` (`tools/lint`, #1110) — maintainer-workflow guards (CLAUDE.md/ci.yml wording, `.githooks/` worktree behaviour, example manifest hygiene) that used to be `quadraui/tests/*.rs` files an outside contributor's ordinary `cargo test` would trip over; moved to a plain binary CI runs explicitly instead |
+| `repo-lint` | ubuntu-latest | `cargo run -p quadraui-repo-lint` (`tools/lint`, #1110's meta-test-relocation half — see "What unit tests don't cover" below for the still-open host-font half of #1110) — maintainer-workflow guards (CLAUDE.md/ci.yml wording, `.githooks/` worktree behaviour, example manifest hygiene) that used to be `quadraui/tests/*.rs` files an outside contributor's ordinary `cargo test` would trip over; moved to a plain binary CI runs explicitly instead |
 | `Example-test coverage` | ubuntu-latest, PR events only | `tools/example_coverage.py --fail-on-gap` — a new `tui_*.rs` example added by the PR must have a matching `TuiDriver` test |
 | `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check + arithmetic-only unit tests (`cargo check`/`test -p quadraui --features win`, ubuntu leg only, #538); on the windows-latest leg (all three `continue-on-error`, see the job's comments for the rollout plan): a real build + clippy of the `win_demo` example (`--features win`, #19/#21) and `cargo test -p quadraui --features win` (#24 — the first step that actually *runs* `cfg(target_os = "windows")` code against real Direct2D, via `src/win/testing.rs`'s `HeadlessSurface`); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg; on the windows-latest leg only, a second conformance run under `--features win --test conformance -- --nocapture` (quadraui#722 review) uploads the `win` column's C0 and Tier-1 tables as their own artifacts (`conformance-matrix-c0-win`, `conformance-matrix-win`) — without it, the `win` burn-down grid never left the log of a step whose stdout `cargo test` discards on a pass |
 | `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs`); a build of the `gtk_terminal` example (`--features gtk,terminal`, #483, same `required-features` gap as `tui_terminal` above); the gtk+tui conformance matrix, uploaded as an artifact |
@@ -1003,8 +1003,9 @@ which are never executed), so the count alone cannot tell you which:
 Both were hit for real: the first by #832's own smoke run, which
 reported "9 of 11 doctests failed" and sent a worker looking in the
 diff. The wrapper exists so neither can happen again;
-`tools/lint` (`quadraui-repo-lint`, #1110 — moved out of `quadraui/tests/`
-so an outside contributor's `cargo test` never fails on it) asserts
+`tools/lint` (`quadraui-repo-lint`, #1110's meta-test-relocation half —
+moved out of `quadraui/tests/` so an outside contributor's `cargo test`
+never fails on it) asserts
 `tools/win-test.sh` keeps setting all three variables and keeps running the
 same cargo line spelled out above.
 Note that a `.cargo/config.toml` would *not* have prevented the second
@@ -1161,3 +1162,33 @@ toward "things that genuinely need eyes".
      reports `chose WidgetId("cancel")` both times — that button is
      marked `is_cancel`, so the dismissal gesture round-trips to it
      rather than reporting "dismissed with no choice".
+
+- **macOS tests still depend on the host having Menlo installed**
+  (quadraui#1110, second half — deliberately **not** done by the
+  `tools/lint` extraction above). `MacDriver::new` (`src/macos/testing.rs`)
+  installs `make_font("Menlo", 14.0)` as the default font before every
+  headless macOS test runs, mirroring what `macos::run` installs for a
+  real window, and roughly a dozen individual tests additionally call
+  `make_font("Menlo", …).expect("Menlo installed on every macOS host")`
+  directly (`macos/text.rs`, `macos/status_bar.rs`, `macos/minimap.rs`,
+  `macos/toolbar.rs`) — 82 `"Menlo"` string literals across 37 files in
+  `src/macos/` in total (`rg '"Menlo"' quadraui/src/macos | wc -l`), most
+  of them reached transitively through `MacDriver::new`. `#929`'s
+  `Backend::register_font_from_memory` (`macos::text::register_font_from_memory`)
+  exists and is exercised by its own unit tests, but nothing wires an
+  embedded test-font's bytes into `MacDriver::new` or the direct
+  `make_font("Menlo", …)` call sites yet — a fork/CI runner without
+  Menlo (any non-macOS-with-full-font-set host, or a locked-down macOS
+  image) still fails the whole `--features macos` test leg on font
+  lookup, not on anything the PR under test actually changed. Doing this
+  right means picking (or generating) an embeddable monospace font,
+  re-deriving every pixel-metric assertion tuned to Menlo's actual glyph
+  advances against the embedded font's metrics instead, and re-verifying
+  `cargo test --features macos` on a real macOS host — large enough that
+  it needs its own tracked issue and its own PR rather than riding along
+  with the `tools/lint` extraction (which only moves *maintainer-workflow*
+  meta-tests, and touches nothing under `src/macos/`). Today this is
+  mitigated, not solved: `.github/workflows/macos.yml` only runs on
+  `macos-latest`, which ships Menlo, so CI itself doesn't hit this gap —
+  it is a real gap for anyone running `cargo test --features macos` on a
+  macOS host that lacks it.

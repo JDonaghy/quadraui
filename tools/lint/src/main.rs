@@ -1,6 +1,10 @@
 //! `quadraui-repo-lint` — maintainer-workflow guards for the quadraui repo,
 //! run explicitly by CI as a binary rather than picked up by `cargo test`
-//! (#1110).
+//! (#1110's "move process meta-tests out of `cargo test`" half only —
+//! #1110's separate "stop depending on host fonts" half, the macOS tests
+//! that `expect("Menlo installed on every macOS host")`, is untouched by
+//! this crate; see `quadraui/docs/TESTING.md`'s "What unit tests don't
+//! cover" section for that gap).
 //!
 //! ## Why this crate exists
 //!
@@ -52,7 +56,7 @@ mod example_manifest;
 mod githooks_worktree;
 mod quality_gate_docs;
 
-use std::panic::{self, AssertUnwindSafe};
+use std::panic;
 
 /// One named, self-contained check. `run` panics (via `assert!`/`panic!`,
 /// same idiom as a `#[test]` fn body) to report failure — this harness
@@ -129,7 +133,7 @@ fn main() {
 
     for check in all_checks {
         print!("check {} ... ", check.name);
-        match panic::catch_unwind(AssertUnwindSafe(check.run)) {
+        match panic::catch_unwind(check.run) {
             Ok(()) => println!("ok"),
             Err(payload) => {
                 println!("FAILED");
