@@ -255,70 +255,6 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     }
 }
 
-/// Decode `WM_COMMAND`'s `wparam` into the command id
-/// `WinBackend::install_menu_bar_now` assigned to a leaf menu item, or
-/// `None` if this `WM_COMMAND` isn't a menu selection at all (issue
-/// #1200). Per the `WM_COMMAND` contract, `HIWORD(wparam)` is `0` only
-/// for a menu selection — `1` marks an accelerator-table entry (this
-/// backend has no native `ACCEL` table; every accelerator routes
-/// through `WM_KEYDOWN`/`register_accelerator` instead, so that case
-/// never arises in practice) and any other value is a control
-/// notification code from a child `HWND`, which this backend never
-/// creates. `LOWORD(wparam)` is the command id itself.
-///
-/// Pure decode (no `HWND`/table lookup) so it's unit-testable off
-/// Windows — mirrors `win::tray::tray_click_button`'s identical "pure
-/// decode, `wndproc` arm does the live lookup" split. Not itself
-/// `#[cfg(target_os = "windows")]`: same posture as [`dispatch_event`]
-/// above — its only caller (`mod win32`'s `WM_COMMAND` arm) is
-/// windows-gated, so this stays `#[allow(dead_code)]` on every other
-/// host rather than cfg-gated, keeping it type-checked (and
-/// unit-testable, below) everywhere.
-#[allow(dead_code)]
-pub(crate) fn win_menu_command_id(wparam: usize) -> Option<u16> {
-    let hiword = (wparam >> 16) & 0xFFFF;
-    if hiword != 0 {
-        return None;
-    }
-    Some((wparam & 0xFFFF) as u16)
-}
-
-/// Coverage for [`win_menu_command_id`] (issue #1200) — pure decode, runs
-/// on every host per that function's doc, mirroring
-/// `win::tray::tests::tray_click_button_*`'s identical split.
-#[cfg(test)]
-mod menu_command_id_tests {
-    use super::win_menu_command_id;
-
-    #[test]
-    fn low_word_is_the_command_id_when_high_word_is_zero() {
-        assert_eq!(win_menu_command_id(1), Some(1));
-        assert_eq!(win_menu_command_id(42), Some(42));
-        assert_eq!(win_menu_command_id(0xFFFF), Some(0xFFFF));
-    }
-
-    #[test]
-    fn nonzero_high_word_is_not_a_menu_selection() {
-        // HIWORD 1: accelerator-table entry.
-        assert_eq!(win_menu_command_id(1 << 16 | 7), None);
-        // HIWORD anything else: a control notification code.
-        assert_eq!(win_menu_command_id(0x0300 << 16 | 7), None);
-    }
-
-    #[test]
-    fn zero_wparam_decodes_to_command_id_zero() {
-        // Command id 0 is never assigned by `install_menu_bar_now`
-        // (`super::tray::append_hmenu_item`'s 1-based scheme, mirrored
-        // by `win::backend::win_append_menu_bar_item`) — the live
-        // `menu_command_id` lookup correctly finds nothing for it, but
-        // the *decode* step here is agnostic to that and returns
-        // `Some(0)` for a literal all-zero `wparam`, matching the raw
-        // `WM_COMMAND` bit layout with no menu-specific interpretation
-        // baked in.
-        assert_eq!(win_menu_command_id(0), Some(0));
-    }
-}
-
 /// Route a `MouseDown` through the shared pointer-routing pipeline
 /// ([`crate::dispatch::route_pointer`], issue #1088) before handing the
 /// resulting event(s) to [`dispatch_event`] — the Win-GUI twin of
@@ -820,12 +756,11 @@ mod win32 {
         SetWindowPos, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
         CW_USEDEFAULT, GWLP_USERDATA, HTCAPTION, HTCLIENT, ICON_BIG, ICON_SMALL, IDC_ARROW, MSG,
         NCCALCSIZE_PARAMS, SWP_NOACTIVATE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-        WM_CHAR, WM_CLOSE, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
-        WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-        WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST,
-        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE,
-        WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
-        WS_OVERLAPPEDWINDOW,
+        WM_CHAR, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN,
+        WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCCREATE, WM_NCHITTEST, WM_PAINT,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SETICON, WM_SIZE, WM_SYSCHAR,
+        WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
     // #834: `WM_DROPFILES` decode (`HDROP`, `DragAcceptFiles`/
     // `DragQueryFileW`/`DragQueryPoint`/`DragFinish`) — all real Shell32
@@ -1363,26 +1298,38 @@ mod win32 {
             // path only stores the pointer in `GWLP_USERDATA`, never
             // dereferences it.
             let ws: &WindowState<A> = unsafe { &*state_ptr };
-            // #1213: `attach_surface` replays a `setup()`-time
-            // `install_menu_bar` via `WinBackend::install_menu_bar_now`,
-            // whose `SetMenu` call can synchronously re-enter `wndproc`
-            // with a nested `WM_SIZE` (Win32 recalculates the
-            // non-client area from inside `SetMenu`, per MSDN) *before*
-            // `SetMenu` itself returns — i.e. before this call below
-            // returns, while `ws.state` is still borrowed on this same
-            // stack. That is the same "arrives from a synchronous Win32
-            // API call, not the main pump" hazard `ModalPumpGuard`
-            // already guards every `guarded_call` against (see
-            // `wndproc`'s `pump_depth.is_pumping()` check), but this
-            // call happens during window creation, before the first
+            // #1213 (the hazard that motivated this guard has since gone
+            // away — see the note below): a call inside `attach_surface`
+            // that synchronously re-enters `wndproc` with a nested
+            // message *before* returning — while `ws.state` is still
+            // borrowed on this same stack — is the same "arrives from a
+            // synchronous Win32 API call, not the main pump" hazard
+            // `ModalPumpGuard` already guards every `guarded_call`
+            // against (see `wndproc`'s `pump_depth.is_pumping()` check).
+            // This call happens during window creation, before the first
             // `guarded_call` has ever run — nothing had armed
-            // `pump_depth` yet, so the nested `WM_SIZE` sailed through
-            // to a second, panicking `ws.state.borrow_mut()`. Arm the
-            // guard explicitly here so that nested message bounces to
-            // `DefWindowProcW` instead. `WinBackend::attach_surface`
-            // resyncs the render target's size itself once
-            // `install_menu_bar_now` returns, so the client-rect change
-            // this swallows isn't lost — see that function's doc.
+            // `pump_depth` yet — so a nested message here would sail
+            // through to a second, panicking `ws.state.borrow_mut()`
+            // without this guard. Arm it explicitly so any such message
+            // bounces to `DefWindowProcW` instead.
+            //
+            // #1213's original trigger was `WinBackend::attach_surface`
+            // replaying a `setup()`-time `install_menu_bar` via a
+            // `SetMenu` call, which synchronously fires a nested
+            // `WM_SIZE` (Win32 recalculates the non-client area from
+            // inside `SetMenu`, per MSDN) before `SetMenu` itself
+            // returns. Issue #1228 removed that call path entirely —
+            // Win-GUI's custom caption (#1199) permanently covers the
+            // non-client area a native menu bar would live in, so
+            // `WinBackend` no longer overrides `Backend::install_menu_bar`
+            // at all (matching `GtkBackend`/`TuiBackend`'s no-op
+            // default). This guard stays anyway as defensive coverage
+            // for `attach_surface`'s *other* Win32 calls
+            // (`CreateHwndRenderTarget`, `DWrite::new` ×2,
+            // `WinPlatformServices::set_window`) — none is currently
+            // known to pump messages synchronously, but the guard is
+            // free once armed and removing it would re-open exactly this
+            // class of bug the moment one of them starts to.
             let _guard = ModalPumpGuard::new(&ws.pump_depth);
             ws.state.borrow_mut().backend.attach_surface(hwnd)
         };
@@ -2084,25 +2031,6 @@ mod win32 {
                     msg == WM_MOUSEHWHEEL,
                 );
                 dispatch(ws, hwnd, event);
-                LRESULT(0)
-            }
-            WM_COMMAND => {
-                // Issue #1200: fires when the user picks an item from the
-                // native menu bar `WinBackend::install_menu_bar` attached
-                // via `SetMenu`. `win_menu_command_id` (pure, defined
-                // above `mod win32` so it's unit-testable off Windows)
-                // decodes `wparam` into the assigned command id, ignoring
-                // anything that isn't a genuine menu selection (see that
-                // function's doc); the live lookup back to the item's
-                // `WidgetId` needs `WinBackend::menu_command_id`, which
-                // only exists on this platform, so it stays here rather
-                // than moving into the pure decode step.
-                if let Some(cmd_id) = super::win_menu_command_id(wparam.0) {
-                    let id = ws.state.borrow().backend.menu_command_id(cmd_id);
-                    if let Some(id) = id {
-                        dispatch(ws, hwnd, UiEvent::MenuActivated(id));
-                    }
-                }
                 LRESULT(0)
             }
             WM_KEYDOWN => {
@@ -2858,11 +2786,19 @@ mod tests {
     /// helper that later checks it. `win32::run_inner`'s initial
     /// `attach_surface` call is different: it takes `ws.state.borrow_mut()`
     /// *directly* (window creation happens before any `wndproc` dispatch
-    /// has ever run `guarded_call`), and `WinBackend::install_menu_bar_now`
-    /// (called from inside that borrow, replaying a `setup()`-time
-    /// `install_menu_bar`) can trigger a synchronous nested `WM_SIZE` via
-    /// `SetMenu` — Win32 recalculates the non-client area from inside
-    /// that call, per MSDN — before `attach_surface` itself returns.
+    /// has ever run `guarded_call`), and — at the time #1213 was filed —
+    /// `WinBackend::install_menu_bar_now` (called from inside that
+    /// borrow, replaying a `setup()`-time `install_menu_bar`) could
+    /// trigger a synchronous nested `WM_SIZE` via `SetMenu`: Win32
+    /// recalculates the non-client area from inside that call, per
+    /// MSDN, before `attach_surface` itself returns. Issue #1228 later
+    /// removed that specific call path (`WinBackend` no longer overrides
+    /// `install_menu_bar` — see `backend.rs`'s `backend_caps` doc), but
+    /// this test models the *hazard class* — any synchronous nested
+    /// message arriving mid-direct-borrow — rather than that one
+    /// trigger, so it stays a live regression guard for
+    /// `attach_surface`'s other Win32 calls (see the `ModalPumpGuard`
+    /// call site's own doc in `run_inner`).
     ///
     /// Without a `ModalPumpGuard` armed around the outer direct borrow,
     /// nothing stops `wndproc`'s `WM_SIZE` arm (which itself borrows
@@ -2871,12 +2807,13 @@ mod tests {
     /// `RefCell` while the outer one is still live, panicking with
     /// "already mutably borrowed" — the exact crash observed on real
     /// hardware (`RefCell already borrowed` at the `WM_SIZE` arm, called
-    /// from `NtUserSetMenu`). `run_inner` now wraps that initial
-    /// `attach_surface` call in a `ModalPumpGuard` (mirroring
-    /// `guarded_call`'s own protection) so `wndproc`'s
-    /// `pump_depth.is_pumping()` top-of-function check — modeled here as
-    /// `fake_wndproc_arm` — bounces the nested message to a
-    /// `DefWindowProcW` stand-in instead of ever re-touching `state`.
+    /// from `NtUserSetMenu`, back when `SetMenu` was the trigger).
+    /// `run_inner` wraps that initial `attach_surface` call in a
+    /// `ModalPumpGuard` (mirroring `guarded_call`'s own protection) so
+    /// `wndproc`'s `pump_depth.is_pumping()` top-of-function check —
+    /// modeled here as `fake_wndproc_arm` — bounces the nested message
+    /// to a `DefWindowProcW` stand-in instead of ever re-touching
+    /// `state`.
     #[test]
     fn reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed() {
         let state = RefCell::new(0i32);
@@ -2955,120 +2892,24 @@ mod tests {
         );
     }
 
-    /// Issue #1213 — the live regression test the reviewer asked for
-    /// (option 1 of the two the issue itself offered): drives the *real*
-    /// `win32::run_inner` → `CreateWindowExW` → `WinBackend::attach_surface`
-    /// → `install_menu_bar_now` → `SetMenu` → nested `WM_SIZE` →
-    /// `win32::wndproc` sequence end to end, on real Windows hardware, via
-    /// the crate's own public [`run_with`] entry point — not a hand-rolled
-    /// model of it (unlike
-    /// [`reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed`]
-    /// above, which only proves `ModalPumpGuard`'s own semantics in
-    /// isolation and would keep passing even if `run_inner`'s `let _guard
-    /// = ModalPumpGuard::new(&ws.pump_depth);` line were deleted — see
-    /// that test's doc for why it doesn't regression-guard this bug on
-    /// its own).
-    ///
-    /// Before this fix (observed on real hardware against `cc2b80d` /
-    /// `928f2b5`, matching the issue's own isolation table): any
-    /// `AppLogic::setup` that calls `Backend::install_menu_bar` crashed
-    /// **every** window-creation `CreateWindowExW` call with `RefCell
-    /// already borrowed`, escalating to `panic in a function that cannot
-    /// unwind` because `wndproc` is a C-ABI `WNDPROC` that cannot unwind
-    /// across the `NtUserSetMenu` → `KiUserCallbackDispatcher` →
-    /// `CallWindowProcW` boundary — i.e. this whole test process would
-    /// abort outright, not merely fail an assertion, if the guard
-    /// regressed.
-    ///
-    /// `MenuBarSmokeApp::setup` calls `install_menu_bar` unconditionally,
-    /// so `WinBackend::pending_menu_bar` is `Some` by the time
-    /// `run_inner`'s `attach_surface` call runs — the exact
-    /// `pending_menu_bar.is_some()` path `WinBackend::attach_surface`'s
-    /// #1213 doc describes. `QUADRAUI_WIN_SMOKE_MS` (see this module's
-    /// "Headless smoke mode" doc) makes `run_with` self-terminate after a
-    /// short deadline instead of blocking on a user closing the window,
-    /// so this runs unattended exactly like `ci.yml`'s real-Windows leg
-    /// runs every other `win_*` smoke check — see `CLAUDE.md`'s "Win-GUI:
-    /// building and testing for real".
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn install_menu_bar_during_setup_does_not_panic_a_live_window_creation() {
-        use crate::primitives::menu_bar::{MenuBar, MenuBarItem};
-        use crate::types::WidgetId;
-        use crate::Reaction;
-
-        // `mod win32`'s own `SMOKE_MS_VAR` const (`"QUADRAUI_WIN_SMOKE_MS"`)
-        // is private to that module, unreachable from here — this test
-        // lives at the top level (`mod tests`), the same scope
-        // `RunConfig`/`run_with` are public from — so the literal name is
-        // duplicated rather than imported. `env::set_var`/`remove_var` are
-        // process-global (same caveat `desktop::smoke_config_tests`'
-        // `ENV_LOCK` documents) — this test is the only one in the crate
-        // that sets this var via `run_with`'s real entry point
-        // (`win::testing::WinDriver` and the `HeadlessSurface`-based tests
-        // never touch it at all — see this module's doc), so there is no
-        // other writer to race against.
-        const SMOKE_MS_VAR: &str = "QUADRAUI_WIN_SMOKE_MS";
-        std::env::set_var(SMOKE_MS_VAR, "300");
-
-        struct MenuBarSmokeApp;
-
-        impl AppLogic for MenuBarSmokeApp {
-            type AreaId = ();
-
-            fn setup(&mut self, backend: &mut dyn Backend) {
-                // The exact call path the issue's "Ask" section names:
-                // `AppLogic::setup`-time `install_menu_bar`, replayed by
-                // `WinBackend::attach_surface` once `run_inner` creates
-                // the real window below.
-                backend.install_menu_bar(&MenuBar {
-                    id: WidgetId::new("menubar"),
-                    items: vec![MenuBarItem {
-                        id: WidgetId::new("file"),
-                        label: "&File".to_string(),
-                        disabled: false,
-                        submenu: None,
-                    }],
-                    open_item: None,
-                    focused_item: None,
-                });
-            }
-
-            fn render(&self, _backend: &mut dyn Backend, _area: Self::AreaId) {}
-
-            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-                Reaction::Continue
-            }
-        }
-
-        // A title unique to this test (not `"quadraui"`/`"kubeui"`, which
-        // other tests/examples in this crate and its consumers use) keeps
-        // `instance_identity`/`window_class_name`'s scoping (#957) from
-        // colliding with a concurrently-running process of some other
-        // quadraui-based app on the same machine.
-        let config =
-            super::RunConfig::new("quadraui-issue-1213-live-menu-bar-reentrancy-smoke-test");
-
-        // If `ModalPumpGuard::new(&ws.pump_depth)` were missing from
-        // `run_inner`'s `attach_surface` call (the regression this issue
-        // fixes), the nested `WM_SIZE` `SetMenu` fires from inside
-        // `NtUserSetMenu` would double-borrow `ws.state` and this call
-        // would never return — the process aborts first (see this test's
-        // doc). Reaching the assertions below at all is therefore already
-        // most of the proof; the `ExitCode` check confirms the smoke
-        // timer's own `smoke_size_ok` check (a real client rect read back
-        // after the menu bar shrank it) also found nothing wrong.
-        let exit_code = super::run_with(MenuBarSmokeApp, config);
-
-        std::env::remove_var(SMOKE_MS_VAR);
-
-        assert_eq!(
-            exit_code,
-            std::process::ExitCode::SUCCESS,
-            "a live window that installs a menu bar during setup must create and size itself \
-             cleanly, not just avoid the RefCell panic"
-        );
-    }
+    // Issue #1213's live, real-hardware regression test used to live
+    // here: it drove `win32::run_inner` → `CreateWindowExW` →
+    // `WinBackend::attach_surface` → `install_menu_bar_now` → `SetMenu`
+    // → nested `WM_SIZE` → `win32::wndproc` end to end via `run_with`,
+    // proving a `setup()`-time `Backend::install_menu_bar` call no
+    // longer double-borrowed `ws.state` and aborted the process. Issue
+    // #1228 removed that whole call path — `WinBackend` no longer
+    // overrides `install_menu_bar` (see `backend.rs`'s `backend_caps`
+    // doc), so there is no `SetMenu` call left for a live window to
+    // exercise, and a test that still called the now-no-op
+    // `Backend::install_menu_bar` and asserted "no panic" would prove
+    // nothing — the crash it used to guard against is structurally
+    // unreachable, not merely fixed. `ModalPumpGuard`'s own general
+    // defensive coverage of `attach_surface` (kept per that call site's
+    // doc) is still exercised by
+    // [`reentrant_message_during_a_direct_borrow_is_deferred_not_double_borrowed`]
+    // above, which models the hazard class rather than this one
+    // specific trigger.
 }
 
 /// Coverage for #728 — Ctrl-V/Ctrl-Shift-V clipboard-paste interception in
