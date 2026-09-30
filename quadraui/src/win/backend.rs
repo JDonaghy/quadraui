@@ -83,8 +83,6 @@ use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
-#[cfg(target_os = "windows")]
-use crate::primitives::context_menu::ContextMenuItem;
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
