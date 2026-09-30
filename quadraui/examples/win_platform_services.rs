@@ -51,8 +51,17 @@ use quadraui::{
     MessageDialogOptions, NamedKey, Notification, Reaction, UiEvent, WidgetId,
 };
 
+// `pub`, not private: quadraui#1229's `WinDriver` coverage
+// (`tests/win_example_driver.rs`) constructs this directly via a
+// `#[path]`-included module, the same way `tests/tui_example_driver.rs` /
+// `tests/gtk_example_driver.rs` reach every other `examples/common/*`
+// shape. This is the one example whose `AppLogic` lives in the example
+// file itself rather than `examples/common/` (see this file's module
+// docs for why — no in-window status bar to share with a common demo
+// yet), so the test hook is this visibility bump instead of a `pub mod`
+// under `common/`.
 #[cfg(target_os = "windows")]
-struct PlatformServicesDemo;
+pub struct PlatformServicesDemo;
 
 /// Write a throwaway temp file for `f`/`p`/`x` to act on, so this demo
 /// never touches anything the user actually cares about (issue #956).
