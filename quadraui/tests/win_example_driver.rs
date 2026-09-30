@@ -982,11 +982,13 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
 
 // ─── MiniApp: single-StatusBar smoke app (issue #1229) ─────────────────────
 //
-// No TUI/GTK/macOS driver test exists for `MiniApp` yet (grepped —
-// `MiniApp`/`mini_app` appears in none of the other
-// `tests/*_example_driver.rs` files), so this is authored directly from
-// `examples/common/mini_app.rs`'s `status_bar`/`handle` rather than
-// ported from a sibling backend.
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `mini_counts_keystrokes_and_records_last_key` / `mini_q_exits` /
+// `mini_renders_cleanly_and_ctrl_q_exits`, which already cover the same
+// `examples/common/mini_app.rs::MiniApp` on TUI. These are authored
+// directly from `MiniApp`'s `status_bar`/`handle` rather than a literal
+// port, since `WinDriver` observes painted text differently than TUI's
+// cell grid.
 
 const MINI_APP_W: u32 = 800;
 const MINI_APP_H: u32 = 120;
@@ -1327,12 +1329,11 @@ fn form_groups_clicking_find_next_logs_the_action() {
 
 // ─── HScrollEditor: horizontal scroll via key (issue #1229) ───────────────
 //
-// No TUI/GTK/macOS driver test exists for `HScrollEditor` yet — grepped,
-// `HScrollEditor`/`hscroll_editor` appears in none of the other
-// `tests/*_example_driver.rs` files (`tests/tui_example_driver.rs`'s
-// `hscroll_dollar_key_scrolls_visible_window_to_line_end` is for a
-// different shape, `tab_icons_demo`'s hscroll helper — see that file's own
-// section comment). Authored directly from
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `hscroll_dollar_key_scrolls_visible_window_to_line_end`, which already
+// covers the same `examples/common/hscroll_editor.rs::HScrollEditor` on
+// TUI (constructs `HScrollEditor::new()`, asserts `$` scrolls the view to
+// the line end at col 500/500). Authored directly from
 // `examples/common/hscroll_editor.rs`'s status-bar text (`col N / 500
 // scroll_left M viewport_cols K`) rather than TUI's character-grid glyph
 // positions, which have no equivalent against a pixel `WinDriver` canvas —
@@ -1560,6 +1561,16 @@ fn platform_services_unbound_key_continues_and_paints_nothing() {
     );
 }
 
+// NOTE: unlike every other test in this file, this one reads/writes the
+// *real*, live Win32 clipboard (`OpenClipboard(None)`) rather than an
+// in-memory fake — there is no headless clipboard stub on Windows the way
+// TUI's `WinDriver`/`TuiDriver` fake one internally. That is deliberate
+// (no window handle is required, so it's still safe to run headlessly),
+// but it does mutate real desktop/session clipboard state on whatever
+// machine runs it (CI runner or `dell64` interactively). If this test
+// ever flakes, suspect another concurrently-running test or process on
+// the same machine touching the clipboard at the same time before
+// re-deriving this from scratch.
 #[test]
 fn platform_services_clipboard_round_trips_through_the_real_win32_clipboard() {
     let driver = WinDriver::new(
