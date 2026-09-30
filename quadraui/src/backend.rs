@@ -1636,16 +1636,16 @@ pub trait Backend: sealed::Sealed {
     /// (Hide / Quit etc.) is auto-prepended. Activations arrive on the
     /// event queue as [`UiEvent::MenuActivated`].
     ///
-    /// Win-GUI (`WinBackend`) walks `bar.items` → `HMENU` / popup-`HMENU`
-    /// hierarchy built via `CreateMenu`/`CreatePopupMenu`/`AppendMenuW`
-    /// and attaches it with `SetMenu` (issue #1200). Activations arrive
-    /// the same way, decoded from `WM_COMMAND` back to the originating
-    /// `WidgetId`.
-    ///
-    /// TUI / GTK: no-op default. Apps that want an in-window menu keep
-    /// calling `draw_menu_bar` from their render path; a native GTK
-    /// installer (`set_menu_bar`) lands in a follow-up ticket when a
-    /// consumer needs it.
+    /// TUI / GTK / Win-GUI: no-op default. Apps that want an in-window
+    /// menu keep calling `draw_menu_bar` from their render path; a
+    /// native GTK installer (`set_menu_bar`) lands in a follow-up ticket
+    /// when a consumer needs it. Win-GUI (`WinBackend`) previously built
+    /// an `HMENU` bar here via `CreateMenu`/`AppendMenuW`/`SetMenu`
+    /// (issue #1200), but issue #1228 removed it: the custom caption bar
+    /// from #1199 hid the native menu row and ate the window's
+    /// min/max/close buttons, so `WinBackend` switched to the same
+    /// drawn-menu-row + `draw_menu_bar` approach as GTK and now takes
+    /// this trait default like every other backend but macOS.
     ///
     /// Apps typically call this once during `AppLogic::setup`. Re-calling
     /// replaces the previously-installed menu wholesale.
