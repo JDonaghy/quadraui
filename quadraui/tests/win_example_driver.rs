@@ -86,6 +86,58 @@ use multi_tree::DebugSidebar;
 mod data_table_app;
 use data_table_app::DataTableApp;
 
+// ─── quadraui#1229: slice 2, the remaining examples ────────────────────────
+//
+// `win_app`, `win_demo`, `win_chart`, `win_form_groups`, `win_hscroll`,
+// `win_indicators` and `win_platform_services` — the rest of #1116's
+// scope, left untracked when #1116 was closed by slice 1 (PR #1226).
+// Same posture as the slice-1 block above: port each shape's
+// `tests/tui_example_driver.rs` script onto `WinDriver` where one exists,
+// or author directly from the `examples/common` module when it doesn't
+// (`mini_app`/`hscroll_editor` have no TUI/GTK/macOS driver test to port
+// — grepped, see each section's own doc).
+
+#[path = "../examples/common/mini_app.rs"]
+mod mini_app;
+use mini_app::MiniApp;
+
+#[path = "../examples/common/demo.rs"]
+mod demo;
+use demo::AppState;
+
+// `ChartApp::last_chart_rect` is write-only in the shared example source
+// — see `tests/tui_example_driver.rs`'s identical `#[allow(dead_code)]`
+// on its own `#[path]` include of the same file for why this needs a
+// local opt-out here too (`examples/common/mod.rs`'s blanket
+// `#![allow(dead_code)]` doesn't reach a bare `#[path]` include).
+#[path = "../examples/common/chart_app.rs"]
+#[allow(dead_code)]
+mod chart_app;
+use chart_app::ChartApp;
+
+#[path = "../examples/common/form_groups.rs"]
+mod form_groups;
+use form_groups::FormGroupsApp;
+
+#[path = "../examples/common/hscroll_editor.rs"]
+mod hscroll_editor;
+use hscroll_editor::HScrollEditor;
+
+#[path = "../examples/common/indicators_app.rs"]
+mod indicators_app;
+use indicators_app::IndicatorsApp;
+
+// `win_platform_services`'s `AppLogic` lives in the example file itself,
+// not `examples/common/` (see that file's module doc for why) — the
+// example's own doc comment on `PlatformServicesDemo` explains the `pub`
+// visibility bump this `#[path]` include needed. `#[allow(dead_code)]`
+// for the same reason as `chart_app` above: this include pulls in the
+// example's own `fn main`, which this test binary never calls.
+#[path = "../examples/win_platform_services.rs"]
+#[allow(dead_code)]
+mod win_platform_services;
+use win_platform_services::PlatformServicesDemo;
+
 // DIP canvas sized for the shell chrome (activity bar + sidebar + main
 // content) — same nominal size the GTK/macOS/TUI `appshell_demo_*` driver
 // tests use for their own `SHELL_W`/`SHELL_H`.
@@ -533,6 +585,53 @@ fn toast_dismiss_click_removes_it_then_trigger_adds_a_new_one() {
     );
 }
 
+// Two more scripted directly from `examples/common/toast_app.rs`'s
+// `add_toast`/`handle` (issue #1229) — bringing this slice-1 shape up to
+// three tests: an action-button toast and a plain body click, neither
+// covered by the dismiss-then-trigger test above.
+
+#[test]
+fn toast_pressing_a_adds_action_toast_and_clicking_retry_logs_the_action() {
+    let mut driver = WinDriver::new(ToastApp::new(), TOAST_W, TOAST_H);
+    driver.type_char('a');
+    assert!(
+        driver.screen_contains("Retry"),
+        "'a' should add a toast with a Retry action button: {:?}",
+        driver.painted_texts()
+    );
+
+    let (x, y) = driver
+        .find("Retry")
+        .unwrap_or_else(|| panic!("Retry button not painted: {:?}", driver.painted_texts()));
+    // `mouse_down`, not `click`: `ToastApp::handle`'s `ToastHit::Action`
+    // arm fires on press; `WinDriver`'s extra release lands on the same
+    // button and this test isn't scripting a second click.
+    driver.mouse_down(x, y);
+    assert!(
+        driver.screen_contains("Action: retry"),
+        "clicking the Retry action should log it to the status bar: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn toast_clicking_the_toast_body_logs_the_click() {
+    let mut driver = WinDriver::new(ToastApp::new(), TOAST_W, TOAST_H);
+    driver.type_char('1');
+    assert!(driver.screen_contains("Info notification"));
+
+    let (x, y) = driver
+        .find("Info notification")
+        .unwrap_or_else(|| panic!("Info toast title not painted: {:?}", driver.painted_texts()));
+    driver.mouse_down(x, y);
+    assert!(
+        driver.screen_contains("Clicked toast-1"),
+        "clicking the toast body (not its dismiss/action glyphs) should log \
+         a body click for this toast's id: {:?}",
+        driver.painted_texts()
+    );
+}
+
 // ─── SidebarSearchApp: SidebarSystem search panel (issue #1116) ───────────
 //
 // No TUI/GTK/macOS driver test exists yet for this shape (grepped —
@@ -672,6 +771,45 @@ fn search_panel_typing_updates_the_search_status() {
     assert!(
         driver.screen_contains("src/main.rs"),
         "result rows should still be visible while searching: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn search_panel_clicking_a_match_row_jumps_and_logs_the_status() {
+    let mut driver = WinDriver::new(SearchPanelApp::new(), SEARCH_PANEL_W, SEARCH_PANEL_H);
+    let (x, y) = driver
+        .find("fn main() {")
+        .unwrap_or_else(|| panic!("match row not painted: {:?}", driver.painted_texts()));
+
+    // `mouse_down`, not `click`: `TreeViewHit::Row`'s "jump" arm fires on
+    // press, so `WinDriver`'s extra release is a second, unscripted click
+    // at the same point.
+    driver.mouse_down(x, y);
+    assert!(
+        driver.screen_contains("Jump: src/main.rs:12"),
+        "clicking a match row should log a jump to its file:line: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn search_panel_clicking_a_file_header_collapses_its_matches() {
+    let mut driver = WinDriver::new(SearchPanelApp::new(), SEARCH_PANEL_W, SEARCH_PANEL_H);
+    assert!(driver.screen_contains("pub struct Config {"));
+
+    let (x, y) = driver
+        .find("src/config.rs")
+        .unwrap_or_else(|| panic!("file header not painted: {:?}", driver.painted_texts()));
+    driver.mouse_down(x, y);
+    assert!(
+        driver.screen_contains("Collapsed src/config.rs"),
+        "clicking a file header should collapse its match rows and log it: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("pub struct Config {"),
+        "the collapsed file's match rows should no longer paint: {:?}",
         driver.painted_texts()
     );
 }
@@ -839,5 +977,606 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
         narrowed < natural,
         "dragging the divider before the last column left should narrow it: \
          before={natural}, after={narrowed}"
+    );
+}
+
+// ─── MiniApp: single-StatusBar smoke app (issue #1229) ─────────────────────
+//
+// No TUI/GTK/macOS driver test exists for `MiniApp` yet (grepped —
+// `MiniApp`/`mini_app` appears in none of the other
+// `tests/*_example_driver.rs` files), so this is authored directly from
+// `examples/common/mini_app.rs`'s `status_bar`/`handle` rather than
+// ported from a sibling backend.
+
+const MINI_APP_W: u32 = 800;
+const MINI_APP_H: u32 = 120;
+
+#[test]
+fn mini_app_initial_screen_shows_hint_and_zero_count() {
+    let driver = WinDriver::new(MiniApp::new(), MINI_APP_W, MINI_APP_H);
+    assert!(
+        driver.screen_contains("press any key"),
+        "starting hint should paint: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("keys: 0"),
+        "key counter should start at 0: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn mini_app_key_press_increments_counter_and_records_last_key() {
+    let mut driver = WinDriver::new(MiniApp::new(), MINI_APP_W, MINI_APP_H);
+    let reaction = driver.type_char('a');
+    assert_eq!(reaction, Reaction::Redraw, "any non-quit key should redraw");
+    assert!(
+        driver.screen_contains("keys: 1"),
+        "one keypress should bump the counter to 1: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("last: a"),
+        "the pressed key should be echoed as the last key: {:?}",
+        driver.painted_texts()
+    );
+
+    driver.type_char('b');
+    assert!(
+        driver.screen_contains("keys: 2"),
+        "a second keypress should bump the counter again: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn mini_app_q_exits() {
+    let mut driver = WinDriver::new(MiniApp::new(), MINI_APP_W, MINI_APP_H);
+    assert!(!driver.exited());
+    let reaction = driver.type_char('q');
+    assert_eq!(reaction, Reaction::Exit, "'q' should exit MiniApp");
+    assert!(driver.exited());
+}
+
+// ─── AppState / demo: tabs + status-segment focus cycling (issue #1229) ───
+//
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `demo_arrow_keys_switch_active_tab` / `demo_n_opens_a_new_scratch_tab`,
+// plus two more scripted directly from `examples/common/demo.rs`'s
+// `close_active`/`cycle_status_focus`/`handle_status_action` that neither
+// sibling backend covers yet.
+
+const DEMO_W: u32 = 800;
+const DEMO_H: u32 = 200;
+
+#[test]
+fn demo_right_arrow_switches_active_tab() {
+    let mut driver = WinDriver::new(AppState::new(), DEMO_W, DEMO_H);
+    assert!(
+        driver.screen_contains("main.rs"),
+        "first tab should be active initially: {:?}",
+        driver.painted_texts()
+    );
+
+    let reaction = driver.press_named(NamedKey::Right);
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("Tab 2"),
+        "Right arrow should advance the status bar's 'Tab N' segment to 2: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn demo_n_opens_a_new_scratch_tab() {
+    let mut driver = WinDriver::new(AppState::new(), DEMO_W, DEMO_H);
+    driver.type_char('n');
+    assert!(
+        driver.screen_contains("scratch"),
+        "'n' should open a new scratch tab: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn demo_x_closes_the_active_tab() {
+    let mut driver = WinDriver::new(AppState::new(), DEMO_W, DEMO_H);
+    driver.type_char('n');
+    assert!(driver.screen_contains("scratch"));
+
+    let reaction = driver.type_char('x');
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "'x' should close the active tab"
+    );
+    assert!(
+        !driver.screen_contains("scratch"),
+        "closing the freshly-opened scratch tab should remove its label: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("tests.rs"),
+        "closing back down should leave the prior last tab active: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn demo_enter_with_no_prior_tab_dismisses_the_default_focused_segment() {
+    let mut driver = WinDriver::new(AppState::new(), DEMO_W, DEMO_H);
+    assert!(
+        driver.screen_contains("ready"),
+        "status bar should start with the 'ready' message: {:?}",
+        driver.painted_texts()
+    );
+
+    // `AppState::new`'s `focused_status_idx` already starts at 0 — the
+    // first interactive right segment, `status:dismiss` — so Enter alone
+    // (no Tab needed) should activate it.
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Enter should activate the focused segment"
+    );
+    assert!(
+        driver.screen_contains("dismissed"),
+        "Enter with the default focus (index 0, 'status:dismiss') should \
+         set the last_message to 'dismissed': {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn demo_tab_then_enter_activates_the_next_status_segment() {
+    let mut driver = WinDriver::new(AppState::new(), DEMO_W, DEMO_H);
+
+    // One Tab moves focus from index 0 (`status:dismiss`) to index 1
+    // (`status:encoding`) — `cycle_status_focus`'s `+1` step.
+    let reaction = driver.press_named(NamedKey::Tab);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Tab should move status-segment keyboard focus"
+    );
+
+    let reaction = driver.press_named(NamedKey::Enter);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "Enter should activate the focused segment"
+    );
+    assert!(
+        driver.screen_contains("encoding picker (mock)"),
+        "Tab then Enter should activate 'status:encoding', not 'status:dismiss': {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── ChartApp: sparkline / line / bar chart views (issue #1229) ────────────
+//
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `chart_switching_to_line_view_paints_axis_labels_and_gridlines` /
+// `chart_stacked_bar_view_paints_every_series_scaled_to_column_totals` /
+// `chart_grouped_bar_view_paints_series_side_by_side`, but text-only: TUI's
+// versions additionally assert on `█`/`┄` glyph geometry in the character
+// grid, which has no equivalent here — `WinDriver` paints real pixels, not
+// a text grid, and `crate::primitives::chart::paint` draws each axis
+// label/legend entry as one whole `surface_draw_text_run` call (unlike
+// TUI's per-cell grid, nothing here gets glyph-clipped), so `screen_contains`
+// on the full label text is the correct - and sufficient - assertion for
+// this backend. Pixel-level bar-height verification would need to walk
+// `HeadlessSurface::pixel_at` column by column; left out of scope for this
+// slice (see this file's own doc for the "about 3-5 tests" bar).
+
+const CHART_W: u32 = 900;
+const CHART_H: u32 = 400;
+
+#[test]
+fn chart_initial_screen_shows_sparkline_status_and_no_axis_labels() {
+    let driver = WinDriver::new(ChartApp::new(), CHART_W, CHART_H);
+    assert!(
+        driver.screen_contains("Chart: Sparkline"),
+        "status bar should name the starting view: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("Time (s)"),
+        "sparkline view has no axis labels configured, so none should paint: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn chart_switching_to_line_view_paints_axis_labels_and_legend() {
+    let mut driver = WinDriver::new(ChartApp::new(), CHART_W, CHART_H);
+    let reaction = driver.type_char('2');
+    assert_eq!(reaction, Reaction::Redraw);
+
+    assert!(driver.screen_contains("Chart: Line"));
+    assert!(
+        driver.screen_contains("Time (s)"),
+        "line chart's x_label should paint: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("Usage"),
+        "line chart's y_label should paint: {:?}",
+        driver.painted_texts()
+    );
+    assert!(driver.screen_contains("CPU"));
+    assert!(driver.screen_contains("Memory"));
+}
+
+#[test]
+fn chart_switching_to_bar_stacked_shows_legend_and_every_series() {
+    let mut driver = WinDriver::new(ChartApp::new(), CHART_W, CHART_H);
+    driver.type_char('3');
+    assert!(driver.screen_contains("Chart: Bar (stacked)"));
+    for label in ["OK", "Slow", "Failed"] {
+        assert!(
+            driver.screen_contains(label),
+            "stacked-bar legend should name every series, missing {label:?}: {:?}",
+            driver.painted_texts()
+        );
+    }
+}
+
+#[test]
+fn chart_switching_to_bar_grouped_shows_its_own_status_label() {
+    let mut driver = WinDriver::new(ChartApp::new(), CHART_W, CHART_H);
+    driver.type_char('3');
+    assert!(driver.screen_contains("Chart: Bar (stacked)"));
+    driver.type_char('4');
+    assert!(
+        driver.screen_contains("Chart: Bar (grouped)"),
+        "'4' should switch the status label from stacked to grouped: {:?}",
+        driver.painted_texts()
+    );
+    for label in ["OK", "Slow", "Failed"] {
+        assert!(driver.screen_contains(label));
+    }
+}
+
+// ─── FormGroupsApp: ToggleGroup / ButtonRow / Toolbar field clicks (#1229) ─
+//
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `form_groups_click_toggle_flips_rendered_value`, plus two more scripted
+// directly from `examples/common/form_groups.rs`'s `click` handler (the
+// scope-toolbar and Find-Next-button arms) that no sibling backend covers
+// yet.
+
+const FORM_GROUPS_W: u32 = 800;
+const FORM_GROUPS_H: u32 = 400;
+
+#[test]
+fn form_groups_initial_screen_paints_fields_and_default_status() {
+    let driver = WinDriver::new(FormGroupsApp::new(), FORM_GROUPS_W, FORM_GROUPS_H);
+    for needle in [
+        "Find",
+        "Aa",
+        "Ab|",
+        ".*",
+        "Replace",
+        "Find Next",
+        "Replace All",
+        "Workspace",
+        "File",
+        "Selection",
+    ] {
+        assert!(
+            driver.screen_contains(needle),
+            "expected {needle:?} painted somewhere: {:?}",
+            driver.painted_texts()
+        );
+    }
+    assert!(driver.screen_contains("last: —"));
+}
+
+#[test]
+fn form_groups_clicking_case_toggle_flips_and_updates_status() {
+    let mut driver = WinDriver::new(FormGroupsApp::new(), FORM_GROUPS_W, FORM_GROUPS_H);
+    let (x, y) = driver
+        .find("Aa")
+        .unwrap_or_else(|| panic!("case toggle not painted: {:?}", driver.painted_texts()));
+
+    // `mouse_down`, not `click`: `FormGroupsApp::handle` flips the toggle
+    // on `MouseDown` alone — `WinDriver`'s extra release lands on the same
+    // toggle and would flip it straight back.
+    let reaction = driver.mouse_down(x, y);
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("last: case=false"),
+        "clicking the case-sensitive toggle (starts true) should flip it: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn form_groups_clicking_the_file_scope_button_logs_the_scope_change() {
+    let mut driver = WinDriver::new(FormGroupsApp::new(), FORM_GROUPS_W, FORM_GROUPS_H);
+    let (x, y) = driver.find("File").unwrap_or_else(|| {
+        panic!(
+            "File scope button not painted: {:?}",
+            driver.painted_texts()
+        )
+    });
+    driver.mouse_down(x, y);
+    assert!(
+        driver.screen_contains("last: scope=File"),
+        "clicking the File scope toolbar button should log the scope change: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn form_groups_clicking_find_next_logs_the_action() {
+    let mut driver = WinDriver::new(FormGroupsApp::new(), FORM_GROUPS_W, FORM_GROUPS_H);
+    let (x, y) = driver
+        .find("Find Next")
+        .unwrap_or_else(|| panic!("Find Next button not painted: {:?}", driver.painted_texts()));
+    driver.mouse_down(x, y);
+    assert!(
+        driver.screen_contains("last: Find Next"),
+        "clicking Find Next should log it to the status bar: {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── HScrollEditor: horizontal scroll via key (issue #1229) ───────────────
+//
+// No TUI/GTK/macOS driver test exists for `HScrollEditor` yet — grepped,
+// `HScrollEditor`/`hscroll_editor` appears in none of the other
+// `tests/*_example_driver.rs` files (`tests/tui_example_driver.rs`'s
+// `hscroll_dollar_key_scrolls_visible_window_to_line_end` is for a
+// different shape, `tab_icons_demo`'s hscroll helper — see that file's own
+// section comment). Authored directly from
+// `examples/common/hscroll_editor.rs`'s status-bar text (`col N / 500
+// scroll_left M viewport_cols K`) rather than TUI's character-grid glyph
+// positions, which have no equivalent against a pixel `WinDriver` canvas —
+// same reasoning as the `ChartApp` section above.
+
+const HSCROLL_W: u32 = 700;
+const HSCROLL_H: u32 = 120;
+
+#[test]
+fn hscroll_initial_screen_shows_unscrolled_status() {
+    let driver = WinDriver::new(HScrollEditor::new(), HSCROLL_W, HSCROLL_H);
+    assert!(
+        driver.screen_contains("col 1 / 500"),
+        "cursor should start at column 1: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("scroll_left 0"),
+        "view should start unscrolled: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn hscroll_dollar_key_scrolls_to_end_and_updates_status() {
+    let mut driver = WinDriver::new(HScrollEditor::new(), HSCROLL_W, HSCROLL_H);
+    let reaction = driver.type_char('$');
+    assert_eq!(reaction, Reaction::Redraw, "'$' should redraw");
+
+    assert!(
+        driver.screen_contains("col 500 / 500"),
+        "'$' should jump the cursor to the line's last column: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("scroll_left 0"),
+        "jumping to column 500 should scroll the view away from 0: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn hscroll_zero_key_after_dollar_returns_to_start() {
+    let mut driver = WinDriver::new(HScrollEditor::new(), HSCROLL_W, HSCROLL_H);
+    driver.type_char('$');
+    assert!(!driver.screen_contains("scroll_left 0"));
+
+    let reaction = driver.type_char('0');
+    assert_eq!(reaction, Reaction::Redraw, "'0' should redraw");
+    assert!(
+        driver.screen_contains("col 1 / 500"),
+        "'0' should jump the cursor back to the first column: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("scroll_left 0"),
+        "jumping back to column 0 should scroll the view back to 0: {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── IndicatorsApp: ProgressBar + Spinner (issue #1229) ───────────────────
+//
+// Win-GUI twin of `tests/tui_example_driver.rs`'s
+// `indicators_toggling_cancellable_paints_and_clears_cancel_symbol` — the
+// same `×` glyph (`\u{d7}`) is drawn as its own `surface_draw_text_run`
+// call by the shared `crate::primitives::progress` painter every backend
+// (including Win) delegates to, so it resolves via `find`/`screen_contains`
+// here exactly as it does on TUI. Two more scripted directly from
+// `examples/common/indicators_app.rs`'s `handle` that no sibling backend
+// covers yet.
+
+const INDICATORS_W: u32 = 800;
+const INDICATORS_H: u32 = 200;
+
+#[test]
+fn indicators_initial_screen_paints_spinner_and_progress_label() {
+    let driver = WinDriver::new(IndicatorsApp::new(), INDICATORS_W, INDICATORS_H);
+    assert!(
+        driver.screen_contains("Loading..."),
+        "spinner label should paint: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("30%"),
+        "progress starts at 0.3: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("\u{d7}"),
+        "cancellable starts false, so no cancel glyph should paint yet: {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
+    let mut driver = WinDriver::new(IndicatorsApp::new(), INDICATORS_W, INDICATORS_H);
+    driver.type_char('c');
+    assert!(
+        driver.screen_contains("\u{d7}"),
+        "toggling 'c' should enable the cancel affordance and paint '×': {:?}",
+        driver.painted_texts()
+    );
+    assert!(driver.screen_contains("Cancel enabled"));
+
+    driver.type_char('c');
+    assert!(
+        !driver.screen_contains("\u{d7}"),
+        "toggling 'c' again should disable the cancel affordance and clear '×': {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn indicators_space_key_advances_progress() {
+    let mut driver = WinDriver::new(IndicatorsApp::new(), INDICATORS_W, INDICATORS_H);
+    let reaction = driver.type_char(' ');
+    assert_eq!(reaction, Reaction::Redraw);
+    assert!(
+        driver.screen_contains("40%"),
+        "space should advance progress by 10%, from 30% to 40%: {:?}",
+        driver.painted_texts()
+    );
+    assert!(driver.screen_contains("Progress: 40%"));
+}
+
+#[test]
+fn indicators_clicking_cancel_resets_progress() {
+    let mut driver = WinDriver::new(IndicatorsApp::new(), INDICATORS_W, INDICATORS_H);
+    driver.type_char('c'); // enable the cancel affordance
+    let (x, y) = driver
+        .find("\u{d7}")
+        .unwrap_or_else(|| panic!("cancel glyph not painted: {:?}", driver.painted_texts()));
+
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("Cancelled!"),
+        "clicking the cancel glyph should log the cancellation: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        driver.screen_contains("0%"),
+        "cancelling should reset progress back to 0%: {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── PlatformServicesDemo: win_platform_services (issue #1229) ────────────
+//
+// Unlike every other section in this file, `win_platform_services.rs`'s
+// `render` paints nothing (see that example's module doc: "every
+// `WinBackend::draw_*` rasteriser is still a `todo!()` stub" — stale now
+// that #25–#30 landed the chrome rasterisers, but still true *for this
+// example*, which never calls one), and every one of its key handlers
+// reports its result to stderr rather than an in-window status bar,
+// specifically so a human can watch it against a real desktop session.
+// So there is no painted output for a headless `WinDriver` to assert on
+// for `o`/`s`/`m` (blocking native dialogs — would hang a test run
+// waiting on user input that never comes), `n` (a tray balloon has no
+// pixel presence in a `HeadlessSurface`, and no live tray to inspect
+// either), `u`/`f`/`p`/`x`/`t`/`d`/`b` (real desktop side effects: a
+// browser launch, Explorer/shell UI, filesystem/Recycle-Bin mutation, a
+// registry-backed theme query, real monitor enumeration, an audible
+// beep — none of which a `HeadlessSurface` renders and none of which
+// this crate's own `src/win/services.rs` unit tests leave unexercised
+// already, see e.g. `open_url_result_and_open_path_report_a_real_shell_execute_failure`).
+//
+// What *is* headlessly observable:
+// - the `Reaction`/exit behaviour of the app's own key dispatch (proves
+//   `WinDriver` can drive this example's `AppLogic` at all, the same bar
+//   every other section here clears first); and
+// - the clipboard round trip, which needs no window/desktop UI at all
+//   (`OpenClipboard(None)` — see `src/win/services.rs`'s
+//   `win_clipboard_read`/`win_clipboard_write` docs) — exercised here via
+//   `WinBackend::services()` directly rather than routing through `'c'`
+//   and reading the app's `eprintln!`, which a `WinDriver` test has no
+//   way to capture. This is the same real `WinPlatformServices` the `'c'`
+//   handler calls, just reached without needing to observe stderr.
+
+const PLATFORM_SERVICES_W: u32 = 400;
+const PLATFORM_SERVICES_H: u32 = 200;
+
+#[test]
+fn platform_services_q_exits() {
+    let mut driver = WinDriver::new(
+        PlatformServicesDemo,
+        PLATFORM_SERVICES_W,
+        PLATFORM_SERVICES_H,
+    );
+    assert!(!driver.exited());
+    let reaction = driver.type_char('q');
+    assert_eq!(reaction, Reaction::Exit);
+    assert!(driver.exited());
+}
+
+#[test]
+fn platform_services_escape_exits() {
+    let mut driver = WinDriver::new(
+        PlatformServicesDemo,
+        PLATFORM_SERVICES_W,
+        PLATFORM_SERVICES_H,
+    );
+    let reaction = driver.press_named(NamedKey::Escape);
+    assert_eq!(reaction, Reaction::Exit);
+}
+
+#[test]
+fn platform_services_unbound_key_continues_and_paints_nothing() {
+    let mut driver = WinDriver::new(
+        PlatformServicesDemo,
+        PLATFORM_SERVICES_W,
+        PLATFORM_SERVICES_H,
+    );
+    // Every key this example binds (`c/o/s/n/m/u/t/f/p/x/b/d`) triggers a
+    // real platform side effect — 'z' is deliberately unbound so this
+    // reaches `_ => Reaction::Continue` with no side effect at all.
+    let reaction = driver.type_char('z');
+    assert_eq!(reaction, Reaction::Continue);
+    assert!(
+        driver.painted_texts().is_empty(),
+        "this example's `render` paints nothing (see this section's own \
+         doc): {:?}",
+        driver.painted_texts()
+    );
+}
+
+#[test]
+fn platform_services_clipboard_round_trips_through_the_real_win32_clipboard() {
+    let driver = WinDriver::new(
+        PlatformServicesDemo,
+        PLATFORM_SERVICES_W,
+        PLATFORM_SERVICES_H,
+    );
+    const PAYLOAD: &str = "quadraui#1229 win_platform_services WinDriver clipboard round trip";
+
+    let clipboard = driver.backend().services().clipboard();
+    clipboard.write_text(PAYLOAD);
+    assert_eq!(
+        clipboard.read_text().as_deref(),
+        Some(PAYLOAD),
+        "the real Win32 clipboard (`OpenClipboard(None)`, no window \
+         required) should round-trip the exact text just written — the \
+         same `WinPlatformServices::clipboard()` this example's 'c' \
+         handler calls"
     );
 }
