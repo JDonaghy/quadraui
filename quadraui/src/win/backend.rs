@@ -81,7 +81,7 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::native_surface::NativeSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
-use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
+use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
@@ -105,7 +105,7 @@ use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::status_bar::StatusBarLayout;
+use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 #[cfg(target_os = "windows")]
 use crate::primitives::toolbar::ToolbarButton;
 // `TabBarHits` is `#[deprecated]` (issue #823) — the original six
@@ -1305,6 +1305,71 @@ impl WinBackend {
                 && z.bounds.width * z.bounds.height < band_area
         });
         Some(!excluded)
+    }
+
+    // ── Band-content zone registration (#1232) ──────────────────────────
+    //
+    // `Self::nc_hit_test` only excludes a point from `HTCAPTION` when a
+    // *smaller* zone than `TITLE_BAR_DRAG_ZONE` covers it — but nothing
+    // used to register those smaller zones for the widgets a host
+    // actually paints inside the band (the menu row, the command-centre
+    // search box, inline window-control buttons drawn as status-bar
+    // segments). The band-exclusion unit tests above fed `nc_hit_test`
+    // hand-registered zones directly, which is why #1199's design
+    // verified green while every real click in the band still hit
+    // `HTCAPTION` end to end (quadraui#1232). These three helpers close
+    // that gap at the one place each widget's real screen bounds are
+    // already known: right after its `draw_*` call computes a layout.
+    // Called unconditionally (not just when the widget happens to sit
+    // inside the band) — a zone outside the band is simply never found
+    // by `nc_hit_test`'s `band.bounds.contains(point)` check, so this is
+    // harmless for the common case (status bar at the bottom of the
+    // window, a menu bar with no title bar at all, etc.) and mirrors how
+    // `AppShell::render` already registers every activity-bar item's
+    // zone regardless of where the shell puts the activity bar.
+
+    /// Register one zone per clickable [`MenuBarLayout`] item — the
+    /// File/Edit/... labels in the drawn menu row. See the section doc
+    /// above.
+    fn register_menu_bar_item_zones(&mut self, layout: &MenuBarLayout) {
+        for item in &layout.visible_items {
+            if item.clickable {
+                self.register_zone(item.id.clone(), item.bounds);
+            }
+        }
+    }
+
+    /// Register one zone per clickable [`StatusBarLayout`] segment — the
+    /// vimcode inline minimize/maximize/close buttons are ordinary
+    /// `action_id`-bearing status-bar segments drawn into the title-bar
+    /// band. See the section doc above.
+    fn register_status_bar_segment_zones(&mut self, layout: &StatusBarLayout) {
+        for (bounds, hit) in &layout.hit_regions {
+            if let StatusBarHit::Segment(id) = hit {
+                self.register_zone(id.clone(), *bounds);
+            }
+        }
+    }
+
+    /// Register a zone for each present [`CommandCenterLayout`] hit
+    /// region (back/forward nav arrows, the search box) — the
+    /// command-centre strip the issue names explicitly. `CommandCenterHit`
+    /// carries no `WidgetId` of its own, so each zone is keyed off `cc`'s
+    /// id with a fixed suffix, mirroring `"titlebar:minimize-button"`-style
+    /// synthetic ids already used by this file's unit tests below.
+    fn register_command_center_zones(&mut self, cc_id: &WidgetId, layout: &CommandCenterLayout) {
+        for (bounds, hit) in &layout.hit_regions {
+            let suffix = match hit {
+                CommandCenterHit::Back => "back",
+                CommandCenterHit::Forward => "forward",
+                CommandCenterHit::SearchBox => "search",
+                CommandCenterHit::Bar | CommandCenterHit::Outside => continue,
+            };
+            self.register_zone(
+                WidgetId::new(format!("{}:{}", cc_id.as_str(), suffix)),
+                *bounds,
+            );
+        }
     }
 
     // ── Paint-time text-run recording (quadraui#721) ────────────────────
@@ -2774,7 +2839,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
-            return crate::primitives::status_bar::native_surface_paint::paint(
+            let layout = crate::primitives::status_bar::native_surface_paint::paint(
                 bar,
                 self,
                 &theme,
@@ -2785,19 +2850,32 @@ impl Backend for WinBackend {
                 hovered_id,
                 pressed_id,
             );
+            // #1232: a status-bar segment drawn inside the AppShell
+            // title-bar band (e.g. vimcode's inline minimize/maximize/
+            // close buttons) needs its own `register_zone` entry — see
+            // `Self::nc_hit_test`'s doc — or the whole band keeps
+            // reading as `HTCAPTION` and the OS swallows the click
+            // before it ever reaches the segment as a `MouseDown`.
+            // Harmless outside the band: `nc_hit_test` only treats a
+            // zone as an exclusion when it falls inside the registered
+            // `TITLE_BAR_DRAG_ZONE`.
+            self.register_status_bar_segment_zones(&layout);
+            return layout;
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `status_bar_layout` falls back to, and paint
         // nothing (issue #924). `hovered_id`/`pressed_id` only affect
         // painting, so they're unused on this path.
         let _ = (hovered_id, pressed_id);
-        super::status_bar::win_status_bar_layout(
+        let layout = super::status_bar::win_status_bar_layout(
             &NominalTextMeasure {
                 char_width: self.current_char_width,
             },
             rect,
             bar,
-        )
+        );
+        self.register_status_bar_segment_zones(&layout);
+        layout
     }
 
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
@@ -3693,24 +3771,32 @@ impl Backend for WinBackend {
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::menu_bar::draw_menu_bar(
+            let layout = super::menu_bar::draw_menu_bar(
                 &surface.target,
                 dwrite,
                 rect,
                 bar,
                 &self.current_theme,
             );
+            // #1232: see "Band-content zone registration" above —
+            // without this, every point over "File"/"Edit"/... reads as
+            // `HTCAPTION` and the OS swallows the click before the app
+            // ever sees it.
+            self.register_menu_bar_item_zones(&layout);
+            return layout;
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `menu_bar_layout` falls back to, and paint
         // nothing (issue #924).
-        super::menu_bar::win_menu_bar_layout(
+        let layout = super::menu_bar::win_menu_bar_layout(
             &NominalTextMeasure {
                 char_width: self.current_char_width,
             },
             rect,
             bar,
-        )
+        );
+        self.register_menu_bar_item_zones(&layout);
+        layout
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
@@ -4178,7 +4264,7 @@ impl Backend for WinBackend {
     fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::command_center::draw_command_center(
+            let layout = super::command_center::draw_command_center(
                 &surface.target,
                 dwrite,
                 self.current_char_width,
@@ -4187,11 +4273,17 @@ impl Backend for WinBackend {
                 cc,
                 &self.current_theme,
             );
+            // #1232: see "Band-content zone registration" above — the
+            // command-centre search box the issue names explicitly.
+            self.register_command_center_zones(&cc.id, &layout);
+            return layout;
         }
         // No surface yet — return the real (pure `char_width` estimate)
         // layout via `command_center_layout` and paint nothing (issue
         // #924).
-        self.command_center_layout(rect, cc)
+        let layout = self.command_center_layout(rect, cc);
+        self.register_command_center_zones(&cc.id, &layout);
+        layout
     }
 
     /// #732: pure `char_width` estimate (via the shared
@@ -6267,6 +6359,134 @@ mod tests {
         assert_eq!(b.nc_hit_test(712.0, 16.0), Some(false));
         // Outside the button but still in the band.
         assert_eq!(b.nc_hit_test(100.0, 16.0), Some(true));
+    }
+
+    /// Issue #1232 end-to-end regression: before this fix, nothing ever
+    /// registered a zone for the real widgets a host paints *inside* the
+    /// title-bar band — `nc_hit_test_client_on_an_inline_button` above
+    /// passed by hand-registering the exclusion zone directly, which is
+    /// exactly why #1199's design review didn't catch the gap. This test
+    /// drives the real paint path instead: register the band, call
+    /// `Backend::draw_menu_bar` with a real `MenuBar` sitting inside it,
+    /// and confirm a click on the "File" label now excludes itself from
+    /// `HTCAPTION` — with no hand-registered zone of its own.
+    #[test]
+    fn draw_menu_bar_registers_its_own_item_zones_inside_the_band() {
+        let mut b = WinBackend::new();
+        let band = Rect::new(0.0, 0.0, 800.0, 32.0);
+        Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
+
+        let bar = MenuBar {
+            id: WidgetId::new("bar"),
+            items: vec![
+                crate::primitives::menu_bar::MenuBarItem {
+                    id: WidgetId::new("bar:file"),
+                    label: "&File".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+                crate::primitives::menu_bar::MenuBarItem {
+                    id: WidgetId::new("bar:edit"),
+                    label: "&Edit".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+            ],
+            open_item: None,
+            focused_item: None,
+        };
+        let layout = Backend::draw_menu_bar(&mut b, Rect::new(0.0, 0.0, 300.0, 32.0), &bar);
+        let file_item = layout
+            .visible_items
+            .iter()
+            .find(|v| v.id == WidgetId::new("bar:file"))
+            .expect("File item must be visible at this width");
+        let (cx, cy) = (
+            file_item.bounds.x + file_item.bounds.width / 2.0,
+            file_item.bounds.y + file_item.bounds.height / 2.0,
+        );
+        // On "File": the OS must not swallow this as a caption drag.
+        assert_eq!(b.nc_hit_test(cx, cy), Some(false));
+        // Still empty band space well past the drawn items.
+        assert_eq!(b.nc_hit_test(790.0, 16.0), Some(true));
+    }
+
+    /// Same regression as above for `Backend::draw_status_bar_interactive`
+    /// — vimcode's inline minimize/maximize/close buttons are ordinary
+    /// `action_id` status-bar segments drawn into the band.
+    #[test]
+    fn draw_status_bar_interactive_registers_its_own_segment_zones_inside_the_band() {
+        let mut b = WinBackend::new();
+        let band = Rect::new(0.0, 0.0, 800.0, 32.0);
+        Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
+
+        let bar = StatusBar {
+            id: WidgetId::new("titlebar:controls"),
+            left_segments: vec![],
+            right_segments: vec![
+                crate::primitives::status_bar::StatusBarSegment {
+                    text: "_".into(),
+                    fg: crate::types::Color::rgb(255, 255, 255),
+                    bg: crate::types::Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: Some(WidgetId::new("titlebar:minimize")),
+                },
+                crate::primitives::status_bar::StatusBarSegment {
+                    text: "X".into(),
+                    fg: crate::types::Color::rgb(255, 255, 255),
+                    bg: crate::types::Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: Some(WidgetId::new("titlebar:close")),
+                },
+            ],
+        };
+        let interaction = crate::interaction::InteractionState::new();
+        let layout = Backend::draw_status_bar_interactive(
+            &mut b,
+            Rect::new(600.0, 0.0, 200.0, 32.0),
+            &bar,
+            &interaction,
+        );
+        let (close_rect, hit) = layout
+            .hit_regions
+            .iter()
+            .find(|(_, hit)| {
+                matches!(hit, StatusBarHit::Segment(id) if *id == WidgetId::new("titlebar:close"))
+            })
+            .expect("close segment must be a registered hit region");
+        let _ = hit;
+        let (cx, cy) = (
+            close_rect.x + close_rect.width / 2.0,
+            close_rect.y + close_rect.height / 2.0,
+        );
+        // On the close button: must reach the app as a normal click.
+        assert_eq!(b.nc_hit_test(cx, cy), Some(false));
+        assert_eq!(b.nc_hit_test(10.0, 16.0), Some(true));
+    }
+
+    /// Same regression for `Backend::draw_command_center` — the
+    /// command-centre search box the issue names explicitly.
+    #[test]
+    fn draw_command_center_registers_its_own_zones_inside_the_band() {
+        let mut b = WinBackend::new();
+        let band = Rect::new(0.0, 0.0, 800.0, 32.0);
+        Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
+
+        let cc = CommandCenter {
+            id: WidgetId::new("titlebar:cc"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "project-name".into(),
+        };
+        let layout = Backend::draw_command_center(&mut b, Rect::new(300.0, 0.0, 400.0, 32.0), &cc);
+        let search = layout.search_bounds.expect("search box must be laid out");
+        let (cx, cy) = (
+            search.x + search.width / 2.0,
+            search.y + search.height / 2.0,
+        );
+        // On the search box: must reach the app as a normal click.
+        assert_eq!(b.nc_hit_test(cx, cy), Some(false));
+        assert_eq!(b.nc_hit_test(1.0, 16.0), Some(true));
     }
 
     /// A coarser zone that contains the whole band (e.g. `AppShell`'s own
