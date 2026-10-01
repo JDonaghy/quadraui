@@ -480,6 +480,83 @@ impl Dialog {
     pub fn cancel_button_id(&self) -> Option<&WidgetId> {
         self.buttons.iter().find(|b| b.is_cancel).map(|b| &b.id)
     }
+
+    /// Derive a [`DialogMeasure`] from just `char_width`/`line_height` —
+    /// no real text measurement available (quadraui#419). This is the
+    /// char-cell approximation every caller of [`Self::layout`] currently
+    /// hand-rolls: `char_width == line_height == 1.0` on TUI (one
+    /// character cell), and the backend's real glyph metrics on pixel
+    /// backends. Lifted near-verbatim from
+    /// `examples/common/dialog_table_demo.rs`'s pre-#419 inline
+    /// `measure()` (quadraui#817 fixed that formula to take the real
+    /// `char_width` instead of approximating `line_height * 0.6` — see
+    /// that example's module doc for the provenance) so other
+    /// consumers — vimcode's GTK/TUI backends among them — don't have
+    /// to re-derive the same arithmetic themselves.
+    ///
+    /// `border_chrome_inset` optionally shrinks the resulting `width` to
+    /// leave room for a border the rasteriser draws *outside*
+    /// [`DialogLayout::bounds`] rather than inside it — e.g. a TUI
+    /// backend whose box-drawing glyphs live one cell past the content
+    /// box, the same convention `tui::context_menu::draw_context_menu`
+    /// (behind the `tui` feature) already uses for `ContextMenu` — see
+    /// that function's "chrome border one cell outside" comment. Pass
+    /// `0.0` when the border is painted *inside* the returned bounds —
+    /// this crate's own `tui::dialog::draw_dialog` (also `tui`-gated)
+    /// and every pixel backend do this today.
+    ///
+    /// Does not measure [`Self::table`]'s or [`Self::buttons`]'
+    /// rendered pixel width beyond the char-cell approximation above;
+    /// callers with real text measurement available should prefer
+    /// measuring directly and building a [`DialogMeasure`] by hand.
+    pub fn measure_generic(
+        &self,
+        char_width: f32,
+        line_height: f32,
+        viewport: Rect,
+        border_chrome_inset: f32,
+    ) -> DialogMeasure {
+        let table = self.table.as_ref();
+        let table_total_h = table
+            .map(|t| t.tui_total_height() as f32 * line_height)
+            .unwrap_or(0.0);
+        // Preferred table width: char cells × char_width + 2 char-widths
+        // of padding.
+        let table_preferred_w = table
+            .map(|t| t.tui_total_width() as f32 * char_width + char_width * 2.0)
+            .unwrap_or(0.0);
+
+        let title_h = if self.title.spans.iter().any(|s| !s.text.is_empty()) {
+            line_height
+        } else {
+            0.0
+        };
+        let body_h = self.body.len() as f32 * line_height;
+        let input_h = if self.input.is_some() {
+            line_height
+        } else {
+            0.0
+        };
+
+        let min_w = char_width * 30.0; // ≈ 30 char-widths
+        let max_w = char_width * 60.0; // ≈ 60 char-widths
+        let default_w = (viewport.width * 0.5).clamp(min_w, max_w);
+        let dialog_w = default_w
+            .max(table_preferred_w)
+            .min(viewport.width - char_width * 4.0 - border_chrome_inset * 2.0);
+
+        DialogMeasure {
+            width: dialog_w,
+            title_height: title_h,
+            body_height: body_h,
+            table_height: table_total_h,
+            input_height: input_h,
+            button_row_height: line_height,
+            button_width: char_width * 8.0,
+            button_gap: char_width * 2.0,
+            padding: line_height,
+        }
+    }
 }
 
 /// Flatten a [`StyledText`] to plain text. Native alert facilities carry
@@ -1497,5 +1574,92 @@ mod tests {
         };
         assert_eq!(d.default_button_id().unwrap().as_str(), "ok");
         assert_eq!(d.cancel_button_id().unwrap().as_str(), "cancel");
+    }
+
+    // ── Dialog::measure_generic (quadraui#419) ────────────────────────────
+
+    #[test]
+    fn measure_generic_tui_shaped_matches_hand_rolled_formula() {
+        // char_width == line_height == 1.0, mirroring TUI metrics —
+        // reproduces the formula every caller currently hand-rolls.
+        let d = table_dialog();
+        let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let m = d.measure_generic(1.0, 1.0, viewport, 0.0);
+
+        assert_eq!(m.title_height, 1.0, "non-empty title reserves one line");
+        assert_eq!(m.body_height, 0.0, "table_dialog() has no body lines");
+        let table = d.table.as_ref().unwrap();
+        assert_eq!(m.table_height, table.tui_total_height() as f32);
+        assert_eq!(m.button_row_height, 1.0);
+        assert_eq!(m.button_width, 8.0);
+        assert_eq!(m.button_gap, 2.0);
+        assert_eq!(m.padding, 1.0);
+        assert_eq!(m.input_height, 0.0, "no DialogInput on table_dialog()");
+    }
+
+    #[test]
+    fn measure_generic_empty_title_reserves_no_height() {
+        let mut d = base_dialog(None);
+        d.title = StyledText::default();
+        let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let m = d.measure_generic(1.0, 1.0, viewport, 0.0);
+        assert_eq!(m.title_height, 0.0);
+    }
+
+    #[test]
+    fn measure_generic_input_present_reserves_one_line() {
+        let d = base_dialog(Some(DialogInput::TextInput(DialogTextInput {
+            value: "x".into(),
+            placeholder: String::new(),
+            cursor: None,
+        })));
+        let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let m = d.measure_generic(1.0, 1.0, viewport, 0.0);
+        assert_eq!(m.input_height, 1.0);
+    }
+
+    #[test]
+    fn measure_generic_widens_for_wide_table() {
+        // A table wide enough to force the dialog beyond its default
+        // preferred width.
+        let wide_table_dialog = Dialog {
+            id: WidgetId::new("wide"),
+            title: StyledText::plain("Wide"),
+            body: vec![],
+            buttons: vec![btn("close")],
+            severity: None,
+            vertical_buttons: false,
+            table: Some(DialogTable {
+                headers: None,
+                rows: vec![vec!["x".repeat(80)]],
+                column_widths: None,
+            }),
+            input: None,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 50.0);
+        let m = wide_table_dialog.measure_generic(1.0, 1.0, viewport, 0.0);
+        // Table content alone needs 80 + 2 padding chars = 82, well past
+        // the ≈30-60 char default preferred width.
+        assert!(
+            m.width >= 82.0,
+            "width {} should fit the wide table",
+            m.width
+        );
+    }
+
+    #[test]
+    fn measure_generic_border_chrome_inset_shrinks_width_when_viewport_bound() {
+        // Narrow viewport so the `viewport.width - 4*char_width -
+        // 2*inset` clamp is the binding constraint, not the table or
+        // the 30-60 char-width default band.
+        let d = base_dialog(None);
+        let viewport = Rect::new(0.0, 0.0, 20.0, 30.0);
+        let no_inset = d.measure_generic(1.0, 1.0, viewport, 0.0);
+        let with_inset = d.measure_generic(1.0, 1.0, viewport, 2.0);
+        assert_eq!(
+            with_inset.width,
+            no_inset.width - 4.0,
+            "border_chrome_inset shrinks width by 2x the inset"
+        );
     }
 }
