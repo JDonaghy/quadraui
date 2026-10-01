@@ -103,10 +103,37 @@ pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect) -> ToolbarLayout {
 }
 
 /// Draw a [`Toolbar`] into `area` on `buf`. Returns the layout for host
-/// click dispatch. `options.valign` (issue #260) resolves which row
-/// button/label text paints on when `area.height > 1` — see
-/// [`tui_text_row`].
+/// click dispatch.
+///
+/// Equivalent to [`draw_toolbar_with_options`] with
+/// [`ToolbarPaintOptions::default()`] — kept as a separate, **unchanged**
+/// function (rather than growing this one's argument list) so every
+/// existing caller of this re-exported `pub fn` keeps compiling
+/// untouched. See [`ToolbarPaintOptions`] and `CLAUDE.md`'s *Downstream
+/// consumers* rule 2.
 pub fn draw_toolbar(
+    buf: &mut Buffer,
+    area: Rect,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+) -> ToolbarLayout {
+    draw_toolbar_with_options(
+        buf,
+        area,
+        bar,
+        theme,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
+    )
+}
+
+/// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
+/// (issue #260) resolves which row button/label text paints on when
+/// `area.height > 1` — see [`tui_text_row`].
+pub fn draw_toolbar_with_options(
     buf: &mut Buffer,
     area: Rect,
     bar: &Toolbar,
@@ -300,15 +327,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // First two cells should be `[` then ` `.
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_eq!(cell_char(&buf, 1, 0), ' ');
@@ -329,15 +348,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // Click inside the first button.
         let b = layout.visible_items[0].bounds;
         assert_eq!(
@@ -385,15 +396,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         let b = layout.visible_items[0].bounds;
         assert_eq!(layout.hit_test(b.x + 1.0, b.y), ToolbarHit::Empty);
     }
@@ -408,15 +411,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // First cell is space, second is the pipe char.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert_eq!(cell_char(&buf, 1, 0), '│');
@@ -435,15 +430,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), '2');
         assert_eq!(cell_char(&buf, 1, 0), '/');
         assert_eq!(cell_char(&buf, 2, 0), '5');
@@ -460,15 +447,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert!(layout.visible_items.is_empty());
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
@@ -493,15 +472,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert!(layout.visible_items.is_empty());
         // Pre-fix, the forced `bar_height.max(1)` row band at y == 0
         // would hit-test the button here even though nothing painted.
@@ -522,15 +493,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
 
         // Row 0 (top): button text painted in centre — but the bg
         // outside the button text still fills.
@@ -569,7 +532,8 @@ mod tests {
         let options = ToolbarPaintOptions {
             valign: ToolbarVAlign::Center,
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let _ =
+            draw_toolbar_with_options(&mut buf, area, &bar, &Theme::default(), None, None, options);
         // Row 1 col 0 should be `[`.
         assert_eq!(cell_char(&buf, 0, 1), '[');
         // Rows 0 and 2 should not have the bracket.
@@ -593,15 +557,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_ne!(cell_char(&buf, 0, 1), '[');
         assert_ne!(cell_char(&buf, 0, 2), '[');
@@ -624,7 +580,8 @@ mod tests {
         let options = ToolbarPaintOptions {
             valign: ToolbarVAlign::Bottom,
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let _ =
+            draw_toolbar_with_options(&mut buf, area, &bar, &Theme::default(), None, None, options);
         assert_eq!(cell_char(&buf, 0, 2), '[');
         assert_ne!(cell_char(&buf, 0, 0), '[');
         assert_ne!(cell_char(&buf, 0, 1), '[');
@@ -648,7 +605,7 @@ mod tests {
                 bg: None,
                 focused_index: None,
             };
-            let _ = draw_toolbar(
+            let _ = draw_toolbar_with_options(
                 &mut buf,
                 area,
                 &bar,
@@ -695,15 +652,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         let r = layout.visible_items[0].bounds;
         // Click in each row of the button bounds — every row should
         // resolve to the button.
@@ -726,15 +675,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // The │ glyph should appear on every row at column 1.
         for y in 0..area.height {
             assert_eq!(cell_char(&buf, 1, y), '│', "row {y} missing pipe");
@@ -764,15 +705,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(layout.visible_items[0].bounds.width, 5.0);
         // Painted: `[ X ]`
         assert_eq!(cell_char(&buf, 0, 0), '[');
@@ -803,15 +736,7 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(
-            &mut buf,
-            area,
-            &bar,
-            &Theme::default(),
-            None,
-            None,
-            ToolbarPaintOptions::default(),
-        );
+        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
         assert_eq!(layout.visible_items[0].bounds.width, 9.0);
     }

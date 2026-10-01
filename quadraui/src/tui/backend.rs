@@ -3308,7 +3308,7 @@ impl Backend for TuiBackend {
         crate::tui::tui_chart_layout(chart, area)
     }
 
-    fn draw_toolbar_interactive(
+    fn draw_toolbar_with_options(
         &mut self,
         rect: QRect,
         bar: &crate::primitives::toolbar::Toolbar,
@@ -3320,11 +3320,11 @@ impl Backend for TuiBackend {
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
-                "TuiBackend::draw_toolbar_interactive called outside enter_frame_scope"
+                "TuiBackend::draw_toolbar_with_options called outside enter_frame_scope"
             );
             return self.toolbar_layout(rect, bar);
         };
-        crate::tui::draw_toolbar(
+        crate::tui::draw_toolbar_with_options(
             frame.buffer_mut(),
             area,
             bar,
@@ -4253,7 +4253,7 @@ mod tests {
             )
         }
 
-        fn draw_toolbar_interactive(
+        fn draw_toolbar_with_options(
             &mut self,
             r: QRect,
             bar: &crate::primitives::toolbar::Toolbar,

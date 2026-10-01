@@ -308,3 +308,134 @@ fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
     assert_eq!(layout.main_content_bounds.width, 1400.0);
     assert!(layout.bottom_panel_bounds.is_none());
 }
+
+// ── `Backend::draw_toolbar*` call shapes (issue #260) ──────────────────
+
+/// The *call shapes* both known consumers use to paint a `Toolbar`, as
+/// an external crate — the other half of the struct-literal guards
+/// above. A struct can break a consumer by growing a field; a trait
+/// method or free function breaks one just as hard by growing a
+/// **parameter** (`E0061`), and nothing in `tests/` caught that until
+/// #260's first attempt did exactly that and turned the *downstream
+/// consumers (compile truth)* CI job red:
+///
+/// ```text
+/// $ grep -rn 'draw_toolbar' ~/src/coord-tui/src ~/src/vimcode/src
+/// /home/john/src/coord-tui/src/app/render.rs:396:   backend.draw_toolbar_interactive(bar_rect, &toolbar, &InteractionState::from_parts(..))
+/// /home/john/src/coord-tui/src/app/dialogs.rs:6435: backend.draw_toolbar_interactive(bar_rect, &toolbar, &InteractionState::new())
+/// /home/john/src/vimcode/src/render.rs:12341:       b.draw_toolbar(rect, &bar, hovered.as_ref(), pressed.as_ref())
+/// ```
+///
+/// `ToolbarVAlign` reaches the rasteriser through
+/// [`quadraui::ToolbarPaintOptions`] + `draw_toolbar_with_options`
+/// instead — a *new* method beside the old ones, per `CLAUDE.md`'s
+/// *Downstream consumers* rule 2 — so all three call sites above keep
+/// compiling untouched. This test fails to compile if a future change
+/// grows any of them again.
+#[cfg(feature = "tui")]
+mod toolbar_paint_call_shapes {
+    use quadraui::tui::testing::TuiDriver;
+    use quadraui::{
+        AppLogic, Backend, InteractionState, Reaction, Rect, Toolbar, ToolbarButton,
+        ToolbarPaintOptions, ToolbarVAlign, UiEvent, WidgetId,
+    };
+
+    /// Paints one toolbar into a 3-row slot, through whichever of the
+    /// three public entry points `call_shape` selects.
+    struct ToolbarPainter {
+        call_shape: CallShape,
+    }
+
+    #[derive(Clone, Copy)]
+    enum CallShape {
+        /// coord-tui's shape: `(rect, bar, &InteractionState)`.
+        Interactive,
+        /// vimcode's shape: `(rect, bar, hovered, pressed)` (deprecated).
+        Positional,
+        /// #260's new shape: the above plus `ToolbarPaintOptions`.
+        WithOptions(ToolbarVAlign),
+    }
+
+    fn bar() -> Toolbar {
+        Toolbar {
+            id: WidgetId::new("downstream-bar"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("downstream:go"),
+                label: "Go".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    impl AppLogic for ToolbarPainter {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            // A 3-row slot at the top of the screen: tall enough that
+            // `Top` and `Bottom` land on different rows.
+            let rect = Rect::new(0.0, 0.0, backend.viewport().width, 3.0);
+            let bar = bar();
+            let _ = match self.call_shape {
+                CallShape::Interactive => {
+                    backend.draw_toolbar_interactive(rect, &bar, &InteractionState::new())
+                }
+                #[allow(deprecated)]
+                CallShape::Positional => backend.draw_toolbar(rect, &bar, None, None),
+                CallShape::WithOptions(valign) => backend.draw_toolbar_with_options(
+                    rect,
+                    &bar,
+                    &InteractionState::new(),
+                    ToolbarPaintOptions { valign },
+                ),
+            };
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            Reaction::Continue
+        }
+    }
+
+    fn painted_row(call_shape: CallShape) -> u16 {
+        let mut driver = TuiDriver::new(ToolbarPainter { call_shape }, 24, 6);
+        driver.render();
+        let (_x, y) = driver
+            .find("Go")
+            .unwrap_or_else(|| panic!("toolbar button never painted:\n{}", driver.screen()));
+        y as u16
+    }
+
+    /// coord-tui's three-argument call still compiles **and** paints —
+    /// a forwarding shim that silently stopped painting would pass a
+    /// compile-only guard.
+    #[test]
+    fn coord_tui_three_arg_interactive_call_still_paints() {
+        assert_eq!(painted_row(CallShape::Interactive), 0);
+    }
+
+    /// vimcode's positional (deprecated, still working) call shape.
+    #[test]
+    fn vimcode_positional_call_still_paints() {
+        assert_eq!(painted_row(CallShape::Positional), 0);
+    }
+
+    /// #260's opt-in: the new method moves the painted row, and the two
+    /// shims above agree with `ToolbarVAlign::Top` (the default).
+    #[test]
+    fn with_options_moves_the_painted_row_and_defaults_to_top() {
+        assert_eq!(painted_row(CallShape::WithOptions(ToolbarVAlign::Top)), 0);
+        assert_eq!(
+            painted_row(CallShape::WithOptions(ToolbarVAlign::Center)),
+            1
+        );
+        assert_eq!(
+            painted_row(CallShape::WithOptions(ToolbarVAlign::Bottom)),
+            2
+        );
+    }
+}

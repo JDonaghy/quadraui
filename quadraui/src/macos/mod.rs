@@ -205,7 +205,7 @@ pub use text_display::mac_text_display_layout;
 // re-export above.
 #[allow(deprecated)]
 pub use toast::{draw_toast_stack, mac_toast_stack_layout};
-pub use toolbar::{draw_toolbar, mac_toolbar_layout};
+pub use toolbar::{draw_toolbar, draw_toolbar_with_options, mac_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::{draw_tree, mac_tree_layout};
 

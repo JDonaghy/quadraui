@@ -748,15 +748,7 @@ fn draw_field_toolbar(
         area.width.saturating_sub(start_col),
         1,
     );
-    super::toolbar::draw_toolbar(
-        buf,
-        toolbar_area,
-        toolbar,
-        theme,
-        None,
-        None,
-        crate::primitives::toolbar::ToolbarPaintOptions::default(),
-    );
+    super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
 }
 
 fn draw_field_text_area(

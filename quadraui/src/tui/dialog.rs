@@ -318,15 +318,7 @@ pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, the
                 // repaint with hover/pressed state if the caller provides
                 // it. For the dialog paint path we pass `None` for both.
                 let toolbar_area = RRect::new(ix, iy, iw, 1);
-                super::toolbar::draw_toolbar(
-                    buf,
-                    toolbar_area,
-                    toolbar,
-                    theme,
-                    None,
-                    None,
-                    crate::primitives::toolbar::ToolbarPaintOptions::default(),
-                );
+                super::toolbar::draw_toolbar(buf, toolbar_area, toolbar, theme, None, None);
             }
         }
     }

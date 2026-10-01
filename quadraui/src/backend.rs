@@ -3526,17 +3526,42 @@ pub trait Backend: sealed::Sealed {
     /// `layout.hit_test(x, y)` without re-deriving metrics. Same
     /// coordinate frame as [`Self::toolbar_layout`] (ABSOLUTE).
     ///
-    /// `options.valign` (issue #260) resolves where button/label text
-    /// paints within a slot taller than one text row — pass
-    /// [`ToolbarPaintOptions::default()`] for the pre-#260 behaviour
-    /// (`ToolbarVAlign::Top`, byte-identical to every existing caller
-    /// on a 1-row slot). `Toolbar` itself can't carry this: both known
-    /// downstream consumers build it with exhaustive struct literals —
-    /// see [`ToolbarPaintOptions`]'s own doc.
+    /// Equivalent to [`Self::draw_toolbar_with_options`] with
+    /// [`ToolbarPaintOptions::default()`] — kept as a separate,
+    /// **unchanged** method (rather than growing this one's argument
+    /// list) so every existing caller keeps compiling untouched. Both
+    /// known downstream consumers call this method with exactly these
+    /// three arguments (`coord-tui`'s `app/render.rs` +
+    /// `app/dialogs.rs`), so adding a parameter here is an `E0061`
+    /// break for them — see [`ToolbarPaintOptions`]'s own doc and
+    /// `CLAUDE.md`'s *Downstream consumers* rule 2.
     ///
-    /// This is the implemented method; the positional
-    /// [`Self::draw_toolbar`] is a deprecated shim over it.
+    /// Backends implement [`Self::draw_toolbar_with_options`]; this is
+    /// a forwarding default, and the positional [`Self::draw_toolbar`]
+    /// is a deprecated shim over the same path.
     fn draw_toolbar_interactive(
+        &mut self,
+        rect: Rect,
+        bar: &Toolbar,
+        interaction: &InteractionState,
+    ) -> ToolbarLayout {
+        self.draw_toolbar_with_options(rect, bar, interaction, ToolbarPaintOptions::default())
+    }
+
+    /// [`Self::draw_toolbar_interactive`], plus [`ToolbarPaintOptions`]
+    /// a host can set to override otherwise-fixed paint decisions —
+    /// currently just `valign` (issue #260), which resolves where
+    /// button/label text paints within a slot taller than one text row.
+    ///
+    /// `Toolbar` itself can't carry this: both known downstream
+    /// consumers build it with exhaustive struct literals — see
+    /// [`ToolbarPaintOptions`]'s own doc.
+    ///
+    /// This is the implemented method — every `Backend` writes its
+    /// rasteriser here, and the two shims above forward into it with
+    /// [`ToolbarPaintOptions::default()`] (`ToolbarVAlign::Top`,
+    /// byte-identical to the pre-#260 paint on a 1-row slot).
+    fn draw_toolbar_with_options(
         &mut self,
         rect: Rect,
         bar: &Toolbar,
@@ -3557,7 +3582,7 @@ pub trait Backend: sealed::Sealed {
     /// the PR's *Downstream impact* section), so removing it outright
     /// would break their builds on the next `develop` pull. Always
     /// forwards [`ToolbarPaintOptions::default()`] — callers that need
-    /// `valign` go through [`Self::draw_toolbar_interactive`] directly.
+    /// `valign` go through [`Self::draw_toolbar_with_options`] directly.
     #[deprecated(
         since = "0.0.1",
         note = "use `draw_toolbar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
@@ -3570,7 +3595,7 @@ pub trait Backend: sealed::Sealed {
         pressed_id: Option<&WidgetId>,
     ) -> ToolbarLayout {
         let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
-        self.draw_toolbar_interactive(rect, bar, &interaction, ToolbarPaintOptions::default())
+        self.draw_toolbar_with_options(rect, bar, &interaction, ToolbarPaintOptions::default())
     }
 
     /// Compute toolbar layout without painting. Hosts call this after

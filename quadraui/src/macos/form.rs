@@ -112,17 +112,7 @@ pub unsafe fn draw_form(
             // SAFETY: `ctx` is valid for the duration of this call, per
             // this fn's own contract.
             super::toolbar::draw_toolbar(
-                ctx,
-                font,
-                toolbar_x,
-                row_y,
-                toolbar_w,
-                row_h,
-                toolbar,
-                theme,
-                None,
-                None,
-                crate::primitives::toolbar::ToolbarPaintOptions::default(),
+                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
             );
         }
     }

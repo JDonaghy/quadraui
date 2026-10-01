@@ -4304,7 +4304,7 @@ impl Backend for WinBackend {
 
     /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
-    fn draw_toolbar_interactive(
+    fn draw_toolbar_with_options(
         &mut self,
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
@@ -4314,7 +4314,7 @@ impl Backend for WinBackend {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            return super::toolbar::draw_toolbar(
+            return super::toolbar::draw_toolbar_with_options(
                 &surface.target,
                 dwrite,
                 rect,
@@ -8265,12 +8265,7 @@ mod tests {
             focused_index: None,
         };
         let interaction = crate::interaction::InteractionState::default();
-        let _ = backend.draw_toolbar_interactive(
-            rect,
-            &toolbar,
-            &interaction,
-            crate::primitives::toolbar::ToolbarPaintOptions::default(),
-        );
+        let _ = backend.draw_toolbar_interactive(rect, &toolbar, &interaction);
 
         // `PanelLayout` category (pure geometry, no measurer).
         let panel = sample_panel();

@@ -107,7 +107,6 @@ pub fn draw_form(
                 theme,
                 None,
                 None,
-                crate::primitives::toolbar::ToolbarPaintOptions::default(),
             );
             layout.set_attributes(None);
         }

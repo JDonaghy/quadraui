@@ -212,7 +212,7 @@ pub use text_input::{draw_text_input, gtk_text_input_layout};
 // re-export above.
 #[allow(deprecated)]
 pub use toast::{draw_toast_stack, gtk_toast_stack_layout};
-pub use toolbar::{draw_toolbar, gtk_toolbar_layout};
+pub use toolbar::{draw_toolbar, draw_toolbar_with_options, gtk_toolbar_layout};
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::{draw_tree, gtk_tree_layout};
 

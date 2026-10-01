@@ -45,8 +45,10 @@ pub fn mac_toolbar_layout(
 /// Paint `bar` into `(x, y, w, h)` on `ctx`. Returns the resolved
 /// layout for host click dispatch.
 ///
-/// `options.valign` (issue #260) resolves where button/label text
-/// paints within a slot taller than one line.
+/// Equivalent to [`draw_toolbar_with_options`] with
+/// [`ToolbarPaintOptions::default()`] — kept as a separate, **unchanged**
+/// function so every existing caller of this re-exported `pub fn` keeps
+/// compiling untouched (`CLAUDE.md`'s *Downstream consumers* rule 2).
 ///
 /// # Safety
 ///
@@ -55,6 +57,42 @@ pub fn mac_toolbar_layout(
 /// [`super::MacBackend`]).
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn draw_toolbar(
+    ctx: CGContextRef,
+    font: &CTFont,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+) -> ToolbarLayout {
+    draw_toolbar_with_options(
+        ctx,
+        font,
+        x,
+        y,
+        w,
+        h,
+        bar,
+        theme,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
+    )
+}
+
+/// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
+/// (issue #260) resolves where button/label text paints within a slot
+/// taller than one line.
+///
+/// # Safety
+///
+/// Same contract as [`draw_toolbar`] — `ctx` must be a valid
+/// `CGContextRef` borrowed for the duration of the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_toolbar_with_options(
     ctx: CGContextRef,
     font: &CTFont,
     x: f64,
@@ -190,7 +228,7 @@ mod tests {
 
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_toolbar_interactive(
+            let l = b.draw_toolbar_with_options(
                 QRect::new(x, y, W as f32 - x, H as f32 - y),
                 bar,
                 &crate::InteractionState::new(),
