@@ -51,9 +51,11 @@
 //! (`cargo bench --bench terminal_throughput --features terminal -- --quick`
 //! for a fast sanity pass).
 //!
-//! ## Baseline (one worker run, debug-grade dev box, `--sample-size 30
-//! --measurement-time 2`; re-run before trusting absolute numbers — only
-//! the *relative* shape across workloads is the load-bearing finding)
+//! ## Baseline (one worker run, release-profile build — `cargo bench` builds
+//! in release by default — on a shared/contended dev VM, not a quiet
+//! benchmarking rig, `--sample-size 30 --measurement-time 2`; re-run before
+//! trusting absolute numbers — only the *relative* shape across workloads is
+//! the load-bearing finding)
 //!
 //! | Benchmark | Time | Throughput | Allocs/call | Bytes/call |
 //! |---|---|---|---|---|
@@ -96,16 +98,25 @@
 //!   here, but real allocation churn a dirty-row/diff approach would
 //!   remove.
 //!
-//! Per the issue's acceptance bar, this should be filed as a follow-up
-//! optimization: dirty-row tracking (or at least capping/batching
+//! Per the issue's acceptance bar ("if snapshot rebuild or the
+//! scrollback-capture dance dominates, file the optimization as a
+//! follow-up"): **this benchmark's own baseline shows the capture dance
+//! dominates, so the follow-up is required, not optional.** Filing it is a
+//! `gh issue create` call this worker is not permitted to make (GitHub
+//! interactions are reserved for the coordinator) — tracked instead as
+//! `TODO(#340-followup)` below until the coordinator opens the issue and
+//! this comment is updated with its number:
+//!
+//! `TODO(#340-followup)`: dirty-row tracking (or at least capping/batching
 //! `capture_scrolled_rows`'s per-cell `String` allocation) to fix the
 //! `process_with_capture` outlier, and investigating whether
 //! `reflow_screen` can avoid a full dump+replay on every `resize()` call
 //! during a drag — both ahead of `build_rows`, which is a smaller, steadier
-//! cost by comparison.
+//! cost by comparison. Suggested issue title: "Terminal: scrollback-capture
+//! dance dominates process_with_capture (quadraui#340 follow-up)".
 
 use criterion::{Criterion, Throughput};
-use quadraui::terminal_engine::TerminalSession;
+use quadraui::terminal_engine::{default_shell, TerminalSession};
 use quadraui::WidgetId;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
@@ -184,12 +195,16 @@ fn sgr_heavy_bytes(lines: usize, cols: usize) -> Vec<u8> {
 
 fn spawn_idle_session(cols: u16, rows: u16, history_capacity: usize) -> TerminalSession {
     let cwd = std::env::temp_dir();
-    // `/bin/sh` left idle at its own prompt — we never call `poll()`, so its
-    // output (if any) just sits unread in the reader thread's channel. All
-    // measured work below goes through `feed_for_bench`/`resize`/
-    // `to_terminal`, not through the shell's own output.
-    TerminalSession::spawn(cols, rows, "/bin/sh", Path::new(&cwd), history_capacity)
-        .expect("failed to spawn /bin/sh for benchmark fixture")
+    // The platform's default shell (`default_shell()` — honours `$SHELL` on
+    // any platform, else `/bin/bash` on Unix / `powershell.exe` on Windows;
+    // quadraui#340) left idle at its own prompt — we never call `poll()`, so
+    // its output
+    // (if any) just sits unread in the reader thread's channel. All measured
+    // work below goes through `feed_for_bench`/`resize`/`to_terminal`, not
+    // through the shell's own output.
+    let shell = default_shell();
+    TerminalSession::spawn(cols, rows, &shell, Path::new(&cwd), history_capacity)
+        .unwrap_or_else(|e| panic!("failed to spawn {shell:?} for benchmark fixture: {e}"))
 }
 
 // ── Benchmarks ───────────────────────────────────────────────────────────────
