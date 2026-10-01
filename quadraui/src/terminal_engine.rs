@@ -1072,6 +1072,29 @@ impl TerminalSession {
         self.write_input(s.as_bytes());
     }
 
+    // ── Benchmark / test support ─────────────────────────────────────────────
+
+    /// Feed raw bytes directly into the ingest path [`poll()`](Self::poll)
+    /// uses — the private `process_with_capture` helper, including its
+    /// `set_scrollback` capture dance for rows that scroll off screen —
+    /// bypassing the PTY reader thread entirely (quadraui#340).
+    ///
+    /// `poll()` only ever reads from the background thread's channel, which
+    /// is fed by a real child process; there is no other way to reach the
+    /// private ingest code from outside this module. This hook exists so a
+    /// throughput benchmark (`benches/terminal_throughput.rs`) can drive that
+    /// exact path with synthetic, reproducible byte streams at whatever rate
+    /// it likes, instead of being at the mercy of a real shell's scheduling
+    /// and output timing — "no real PTY needed" per the issue.
+    ///
+    /// `#[doc(hidden)]`: this is bench/test plumbing, not part of the public
+    /// API surface a consuming app should build on. A real app always goes
+    /// through `poll()`.
+    #[doc(hidden)]
+    pub fn feed_for_bench(&mut self, data: &[u8]) {
+        self.process_with_capture(data);
+    }
+
     // ── Exit status ───────────────────────────────────────────────────────────
 
     /// Current terminal width in columns.
@@ -3474,6 +3497,42 @@ mod tests {
         assert!(
             text.contains("__marker__"),
             "full_text() does not contain '__marker__'; got: {text:?}"
+        );
+    }
+
+    /// `feed_for_bench` (quadraui#340) must drive the exact same ingest path
+    /// `poll()` uses — a bench shouldn't quietly be measuring a different,
+    /// unrepresentative code path.
+    ///
+    /// Covers both halves: live-screen text updates (`process_with_capture`'s
+    /// `parser.process()`), and the scrollback-capture dance
+    /// (`capture_scrolled_rows`) for rows pushed off-screen — by feeding more
+    /// newlines than the pane is tall. No PTY output is read at all (the
+    /// shell is never sent anything); every byte in the session's screen and
+    /// history comes from `feed_for_bench`.
+    #[test]
+    #[cfg(unix)]
+    fn feed_for_bench_drives_process_with_capture_without_pty() {
+        let cwd = std::env::temp_dir();
+        // 3 rows tall: 5 lines guarantees at least 2 scroll off into history.
+        let mut sess =
+            TerminalSession::spawn(20, 3, "/bin/sh", &cwd, 100).expect("failed to spawn /bin/sh");
+
+        sess.feed_for_bench(b"line1\nline2\nline3\nline4\nline5\n");
+
+        assert!(
+            sess.full_text().contains("line1"),
+            "feed_for_bench should have scrolled 'line1' into history; got: {:?}",
+            sess.full_text()
+        );
+        assert!(
+            sess.full_text().contains("line5"),
+            "feed_for_bench should have left 'line5' on the live screen; got: {:?}",
+            sess.full_text()
+        );
+        assert!(
+            sess.history_len() > 0,
+            "lines scrolled off a 3-row screen must land in scrollback history"
         );
     }
 

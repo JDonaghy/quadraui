@@ -549,6 +549,19 @@ name = "editor_bench"
 path = "benches/editor_bench.rs"
 harness = false
 
+# Issue #340: `TerminalSession` throughput — `process_with_capture`'s
+# scrollback-capture dance and `build_rows`'s full-grid snapshot rebuild,
+# the two plausible bottlenecks named in the issue. Requires `terminal`
+# (there is no `TerminalSession` without it); unlike the three benches
+# above, this one does not have a backend-neutral core that builds without
+# any feature active. `harness = false`: hands `main()` to criterion's own
+# runner, same as the other benches here — see that file's module doc.
+[[bench]]
+name = "terminal_throughput"
+path = "benches/terminal_throughput.rs"
+harness = false
+required-features = ["terminal"]
+
 [[example]]
 name = "tui_tooltip"
 path = "examples/tui_tooltip.rs"
