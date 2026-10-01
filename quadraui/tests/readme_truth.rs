@@ -21,6 +21,19 @@
 //! What this cannot do: notice a NEW kind of drift nobody anticipated. It
 //! only re-checks the specific facts #798 corrected. Extend it when the
 //! next drift is found rather than trusting a truth pass to hold forever.
+//!
+//! #1107 ("truth pass II") found it had rotted again: the root README's
+//! `## Features` section only ever named `tui`/`gtk`, even after `terminal`,
+//! `win`, and `macos` features existed in `Cargo.toml`; README.md's Windows
+//! status paragraph still said "most `Backend::draw_*`/`*_layout` methods
+//! on `WinBackend` are `todo!()` stubs" against a `src/win/backend.rs` with
+//! zero non-comment `todo!()` calls left; and the README's sample
+//! `Cargo.toml` snippet labelled the `path =` dependency shape "vimcode's
+//! approach" after vimcode had already moved to a pinned `git`+`rev`
+//! dependency (vimcode#691, quadraui#795 — see the root `README-PATCH.md`).
+//! The tests below derive each of those three facts from `Cargo.toml` /
+//! `src/win/backend.rs` instead of restating a snapshot, the same strategy
+//! #798's tests already use for version and primitive count.
 
 use std::fs;
 use std::path::PathBuf;
@@ -56,6 +69,79 @@ fn primitives_mod_rs() -> String {
 
 fn backend_rs() -> String {
     read(crate_root().join("src/backend.rs"))
+}
+
+fn cargo_toml() -> String {
+    read(crate_root().join("Cargo.toml"))
+}
+
+fn win_backend_rs() -> String {
+    read(crate_root().join("src/win/backend.rs"))
+}
+
+/// Feature names declared in `Cargo.toml`'s `[features]` table — the
+/// crate's own definition of "what features exist", parsed the same
+/// mechanical way [`primitive_module_count`] derives primitive count,
+/// rather than hand-listed.
+fn declared_feature_names() -> Vec<String> {
+    let toml = cargo_toml();
+    let start = toml
+        .find("\n[features]")
+        .expect("Cargo.toml has a [features] table")
+        + 1;
+    let after = &toml[start..];
+    let body_start = after
+        .find('\n')
+        .expect("[features] header has a newline after it")
+        + 1;
+    let body = &after[body_start..];
+    // The table ends at the next top-level `[section]` header.
+    let end = body.find("\n[").unwrap_or(body.len());
+    let body = &body[..end];
+
+    let names: Vec<String> = body
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.starts_with('#') || l.is_empty() {
+                return None;
+            }
+            // A feature declaration line looks like `name = [...]` or
+            // `name = ["..."]` possibly spanning multiple lines — only the
+            // first line (with the `=`) carries the name.
+            let (name, rest) = l.split_once('=')?;
+            let name = name.trim();
+            let is_ident = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            (is_ident && rest.trim_start().starts_with('[')).then(|| name.to_string())
+        })
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "Cargo.toml's [features] table parsed to zero feature names — \
+         either the table emptied out or this test's parsing broke \
+         (it expects `name = [...]` lines). Investigate before trusting \
+         the names below."
+    );
+    names
+}
+
+/// The root README's `## Features` section body, up to the next `##`
+/// heading — so a feature name mentioned elsewhere in the README (e.g. in
+/// prose) doesn't count as "listed".
+fn readme_features_section() -> String {
+    let readme = root_readme();
+    let start = readme
+        .find("## Features")
+        .expect("root README.md has a `## Features` section");
+    let after = &readme[start..];
+    let end = after[2..]
+        .find("\n## ")
+        .map(|i| i + 2)
+        .unwrap_or(after.len());
+    after[..end].to_string()
 }
 
 fn backend_md() -> String {
@@ -149,6 +235,46 @@ fn readme_does_not_claim_a_resolvable_published_version() {
     );
 }
 
+// ── Consumer pin shape (#1107) ───────────────────────────────────────────
+
+#[test]
+fn readme_does_not_attribute_the_path_dependency_shape_to_vimcode() {
+    // #1107: README's sample Cargo.toml block labelled the `path =`
+    // dependency snippet "vimcode's approach". vimcode moved to a pinned
+    // `git` + `rev` dependency in vimcode#691 — the same shape coord-tui
+    // uses — and no longer path-deps a sibling checkout; the vendored
+    // vt100 patch that the old path shape depended on is gone too
+    // (quadraui#795, see root `README-PATCH.md`'s regression note). A
+    // reader who copies the labelled snippet today gets a dependency
+    // shape neither real consumer actually uses.
+    let readme = root_readme();
+    assert!(
+        !readme.to_lowercase().contains("vimcode's approach"),
+        "root README.md still labels a Cargo.toml dependency snippet \
+         \"vimcode's approach\". vimcode pins quadraui via `git` + `rev` \
+         now (vimcode#691), not a `path =` sibling-checkout dependency — \
+         re-verify which shape (if any) vimcode actually uses before \
+         attributing a snippet to it again."
+    );
+}
+
+#[test]
+fn readme_shows_git_rev_as_the_real_consumer_pin_shape() {
+    // The positive half of the check above: the README's dependency
+    // snippets should show a `git` + `rev` pin — the shape both real
+    // downstream consumers (coord-tui, vimcode) actually use today — not
+    // just avoid mis-attributing the path shape.
+    let readme = root_readme();
+    assert!(
+        readme.contains("rev = \"<commit-sha>\"") || readme.contains("rev = \"<pinned sha>\""),
+        "root README.md's dependency snippet no longer shows a `git` + \
+         `rev` pin. Both coord-tui and vimcode pin quadraui to a fixed \
+         git revision rather than floating on `develop`'s tip or using a \
+         path dependency — the README's consumer-facing example should \
+         lead with that shape."
+    );
+}
+
 // ── Primitive count ──────────────────────────────────────────────────────
 
 #[test]
@@ -178,6 +304,48 @@ fn root_readme_states_the_real_primitive_count() {
          src/primitives/mod.rs declares {count} `pub mod` primitive \
          modules. Update the README's Primitives section count."
     );
+}
+
+// ── Feature list (#1107) ─────────────────────────────────────────────────
+
+#[test]
+fn root_readme_features_section_lists_every_cargo_feature() {
+    // #1107: README's `## Features` section said only `tui`/`gtk` while
+    // Cargo.toml had grown `terminal`, `win`, and `macos` on top of those.
+    // Derive the real feature set from Cargo.toml instead of re-pinning a
+    // hand-written list that will drift the next time a feature is added.
+    let features = declared_feature_names();
+    let section = readme_features_section();
+    for name in &features {
+        let needle = format!("`{name}`");
+        assert!(
+            section.contains(&needle),
+            "root README.md's `## Features` section doesn't mention \
+             \"{needle}\", but Cargo.toml declares a `{name}` feature. \
+             Add a bullet for it (see the other entries for the format) \
+             — this is the exact drift #1107 fixed (the section only \
+             named `tui`/`gtk` after `terminal`/`win`/`macos` existed)."
+        );
+    }
+}
+
+#[test]
+fn root_readme_does_not_list_a_feature_cargo_toml_no_longer_has() {
+    // The inverse direction: a feature bullet left behind after a feature
+    // was renamed or removed tells a reader to enable something that no
+    // longer exists.
+    let features = declared_feature_names();
+    let section = readme_features_section();
+    for bullet_name in ["terminal", "tui", "gtk", "win", "macos"] {
+        let mentioned = section.contains(&format!("`{bullet_name}`"));
+        let declared = features.iter().any(|f| f == bullet_name);
+        assert!(
+            !mentioned || declared,
+            "root README.md's `## Features` section mentions `{bullet_name}`, \
+             but Cargo.toml's [features] table no longer declares it. \
+             Remove the stale bullet."
+        );
+    }
 }
 
 // ── Per-backend status ───────────────────────────────────────────────────
@@ -220,6 +388,55 @@ fn windows_backend_is_not_described_as_unimplemented() {
              different backend, verify it the same way (grep CI, grep \
              src/) before restating it; if it fired for Windows again, the \
              phrase crept back in."
+        );
+    }
+}
+
+/// Number of non-comment `todo!()` macro calls in `src/win/backend.rs` —
+/// a crude but mechanical line-based check (skip lines whose trimmed start
+/// is a `//` comment) rather than a real Rust parser, same trade-off
+/// [`primitive_module_count`]'s `pub mod` grep makes.
+fn win_backend_real_todo_call_count() -> usize {
+    win_backend_rs()
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim_start();
+            !trimmed.starts_with("//") && l.contains("todo!()")
+        })
+        .count()
+}
+
+#[test]
+fn win_backend_todo_claim_tracks_source_reality() {
+    // #1107: README.md said "most `Backend::draw_*`/`*_layout` methods on
+    // `WinBackend` are `todo!()` stubs" after src/win/backend.rs had
+    // already been filled in for real (0 non-comment `todo!()` calls left).
+    // Same shape as `backend_error_doc_claim_tracks_source_reality` below:
+    // check both directions so neither "claims a stub gap that's gone" nor
+    // "silently overclaims completeness" can land unnoticed.
+    let real_todo_calls = win_backend_real_todo_call_count();
+    let readme = root_readme().to_lowercase();
+    let claims_todo_stubs = readme.contains("todo!()` stubs") || readme.contains("todo!() stubs");
+
+    if real_todo_calls == 0 {
+        assert!(
+            !claims_todo_stubs,
+            "README.md still claims WinBackend draw_*/*_layout methods \
+             are `todo!()` stubs, but src/win/backend.rs has zero \
+             non-comment `todo!()` macro calls left. Update the Windows \
+             status paragraph to describe the real remaining gap (its \
+             conformance-matrix burn-down status in \
+             tests/conformance.rs) instead of a stub count that no \
+             longer exists — this is the exact drift #1107 fixed."
+        );
+    } else {
+        assert!(
+            claims_todo_stubs,
+            "src/win/backend.rs has {real_todo_calls} real `todo!()` \
+             macro call(s) left, but README.md no longer mentions \
+             `todo!()` stubs for the Windows backend — restore an \
+             accurate claim instead of silently overclaiming \
+             completeness."
         );
     }
 }

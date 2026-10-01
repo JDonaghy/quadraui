@@ -11,10 +11,11 @@
 //! class of bug where a new modal is added to one backend but forgotten
 //! in another (issue #192 is the motivating case).
 //!
-//! # What's here in the pilot
+//! # What's here
 //!
-//! [`dispatch_mouse_down`] only. Mouse-up, drag, and scroll dispatch
-//! arrive in follow-up commits (per the B.4 event-routing plan).
+//! [`dispatch_mouse_down`], [`dispatch_mouse_drag`], [`dispatch_mouse_up`],
+//! [`dispatch_scroll`], and [`dispatch_click`] — the full B.4
+//! event-routing plan this module started as a pilot for.
 //!
 //! # What's explicitly not here
 //!
@@ -24,9 +25,9 @@
 //!   calls the primitive's hit test afterward if it needs an
 //!   item-level target.
 //! - Base-layer hit testing — the editor, sidebar, tabs, and so on.
-//!   The pilot leaves base-layer events going through the backend's
-//!   existing mouse handlers, which are already per-backend. Later
-//!   commits can route them through here too.
+//!   Those events still go through each backend's existing mouse
+//!   handlers, which are already per-backend. A future change could
+//!   route them through here too.
 
 use crate::event::{MouseButton, Point, ScrollDelta, UiEvent};
 use crate::modal_stack::ModalStack;

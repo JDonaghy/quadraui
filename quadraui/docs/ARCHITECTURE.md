@@ -4,7 +4,7 @@
 
 | Crate | Purpose |
 |---|---|
-| `quadraui/` | Core library: primitives, types, theme, backend traits, TUI + GTK rasterisers. |
+| `quadraui/` | Core library: primitives, types, theme, backend traits, TUI, GTK, macOS, and Windows rasterisers. |
 | `kubeui-core/` | Domain logic for a Kubernetes dashboard demo. No rendering deps — testable in isolation. |
 | `kubeui/` | TUI Kubernetes dashboard. Real consumer of every TUI rasteriser. |
 | `kubeui-gtk/` | GTK Kubernetes dashboard. Same domain logic as `kubeui`. |
@@ -15,9 +15,13 @@
   layout functions + hit_test. **Must NOT depend on `ratatui`, `gtk4`,
   `cairo`, or any backend crate.** Tests live as inline `#[cfg(test)]
   mod tests` blocks at the bottom of each primitive file.
-- `quadraui/src/tui/` and `quadraui/src/gtk/` — backend rasterisers.
-  Each consumes the primitive's `layout()` and paints verbatim. **Must
-  NOT contain layout decisions** that the primitive could express.
+- `quadraui/src/tui/`, `quadraui/src/gtk/`, `quadraui/src/macos/`, and
+  `quadraui/src/win/` — the four backend rasterisers (`tui`, `gtk`,
+  `macos`, `win` feature-gated respectively). Each consumes the
+  primitive's `layout()` and paints verbatim. **Must NOT contain layout
+  decisions** that the primitive could express. See the root
+  `README.md`'s *Status* section for how far each backend actually
+  gets today.
 
 **Compose helpers** in `quadraui/src/compose/` sit above primitives
 and below apps. They own interaction state machines for common
@@ -35,6 +39,34 @@ multi-primitive compositions so consumers don't reimplement them:
   `set_focusable(false)`, `can_target` toggling, surface clearing,
   and draw/click/motion wiring. Apps that use the single-DA runner
   don't need this — the dropdown paints on the same surface.
+
+**Cross-backend runtime plumbing** sits at the top of `quadraui/src/`,
+alongside `backend.rs` and `frame.rs`, shared by all four backends
+instead of duplicated per-runner:
+
+- `runtime.rs` — shared plumbing for the per-backend runners (`tui::run`,
+  `gtk::run`, `macos::run`, `win::run`): the post-event `EventOutcome`
+  enum and "apply this outcome to the live window", previously
+  duplicated (or silently missing) across the four runners (#496/#813).
+- `dispatch.rs` — cross-backend mouse + scroll dispatch. Backends call
+  free functions (`dispatch_mouse_down`, `dispatch_mouse_drag`,
+  `dispatch_mouse_up`, `dispatch_scroll`, `dispatch_click`) with raw,
+  platform-translated events; a shared [`ModalStack`] decides whether an
+  open modal — never a base-layer widget behind it — receives the event
+  (issue #192).
+- `shell.rs` — the `ShellApp` trait + `ShellConfig` for apps that want a
+  full `AppShell` (activity bar + sidebar + main content) instead of
+  implementing `AppLogic` directly. Each backend's `run_with_shell()`
+  owns window creation, event wiring, and chrome rendering; the
+  consumer renders only its own content. `shell_adapter.rs` is the
+  shared `AppLogic` impl every backend's shell runner instantiates to
+  avoid re-deriving that routing per backend.
+- `native_surface.rs` — the low-level drawing-verb trait underneath the
+  three pixel backends (GTK, macOS, Windows), factoring the "how the
+  platform draws at all" half of `Backend` (frame lifecycle,
+  measurement, fill/stroke/text primitives) out from the "what to
+  paint" half — one `draw_*`/`*_layout` method per primitive (issue
+  #807).
 
 **Backend trait** in `quadraui/src/backend.rs` plumbs frame state, the
 `set_theme` / `set_nerd_fonts` setters hosts call once per frame, *and*

@@ -108,8 +108,12 @@ gtk = [
 # `cfg(target_os = "windows")` so `cargo check --features win` keeps
 # type-checking `WinBackend`'s trait-completeness on Linux (the whole
 # point of the ubuntu "win compile gate" in ci.yml — see its comment)
-# without needing a real WinAPI. Most `Backend::draw_*` methods are
-# still `todo!()` stubs — later issues implement each rasteriser.
+# without needing a real WinAPI. `Backend::draw_*` methods are now
+# implemented for real (no non-test `todo!()` calls left in
+# `src/win/backend.rs`); `win` remains a conformance-matrix burn-down
+# column (`tests/conformance.rs`, quadraui#708/#722) rather than a
+# blocking one while per-primitive paint/click parity with the other
+# backends is still being closed out.
 # `dep:trash` (issue #956) / `dep:keyring` (issue #958): see the `tui`
 # feature's comments above — same crates, same reasons.
 win = ["dep:windows", "dep:windows-numerics", "dep:trash", "dep:keyring"]
