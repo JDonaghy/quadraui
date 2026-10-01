@@ -2,9 +2,11 @@
 //!
 //! Paints a horizontal row of rounded stage boxes connected by `───▶`
 //! arrow connectors. Corner glyphs `╭ ╮ ╰ ╯` give the boxes soft rounded
-//! corners, matching the `border-radius` used by the GTK rasteriser. Each box shows a status icon on the first row, the
-//! stage label on the second row, and an optional `[Action]` button on
-//! the bottom row.
+//! corners, matching the `border-radius` used by the GTK rasteriser. Each
+//! box shows a status icon on the first row, the stage label on as many
+//! rows as fit within the box's `label_bounds` (#282 generalises #280's
+//! 2-row cap to arbitrary N-line labels), and an optional `[Action]`
+//! button on the bottom row.
 //!
 //! ## Colour mapping
 //!
@@ -149,20 +151,28 @@ pub fn draw_pipeline_view(
             }
         }
 
-        // ── Label (rows 2+ inside box) ───────────────────────────────────
-        // The label may carry a newline (e.g. "Review T12\n3:45": stage+turns
-        // on line 1, elapsed mm:ss on line 2). Render each line on its own row,
-        // centred, with char-based (not byte-based) truncation so a stray byte
-        // boundary never splits a multi-byte char and the second line never
-        // overflows row 1 (the cause of the off-box "black gap" glitch).
-        let first_row = by + 2.min(bh.saturating_sub(2));
+        // ── Label (arbitrary N lines, within label_bounds) ───────────────
+        // The label may carry any number of newlines (e.g. "Review T12\n3:45\n+2"
+        // — stage+turns, elapsed mm:ss, extra detail each on their own line).
+        // #282 generalises #280's hardcoded 2-row assumption: render every
+        // line, centred, with char-based (not byte-based) truncation so a
+        // stray byte boundary never splits a multi-byte char — but bound the
+        // rows to `label_bounds`'s own vertical span (computed by
+        // `PipelineView::layout`, which already reserves the icon row above
+        // and the action row below) rather than a fixed row count. If the box
+        // is shorter than the label's line count, overflow lines are dropped
+        // — never painted past the box border (clamped to `inner_bottom`).
         let inner_bottom = by + bh.saturating_sub(1); // border row (exclusive)
-        if first_row < inner_bottom && !stage.label.is_empty() {
+        let label_top = (sb.label_bounds.y.round() as u16).max(by + 1);
+        let label_bottom = label_top
+            .saturating_add(sb.label_bounds.height.round() as u16)
+            .min(inner_bottom);
+        if label_top < label_bottom && !stage.label.is_empty() {
             let avail = bw.saturating_sub(2) as usize;
             let max_col = bx + bw.saturating_sub(1);
-            for (line_idx, line) in stage.label.split('\n').take(2).enumerate() {
-                let row = first_row + line_idx as u16;
-                if row >= inner_bottom {
+            for (line_idx, line) in stage.label.split('\n').enumerate() {
+                let row = label_top + line_idx as u16;
+                if row >= label_bottom {
                     break;
                 }
                 let chars: Vec<char> = line.chars().collect();
@@ -391,8 +401,9 @@ mod tests {
 
         let bb = layout.stages[0].box_bounds;
         let by = bb.y.round() as u16;
-        let bh = bb.height.round() as u16;
-        let first_row = by + 2.min(bh.saturating_sub(2));
+        // Derive the expected first label row from `label_bounds` (the same
+        // source the renderer itself now honors), not a recomputed formula.
+        let first_row = (layout.stages[0].label_bounds.y.round() as u16).max(by + 1);
 
         // Collect the rendered glyphs of the two label rows.
         let row1: String = (0..area.width)
@@ -409,6 +420,106 @@ mod tests {
         assert!(!row1.contains("3:45"), "elapsed leaked onto row1: {row1:?}");
         // No literal newline rendered as a cell anywhere on row 1.
         assert!(!row1.contains('\n'), "newline rendered as a cell: {row1:?}");
+    }
+
+    /// A 3-line label renders all three lines on their own rows when the box
+    /// has room — regression guard for #282's generalisation of #280's
+    /// hardcoded `.take(2)` cap to arbitrary N-line labels.
+    #[test]
+    fn three_line_label_renders_on_separate_rows() {
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let view = PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Line One\nLine Two\nLine Three".into(),
+                status: StageStatus::Active,
+                action: None,
+            }],
+            focused_stage: None,
+        };
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let lb = layout.stages[0].label_bounds;
+        let by = bb.y.round() as u16;
+        let first_row = (lb.y.round() as u16).max(by + 1);
+
+        let row_text =
+            |row: u16| -> String { (0..area.width).map(|x| cell_char(&buf, x, row)).collect() };
+
+        assert!(
+            row_text(first_row).contains("Line One"),
+            "row {first_row} = {:?}",
+            row_text(first_row)
+        );
+        assert!(
+            row_text(first_row + 1).contains("Line Two"),
+            "row {} = {:?}",
+            first_row + 1,
+            row_text(first_row + 1)
+        );
+        assert!(
+            row_text(first_row + 2).contains("Line Three"),
+            "row {} = {:?}",
+            first_row + 2,
+            row_text(first_row + 2)
+        );
+    }
+
+    /// When the box is too short to fit every line, overflow lines are
+    /// dropped — never painted past the box border. Regression guard for
+    /// #282's clamp requirement.
+    #[test]
+    fn label_overflow_is_clamped_not_painted_past_the_box() {
+        // A short box (action button reserves a row too) leaves only one row
+        // for the label even though it carries two lines.
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        let view = PipelineView {
+            id: WidgetId::new("pipe"),
+            stages: vec![PipelineStage {
+                label: "Line One\nLine Two".into(),
+                status: StageStatus::Active,
+                action: Some("Go".into()),
+            }],
+            focused_stage: None,
+        };
+        let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
+
+        let bb = layout.stages[0].box_bounds;
+        let lb = layout.stages[0].label_bounds;
+        let by = bb.y.round() as u16;
+        let bh = bb.height.round() as u16;
+        // Test setup assumption: the label area really is clamped to a
+        // single row by icon+action reservation, so this test actually
+        // exercises the clamp path.
+        assert!(
+            lb.height.round() <= 1.0,
+            "test setup expects a 1-row label area, got {}",
+            lb.height
+        );
+
+        let row_text =
+            |row: u16| -> String { (0..area.width).map(|x| cell_char(&buf, x, row)).collect() };
+
+        let first_row = (lb.y.round() as u16).max(by + 1);
+        assert!(
+            row_text(first_row).contains("Line One"),
+            "row {first_row} = {:?}",
+            row_text(first_row)
+        );
+
+        // The second line must never appear anywhere — including not
+        // bleeding onto or past the bottom border row.
+        for y in 0..bh {
+            let row = by + y;
+            assert!(
+                !row_text(row).contains("Line Two"),
+                "row {row} unexpectedly contains the overflow line: {:?}",
+                row_text(row)
+            );
+        }
     }
 
     /// When no stage is focused the indicator row stays blank.
