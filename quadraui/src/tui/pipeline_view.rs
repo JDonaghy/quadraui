@@ -4,9 +4,11 @@
 //! arrow connectors. Corner glyphs `╭ ╮ ╰ ╯` give the boxes soft rounded
 //! corners, matching the `border-radius` used by the GTK rasteriser. Each
 //! box shows a status icon on the first row, the stage label on as many
-//! rows as fit within the box's `label_bounds` (#282 generalises #280's
-//! 2-row cap to arbitrary N-line labels), and an optional `[Action]`
-//! button on the bottom row.
+//! rows as fit directly below it, bounded by the box border and the
+//! action button row (#282 generalises #280's 2-row cap to arbitrary
+//! N-line labels; see [`label_row_bounds`] for why this is computed from
+//! the rows actually painted rather than the layout's proportional
+//! `label_bounds`), and an optional `[Action]` button on the bottom row.
 //!
 //! ## Colour mapping
 //!
@@ -59,6 +61,30 @@ pub fn tui_pipeline_view_layout(view: &PipelineView, area: Rect) -> PipelineView
             action_h,
         ),
     )
+}
+
+/// Compute the first (inclusive) and last (exclusive) TUI row available for
+/// the stage label, given the box's top row (`by`), its height in rows
+/// (`bh`), and the stage's action-button bounds (if any).
+///
+/// `label_top` is pinned directly below the icon's single rendered row
+/// (`icon_row = by + 1`, see [`draw_pipeline_view`]) rather than
+/// `label_bounds.y`, whose proportional 40%-of-box-height icon reservation
+/// doesn't correspond to any row this renderer actually paints into. The
+/// `2.min(bh.saturating_sub(2))` clamp matches the pre-#282 single-line
+/// behaviour for very short boxes.
+///
+/// `label_bottom` stops before whichever comes first: the box's bottom
+/// border row, or the action-button row (if the stage has one) — i.e. the
+/// rows that are actually painted, not a recomputed proportional height.
+fn label_row_bounds(by: u16, bh: u16, action_bounds: Option<crate::event::Rect>) -> (u16, u16) {
+    let label_top = by + 2.min(bh.saturating_sub(2));
+    let inner_bottom = by + bh.saturating_sub(1); // border row (exclusive)
+    let label_bottom = match action_bounds {
+        Some(ab) => (ab.y.round() as u16).min(inner_bottom),
+        None => inner_bottom,
+    };
+    (label_top, label_bottom)
 }
 
 /// Draw a [`PipelineView`] into `area` on `buf`. Returns the layout for
@@ -151,22 +177,26 @@ pub fn draw_pipeline_view(
             }
         }
 
-        // ── Label (arbitrary N lines, within label_bounds) ───────────────
+        // ── Label (arbitrary N lines, directly below the icon row) ───────
         // The label may carry any number of newlines (e.g. "Review T12\n3:45\n+2"
         // — stage+turns, elapsed mm:ss, extra detail each on their own line).
         // #282 generalises #280's hardcoded 2-row assumption: render every
         // line, centred, with char-based (not byte-based) truncation so a
-        // stray byte boundary never splits a multi-byte char — but bound the
-        // rows to `label_bounds`'s own vertical span (computed by
-        // `PipelineView::layout`, which already reserves the icon row above
-        // and the action row below) rather than a fixed row count. If the box
-        // is shorter than the label's line count, overflow lines are dropped
-        // — never painted past the box border (clamped to `inner_bottom`).
-        let inner_bottom = by + bh.saturating_sub(1); // border row (exclusive)
-        let label_top = (sb.label_bounds.y.round() as u16).max(by + 1);
-        let label_bottom = label_top
-            .saturating_add(sb.label_bounds.height.round() as u16)
-            .min(inner_bottom);
+        // stray byte boundary never splits a multi-byte char.
+        //
+        // NOTE: this deliberately does NOT use `sb.label_bounds.y` as the
+        // first label row. `label_bounds` (from `PipelineView::layout`)
+        // reserves a *proportional* 40%-of-box-height icon area above the
+        // label, but this renderer always paints the status icon on a single
+        // fixed row (`icon_row = by + 1`, above). Anchoring the label to the
+        // proportional `label_bounds.y` instead of the icon's actual rendered
+        // row opens a growing blank gap between the icon glyph and the first
+        // label line as box height grows. So `label_top` is pinned right
+        // after the icon row (contiguous, matching pre-#282 behaviour), and
+        // `label_bottom` is derived from the box border / action button rows
+        // that are actually painted — not from `label_bounds.height`, which
+        // inherits the same proportional-icon mismatch.
+        let (label_top, label_bottom) = label_row_bounds(by, bh, sb.action_bounds);
         if label_top < label_bottom && !stage.label.is_empty() {
             let avail = bw.saturating_sub(2) as usize;
             let max_col = bx + bw.saturating_sub(1);
@@ -401,9 +431,17 @@ mod tests {
 
         let bb = layout.stages[0].box_bounds;
         let by = bb.y.round() as u16;
-        // Derive the expected first label row from `label_bounds` (the same
-        // source the renderer itself now honors), not a recomputed formula.
-        let first_row = (layout.stages[0].label_bounds.y.round() as u16).max(by + 1);
+        let bh = bb.height.round() as u16;
+        let (first_row, _) = label_row_bounds(by, bh, layout.stages[0].action_bounds);
+
+        // Label must start immediately below the icon's actual rendered row
+        // (icon_row = by + 1) — no blank gap row, regardless of
+        // `label_bounds`'s proportional icon-height assumption.
+        assert_eq!(
+            first_row,
+            by + 2,
+            "label should start directly below the icon row, with no gap"
+        );
 
         // Collect the rendered glyphs of the two label rows.
         let row1: String = (0..area.width)
@@ -441,9 +479,9 @@ mod tests {
         let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
 
         let bb = layout.stages[0].box_bounds;
-        let lb = layout.stages[0].label_bounds;
         let by = bb.y.round() as u16;
-        let first_row = (lb.y.round() as u16).max(by + 1);
+        let bh = bb.height.round() as u16;
+        let (first_row, _) = label_row_bounds(by, bh, layout.stages[0].action_bounds);
 
         let row_text =
             |row: u16| -> String { (0..area.width).map(|x| cell_char(&buf, x, row)).collect() };
@@ -488,22 +526,22 @@ mod tests {
         let layout = draw_pipeline_view(&mut buf, area, &view, &Theme::default());
 
         let bb = layout.stages[0].box_bounds;
-        let lb = layout.stages[0].label_bounds;
         let by = bb.y.round() as u16;
         let bh = bb.height.round() as u16;
+        let (first_row, label_bottom) = label_row_bounds(by, bh, layout.stages[0].action_bounds);
         // Test setup assumption: the label area really is clamped to a
         // single row by icon+action reservation, so this test actually
         // exercises the clamp path.
         assert!(
-            lb.height.round() <= 1.0,
-            "test setup expects a 1-row label area, got {}",
-            lb.height
+            label_bottom.saturating_sub(first_row) <= 1,
+            "test setup expects a 1-row label area, got {}..{}",
+            first_row,
+            label_bottom
         );
 
         let row_text =
             |row: u16| -> String { (0..area.width).map(|x| cell_char(&buf, x, row)).collect() };
 
-        let first_row = (lb.y.round() as u16).max(by + 1);
         assert!(
             row_text(first_row).contains("Line One"),
             "row {first_row} = {:?}",
