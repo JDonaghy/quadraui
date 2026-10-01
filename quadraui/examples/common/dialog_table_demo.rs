@@ -10,6 +10,9 @@
 //! - Generic layout using `backend.measure()` (quadraui#817) so the dialog
 //!   renders at the right scale on both TUI (1.0 = one cell) and GTK (real
 //!   pixel line height / char width, not an approximation of either).
+//! - [`Dialog::measure_generic`] (quadraui#419) for deriving the
+//!   `DialogMeasure` itself — this demo used to hand-roll the same
+//!   char-cell arithmetic inline; it now dogfoods the library helper.
 //! - The `draw_dialog` table rendering path (column separators + header row)
 
 use quadraui::{
@@ -56,62 +59,23 @@ impl DialogTableDemo {
         Self { dialog }
     }
 
-    /// Compute a generic [`DialogMeasure`] from `backend.measure()` and the
-    /// table's auto-sized column widths.
+    /// Compute a generic [`DialogMeasure`] from `backend.measure()` via
+    /// [`Dialog::measure_generic`] (quadraui#419).
     ///
     /// `line_height` is 1.0 on TUI (one character cell) and the pixel line
-    /// height on GTK/macOS. Column widths from `tui_total_width()` are in
-    /// character cells, so a pixel backend's `char_width` (also bundled into
-    /// [`crate::Backend::measure`]'s [`crate::Metrics`]) converts them to
-    /// pixels directly.
-    ///
-    /// Pre-#817 this approximated `char_width` as `line_height * 0.6`
-    /// instead of asking the backend for the real value — exactly the
-    /// duplicated-font-metric-knowledge issue #817 exists to remove. On
-    /// TUI the two happened to agree (both `1.0`), which is why the
-    /// approximation went unnoticed here; on a pixel backend they don't,
-    /// and `backend.measure().char_width` is the actual glyph width, not
-    /// a guess.
+    /// height on GTK/macOS. `char_width` is likewise the real glyph width
+    /// on pixel backends — [`crate::Backend::measure`]'s [`crate::Metrics`]
+    /// is the one source of truth, same as pre-#419; this method now just
+    /// delegates the char-cell arithmetic to the library instead of
+    /// hand-rolling it inline. `border_chrome_inset` is `0.0`: both this
+    /// repo's TUI and GTK `draw_dialog` paint the border *inside*
+    /// `DialogLayout::bounds`, so no extra inset is needed.
     fn measure(&self, backend: &dyn Backend) -> DialogMeasure {
         let m = backend.measure();
-        let lh = m.line_height;
-        let char_w = m.char_width;
         let viewport = backend.viewport();
-
-        let table = self.dialog.table.as_ref();
-        let table_total_h = table
-            .map(|t| t.tui_total_height() as f32 * lh)
-            .unwrap_or(0.0);
-        // Preferred table width: char cells × char_w + 2 char-widths of padding.
-        let table_preferred_w = table
-            .map(|t| t.tui_total_width() as f32 * char_w + char_w * 2.0)
-            .unwrap_or(0.0);
-
-        let title_h = if self.dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
-            lh
-        } else {
-            0.0
-        };
-        let body_h = self.dialog.body.len() as f32 * lh;
-
-        let min_w = char_w * 30.0; // ≈ 30 char-widths
-        let max_w = char_w * 60.0; // ≈ 60 char-widths
-        let default_w = (viewport.width * 0.5).clamp(min_w, max_w);
-        let dialog_w = default_w
-            .max(table_preferred_w)
-            .min(viewport.width - char_w * 4.0);
-
-        DialogMeasure {
-            width: dialog_w,
-            title_height: title_h,
-            body_height: body_h,
-            table_height: table_total_h,
-            input_height: 0.0,
-            button_row_height: lh,
-            button_width: char_w * 8.0,
-            button_gap: char_w * 2.0,
-            padding: lh,
-        }
+        let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+        self.dialog
+            .measure_generic(m.char_width, m.line_height, viewport_rect, 0.0)
     }
 }
 

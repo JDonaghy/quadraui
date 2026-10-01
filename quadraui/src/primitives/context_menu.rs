@@ -421,6 +421,66 @@ impl ContextMenu {
         }
         current
     }
+
+    /// Derive a menu width (in the same units as `char_width` — TUI
+    /// char cells, or pixels on a pixel backend) from each item's label
+    /// length — no real text measurement available (quadraui#419). Same
+    /// char-cell-approximation rationale as
+    /// `crate::primitives::dialog::Dialog::measure_generic`.
+    ///
+    /// Per item, counts: a 2-char prefix slot when `checked` is
+    /// `Some(_)` (mirrors the `"✓ "` / `"  "` prefix both
+    /// `tui::context_menu::draw_context_menu` and this module's
+    /// `native_surface_paint::paint` reserve); the label text; and,
+    /// when present, a 1-char gap plus either a 1-char `▶` submenu
+    /// arrow or [`ContextMenuItem::detail`]'s length — whichever
+    /// trailing content the item carries. [`ContextMenuItem::key_equivalent`]-rendered
+    /// shortcuts need a `crate::accelerator::Platform` this helper
+    /// doesn't take, so they're not counted; callers that rely on
+    /// `key_equivalent` alone should populate `detail` too, or pad the
+    /// result. Two char-widths of interior left/right margin are added
+    /// on top of the widest item.
+    ///
+    /// `border_chrome_inset` optionally shrinks the result to leave
+    /// room for a border the rasteriser draws *outside* the bounds this
+    /// width feeds into [`Self::layout`]/[`Self::layout_at`] — see
+    /// `Dialog::measure_generic`'s doc for the same parameter.
+    /// `tui::context_menu::draw_context_menu` is exactly this case: its
+    /// box-drawing border lives one char cell outside
+    /// [`ContextMenuLayout::bounds`] on every side, so a TUI caller
+    /// should pass one `char_width` here.
+    pub fn measure_generic_width(&self, char_width: f32, border_chrome_inset: f32) -> f32 {
+        let max_chars = self
+            .items
+            .iter()
+            .map(Self::item_content_chars)
+            .max()
+            .unwrap_or(0);
+        let content_w = (max_chars as f32 + 2.0) * char_width;
+        (content_w - border_chrome_inset * 2.0).max(char_width)
+    }
+
+    /// Char-cell width of one item's content: optional `checked` prefix,
+    /// label, and optional trailing submenu arrow / detail text. See
+    /// [`Self::measure_generic_width`]'s doc for the exact accounting.
+    fn item_content_chars(item: &ContextMenuItem) -> usize {
+        let prefix_len = if item.checked.is_some() { 2 } else { 0 };
+        let label_len: usize = item
+            .label
+            .spans
+            .iter()
+            .map(|s| s.text.chars().count())
+            .sum();
+        let trailing_len = if item.submenu.is_some() {
+            1
+        } else if let Some(det) = &item.detail {
+            det.spans.iter().map(|s| s.text.chars().count()).sum()
+        } else {
+            0
+        };
+        let gap = if trailing_len > 0 { 1 } else { 0 };
+        prefix_len + label_len + gap + trailing_len
+    }
 }
 
 // ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
@@ -976,5 +1036,85 @@ mod tests {
             shortcut.contains('⌘'),
             "macOS shortcut should contain ⌘, got {shortcut:?}",
         );
+    }
+
+    // ── ContextMenu::measure_generic_width (quadraui#419) ─────────────────
+
+    #[test]
+    fn measure_generic_width_widens_for_longer_label() {
+        let short = menu(vec![cm_action("a", "Cut")]);
+        let long = menu(vec![cm_action("a", "Toggle Sidebar Visibility")]);
+        let short_w = short.measure_generic_width(1.0, 0.0);
+        let long_w = long.measure_generic_width(1.0, 0.0);
+        assert!(
+            long_w > short_w,
+            "longer label should produce a wider menu: {long_w} vs {short_w}"
+        );
+    }
+
+    #[test]
+    fn measure_generic_width_scales_with_char_width() {
+        let m = menu(vec![cm_action("a", "Copy")]);
+        let w1 = m.measure_generic_width(1.0, 0.0);
+        let w2 = m.measure_generic_width(2.0, 0.0);
+        assert_eq!(w2, w1 * 2.0);
+    }
+
+    #[test]
+    fn measure_generic_width_checked_item_reserves_prefix_space() {
+        let unchecked = menu(vec![cm_action("a", "Wrap")]);
+        let mut checked_items = vec![cm_action("a", "Wrap")];
+        checked_items[0].checked = Some(true);
+        let checked = menu(checked_items);
+        assert!(
+            checked.measure_generic_width(1.0, 0.0) > unchecked.measure_generic_width(1.0, 0.0),
+            "checked item reserves extra prefix width"
+        );
+    }
+
+    #[test]
+    fn measure_generic_width_submenu_arrow_reserves_trailing_space() {
+        let plain = menu(vec![cm_action("a", "View")]);
+        let mut submenu_items = vec![cm_action("a", "View")];
+        submenu_items[0].submenu = Some(vec![cm_action("b", "Toggle Sidebar")]);
+        let with_submenu = menu(submenu_items);
+        assert!(
+            with_submenu.measure_generic_width(1.0, 0.0) > plain.measure_generic_width(1.0, 0.0),
+            "submenu arrow reserves extra trailing width"
+        );
+    }
+
+    #[test]
+    fn measure_generic_width_detail_reserves_trailing_space() {
+        let plain = menu(vec![cm_action("a", "Save")]);
+        let mut detail_items = vec![cm_action("a", "Save")];
+        detail_items[0].detail = Some(StyledText::plain("Ctrl+S"));
+        let with_detail = menu(detail_items);
+        assert!(
+            with_detail.measure_generic_width(1.0, 0.0) > plain.measure_generic_width(1.0, 0.0),
+            "detail text reserves extra trailing width"
+        );
+    }
+
+    #[test]
+    fn measure_generic_width_border_chrome_inset_shrinks_result() {
+        let m = menu(vec![cm_action("a", "Copy")]);
+        let no_inset = m.measure_generic_width(1.0, 0.0);
+        let with_inset = m.measure_generic_width(1.0, 1.0);
+        assert_eq!(with_inset, no_inset - 2.0);
+    }
+
+    #[test]
+    fn measure_generic_width_never_shrinks_below_one_char() {
+        let m = menu(vec![cm_action("a", "X")]);
+        let w = m.measure_generic_width(1.0, 1000.0);
+        assert_eq!(w, 1.0, "clamped to at least one char_width");
+    }
+
+    #[test]
+    fn measure_generic_width_empty_menu() {
+        let m = menu(vec![]);
+        // Only the 2-char interior margin, no item content.
+        assert_eq!(m.measure_generic_width(1.0, 0.0), 2.0);
     }
 }
