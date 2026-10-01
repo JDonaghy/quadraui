@@ -25,14 +25,18 @@ legs are blocking (#590): on `windows-latest` it builds and clippy-checks
 every `win_*` example against the real `windows` crate, and runs `cargo
 test -p quadraui --features win` for real on that host — including the
 headless `ID2D1DCRenderTarget` surface in `src/win/testing.rs`, which
-needs no `HWND`, GPU, or desktop session. What's still incomplete: most
-`Backend::draw_*`/`*_layout` methods on `WinBackend` are `todo!()` stubs
-(`quadraui/src/win/backend.rs`) — the window, event-translation, and
-platform-services layers work, but per-primitive rasterisers are largely
-unwritten. This is tracked honestly rather than silently: the conformance
-matrix (`quadraui/tests/conformance.rs`) registers `win` as a **burn-down**
-column (quadraui#708/#722) — its cells are reported in the artifact but
-don't gate CI, precisely because the rasterisers aren't done yet.
+needs no `HWND`, GPU, or desktop session. Per-primitive rasterisers are
+no longer stubs: `quadraui/src/win/backend.rs` has zero non-test
+`todo!()` calls left, and `register_zone`/painted-text-run recording
+(what the conformance driver needs to find things on screen) are real,
+not no-ops. What's still incomplete is *conformance*, not *existence*:
+the conformance matrix (`quadraui/tests/conformance.rs`) still registers
+`win` as a **burn-down** column (quadraui#708/#722) rather than
+promoting it to blocking — its cells are reported in the artifact but
+don't gate CI, because some per-primitive cases still fail the same
+paint↔click round-trip checks the TUI/GTK/macOS columns already pass.
+See that file's `c0_paint_smoke` test for the current per-primitive
+checklist.
 
 **The macOS backend implements the whole `Backend` trait, and
 `macos-latest` CI builds and tests it** (`.github/workflows/macos.yml`,
@@ -110,20 +114,28 @@ real apps under development.
 
 ## Features
 
-- `tui` — TUI rasteriser (`quadraui::tui::draw_*`).
-- `gtk` — GTK4 rasteriser (`quadraui::gtk::draw_*`).
+- `terminal` — PTY + vt100 + scrollback engine (`quadraui::terminal_engine`).
+  No rasteriser; pairs with any backend feature below.
+- `tui` — TUI rasteriser (`quadraui::tui::draw_*`), via ratatui.
+- `gtk` — GTK4 rasteriser (`quadraui::gtk::draw_*`), via gtk4-rs + Cairo + Pango.
+- `macos` — macOS rasteriser (`quadraui::macos::draw_*`), via Core Graphics
+  + Core Text. Gated on `target_os = "macos"`.
+- `win` — Windows rasteriser (`quadraui::win::draw_*`), via Direct2D +
+  DirectWrite (`windows-rs`). Compiles on every host — only the real
+  WinAPI calls inside are `cfg(target_os = "windows")`-gated.
 
 quadraui is not published to crates.io — a bare `version = "0.0.1"` crates.io
-dependency line will not resolve for anyone. Consumers pin it either by git rev or by
-relative path, the same two shapes this repo's own downstream consumers
-use (see `CLAUDE.md`'s *Downstream consumers* table):
+dependency line will not resolve for anyone. Both of this repo's real
+downstream consumers (`coord-tui`, `vimcode`) pin it to a fixed git
+revision rather than floating on `develop`'s tip (see `CLAUDE.md`'s
+*Downstream consumers* table):
 
 ```toml
 [dependencies]
-# Pin to a commit (coord-tui's approach):
+# Pin to a commit — the shape both real downstream consumers use:
 quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = ["tui", "gtk"] }
 
-# Or, for in-tree/sibling-checkout development (vimcode's approach):
+# Or, for in-tree/sibling-checkout development:
 quadraui = { path = "../quadraui/quadraui", features = ["tui", "gtk"] }
 ```
 
