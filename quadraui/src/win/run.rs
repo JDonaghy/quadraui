@@ -2555,6 +2555,292 @@ mod win32 {
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
     }
+
+    /// Issue #1232's acceptance bar: a live-window `WM_NCHITTEST` round
+    /// trip. Every other test in this file proves the Rust-side half —
+    /// `nc_hit_test`'s classification, and (in `win::backend`'s own test
+    /// module) that `draw_menu_bar`/`draw_status_bar_interactive`/
+    /// `draw_command_center` now call `register_zone` for their own
+    /// clickable bounds — but per this issue's "Why it slipped through",
+    /// the #1199 regression only showed up once a real `WM_NCHITTEST`
+    /// round-trips through a real `wndproc` on a real `HWND`; nothing
+    /// else in this crate's test suite ever sends that message, and the
+    /// probes that *did* exist (vimcode#1629) used `PostMessageW`, which
+    /// bypasses it entirely. This module creates a real top-level
+    /// window, paints real menu-bar / status-bar / command-centre
+    /// widgets into its title-bar band via the real `WinBackend::draw_*`
+    /// calls (so it exercises this issue's actual fix, not a
+    /// hand-registered zone), then drives `WM_NCHITTEST` with
+    /// `SendMessageW` at each widget's real resolved centre and at an
+    /// empty strip of the band between them.
+    #[cfg(test)]
+    mod live_window_nchittest_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        use windows::Win32::Graphics::Gdi::ClientToScreen;
+
+        /// Real DIP centre points [`LiveWindowApp::render`] resolves each
+        /// frame from the real `MenuBarLayout`/`StatusBarLayout`/
+        /// `CommandCenterLayout` the real `WinBackend` `draw_*` calls hand
+        /// back, plus the real `Viewport::scale` those bounds are in —
+        /// shared with the probing thread so it computes real screen
+        /// coordinates instead of guessing font-metric-dependent pixel
+        /// offsets.
+        #[derive(Clone, Copy, Debug, Default)]
+        struct ProbeTargets {
+            file_item: Option<(f32, f32)>,
+            close_button: Option<(f32, f32)>,
+            search_box: Option<(f32, f32)>,
+            empty_band: (f32, f32),
+            scale: f32,
+        }
+
+        struct LiveWindowApp {
+            targets: Arc<Mutex<ProbeTargets>>,
+        }
+
+        impl AppLogic for LiveWindowApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let viewport = backend.viewport();
+                let band_height = 32.0_f32;
+                let band = crate::event::Rect::new(0.0, 0.0, viewport.width, band_height);
+                Backend::register_zone(
+                    backend,
+                    crate::types::WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE),
+                    band,
+                );
+
+                let bar = crate::MenuBar {
+                    id: crate::types::WidgetId::new("probe:bar"),
+                    items: vec![crate::MenuBarItem {
+                        id: crate::types::WidgetId::new("probe:bar:file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        submenu: None,
+                    }],
+                    open_item: None,
+                    focused_item: None,
+                };
+                let menu_layout = backend
+                    .draw_menu_bar(crate::event::Rect::new(0.0, 0.0, 100.0, band_height), &bar);
+
+                let status = crate::StatusBar {
+                    id: crate::types::WidgetId::new("probe:status"),
+                    left_segments: vec![],
+                    right_segments: vec![crate::StatusBarSegment {
+                        text: "X".into(),
+                        fg: crate::types::Color::rgb(255, 255, 255),
+                        bg: crate::types::Color::rgb(0, 0, 0),
+                        bold: false,
+                        action_id: Some(crate::types::WidgetId::new("probe:close")),
+                    }],
+                };
+                let status_rect =
+                    crate::event::Rect::new(viewport.width - 40.0, 0.0, 40.0, band_height);
+                let status_layout = backend.draw_status_bar_interactive(
+                    status_rect,
+                    &status,
+                    &crate::interaction::InteractionState::new(),
+                );
+
+                let cc = crate::CommandCenter {
+                    id: crate::types::WidgetId::new("probe:cc"),
+                    back_enabled: true,
+                    forward_enabled: true,
+                    search_label: "probe".into(),
+                };
+                let cc_rect = crate::event::Rect::new(160.0, 0.0, 240.0, band_height);
+                let cc_layout = backend.draw_command_center(cc_rect, &cc);
+
+                let file_item = menu_layout
+                    .visible_items
+                    .iter()
+                    .find(|v| v.clickable)
+                    .map(|v| {
+                        (
+                            v.bounds.x + v.bounds.width / 2.0,
+                            v.bounds.y + v.bounds.height / 2.0,
+                        )
+                    });
+                let close_button = status_layout.hit_regions.iter().find_map(|(r, hit)| {
+                    matches!(hit, crate::primitives::status_bar::StatusBarHit::Segment(_))
+                        .then(|| (r.x + r.width / 2.0, r.y + r.height / 2.0))
+                });
+                let search_box = cc_layout
+                    .search_bounds
+                    .map(|r| (r.x + r.width / 2.0, r.y + r.height / 2.0));
+
+                let mut targets = self.targets.lock().unwrap();
+                targets.file_item = file_item;
+                targets.close_button = close_button;
+                targets.search_box = search_box;
+                // Between the 100-wide menu-bar rect and the
+                // 160-starting command-centre rect — guaranteed clear of
+                // every widget above regardless of real glyph metrics,
+                // since both rects are fixed-width independent of what
+                // text happened to measure inside them.
+                targets.empty_band = (130.0, band_height / 2.0);
+                targets.scale = viewport.scale;
+            }
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::WindowClose => Reaction::Exit,
+                    _ => Reaction::Continue,
+                }
+            }
+        }
+
+        /// DIP → screen-point conversion for `SendMessageW(WM_NCHITTEST)`:
+        /// scales by the window's real DPI ratio (captured from the same
+        /// `render` call the target point came from) and maps through
+        /// `ClientToScreen` — the exact inverse of `wndproc`'s own
+        /// `WM_NCHITTEST` arm (`ScreenToClient` then unscale).
+        fn dip_to_screen_lparam(hwnd: HWND, dip: (f32, f32), scale: f32) -> LPARAM {
+            let mut pt = POINT {
+                x: (dip.0 * scale).round() as i32,
+                y: (dip.1 * scale).round() as i32,
+            };
+            // SAFETY: `hwnd` is the live test window, still open for the
+            // duration of this call; `pt` is stack-local.
+            unsafe {
+                let _ = ClientToScreen(hwnd, &mut pt);
+            }
+            LPARAM((((pt.y as u16 as u32) << 16) | (pt.x as u16 as u32)) as i32 as isize)
+        }
+
+        /// Self-guarding (stderr diagnostic + early return, same posture
+        /// as `ctrl_v_delivers_real_clipboard_text_as_clipboard_paste`
+        /// above) if the window never becomes findable/painted within
+        /// the timeout — this test's contract is "a live interactive
+        /// window station", not every CI sandbox.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn real_wm_nchittest_excludes_band_widgets_and_caps_the_empty_strip() {
+            let targets = Arc::new(Mutex::new(ProbeTargets::default()));
+            let app = LiveWindowApp {
+                targets: targets.clone(),
+            };
+            let title = format!(
+                "quadraui-nchittest-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::win::run::RunConfig::new(title.clone());
+
+            let runner = std::thread::spawn(move || run(app, config));
+
+            // Poll for the window (`FindWindowW`), bounded — an
+            // environment with no interactive window station (window
+            // creation fails) reports a diagnostic and returns instead of
+            // hanging forever.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping \
+                     real_wm_nchittest_excludes_band_widgets_and_caps_the_empty_strip — \
+                     the test window never became findable within 10s (no interactive \
+                     window station on this host?)"
+                );
+                return;
+            };
+
+            // Poll for the first full paint — `ProbeTargets` populated by
+            // `LiveWindowApp::render`, same bounded/self-guarding posture.
+            let ready = loop {
+                let snapshot = *targets.lock().unwrap();
+                if snapshot.file_item.is_some()
+                    && snapshot.close_button.is_some()
+                    && snapshot.search_box.is_some()
+                {
+                    break Some(snapshot);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(snapshot) = ready else {
+                eprintln!(
+                    "quadraui: skipping \
+                     real_wm_nchittest_excludes_band_widgets_and_caps_the_empty_strip — \
+                     the window never painted a full frame within 10s"
+                );
+                // SAFETY: `hwnd` is still the live test window; `WM_CLOSE`
+                // is this window's normal user-close path.
+                unsafe {
+                    SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+                let _ = runner.join();
+                return;
+            };
+
+            let assert_hit = |label: &str, dip: (f32, f32), expect_caption: bool| {
+                let lparam = dip_to_screen_lparam(hwnd, dip, snapshot.scale);
+                let result = {
+                    // SAFETY: `hwnd` is still the live test window;
+                    // `WM_NCHITTEST` is a pure query with no side effects
+                    // to uphold beyond a live window.
+                    unsafe { SendMessageW(hwnd, WM_NCHITTEST, Some(WPARAM(0)), Some(lparam)) }
+                };
+                let is_caption = result.0 as u32 == HTCAPTION;
+                assert_eq!(
+                    is_caption,
+                    expect_caption,
+                    "{label}: expected {} but WM_NCHITTEST returned {:#x}",
+                    if expect_caption {
+                        "HTCAPTION"
+                    } else {
+                        "not HTCAPTION (HTCLIENT)"
+                    },
+                    result.0
+                );
+            };
+
+            // The real fix this issue is about: each widget excludes its
+            // own footprint from the OS caption-drag gesture.
+            assert_hit("File menu item", snapshot.file_item.unwrap(), false);
+            assert_hit(
+                "status-bar close segment",
+                snapshot.close_button.unwrap(),
+                false,
+            );
+            assert_hit(
+                "command-centre search box",
+                snapshot.search_box.unwrap(),
+                false,
+            );
+            // The other half of the same acceptance scenario: empty band
+            // space still drags/maximizes like a native titlebar.
+            assert_hit("empty band strip", snapshot.empty_band, true);
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // the normal user-close path this window's `wndproc` already
+            // handles (the `WM_CLOSE` arm above) — `LiveWindowApp::handle`
+            // always resolves it to `Reaction::Exit`, so this ends the
+            // message loop `runner`'s thread is pumping.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner.join();
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
