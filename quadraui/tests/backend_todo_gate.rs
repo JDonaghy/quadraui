@@ -233,7 +233,7 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ("src/win/backend.rs", "fn draw_spinner", "\"Direct2D spinner rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn spinner_layout", "\"DirectWrite spinner layout (no surface attached yet)\""),
     ("src/win/backend.rs", "fn draw_command_center", "\"Direct2D command center rasteriser (no surface attached yet)\""),
-    ("src/win/backend.rs", "fn draw_toolbar_interactive", "\"Direct2D toolbar rasteriser (no surface attached yet)\""),
+    ("src/win/backend.rs", "fn draw_toolbar_with_options", "\"Direct2D toolbar rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn toolbar_layout", "\"DirectWrite toolbar layout (no surface attached yet)\""),
     ("src/win/backend.rs", "fn draw_sidebar_panel_interactive", "\"Direct2D sidebar-panel rasteriser (no surface attached yet)\""),
     ("src/win/backend.rs", "fn sidebar_panel_layout", "\"DirectWrite sidebar-panel layout (no surface attached yet)\""),

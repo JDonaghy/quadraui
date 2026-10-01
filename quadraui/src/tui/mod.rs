@@ -125,7 +125,7 @@ pub use text::{char_cell_width, display_width, truncate_to_width, truncate_to_wi
 pub use text_display::{draw_text_display, tui_text_display_layout};
 pub use text_input::{draw_text_input, tui_text_input_layout};
 pub use toast::{draw_toast_stack, tui_toast_stack_layout};
-pub use toolbar::{draw_toolbar, tui_toolbar_layout};
+pub use toolbar::{draw_toolbar, draw_toolbar_with_options, tui_toolbar_layout};
 pub use tooltip::{
     draw_tooltip, draw_tooltip_with_chrome, painted_bounds as tooltip_painted_bounds,
 };

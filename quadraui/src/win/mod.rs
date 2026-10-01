@@ -431,7 +431,7 @@ pub use text_input::{draw_text_input, win_text_input_layout};
 pub use toast::draw_toast_stack;
 pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
-pub use toolbar::{draw_toolbar, win_toolbar_layout};
+pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
 #[cfg(target_os = "windows")]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[cfg(target_os = "windows")]

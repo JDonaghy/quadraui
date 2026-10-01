@@ -67,10 +67,36 @@ pub fn win_toolbar_layout(dwrite: &DWrite, rect: Rect, bar: &Toolbar) -> Toolbar
 }
 
 /// Draw a [`Toolbar`] into `rect` (DIPs) on `target`. Returns the
-/// resolved [`ToolbarLayout`] for host click dispatch. `options.valign`
+/// resolved [`ToolbarLayout`] for host click dispatch.
+///
+/// Equivalent to [`draw_toolbar_with_options`] with
+/// [`ToolbarPaintOptions::default()`] — kept as a separate, **unchanged**
+/// function so every existing caller of this re-exported `pub fn` keeps
+/// compiling untouched (`CLAUDE.md`'s *Downstream consumers* rule 2).
+pub fn draw_toolbar(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    rect: Rect,
+    bar: &Toolbar,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+) -> ToolbarLayout {
+    draw_toolbar_with_options(
+        target,
+        dwrite,
+        rect,
+        bar,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
+    )
+}
+
+/// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
 /// (issue #260) resolves where button/label text paints within a slot
 /// taller than one line.
-pub fn draw_toolbar(
+#[allow(clippy::too_many_arguments)]
+pub fn draw_toolbar_with_options(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
     rect: Rect,

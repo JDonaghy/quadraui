@@ -2110,17 +2110,7 @@ impl Backend for MacBackend {
                 // SAFETY: ctx is non-null inside the frame scope.
                 unsafe {
                     super::toolbar::draw_toolbar(
-                        ctx,
-                        &font,
-                        toolbar_x,
-                        row_y,
-                        toolbar_w,
-                        row_h,
-                        toolbar,
-                        &theme,
-                        None,
-                        None,
-                        crate::primitives::toolbar::ToolbarPaintOptions::default(),
+                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
                     );
                 }
             }
@@ -3234,7 +3224,7 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_toolbar_interactive(
+    fn draw_toolbar_with_options(
         &mut self,
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
@@ -3253,7 +3243,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
-            super::toolbar::draw_toolbar(
+            super::toolbar::draw_toolbar_with_options(
                 ctx,
                 font,
                 rect.x as f64,

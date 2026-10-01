@@ -68,7 +68,6 @@ pub unsafe fn draw_dialog(
                 theme,
                 None,
                 None,
-                crate::primitives::toolbar::ToolbarPaintOptions::default(),
             );
         }
     }

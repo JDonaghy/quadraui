@@ -344,17 +344,7 @@ unsafe fn draw_form_body(
         let toolbar_w = row_x + row_w - toolbar_x;
         if toolbar_w > 0.0 {
             super::toolbar::draw_toolbar(
-                ctx,
-                font,
-                toolbar_x,
-                row_y,
-                toolbar_w,
-                row_h,
-                toolbar,
-                theme,
-                None,
-                None,
-                crate::primitives::toolbar::ToolbarPaintOptions::default(),
+                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
             );
         }
     }

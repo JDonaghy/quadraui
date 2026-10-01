@@ -69,7 +69,6 @@ pub fn draw_sidebar_panel(
             theme,
             hovered_toolbar_id,
             pressed_toolbar_id,
-            crate::primitives::toolbar::ToolbarPaintOptions::default(),
         );
     }
 

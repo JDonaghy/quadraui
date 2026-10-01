@@ -1187,7 +1187,7 @@ mod tests {
         ) -> crate::CommandCenterLayout {
             unimplemented!()
         }
-        fn draw_toolbar_interactive(
+        fn draw_toolbar_with_options(
             &mut self,
             _r: Rect,
             _b: &crate::primitives::toolbar::Toolbar,

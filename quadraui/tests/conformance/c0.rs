@@ -49,8 +49,8 @@ use quadraui::{
     StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame,
     TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast,
     ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarPaintOptions, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
+    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 // Pre-#1185 single-action toast shapes, for the `draw_toast_stack`
@@ -1190,7 +1190,41 @@ pub const CASES: &[Case] = &[
                 Rect::new(0.0, 0.0, area.width, lh),
                 &bar,
                 &InteractionState::new(),
-                ToolbarPaintOptions::default(),
+            );
+        },
+    },
+    // #260: the options-taking twin backends actually implement —
+    // `draw_toolbar_interactive` above is a forwarding default over it.
+    // A C0 row here is what proves each backend's rasteriser is reached
+    // through *this* entry point too, and it paints into a slot taller
+    // than one text row with a non-default `valign` so the arm that
+    // moves the text is the one exercised.
+    Case {
+        method: "draw_toolbar_with_options",
+        needle: Some("c0tbva"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let bar = Toolbar {
+                id: id("toolbar-valign"),
+                buttons: vec![ToolbarButton::Action {
+                    id: id("toolbar-valign-button"),
+                    label: "c0tbva".to_string(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            };
+            let _ = b.draw_toolbar_with_options(
+                Rect::new(0.0, 0.0, area.width, lh * 3.0),
+                &bar,
+                &InteractionState::new(),
+                ToolbarPaintOptions {
+                    valign: ToolbarVAlign::Bottom,
+                },
             );
         },
     },

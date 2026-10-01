@@ -75,10 +75,45 @@ pub fn gtk_toolbar_layout(
 }
 
 /// Draw a [`Toolbar`] into `(x, y, w, h)` on `cr`. Returns the layout
-/// for host click dispatch. `options.valign` (issue #260) resolves
-/// where button/label text paints within a slot taller than one line.
+/// for host click dispatch.
+///
+/// Equivalent to [`draw_toolbar_with_options`] with
+/// [`ToolbarPaintOptions::default()`] — kept as a separate, **unchanged**
+/// function so every existing caller of this re-exported `pub fn` keeps
+/// compiling untouched (`CLAUDE.md`'s *Downstream consumers* rule 2).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar(
+    cr: &Context,
+    pango_layout: &pango::Layout,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    bar: &Toolbar,
+    theme: &Theme,
+    hovered_id: Option<&WidgetId>,
+    pressed_id: Option<&WidgetId>,
+) -> ToolbarLayout {
+    draw_toolbar_with_options(
+        cr,
+        pango_layout,
+        x,
+        y,
+        w,
+        h,
+        bar,
+        theme,
+        hovered_id,
+        pressed_id,
+        ToolbarPaintOptions::default(),
+    )
+}
+
+/// [`draw_toolbar`], plus [`ToolbarPaintOptions`]: `options.valign`
+/// (issue #260) resolves where button/label text paints within a slot
+/// taller than one line.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_toolbar_with_options(
     cr: &Context,
     pango_layout: &pango::Layout,
     x: f64,
@@ -233,7 +268,7 @@ mod tests {
             {
                 let cr = Context::new(&surface).expect("Context::new");
                 let pango_layout = pangocairo::functions::create_layout(&cr);
-                draw_toolbar(
+                draw_toolbar_with_options(
                     &cr,
                     &pango_layout,
                     0.0,

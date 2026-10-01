@@ -353,7 +353,7 @@ impl AppLogic for ToolbarApp {
         // Toolbar in the second row.
         let rect = Self::toolbar_rect(backend);
         let bar = self.resolved_toolbar(backend);
-        let _ = backend.draw_toolbar_interactive(
+        let _ = backend.draw_toolbar_with_options(
             rect,
             &bar,
             &self.interaction,

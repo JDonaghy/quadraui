@@ -2519,17 +2519,7 @@ impl Backend for GtkBackend {
             let toolbar_w = row_x + row_w - toolbar_x;
             if toolbar_w > 0.0 {
                 crate::gtk::toolbar::draw_toolbar(
-                    cr,
-                    layout,
-                    toolbar_x,
-                    row_y,
-                    toolbar_w,
-                    row_h,
-                    toolbar,
-                    &theme,
-                    None,
-                    None,
-                    crate::primitives::toolbar::ToolbarPaintOptions::default(),
+                    cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
                 );
                 layout.set_attributes(None);
             }
@@ -4345,7 +4335,7 @@ impl Backend for GtkBackend {
         )
     }
 
-    fn draw_toolbar_interactive(
+    fn draw_toolbar_with_options(
         &mut self,
         rect: QRect,
         bar: &crate::primitives::toolbar::Toolbar,
@@ -4357,7 +4347,7 @@ impl Backend for GtkBackend {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
-            .expect("GtkBackend::draw_toolbar_interactive called outside enter_frame_scope");
+            .expect("GtkBackend::draw_toolbar_with_options called outside enter_frame_scope");
         // #416: action labels and `Toolbar::Action` icon glyphs are chrome,
         // not editor content — mirrors `Self::draw_list`/`Self::draw_tree`'s
         // save/swap/restore. Before this, the toolbar painted with
@@ -4368,7 +4358,7 @@ impl Backend for GtkBackend {
         // tofu/blank depending on what else is installed.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
-        let layout = crate::gtk::draw_toolbar(
+        let layout = crate::gtk::draw_toolbar_with_options(
             cr,
             pango_layout,
             rect.x as f64,
@@ -7890,13 +7880,8 @@ mod tests {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_toolbar_interactive(
-                    rect,
-                    &bar,
-                    &crate::InteractionState::new(),
-                    crate::primitives::toolbar::ToolbarPaintOptions::default(),
-                )
-                .visible_items[0]
+                b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
+                    .visible_items[0]
                     .bounds
                     .width
             })
@@ -7950,13 +7935,8 @@ mod tests {
         Backend::set_ui_font(&mut backend, "Sans 40");
 
         let painted = backend.enter_frame_scope(&cr, &layout, |b| {
-            b.draw_toolbar_interactive(
-                rect,
-                &bar,
-                &crate::InteractionState::new(),
-                crate::primitives::toolbar::ToolbarPaintOptions::default(),
-            )
-            .visible_items[0]
+            b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
+                .visible_items[0]
                 .bounds
         });
         // Outside the frame scope — the click-time path.
