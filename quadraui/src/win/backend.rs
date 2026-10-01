@@ -4309,6 +4309,7 @@ impl Backend for WinBackend {
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
         interaction: &crate::interaction::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         #[cfg(target_os = "windows")]
@@ -4320,13 +4321,14 @@ impl Backend for WinBackend {
                 bar,
                 hovered_id,
                 pressed_id,
+                options,
             );
         }
         // No surface/DWrite yet — compute the real layout via the same
         // nominal measurer `toolbar_layout` falls back to, and paint
-        // nothing (issue #924). `hovered_id`/`pressed_id` only affect
-        // painting, so they're unused on this path.
-        let _ = (hovered_id, pressed_id);
+        // nothing (issue #924). `hovered_id`/`pressed_id`/`options` only
+        // affect painting, so they're unused on this path.
+        let _ = (hovered_id, pressed_id, options);
         self.toolbar_layout(rect, bar)
     }
 
@@ -8263,7 +8265,12 @@ mod tests {
             focused_index: None,
         };
         let interaction = crate::interaction::InteractionState::default();
-        let _ = backend.draw_toolbar_interactive(rect, &toolbar, &interaction);
+        let _ = backend.draw_toolbar_interactive(
+            rect,
+            &toolbar,
+            &interaction,
+            crate::primitives::toolbar::ToolbarPaintOptions::default(),
+        );
 
         // `PanelLayout` category (pure geometry, no measurer).
         let panel = sample_panel();

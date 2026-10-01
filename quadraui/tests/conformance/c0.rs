@@ -48,9 +48,9 @@ use quadraui::{
     SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree,
     StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame,
     TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast,
-    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, Tooltip,
-    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView,
-    UiEvent, WidgetId,
+    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
+    ToolbarPaintOptions, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
+    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 // Pre-#1185 single-action toast shapes, for the `draw_toast_stack`
@@ -1190,6 +1190,7 @@ pub const CASES: &[Case] = &[
                 Rect::new(0.0, 0.0, area.width, lh),
                 &bar,
                 &InteractionState::new(),
+                ToolbarPaintOptions::default(),
             );
         },
     },

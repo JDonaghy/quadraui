@@ -19,6 +19,7 @@ use gtk4::pango;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -74,7 +75,8 @@ pub fn gtk_toolbar_layout(
 }
 
 /// Draw a [`Toolbar`] into `(x, y, w, h)` on `cr`. Returns the layout
-/// for host click dispatch.
+/// for host click dispatch. `options.valign` (issue #260) resolves
+/// where button/label text paints within a slot taller than one line.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar(
     cr: &Context,
@@ -87,6 +89,7 @@ pub fn draw_toolbar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
+    options: ToolbarPaintOptions,
 ) -> ToolbarLayout {
     pango_layout.set_attributes(None);
     pango_layout.set_width(-1);
@@ -119,6 +122,7 @@ pub fn draw_toolbar(
         theme,
         hovered_id,
         pressed_id,
+        options,
     );
     pango_layout.set_attributes(None);
 
@@ -183,5 +187,93 @@ mod tests {
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         round_trip_at(7.0, 13.0);
+    }
+
+    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
+
+    /// Pixel-level multi-row paint test (issue #260's test plan): paint
+    /// the same bar into the same tall slot once per [`ToolbarVAlign`]
+    /// variant and confirm the row of the first painted (non-background)
+    /// pixel moves accordingly — `Top` paints highest, `Bottom` lowest,
+    /// `Center` strictly between the two. Exercises the real
+    /// [`draw_toolbar`] → [`crate::primitives::toolbar::native_surface_paint::paint`]
+    /// path through an in-memory Cairo `ImageSurface`, the same headless
+    /// pattern `gtk::command_line`'s pixel tests use — no live GTK window
+    /// needed.
+    #[test]
+    fn multi_row_valign_moves_painted_text_vertically() {
+        use crate::primitives::toolbar::ToolbarVAlign;
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 200;
+        const H: i32 = 60;
+
+        let theme = Theme::default();
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:go"),
+                label: "Go".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+
+        // Row (from the top) of the first pixel that differs from the
+        // bar's own background fill — i.e. the first row any ink lands
+        // on, for a given `valign`.
+        let first_ink_row = |valign: ToolbarVAlign| -> i32 {
+            let mut surface =
+                ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+            {
+                let cr = Context::new(&surface).expect("Context::new");
+                let pango_layout = pangocairo::functions::create_layout(&cr);
+                draw_toolbar(
+                    &cr,
+                    &pango_layout,
+                    0.0,
+                    0.0,
+                    W as f64,
+                    H as f64,
+                    &bar,
+                    &theme,
+                    None,
+                    None,
+                    ToolbarPaintOptions { valign },
+                );
+            }
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let bg = theme.header_bg;
+            for y in 0..H {
+                for x in 0..W {
+                    let off = y as usize * stride + x as usize * 4;
+                    // Cairo ARGB32 byte order on little-endian is BGRA.
+                    let (b, g, r) = (data[off], data[off + 1], data[off + 2]);
+                    if (r, g, b) != (bg.r, bg.g, bg.b) {
+                        return y;
+                    }
+                }
+            }
+            panic!("no ink painted for valign {valign:?}");
+        };
+
+        let top_row = first_ink_row(ToolbarVAlign::Top);
+        let center_row = first_ink_row(ToolbarVAlign::Center);
+        let bottom_row = first_ink_row(ToolbarVAlign::Bottom);
+
+        assert!(
+            top_row < center_row,
+            "Top should paint higher than Center (top={top_row}, center={center_row})"
+        );
+        assert!(
+            center_row < bottom_row,
+            "Center should paint higher than Bottom (center={center_row}, bottom={bottom_row})"
+        );
     }
 }

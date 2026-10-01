@@ -1276,6 +1276,7 @@ impl crate::Backend for RecordingBackend {
         _r: Rect,
         _b: &crate::primitives::toolbar::Toolbar,
         _interaction: &crate::interaction::InteractionState,
+        _options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         self.record("draw_toolbar");
         unimplemented!("RecordingBackend has no Toolbar layout algorithm")
