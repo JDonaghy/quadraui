@@ -171,7 +171,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_toolbar(
+                draw_toolbar_with_options(
                     target,
                     &dwrite,
                     rect,
@@ -294,7 +294,7 @@ mod tests {
 
         let painted = surface
             .paint(|target| {
-                draw_toolbar(
+                draw_toolbar_with_options(
                     target,
                     &dwrite,
                     rect,
@@ -340,7 +340,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_toolbar(
+                draw_toolbar_with_options(
                     target,
                     &dwrite,
                     rect,
@@ -440,7 +440,7 @@ mod tests {
             let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
             surface
                 .paint(|target| {
-                    draw_toolbar(
+                    draw_toolbar_with_options(
                         target,
                         &dwrite,
                         rect,
