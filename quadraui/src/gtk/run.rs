@@ -732,6 +732,20 @@ fn activate<A: AppLogic + 'static>(
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
+    // #235: the DA is the widget every keyboard-driven primitive expects
+    // to hold GTK's internal focus (even though `setup_key_controller`
+    // below attaches `EventControllerKey` to the *window*, not `da` —
+    // bubble-phase propagation still starts at whatever widget holds
+    // focus and walks up to the window, so an unfocusable/unfocused `da`
+    // leaves nothing in that chain until the user clicks it). Without
+    // `focusable(true)` here, `grab_focus()` below (after `present()`)
+    // would be a silent no-op — GTK widgets default to
+    // `focusable: false`. kubeui-gtk worked around the missing piece by
+    // calling `grab_focus()` itself post-construction; this folds that
+    // into the runner so every app built on `gtk::run`/`GtkRunner` gets
+    // working keyboard input on first launch with no click required.
+    da.set_focusable(true);
+    da.set_can_focus(true);
     window.set_child(Some(&da));
 
     // Seed the backend's persistent pango context from the widget so
@@ -797,6 +811,13 @@ fn activate<A: AppLogic + 'static>(
     setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
 
     window.present();
+    // #235: grab focus only after `present()` realizes/maps the window —
+    // calling this any earlier is a well-documented GTK4 foot-gun (the
+    // widget isn't part of a mapped surface yet, so the focus request can
+    // be silently dropped on some backends instead of just being queued).
+    // See the `set_focusable`/`set_can_focus` call above `window.set_child`
+    // for why this is a no-op without that pairing.
+    da.grab_focus();
 
     // quadraui#450 (GD-5): opt-in, zero-cost unless `QUADRAUI_GTK_SMOKE_MS`
     // is set — see the module doc's "Headless smoke mode" section.
@@ -1674,6 +1695,24 @@ fn schedule_smoke_check<A: AppLogic + 'static>(
                 "quadraui smoke: DrawingArea size looks broken ({width}x{height}px, \
                  expected at least {SMOKE_MIN_WIDTH}x{SMOKE_MIN_HEIGHT}px) — \
                  this is the quadraui#437 tiny-window regression class"
+            );
+            smoke_failed.set(true);
+        }
+
+        // #235: `da.is_focus()` asks GTK's own toplevel-focus bookkeeping
+        // "is this the widget holding internal focus", independent of
+        // whether the X/Wayland compositor also granted the *window*
+        // native input focus (`has_focus()` conflates the two, and
+        // `xvfb-run` here runs with no window manager to arbitrate that
+        // — see the module doc on this script). That makes it the right
+        // predicate for this regression: `activate`'s `set_focusable` +
+        // `grab_focus()` calls are a GTK-level widget request, not an
+        // X11/Wayland one, so this is exactly what they're responsible
+        // for.
+        if !da.is_focus() {
+            eprintln!(
+                "quadraui smoke: DrawingArea never became GTK's focus widget — \
+                 this is the quadraui#235 missing-grab_focus regression class"
             );
             smoke_failed.set(true);
         }
