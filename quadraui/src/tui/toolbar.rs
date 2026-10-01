@@ -30,9 +30,30 @@ use ratatui::layout::Rect;
 
 use super::text::{char_cell_width, display_width};
 use super::{qc, set_cell};
-use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout};
+use crate::primitives::toolbar::{
+    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign,
+};
 use crate::theme::Theme;
 use crate::types::WidgetId;
+
+/// Resolve which row within `[area.y, area.y + area.height)` button /
+/// label text paints on, per `valign` (issue #260). TUI's own cell-grid
+/// twin of [`crate::primitives::toolbar::valign_offset_y`] — kept
+/// separate because a terminal row is already a quantized unit, so
+/// folding this into the pixel-unit `f32` formula would just re-round
+/// it back.
+///
+/// `Center`'s formula is the pre-#260 arithmetic, unchanged: for even
+/// heights the row *above* centre wins (matches the pixel backends'
+/// `(slot_height - content_height) / 2.0` integer-truncating the same
+/// way).
+pub(crate) fn tui_text_row(valign: ToolbarVAlign, area: Rect) -> u16 {
+    match valign {
+        ToolbarVAlign::Top => area.y,
+        ToolbarVAlign::Center => area.y + area.height.saturating_sub(1) / 2,
+        ToolbarVAlign::Bottom => area.y + area.height.saturating_sub(1),
+    }
+}
 
 /// Compute the TUI cell-unit width of a single toolbar item.
 ///
@@ -82,7 +103,9 @@ pub fn tui_toolbar_layout(bar: &Toolbar, area: Rect) -> ToolbarLayout {
 }
 
 /// Draw a [`Toolbar`] into `area` on `buf`. Returns the layout for host
-/// click dispatch.
+/// click dispatch. `options.valign` (issue #260) resolves which row
+/// button/label text paints on when `area.height > 1` — see
+/// [`tui_text_row`].
 pub fn draw_toolbar(
     buf: &mut Buffer,
     area: Rect,
@@ -90,6 +113,7 @@ pub fn draw_toolbar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
+    options: ToolbarPaintOptions,
 ) -> ToolbarLayout {
     if area.width == 0 || area.height == 0 {
         // `tui_toolbar_layout` forces `bar_height` to `area.height.max(1)`
@@ -116,10 +140,9 @@ pub fn draw_toolbar(
     let active_bg = qc(theme.selected_bg);
     let focus_bg = qc(theme.accent_bg);
 
-    // Vertically centre text on rects taller than 1 row. With even
-    // heights the row above centre wins (matches GTK's
-    // line_height-based centring).
-    let text_row = area.y + area.height.saturating_sub(1) / 2;
+    // Resolve the text row per `options.valign` (issue #260). On a
+    // 1-row slot every variant resolves to `area.y`.
+    let text_row = tui_text_row(options.valign, area);
 
     // Fill every row of the bar background so multi-row hosts (Gap 1)
     // get a uniform-coloured strip rather than 1 row painted + N-1
@@ -277,7 +300,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         // First two cells should be `[` then ` `.
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_eq!(cell_char(&buf, 1, 0), ' ');
@@ -298,7 +329,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         // Click inside the first button.
         let b = layout.visible_items[0].bounds;
         assert_eq!(
@@ -346,7 +385,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         let b = layout.visible_items[0].bounds;
         assert_eq!(layout.hit_test(b.x + 1.0, b.y), ToolbarHit::Empty);
     }
@@ -361,7 +408,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         // First cell is space, second is the pipe char.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert_eq!(cell_char(&buf, 1, 0), '│');
@@ -380,7 +435,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         assert_eq!(cell_char(&buf, 0, 0), '2');
         assert_eq!(cell_char(&buf, 1, 0), '/');
         assert_eq!(cell_char(&buf, 2, 0), '5');
@@ -397,7 +460,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert!(layout.visible_items.is_empty());
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
@@ -422,7 +493,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         assert!(layout.visible_items.is_empty());
         // Pre-fix, the forced `bar_height.max(1)` row band at y == 0
         // would hit-test the button here even though nothing painted.
@@ -443,7 +522,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
 
         // Row 0 (top): button text painted in centre — but the bg
         // outside the button text still fills.
@@ -466,8 +553,11 @@ mod tests {
     }
 
     #[test]
-    fn multi_row_centres_button_text_vertically() {
-        // Height 3 → text on row 1 (middle).
+    fn multi_row_center_valign_centres_button_text_vertically() {
+        // Height 3, `ToolbarVAlign::Center` → text on row 1 (middle).
+        // Pre-#260 this was the *only* behaviour `draw_toolbar` had;
+        // post-#260 it's the explicit opt-in (the default changed to
+        // `Top` — see `multi_row_default_valign_is_top` below).
         let area = Rect::new(0, 0, 12, 3);
         let mut buf = Buffer::empty(area);
         let bar = Toolbar {
@@ -476,12 +566,123 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let options = ToolbarPaintOptions {
+            valign: ToolbarVAlign::Center,
+        };
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, options);
         // Row 1 col 0 should be `[`.
         assert_eq!(cell_char(&buf, 0, 1), '[');
         // Rows 0 and 2 should not have the bracket.
         assert_ne!(cell_char(&buf, 0, 0), '[');
         assert_ne!(cell_char(&buf, 0, 2), '[');
+    }
+
+    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
+
+    #[test]
+    fn multi_row_default_valign_is_top() {
+        // `ToolbarPaintOptions::default()` → `ToolbarVAlign::Top` → text
+        // on row 0, padding below (issue #260's reported complaint,
+        // now the documented default rather than an arithmetic
+        // accident).
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Go", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let _ = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
+        assert_eq!(cell_char(&buf, 0, 0), '[');
+        assert_ne!(cell_char(&buf, 0, 1), '[');
+        assert_ne!(cell_char(&buf, 0, 2), '[');
+    }
+
+    #[test]
+    fn multi_row_bottom_valign_puts_text_on_last_row() {
+        // `ToolbarVAlign::Bottom` → text on the last row, padding
+        // above — the shape issue #260's Adoption section names for a
+        // sidebar action bar sitting flush against the content below
+        // it.
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::empty(area);
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![mk_action("a", "Go", true)],
+            bg: None,
+            focused_index: None,
+        };
+        let options = ToolbarPaintOptions {
+            valign: ToolbarVAlign::Bottom,
+        };
+        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        assert_eq!(cell_char(&buf, 0, 2), '[');
+        assert_ne!(cell_char(&buf, 0, 0), '[');
+        assert_ne!(cell_char(&buf, 0, 1), '[');
+    }
+
+    #[test]
+    fn one_row_slot_every_valign_resolves_identically() {
+        // On a 1-row slot there's only one row to paint on — Top,
+        // Center, and Bottom must all resolve to it, so this is
+        // purely a multi-row concern (per `ToolbarVAlign`'s own doc).
+        for valign in [
+            ToolbarVAlign::Top,
+            ToolbarVAlign::Center,
+            ToolbarVAlign::Bottom,
+        ] {
+            let area = Rect::new(0, 0, 12, 1);
+            let mut buf = Buffer::empty(area);
+            let bar = Toolbar {
+                id: WidgetId::new("tb"),
+                buttons: vec![mk_action("a", "Go", true)],
+                bg: None,
+                focused_index: None,
+            };
+            let _ = draw_toolbar(
+                &mut buf,
+                area,
+                &bar,
+                &Theme::default(),
+                None,
+                None,
+                ToolbarPaintOptions { valign },
+            );
+            assert_eq!(cell_char(&buf, 0, 0), '[', "valign={valign:?}");
+        }
+    }
+
+    #[test]
+    fn toolbar_valign_defaults_to_top_when_omitted_from_serde() {
+        // Round-trip serde test (issue #260's test plan): an object
+        // that omits `valign` entirely must deserialise to `Top`, not
+        // an error or some other variant. `ToolbarVAlign` isn't
+        // embedded in `Toolbar` itself (see `ToolbarPaintOptions`'s
+        // doc for why), so this round-trips the enum directly via a
+        // throwaway wrapper — the same shape a future serializable
+        // paint-options host would use.
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            valign: ToolbarVAlign,
+        }
+        let w: Wrapper = serde_json::from_str("{}").unwrap();
+        assert_eq!(w.valign, ToolbarVAlign::Top);
+
+        // Serialises back to a tagged string the same wrapper can
+        // round-trip.
+        let json = serde_json::to_string(&ToolbarVAlign::Bottom).unwrap();
+        let back: ToolbarVAlign = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ToolbarVAlign::Bottom);
     }
 
     #[test]
@@ -494,7 +695,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         let r = layout.visible_items[0].bounds;
         // Click in each row of the button bounds — every row should
         // resolve to the button.
@@ -517,7 +726,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         // The │ glyph should appear on every row at column 1.
         for y in 0..area.height {
             assert_eq!(cell_char(&buf, 1, y), '│', "row {y} missing pipe");
@@ -547,7 +764,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         assert_eq!(layout.visible_items[0].bounds.width, 5.0);
         // Painted: `[ X ]`
         assert_eq!(cell_char(&buf, 0, 0), '[');
@@ -578,7 +803,15 @@ mod tests {
             bg: None,
             focused_index: None,
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut buf,
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
         assert_eq!(layout.visible_items[0].bounds.width, 9.0);
     }

@@ -2496,6 +2496,67 @@ fn toolbar_click_still_hits_reset_after_the_nerd_glyph_swap() {
     );
 }
 
+/// Issue #260: `v` cycles the toolbar's `ToolbarVAlign` Top → Center →
+/// Bottom → Top. `toolbar_app`'s slot is reserved at 3 rows precisely so
+/// this is observable — the painted row of "Pause" must move down, then
+/// down again, then back to where it started. No hardcoded coordinates:
+/// every assertion locates "Pause" fresh via `find_bounds`.
+#[test]
+fn toolbar_v_cycles_valign_and_moves_the_button_row() {
+    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+
+    let top_y = driver
+        .find_bounds("Pause")
+        .unwrap_or_else(|| panic!("Pause button must be visible:\n{}", driver.screen()))
+        .y;
+
+    driver.type_char('v');
+    assert!(
+        driver.screen_contains("valign:Center"),
+        "status line should name the new alignment:\n{}",
+        driver.screen()
+    );
+    let center_y = driver
+        .find_bounds("Pause")
+        .unwrap_or_else(|| panic!("Pause button must stay visible:\n{}", driver.screen()))
+        .y;
+    assert!(
+        center_y > top_y,
+        "Center should paint lower than Top (top_y={top_y}, center_y={center_y})"
+    );
+
+    driver.type_char('v');
+    assert!(
+        driver.screen_contains("valign:Bottom"),
+        "status line should name the new alignment:\n{}",
+        driver.screen()
+    );
+    let bottom_y = driver
+        .find_bounds("Pause")
+        .unwrap_or_else(|| panic!("Pause button must stay visible:\n{}", driver.screen()))
+        .y;
+    assert!(
+        bottom_y > center_y,
+        "Bottom should paint lower than Center (center_y={center_y}, bottom_y={bottom_y})"
+    );
+
+    // Wraps back to Top.
+    driver.type_char('v');
+    assert!(
+        driver.screen_contains("valign:Top"),
+        "status line should name the new alignment:\n{}",
+        driver.screen()
+    );
+    let wrapped_y = driver
+        .find_bounds("Pause")
+        .unwrap_or_else(|| panic!("Pause button must stay visible:\n{}", driver.screen()))
+        .y;
+    assert_eq!(
+        wrapped_y, top_y,
+        "cycling back to Top should repaint at the original row"
+    );
+}
+
 /// Pressing `f` rebuilds the controller via `from_layout`, producing a
 /// 3-pane mixed H/V tree (left | top-right / bottom-right).
 ///

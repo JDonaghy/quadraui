@@ -96,6 +96,48 @@ pub struct Toolbar {
     pub focused_index: Option<usize>,
 }
 
+/// Vertical alignment of button/label text within a toolbar slot taller
+/// than one text row (issue #260).
+///
+/// On a 1-row slot every variant resolves to the same painted position,
+/// so this is purely a multi-row concern — see each rasteriser's
+/// `text_row`/`ty` resolution (`tui::toolbar::tui_text_row`,
+/// [`native_surface_paint::paint`]) for the exact per-backend formula.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ToolbarVAlign {
+    /// (default) Text on the top row of the slot. Padding below.
+    #[default]
+    Top,
+    /// Text vertically centred. For even heights, the row/offset above
+    /// centre wins (matches the pre-#260 TUI arithmetic this variant
+    /// preserves byte-for-byte).
+    Center,
+    /// Text on the bottom row of the slot. Padding above.
+    Bottom,
+}
+
+/// Per-call paint options for [`Toolbar`] rasterisers that don't have a
+/// home directly on the [`Toolbar`] snapshot itself.
+///
+/// `Toolbar` is one of the all-`pub`-field paint-time snapshots both
+/// known downstream consumers build with **exhaustive struct
+/// literals** — no `..base`, no `..Default::default()` (six such
+/// literals: four in `coord-tui`, two in `vimcode`; see
+/// `quadraui/tests/downstream_struct_literals.rs` and this file's own
+/// [`ToolbarIcons`] doc for the two previous times this exact class of
+/// struct hit the same wall, #833/#913). Issue #260 originally proposed
+/// `valign` as a new field directly on `Toolbar`; growing its field
+/// list would break every one of those six call sites with `E0063`.
+/// A small, independently-growable options struct — the same escape
+/// hatch [`crate::primitives::editor::EditorPaintOptions`] uses for
+/// `Editor` — sidesteps that, and can gain more fields later for free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolbarPaintOptions {
+    /// Vertical alignment of button/label text within the toolbar's
+    /// slot. Only visible when the slot is taller than one text row.
+    pub valign: ToolbarVAlign,
+}
+
 /// One item in a [`Toolbar`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolbarButton {
@@ -438,6 +480,26 @@ pub fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> S
     s
 }
 
+/// Resolve the y-offset (px/DIPs) at which text of `content_height`
+/// should paint within a slot starting at `slot_y` with `slot_height`,
+/// per `valign` (issue #260). Shared by every pixel-unit rasteriser via
+/// [`native_surface_paint::paint`] so GTK / macOS / Win-GUI agree
+/// exactly. TUI's cell-grid math is its own
+/// (`tui::toolbar::tui_text_row`) since a cell is already quantized —
+/// folding it into this `f32` formula would just re-round it back.
+pub fn valign_offset_y(
+    valign: ToolbarVAlign,
+    slot_y: f32,
+    slot_height: f32,
+    content_height: f32,
+) -> f32 {
+    match valign {
+        ToolbarVAlign::Top => slot_y,
+        ToolbarVAlign::Center => slot_y + (slot_height - content_height) / 2.0,
+        ToolbarVAlign::Bottom => slot_y + (slot_height - content_height),
+    }
+}
+
 /// Compute the pixel/DIP width of a single toolbar item via `measure`.
 ///
 /// This is the **single** button-measure formula for every pixel
@@ -583,7 +645,9 @@ impl Toolbar {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{action_text, Toolbar, ToolbarButton, ToolbarLayout};
+    use super::{
+        action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarLayout, ToolbarPaintOptions,
+    };
     use crate::event::{Point, Rect};
     use crate::native_surface::NativeSurface;
     use crate::theme::Theme;
@@ -597,7 +661,9 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Toolbar`] at its caller-resolved `layout` onto
     /// `surface`. `hovered_id`/`pressed_id` select the live interaction
     /// state; see this module's own doc table for the exact
-    /// fg/bg-per-state contract every backend shares.
+    /// fg/bg-per-state contract every backend shares. `options.valign`
+    /// resolves where text paints within a slot taller than one text
+    /// row (issue #260) — see [`valign_offset_y`].
     pub(crate) fn paint(
         bar: &Toolbar,
         layout: &ToolbarLayout,
@@ -605,6 +671,7 @@ pub(crate) mod native_surface_paint {
         theme: &Theme,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
+        options: ToolbarPaintOptions,
     ) {
         if layout.bar_bounds.width <= 0.0 || layout.bar_bounds.height <= 0.0 {
             return;
@@ -675,7 +742,7 @@ pub(crate) mod native_surface_paint {
                     let text = action_text(label, icon.as_deref(), key_hint.as_deref());
                     let (tw, th) = surface.surface_measure_text(&text);
                     let tx = item.x + (item.width - tw) / 2.0;
-                    let ty = item.y + (item.height - th) / 2.0;
+                    let ty = valign_offset_y(options.valign, item.y, item.height, th);
                     surface.surface_draw_text_run(
                         Rect::new(tx, ty, tw.max(0.0), th.max(0.0)),
                         &text,
@@ -695,7 +762,7 @@ pub(crate) mod native_surface_paint {
                 ToolbarButton::Label { text, fg } => {
                     let color = fg.unwrap_or(theme.muted_fg);
                     let (tw, th) = surface.surface_measure_text(text);
-                    let ty = item.y + (item.height - th) / 2.0;
+                    let ty = valign_offset_y(options.valign, item.y, item.height, th);
                     surface.surface_draw_text_run(
                         Rect::new(item.x, ty, tw.max(0.0), th.max(0.0)),
                         text,
@@ -994,6 +1061,53 @@ mod tests {
         };
         let w = measure_button(&FakeMeasure, &btn);
         assert_eq!(w, 36.0);
+    }
+
+    // ── #260: `ToolbarVAlign` / `valign_offset_y` ───────────────────────
+
+    #[test]
+    fn valign_offset_y_top_ignores_slot_height() {
+        assert_eq!(valign_offset_y(ToolbarVAlign::Top, 10.0, 40.0, 12.0), 10.0);
+    }
+
+    #[test]
+    fn valign_offset_y_center_splits_remaining_space_evenly() {
+        // slot_height=40, content_height=12 → 28px left over, 14px above.
+        assert_eq!(
+            valign_offset_y(ToolbarVAlign::Center, 10.0, 40.0, 12.0),
+            10.0 + 14.0
+        );
+    }
+
+    #[test]
+    fn valign_offset_y_bottom_flushes_content_to_the_end_of_the_slot() {
+        assert_eq!(
+            valign_offset_y(ToolbarVAlign::Bottom, 10.0, 40.0, 12.0),
+            10.0 + 28.0
+        );
+    }
+
+    #[test]
+    fn valign_offset_y_every_variant_agrees_on_a_one_row_slot() {
+        // slot_height == content_height: no room to move, every variant
+        // resolves to the same offset (`ToolbarVAlign`'s own doc).
+        for valign in [
+            ToolbarVAlign::Top,
+            ToolbarVAlign::Center,
+            ToolbarVAlign::Bottom,
+        ] {
+            assert_eq!(
+                valign_offset_y(valign, 5.0, 20.0, 20.0),
+                5.0,
+                "valign={valign:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn toolbar_valign_defaults_to_top() {
+        assert_eq!(ToolbarVAlign::default(), ToolbarVAlign::Top);
+        assert_eq!(ToolbarPaintOptions::default().valign, ToolbarVAlign::Top);
     }
 
     #[test]

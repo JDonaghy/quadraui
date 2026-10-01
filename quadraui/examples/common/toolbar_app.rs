@@ -13,6 +13,11 @@
 //!   a glyph + ASCII fallback pair in a [`ToolbarIcons`] table, baked into
 //!   the painted `Toolbar` via `ToolbarIcons::apply`. "Continue" and
 //!   "Pause" register nothing, so they paint their own icon either way.
+//! - **Multi-row `valign`** (issue #260): the toolbar slot is reserved at
+//!   3 rows so `v` can cycle [`ToolbarVAlign`] through `Top` → `Center` →
+//!   `Bottom` and visually confirm all three — `Top`'s row 0 + padding
+//!   below, `Center`'s pre-#260 middle row, `Bottom`'s padding above +
+//!   last row.
 //!
 //! Controls:
 //! - Click an action button       fire it
@@ -20,11 +25,13 @@
 //! - Enter / Space                activate the focused button
 //! - 1 / 2 / 3 / 4               keyboard shortcuts for the four enabled actions
 //! - n                           toggle Nerd-Font glyphs vs ASCII fallbacks
+//! - v                           cycle toolbar text vertical alignment (#260)
 //! - q / Esc                     quit
 
 use quadraui::{
     AppLogic, Backend, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, UiEvent, WidgetId,
+    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarPaintOptions,
+    ToolbarVAlign, UiEvent, WidgetId,
 };
 
 pub struct ToolbarApp {
@@ -53,6 +60,9 @@ pub struct ToolbarApp {
     /// [`Self::icons`]. The `n` key flips it so the demo shows both
     /// halves of every registered [`Icon`] pair without restarting.
     nerd_fonts: bool,
+    /// Vertical alignment of the toolbar's button/label text within its
+    /// (3-row) slot — issue #260. `v` cycles this Top → Center → Bottom.
+    valign: ToolbarVAlign,
 }
 
 impl ToolbarApp {
@@ -64,7 +74,17 @@ impl ToolbarApp {
             interaction: InteractionState::new(),
             focused_index: None,
             nerd_fonts: false,
+            valign: ToolbarVAlign::Top,
         }
+    }
+
+    /// Cycle [`Self::valign`] Top → Center → Bottom → Top (the 'v' key).
+    fn cycle_valign(&mut self) {
+        self.valign = match self.valign {
+            ToolbarVAlign::Top => ToolbarVAlign::Center,
+            ToolbarVAlign::Center => ToolbarVAlign::Bottom,
+            ToolbarVAlign::Bottom => ToolbarVAlign::Top,
+        };
     }
 
     /// Nerd-Font glyph + ASCII fallback pairs for two of the buttons
@@ -174,7 +194,7 @@ impl ToolbarApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " n=nerd icons  q=quit ".into(),
+                text: format!(" n=nerd icons  v=valign:{:?}  q=quit ", self.valign),
                 fg: Color::rgb(200, 200, 200),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -183,13 +203,19 @@ impl ToolbarApp {
         }
     }
 
+    /// Reserved height of the toolbar slot, in rows. 3 rows (not 1) so
+    /// `v` cycling [`ToolbarVAlign`] (#260) actually moves the painted
+    /// button row visibly instead of every variant collapsing onto the
+    /// same single row.
+    const TOOLBAR_ROWS: f32 = 3.0;
+
     /// Layout rect of the toolbar inside the viewport. Shared between
     /// `render` (paint) and `handle` (hit-test) so paint and click
     /// consume the same coordinates — the source-of-truth contract.
     fn toolbar_rect(backend: &dyn Backend) -> Rect {
         let viewport = backend.viewport();
         let lh = backend.line_height();
-        Rect::new(0.0, lh, viewport.width, lh)
+        Rect::new(0.0, lh, viewport.width, lh * Self::TOOLBAR_ROWS)
     }
 
     fn dispatch(&mut self, id: &WidgetId) {
@@ -327,7 +353,14 @@ impl AppLogic for ToolbarApp {
         // Toolbar in the second row.
         let rect = Self::toolbar_rect(backend);
         let bar = self.resolved_toolbar(backend);
-        let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
+        let _ = backend.draw_toolbar_interactive(
+            rect,
+            &bar,
+            &self.interaction,
+            ToolbarPaintOptions {
+                valign: self.valign,
+            },
+        );
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -414,6 +447,16 @@ impl AppLogic for ToolbarApp {
                     "Nerd-Font icons {}",
                     if self.nerd_fonts { "on" } else { "off" }
                 );
+                Reaction::Redraw
+            }
+
+            // ── v: cycle toolbar text vertical alignment (issue #260) ──────
+            UiEvent::KeyPressed {
+                key: Key::Char('v'),
+                ..
+            } => {
+                self.cycle_valign();
+                self.last_message = format!("Toolbar valign: {:?}", self.valign);
                 Reaction::Redraw
             }
 

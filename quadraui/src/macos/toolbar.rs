@@ -19,6 +19,7 @@ use core_text::font::CTFont;
 
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -44,6 +45,9 @@ pub fn mac_toolbar_layout(
 /// Paint `bar` into `(x, y, w, h)` on `ctx`. Returns the resolved
 /// layout for host click dispatch.
 ///
+/// `options.valign` (issue #260) resolves where button/label text
+/// paints within a slot taller than one line.
+///
 /// # Safety
 ///
 /// `ctx` must be a valid `CGContextRef` borrowed for the duration of
@@ -61,6 +65,7 @@ pub unsafe fn draw_toolbar(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
+    options: ToolbarPaintOptions,
 ) -> ToolbarLayout {
     let layout = mac_toolbar_layout(bar, font, x, y, w, h);
 
@@ -81,7 +86,15 @@ pub unsafe fn draw_toolbar(
         ctx,
         font: Some(font),
     };
-    native_surface_paint::paint(bar, &layout, &mut surface, theme, hovered_id, pressed_id);
+    native_surface_paint::paint(
+        bar,
+        &layout,
+        &mut surface,
+        theme,
+        hovered_id,
+        pressed_id,
+        options,
+    );
 
     super::backend::ns_pop_clip(ctx);
     layout
@@ -149,6 +162,25 @@ mod tests {
     /// comment). This lets tests confirm painted buttons and the
     /// returned layout still agree at a non-zero origin.
     fn paint_via_backend_at(bar: &Toolbar, x: f32, y: f32) -> (BitmapSurface, ToolbarLayout) {
+        paint_via_backend_with_options(
+            bar,
+            x,
+            y,
+            crate::primitives::toolbar::ToolbarPaintOptions::default(),
+        )
+    }
+
+    /// Like [`paint_via_backend_at`] but with an explicit
+    /// [`crate::primitives::toolbar::ToolbarPaintOptions`] — issue #260's
+    /// `valign` multi-row paint tests use this to paint the same bar at
+    /// the same slot once per [`crate::primitives::toolbar::ToolbarVAlign`]
+    /// variant.
+    fn paint_via_backend_with_options(
+        bar: &Toolbar,
+        x: f32,
+        y: f32,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
+    ) -> (BitmapSurface, ToolbarLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
@@ -162,6 +194,7 @@ mod tests {
                 QRect::new(x, y, W as f32 - x, H as f32 - y),
                 bar,
                 &crate::InteractionState::new(),
+                options,
             );
             *layout.borrow_mut() = Some(l);
         });
@@ -308,6 +341,58 @@ mod tests {
                 theme.selected_bg.b
             ),
             "highlight fill should be solid away from the corners and the label text",
+        );
+    }
+
+    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
+
+    /// Multi-row paint test (issue #260's test plan): paint the same bar
+    /// into the same tall slot once per [`crate::primitives::toolbar::ToolbarVAlign`]
+    /// variant and confirm the row of the first painted (non-background)
+    /// pixel moves accordingly — `Top` paints highest, `Bottom` lowest.
+    #[test]
+    fn multi_row_valign_moves_painted_text_vertically() {
+        use crate::primitives::toolbar::ToolbarVAlign;
+
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:go"),
+                label: "Go".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+        let theme = Theme::default();
+
+        let first_ink_row = |valign: ToolbarVAlign| -> u32 {
+            let (surface, _layout) = paint_via_backend_with_options(
+                &bar,
+                0.0,
+                0.0,
+                crate::primitives::toolbar::ToolbarPaintOptions { valign },
+            );
+            for y in 0..H {
+                for x in 0..W {
+                    let (r, g, b, _) = surface.pixel(x, y);
+                    if (r, g, b) != (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b) {
+                        return y;
+                    }
+                }
+            }
+            panic!("no ink painted for valign {valign:?}");
+        };
+
+        let top_row = first_ink_row(ToolbarVAlign::Top);
+        let bottom_row = first_ink_row(ToolbarVAlign::Bottom);
+        assert!(
+            top_row < bottom_row,
+            "Top should paint higher than Bottom (top={top_row}, bottom={bottom_row})"
         );
     }
 }

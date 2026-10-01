@@ -2110,7 +2110,17 @@ impl Backend for MacBackend {
                 // SAFETY: ctx is non-null inside the frame scope.
                 unsafe {
                     super::toolbar::draw_toolbar(
-                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                        ctx,
+                        &font,
+                        toolbar_x,
+                        row_y,
+                        toolbar_w,
+                        row_h,
+                        toolbar,
+                        &theme,
+                        None,
+                        None,
+                        crate::primitives::toolbar::ToolbarPaintOptions::default(),
                     );
                 }
             }
@@ -3229,6 +3239,7 @@ impl Backend for MacBackend {
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
         interaction: &crate::interaction::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         let ctx = self.current_cg();
@@ -3253,6 +3264,7 @@ impl Backend for MacBackend {
                 &theme,
                 hovered_id,
                 pressed_id,
+                options,
             )
         }
     }

@@ -371,6 +371,7 @@ fn draw_form_body(
                 theme,
                 None,
                 None,
+                crate::primitives::toolbar::ToolbarPaintOptions::default(),
             );
             layout.set_attributes(None);
         }

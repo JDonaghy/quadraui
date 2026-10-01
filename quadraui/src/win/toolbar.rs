@@ -42,6 +42,7 @@ use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
+    ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -66,7 +67,9 @@ pub fn win_toolbar_layout(dwrite: &DWrite, rect: Rect, bar: &Toolbar) -> Toolbar
 }
 
 /// Draw a [`Toolbar`] into `rect` (DIPs) on `target`. Returns the
-/// resolved [`ToolbarLayout`] for host click dispatch.
+/// resolved [`ToolbarLayout`] for host click dispatch. `options.valign`
+/// (issue #260) resolves where button/label text paints within a slot
+/// taller than one line.
 pub fn draw_toolbar(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -74,6 +77,7 @@ pub fn draw_toolbar(
     bar: &Toolbar,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
+    options: ToolbarPaintOptions,
 ) -> ToolbarLayout {
     let layout = win_toolbar_layout(dwrite, rect, bar);
 
@@ -86,7 +90,15 @@ pub fn draw_toolbar(
         target,
         dwrite: Some(dwrite),
     };
-    native_surface_paint::paint(bar, &layout, &mut surface, &theme, hovered_id, pressed_id);
+    native_surface_paint::paint(
+        bar,
+        &layout,
+        &mut surface,
+        &theme,
+        hovered_id,
+        pressed_id,
+        options,
+    );
 
     layout
 }
@@ -133,7 +145,15 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_toolbar(target, &dwrite, rect, bar, None, None);
+                draw_toolbar(
+                    target,
+                    &dwrite,
+                    rect,
+                    bar,
+                    None,
+                    None,
+                    ToolbarPaintOptions::default(),
+                );
             })
             .map(|_| win_toolbar_layout(&dwrite, rect, bar))
             .expect("paint toolbar")
@@ -248,7 +268,15 @@ mod tests {
 
         let painted = surface
             .paint(|target| {
-                draw_toolbar(target, &dwrite, rect, &bar, None, None);
+                draw_toolbar(
+                    target,
+                    &dwrite,
+                    rect,
+                    &bar,
+                    None,
+                    None,
+                    ToolbarPaintOptions::default(),
+                );
             })
             .map(|_| win_toolbar_layout(&dwrite, rect, &bar))
             .expect("paint");
@@ -286,7 +314,15 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_toolbar(target, &dwrite, rect, &bar, None, None);
+                draw_toolbar(
+                    target,
+                    &dwrite,
+                    rect,
+                    &bar,
+                    None,
+                    None,
+                    ToolbarPaintOptions::default(),
+                );
             })
             .expect("paint toolbar");
         let layout = win_toolbar_layout(&dwrite, rect, &bar);
@@ -343,6 +379,70 @@ mod tests {
                 theme.selected_bg.b
             ),
             "highlight fill should be solid away from the corners and the label text",
+        );
+    }
+
+    // ── #260: `ToolbarVAlign` ────────────────────────────────────────────
+
+    /// Multi-row paint test (issue #260's test plan): paint the same bar
+    /// into the same tall slot once per [`crate::primitives::toolbar::ToolbarVAlign`]
+    /// variant and confirm the row of the first painted (non-background)
+    /// pixel moves accordingly — `Top` paints highest, `Bottom` lowest.
+    #[test]
+    fn multi_row_valign_moves_painted_text_vertically() {
+        use crate::primitives::toolbar::ToolbarVAlign;
+
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:go"),
+                label: "Go".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+        let theme = Theme::default();
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+        let first_ink_row = |valign: ToolbarVAlign| -> u32 {
+            let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+            surface
+                .paint(|target| {
+                    draw_toolbar(
+                        target,
+                        &dwrite,
+                        rect,
+                        &bar,
+                        None,
+                        None,
+                        ToolbarPaintOptions { valign },
+                    );
+                })
+                .expect("paint toolbar");
+            for y in 0..H as u32 {
+                for x in 0..W as u32 {
+                    let px = surface.pixel_at(x, y);
+                    if (px.r, px.g, px.b)
+                        != (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b)
+                    {
+                        return y;
+                    }
+                }
+            }
+            panic!("no ink painted for valign {valign:?}");
+        };
+
+        let top_row = first_ink_row(ToolbarVAlign::Top);
+        let bottom_row = first_ink_row(ToolbarVAlign::Bottom);
+        assert!(
+            top_row < bottom_row,
+            "Top should paint higher than Bottom (top={top_row}, bottom={bottom_row})"
         );
     }
 }

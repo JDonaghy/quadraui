@@ -116,7 +116,7 @@ use crate::primitives::text_input::{TextInput, TextInputLayout};
 #[allow(deprecated)]
 use crate::primitives::toast::ToastStack;
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
-use crate::primitives::toolbar::{Toolbar, ToolbarLayout};
+use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::{Color, WidgetId};
@@ -3526,6 +3526,14 @@ pub trait Backend: sealed::Sealed {
     /// `layout.hit_test(x, y)` without re-deriving metrics. Same
     /// coordinate frame as [`Self::toolbar_layout`] (ABSOLUTE).
     ///
+    /// `options.valign` (issue #260) resolves where button/label text
+    /// paints within a slot taller than one text row — pass
+    /// [`ToolbarPaintOptions::default()`] for the pre-#260 behaviour
+    /// (`ToolbarVAlign::Top`, byte-identical to every existing caller
+    /// on a 1-row slot). `Toolbar` itself can't carry this: both known
+    /// downstream consumers build it with exhaustive struct literals —
+    /// see [`ToolbarPaintOptions`]'s own doc.
+    ///
     /// This is the implemented method; the positional
     /// [`Self::draw_toolbar`] is a deprecated shim over it.
     fn draw_toolbar_interactive(
@@ -3533,6 +3541,7 @@ pub trait Backend: sealed::Sealed {
         rect: Rect,
         bar: &Toolbar,
         interaction: &InteractionState,
+        options: ToolbarPaintOptions,
     ) -> ToolbarLayout;
 
     /// Draw a [`Toolbar`] with hover/pressed supplied positionally.
@@ -3546,7 +3555,9 @@ pub trait Backend: sealed::Sealed {
     /// `CLAUDE.md` rule 3's two-PR deprecate-then-remove protocol: both
     /// `coord-tui` and `vimcode` call this method directly today (see
     /// the PR's *Downstream impact* section), so removing it outright
-    /// would break their builds on the next `develop` pull.
+    /// would break their builds on the next `develop` pull. Always
+    /// forwards [`ToolbarPaintOptions::default()`] — callers that need
+    /// `valign` go through [`Self::draw_toolbar_interactive`] directly.
     #[deprecated(
         since = "0.0.1",
         note = "use `draw_toolbar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
@@ -3559,7 +3570,7 @@ pub trait Backend: sealed::Sealed {
         pressed_id: Option<&WidgetId>,
     ) -> ToolbarLayout {
         let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
-        self.draw_toolbar_interactive(rect, bar, &interaction)
+        self.draw_toolbar_interactive(rect, bar, &interaction, ToolbarPaintOptions::default())
     }
 
     /// Compute toolbar layout without painting. Hosts call this after

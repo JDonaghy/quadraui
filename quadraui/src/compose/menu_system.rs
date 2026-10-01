@@ -1192,6 +1192,7 @@ mod tests {
             _r: Rect,
             _b: &crate::primitives::toolbar::Toolbar,
             _interaction: &crate::interaction::InteractionState,
+            _options: crate::primitives::toolbar::ToolbarPaintOptions,
         ) -> crate::primitives::toolbar::ToolbarLayout {
             unimplemented!()
         }

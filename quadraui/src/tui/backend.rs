@@ -3313,6 +3313,7 @@ impl Backend for TuiBackend {
         rect: QRect,
         bar: &crate::primitives::toolbar::Toolbar,
         interaction: &crate::interaction::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -3330,6 +3331,7 @@ impl Backend for TuiBackend {
             &theme,
             interaction.hovered(),
             interaction.pressed(),
+            options,
         )
     }
 
@@ -4256,6 +4258,7 @@ mod tests {
             r: QRect,
             bar: &crate::primitives::toolbar::Toolbar,
             _interaction: &crate::interaction::InteractionState,
+            _options: crate::primitives::toolbar::ToolbarPaintOptions,
         ) -> crate::primitives::toolbar::ToolbarLayout {
             bar.layout(r.x, r.y, r.width, r.height, |_| {
                 crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)

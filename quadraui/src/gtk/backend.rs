@@ -2519,7 +2519,17 @@ impl Backend for GtkBackend {
             let toolbar_w = row_x + row_w - toolbar_x;
             if toolbar_w > 0.0 {
                 crate::gtk::toolbar::draw_toolbar(
-                    cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
+                    cr,
+                    layout,
+                    toolbar_x,
+                    row_y,
+                    toolbar_w,
+                    row_h,
+                    toolbar,
+                    &theme,
+                    None,
+                    None,
+                    crate::primitives::toolbar::ToolbarPaintOptions::default(),
                 );
                 layout.set_attributes(None);
             }
@@ -4340,6 +4350,7 @@ impl Backend for GtkBackend {
         rect: QRect,
         bar: &crate::primitives::toolbar::Toolbar,
         interaction: &crate::interaction::InteractionState,
+        options: crate::primitives::toolbar::ToolbarPaintOptions,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         let theme = self.current_theme;
@@ -4368,6 +4379,7 @@ impl Backend for GtkBackend {
             &theme,
             hovered_id,
             pressed_id,
+            options,
         );
         pango_layout.set_font_description(saved_font.as_ref());
         layout
@@ -7878,8 +7890,13 @@ mod tests {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_items[0]
+                b.draw_toolbar_interactive(
+                    rect,
+                    &bar,
+                    &crate::InteractionState::new(),
+                    crate::primitives::toolbar::ToolbarPaintOptions::default(),
+                )
+                .visible_items[0]
                     .bounds
                     .width
             })
@@ -7933,8 +7950,13 @@ mod tests {
         Backend::set_ui_font(&mut backend, "Sans 40");
 
         let painted = backend.enter_frame_scope(&cr, &layout, |b| {
-            b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
-                .visible_items[0]
+            b.draw_toolbar_interactive(
+                rect,
+                &bar,
+                &crate::InteractionState::new(),
+                crate::primitives::toolbar::ToolbarPaintOptions::default(),
+            )
+            .visible_items[0]
                 .bounds
         });
         // Outside the frame scope — the click-time path.
