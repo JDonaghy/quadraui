@@ -90,16 +90,14 @@ use crate::undo::UndoStack;
 /// own CI if one is added, instead of the break surfacing later in a
 /// consumer's build.
 ///
-/// **quadraui#1108 (phase 1 of quadraui#1251):** every field below has a
+/// Every field below has a
 /// matching `with_*` builder on [`TextInput::new`], and the type
 /// implements `Default`, so a consumer can already stop writing an
 /// exhaustive struct literal — construct with `TextInput::new(id)` /
 /// `TextInput::default()` and chain `with_*` instead. `#[non_exhaustive]`
 /// itself is **not** applied yet; it is gated behind the off-by-default
 /// `strict-descriptors` feature (`cfg_attr` below) so a consumer can
-/// prove its own migration is complete by building with that feature on,
-/// before quadraui#1251 makes it unconditional — the actual breaking
-/// change — once `vimcode`/`coord-tui` have migrated.
+/// prove its own migration is complete by building with that feature on.
 #[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {
@@ -208,8 +206,8 @@ impl TextInput {
 }
 
 /// Same shape as [`TextInput::new`] with an empty `WidgetId` — the
-/// `new(required…)`/`with_*`/`Default` trio quadraui#1108 adds so a
-/// consumer can build a `TextInput` without an exhaustive struct literal.
+/// `new(required…)`/`with_*`/`Default` trio that lets a
+/// consumer build a `TextInput` without an exhaustive struct literal.
 impl Default for TextInput {
     fn default() -> Self {
         Self::new(WidgetId::new(String::new()))
@@ -1986,7 +1984,7 @@ mod tests {
         );
     }
 
-    // ── quadraui#1108: `new`/`with_*`/`Default` builders ───────────────
+    // ── `new`/`with_*`/`Default` builders ──────────────────────────────
 
     /// `Default::default()` matches `TextInput::new` with an empty id —
     /// the `new(required…)`/`with_*`/`Default` trio only differs in what

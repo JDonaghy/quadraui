@@ -78,12 +78,12 @@ fn default_true() -> bool {
 /// and `vimcode` reproduce with real exhaustive literals from their own
 /// source.
 ///
-/// **quadraui#1108 (phase 1 of quadraui#1251):** [`Toolbar::new`] plus a
+/// [`Toolbar::new`] plus a
 /// `with_*` builder per field below, and a `Default` impl, so a consumer
 /// can already stop writing an exhaustive literal. `#[non_exhaustive]`
 /// itself is gated behind the off-by-default `strict-descriptors`
-/// feature until quadraui#1251 makes it unconditional, once
-/// `vimcode`/`coord-tui` have migrated to the constructors above.
+/// feature, which a consumer builds with to prove it uses no
+/// exhaustive literals.
 #[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toolbar {
@@ -557,7 +557,7 @@ pub fn measure_button(
 }
 
 /// An empty toolbar with an empty `WidgetId` — the `new(required…)`/
-/// `with_*`/`Default` trio quadraui#1108 adds so a consumer can build a
+/// `with_*`/`Default` trio that lets a consumer build a
 /// `Toolbar` without an exhaustive struct literal.
 impl Default for Toolbar {
     fn default() -> Self {
@@ -1343,7 +1343,7 @@ mod tests {
         );
     }
 
-    // ── quadraui#1108: `new`/`with_*`/`Default` builders ───────────────
+    // ── `new`/`with_*`/`Default` builders ──────────────────────────────
 
     /// `Default::default()` matches `Toolbar::new` with an empty id — the
     /// `new(required…)`/`with_*`/`Default` trio only differs in what `id`

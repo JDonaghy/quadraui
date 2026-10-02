@@ -418,13 +418,12 @@ pub struct EditorLine {
 /// `quadraui/tests/downstream_struct_literals.rs`, transcribed from
 /// `vimcode`'s only call site.
 ///
-/// **quadraui#1108 (phase 1 of quadraui#1251):** [`Editor::new`] plus a
+/// [`Editor::new`] plus a
 /// `with_*` builder per field below (besides `id`/`rect`, which `new`
 /// already requires), and a `Default` impl, so a consumer can already
 /// stop writing an exhaustive literal. `#[non_exhaustive]` itself is
-/// gated behind the off-by-default `strict-descriptors` feature until
-/// quadraui#1251 makes it unconditional, once `vimcode`/`coord-tui` have
-/// migrated to the constructors above.
+/// gated behind the off-by-default `strict-descriptors` feature, which a
+/// consumer builds with to prove it uses no exhaustive literals.
 #[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Editor {
@@ -723,7 +722,7 @@ impl EditorLayout {
 
 /// An editor viewport with no content and every optional/overlay field at
 /// its empty default — the `new(required…)`/`with_*`/`Default` trio
-/// quadraui#1108 adds so a consumer can build an `Editor` without an
+/// that lets a consumer build an `Editor` without an
 /// exhaustive struct literal. `tabstop` defaults to `4` and
 /// `lightbulb_glyph` to `'!'`, matching [`default_lightbulb_glyph`] and
 /// every existing call site's convention — not derived-`Default`'s `0`
@@ -1687,7 +1686,7 @@ mod tests {
         assert_eq!((cols.start, cols.end), (0, 1));
     }
 
-    // ── quadraui#1108: `new`/`with_*`/`Default` builders ───────────────
+    // ── `new`/`with_*`/`Default` builders ──────────────────────────────
 
     /// `Default::default()` matches `Editor::new` with an empty id and a
     /// zero `Rect` — the `new(required…)`/`with_*`/`Default` trio only
