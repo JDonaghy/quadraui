@@ -2077,3 +2077,98 @@ Mechanically:
   need updating again if the header's shape changes further; it is a
   by-design brittleness the test itself already documented before this
   change, not a new one.
+
+---
+
+## D-014 — What may be GUI-only: every capability declares its TUI story (issue #1097)
+
+### Question
+
+Every design fork so far chose the terminal grid's convenience: a
+`line_height` of 1.0 rather than ~17, char-width layout, no canvas. The
+widget-model work (#1095) is about to add capabilities that have no
+obvious terminal form: an app-drawn `Canvas` (#1102), proportional text
+metrics (#1132), and animation. Each of those either drags GUI quality
+down to the grid, or is allowed to be GUI-only. Which is it?
+
+### Decision
+
+**The rule in `CLAUDE.md` ("TUI is not a second-class backend") governs,
+and this entry extends it to new capabilities.** A capability may only
+be truly GUI-only when it is *physically* absent on a terminal: a tray
+icon, a dock badge, an OS global shortcut. Everything else must work on
+TUI, and the crate owns the degrade, not the app.
+
+Every new capability therefore declares its **TUI story** as one of:
+
+| Story | Meaning |
+|---|---|
+| **full** | Same behaviour on TUI; only the look differs. |
+| **degrade** | Works on TUI at lower fidelity, behind the same call. The app does not branch on backend. |
+| **N/A** | Physically absent on a terminal. Reported through `BackendCaps` as `Unsupported`; the app must not *need* it to function. |
+
+The declaration goes in the capability's issue and its rustdoc. A PR
+adding a capability without one is incomplete.
+
+The three test cases:
+
+- **`Canvas` (#1102): degrade.** GUI backends rasterise the app's draw
+  calls in pixels. TUI rasterises the same calls into cells, using the
+  sub-cell packing `tui/braille.rs` already provides for `Chart` and
+  `Minimap`. One draw API; the app does not branch.
+- **Proportional text (#1132): degrade.** GUI `measure()` becomes
+  proportional. TUI `measure()` stays char-cell. Layout code consumes
+  `measure()` and must not assume monospace on GUI. The grid stops
+  being the GUI's ceiling, and TUI loses nothing.
+- **Animation: degrade.** Animation is time-driven presentation, never
+  function. On TUI it may run off the app's ticker, as `Spinner`
+  already does, or jump straight to its final state. A state the user can reach
+  only through an animation is a bug on every backend.
+
+### What this does NOT mean
+
+- It does not require pixel fidelity on TUI. "Works" means the user can
+  do the same thing, not that it looks the same.
+- It does not let interactive capabilities answer `Unsupported` on TUI.
+  N/A is for physical absence only, as `CLAUDE.md` already states.
+- It does not decide `Rect`'s unit contract. That is #1098, which this
+  entry unblocks but does not settle.
+
+---
+
+## D-015 — The web backend is shelved; NativeSurface reopens its design if it is revived (issue #785)
+
+### Question
+
+`docs/WEB_BACKEND_PROPOSAL.md` chose server-rendered semantic HTML (D7)
+for quadraweb: one hand-written HTML emitter per primitive, about 42.
+#785 then moved the paint half onto `NativeSurface`, which makes a
+pixel backend (wgpu, Skia, or an absolutely-positioned canvas in the
+browser) cost about 15 drawing verbs plus transport. #785 required the
+two plans to be reconciled before W1 (#320) starts.
+
+### Decision
+
+**Shelve the web backend.** Its original purpose was to run `CoordApp`
+on a phone over Tailscale. The React phone web app in code-coordinator
+(`coord/dashboard/webapp/`) already does that. The quadraweb milestone
+and its issues (#314–#318, #320–#324) are closed as superseded.
+
+If a web backend is ever revived, the two designs must be re-decided
+first, against this trade:
+
+| | Semantic HTML (D7) | Pixel canvas via `NativeSurface` |
+|---|---|---|
+| Cost | ~42 hand-written emitters | ~15 verbs plus transport |
+| Reflow | Genuine, CSS-driven | Server-side, like GTK |
+| Accessibility / text selection | Native DOM | None without extra work |
+| What it is | A web app | A GUI app in a browser tab |
+
+Neither is pre-chosen. W1 (#320) must not start without that decision.
+
+### What this does NOT mean
+
+- It does not withdraw `WEB_BACKEND_PROPOSAL.md`. It stays as the
+  record of the D7 reasoning, now marked shelved.
+- It does not affect `NativeSurface` itself, which stays the single
+  paint layer for GTK, macOS and Windows.
