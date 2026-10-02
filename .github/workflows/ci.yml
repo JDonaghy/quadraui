@@ -181,6 +181,28 @@ jobs:
             --fail-on-gap \
             --base "${{ github.event.pull_request.base.sha }}"
 
+  comment-lint:
+    # #1112: comments describe the code as it is; history (what it used to
+    # do, what a PR/reviewer said) belongs in CHANGELOG.md and the issue
+    # tracker, not inline (see CONTRIBUTING.md/CLAUDE.md's "Comment policy").
+    # `tools/comment_history_lint.py` counts `#\d+`-and-history-phrase
+    # comment lines per module and compares against
+    # `tools/comment_history_thresholds.json`, whose values are today's
+    # baseline per module — so this job is a ratchet, not a full-audit: it
+    # doesn't fail now, but it fails the instant a module's count climbs
+    # *above* its threshold, and each module's own mechanical-pass issue
+    # (#1243-#1249) lowers that module's number as part of its own PR,
+    # tightening the ceiling for good. No `--base`/delta logic needed here,
+    # unlike `example-coverage` above: the threshold file itself is the
+    # "what's already there" baseline, so this runs the same on `push` and
+    # `pull_request`.
+    name: Comment-history lint (ratchet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Comment-history lint
+        run: python3 tools/comment_history_lint.py
+
   tui:
     name: tui + win (build, test, clippy) — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

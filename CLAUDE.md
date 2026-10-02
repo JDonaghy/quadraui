@@ -266,6 +266,19 @@ turns a serialized lane into a rebase conflict.
 - `PascalCase` types, `snake_case` functions/vars.
 - Tests in `#[cfg(test)] mod tests` at file bottom.
 - Doc comments on public types/functions; `//!` module headers describe intent + invariants.
+- **Comment policy (#1112):** comments describe the code as it is now, not
+  its history. No "used to"/"no longer"/"before #123"/"this PR"/"the
+  reviewer" in `//`/`///`/`//!` comments — that narration belongs in
+  `CHANGELOG.md` and the issue tracker. An issue reference is fine when
+  it's load-bearing: a workaround whose *removal* is gated on that issue
+  closing (e.g. `// workaround for ratatui#123; remove once it lands`) is
+  describing a current constraint, not narrating a past one. See
+  `CONTRIBUTING.md`'s "Comment policy" section for the full worked example.
+  `tools/comment_history_lint.py` (CI job `comment-lint`) counts violations
+  per module against `tools/comment_history_thresholds.json`; it's a blunt
+  counter that can't tell load-bearing from narrating, so each module's
+  mechanical-pass issue (#1243-#1249) makes that call and ratchets its
+  threshold down.
 
 ## Commit conventions
 
