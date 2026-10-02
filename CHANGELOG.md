@@ -55,6 +55,19 @@ release time.
 
 ### Added
 
+- `TextInput::new`/`with_*`, `Toolbar::new`/`with_*`, `Editor::new`/`with_*`,
+  and a `Default` impl for all three (issue #1108, phase 1 of #1251) — every
+  field a consumer previously had to set via an exhaustive struct literal
+  (`tests/downstream_struct_literals.rs`'s guards) now has a chainable
+  builder too, so `vimcode`/`coord-tui` can migrate off literal construction
+  before the attribute below starts actually enforcing it. New
+  off-by-default `strict-descriptors` feature: applies `#[non_exhaustive]`
+  to these three descriptors via `cfg_attr`, purely so a consumer can prove
+  its own migration is complete by building with the feature on — it
+  changes nothing for anyone who doesn't opt in, and `tests/downstream_struct_literals.rs`'s
+  literal-construction guards keep passing under the default feature set.
+  #1251 is the follow-up that makes the attribute unconditional (the actual
+  breaking change) once both consumers have migrated.
 - `Backend::draw_status_bar_interactive_scaled` (issue #1045 item 2) — a
   per-call chrome-font-size override for one `StatusBar` paint, without
   perturbing the ambient `set_ui_font` state every other status bar (or

@@ -185,20 +185,19 @@ impl FormAllFieldsApp {
                 FormField {
                     id: WidgetId::new("toolbar"),
                     label: StyledText::plain("Toolbar"),
-                    kind: FieldKind::Toolbar(Toolbar {
-                        id: WidgetId::new("toolbar-field"),
-                        buttons: vec![ToolbarButton::Action {
-                            id: WidgetId::new("build"),
-                            label: "Buildaction".into(),
-                            icon: None,
-                            key_hint: None,
-                            enabled: true,
-                            is_active: false,
-                            tooltip: "Build the project".into(),
-                        }],
-                        bg: None,
-                        focused_index: None,
-                    }),
+                    kind: FieldKind::Toolbar(
+                        Toolbar::new(WidgetId::new("toolbar-field")).with_buttons(vec![
+                            ToolbarButton::Action {
+                                id: WidgetId::new("build"),
+                                label: "Buildaction".into(),
+                                icon: None,
+                                key_hint: None,
+                                enabled: true,
+                                is_active: false,
+                                tooltip: "Build the project".into(),
+                            },
+                        ]),
+                    ),
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,

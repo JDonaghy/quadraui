@@ -112,9 +112,8 @@ impl ToolbarApp {
     }
 
     fn toolbar(&self) -> Toolbar {
-        Toolbar {
-            id: WidgetId::new("demo:toolbar"),
-            buttons: vec![
+        Toolbar::new(WidgetId::new("demo:toolbar"))
+            .with_buttons(vec![
                 ToolbarButton::Action {
                     id: WidgetId::new("demo:continue"),
                     label: "Continue".into(),
@@ -176,11 +175,9 @@ impl ToolbarApp {
                         Color::rgb(220, 180, 80)
                     }),
                 },
-            ],
-            // `None` lets the backend pick its theme default (header_bg).
-            bg: None,
-            focused_index: self.focused_index,
-        }
+            ])
+            // `None` (the default) lets the backend pick its theme default (header_bg).
+            .with_focused_index(self.focused_index)
     }
 
     fn status_bar(&self) -> StatusBar {
