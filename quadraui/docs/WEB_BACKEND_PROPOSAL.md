@@ -9,8 +9,11 @@ First consumer + acceptance target: **claude-coordinator's `CoordApp`**,
 viewable and usable from a phone browser over Tailscale (no TLS, no
 external hosting).
 
-Status: **proposal**. Tracked by the `quadraweb` epic (#314); phases
-#315 (spike), #316 (MVP), #317 (adaptivity), #318 (polish).
+Status: **shelved** (2026-10-01, D-015 in `docs/decisions/DECISIONS.md`).
+The phone use case is covered by code-coordinator's React web app, and
+the quadraweb issues (#314–#318, #320–#324) are closed. If revived, the
+semantic-HTML choice below must be re-decided against a `NativeSurface`
+pixel backend first; D-015 records the trade.
 
 ---
 
