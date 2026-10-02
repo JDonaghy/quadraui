@@ -32,12 +32,12 @@
 //! `super::mod`'s `mod toast;` is no longer whole-module gated; see
 //! `backend.rs`'s module docs.
 
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::{pixel_toast_stack_layout, TextMeasure};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 use crate::theme::Theme;
 
 /// Compute a [`ToastOverlay`]'s layout without painting — the measurer twin

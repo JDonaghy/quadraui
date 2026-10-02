@@ -325,14 +325,6 @@ pub use tab_bar::{win_tab_bar_native_layout, win_tab_bar_native_layout_icons};
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
 pub use text_input::{draw_text_input, win_text_input_layout};
-// #861: `draw_toast_stack` is `#[deprecated]` — see
-// `toast::draw_toast_stack`'s doc for why the shim exists and why
-// re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use toast::draw_toast_stack;
 pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
 pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
