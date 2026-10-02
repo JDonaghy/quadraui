@@ -38,7 +38,7 @@ use crate::event::Rect;
 use crate::primitives::status_bar::{
     StatusSegmentMeasure, PIXEL_EDGE_INSET, PIXEL_SEGMENT_PADDING,
 };
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 use crate::theme::Theme;
 use crate::{StatusBar, StatusBarLayout};
 
