@@ -48,17 +48,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lib]
 
 [features]
-# Phase 1 of quadraui#1108/#1251: marks a small set of "paint-time
+# Marks a small set of "paint-time
 # snapshot" primitive descriptors (`TextInput`, `Toolbar`, `Editor` so
 # far) `#[non_exhaustive]` via `cfg_attr`, purely so a consumer can prove
 # its own migration off exhaustive struct literals is complete by
 # building with this feature on. Off by default — turning it on does
 # nothing to this crate's own public API surface for anyone who doesn't
-# opt in. quadraui#1251 is the follow-up that makes the attribute
-# unconditional (the actual breaking change), once `vimcode` and
-# `coord-tui` have migrated to the `new(..)`/`with_*`/`Default`
-# constructors this feature's descriptors also ship (additive, always
-# on, no feature needed). No dependency changes — this only toggles an
+# opt in. The `new(..)`/`with_*`/`Default` constructors these
+# descriptors ship are additive and always on, no feature needed. No dependency changes — this only toggles an
 # attribute, so it pulls in nothing new.
 strict-descriptors = []
 
