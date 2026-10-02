@@ -149,6 +149,45 @@ Scope is `quadraui` for library changes, `kubeui` / `kubeui-gtk` /
   headers describe the module's intent and invariants, not just what's
   in it.
 
+### Comment policy (#1112)
+
+Comments describe the code **as it is now** — not how it got there. Don't
+write "used to", "no longer", "before #123", "this PR", "the reviewer
+asked for", or similar in a `//`/`///`/`//!` comment. That history belongs
+in `CHANGELOG.md` and the issue tracker, which are the right place to look
+up *why* — a comment that narrates a past state goes stale the next time
+the code changes again, while the issue it cites doesn't.
+
+The one exception: an issue reference is **load-bearing** when the
+comment describes a *current* constraint whose expiry condition is that
+issue closing — e.g. a workaround that should be deleted once a dependency
+fixes its bug:
+
+```rust
+// Workaround for ratatui#123 (unreleased): Paragraph::wrap() doesn't
+// handle zero-width joiners. Remove this manual split once that lands.
+```
+
+That's fine, because it's still describing the code as it is *today* (a
+workaround, active, with a removal condition) — it just happens to name an
+issue. Compare the non-exception case, which narrates a change that
+already happened and is purely historical:
+
+```rust
+// Used to call foo() here, but changed to bar() after review in #123.
+```
+
+That line says nothing about what the code does now; it belongs in
+`CHANGELOG.md` or the PR description, not inline.
+
+`tools/comment_history_lint.py` is a blunt counter (not a classifier) that
+flags every comment line matching an issue reference or history phrase,
+grouped by module, against a per-module threshold in
+`tools/comment_history_thresholds.json` — CI's `comment-lint` job runs it.
+It can't tell a load-bearing reference from a narrating one; that judgment
+call is what each module's own mechanical-pass issue (#1243-#1249) makes
+when it lowers that module's threshold.
+
 ## Opening a pull request
 
 - Target `develop`, not `main`.

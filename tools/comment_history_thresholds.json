@@ -1,0 +1,9 @@
+{
+  "src": 959,
+  "compose": 259,
+  "primitives": 908,
+  "tui": 829,
+  "gtk": 1078,
+  "macos": 1059,
+  "win": 1238
+}
