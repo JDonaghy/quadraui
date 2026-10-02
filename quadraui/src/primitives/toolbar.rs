@@ -71,6 +71,20 @@ fn default_true() -> bool {
 // ── Data model ───────────────────────────────────────────────────────────────
 
 /// Declarative description of a horizontal toolbar.
+///
+/// **Adding a field here is a breaking change today** — see
+/// `toolbar_exhaustive_struct_literal_still_compiles` in
+/// `quadraui/tests/downstream_struct_literals.rs`, which both `coord-tui`
+/// and `vimcode` reproduce with real exhaustive literals from their own
+/// source.
+///
+/// **quadraui#1108 (phase 1 of quadraui#1251):** [`Toolbar::new`] plus a
+/// `with_*` builder per field below, and a `Default` impl, so a consumer
+/// can already stop writing an exhaustive literal. `#[non_exhaustive]`
+/// itself is gated behind the off-by-default `strict-descriptors`
+/// feature until quadraui#1251 makes it unconditional, once
+/// `vimcode`/`coord-tui` have migrated to the constructors above.
+#[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toolbar {
     pub id: WidgetId,
@@ -542,7 +556,50 @@ pub fn measure_button(
     }
 }
 
+/// An empty toolbar with an empty `WidgetId` — the `new(required…)`/
+/// `with_*`/`Default` trio quadraui#1108 adds so a consumer can build a
+/// `Toolbar` without an exhaustive struct literal.
+impl Default for Toolbar {
+    fn default() -> Self {
+        Self::new(WidgetId::new(String::new()))
+    }
+}
+
 impl Toolbar {
+    /// An empty toolbar with no buttons — chain `with_*` to fill it in.
+    pub fn new(id: WidgetId) -> Self {
+        Self {
+            id,
+            buttons: Vec::new(),
+            bg: None,
+            focused_index: None,
+        }
+    }
+
+    /// Replace [`Self::buttons`].
+    #[must_use]
+    pub fn with_buttons(mut self, buttons: Vec<ToolbarButton>) -> Self {
+        self.buttons = buttons;
+        self
+    }
+
+    /// Set [`Self::bg`].
+    #[must_use]
+    pub fn with_bg(mut self, bg: Color) -> Self {
+        self.bg = Some(bg);
+        self
+    }
+
+    /// Set [`Self::focused_index`]. Takes `Option<usize>` directly
+    /// (rather than wrapping like [`Self::with_bg`]) since callers
+    /// commonly carry "no button focused" as their own `Option<usize>`
+    /// state and want to forward it verbatim.
+    #[must_use]
+    pub fn with_focused_index(mut self, focused_index: Option<usize>) -> Self {
+        self.focused_index = focused_index;
+        self
+    }
+
     /// Compute the full rendering + hit-test layout for this toolbar.
     ///
     /// Items lay out left-to-right starting at `(origin_x, origin_y)`,
@@ -1284,5 +1341,47 @@ mod tests {
             1.0,
             "the next button's hit region moves with it"
         );
+    }
+
+    // ── quadraui#1108: `new`/`with_*`/`Default` builders ───────────────
+
+    /// `Default::default()` matches `Toolbar::new` with an empty id — the
+    /// `new(required…)`/`with_*`/`Default` trio only differs in what `id`
+    /// it carries.
+    #[test]
+    fn default_matches_new_with_empty_id() {
+        assert_eq!(Toolbar::default(), Toolbar::new(WidgetId::new("")));
+    }
+
+    /// Chaining every `with_*` builder reaches exactly the values the
+    /// exhaustive literal in `tests/downstream_struct_literals.rs` sets
+    /// field-for-field, without writing a struct literal at all.
+    #[test]
+    fn with_builders_reach_every_field_a_struct_literal_can_set() {
+        let bar = Toolbar::new(WidgetId::new("sidebar-action-bar"))
+            .with_buttons(vec![mk_action("sidebar:refresh", "Refresh", true)])
+            .with_bg(Color::rgb(10, 20, 30))
+            .with_focused_index(Some(0));
+
+        assert_eq!(
+            bar,
+            Toolbar {
+                id: WidgetId::new("sidebar-action-bar"),
+                buttons: vec![mk_action("sidebar:refresh", "Refresh", true)],
+                bg: Some(Color::rgb(10, 20, 30)),
+                focused_index: Some(0),
+            }
+        );
+    }
+
+    /// `with_focused_index(None)` clears it back to the `new()` default —
+    /// the one builder here that takes `Option<usize>` rather than
+    /// wrapping, precisely so a caller can forward its own
+    /// `Option<usize>` state (including `None`) in one call.
+    #[test]
+    fn with_focused_index_accepts_none() {
+        let bar = Toolbar::new(WidgetId::new("bar")).with_focused_index(Some(2));
+        assert_eq!(bar.focused_index, Some(2));
+        assert_eq!(bar.with_focused_index(None).focused_index, None);
     }
 }

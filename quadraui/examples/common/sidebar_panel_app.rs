@@ -60,63 +60,58 @@ impl SidebarPanelApp {
     }
 
     fn toolbar(&self) -> Toolbar {
-        Toolbar {
-            id: WidgetId::new("sb:toolbar"),
-            buttons: vec![
-                // Icon-only `[ + ]` — exercises Gap 4 icon-only width.
-                ToolbarButton::Action {
-                    id: WidgetId::new("sb:add"),
-                    label: "".into(),
-                    icon: Some("+".into()),
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: "Add task".into(),
-                },
-                // Icon-only refresh.
-                ToolbarButton::Action {
-                    id: WidgetId::new("sb:refresh"),
-                    label: "".into(),
-                    icon: Some("↻".into()),
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: "Clear last message".into(),
-                },
-                ToolbarButton::Separator,
-                // Icon + label + key hint — toggle.
-                ToolbarButton::Action {
-                    id: WidgetId::new("sb:filter"),
-                    label: "Filter".into(),
-                    icon: Some("⚙".into()),
-                    key_hint: Some("f".into()),
-                    enabled: true,
-                    is_active: self.filter_on,
-                    tooltip: "Toggle filter".into(),
-                },
-                ToolbarButton::Action {
-                    id: WidgetId::new("sb:clear"),
-                    label: "Clear".into(),
-                    icon: None,
-                    key_hint: Some("c".into()),
-                    // Disabled when there's nothing to clear — shows the dim paint.
-                    enabled: !self.tasks.is_empty(),
-                    is_active: false,
-                    tooltip: "Remove all tasks".into(),
-                },
-                ToolbarButton::Separator,
-                ToolbarButton::Label {
-                    text: format!(
-                        " {} task{} ",
-                        self.tasks.len(),
-                        if self.tasks.len() == 1 { "" } else { "s" }
-                    ),
-                    fg: Some(Color::rgb(160, 200, 160)),
-                },
-            ],
-            bg: None,
-            focused_index: None,
-        }
+        Toolbar::new(WidgetId::new("sb:toolbar")).with_buttons(vec![
+            // Icon-only `[ + ]` — exercises Gap 4 icon-only width.
+            ToolbarButton::Action {
+                id: WidgetId::new("sb:add"),
+                label: "".into(),
+                icon: Some("+".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: "Add task".into(),
+            },
+            // Icon-only refresh.
+            ToolbarButton::Action {
+                id: WidgetId::new("sb:refresh"),
+                label: "".into(),
+                icon: Some("↻".into()),
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: "Clear last message".into(),
+            },
+            ToolbarButton::Separator,
+            // Icon + label + key hint — toggle.
+            ToolbarButton::Action {
+                id: WidgetId::new("sb:filter"),
+                label: "Filter".into(),
+                icon: Some("⚙".into()),
+                key_hint: Some("f".into()),
+                enabled: true,
+                is_active: self.filter_on,
+                tooltip: "Toggle filter".into(),
+            },
+            ToolbarButton::Action {
+                id: WidgetId::new("sb:clear"),
+                label: "Clear".into(),
+                icon: None,
+                key_hint: Some("c".into()),
+                // Disabled when there's nothing to clear — shows the dim paint.
+                enabled: !self.tasks.is_empty(),
+                is_active: false,
+                tooltip: "Remove all tasks".into(),
+            },
+            ToolbarButton::Separator,
+            ToolbarButton::Label {
+                text: format!(
+                    " {} task{} ",
+                    self.tasks.len(),
+                    if self.tasks.len() == 1 { "" } else { "s" }
+                ),
+                fg: Some(Color::rgb(160, 200, 160)),
+            },
+        ])
     }
 
     fn panel(&self) -> SidebarPanel {

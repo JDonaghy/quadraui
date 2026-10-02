@@ -84,11 +84,23 @@ use crate::undo::UndoStack;
 /// being fields here (short version: adding **any** field, `pub` or
 /// private, breaks external exhaustive `TextInput { .. }` literals).
 ///
-/// **Adding a field to this struct is a breaking change.** The
+/// **Adding a field to this struct is a breaking change today.** The
 /// `text_input_exhaustive_struct_literal_still_compiles` guard in
 /// `quadraui/tests/downstream_struct_literals.rs` fails in this repo's
 /// own CI if one is added, instead of the break surfacing later in a
 /// consumer's build.
+///
+/// **quadraui#1108 (phase 1 of quadraui#1251):** every field below has a
+/// matching `with_*` builder on [`TextInput::new`], and the type
+/// implements `Default`, so a consumer can already stop writing an
+/// exhaustive struct literal — construct with `TextInput::new(id)` /
+/// `TextInput::default()` and chain `with_*` instead. `#[non_exhaustive]`
+/// itself is **not** applied yet; it is gated behind the off-by-default
+/// `strict-descriptors` feature (`cfg_attr` below) so a consumer can
+/// prove its own migration is complete by building with that feature on,
+/// before quadraui#1251 makes it unconditional — the actual breaking
+/// change — once `vimcode`/`coord-tui` have migrated.
+#[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {
     pub id: WidgetId,
@@ -143,6 +155,64 @@ impl TextInput {
             scroll_col: 0,
             has_focus: false,
         }
+    }
+
+    /// Replace [`Self::lines`] — one entry per logical line.
+    #[must_use]
+    pub fn with_lines(mut self, lines: Vec<String>) -> Self {
+        self.lines = lines;
+        self
+    }
+
+    /// Set [`Self::cursor_line`].
+    #[must_use]
+    pub fn with_cursor_line(mut self, cursor_line: usize) -> Self {
+        self.cursor_line = cursor_line;
+        self
+    }
+
+    /// Set [`Self::cursor_col`].
+    #[must_use]
+    pub fn with_cursor_col(mut self, cursor_col: usize) -> Self {
+        self.cursor_col = cursor_col;
+        self
+    }
+
+    /// Set [`Self::placeholder`].
+    #[must_use]
+    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set [`Self::scroll_offset`].
+    #[must_use]
+    pub fn with_scroll_offset(mut self, scroll_offset: usize) -> Self {
+        self.scroll_offset = scroll_offset;
+        self
+    }
+
+    /// Set [`Self::scroll_col`].
+    #[must_use]
+    pub fn with_scroll_col(mut self, scroll_col: usize) -> Self {
+        self.scroll_col = scroll_col;
+        self
+    }
+
+    /// Set [`Self::has_focus`].
+    #[must_use]
+    pub fn with_has_focus(mut self, has_focus: bool) -> Self {
+        self.has_focus = has_focus;
+        self
+    }
+}
+
+/// Same shape as [`TextInput::new`] with an empty `WidgetId` — the
+/// `new(required…)`/`with_*`/`Default` trio quadraui#1108 adds so a
+/// consumer can build a `TextInput` without an exhaustive struct literal.
+impl Default for TextInput {
+    fn default() -> Self {
+        Self::new(WidgetId::new(String::new()))
     }
 }
 
@@ -1913,6 +1983,49 @@ mod tests {
         assert_eq!(
             a.input, b.input,
             "equality must compare content, not undo history"
+        );
+    }
+
+    // ── quadraui#1108: `new`/`with_*`/`Default` builders ───────────────
+
+    /// `Default::default()` matches `TextInput::new` with an empty id —
+    /// the `new(required…)`/`with_*`/`Default` trio only differs in what
+    /// `id` it carries.
+    #[test]
+    fn default_matches_new_with_empty_id() {
+        assert_eq!(TextInput::default(), TextInput::new(WidgetId::new("")));
+    }
+
+    /// Chaining every `with_*` builder reaches exactly the values the
+    /// exhaustive literal in `tests/downstream_struct_literals.rs` sets
+    /// field-for-field, without writing a struct literal at all.
+    #[test]
+    fn with_builders_reach_every_field_a_struct_literal_can_set() {
+        let ti = TextInput::new(WidgetId::new("sc:commit_input"))
+            .with_lines(vec![
+                "subject".to_string(),
+                String::new(),
+                "body".to_string(),
+            ])
+            .with_cursor_line(2)
+            .with_cursor_col(4)
+            .with_placeholder("Message (press c)")
+            .with_scroll_offset(0)
+            .with_scroll_col(0)
+            .with_has_focus(true);
+
+        assert_eq!(
+            ti,
+            TextInput {
+                id: WidgetId::new("sc:commit_input"),
+                lines: vec!["subject".to_string(), String::new(), "body".to_string()],
+                cursor_line: 2,
+                cursor_col: 4,
+                placeholder: Some("Message (press c)".to_string()),
+                scroll_offset: 0,
+                scroll_col: 0,
+                has_focus: true,
+            }
         );
     }
 }

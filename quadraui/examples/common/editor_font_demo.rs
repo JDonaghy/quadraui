@@ -87,38 +87,20 @@ impl EditorFontDemo {
             })
             .collect::<Vec<_>>();
 
-        Editor {
-            id: WidgetId::new("editor-font-demo"),
-            rect: main,
-            lines,
-            cursor: Some(EditorCursor {
+        Editor::new(WidgetId::new("editor-font-demo"), main)
+            .with_lines(lines)
+            .with_cursor(EditorCursor {
                 pos: EditorCursorPos {
                     view_line: 0,
                     col: 0,
                 },
                 shape: EditorCursorShape::Block,
-            }),
-            extra_cursors: vec![],
-            selection: None,
-            extra_selections: vec![],
-            yank_highlight: None,
-            scroll_top: 0,
-            scroll_left: 0,
-            total_lines: texts.len(),
-            max_col: 0,
-            gutter_char_width: 4,
-            is_active: true,
-            show_active_bg: false,
-            has_git_diff: false,
-            has_breakpoints: false,
-            diagnostic_gutter: Default::default(),
-            code_action_lines: Default::default(),
-            bracket_match_positions: vec![],
-            active_indent_col: None,
-            tabstop: 4,
-            cursorline: true,
-            lightbulb_glyph: '\0',
-        }
+            })
+            .with_total_lines(texts.len())
+            .with_gutter_char_width(4)
+            .with_is_active(true)
+            .with_cursorline(true)
+            .with_lightbulb_glyph('\0')
     }
 }
 

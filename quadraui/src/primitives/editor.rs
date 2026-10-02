@@ -412,6 +412,20 @@ pub struct EditorLine {
 /// per-window status-line painted separately by the caller (the status
 /// line was lifted to `quadraui::WindowStatusLine` in Session 241 —
 /// Stage 1 of #276 does not touch that surface).
+///
+/// **Adding a field here is a breaking change today** — see
+/// `editor_exhaustive_struct_literal_still_compiles` in
+/// `quadraui/tests/downstream_struct_literals.rs`, transcribed from
+/// `vimcode`'s only call site.
+///
+/// **quadraui#1108 (phase 1 of quadraui#1251):** [`Editor::new`] plus a
+/// `with_*` builder per field below (besides `id`/`rect`, which `new`
+/// already requires), and a `Default` impl, so a consumer can already
+/// stop writing an exhaustive literal. `#[non_exhaustive]` itself is
+/// gated behind the off-by-default `strict-descriptors` feature until
+/// quadraui#1251 makes it unconditional, once `vimcode`/`coord-tui` have
+/// migrated to the constructors above.
+#[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Editor {
     pub id: WidgetId,
@@ -707,7 +721,211 @@ impl EditorLayout {
     }
 }
 
+/// An editor viewport with no content and every optional/overlay field at
+/// its empty default — the `new(required…)`/`with_*`/`Default` trio
+/// quadraui#1108 adds so a consumer can build an `Editor` without an
+/// exhaustive struct literal. `tabstop` defaults to `4` and
+/// `lightbulb_glyph` to `'!'`, matching [`default_lightbulb_glyph`] and
+/// every existing call site's convention — not derived-`Default`'s `0`
+/// / `'\0'`.
+impl Default for Editor {
+    fn default() -> Self {
+        Self::new(WidgetId::new(String::new()), Rect::default())
+    }
+}
+
 impl Editor {
+    /// An editor viewport at `rect` with no lines, no cursor, and no
+    /// overlays — chain `with_*` to fill it in.
+    pub fn new(id: WidgetId, rect: Rect) -> Self {
+        Self {
+            id,
+            rect,
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 0,
+            max_col: 0,
+            gutter_char_width: 0,
+            is_active: false,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: default_lightbulb_glyph(),
+        }
+    }
+
+    /// Replace [`Self::lines`].
+    #[must_use]
+    pub fn with_lines(mut self, lines: Vec<EditorLine>) -> Self {
+        self.lines = lines;
+        self
+    }
+
+    /// Set [`Self::cursor`].
+    #[must_use]
+    pub fn with_cursor(mut self, cursor: EditorCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    /// Replace [`Self::extra_cursors`].
+    #[must_use]
+    pub fn with_extra_cursors(mut self, extra_cursors: Vec<CursorPos>) -> Self {
+        self.extra_cursors = extra_cursors;
+        self
+    }
+
+    /// Set [`Self::selection`].
+    #[must_use]
+    pub fn with_selection(mut self, selection: EditorSelection) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// Replace [`Self::extra_selections`].
+    #[must_use]
+    pub fn with_extra_selections(mut self, extra_selections: Vec<EditorSelection>) -> Self {
+        self.extra_selections = extra_selections;
+        self
+    }
+
+    /// Set [`Self::yank_highlight`].
+    #[must_use]
+    pub fn with_yank_highlight(mut self, yank_highlight: EditorSelection) -> Self {
+        self.yank_highlight = Some(yank_highlight);
+        self
+    }
+
+    /// Set [`Self::scroll_top`].
+    #[must_use]
+    pub fn with_scroll_top(mut self, scroll_top: usize) -> Self {
+        self.scroll_top = scroll_top;
+        self
+    }
+
+    /// Set [`Self::scroll_left`].
+    #[must_use]
+    pub fn with_scroll_left(mut self, scroll_left: usize) -> Self {
+        self.scroll_left = scroll_left;
+        self
+    }
+
+    /// Set [`Self::total_lines`].
+    #[must_use]
+    pub fn with_total_lines(mut self, total_lines: usize) -> Self {
+        self.total_lines = total_lines;
+        self
+    }
+
+    /// Set [`Self::max_col`].
+    #[must_use]
+    pub fn with_max_col(mut self, max_col: usize) -> Self {
+        self.max_col = max_col;
+        self
+    }
+
+    /// Set [`Self::gutter_char_width`].
+    #[must_use]
+    pub fn with_gutter_char_width(mut self, gutter_char_width: usize) -> Self {
+        self.gutter_char_width = gutter_char_width;
+        self
+    }
+
+    /// Set [`Self::is_active`].
+    #[must_use]
+    pub fn with_is_active(mut self, is_active: bool) -> Self {
+        self.is_active = is_active;
+        self
+    }
+
+    /// Set [`Self::show_active_bg`].
+    #[must_use]
+    pub fn with_show_active_bg(mut self, show_active_bg: bool) -> Self {
+        self.show_active_bg = show_active_bg;
+        self
+    }
+
+    /// Set [`Self::has_git_diff`].
+    #[must_use]
+    pub fn with_has_git_diff(mut self, has_git_diff: bool) -> Self {
+        self.has_git_diff = has_git_diff;
+        self
+    }
+
+    /// Set [`Self::has_breakpoints`].
+    #[must_use]
+    pub fn with_has_breakpoints(mut self, has_breakpoints: bool) -> Self {
+        self.has_breakpoints = has_breakpoints;
+        self
+    }
+
+    /// Replace [`Self::diagnostic_gutter`].
+    #[must_use]
+    pub fn with_diagnostic_gutter(
+        mut self,
+        diagnostic_gutter: HashMap<usize, DiagnosticSeverity>,
+    ) -> Self {
+        self.diagnostic_gutter = diagnostic_gutter;
+        self
+    }
+
+    /// Replace [`Self::code_action_lines`].
+    #[must_use]
+    pub fn with_code_action_lines(mut self, code_action_lines: HashSet<usize>) -> Self {
+        self.code_action_lines = code_action_lines;
+        self
+    }
+
+    /// Replace [`Self::bracket_match_positions`].
+    #[must_use]
+    pub fn with_bracket_match_positions(
+        mut self,
+        bracket_match_positions: Vec<(usize, usize)>,
+    ) -> Self {
+        self.bracket_match_positions = bracket_match_positions;
+        self
+    }
+
+    /// Set [`Self::active_indent_col`].
+    #[must_use]
+    pub fn with_active_indent_col(mut self, active_indent_col: usize) -> Self {
+        self.active_indent_col = Some(active_indent_col);
+        self
+    }
+
+    /// Set [`Self::tabstop`].
+    #[must_use]
+    pub fn with_tabstop(mut self, tabstop: usize) -> Self {
+        self.tabstop = tabstop;
+        self
+    }
+
+    /// Set [`Self::cursorline`].
+    #[must_use]
+    pub fn with_cursorline(mut self, cursorline: bool) -> Self {
+        self.cursorline = cursorline;
+        self
+    }
+
+    /// Set [`Self::lightbulb_glyph`].
+    #[must_use]
+    pub fn with_lightbulb_glyph(mut self, lightbulb_glyph: char) -> Self {
+        self.lightbulb_glyph = lightbulb_glyph;
+        self
+    }
+
     /// Compute the viewport geometry for hit-testing and rendering layout.
     ///
     /// # Arguments
@@ -1467,5 +1685,72 @@ mod tests {
         };
         let cols = sel.cols_on(&line).expect("blank interior line is selected");
         assert_eq!((cols.start, cols.end), (0, 1));
+    }
+
+    // ── quadraui#1108: `new`/`with_*`/`Default` builders ───────────────
+
+    /// `Default::default()` matches `Editor::new` with an empty id and a
+    /// zero `Rect` — the `new(required…)`/`with_*`/`Default` trio only
+    /// differs in what `id`/`rect` it carries.
+    #[test]
+    fn default_matches_new_with_empty_id_and_rect() {
+        assert_eq!(
+            Editor::default(),
+            Editor::new(WidgetId::new(""), Rect::default())
+        );
+    }
+
+    /// Chaining every `with_*` builder reaches exactly the values the
+    /// exhaustive literal in `tests/downstream_struct_literals.rs` sets
+    /// field-for-field, without writing a struct literal at all.
+    #[test]
+    fn with_builders_reach_every_field_a_struct_literal_can_set() {
+        let ed = Editor::new(WidgetId::new("editor:0"), Rect::new(0.0, 0.0, 80.0, 24.0))
+            .with_cursor(EditorCursor {
+                pos: CursorPos {
+                    view_line: 0,
+                    col: 0,
+                },
+                shape: CursorShape::Bar,
+            })
+            .with_is_active(true)
+            .with_tabstop(4)
+            .with_cursorline(true);
+
+        assert_eq!(
+            ed,
+            Editor {
+                id: WidgetId::new("editor:0"),
+                rect: Rect::new(0.0, 0.0, 80.0, 24.0),
+                lines: Vec::new(),
+                cursor: Some(EditorCursor {
+                    pos: CursorPos {
+                        view_line: 0,
+                        col: 0,
+                    },
+                    shape: CursorShape::Bar,
+                }),
+                extra_cursors: Vec::new(),
+                selection: None,
+                extra_selections: Vec::new(),
+                yank_highlight: None,
+                scroll_top: 0,
+                scroll_left: 0,
+                total_lines: 0,
+                max_col: 0,
+                gutter_char_width: 0,
+                is_active: true,
+                show_active_bg: false,
+                has_git_diff: false,
+                has_breakpoints: false,
+                diagnostic_gutter: HashMap::new(),
+                code_action_lines: HashSet::new(),
+                bracket_match_positions: Vec::new(),
+                active_indent_col: None,
+                tabstop: 4,
+                cursorline: true,
+                lightbulb_glyph: '!',
+            }
+        );
     }
 }

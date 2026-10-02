@@ -49,13 +49,36 @@
 //! `TextEditor` does for #833's selection anchor and undo history); if it
 //! genuinely must break, land the consumer migration alongside it and put
 //! the `grep` output in the PR's `## Downstream impact` section.
+//!
+//! ## Interaction with `strict-descriptors` (quadraui#1108)
+//!
+//! `TextInput`/`Toolbar`/`Editor` are `#[cfg_attr(feature =
+//! "strict-descriptors", non_exhaustive)]` as of #1108 — an off-by-default
+//! feature a consumer opts into to prove its own migration off exhaustive
+//! literals (onto the `new(..)`/`with_*`/`Default` constructors those
+//! three types now also ship) is complete. Every test below that builds
+//! one of those three types with an exhaustive literal is therefore
+//! `#[cfg(not(feature = "strict-descriptors"))]`: under the default
+//! feature set (what every real consumer builds against today, and what
+//! this repo's own CI exercises) the guard above still holds exactly as
+//! described; building `--features strict-descriptors` is a deliberate,
+//! separate proof that the literal-free path exists, not a claim that
+//! today's literal has become non-breaking. quadraui#1251 is what
+//! actually flips the attribute on unconditionally — at that point these
+//! `cfg`s (and the tests they guard) are what gets deleted or inverted,
+//! per this file's module doc above.
 
+#[cfg(not(feature = "strict-descriptors"))]
 use quadraui::{TextInput, WidgetId};
 
 /// `TextInput`'s exhaustive struct literal, transcribed from vimcode's
 /// `sc_commit_message_to_text_input()` — field-for-field, and pointedly
 /// with no `..base`. If this stops compiling, so does that consumer.
+///
+/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
+/// doc, *Interaction with `strict-descriptors`*.
 #[test]
+#[cfg(not(feature = "strict-descriptors"))]
 fn text_input_exhaustive_struct_literal_still_compiles() {
     let ti = TextInput {
         id: WidgetId::new("sc:commit_input"),
@@ -80,7 +103,11 @@ fn text_input_exhaustive_struct_literal_still_compiles() {
 /// This is the other half of the guard above — it proves the wrapper is a
 /// real substitute for the fields that were *not* added, rather than the
 /// literal above being kept alive by amputating the feature.
+///
+/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
+/// doc, *Interaction with `strict-descriptors`*.
 #[test]
+#[cfg(not(feature = "strict-descriptors"))]
 fn editing_is_available_without_new_text_input_fields() {
     use quadraui::{EditOp, TextEditor};
 
@@ -135,7 +162,11 @@ fn editing_is_available_without_new_text_input_fields() {
 /// `..Default::default()` included). CI's *downstream consumers* job
 /// caught the second attempt; this test is what catches the next one
 /// here, before it costs a merge-gate round trip.
+///
+/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
+/// doc, *Interaction with `strict-descriptors`*.
 #[test]
+#[cfg(not(feature = "strict-descriptors"))]
 fn toolbar_exhaustive_struct_literal_still_compiles() {
     use quadraui::{Toolbar, ToolbarButton};
 
@@ -166,7 +197,11 @@ fn toolbar_exhaustive_struct_literal_still_compiles() {
 /// This is the other half of the guard — it proves the side table is a
 /// real substitute for the field that was *not* added, rather than the
 /// literal above being kept alive by dropping the feature.
+///
+/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
+/// doc, *Interaction with `strict-descriptors`*.
 #[test]
+#[cfg(not(feature = "strict-descriptors"))]
 fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
     use quadraui::{Icon, Toolbar, ToolbarButton, ToolbarIcons};
 
@@ -221,7 +256,11 @@ fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
 /// untouched — see that primitive's module doc and
 /// `docs/PRIMITIVE_RULES.md` rule 8. If this test stops compiling, a
 /// future change grew `Editor`'s field list the breaking way instead.
+///
+/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
+/// doc, *Interaction with `strict-descriptors`*.
 #[test]
+#[cfg(not(feature = "strict-descriptors"))]
 fn editor_exhaustive_struct_literal_still_compiles() {
     use quadraui::{Editor, EditorCursor, EditorCursorPos, EditorCursorShape, Rect, WidgetId};
     use std::collections::{HashMap, HashSet};
@@ -357,20 +396,19 @@ mod toolbar_paint_call_shapes {
     }
 
     fn bar() -> Toolbar {
-        Toolbar {
-            id: WidgetId::new("downstream-bar"),
-            buttons: vec![ToolbarButton::Action {
-                id: WidgetId::new("downstream:go"),
-                label: "Go".to_string(),
-                icon: None,
-                key_hint: None,
-                enabled: true,
-                is_active: false,
-                tooltip: String::new(),
-            }],
-            bg: None,
-            focused_index: None,
-        }
+        // This module is about the three `draw_toolbar*` *call shapes*,
+        // not about exhaustive-literal construction (that's the other
+        // tests in this file), so it builds via `Toolbar::new`/`with_*`
+        // rather than the literal above — unaffected by `strict-descriptors`.
+        Toolbar::new(WidgetId::new("downstream-bar")).with_buttons(vec![ToolbarButton::Action {
+            id: WidgetId::new("downstream:go"),
+            label: "Go".to_string(),
+            icon: None,
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }])
     }
 
     impl AppLogic for ToolbarPainter {

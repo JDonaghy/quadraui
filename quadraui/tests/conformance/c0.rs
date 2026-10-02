@@ -950,38 +950,21 @@ pub const CASES: &[Case] = &[
                 indent_guides: vec![],
                 colorcolumns: vec![],
             };
-            let editor = Editor {
-                id: id("editor"),
-                rect: area,
-                lines: vec![line],
-                cursor: Some(EditorCursor {
+            let editor = Editor::new(id("editor"), area)
+                .with_lines(vec![line])
+                .with_cursor(EditorCursor {
                     pos: EditorCursorPos {
                         view_line: 0,
                         col: 0,
                     },
                     shape: EditorCursorShape::Block,
-                }),
-                extra_cursors: vec![],
-                selection: None,
-                extra_selections: vec![],
-                yank_highlight: None,
-                scroll_top: 0,
-                scroll_left: 0,
-                total_lines: 1,
-                max_col: 6,
-                gutter_char_width: 4,
-                is_active: true,
-                show_active_bg: false,
-                has_git_diff: false,
-                has_breakpoints: false,
-                diagnostic_gutter: Default::default(),
-                code_action_lines: Default::default(),
-                bracket_match_positions: vec![],
-                active_indent_col: None,
-                tabstop: 4,
-                cursorline: true,
-                lightbulb_glyph: '\0',
-            };
+                })
+                .with_total_lines(1)
+                .with_max_col(6)
+                .with_gutter_char_width(4)
+                .with_is_active(true)
+                .with_cursorline(true)
+                .with_lightbulb_glyph('\0');
             let _ = b.draw_editor(area, &editor);
         },
     },
@@ -1172,20 +1155,15 @@ pub const CASES: &[Case] = &[
         needle: Some("c0tbar"),
         paint: |b, area| {
             let lh = b.line_height();
-            let bar = Toolbar {
-                id: id("toolbar"),
-                buttons: vec![ToolbarButton::Action {
-                    id: id("toolbar-button"),
-                    label: "c0tbar".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }],
-                bg: None,
-                focused_index: None,
-            };
+            let bar = Toolbar::new(id("toolbar")).with_buttons(vec![ToolbarButton::Action {
+                id: id("toolbar-button"),
+                label: "c0tbar".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }]);
             let _ = b.draw_toolbar_interactive(
                 Rect::new(0.0, 0.0, area.width, lh),
                 &bar,
@@ -1204,9 +1182,8 @@ pub const CASES: &[Case] = &[
         needle: Some("c0tbva"),
         paint: |b, area| {
             let lh = b.line_height();
-            let bar = Toolbar {
-                id: id("toolbar-valign"),
-                buttons: vec![ToolbarButton::Action {
+            let bar =
+                Toolbar::new(id("toolbar-valign")).with_buttons(vec![ToolbarButton::Action {
                     id: id("toolbar-valign-button"),
                     label: "c0tbva".to_string(),
                     icon: None,
@@ -1214,10 +1191,7 @@ pub const CASES: &[Case] = &[
                     enabled: true,
                     is_active: false,
                     tooltip: String::new(),
-                }],
-                bg: None,
-                focused_index: None,
-            };
+                }]);
             let _ = b.draw_toolbar_with_options(
                 Rect::new(0.0, 0.0, area.width, lh * 3.0),
                 &bar,
@@ -1232,9 +1206,8 @@ pub const CASES: &[Case] = &[
         method: "draw_sidebar_panel_interactive",
         needle: Some("c0sbpn"),
         paint: |b, area| {
-            let toolbar = Toolbar {
-                id: id("sidebar-toolbar"),
-                buttons: vec![ToolbarButton::Action {
+            let toolbar =
+                Toolbar::new(id("sidebar-toolbar")).with_buttons(vec![ToolbarButton::Action {
                     id: id("sidebar-toolbar-button"),
                     label: "c0sbpn".to_string(),
                     icon: None,
@@ -1242,10 +1215,7 @@ pub const CASES: &[Case] = &[
                     enabled: true,
                     is_active: false,
                     tooltip: String::new(),
-                }],
-                bg: None,
-                focused_index: None,
-            };
+                }]);
             let panel = SidebarPanel {
                 id: id("sidebar-panel"),
                 toolbar: Some(toolbar),
@@ -1395,20 +1365,15 @@ pub const CASES: &[Case] = &[
         needle: Some("c0tbsh"),
         paint: |b, area| {
             let lh = b.line_height();
-            let bar = Toolbar {
-                id: id("toolbar-shim"),
-                buttons: vec![ToolbarButton::Action {
-                    id: id("toolbar-shim-button"),
-                    label: "c0tbsh".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }],
-                bg: None,
-                focused_index: None,
-            };
+            let bar = Toolbar::new(id("toolbar-shim")).with_buttons(vec![ToolbarButton::Action {
+                id: id("toolbar-shim-button"),
+                label: "c0tbsh".to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }]);
             #[allow(deprecated)]
             let _ = b.draw_toolbar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
         },
@@ -1417,9 +1382,8 @@ pub const CASES: &[Case] = &[
         method: "draw_sidebar_panel",
         needle: Some("c0sbsh"),
         paint: |b, area| {
-            let toolbar = Toolbar {
-                id: id("sidebar-shim-toolbar"),
-                buttons: vec![ToolbarButton::Action {
+            let toolbar = Toolbar::new(id("sidebar-shim-toolbar")).with_buttons(vec![
+                ToolbarButton::Action {
                     id: id("sidebar-shim-toolbar-button"),
                     label: "c0sbsh".to_string(),
                     icon: None,
@@ -1427,10 +1391,8 @@ pub const CASES: &[Case] = &[
                     enabled: true,
                     is_active: false,
                     tooltip: String::new(),
-                }],
-                bg: None,
-                focused_index: None,
-            };
+                },
+            ]);
             let panel = SidebarPanel {
                 id: id("sidebar-panel-shim"),
                 toolbar: Some(toolbar),

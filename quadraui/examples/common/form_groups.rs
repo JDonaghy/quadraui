@@ -138,9 +138,8 @@ impl FormGroupsApp {
                 FormField {
                     id: WidgetId::new("scope"),
                     label: StyledText::plain("Scope"),
-                    kind: FieldKind::Toolbar(Toolbar {
-                        id: WidgetId::new("scope-toolbar"),
-                        buttons: vec![
+                    kind: FieldKind::Toolbar(
+                        Toolbar::new(WidgetId::new("scope-toolbar")).with_buttons(vec![
                             ToolbarButton::Action {
                                 id: WidgetId::new("scope-ws"),
                                 label: "Workspace".into(),
@@ -168,10 +167,8 @@ impl FormGroupsApp {
                                 is_active: self.scope == 2,
                                 tooltip: "Search selected text only".into(),
                             },
-                        ],
-                        bg: None,
-                        focused_index: None,
-                    }),
+                        ]),
+                    ),
                     hint: StyledText::default(),
                     disabled: false,
                     validation: None,
