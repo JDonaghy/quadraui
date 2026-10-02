@@ -5,18 +5,17 @@
 //! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
 //! module doc for why the three per-backend copies were found to be
 //! already identical (no divergence). This module now carries
-//! [`mac_split_tree_layout`] and the deprecated [`draw_split_tree`]
+//! [`mac_split_tree_layout`]; the deprecated `draw_split_tree`
 //! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawSplitTreeSurface`). Divider thickness matches [`super::split`]'s
-//! 4 points, which in turn matches GTK, so a `SplitTree` and a plain
-//! `Split` line up.
-
-use core_graphics::sys::CGContextRef;
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`). Divider thickness matches
+//! [`super::split`]'s 4 points, which in turn matches GTK, so a
+//! `SplitTree` and a plain `Split` line up.
 
 use crate::event::Rect as QRect;
 use crate::primitives::layout_metrics::pixel_split_tree_layout;
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the macOS point-unit layout for a [`SplitTree`] without
@@ -28,38 +27,6 @@ use crate::theme::Theme;
 pub fn mac_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_tree_layout(tree, bounds)
-}
-
-/// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
-/// the pre-#863 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_split_tree` reference rather than going
-/// through [`crate::Backend::draw_split_tree`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is
-/// why this shim has no in-repo caller left to trip the
-/// `-D warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
-/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
-/// Calling with a freed or null pointer is UB.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_split_tree` instead — this free function is a compatibility shim over the shared #863 implementation"
-)]
-pub unsafe fn draw_split_tree(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    tree: &SplitTree,
-    theme: &Theme,
-) -> SplitTreeLayout {
-    let layout = mac_split_tree_layout(tree, x, y, w, h);
-    let mut surface = super::surface::CgSurface { ctx, font: None };
-    crate::primitives::split_tree::native_surface_paint::paint(&layout, &mut surface, theme);
-    layout
 }
 
 #[cfg(test)]

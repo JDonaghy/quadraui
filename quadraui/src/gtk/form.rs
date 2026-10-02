@@ -3,14 +3,15 @@
 //! Field-kind *painting* moved to the shared
 //! [`crate::primitives::form::paint`] (#808, NativeSurface Phase 2a) —
 //! this module now only carries `draw_settings_chrome` (unrelated: form
-//! *body* chrome, not field painting) and the deprecated [`draw_form`]
-//! shim, both over the shared [`super::surface::CairoSurface`] adapter
-//! (#1072 — consolidated from this module's own private
-//! `RawFormSurface`, which also served call sites with only a raw
-//! `(&Context, &pango::Layout)` pair — not a live
+//! *body* chrome, not field painting) over the shared
+//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawFormSurface`, which also served call
+//! sites with only a raw `(&Context, &pango::Layout)` pair — not a live
 //! [`super::backend::GtkBackend`] — such as
 //! [`crate::gtk::multi_section_view`]'s embedded-`Form` section body;
-//! those now build a [`super::surface::CairoSurface`] directly).
+//! those now build a [`super::surface::CairoSurface`] directly). The
+//! deprecated `draw_form` free-function shim was removed in issue
+//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! Before #808, this module's own `draw_form` painted from an ad-hoc
 //! running cursor independent of the shared [`crate::Form::layout`]
@@ -24,98 +25,10 @@ use gtk4::pango;
 
 use super::cairo_rgb;
 use crate::theme::Theme;
-use crate::Form;
-
-/// Deprecated free-function shim (#808, CLAUDE.md rule 8): `draw_form`
-/// used to be this module's whole reason to exist — every `FieldKind`
-/// match arm lived directly in its body. Painting now goes through
-/// [`crate::primitives::form::paint`] via [`super::surface::CairoSurface`];
-/// this wrapper reproduces the old signature exactly (same geometry, same
-/// paint contract) for any external caller that held a direct
-/// `quadraui::gtk::draw_form` reference rather than going through
-/// [`crate::Backend::draw_form`] — the sanctioned entry point, and the
-/// one every in-tree call site already uses, which is why this shim has
-/// no in-repo caller left to trip the `-D warnings`-denied `deprecated`
-/// lint. `FieldKind::Toolbar` renders through the full toolbar
-/// rasteriser here too, matching pre-#808 behaviour, for the same
-/// reason `GtkBackend::draw_form` does (see that method's doc).
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `super::surface::CairoSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn draw_form(
-    cr: &Context,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    form: &Form,
-    theme: &Theme,
-    line_height: f64,
-) {
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
-    let measure = super::toolbar::PangoMeasure {
-        pango_layout: Some(layout),
-        char_width: 8.0,
-    };
-    let flayout = form.layout(w as f32, h as f32, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
-    });
-    let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(layout),
-        translucent_fill: false,
-    };
-    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
-
-    for vf in &flayout.visible_fields {
-        let Some(field) = form.fields.get(vf.field_idx) else {
-            continue;
-        };
-        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
-            continue;
-        };
-        let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-        let no_label = label_text.is_empty();
-        layout.set_text(&label_text);
-        let (label_w, _) = layout.pixel_size();
-        let row_x = x + vf.bounds.x as f64;
-        let row_y = y + vf.bounds.y as f64;
-        let row_w = vf.bounds.width as f64;
-        let toolbar_row_h = vf.bounds.height as f64;
-        let toolbar_x = if no_label {
-            row_x + 6.0
-        } else {
-            row_x + 6.0 + label_w as f64 + 12.0
-        };
-        let toolbar_w = row_x + row_w - toolbar_x;
-        if toolbar_w > 0.0 {
-            super::toolbar::draw_toolbar(
-                cr,
-                layout,
-                toolbar_x,
-                row_y,
-                toolbar_w,
-                toolbar_row_h,
-                toolbar,
-                theme,
-                None,
-                None,
-            );
-            layout.set_attributes(None);
-        }
-    }
-}
 
 /// Settings panel chrome: a header row and, when `height` leaves room
 /// for it, a search input row beneath it — designed to sit immediately
-/// above a [`Form`] body.
+/// above a [`crate::Form`] body.
 ///
 /// The header row always paints at `line_height` tall. The search row
 /// paints only when `height >= line_height * 1.5` (issue #1041 review):

@@ -9,9 +9,10 @@
 //! `macos::panel::draw_panel` and `win::panel::draw_panel` into one
 //! implementation. This module now only carries [`win_panel_layout`]
 //! (pure layout, still needed by `WinBackend::panel_layout` for no-paint
-//! hit-test queries) and the deprecated [`draw_panel`] compatibility
-//! shim over the shared [`super::surface::D2dSurface`] adapter (#1072 —
-//! consolidated from this module's own private `RawPanelSurface`).
+//! hit-test queries); the deprecated `draw_panel` compatibility shim
+//! over the shared [`super::surface::D2dSurface`] adapter was removed
+//! in issue #1109 (zero uses in coord-tui's `main` and vimcode's
+//! `develop`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod panel;` and `backend.rs`'s module
@@ -24,50 +25,23 @@
 //! module doc for the "placeholder until a later issue wires the app's
 //! real theme through" posture this module shares.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_panel_layout;
 use crate::primitives::panel::{Panel, PanelLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute a [`Panel`]'s layout without painting — the DirectWrite
-/// measurer twin of [`draw_panel`]. Both call [`Panel::layout`] with the
-/// identical measure, so a no-paint hit-test call always agrees with
-/// what the last paint drew. Shares its action-button width with
-/// `gtk_panel_layout` / `mac_panel_layout` via [`pixel_panel_layout`]
-/// (issue #1079).
+/// measurer twin of `crate::Backend::draw_panel` (the free-function
+/// `draw_panel` shim this backed was removed in issue #1109). Both call
+/// [`Panel::layout`] with the identical measure, so a no-paint hit-test
+/// call always agrees with what the last paint drew. Shares its
+/// action-button width with `gtk_panel_layout` / `mac_panel_layout` via
+/// [`pixel_panel_layout`] (issue #1079).
 pub fn win_panel_layout(rect: Rect, panel: &Panel, line_height: f32) -> PanelLayout {
     pixel_panel_layout(panel, rect.x, rect.y, rect.width, rect.height, line_height)
-}
-
-/// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
-/// the pre-#859 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_panel` reference rather than going
-/// through [`crate::Backend::draw_panel`] — the sanctioned entry point,
-/// and the one every in-tree call site already uses, which is why this
-/// shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_panel` instead — this free function is a compatibility shim over the shared #859 implementation"
-)]
-pub fn draw_panel(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    panel: &Panel,
-    line_height: f32,
-) -> PanelLayout {
-    let layout = win_panel_layout(rect, panel, line_height);
-    let theme = Theme::default();
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, &theme);
-    layout
 }
 
 #[cfg(test)]
@@ -99,10 +73,8 @@ mod tests {
     /// Paint `panel` via the shared
     /// [`crate::primitives::panel::native_surface_paint::paint`] through
     /// a [`super::super::surface::D2dSurface`] over `surface`'s headless target — the same
-    /// adapter the deprecated [`draw_panel`] shim uses, exercised here
-    /// directly so these tests don't trip the `-D warnings`-denied
-    /// `deprecated` lint (CLAUDE.md rule 3; mirrors `win::scrollbar`'s
-    /// identical test-migration note).
+    /// adapter the now-removed `draw_panel` shim used (issue #1109),
+    /// exercised here directly.
     fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, panel: &Panel) -> PanelLayout {
         let layout = win_panel_layout(rect, panel, LINE_HEIGHT);
         surface

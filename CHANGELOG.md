@@ -467,48 +467,42 @@ release time.
 
 ### Deprecated
 
-- `primitives::toast::{ToastStack, ToastItem, ToastAction}`,
-  `VisibleToast::action_bounds` and `Backend::draw_toast_stack` (issue
-  #1185) — the pre-#1185 single-action toast shapes. This is **PR 1 of the
-  rule-3 deprecate-then-remove pair** (`CLAUDE.md` *Downstream consumers*):
-  the three structs keep their exact field sets and their public paths
-  (`quadraui::ToastItem`, `quadraui::primitives::toast::ToastItem`, …), so
-  every existing struct literal still compiles, and `Backend::
-  draw_toast_stack` survives as a forwarding default that converts with
-  `ToastStack::to_overlay()` and calls `draw_toast_overlay` — same box
-  geometry, same hit regions, the single action secondary-styled, no focus
-  ring (covered by `legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay`
-  and `primitives::toast::legacy_compat_tests`). Replacements: `Toast`,
-  `ToastOverlay`, `ToastButton`, `VisibleToast::action_rects`,
-  `Backend::draw_toast_overlay`. PR 2 deletes the shims once both consumers
-  have migrated.
+- `primitives::toast::{ToastStack, ToastItem, ToastAction}` and
+  `Backend::draw_toast_stack` (issue #1185) — the pre-#1185 single-action
+  toast shapes. This is **PR 1 of the rule-3 deprecate-then-remove pair**
+  (`CLAUDE.md` *Downstream consumers*): the three structs keep their exact
+  field sets and their public paths (`quadraui::ToastItem`,
+  `quadraui::primitives::toast::ToastItem`, …), so every existing struct
+  literal still compiles, and `Backend::draw_toast_stack` survives as a
+  forwarding default that converts with `ToastStack::to_overlay()` and
+  calls `draw_toast_overlay` — same box geometry, same hit regions, the
+  single action secondary-styled, no focus ring (covered by
+  `legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay` and
+  `primitives::toast::legacy_compat_tests`). Replacements: `Toast`,
+  `ToastOverlay`, `ToastButton`, `Backend::draw_toast_overlay`. Issue
+  #1109 found zero uses of `ToastStack`/`draw_toast_stack` in coord-tui's
+  `main`, and zero uses of `ToastAction` in either consumer, but
+  `coord-tui` still constructs `ToastItem` directly (`src/app/mod.rs`),
+  which holds `ToastAction` through its own `action` field — so all three
+  structs and the trait method stay deprecated pending that migration.
 
   **Downstream impact.** Blast-radius grep of both consumers' CI branches
-  (`grep -rn 'ToastItem\|ToastStack\|ToastAction\|action_bounds\|draw_toast_stack'`
-  over `coord-tui/src` + `vimcode/src`):
+  (`grep -rn 'ToastItem\|ToastStack\|ToastAction\|draw_toast_stack'` over
+  `coord-tui/src` + `vimcode/src`):
   - `coord-tui` — `src/app/mod.rs` (`ToastItem { … action: None … }` at two
     call sites, `Vec<(ToastItem, …)>`, `ToastStack { … }`),
     `src/app/dialogs.rs` (reads `item.title` / `item.body`),
     `src/app/render.rs` (`backend.draw_toast_stack(…)`).
-  - `vimcode` — `src/render.rs::build_toast_stack` (`quadraui::ToastStack`
-    / `ToastItem` / `ToastAction` literals, `b.draw_toast_stack(…)`),
-    `src/gtk/testing.rs` (reads `VisibleToast::action_bounds`).
+  - `vimcode` — zero hits (migrated off `ToastStack`/`ToastItem`/
+    `ToastAction`/`draw_toast_stack` already; its `FrameOp::ToastStack` is
+    its own unrelated enum variant).
 
   Every one of those still compiles against this PR — verified by running
   the `downstream` job's own command, `cargo check --all-targets`, in each
   consumer with its `quadraui` repointed at this branch: both exit 0, with
   `deprecated` warnings only (that job sets `RUSTFLAGS: ""`, which is
   exactly the policy split `CLAUDE.md` rule 3 describes). Consumer
-  migration PRs are a follow-up in each repo, filed by the coordinator.
-- `primitives::status_bar::StatusBar::hit_regions` and
-  `hit_regions_fit_chars` — pre-D6 char-column hit-testing helpers.
-  Replacement: `StatusBar::layout()` + `StatusBarLayout::hit_test()`, which
-  already applies the same priority-drop policy and returns the crate's
-  `Rect` + `Hit`-enum convention instead of raw `u16` columns. Tracked in
-  #823.
-- `primitives::status_bar::StatusBar::resolve_click_fit_chars` — same
-  replacement as above (`StatusBar::layout()` + `StatusBarLayout::hit_test()`).
-  Tracked in #823.
+  migration PR is a follow-up in coord-tui, filed by the coordinator.
 - `primitives::tab_bar::TabBarHits` — the f64-tuple pre-D6 hit struct still
   returned by `Backend::draw_tab_bar` / `draw_tab_bar_icons` /
   `draw_tab_bar_with_chrome` / `tab_bar_layout` / `tab_bar_layout_icons` /
@@ -532,25 +526,62 @@ release time.
   by which side of `aggregate_spans` produced them). Old name kept as a
   `#[deprecated]` `pub type` alias, still re-exported at the crate root
   behind `#[allow(deprecated)]`. PR 2 (shim removal), tracked in #822.
-- `primitives::multi_section_view::LayoutMetrics` — renamed to
-  `MsvLayoutMetrics` (the crate-root export was already using this name)
-  to resolve a bare-name clash that read as though it belonged to the
-  unrelated `primitives::layout_metrics` module. Old name kept as a
-  `#[deprecated]` `pub type` alias. PR 2 (shim removal), tracked in #822.
+
+### Removed
+
+- `primitives::status_bar::StatusBar::{hit_regions, hit_regions_fit_chars,
+  resolve_click_fit_chars}` — pre-D6 char-column hit-testing helpers
+  (#823). Replacement: `StatusBar::layout()` + `StatusBarLayout::hit_test()`,
+  which already applies the same priority-drop policy and returns the
+  crate's `Rect` + `Hit`-enum convention instead of raw `u16` columns.
+  Issue #1109 found zero uses of all three in coord-tui's `main` or
+  vimcode's `develop`; `StatusBar::resolve_click` (not itself deprecated)
+  kept its public signature, with the `hit_regions` logic it depended on
+  inlined as a private helper.
+- `primitives::multi_section_view::LayoutMetrics` — the pre-#822
+  `#[deprecated]` `pub type` alias for `MsvLayoutMetrics` (the crate-root
+  export was already using the new name). Issue #1109 found zero uses in
+  coord-tui's `main` or vimcode's `develop`.
 - `primitives::tooltip::Tooltip::{with_styled_lines, with_placement,
   with_bg, with_fg}` and `primitives::tooltip::TooltipChrome::{with_border,
   with_title}` — `with_*` builder sprawl (#824): every one of these fields
   is already `pub`, so the builder was sugar around a field write, not
   something guarding an invariant. Replacement: set the field directly.
-  `TooltipChrome` is already `#[non_exhaustive]` + `Default`, so it already
-  *is* the options-struct shape #824 asks for; `Tooltip` stays a plain,
-  non-`#[non_exhaustive]` struct (per its module doc's exhaustive-literal
-  reasoning), so its fields are set the same way. Old methods kept behind
-  `#[deprecated]`, unchanged in behaviour. PR 2 (shim removal), tracked in
-  #824.
-
-### Removed
-
+  Issue #1109 found zero uses of any of the six in coord-tui's `main` or
+  vimcode's `develop`.
+- `VisibleToast::action_bounds` (issue #1185's single-action mirror field)
+  — zero uses in coord-tui's `main` or vimcode's `develop` (issue #1109);
+  the `src/gtk/testing.rs` read this file's #1185 entry once attributed to
+  vimcode no longer exists there. Replacement: `VisibleToast::action_rects`.
+- `primitives::minimap::Minimap::layout` and `primitives::minimap::
+  sample_lines` — the pre-#667 two-argument `layout()` shim (defaulted to
+  `MinimapSizing::Fill`) and the pre-#1012 point-sampler `sample_lines`.
+  Issue #1109 found zero uses of either in coord-tui's `main` or vimcode's
+  `develop` — the doc comments claiming a live `vimcode::src/render.rs::
+  minimap_click_line` dependency on the 2-arg `layout()` were stale; that
+  function now calls `layout_with_sizing` exclusively. Replacements:
+  `Minimap::layout_with_sizing`, `Minimap::sample_blocks`.
+- `Backend::tab_bar_layout_to_hits` and `EditorPaintResult::cursor_position`
+  — issue #1109 found zero uses of either in coord-tui's `main` or
+  vimcode's `develop`: the former's only vimcode hit was a doc comment
+  (`src/gtk/testing.rs`), and the latter's `src/tui_main/render_impl.rs`
+  call site this field was kept populated for no longer exists. Renamed
+  to `tab_bar_hits_from_layout` (#504); replacement:
+  `EditorPaintResult::cursor_position_native` (#504).
+- Every per-backend free-function `draw_*` paint shim deprecated across
+  issues #808/#811/#859/#860/#861/#862/#863/#864/#865/#866/#1072/#1085
+  (one per primitive per backend, over the shared `CgSurface`/
+  `D2dSurface`/`CairoSurface` adapters) — `macos::{draw_board, draw_panel,
+  draw_split, draw_split_tree, draw_pipeline_view, draw_toast_stack,
+  draw_scrollbar, draw_progress, draw_drop_overlay, draw_form,
+  draw_diff_view, draw_status_bar}`, the identical `win::` set, and the
+  identical `gtk::` set **except** `gtk::draw_status_bar` (issue #1109):
+  that one has a real consumer (vimcode's `src/gtk/mod.rs` calls
+  `quadraui::gtk::draw_status_bar` directly in a test helper), so it
+  stays deprecated pending that migration; every other free function in
+  the list had zero uses in coord-tui's `main` and vimcode's `develop`.
+  Replacement for all of them: the corresponding `Backend::draw_*` trait
+  method, which every in-tree call site already used.
 - `compose::key_map::{KeyMap, KeyContext}` (#473) — the "one convention
   #10" adopt-or-demote pass (#825) found zero constructors anywhere: no
   hit in this crate's own examples or tests beyond its own unit-test

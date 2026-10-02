@@ -30,83 +30,6 @@ use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-/// Deprecated free-function shim (#808, CLAUDE.md rule 8): this module's
-/// `draw_form` used to match every `FieldKind` directly. Painting now
-/// goes through [`crate::primitives::form::paint`] via
-/// [`super::surface::D2dSurface`]; this wrapper reproduces the old signature exactly
-/// for any external caller that held a direct `quadraui::win::draw_form`
-/// reference rather than going through [`crate::Backend::draw_form`] —
-/// the sanctioned entry point, and the one every in-tree call site
-/// already uses, which is why this shim has no in-repo caller left to
-/// trip the `-D warnings`-denied `deprecated` lint. `FieldKind::Toolbar`
-/// still renders as plain per-button text here, matching pre-#808
-/// behaviour, for the same reason `WinBackend::draw_form` does (see that
-/// method's doc).
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_form` (or `crate::primitives::form::paint` with a `super::surface::D2dSurface`) instead — this free function is a compatibility shim over the shared #808 implementation"
-)]
-pub fn draw_form(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    form: &Form,
-    line_height: f32,
-) -> FormLayout {
-    let flayout = win_form_layout(dwrite, rect, form, line_height);
-    let theme = Theme::default();
-    let origin = crate::Point::new(rect.x, rect.y);
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::form::paint(form, &flayout, &mut surface, &theme, origin);
-
-    for vf in &flayout.visible_fields {
-        let Some(field) = form.fields.get(vf.field_idx) else {
-            continue;
-        };
-        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
-            continue;
-        };
-        let field_fg = if field.disabled {
-            theme.muted_fg
-        } else {
-            theme.foreground
-        };
-        for (item_id, item_rect) in &vf.item_bounds {
-            let btn = toolbar.buttons.iter().find_map(|b| {
-                toolbar_item(&field.id, b)
-                    .filter(|(id, _)| id == item_id)
-                    .map(|_| b)
-            });
-            let r = Rect::new(
-                origin.x + item_rect.x,
-                origin.y + item_rect.y,
-                item_rect.width,
-                item_rect.height,
-            );
-            match btn {
-                Some(ToolbarButton::Action { label, enabled, .. }) => {
-                    let fg = if *enabled { field_fg } else { theme.muted_fg };
-                    let (tw, th) = dwrite.measure_text(label).unwrap_or((0.0, 0.0));
-                    let ty = r.y + (r.height - th) / 2.0;
-                    let _ = dwrite.draw_text(target, label, Rect::new(r.x, ty, tw, th), fg);
-                }
-                Some(ToolbarButton::Label { text, fg }) => {
-                    let color = fg.unwrap_or(field_fg);
-                    let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
-                    let ty = r.y + (r.height - th) / 2.0;
-                    let _ = dwrite.draw_text(target, text, Rect::new(r.x, ty, tw, th), color);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    flayout
-}
-
 pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(WidgetId, String)> {
     match btn {
         ToolbarButton::Action { id, label, .. } => Some((id.clone(), label.clone())),
@@ -116,7 +39,9 @@ pub(crate) fn toolbar_item(field_id: &WidgetId, btn: &ToolbarButton) -> Option<(
 }
 
 /// Compute a [`Form`]'s layout without painting — the DirectWrite twin
-/// of [`draw_form`]'s internal layout call.
+/// of `crate::Backend::draw_form`'s internal layout call (the
+/// free-function `draw_form` shim this backed was removed in issue
+/// #1109).
 ///
 /// Thin wrapper over [`crate::primitives::layout_metrics::form_row_height`]
 /// / [`crate::primitives::layout_metrics::form_field_measure`] (#499,

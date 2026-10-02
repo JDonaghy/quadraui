@@ -5,17 +5,14 @@
 //! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
 //! module doc for why the three per-backend copies were found to be
 //! already identical (no divergence). This module now carries
-//! [`gtk_split_tree_layout`] and the deprecated [`draw_split_tree`]
+//! [`gtk_split_tree_layout`]; the deprecated `draw_split_tree`
 //! compatibility shim over the shared [`super::surface::CairoSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawSplitTreeSurface`).
-
-use gtk4::cairo::Context;
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`).
 
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_split_tree_layout;
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`SplitTree`] without
 /// painting. Shares its divider thickness with `mac_split_tree_layout` /
@@ -23,41 +20,6 @@ use crate::theme::Theme;
 pub fn gtk_split_tree_layout(tree: &SplitTree, x: f64, y: f64, w: f64, h: f64) -> SplitTreeLayout {
     let bounds = Rect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_tree_layout(tree, bounds)
-}
-
-/// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
-/// the pre-#863 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_split_tree` reference rather than going
-/// through [`crate::Backend::draw_split_tree`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is
-/// why this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[allow(clippy::too_many_arguments)]
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_split_tree` instead — this free function is a compatibility shim over the shared #863 implementation"
-)]
-pub fn draw_split_tree(
-    cr: &Context,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    tree: &SplitTree,
-    theme: &Theme,
-) -> SplitTreeLayout {
-    let layout = gtk_split_tree_layout(tree, x, y, w, h);
-    // Dividers are always opaque `theme.separator` —
-    // `translucent_fill: false` matches this module's pre-migration
-    // behaviour exactly, unlike `gtk::scrollbar`'s translucent-overlay
-    // fill.
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: None,
-        translucent_fill: false,
-    };
-    crate::primitives::split_tree::native_surface_paint::paint(&layout, &mut surface, theme);
-    layout
 }
 
 #[cfg(test)]

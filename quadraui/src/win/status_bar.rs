@@ -10,14 +10,14 @@
 //! and `win::status_bar::draw_status_bar` into one implementation. This
 //! module now only carries [`win_status_bar_layout`] (pure layout, still
 //! needed by `WinBackend::status_bar_layout` for no-paint hit-test
-//! queries) and the deprecated [`draw_status_bar`] compatibility shim over
-//! the shared [`super::surface::D2dSurface`] adapter (#1072 — consolidated
-//! from this module's own private `RawWinStatusBarSurface`). `MIN_GAP_DIP`
-//! stays put — it's still [`win_status_bar_layout`]'s own measurer
-//! constant, untouched by this migration.
+//! queries); the deprecated `draw_status_bar` compatibility shim over
+//! the shared [`super::surface::D2dSurface`] adapter was removed in
+//! issue #1109 (zero uses in coord-tui's `main` and vimcode's
+//! `develop`). `MIN_GAP_DIP` stays put — it's still
+//! [`win_status_bar_layout`]'s own measurer constant, untouched by this
+//! migration.
 //!
-//! Issue #1078: only [`draw_status_bar`] (the deprecated paint shim) is
-//! Windows-only. [`win_status_bar_layout`] is pure geometry generic over
+//! [`win_status_bar_layout`] is pure geometry generic over
 //! [`StatusMeasure`] — no Direct2D/DirectWrite type in its signature —
 //! so it compiles and runs everywhere, including a plain `cargo test
 //! --features win` on Linux. `super::mod`'s `mod status_bar;` is no
@@ -33,9 +33,6 @@
 //! background, not [`Theme::default`].
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
-#[cfg(target_os = "windows")]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::status_bar::{
@@ -43,8 +40,6 @@ use crate::primitives::status_bar::{
 };
 #[cfg(target_os = "windows")]
 use crate::theme::Theme;
-#[cfg(target_os = "windows")]
-use crate::types::WidgetId;
 use crate::{StatusBar, StatusBarLayout};
 
 /// Minimum gap (DIPs) reserved between the left and right segment
@@ -94,44 +89,6 @@ pub fn win_status_bar_layout(
         PIXEL_EDGE_INSET,
         PIXEL_SEGMENT_PADDING,
         |seg| StatusSegmentMeasure::new(measure.width_of(&seg.text, seg.bold)),
-    )
-}
-
-/// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
-/// the pre-#860 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_status_bar` reference rather than going
-/// through [`crate::Backend::draw_status_bar`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[cfg(target_os = "windows")]
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_status_bar` instead — this free function is a compatibility shim over the shared #860 implementation"
-)]
-pub fn draw_status_bar(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    bar: &StatusBar,
-    hovered_id: Option<&WidgetId>,
-    pressed_id: Option<&WidgetId>,
-    theme: &Theme,
-) -> StatusBarLayout {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::status_bar::native_surface_paint::paint(
-        bar,
-        &mut surface,
-        theme,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        hovered_id,
-        pressed_id,
     )
 }
 
@@ -321,10 +278,8 @@ mod tests {
     /// Paint `bar` via the shared
     /// [`crate::primitives::status_bar::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
-    /// target — the same adapter the deprecated [`draw_status_bar`] shim
-    /// uses, exercised here directly so these tests don't trip the
-    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
-    /// `win::panel`'s identical test-migration note).
+    /// target — the same adapter the now-removed `draw_status_bar` shim
+    /// used (issue #1109), exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,

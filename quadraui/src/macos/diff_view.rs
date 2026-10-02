@@ -8,73 +8,21 @@
 //! ellipsize vs. hard-clip) found while unifying
 //! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
 //! and `win::diff_view::draw_diff_view` into one implementation. This
-//! module now only carries the deprecated [`draw_diff_view`]
-//! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawMacDiffViewSurface`).
+//! module no longer carries any public rasteriser of its own — the
+//! deprecated `draw_diff_view` compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`); callers
+//! reach the same paint through [`crate::Backend::draw_diff_view`].
 //!
 //! Before #737 landed, `MacBackend::draw_diff_view` painted nothing and
 //! returned `visible_rows: 0`, which silently pinned every host's scroll
 //! clamp to zero (quadraui#484 §4) — the shared paint below inherits
 //! that fix via [`DiffView::layout`].
-//!
-//! # Safety
-//!
-//! `unsafe` here is confined to [`super::surface::CgSurface`]'s trait
-//! impl, which forwards to [`super::backend::ns_fill_rect`]/
-//! [`ns_push_clip`]/[`ns_pop_clip`](super::backend::ns_pop_clip) and
-//! [`super::text::draw_text`] — each requires a valid `CGContextRef`
-//! borrowed for the duration of the call, the same contract
-//! [`super::surface::CgSurface`]'s constructor sites (the deprecated
-//! [`draw_diff_view`] shim, and this module's own tests) uphold.
 
-use core_graphics::sys::CGContextRef;
-use core_text::font::CTFont;
-
+#[cfg(test)]
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};
+#[cfg(test)]
 use crate::theme::Theme;
-
-/// Deprecated free-function shim (#866, CLAUDE.md rule 8): reproduces
-/// the pre-#866 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_diff_view` reference rather than going
-/// through [`crate::Backend::draw_diff_view`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
-/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
-/// Calling with a freed or null pointer is UB.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_diff_view` instead — this free function is a compatibility shim over the shared #866 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_diff_view(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    view: &DiffView,
-    theme: &Theme,
-    line_height: f64,
-) -> DiffViewLayout {
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::diff_view::native_surface_paint::paint(
-        view,
-        &mut surface,
-        theme,
-        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
-        line_height as f32,
-    )
-}
 
 #[cfg(test)]
 mod tests {

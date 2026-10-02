@@ -35,9 +35,9 @@
 //! 3. **Skip dropped segments in click handlers.** Call [`StatusBar::layout`]
 //!    and resolve clicks with [`StatusBarLayout::hit_test`] — its
 //!    `hit_regions` only ever cover the segments `resolved_right_start`
-//!    kept visible. (The pre-D6 [`StatusBar::resolve_click_fit_chars`] did
-//!    the same thing by hand for char-cell backends; it's `#[deprecated]`
-//!    as of issue #823 — use `layout` + `hit_test` instead.) Otherwise
+//!    kept visible. (The pre-D6 `StatusBar::resolve_click_fit_chars` did
+//!    the same thing by hand for char-cell backends; it was removed in
+//!    issue #1109 — use `layout` + `hit_test` instead.) Otherwise
 //!    clicks on columns where dropped segments *used to be* will trigger
 //!    their actions even though the user can't see them.
 //!
@@ -88,7 +88,7 @@ pub struct StatusBarSegment {
 
 /// One pre-computed hit region used for click resolution. `(col, width, id)`
 /// where `col` is the starting character column and `width` is the segment
-/// width in cells. Computed by [`StatusBar::hit_regions`].
+/// width in cells. Computed internally by [`StatusBar::resolve_click`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusBarHitRegion {
     pub col: u16,
@@ -112,18 +112,13 @@ impl StatusBar {
     /// Left segments accumulate from column 0; right segments are right-
     /// aligned inside `bar_width`.
     ///
-    /// # Deprecated (issue #823)
-    ///
-    /// Pre-D6: returns character-column `u16` pairs rather than the
-    /// crate's `Rect` + `Hit`-enum convention. Use [`Self::layout`] and
-    /// [`StatusBarLayout::hit_test`] instead — same priority-aware hit
-    /// geometry, native-unit `Rect`s, and a `StatusBarHit` result instead
-    /// of a raw `WidgetId`.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `StatusBar::layout()` + `StatusBarLayout::hit_test()` instead — issue #823"
-    )]
-    pub fn hit_regions(&self, bar_width: usize) -> Vec<StatusBarHitRegion> {
+    /// Pre-D6 shape (character-column `u16` pairs); kept private, as the
+    /// shared body [`Self::resolve_click`] calls. The public `hit_regions`
+    /// this once backed was removed in issue #1109 (zero uses in
+    /// coord-tui's `main` and vimcode's `develop`) — use [`Self::layout`]
+    /// and [`StatusBarLayout::hit_test`] instead for the crate's `Rect` +
+    /// `Hit`-enum convention.
+    fn hit_regions_impl(&self, bar_width: usize) -> Vec<StatusBarHitRegion> {
         let mut regions = Vec::new();
         let mut col: u16 = 0;
         for seg in &self.left_segments {
@@ -159,13 +154,8 @@ impl StatusBar {
 
     /// Resolve a column position to the `WidgetId` of the clicked segment,
     /// or `None` if the column falls outside any interactive segment.
-    ///
-    /// Not itself part of issue #823's retirement list, but calls the
-    /// now-deprecated [`Self::hit_regions`] internally — `#[allow(deprecated)]`
-    /// here is that internal call, not a second public deprecation.
-    #[allow(deprecated)]
     pub fn resolve_click(&self, click_col: u16, bar_width: usize) -> Option<WidgetId> {
-        for region in self.hit_regions(bar_width) {
+        for region in self.hit_regions_impl(bar_width) {
             if click_col >= region.col && click_col < region.col + region.width {
                 return Some(region.id);
             }
@@ -233,82 +223,6 @@ impl StatusBar {
     /// (TUI). Same algorithm, with `measure = |seg| seg.text.chars().count()`.
     pub fn fit_right_start_chars(&self, bar_width: usize, min_gap: usize) -> usize {
         self.fit_right_start(bar_width, min_gap, |seg| seg.text.chars().count())
-    }
-
-    /// Like `hit_regions` but skips segments dropped by `fit_right_start_chars`.
-    /// Use when the visible right half may have been narrowed.
-    ///
-    /// # Deprecated (issue #823)
-    ///
-    /// Pre-D6, same shape as [`Self::hit_regions`]. [`Self::layout`]
-    /// already applies the priority-drop policy this method hand-rolls,
-    /// so its [`StatusBarLayout::hit_test`] is the direct replacement.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `StatusBar::layout()` + `StatusBarLayout::hit_test()` instead — issue #823"
-    )]
-    pub fn hit_regions_fit_chars(
-        &self,
-        bar_width: usize,
-        min_gap: usize,
-    ) -> Vec<StatusBarHitRegion> {
-        let start = self.fit_right_start_chars(bar_width, min_gap);
-        let mut regions = Vec::new();
-        let mut col: u16 = 0;
-        for seg in &self.left_segments {
-            let w = seg.text.chars().count() as u16;
-            if let Some(id) = &seg.action_id {
-                regions.push(StatusBarHitRegion {
-                    col,
-                    width: w,
-                    id: id.clone(),
-                });
-            }
-            col += w;
-        }
-        let visible_right = &self.right_segments[start..];
-        let right_width: usize = visible_right.iter().map(|s| s.text.chars().count()).sum();
-        let mut col = bar_width.saturating_sub(right_width) as u16;
-        for seg in visible_right {
-            let w = seg.text.chars().count() as u16;
-            if let Some(id) = &seg.action_id {
-                regions.push(StatusBarHitRegion {
-                    col,
-                    width: w,
-                    id: id.clone(),
-                });
-            }
-            col += w;
-        }
-        regions
-    }
-
-    /// Like `resolve_click` but uses `hit_regions_fit_chars` so clicks on
-    /// dropped (invisible) segments don't trigger spurious actions.
-    ///
-    /// # Deprecated (issue #823)
-    ///
-    /// Pre-D6. [`Self::layout`] already resolves the same priority-drop
-    /// decision (see `resolved_right_start`) and its
-    /// [`StatusBarLayout::hit_test`] only ever matches a visible segment,
-    /// so it is the direct replacement — no separate "fit" variant needed.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `StatusBar::layout()` + `StatusBarLayout::hit_test()` instead — issue #823"
-    )]
-    #[allow(deprecated)] // calls the also-deprecated `hit_regions_fit_chars` — issue #823
-    pub fn resolve_click_fit_chars(
-        &self,
-        click_col: u16,
-        bar_width: usize,
-        min_gap: usize,
-    ) -> Option<WidgetId> {
-        for region in self.hit_regions_fit_chars(bar_width, min_gap) {
-            if click_col >= region.col && click_col < region.col + region.width {
-                return Some(region.id);
-            }
-        }
-        None
     }
 }
 
@@ -1302,8 +1216,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated pre-D6 shim directly — issue #823
-    fn status_bar_hit_regions() {
+    fn status_bar_resolve_click() {
         // Bar width 30: left " LEFT " (6 chars, clickable "left") +
         // right " R " (3 chars, clickable "right") right-aligned at col 27.
         let bar = StatusBar {
@@ -1323,17 +1236,6 @@ mod tests {
                 action_id: Some(WidgetId::new("right")),
             }],
         };
-        let regions = bar.hit_regions(30);
-        assert_eq!(regions.len(), 2);
-        // Left starts at col 0, width 6
-        assert_eq!(regions[0].col, 0);
-        assert_eq!(regions[0].width, 6);
-        assert_eq!(regions[0].id.as_str(), "left");
-        // Right starts at col 27, width 3
-        assert_eq!(regions[1].col, 27);
-        assert_eq!(regions[1].width, 3);
-        assert_eq!(regions[1].id.as_str(), "right");
-
         // Click resolution
         assert_eq!(
             bar.resolve_click(3, 30).as_ref().map(|w| w.as_str()),
@@ -1451,44 +1353,6 @@ mod tests {
         assert_eq!(bold.fit_right_start(90, 5, measure_with_bold), 0);
         // 89: drop one — first ("xx").
         assert_eq!(bold.fit_right_start(89, 5, measure_with_bold), 1);
-    }
-
-    #[test]
-    #[allow(deprecated)] // exercises the deprecated pre-D6 shim directly — issue #823
-    fn status_bar_resolve_click_fit_chars_skips_dropped() {
-        let mk = |text: &str, id: &str| StatusBarSegment {
-            text: text.to_string(),
-            fg: Color::rgb(0, 0, 0),
-            bg: Color::rgb(0, 0, 0),
-            bold: false,
-            action_id: Some(WidgetId::new(id)),
-        };
-        let bar = StatusBar {
-            id: WidgetId::new("t"),
-            left_segments: vec![mk(" L ", "left")],
-            right_segments: vec![mk(" drop ", "drop"), mk(" keep ", "keep")],
-        };
-
-        // bar_width 20 fits both on the right (3+12=15 <= 20-0=20 with gap 2): left_w=3, gap=2, total_r=12, 3+2+12=17 <= 20.
-        // No drop; keep starts at col 14 (20-6), drop at col 8 (20-12).
-        assert_eq!(
-            bar.resolve_click_fit_chars(10, 20, 2)
-                .as_ref()
-                .map(|w| w.as_str()),
-            Some("drop")
-        );
-
-        // Narrow bar: 3 + 2 + 12 = 17 > 15. Drop " drop " (6). Remaining " keep " (6) fits (3+2+6=11<=15).
-        // Now visible right: just "keep" at col 15-6=9.
-        // Click at col 10 → hits "keep".
-        assert_eq!(
-            bar.resolve_click_fit_chars(10, 15, 2)
-                .as_ref()
-                .map(|w| w.as_str()),
-            Some("keep")
-        );
-        // Click at col 3 (where "drop" used to be) → no segment.
-        assert_eq!(bar.resolve_click_fit_chars(3, 15, 2), None);
     }
 
     // ── D6 StatusBar layout API tests ─────────────────────────────────

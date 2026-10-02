@@ -12,29 +12,30 @@
 //! chevron arrow head/focus indicator, the clamped+clipped label — were
 //! already this backend's own behaviour and are now what every backend
 //! shares). This module now only carries [`win_pipeline_view_layout`]
-//! (still real, backend-specific pure geometry — no painting involved)
-//! and the deprecated [`draw_pipeline_view`] compatibility shim over the
-//! shared [`super::surface::D2dSurface`] adapter (mirrors
-//! `win::diff_view`'s #866 shim).
+//! (still real, backend-specific pure geometry — no painting involved);
+//! the deprecated `draw_pipeline_view` compatibility shim over the
+//! shared [`super::surface::D2dSurface`] adapter was removed in issue
+//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod pipeline_view;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the Win-GUI DIP-unit layout for a [`PipelineView`] without
-/// painting — the DirectWrite twin of [`draw_pipeline_view`]'s internal
-/// layout call. Shares its geometry with `gtk_pipeline_view_layout` /
-/// `mac_pipeline_view_layout` via [`pixel_pipeline_view_layout`] (issue
-/// #1079).
+/// painting — the DirectWrite twin of `crate::Backend::draw_pipeline_view`'s
+/// internal layout call (the free-function `draw_pipeline_view` shim
+/// this backed was removed in issue #1109). Shares its geometry with
+/// `gtk_pipeline_view_layout` / `mac_pipeline_view_layout` via
+/// [`pixel_pipeline_view_layout`] (issue #1079).
 ///
 /// Note: the returned layout (incl. `bounds`) is offset down by
 /// [`pixel::PIPELINE_FOCUS_INDICATOR_H`], so `bounds.y` starts below the
@@ -44,31 +45,6 @@ use crate::theme::Theme;
 /// contract as the GTK/macOS/TUI twins' `*_pipeline_view_layout`.
 pub fn win_pipeline_view_layout(view: &PipelineView, rect: Rect) -> PipelineViewLayout {
     pixel_pipeline_view_layout(view, rect.x, rect.y, rect.width, rect.height)
-}
-
-/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
-/// the pre-#1085 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_pipeline_view` reference rather than
-/// going through [`crate::Backend::draw_pipeline_view`] — the sanctioned
-/// entry point, and the one every in-tree call site already uses, which
-/// is why this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_pipeline_view` instead — this free function is a compatibility shim over the shared #1085 implementation"
-)]
-pub fn draw_pipeline_view(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    view: &PipelineView,
-    theme: &Theme,
-) -> PipelineViewLayout {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::pipeline_view::native_surface_paint::paint(view, &mut surface, theme, rect)
 }
 
 #[cfg(test)]
@@ -104,11 +80,9 @@ mod tests {
     /// Paint `view` via the shared
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s
-    /// headless target — the same adapter the deprecated
-    /// [`draw_pipeline_view`] shim uses, exercised here directly so these
-    /// tests don't trip the `-D warnings`-denied `deprecated` lint
-    /// (CLAUDE.md rule 3; mirrors `win::diff_view`'s identical
-    /// test-migration note).
+    /// headless target — the same adapter the now-removed
+    /// `draw_pipeline_view` shim used (issue #1109), exercised here
+    /// directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,

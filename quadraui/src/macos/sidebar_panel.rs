@@ -8,18 +8,15 @@
 //! and `win::sidebar_panel::draw_sidebar_panel` into one implementation.
 //! This module now only carries [`mac_sidebar_panel_layout`] (pure
 //! layout, still needed by `MacBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries) and the deprecated [`draw_sidebar_panel`]
+//! no-paint hit-test queries); the deprecated `draw_sidebar_panel`
 //! compatibility shim over the shared [`super::surface::CgSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawSidebarPanelSurface`).
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`).
 
-use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
-use crate::theme::Theme;
-use crate::types::WidgetId;
 
 /// Compute the macOS pixel-unit layout for a `SidebarPanel`. `font`
 /// is required for accurate text measurement — it's a
@@ -39,53 +36,6 @@ pub fn mac_sidebar_panel_layout(
         bounds,
         SidebarPanelMeasure::new(line_height as f32, 8.0),
         |btn| ToolbarItemMeasure::new(measure_button(font, btn)),
-    )
-}
-
-/// Deprecated free-function shim (#862, CLAUDE.md rule 8): reproduces
-/// the pre-#862 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_sidebar_panel` reference rather than
-/// going through [`crate::Backend::draw_sidebar_panel`] — the sanctioned
-/// entry point, and the one every in-tree call site already uses, which
-/// is why this shim has no in-repo caller left to trip the
-/// `-D warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call (typical: the frame-scope pointer stashed on
-/// [`super::MacBackend`]).
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_sidebar_panel` instead — this free function is a compatibility shim over the shared #862 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_sidebar_panel(
-    ctx: CGContextRef,
-    font: &CTFont,
-    line_height: f64,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    panel: &SidebarPanel,
-    theme: &Theme,
-    hovered_toolbar_id: Option<&WidgetId>,
-    pressed_toolbar_id: Option<&WidgetId>,
-) -> SidebarPanelLayout {
-    let bounds = crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::sidebar_panel::native_surface_paint::paint(
-        panel,
-        &mut surface,
-        theme,
-        bounds,
-        line_height as f32,
-        hovered_toolbar_id,
-        pressed_toolbar_id,
     )
 }
 

@@ -7,43 +7,20 @@
 //! unlike GTK/macOS's real alpha blend) found and reported while
 //! unifying `gtk::draw_drop_overlay`, `macos::drop_overlay::
 //! draw_drop_overlay` and `win::drop_overlay::draw_drop_overlay` into
-//! one implementation. This module now only carries the deprecated
-//! [`draw_drop_overlay`] compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawDropOverlaySurface`), plus the
-//! driver-tier tests below (unchanged — they already painted through
-//! [`crate::Backend::draw_drop_overlay`], so they exercise the new
-//! shared path without modification).
+//! one implementation. This module no longer carries any public
+//! rasteriser of its own — the deprecated `draw_drop_overlay`
+//! compatibility shim over the shared [`super::surface::CgSurface`]
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`); the driver-tier tests below paint through
+//! [`crate::Backend::draw_drop_overlay`] instead.
 //!
 //! `DropOverlay::ghost_position` is not rendered — neither GTK nor TUI
 //! paints a ghost label either, so this is parity, not a macOS gap.
 
-use core_graphics::sys::CGContextRef;
-
+#[cfg(test)]
 use crate::primitives::drop_zone::DropOverlay;
+#[cfg(test)]
 use crate::theme::Theme;
-
-/// Deprecated free-function shim (#865, CLAUDE.md rule 8): reproduces
-/// the pre-#865 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_drop_overlay` reference rather than
-/// going through [`crate::Backend::draw_drop_overlay`] — the sanctioned
-/// entry point, and the one every in-tree call site already uses, which
-/// is why this shim has no in-repo caller left to trip the
-/// `-D warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the
-/// call (typical: the frame-scope pointer stashed on [`super::MacBackend`]).
-/// Calling with a freed or null pointer is UB.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_drop_overlay` instead — this free function is a compatibility shim over the shared #865 implementation"
-)]
-pub unsafe fn draw_drop_overlay(ctx: CGContextRef, overlay: &DropOverlay, theme: &Theme) {
-    let mut surface = super::surface::CgSurface { ctx, font: None };
-    crate::primitives::drop_zone::native_surface_paint::paint(overlay, &mut surface, theme);
-}
 
 #[cfg(test)]
 mod tests {

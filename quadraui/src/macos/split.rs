@@ -7,16 +7,15 @@
 //! macOS's `CGContextSetRGBFillColor` (via `ns_fill_rect`) always
 //! honoured a translucent `theme.separator`, while pre-migration GTK
 //! did not — this module's behaviour is unchanged by the migration.
-//! This module now carries [`mac_split_layout`] and the deprecated
-//! [`draw_split`] compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawSplitSurface`).
-
-use core_graphics::sys::CGContextRef;
+//! This module now carries [`mac_split_layout`]; the deprecated
+//! `draw_split` compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 
 use crate::event::Rect as QRect;
 use crate::primitives::layout_metrics::pixel_split_layout;
 use crate::primitives::split::{Split, SplitLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`Split`] without painting.
@@ -25,38 +24,6 @@ use crate::theme::Theme;
 pub fn mac_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitLayout {
     let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_layout(split, bounds)
-}
-
-/// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces
-/// the pre-#864 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_split` reference rather than going
-/// through [`crate::Backend::draw_split`] — the sanctioned entry point,
-/// and the one every in-tree call site already uses, which is why this
-/// shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-#[allow(clippy::too_many_arguments)]
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_split` instead — this free function is a compatibility shim over the shared #864 implementation"
-)]
-pub unsafe fn draw_split(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    split: &Split,
-    theme: &Theme,
-) -> SplitLayout {
-    let layout = mac_split_layout(split, x, y, w, h);
-    let mut surface = super::surface::CgSurface { ctx, font: None };
-    crate::primitives::split::native_surface_paint::paint(&layout, &mut surface, theme);
-    layout
 }
 
 #[cfg(test)]

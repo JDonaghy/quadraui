@@ -11,29 +11,30 @@
 //! through to the embedded toolbar — preserved as-is, not fixed here).
 //! This module now only carries [`win_sidebar_panel_layout`] (pure
 //! layout, still needed by `WinBackend::sidebar_panel_layout` for
-//! no-paint hit-test queries) and the deprecated [`draw_sidebar_panel`]
+//! no-paint hit-test queries); the deprecated `draw_sidebar_panel`
 //! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawSidebarPanelSurface`).
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod sidebar_panel;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
 use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure};
+#[cfg(test)]
 use crate::theme::Theme;
+#[cfg(test)]
 use crate::types::WidgetId;
 
 /// Compute the Win-GUI pixel/DIP layout for a [`SidebarPanel`] without
-/// painting — the DirectWrite twin of [`draw_sidebar_panel`]'s internal
-/// layout call. No geometry is re-derived here: this delegates entirely
-/// to [`SidebarPanel::layout`] (#731's acceptance bar).
+/// painting — the DirectWrite twin of `crate::Backend::draw_sidebar_panel`
+/// (the removed `draw_sidebar_panel` free function shim this backed —
+/// see module doc). No geometry is re-derived here: this delegates
+/// entirely to [`SidebarPanel::layout`] (#731's acceptance bar).
 ///
 /// Coordinate frame: **ABSOLUTE** (`rect.x`/`rect.y` baked into
 /// `content_bounds` / `toolbar_bounds`), matching
@@ -50,45 +51,6 @@ pub fn win_sidebar_panel_layout(
     })
 }
 
-/// Deprecated free-function shim (#862, CLAUDE.md rule 8): reproduces
-/// the pre-#862 signature exactly (no `Theme` param — this backend never
-/// took one for `SidebarPanel`'s embedded toolbar; see this module's
-/// doc, divergence 4) for any external caller that held a direct
-/// `quadraui::win::draw_sidebar_panel` reference rather than going
-/// through [`crate::Backend::draw_sidebar_panel`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is
-/// why this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_sidebar_panel` instead — this free function is a compatibility shim over the shared #862 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn draw_sidebar_panel(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    line_height: f32,
-    rect: Rect,
-    panel: &SidebarPanel,
-    hovered_toolbar_id: Option<&WidgetId>,
-    pressed_toolbar_id: Option<&WidgetId>,
-) -> SidebarPanelLayout {
-    let theme = Theme::default();
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::sidebar_panel::native_surface_paint::paint(
-        panel,
-        &mut surface,
-        &theme,
-        rect,
-        line_height,
-        hovered_toolbar_id,
-        pressed_toolbar_id,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,11 +64,8 @@ mod tests {
     /// Paint `panel` via the shared
     /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
-    /// target — the same adapter the deprecated [`draw_sidebar_panel`]
-    /// shim uses, exercised here directly so these tests don't trip the
-    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
-    /// `win::panel`'s and `win::scrollbar`'s identical test-migration
-    /// note).
+    /// target — the same adapter the now-removed `draw_sidebar_panel`
+    /// shim used (issue #1109), exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,

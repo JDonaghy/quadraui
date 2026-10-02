@@ -8,16 +8,16 @@
 //! `gtk::draw_toast_stack`, `macos::toast::draw_toast_stack` and
 //! `win::toast::draw_toast_stack` into one implementation. This module
 //! now only carries [`gtk_toast_stack_layout`] (pure layout, still needed
-//! by `GtkDriver`/downstream callers for no-paint hit-test queries) and
-//! the deprecated [`draw_toast_stack`] compatibility shim over the shared
-//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawGtkToastSurface`).
+//! by `GtkDriver`/downstream callers for no-paint hit-test queries); the
+//! deprecated `draw_toast_stack` compatibility shim over the shared
+//! [`super::surface::CairoSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 
-use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::primitives::layout_metrics::pixel_toast_stack_layout;
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`ToastOverlay`] without painting.
@@ -58,46 +58,6 @@ pub fn gtk_toast_stack_layout(
         origin_y,
         viewport_width,
         viewport_height,
-        line_height as f32,
-    )
-}
-
-/// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
-/// the pre-#861 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_toast_stack` reference rather than going
-/// through [`crate::Backend::draw_toast_stack`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_toast_stack` instead — this free function is a compatibility shim over the shared #861 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn draw_toast_stack(
-    cr: &Context,
-    pango_layout: &pango::Layout,
-    origin_x: f64,
-    origin_y: f64,
-    viewport_width: f64,
-    viewport_height: f64,
-    stack: &ToastOverlay,
-    theme: &Theme,
-    line_height: f64,
-) -> ToastStackLayout {
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(pango_layout),
-        translucent_fill: true,
-    };
-    crate::primitives::toast::native_surface_paint::paint(
-        stack,
-        &mut surface,
-        theme,
-        origin_x as f32,
-        origin_y as f32,
-        viewport_width as f32,
-        viewport_height as f32,
         line_height as f32,
     )
 }
@@ -151,11 +111,10 @@ mod tests {
 
     /// Paint→click round trip at `(origin_x, origin_y)`: paints a single
     /// toast through [`super::super::surface::CairoSurface`] and the shared
-    /// `primitives::toast::native_surface_paint::paint` directly (rather
-    /// than the deprecated [`draw_toast_stack`] shim, so this test
-    /// doesn't trip the `-D warnings`-denied `deprecated` lint — mirrors
-    /// `gtk::status_bar`'s identical #860 test-migration note), confirms
-    /// the box's fill colour lands at the origin-shifted *absolute*
+    /// `primitives::toast::native_surface_paint::paint` directly — the
+    /// same adapter the now-removed `draw_toast_stack` shim used (issue
+    /// #1109) — confirms the box's fill colour lands at the
+    /// origin-shifted *absolute*
     /// position — not the viewport-local one `gtk_toast_stack_layout`
     /// used to compute internally before shifting — and that `hit_test`
     /// resolves clicks at that same absolute position through Dismiss

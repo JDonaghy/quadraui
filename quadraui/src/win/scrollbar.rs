@@ -5,10 +5,10 @@
 //! `NativeSurface` Phase 2d) — see that fn's doc for the one named
 //! divergence (quadraui#791) re-verified (already fixed) while unifying
 //! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
-//! `win::scrollbar::draw_scrollbar` into one implementation. This module
-//! now only carries the deprecated [`draw_scrollbar`] compatibility shim
-//! over the shared [`super::surface::D2dSurface`] adapter (#1072 —
-//! consolidated from this module's own private `RawScrollbarSurface`).
+//! `win::scrollbar::draw_scrollbar` into one implementation. The
+//! deprecated `draw_scrollbar` compatibility shim over the shared
+//! [`super::surface::D2dSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! `super::multi_section_view`'s embedded scrollbar still uses its own
 //! CPU-premix convention — out of scope here, see that module's doc.
@@ -18,29 +18,10 @@
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use crate::primitives::scrollbar::Scrollbar;
+#[cfg(test)]
 use crate::theme::Theme;
-
-/// Deprecated free-function shim (#811, CLAUDE.md rule 8): reproduces
-/// the pre-#811 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_scrollbar` reference rather than going
-/// through [`crate::Backend::draw_scrollbar`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is
-/// why this shim has no in-repo caller left to trip the
-/// `-D warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_scrollbar` instead — this free function is a compatibility shim over the shared #811 implementation"
-)]
-pub fn draw_scrollbar(target: &ID2D1RenderTarget, scrollbar: &Scrollbar, theme: &Theme) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: None,
-    };
-    crate::primitives::scrollbar::native_surface_paint::paint(scrollbar, &mut surface, theme);
-}
 
 #[cfg(test)]
 mod tests {
@@ -55,10 +36,9 @@ mod tests {
     /// Paint `scrollbar` via the shared
     /// [`crate::primitives::scrollbar::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s
-    /// headless target — the same adapter the deprecated [`draw_scrollbar`] shim
-    /// uses, exercised here directly so these tests don't trip the
-    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3;
-    /// mirrors `win::form`'s identical test-migration note).
+    /// headless target — the same adapter the now-removed
+    /// `draw_scrollbar` shim used (issue #1109), exercised here
+    /// directly.
     fn paint(scrollbar: &Scrollbar) -> HeadlessSurface {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         // Fill with a known background so blended track/thumb colours

@@ -203,7 +203,7 @@ pub mod testing;
 /// line-by-line like `backend.rs`.
 ///
 /// `pub` rather than `pub(crate)` (#25): the chrome rasterisers re-exported
-/// below (`draw_status_bar`, `draw_tab_bar`, …) take a `&DWrite` measurer in
+/// below (`draw_tab_bar`, …) take a `&DWrite` measurer in
 /// their signatures, exactly as [`crate::macos`]'s take a `&CTFont` from its
 /// own `pub mod text`. A `pub` function whose parameter type is `pub(crate)`
 /// is a `private_interfaces` warning — and this repo's CI runs with
@@ -251,13 +251,6 @@ pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 pub use board::win_board_layout;
-// #1085: `draw_board` is `#[deprecated]` — see `board::draw_board`'s doc
-// for why the shim exists and why re-exporting it here (rather than
-// dropping the re-export) is the point. `#[allow(deprecated)]` for the
-// same reason as `form::draw_form`'s re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use board::draw_board;
 #[cfg(target_os = "windows")]
 pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
@@ -273,36 +266,10 @@ pub use data_table::draw_data_table;
 pub use data_table::win_data_table_layout;
 #[cfg(target_os = "windows")]
 pub use dialog::draw_dialog;
-// #866: `draw_diff_view` is `#[deprecated]` — see
-// `diff_view::draw_diff_view`'s doc for why the shim exists and why
-// re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use diff_view::draw_diff_view;
-// #865: `draw_drop_overlay` is `#[deprecated]` — see
-// `drop_overlay::draw_drop_overlay`'s doc for why the shim exists and
-// why re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use drop_overlay::draw_drop_overlay;
 #[cfg(target_os = "windows")]
 pub use editor::draw_editor;
 #[cfg(target_os = "windows")]
 pub use form::{draw_settings_chrome, win_form_layout};
-// #808: `draw_form` is `#[deprecated]` — see `form::draw_form`'s doc for
-// why the shim exists and why re-exporting it here (rather than dropping
-// the re-export) is the point. `#[allow(deprecated)]` because a `pub
-// use` of a deprecated item is itself a `deprecated`-lint use site, and
-// this crate denies that lint in-repo (`RUSTFLAGS: -D warnings`) — see
-// CLAUDE.md's "the `deprecated` lint is denied in-repo and allowed
-// downstream" section for why that split is deliberate.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use form::draw_form;
 #[cfg(target_os = "windows")]
 pub use image::draw_image;
 #[cfg(target_os = "windows")]
@@ -321,86 +288,23 @@ pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_me
 pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
 pub use panel::win_panel_layout;
-// #859: `draw_panel` is `#[deprecated]` — see `panel::draw_panel`'s doc
-// for why the shim exists and why re-exporting it here (rather than
-// dropping the re-export) is the point. `#[allow(deprecated)]` for the
-// same reason as `form::draw_form`'s re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use panel::draw_panel;
 #[cfg(target_os = "windows")]
 pub use pipeline_view::win_pipeline_view_layout;
-// #1085: `draw_pipeline_view` is `#[deprecated]` — see
-// `pipeline_view::draw_pipeline_view`'s doc for why the shim exists and
-// why re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use pipeline_view::draw_pipeline_view;
 #[cfg(target_os = "windows")]
 pub use progress::win_progress_layout;
-// #1085: `draw_progress` is `#[deprecated]` — see
-// `progress::draw_progress`'s doc for why the shim exists and why
-// re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use progress::draw_progress;
 #[cfg(target_os = "windows")]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig};
-// #811: `draw_scrollbar` is `#[deprecated]` — see `scrollbar::draw_scrollbar`'s
-// doc for why the shim exists and why re-exporting it here (rather than
-// dropping the re-export) is the point. `#[allow(deprecated)]` for the
-// same reason as `form::draw_form`'s re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use scrollbar::draw_scrollbar;
 pub use services::WinPlatformServices;
 #[cfg(target_os = "windows")]
 pub use sidebar_panel::win_sidebar_panel_layout;
-// #862: `draw_sidebar_panel` is `#[deprecated]` — see
-// `sidebar_panel::draw_sidebar_panel`'s doc for why the shim exists and
-// why re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use sidebar_panel::draw_sidebar_panel;
 #[cfg(target_os = "windows")]
 pub use spinner::draw_spinner;
 pub use spinner::win_spinner_layout;
 #[cfg(target_os = "windows")]
 pub use split::win_split_layout;
-// #864: `draw_split` is `#[deprecated]` — see `split::draw_split`'s doc
-// for why the shim exists and why re-exporting it here (rather than
-// dropping the re-export) is the point. `#[allow(deprecated)]` for the
-// same reason as `form::draw_form`'s re-export above.
 #[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use split::draw_split;
-// #863: `draw_split_tree` is `#[deprecated]` — see
-// `split_tree::draw_split_tree`'s doc for why the shim exists and why
-// re-exporting it here (rather than dropping the re-export, or leaving
-// it unreachable and therefore dead code once `WinBackend::draw_split_tree`
-// no longer called it directly) is the point. This re-export was missing
-// even for the pre-#863 free function — `split_tree` is the one
-// container/indicator module in this file whose twin, `split`, already
-// gets this treatment two lines up. `#[allow(deprecated)]` for the same
-// reason as `form::draw_form`'s re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use split_tree::{draw_split_tree, win_split_tree_layout};
-// #860: `draw_status_bar` is `#[deprecated]` — see
-// `status_bar::draw_status_bar`'s doc for why the shim exists and why
-// re-exporting it here (rather than dropping the re-export) is the
-// point. `#[allow(deprecated)]` for the same reason as `form::draw_form`'s
-// re-export above.
-#[cfg(target_os = "windows")]
-#[allow(deprecated)]
-pub use status_bar::draw_status_bar;
+pub use split_tree::win_split_tree_layout;
 pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 #[allow(deprecated)]

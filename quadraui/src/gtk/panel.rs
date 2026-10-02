@@ -8,17 +8,13 @@
 //! unifying `gtk::draw_panel`, `macos::panel::draw_panel` and
 //! `win::panel::draw_panel` into one implementation. This module now
 //! only carries [`gtk_panel_layout`] (pure layout, still needed by
-//! `GtkBackend::panel_layout` for no-paint hit-test queries) and the
-//! deprecated [`draw_panel`] compatibility shim over the shared
-//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawPanelSurface`).
-
-use gtk4::cairo::Context;
-use gtk4::pango;
+//! `GtkBackend::panel_layout` for no-paint hit-test queries); the
+//! deprecated `draw_panel` compatibility shim over the shared
+//! [`super::surface::CairoSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
 use crate::primitives::panel::{Panel, PanelLayout};
-use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`Panel`] without painting.
 /// Shares its action-button width with `mac_panel_layout` /
@@ -39,39 +35,6 @@ pub fn gtk_panel_layout(
         h as f32,
         line_height as f32,
     )
-}
-
-/// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
-/// the pre-#859 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_panel` reference rather than going
-/// through [`crate::Backend::draw_panel`] — the sanctioned entry point,
-/// and the one every in-tree call site already uses, which is why this
-/// shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_panel` instead — this free function is a compatibility shim over the shared #859 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn draw_panel(
-    cr: &Context,
-    pango_layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    panel: &Panel,
-    theme: &Theme,
-    line_height: f64,
-) -> PanelLayout {
-    let layout = gtk_panel_layout(panel, x, y, w, h, line_height);
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(pango_layout),
-        translucent_fill: true,
-    };
-    crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, theme);
-    layout
 }
 
 #[cfg(test)]

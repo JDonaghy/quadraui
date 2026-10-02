@@ -17,12 +17,13 @@
 //! [`sample_blocks`] (issue #1012) partitions the buffer into
 //! [`block_bounds`] blocks and aggregates *every* line in each block's
 //! read budget ([`BLOCK_LINE_SAMPLE_CAP`]) into one output row via a
-//! per-column coverage [`dither_threshold_met`] — not [`sample_lines`]'s
-//! older point-sample, which kept exactly one line per block and
-//! discarded the rest outright (at a 647-line file through a ~33-row
-//! strip, 80% of the buffer). [`sample_lines`] is now a deprecated shim
-//! over [`sample_blocks`], the same way [`Minimap::layout`] is a shim
-//! over [`Minimap::layout_with_sizing`].
+//! per-column coverage [`dither_threshold_met`] — not the older
+//! point-sampler this replaced, which kept exactly one line per block
+//! and discarded the rest outright (at a 647-line file through a
+//! ~33-row strip, 80% of the buffer). That point-sampler, `sample_lines`
+//! — like the `Minimap::layout` two-argument shim over
+//! `Minimap::layout_with_sizing` — was removed in issue #1109 (zero
+//! uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! [`sample_blocks`] alone always compresses `total_lines` down to (at
 //! most) `target_rows` output rows — the right behaviour for a rasteriser
@@ -48,11 +49,10 @@
 //! [`Minimap::layout_with_sizing`] takes `lines_per_row` (the backend's own
 //! grouping factor: `1` for GTK, `4` for TUI) and groups `lines` into that
 //! many rows, then tiles those rows according to [`MinimapSizing`] (issue
-//! #667). [`Minimap::layout`] is the pre-#667 two-argument shape, kept as a
-//! deprecated shim over `layout_with_sizing(bounds, lines_per_row,
-//! MinimapSizing::Fill)` for source compatibility (see the *Downstream
-//! consumers* section of `CLAUDE.md`) — new call sites should use
-//! `layout_with_sizing` directly:
+//! #667). The pre-#667 two-argument `Minimap::layout` shim over
+//! `layout_with_sizing(bounds, lines_per_row, MinimapSizing::Fill)` was
+//! removed in issue #1109 (zero uses in coord-tui's `main` and vimcode's
+//! `develop`) — call `layout_with_sizing` directly:
 //!
 //! - [`MinimapSizing::Fill`] — stretch to fill `bounds.height`, at a pitch
 //!   that is never allowed to exceed [`MAX_ROW_PITCH`] (issue #663): a file
@@ -60,9 +60,8 @@
 //!   ceiling instead top-aligns and only occupies `row_count * row_h` of
 //!   the strip, leaving the remainder unpainted, rather than stretching to
 //!   fill it. No live rasteriser uses this any more (see `FixedPitch`
-//!   below) — it survives only as the deprecated [`Minimap::layout`]
-//!   shim's default, for source compatibility with pre-#667 out-of-tree
-//!   callers. **Do not size a new rasteriser with `Fill`**: any backend
+//!   below) — it was only the removed `Minimap::layout` shim's default.
+//!   **Do not size a new rasteriser with `Fill`**: any backend
 //!   that paints one glyph/cell per row (TUI's braille rows are cell-native
 //!   with no font to scale, so there's never a reason for it to stretch
 //!   pitch) reads a stretched pitch as *gaps between painted rows*, not a
@@ -179,7 +178,7 @@ pub struct MinimapGrid {
     pub cols_per_cell: usize,
 }
 
-/// One visible row after [`Minimap::layout`].
+/// One visible row after [`Minimap::layout_with_sizing`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VisibleMinimapLine {
     /// Index into [`Minimap::lines`] where this row's line(s) begin.
@@ -250,12 +249,12 @@ impl Default for MinimapLayout {
 /// caller's sampling has downsampled them to roughly fit the strip.
 ///
 /// No rasteriser sizes with `Fill` any more (#992 moved TUI, the last
-/// user, to [`MinimapSizing::FixedPitch`]) — this constant now backs only
-/// the deprecated [`Minimap::layout`] shim's default, kept for source
-/// compatibility with pre-#667 out-of-tree callers.
+/// user, to [`MinimapSizing::FixedPitch`]) — this constant backed only
+/// the now-removed `Minimap::layout` shim's default (issue #1109).
 pub const MAX_ROW_PITCH: f32 = 8.0;
 
-/// How [`Minimap::layout`] sizes rows across `bounds.height` — issue #667.
+/// How [`Minimap::layout_with_sizing`] sizes rows across `bounds.height`
+/// — issue #667.
 ///
 /// Every backend's row pitch drives some paint cost per row — GTK's and
 /// Win-GUI's drive a Pango/DirectWrite font size (or, below the
@@ -273,14 +272,16 @@ pub enum MinimapSizing {
     /// rather than stretching further; there is no sliding window — every
     /// row is always visible.
     ///
-    /// No live rasteriser uses this (see [`Self::FixedPitch`]) — kept only
-    /// for the deprecated [`Minimap::layout`] shim's pre-#667 behaviour.
+    /// No live rasteriser uses this (see [`Self::FixedPitch`]) — it only
+    /// backed the now-removed `Minimap::layout` shim's pre-#667
+    /// behaviour (issue #1109).
     Fill,
     /// Tile rows top-down at exactly this pitch (in `bounds`'s own
     /// coordinate units), regardless of `row_count`. When the file needs
-    /// more rows than `bounds.height / pitch` holds, [`Minimap::layout`]
-    /// shows a sliding window onto the map — see the module docs — instead
-    /// of shrinking the pitch to compress everything in.
+    /// more rows than `bounds.height / pitch` holds,
+    /// [`Minimap::layout_with_sizing`] shows a sliding window onto the
+    /// map — see the module docs — instead of shrinking the pitch to
+    /// compress everything in.
     FixedPitch(f32),
     /// VS Code-parity minimap **width** policy (issue #776) — orthogonal
     /// to `Fill` / `FixedPitch`, which size row *pitch* (vertical). This
@@ -374,26 +375,6 @@ impl MinimapLayout {
 }
 
 impl Minimap {
-    /// Pre-#667 two-argument shape of [`Self::layout_with_sizing`], kept as
-    /// a deprecated shim for source compatibility with out-of-tree callers
-    /// (per CLAUDE.md's rule 8 deprecate-then-remove protocol —
-    /// `vimcode`'s `src/render.rs::minimap_click_line` calls this exact
-    /// 2-arg shape with no version pin on this crate). Forwards to
-    /// [`Self::layout_with_sizing`] with [`MinimapSizing::Fill`], which is
-    /// this method's own pre-#667 behaviour byte-for-byte — this shim does
-    /// not change what any existing caller sees.
-    ///
-    /// New call sites — everything in this crate, and any new downstream
-    /// code — should call [`Self::layout_with_sizing`] directly and choose
-    /// a `sizing` explicitly instead of relying on this default.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `layout_with_sizing(bounds, lines_per_row, sizing)` instead — this shim defaults to `MinimapSizing::Fill` (#667)"
-    )]
-    pub fn layout(&self, bounds: Rect, lines_per_row: usize) -> MinimapLayout {
-        self.layout_with_sizing(bounds, lines_per_row, MinimapSizing::Fill)
-    }
-
     /// Compute layout + hit regions. `lines_per_row` is the backend's
     /// grouping factor (`1` for GTK, `4` for TUI) — see the module docs
     /// for why layout needs it but painting-only metrics (font size,
@@ -572,31 +553,6 @@ impl Minimap {
     }
 }
 
-/// Compress `buffer_lines` into at most `target_rows` [`MinimapLine`]s.
-///
-/// Deprecated (issue #1012): this signature forces a caller to
-/// pre-resolve every buffer line into `buffer_lines` before sampling can
-/// even begin, and — before #1012 — picked exactly one line per
-/// [`block_bounds`] block and discarded the other `stride - 1` outright,
-/// no matter what they contained (at a 647-line file through a ~33-row
-/// strip, 80% of the buffer was invisible to the minimap). This shim now
-/// forwards to [`sample_blocks`], so an existing caller that already has
-/// the whole buffer materialised still gets the real down-sampling fix
-/// for free — `buffer_lines[i].to_string()` as the accessor costs nothing
-/// extra a materialised slice wasn't already paying. A caller that can
-/// avoid materialising the whole buffer up front (e.g. one backed by a
-/// rope) should call [`sample_blocks`] directly instead, and pull only
-/// the lines its own accessor is asked for.
-#[deprecated(
-    since = "0.0.1",
-    note = "point-sampler over a pre-materialised slice; use `sample_blocks` (line accessor, real block aggregation) instead (#1012)"
-)]
-pub fn sample_lines(buffer_lines: &[&str], target_rows: usize) -> Vec<MinimapLine> {
-    sample_blocks(buffer_lines.len(), target_rows, |i| {
-        buffer_lines[i].to_string()
-    })
-}
-
 /// Ceiling on how many real buffer lines [`sample_blocks`] reads for one
 /// output block's [`block_sample_indices`], regardless of how large the
 /// block itself is (issue #1012).
@@ -622,7 +578,8 @@ pub const BLOCK_LINE_SAMPLE_CAP: usize = 8;
 /// `bounds.len()` is always the block count plus one. Never upscales: one
 /// line per block when `total_lines <= target_rows`, otherwise stride
 /// `total_lines as f64 / target_rows as f64` between block starts —
-/// exactly [`sample_lines`]'s own pre-#1012 stride formula, so a block's
+/// exactly the pre-#1012 `sample_lines` point-sampler's own stride
+/// formula (removed in issue #1109), so a block's
 /// *boundary* lands exactly where the old point-sampler's single pick
 /// used to, but [`sample_blocks`] now reads (a capped sample of) every
 /// line inside it rather than just that one boundary line.
@@ -698,7 +655,8 @@ pub fn dither_threshold_met(covered: usize, total: usize, row: usize, col: usize
 
 /// Down-sample real buffer lines `0..total_lines` into at most
 /// `target_rows` [`MinimapLine`]s — the primitive-owned row down-sampler
-/// (issue #1012) that [`sample_lines`] used to only promise, not deliver.
+/// (issue #1012) that the old `sample_lines` point-sampler (removed in
+/// issue #1109) used to only promise, not deliver.
 ///
 /// `line_at` is a **line accessor**, not a materialised slice: this
 /// function calls it only for the lines its own read budget
@@ -707,15 +665,15 @@ pub fn dither_threshold_met(covered: usize, total: usize, row: usize, col: usize
 /// that row's [`block_bounds`] block via [`block_sample_indices`] — so a
 /// host backed by a rope, a gap buffer, or anything else expensive to
 /// fully materialise never has to resolve the whole buffer just to build
-/// a minimap. That is the seam [`sample_lines`]'s `&[&str]` shape could
-/// not offer: it forced the host to pre-resolve every line before
+/// a minimap. That is the seam the old `&[&str]`-shaped `sample_lines`
+/// could not offer: it forced the host to pre-resolve every line before
 /// sampling could even begin.
 ///
 /// A block whose read budget is exactly one line (true for every block
 /// once `total_lines <= target_rows` — the never-upscale case) returns
 /// that line's own text verbatim, truncated to [`COLUMN_CAPACITY`]
-/// columns, same as [`sample_lines`] always did. Otherwise every sampled
-/// line in the block votes on every column: a column reads back non-blank
+/// columns, same as the old `sample_lines` always did. Otherwise every
+/// sampled line in the block votes on every column: a column reads back non-blank
 /// (`'x'`) when its per-column coverage fraction — how many of the
 /// block's sampled lines are non-whitespace there — clears
 /// [`dither_threshold_met`]'s ordered-dither threshold, and blank (`' '`)
@@ -1544,22 +1502,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercising the deprecated shim itself (#667)
-    fn deprecated_layout_shim_matches_layout_with_sizing_fill() {
-        // The pre-#667 two-argument `layout()` must keep resolving exactly
-        // like `layout_with_sizing(.., MinimapSizing::Fill)` -- that's the
-        // whole point of the shim (CLAUDE.md rule 8: `vimcode`'s
-        // `src/render.rs::minimap_click_line` still calls the 2-arg form
-        // with no version pin on this crate, so its behaviour must not
-        // change out from under it).
-        let mm = minimap(8, 2, 3);
-        let bounds = Rect::new(0.0, 0.0, 10.0, 16.0);
-        let shim = mm.layout(bounds, 2);
-        let direct = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill);
-        assert_eq!(shim, direct);
-    }
-
-    #[test]
     fn layout_viewport_highlight_spans_the_editor_viewport() {
         // visible_row_start=2, visible_row_count=3 -> lines[2..5), rows
         // grouped 2-per-row -> row 1 (start) through row 3 (exclusive).
@@ -1750,59 +1692,6 @@ mod tests {
         };
         assert_eq!(layout.hit_test(0.0, 0.0), MinimapHit::None);
         assert_eq!(layout.hit_test(25.0, 15.0), MinimapHit::None);
-    }
-
-    // ── sample_lines (deprecated shim, #1012) ───────────────────────────
-
-    #[test]
-    #[allow(deprecated)] // exercising the deprecated shim itself (#1012)
-    fn sample_lines_empty_buffer_is_empty() {
-        assert!(sample_lines(&[], 5).is_empty());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn sample_lines_zero_target_rows_is_empty_no_div_by_zero() {
-        assert!(sample_lines(&["a", "b", "c"], 0).is_empty());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn sample_lines_never_upscales_small_files() {
-        // 2 buffer lines, target 10 rows: keep exactly 2, not 10, and
-        // (since neither block needs aggregating) the real text survives
-        // verbatim.
-        let out = sample_lines(&["a", "b"], 10);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].line_idx, 0);
-        assert_eq!(out[1].line_idx, 1);
-        assert_eq!(out[0].text, "a");
-        assert_eq!(out[1].text, "b");
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn sample_lines_downsamples_large_files_to_target_rows() {
-        let owned: Vec<String> = (0..100).map(|i| format!("l{i}")).collect();
-        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let out = sample_lines(&borrowed, 10);
-        assert_eq!(out.len(), 10);
-        assert_eq!(out[0].line_idx, 0);
-        // Monotonically increasing source line indices.
-        assert!(out.windows(2).all(|w| w[0].line_idx < w[1].line_idx));
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn sample_lines_forwards_to_sample_blocks_byte_for_byte() {
-        // The whole point of the shim: an existing `&[&str]` caller must
-        // see exactly what `sample_blocks` would produce for the same
-        // buffer, not some separately-maintained behaviour.
-        let owned: Vec<String> = (0..50).map(|i| format!("line {i}")).collect();
-        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let shim = sample_lines(&borrowed, 7);
-        let direct = sample_blocks(borrowed.len(), 7, |i| borrowed[i].to_string());
-        assert_eq!(shim, direct);
     }
 
     // ── block_bounds / block_sample_indices (#1012) ─────────────────────

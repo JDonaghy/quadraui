@@ -2875,12 +2875,7 @@ impl Backend for TuiBackend {
         if tui_result.cursor_position.is_some() {
             self.last_cursor_position = tui_result.cursor_position;
         }
-        #[allow(deprecated)] // issue #504: populate the deprecated cell-tuple
-        // field too, until vimcode's `render_impl.rs` call site migrates to
-        // `cursor_position_native` — see `EditorPaintResult::cursor_position`'s
-        // doc for the full deprecation contract.
         crate::backend::EditorPaintResult {
-            cursor_position: tui_result.cursor_position,
             // `tui_result.cursor_position` is the TUI-internal, already
             // cell-rounded `(u16, u16)` shape `Frame::set_cursor_position`
             // needs (see `last_cursor_position`'s doc); widen to the

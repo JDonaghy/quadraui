@@ -22,10 +22,9 @@
 //! alpha blend instead of reproducing the old premix. The insertion bar
 //! was already opaque on every backend, so it fills unchanged.
 //!
-//! This module now only carries the deprecated [`draw_drop_overlay`]
-//! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawDropOverlaySurface`).
+//! The deprecated `draw_drop_overlay` compatibility shim over the
+//! shared [`super::surface::D2dSurface`] adapter was removed in issue
+//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! `DropOverlay::ghost_position` is not rendered — neither GTK, macOS
 //! nor TUI paints a ghost label either, so this is parity, not a
@@ -36,34 +35,10 @@
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use crate::primitives::drop_zone::DropOverlay;
+#[cfg(test)]
 use crate::theme::Theme;
-
-/// Deprecated free-function shim (#865, CLAUDE.md rule 8): reproduces
-/// the pre-#865 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_drop_overlay` reference rather than going
-/// through [`crate::Backend::draw_drop_overlay`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is
-/// why this shim has no in-repo caller left to trip the
-/// `-D warnings`-denied `deprecated` lint.
-///
-/// Note this shim's behaviour differs from the pre-#865 free function it
-/// replaces: the highlight now alpha-blends against whatever is already
-/// on `target` instead of premixing against `theme.background` — see
-/// the module doc.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_drop_overlay` instead — this free function is a compatibility shim over the shared #865 implementation"
-)]
-pub fn draw_drop_overlay(target: &ID2D1RenderTarget, overlay: &DropOverlay, theme: &Theme) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: None,
-    };
-    crate::primitives::drop_zone::native_surface_paint::paint(overlay, &mut surface, theme);
-}
 
 #[cfg(test)]
 mod tests {
@@ -77,10 +52,8 @@ mod tests {
     /// Paint `overlay` via the shared
     /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
-    /// target — the same adapter the deprecated [`draw_drop_overlay`]
-    /// shim uses, exercised here directly so these tests don't trip the
-    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
-    /// `win::scrollbar`'s identical test-migration note).
+    /// target — the same adapter the now-removed `draw_drop_overlay`
+    /// shim used (issue #1109), exercised here directly.
     fn paint(overlay: &DropOverlay) -> HeadlessSurface {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         // Fill with a known background so a blended highlight tint is

@@ -8,10 +8,10 @@
 //! `gtk::toast::draw_toast_stack`, `macos::toast::draw_toast_stack` and
 //! `win::toast::draw_toast_stack` into one implementation. This module
 //! now only carries [`mac_toast_stack_layout`] (pure layout, still needed
-//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries) and
-//! the deprecated [`draw_toast_stack`] compatibility shim over the
-//! shared [`super::surface::CgSurface`] adapter (#1072 — consolidated
-//! from this module's own private `RawMacToastSurface`).
+//! by `MacBackend::toast_stack_layout` for no-paint hit-test queries);
+//! the deprecated `draw_toast_stack` compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! ## Scope omissions (follow-up)
 //!
@@ -20,11 +20,11 @@
 //!   (search-box border in command_center, close-button hover bg in
 //!   tab_bar).
 
-use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::primitives::layout_metrics::pixel_toast_stack_layout;
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`ToastOverlay`].
@@ -60,50 +60,6 @@ pub fn mac_toast_stack_layout(
         origin_y,
         viewport_width,
         viewport_height,
-        line_height as f32,
-    )
-}
-
-/// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
-/// the pre-#861 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_toast_stack` reference rather than going
-/// through [`crate::Backend::draw_toast_stack`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_toast_stack` instead — this free function is a compatibility shim over the shared #861 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_toast_stack(
-    ctx: CGContextRef,
-    font: &CTFont,
-    origin_x: f64,
-    origin_y: f64,
-    viewport_width: f64,
-    viewport_height: f64,
-    stack: &ToastOverlay,
-    theme: &Theme,
-    line_height: f64,
-) -> ToastStackLayout {
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::toast::native_surface_paint::paint(
-        stack,
-        &mut surface,
-        theme,
-        origin_x as f32,
-        origin_y as f32,
-        viewport_width as f32,
-        viewport_height as f32,
         line_height as f32,
     )
 }

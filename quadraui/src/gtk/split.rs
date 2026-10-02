@@ -3,23 +3,19 @@
 //! Painting moved to the shared
 //! [`crate::primitives::split::native_surface_paint::paint`] (#864,
 //! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
-//! module doc for a **reported divergence**: the deleted `draw_split`
-//! below painted the divider opaque-only (`set_source`), while the live
-//! `Backend::draw_split` path now honours `theme.separator`'s alpha via
-//! `GtkBackend::surface_fill_rect` (`gtk::set_source_rgba`, inherited
-//! from the #811 slice 1 scrollbar fix). This module now carries
-//! [`gtk_split_layout`] and the deprecated [`draw_split`] compatibility
-//! shim over the shared [`super::surface::CairoSurface`] adapter (#1072
-//! — consolidated from this module's own private `RawSplitSurface`; the
-//! opaque-only fill divergence above is preserved via
-//! `CairoSurface::translucent_fill: false`, see that struct's doc).
-
-use gtk4::cairo::Context;
+//! module doc for a **reported divergence**: the old free-function
+//! `draw_split` painted the divider opaque-only (`set_source`), while
+//! the live `Backend::draw_split` path now honours `theme.separator`'s
+//! alpha via `GtkBackend::surface_fill_rect` (`gtk::set_source_rgba`,
+//! inherited from the #811 slice 1 scrollbar fix). This module now
+//! carries [`gtk_split_layout`]; the deprecated `draw_split`
+//! compatibility shim over the shared [`super::surface::CairoSurface`]
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`).
 
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_split_layout;
 use crate::primitives::split::{Split, SplitLayout};
-use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`Split`] without painting.
 /// Shares its divider thickness with `mac_split_layout` /
@@ -27,46 +23,6 @@ use crate::theme::Theme;
 pub fn gtk_split_layout(split: &Split, x: f64, y: f64, w: f64, h: f64) -> SplitLayout {
     let bounds = Rect::new(x as f32, y as f32, w as f32, h as f32);
     pixel_split_layout(split, bounds)
-}
-
-/// Deprecated free-function shim (#864, CLAUDE.md rule 8): reproduces
-/// the pre-#864 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_split` reference rather than going
-/// through [`crate::Backend::draw_split`] — the sanctioned entry point,
-/// and the one every in-tree call site already uses, which is why this
-/// shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-#[allow(clippy::too_many_arguments)]
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_split` instead — this free function is a compatibility shim over the shared #864 implementation"
-)]
-pub fn draw_split(
-    cr: &Context,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    split: &Split,
-    theme: &Theme,
-) -> SplitLayout {
-    let layout = gtk_split_layout(split, x, y, w, h);
-    // Deliberately opaque-only (`translucent_fill: false`): this
-    // reproduces the pre-#864 free function's behaviour exactly, byte
-    // for byte, for any external caller still holding a direct
-    // reference to it. `theme.separator` is NOT guaranteed opaque (see
-    // `primitives::split::native_surface_paint`'s module doc for why) —
-    // the sanctioned `Backend::draw_split` entry point now honours its
-    // alpha via `GtkBackend::surface_fill_rect` (`set_source_rgba`);
-    // this deprecated shim intentionally does not, to keep this
-    // preservation guarantee.
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: None,
-        translucent_fill: false,
-    };
-    crate::primitives::split::native_surface_paint::paint(&layout, &mut surface, theme);
-    layout
 }
 
 #[cfg(test)]

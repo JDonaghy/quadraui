@@ -20,21 +20,17 @@
 //!
 //! This module now only carries [`win_toast_stack_layout`] (pure layout,
 //! still needed by `WinBackend::toast_stack_layout` for no-paint
-//! hit-test queries) and the deprecated [`draw_toast_stack`]
-//! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawWinToastSurface`).
+//! hit-test queries); the deprecated `draw_toast_stack` compatibility
+//! shim over the shared [`super::surface::D2dSurface`] adapter was
+//! removed in issue #1109 (zero uses in coord-tui's `main` and
+//! vimcode's `develop`).
 //!
-//! Issue #1078: only [`draw_toast_stack`] (the deprecated paint shim) is
-//! Windows-only. [`win_toast_stack_layout`] is pure geometry generic over
+//! [`win_toast_stack_layout`] is pure geometry generic over
 //! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
 //! DirectWrite type in its signature — so it compiles and runs
 //! everywhere, including a plain `cargo test --features win` on Linux.
 //! `super::mod`'s `mod toast;` is no longer whole-module gated; see
 //! `backend.rs`'s module docs.
-
-#[cfg(target_os = "windows")]
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 #[cfg(target_os = "windows")]
 use super::text::DWrite;
@@ -64,48 +60,6 @@ pub fn win_toast_stack_layout(
     pixel_toast_stack_layout(
         stack,
         measure,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        line_height,
-    )
-}
-
-/// Deprecated free-function shim (#861, CLAUDE.md rule 8): reproduces
-/// the pre-#861 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_toast_stack` reference rather than going
-/// through [`crate::Backend::draw_toast_stack`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-///
-/// Unlike the pre-#861 version, this now requires a `theme: &Theme`
-/// argument — the shared `paint` always takes one (matching `gtk`/
-/// `macos`) — see this module's doc for why the pre-#861 signature's
-/// `Theme::default()` was itself the bug being fixed here, not a shape
-/// worth preserving byte-for-byte in the shim.
-#[cfg(target_os = "windows")]
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_toast_stack` instead — this free function is a compatibility shim over the shared #861 implementation"
-)]
-pub fn draw_toast_stack(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    stack: &ToastOverlay,
-    theme: &Theme,
-    line_height: f32,
-) -> ToastStackLayout {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::toast::native_surface_paint::paint(
-        stack,
-        &mut surface,
-        theme,
         rect.x,
         rect.y,
         rect.width,
@@ -160,10 +114,9 @@ mod tests {
     /// Paint↔click round trip: the toast box's painted fill colour lands
     /// at its own bounds, and `hit_test` resolves clicks on dismiss,
     /// action, and body to the matching `ToastHit`. Exercises the shared
-    /// paint through [`super::super::surface::D2dSurface`] directly rather than the
-    /// deprecated [`draw_toast_stack`] shim, so this test doesn't trip
-    /// the `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3;
-    /// mirrors `win::status_bar`'s identical #860 test-migration note).
+    /// paint through [`super::super::surface::D2dSurface`] directly —
+    /// the same adapter the now-removed `draw_toast_stack` shim used
+    /// (issue #1109).
     #[test]
     fn paint_and_hit_test_round_trip() {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
