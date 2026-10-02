@@ -6,10 +6,10 @@
 //! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
 //! module doc for why the three per-backend copies were found to be
 //! already identical (no divergence). This module now carries
-//! [`win_split_tree_layout`] and the deprecated [`draw_split_tree`]
+//! [`win_split_tree_layout`]; the deprecated `draw_split_tree`
 //! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawSplitTreeSurface`). No geometry is re-derived:
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`). No geometry is re-derived:
 //! [`win_split_tree_layout`] delegates to
 //! [`crate::primitives::layout_metrics::pixel_split_tree_layout`] (issue
 //! #1079), the shared divider thickness
@@ -28,45 +28,22 @@
 //! module doc for the "placeholder until a later issue wires the app's
 //! real theme through" posture this module shares.
 
+#[cfg(test)]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_split_tree_layout;
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute a [`SplitTree`]'s layout without painting — the twin of
-/// [`draw_split_tree`]. Both call [`SplitTree::layout`] with the
-/// identical divider thickness, so a no-paint hit-test call always
-/// agrees with what the last paint drew.
+/// `crate::Backend::draw_split_tree` (the removed `draw_split_tree`
+/// free function shim this backed — see module doc). Both call
+/// [`SplitTree::layout`] with the identical divider thickness, so a
+/// no-paint hit-test call always agrees with what the last paint drew.
 pub fn win_split_tree_layout(rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
     pixel_split_tree_layout(tree, rect)
-}
-
-/// Deprecated free-function shim (#863, CLAUDE.md rule 8): reproduces
-/// the pre-#863 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_split_tree` reference rather than going
-/// through [`crate::Backend::draw_split_tree`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is
-/// why this shim has no in-repo caller left to trip the
-/// `-D warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_split_tree` instead — this free function is a compatibility shim over the shared #863 implementation"
-)]
-pub fn draw_split_tree(
-    target: &ID2D1RenderTarget,
-    rect: Rect,
-    tree: &SplitTree,
-) -> SplitTreeLayout {
-    let layout = win_split_tree_layout(rect, tree);
-    let theme = Theme::default();
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: None,
-    };
-    crate::primitives::split_tree::native_surface_paint::paint(&layout, &mut surface, &theme);
-    layout
 }
 
 #[cfg(test)]
@@ -86,10 +63,8 @@ mod tests {
     /// Paint `tree` via the shared
     /// [`crate::primitives::split_tree::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `target` — the same
-    /// adapter the deprecated [`draw_split_tree`] shim uses, exercised
-    /// here directly so these tests don't trip the `-D
-    /// warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
-    /// `win::scrollbar`'s identical test-migration note).
+    /// adapter the now-removed `draw_split_tree` shim used (issue
+    /// #1109), exercised here directly.
     fn paint(target: &ID2D1RenderTarget, layout: &SplitTreeLayout) {
         let mut raw = super::super::surface::D2dSurface {
             target,

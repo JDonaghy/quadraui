@@ -12,75 +12,38 @@
 //!
 //! [`super::backend::WinBackend::draw_progress`] (the sanctioned,
 //! `Backend`-trait entry point, and the one every in-tree call site
-//! already uses) no longer goes through this module's [`draw_progress`]
-//! at all — it calls the shared `paint` directly with
-//! `self.current_theme`, the same live theme every other Win-GUI
-//! rasteriser already uses, which is where the fix actually lands. The
-//! deprecated [`draw_progress`] free function below keeps its exact
-//! pre-#1085 four-argument signature (CLAUDE.md rule 8 — a shim must stay
-//! call-compatible, not gain a new required parameter) and therefore
-//! *deliberately* keeps hardcoding `Theme::default()` internally: that
-//! was the only theme a caller of the old signature could ever have
-//! gotten anyway, so this is a faithful compatibility shim for that
-//! narrow legacy call shape, not a second copy of the bug for real
-//! (trait-routed) hosts. This module now only carries
-//! [`win_progress_layout`] (still real, backend-specific pure geometry —
-//! no painting involved) and that shim over the shared
-//! [`super::surface::D2dSurface`] adapter (mirrors `win::diff_view`'s
-//! #866 shim).
+//! already uses) no longer goes through a free function at all — it
+//! calls the shared `paint` directly with `self.current_theme`, the
+//! same live theme every other Win-GUI rasteriser already uses, which
+//! is where the fix actually lands. The deprecated `draw_progress` free
+//! function (which, matching its pre-#1085 self, always hardcoded
+//! `Theme::default()` internally) was removed in issue #1109 (zero uses
+//! in coord-tui's `main` and vimcode's `develop`). This module now only
+//! carries [`win_progress_layout`] (still real, backend-specific pure
+//! geometry — no painting involved).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod progress;` and `backend.rs`'s
 //! module docs for why the rest of this repo's `--features win` compile
 //! gate stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::layout_metrics::pixel_progress_layout;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute a [`ProgressBar`]'s layout without painting — the twin of
-/// [`draw_progress`]. Both call [`ProgressBar::layout`] with the
-/// identical cancel-affordance width, so a no-paint hit-test call
-/// always agrees with what the last paint drew. Shares that width with
-/// `gtk_progress_layout` / `mac_progress_layout` via
-/// [`pixel_progress_layout`] (issue #1079).
+/// `crate::Backend::draw_progress` (the removed `draw_progress` free
+/// function shim this backed — see module doc). Both call
+/// [`ProgressBar::layout`] with the identical cancel-affordance width,
+/// so a no-paint hit-test call always agrees with what the last paint
+/// drew. Shares that width with `gtk_progress_layout` /
+/// `mac_progress_layout` via [`pixel_progress_layout`] (issue #1079).
 pub fn win_progress_layout(rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
     pixel_progress_layout(bar, rect.x, rect.y, rect.width, rect.height)
-}
-
-/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
-/// the pre-#1085 signature exactly (still no `theme` parameter — see
-/// this module's doc for why that is deliberate, not an oversight) for
-/// any external caller that held a direct `quadraui::win::draw_progress`
-/// reference rather than going through
-/// [`crate::Backend::draw_progress`] — the sanctioned entry point, and
-/// the one every in-tree call site already uses, which is why this shim
-/// has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_progress` instead — this free function is a compatibility shim over the shared #1085 implementation, and (like its pre-#1085 self) always paints `Theme::default()`"
-)]
-pub fn draw_progress(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    bar: &ProgressBar,
-) -> ProgressBarLayout {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::progress::native_surface_paint::paint(
-        bar,
-        &mut surface,
-        &Theme::default(),
-        rect,
-    )
 }
 
 #[cfg(test)]
@@ -107,11 +70,8 @@ mod tests {
     /// Paint `bar` via the shared
     /// [`crate::primitives::progress::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s
-    /// headless target — the same adapter the deprecated
-    /// [`draw_progress`] shim uses, exercised here directly so these
-    /// tests don't trip the `-D warnings`-denied `deprecated` lint
-    /// (CLAUDE.md rule 3; mirrors `win::diff_view`'s identical
-    /// test-migration note).
+    /// headless target — the same adapter the now-removed
+    /// `draw_progress` shim used (issue #1109), exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,

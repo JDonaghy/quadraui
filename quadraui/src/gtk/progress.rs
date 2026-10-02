@@ -8,16 +8,13 @@
 //! `macos::progress::draw_progress` and `win::progress::draw_progress`
 //! into one implementation. This module now only carries
 //! [`gtk_progress_layout`] (still real, backend-specific pure geometry —
-//! no painting involved) and the deprecated [`draw_progress`]
-//! compatibility shim over the shared [`super::surface::CairoSurface`]
-//! adapter (mirrors `gtk::diff_view`'s #866 shim).
-
-use gtk4::cairo::Context;
-use gtk4::pango;
+//! no painting involved); the deprecated `draw_progress` compatibility
+//! shim over the shared [`super::surface::CairoSurface`] adapter was
+//! removed in issue #1109 (zero uses in coord-tui's `main` and
+//! vimcode's `develop`).
 
 use crate::primitives::layout_metrics::pixel_progress_layout;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`ProgressBar`] without
 /// painting. Shares its cancel-affordance width with
@@ -25,41 +22,6 @@ use crate::theme::Theme;
 /// [`pixel_progress_layout`] (issue #1079).
 pub fn gtk_progress_layout(bar: &ProgressBar, x: f64, y: f64, w: f64, h: f64) -> ProgressBarLayout {
     pixel_progress_layout(bar, x as f32, y as f32, w as f32, h as f32)
-}
-
-/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
-/// the pre-#1085 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_progress` reference rather than going
-/// through [`crate::Backend::draw_progress`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_progress` instead — this free function is a compatibility shim over the shared #1085 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn draw_progress(
-    cr: &Context,
-    pango_layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    bar: &ProgressBar,
-    theme: &Theme,
-) -> ProgressBarLayout {
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(pango_layout),
-        translucent_fill: true,
-    };
-    crate::primitives::progress::native_surface_paint::paint(
-        bar,
-        &mut surface,
-        theme,
-        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
-    )
 }
 
 #[cfg(test)]

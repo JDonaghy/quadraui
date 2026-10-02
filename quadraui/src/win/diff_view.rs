@@ -7,11 +7,10 @@
 //! named divergences (row/header text vertical alignment; header-label
 //! ellipsize vs. hard-clip) found while unifying
 //! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`
-//! and `win::diff_view::draw_diff_view` into one implementation. This
-//! module now only carries the deprecated [`draw_diff_view`]
-//! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawWinDiffViewSurface`).
+//! and `win::diff_view::draw_diff_view` into one implementation. The
+//! deprecated `draw_diff_view` compatibility shim over the shared
+//! [`super::surface::D2dSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod diff_view;` and `backend.rs`'s
@@ -27,44 +26,14 @@
 //! reasoning even more directly now, but the default itself was already
 //! the honest answer and stays unoverridden here too).
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use super::text::DWrite;
+#[cfg(test)]
 use crate::event::Rect;
+#[cfg(test)]
 use crate::primitives::diff_view::{DiffView, DiffViewLayout};
+#[cfg(test)]
 use crate::theme::Theme;
-
-/// Deprecated free-function shim (#866, CLAUDE.md rule 8): reproduces
-/// the pre-#866 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_diff_view` reference rather than going
-/// through [`crate::Backend::draw_diff_view`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_diff_view` instead — this free function is a compatibility shim over the shared #866 implementation"
-)]
-pub fn draw_diff_view(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    view: &DiffView,
-    theme: &Theme,
-    line_height: f32,
-) -> DiffViewLayout {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::diff_view::native_surface_paint::paint(
-        view,
-        &mut surface,
-        theme,
-        rect,
-        line_height,
-    )
-}
 
 #[cfg(test)]
 mod tests {
@@ -107,10 +76,8 @@ mod tests {
     /// Paint `view` via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`]
     /// through a [`super::super::surface::D2dSurface`] over `surface`'s headless
-    /// target — the same adapter the deprecated [`draw_diff_view`] shim
-    /// uses, exercised here directly so these tests don't trip the
-    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
-    /// `win::status_bar`'s identical test-migration note).
+    /// target — the same adapter the now-removed `draw_diff_view` shim
+    /// used (issue #1109), exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,

@@ -8,16 +8,17 @@
 //! unifying `gtk::draw_panel`, `macos::panel::draw_panel` and
 //! `win::panel::draw_panel` into one implementation. This module now
 //! only carries [`mac_panel_layout`] (pure layout, still needed by
-//! `MacBackend::panel_layout` for no-paint hit-test queries) and the
-//! deprecated [`draw_panel`] compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter (#1072 — consolidated from
-//! this module's own private `RawPanelSurface`).
+//! `MacBackend::panel_layout` for no-paint hit-test queries); the
+//! deprecated `draw_panel` compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 
-use core_graphics::sys::CGContextRef;
+#[cfg(test)]
 use core_text::font::CTFont;
 
 use crate::primitives::layout_metrics::pixel_panel_layout;
 use crate::primitives::panel::{Panel, PanelLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`Panel`] without painting.
@@ -39,43 +40,6 @@ pub fn mac_panel_layout(
         h as f32,
         line_height as f32,
     )
-}
-
-/// Deprecated free-function shim (#859, CLAUDE.md rule 8): reproduces
-/// the pre-#859 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_panel` reference rather than going
-/// through [`crate::Backend::draw_panel`] — the sanctioned entry point,
-/// and the one every in-tree call site already uses, which is why this
-/// shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_panel` instead — this free function is a compatibility shim over the shared #859 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_panel(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    panel: &Panel,
-    theme: &Theme,
-    line_height: f64,
-) -> PanelLayout {
-    let layout = mac_panel_layout(panel, x, y, w, h, line_height);
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::panel::native_surface_paint::paint(panel, &layout, &mut surface, theme);
-    layout
 }
 
 #[cfg(test)]

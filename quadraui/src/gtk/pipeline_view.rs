@@ -8,16 +8,14 @@
 //! `macos::pipeline_view::draw_pipeline_view` and
 //! `win::pipeline_view::draw_pipeline_view` into one implementation. This
 //! module now only carries [`gtk_pipeline_view_layout`] (still real,
-//! backend-specific pure geometry — no painting involved) and the
-//! deprecated [`draw_pipeline_view`] compatibility shim over the shared
-//! [`super::surface::CairoSurface`] adapter (mirrors `gtk::diff_view`'s
-//! #866 shim).
-
-use gtk4::cairo::Context;
-use gtk4::pango;
+//! backend-specific pure geometry — no painting involved); the
+//! deprecated `draw_pipeline_view` compatibility shim over the shared
+//! [`super::surface::CairoSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 
 use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the GTK pixel-unit layout for a [`PipelineView`] without
@@ -41,41 +39,6 @@ pub fn gtk_pipeline_view_layout(
     pixel_pipeline_view_layout(view, x as f32, y as f32, w as f32, h as f32)
 }
 
-/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
-/// the pre-#1085 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_pipeline_view` reference rather than going
-/// through [`crate::Backend::draw_pipeline_view`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_pipeline_view` instead — this free function is a compatibility shim over the shared #1085 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub fn draw_pipeline_view(
-    cr: &Context,
-    pango_layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    view: &PipelineView,
-    theme: &Theme,
-) -> PipelineViewLayout {
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(pango_layout),
-        translucent_fill: true,
-    };
-    crate::primitives::pipeline_view::native_surface_paint::paint(
-        view,
-        &mut surface,
-        theme,
-        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
-    )
-}
-
 // ── Tests ──────────────────────────────────────────────────────────────────
 //
 // Headless painted-indicator tests (mirror the TUI tests in
@@ -83,11 +46,8 @@ pub fn draw_pipeline_view(
 // required) and reads back pixels directly, following the established
 // pattern in `gtk/tab_bar.rs`. Routed through `GtkBackend::draw_pipeline_view`
 // (the real `Backend` trait method — which now paints via the shared
-// `native_surface_paint::paint`) rather than the deprecated free-function
-// shim above, so these tests don't trip the `-D warnings`-denied
-// `deprecated` lint (CLAUDE.md rule 3; mirrors
-// `gtk::backend::tests::gtk_diff_view_layout_matches_draw_diff_view_side_by_side_with_header`'s
-// identical test-migration note).
+// `native_surface_paint::paint`) — the now-removed `draw_pipeline_view`
+// free-function shim (issue #1109) is not involved.
 //
 // Regression for #1085 divergence 6: the focus indicator is now a
 // two-line chevron (mirrors Windows's pre-existing shape) rather than a

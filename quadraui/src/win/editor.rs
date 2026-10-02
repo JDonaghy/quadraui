@@ -21,9 +21,9 @@
 //! gutter column, DAP-current-line background, fold headers, AI ghost
 //! text, inline annotations, bracket-match highlight, indent guides,
 //! colorcolumns, spell-check underlines, and the code-action lightbulb
-//! glyph. `EditorPaintResult::cursor_position` is always `None` — this
-//! backend paints its own caret directly (via [`fill_rect`]), the same
-//! posture `GtkBackend::draw_editor`'s doc documents for GTK.
+//! glyph. `EditorPaintResult::cursor_position_native` is always `None`
+//! — this backend paints its own caret directly (via [`fill_rect`]),
+//! the same posture `GtkBackend::draw_editor`'s doc documents for GTK.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 

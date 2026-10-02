@@ -10,11 +10,11 @@
 //! and `win::status_bar::draw_status_bar` into one implementation. This
 //! module now only carries [`mac_status_bar_layout`] (pure layout, still
 //! needed by `MacBackend::status_bar_layout` for no-paint hit-test
-//! queries) and the deprecated [`draw_status_bar`] compatibility shim over
-//! the shared [`super::surface::CgSurface`] adapter (#1072 — consolidated
-//! from this module's own private `RawMacStatusBarSurface`). `MIN_GAP_PX`
-//! stays put — it's still [`mac_status_bar_layout`]'s own measurer
-//! constant, untouched by this migration.
+//! queries); the deprecated `draw_status_bar` compatibility shim over
+//! the shared [`super::surface::CgSurface`] adapter was removed in issue
+//! #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
+//! `MIN_GAP_PX` stays put — it's still [`mac_status_bar_layout`]'s own
+//! measurer constant, untouched by this migration.
 //!
 //! ## Bold segments
 //!
@@ -31,14 +31,11 @@
 //! [`NativeSurface::surface_measure_text_styled`]: crate::native_surface::NativeSurface::surface_measure_text_styled
 //! [`NativeSurface::surface_measure_text`]: crate::native_surface::NativeSurface::surface_measure_text
 
-use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::primitives::status_bar::{
     StatusSegmentMeasure, PIXEL_EDGE_INSET, PIXEL_SEGMENT_PADDING,
 };
-use crate::theme::Theme;
-use crate::types::WidgetId;
 use crate::{StatusBar, StatusBarLayout};
 
 /// 16-point minimum gap between left and right segment groups. Still
@@ -90,52 +87,6 @@ pub fn mac_status_bar_layout(
         PIXEL_EDGE_INSET,
         PIXEL_SEGMENT_PADDING,
         measure,
-    )
-}
-
-/// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
-/// the pre-#860 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_status_bar` reference rather than going
-/// through [`crate::Backend::draw_status_bar`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_status_bar` instead — this free function is a compatibility shim over the shared #860 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_status_bar(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    width: f64,
-    line_height: f64,
-    bar: &StatusBar,
-    theme: &Theme,
-    hovered_id: Option<&WidgetId>,
-    pressed_id: Option<&WidgetId>,
-) -> StatusBarLayout {
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::status_bar::native_surface_paint::paint(
-        bar,
-        &mut surface,
-        theme,
-        x as f32,
-        y as f32,
-        width as f32,
-        line_height as f32,
-        hovered_id,
-        pressed_id,
     )
 }
 

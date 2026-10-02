@@ -652,9 +652,10 @@ impl TabChrome {
 /// (`src/core/engine/mod.rs`, `src/core/engine/terminal_ops.rs`,
 /// `src/gtk/mod.rs`) destructures these fields directly as `f64`, and
 /// CLAUDE.md's downstream-consumers policy forbids a hard break — a type
-/// change here needs the same two-PR deprecate-then-remove protocol as
-/// [`crate::backend::EditorPaintResult::cursor_position`], except across
-/// six `Backend` trait methods (`draw_tab_bar`, `draw_tab_bar_icons`,
+/// change here needs the same two-PR deprecate-then-remove protocol that
+/// retired `crate::backend::EditorPaintResult`'s deprecated
+/// `cursor_position` field (issue #1109), except across six `Backend`
+/// trait methods (`draw_tab_bar`, `draw_tab_bar_icons`,
 /// `draw_tab_bar_with_chrome`, `tab_bar_layout`, `tab_bar_layout_icons`,
 /// `tab_bar_layout_with_chrome`) and four backends, two of which
 /// (`macos::tab_bar`, `win::tab_bar`) construct this struct directly with
@@ -663,10 +664,10 @@ impl TabChrome {
 /// pass over `EditorPaintResult`/`ActivityBarRowHit` could fold in.
 ///
 /// The one piece of this struct's *legacy-ness* this crate can and does
-/// fix without breaking anyone: the converter that constructs it,
-/// [`crate::backend::tab_bar_layout_to_hits`], is deprecated in favour of
-/// [`crate::backend::tab_bar_hits_from_layout`] (same body, new name, zero
-/// remaining in-repo callers of the old one).
+/// fix without breaking anyone: the converter that constructs it was
+/// renamed to [`crate::backend::tab_bar_hits_from_layout`] — the old
+/// `tab_bar_layout_to_hits` alias was removed in issue #1109 (zero uses
+/// in coord-tui's `main` and vimcode's `develop`).
 ///
 /// # Deprecated (issue #823)
 ///

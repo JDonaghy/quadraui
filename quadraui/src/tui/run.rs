@@ -1337,11 +1337,10 @@ mod tests {
     /// Issue #504: `TuiBackend::draw_editor` must widen the TUI-internal,
     /// already cell-rounded `(u16, u16)` cursor position into the portable
     /// `EditorPaintResult::cursor_position_native` `Point` with the same
-    /// `(x, y)` ordering — and keep populating the deprecated
-    /// `cursor_position` tuple field with the exact same pair, since
-    /// `vimcode`'s `Frame::set_cursor_position(result.cursor_position)`
-    /// call site still relies on it (see that field's doc for the full
-    /// deprecation contract).
+    /// `(x, y)` ordering. (The deprecated `cursor_position` tuple field
+    /// this once also populated, for a vimcode call site that read it
+    /// directly, was removed in issue #1109 — that call site no longer
+    /// exists.)
     #[test]
     fn draw_editor_result_maps_cell_cursor_to_native_point() {
         let mut driver = TuiDriver::new(EditorCursorApp::new(3), 40, 10);
@@ -1354,18 +1353,10 @@ mod tests {
             .clone()
             .expect("render() must call draw_editor and capture its result");
 
-        #[allow(deprecated)] // issue #504: asserting the deprecated shim field too
-        let cell = result.cursor_position;
-        assert_eq!(
-            cell,
-            Some((3, 0)),
-            "deprecated cursor_position must still carry the cell-rounded pair"
-        );
         assert_eq!(
             result.cursor_position_native,
-            cell.map(|(x, y)| Point::new(x as f32, y as f32)),
-            "cursor_position_native must be the same (x, y) pair widened to f32, \
-             not swapped or independently computed"
+            Some(Point::new(3.0, 0.0)),
+            "cursor_position_native must carry the cell-rounded (x, y) pair widened to f32"
         );
     }
 }

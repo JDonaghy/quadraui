@@ -459,11 +459,6 @@ pub use primitives::minimap::{
 // for why that split is deliberate.
 #[allow(deprecated)]
 pub use primitives::minimap::SyntaxSpan;
-// #1012: `sample_lines` is a point sampler kept only as a deprecated shim
-// over `sample_blocks` (real block aggregation) — same
-// `#[allow(deprecated)]`-on-a-re-export reasoning as `SyntaxSpan` above.
-#[allow(deprecated)]
-pub use primitives::minimap::sample_lines;
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
     HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit,

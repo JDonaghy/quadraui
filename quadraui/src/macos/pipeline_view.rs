@@ -8,16 +8,17 @@
 //! `macos::pipeline_view::draw_pipeline_view` and
 //! `win::pipeline_view::draw_pipeline_view` into one implementation. This
 //! module now only carries [`mac_pipeline_view_layout`] (still real,
-//! backend-specific pure geometry — no painting involved) and the
-//! deprecated [`draw_pipeline_view`] compatibility shim over the shared
-//! [`super::surface::CgSurface`] adapter (mirrors `macos::diff_view`'s
-//! #866 shim).
+//! backend-specific pure geometry — no painting involved); the
+//! deprecated `draw_pipeline_view` compatibility shim over the shared
+//! [`super::surface::CgSurface`] adapter was removed in issue #1109
+//! (zero uses in coord-tui's `main` and vimcode's `develop`).
 
-use core_graphics::sys::CGContextRef;
+#[cfg(test)]
 use core_text::font::CTFont;
 
 use crate::primitives::layout_metrics::pixel_pipeline_view_layout;
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the macOS pixel-unit layout for a [`PipelineView`]. Shares its
@@ -31,44 +32,6 @@ pub fn mac_pipeline_view_layout(
     h: f64,
 ) -> PipelineViewLayout {
     pixel_pipeline_view_layout(view, x as f32, y as f32, w as f32, h as f32)
-}
-
-/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
-/// the pre-#1085 signature exactly for any external caller that held a
-/// direct `quadraui::macos::draw_pipeline_view` reference rather than
-/// going through [`crate::Backend::draw_pipeline_view`] — the sanctioned
-/// entry point, and the one every in-tree call site already uses, which
-/// is why this shim has no in-repo caller left to trip the `-D
-/// warnings`-denied `deprecated` lint.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of the call.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_pipeline_view` instead — this free function is a compatibility shim over the shared #1085 implementation"
-)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn draw_pipeline_view(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    view: &PipelineView,
-    theme: &Theme,
-) -> PipelineViewLayout {
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::pipeline_view::native_surface_paint::paint(
-        view,
-        &mut surface,
-        theme,
-        crate::event::Rect::new(x as f32, y as f32, w as f32, h as f32),
-    )
 }
 
 #[cfg(test)]

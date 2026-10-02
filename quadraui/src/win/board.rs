@@ -12,56 +12,34 @@
 //! `gtk::board::draw_board`, `macos::board::draw_board` and
 //! `win::board::draw_board` into one implementation. This module now
 //! only carries [`win_board_layout`] (still real, backend-specific pure
-//! geometry — no painting involved) and the deprecated [`draw_board`]
+//! geometry — no painting involved); the deprecated `draw_board`
 //! compatibility shim over the shared [`super::surface::D2dSurface`]
-//! adapter (mirrors `win::diff_view`'s #866 shim).
+//! adapter was removed in issue #1109 (zero uses in coord-tui's `main`
+//! and vimcode's `develop`).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod board;` and `backend.rs`'s module
 //! docs for why the rest of this repo's `--features win` compile gate
 //! stays meaningful without a Windows host.
 
-use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
-
+#[cfg(test)]
 use super::text::DWrite;
 use crate::event::Rect;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::layout_metrics::pixel_board_layout;
+#[cfg(test)]
 use crate::theme::Theme;
 
 /// Compute the Win-GUI DIP-unit layout for a [`BoardModel`] without
-/// painting — the DirectWrite twin of [`draw_board`]'s internal layout
-/// call. Same contract as the GTK/macOS/TUI twins' `*_board_layout`:
+/// painting — the DirectWrite twin of `crate::Backend::draw_board`'s
+/// internal layout call (the free-function `draw_board` shim this
+/// backed was removed in issue #1109). Same contract as the
+/// GTK/macOS/TUI twins' `*_board_layout`:
 /// `rect.x`/`rect.y` are baked into every returned bound (absolute
 /// frame). Shares its column/card measure with `gtk_board_layout` /
 /// `mac_board_layout` via [`pixel_board_layout`] (issue #1079).
 pub fn win_board_layout(model: &BoardModel, rect: Rect) -> BoardLayout {
     pixel_board_layout(model, rect.x, rect.y, rect.width, rect.height)
-}
-
-/// Deprecated free-function shim (#1085, CLAUDE.md rule 8): reproduces
-/// the pre-#1085 signature exactly for any external caller that held a
-/// direct `quadraui::win::draw_board` reference rather than going
-/// through [`crate::Backend::draw_board`] — the sanctioned entry point,
-/// and the one every in-tree call site already uses, which is why this
-/// shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_board` instead — this free function is a compatibility shim over the shared #1085 implementation"
-)]
-pub fn draw_board(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    rect: Rect,
-    model: &BoardModel,
-    theme: &Theme,
-) -> BoardLayout {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::board::native_surface_paint::paint(model, &mut surface, theme, rect)
 }
 
 #[cfg(test)]
@@ -112,10 +90,8 @@ mod tests {
     /// Paint `model` via the shared
     /// [`crate::primitives::board::native_surface_paint::paint`] through
     /// a [`super::super::surface::D2dSurface`] over `surface`'s headless
-    /// target — the same adapter the deprecated [`draw_board`] shim
-    /// uses, exercised here directly so these tests don't trip the
-    /// `-D warnings`-denied `deprecated` lint (CLAUDE.md rule 3; mirrors
-    /// `win::diff_view`'s identical test-migration note).
+    /// target — the same adapter the now-removed `draw_board` shim
+    /// used (issue #1109), exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,

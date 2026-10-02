@@ -582,17 +582,12 @@ pub struct VisibleToast {
     pub dismiss_bounds: Option<Rect>,
     /// Action-button bounds, one per [`Toast::actions`] entry, same
     /// order. Empty if the toast has no actions.
+    ///
+    /// The pre-#1185 single-action mirror field, `action_bounds`
+    /// (always equal to `action_rects.first().copied()`), was removed
+    /// in issue #1109 (zero uses in coord-tui's `main` and vimcode's
+    /// `develop`).
     pub action_rects: Vec<Rect>,
-    /// Bounds of the **first** action button, or `None` when the toast
-    /// has no actions — the pre-#1185 single-action field, kept so
-    /// downstream readers keep compiling (CLAUDE.md rule 3). Always
-    /// equal to `action_rects.first().copied()`; removed with the rest
-    /// of this module's legacy section once consumers migrate.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `action_rects`, which carries every action button — see quadraui#1185"
-    )]
-    pub action_bounds: Option<Rect>,
 }
 
 /// Classification of a hit-test result.
@@ -754,13 +749,11 @@ impl ToastOverlay {
                 .collect();
 
             let toast_id = self.toasts[i].id.clone();
-            #[allow(deprecated)]
             visible_toasts.push(VisibleToast {
                 toast_idx: i,
                 id: toast_id.clone(),
                 bounds,
                 dismiss_bounds,
-                action_bounds: action_rects.first().copied(),
                 action_rects: action_rects.clone(),
             });
 
@@ -812,13 +805,6 @@ impl ToastOverlay {
                     .iter()
                     .map(|r| shift_rect(*r, origin_x, origin_y))
                     .collect();
-                // Keep the deprecated single-action mirror in the same
-                // frame as `action_rects` (it is by definition the first
-                // entry — see `VisibleToast::action_bounds`).
-                #[allow(deprecated)]
-                {
-                    vt.action_bounds = vt.action_rects.first().copied();
-                }
             }
             for (rect, _) in &mut hit_regions {
                 *rect = shift_rect(*rect, origin_x, origin_y);
@@ -1738,7 +1724,7 @@ mod tests {
     }
 
     /// #1185: a toast with two actions produces two, non-overlapping
-    /// `action_bounds` entries, aligned 1:1 with `Toast::actions`.
+    /// `action_rects` entries, aligned 1:1 with `Toast::actions`.
     #[test]
     fn toast_layout_multiple_action_regions() {
         let mut toast = make_toast("t1", "Install Markdown Language Server?");
@@ -1959,44 +1945,5 @@ mod legacy_compat_tests {
         let a = converted.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
         let b = hand_built.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
         assert_eq!(a, b);
-    }
-
-    /// The deprecated single-action mirror on [`VisibleToast`] — which
-    /// downstream reads as `Option<Rect>` — always tracks the first entry
-    /// of `action_rects`, in the same (absolute) frame, origin shift
-    /// included.
-    #[test]
-    fn visible_toast_action_bounds_mirrors_first_action_rect() {
-        let overlay = legacy_stack().to_overlay();
-        let measure = |i: usize| ToastMeasure {
-            width: 300.0,
-            height: 64.0,
-            dismiss_rect: Some(Rect::new(276.0, 4.0, 20.0, 16.0)),
-            action_rects: if i == 0 {
-                vec![Rect::new(210.0, 40.0, 80.0, 20.0)]
-            } else {
-                Vec::new()
-            },
-        };
-
-        for (origin_x, origin_y) in [(0.0, 0.0), (7.0, 13.0)] {
-            let layout = overlay.layout(origin_x, origin_y, 800.0, 600.0, 16.0, 8.0, measure);
-            for vt in &layout.visible_toasts {
-                assert_eq!(vt.action_bounds, vt.action_rects.first().copied());
-            }
-            let with_action = layout
-                .visible_toasts
-                .iter()
-                .find(|vt| vt.id == WidgetId::new("t1"))
-                .expect("the action-bearing toast is visible");
-            let ab = with_action
-                .action_bounds
-                .expect("a legacy reader still sees its single action button");
-            // …and it resolves to that action, not the body.
-            assert_eq!(
-                layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0),
-                ToastHit::Action(WidgetId::new("install")),
-            );
-        }
     }
 }

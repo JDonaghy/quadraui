@@ -440,8 +440,8 @@ impl Default for SectionMeasure {
 /// `primitives::layout_metrics` module (which in fact imports *this*
 /// type) — same-crate naming ambiguity, not a compile clash. Matches the
 /// name this type was already re-exported under at the crate root. The
-/// old name survives as a `#[deprecated]` `pub type` alias below per
-/// `PRIMITIVE_RULES.md` rule 8.
+/// old name's deprecated `pub type` alias was removed in issue #1109
+/// (zero uses in coord-tui's `main` and vimcode's `develop`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MsvLayoutMetrics {
     /// Header row size in main-axis units (e.g. 1 cell, or
@@ -472,12 +472,8 @@ impl Default for MsvLayoutMetrics {
     }
 }
 
-/// Pre-#822 name of [`MsvLayoutMetrics`]. Kept as a source-compatible
-/// alias per `PRIMITIVE_RULES.md` rule 8 for anyone reaching this type
-/// via the full `quadraui::primitives::multi_section_view::LayoutMetrics`
-/// path (the crate root already re-exported it as `MsvLayoutMetrics`).
-#[deprecated(since = "0.0.1", note = "renamed to `MsvLayoutMetrics` (#822)")]
-pub type LayoutMetrics = MsvLayoutMetrics;
+// Pre-#822 name of `MsvLayoutMetrics`, `LayoutMetrics`, was removed in
+// issue #1109 (zero uses in coord-tui's `main` and vimcode's `develop`).
 
 impl MultiSectionView {
     /// Compute the full chrome layout for this view.
