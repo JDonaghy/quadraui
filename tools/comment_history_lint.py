@@ -2,7 +2,7 @@
 """Comment-history lint: flag issue refs and "narrates the past" phrasing in
 comments (#1112).
 
-Policy (see `CONTRIBUTING.md`/`CLAUDE.md`'s "Comment policy" sections):
+Policy (see `CONTRIBUTING.md`'s "Comment policy" section):
 comments describe the code *as it is*; history (what it used to do, why a PR
 changed it, what a reviewer said) belongs in `CHANGELOG.md` and the issue
 tracker, not inline. The one exception is a *load-bearing* issue reference —
