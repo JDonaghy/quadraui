@@ -184,7 +184,7 @@ jobs:
   comment-lint:
     # #1112: comments describe the code as it is; history (what it used to
     # do, what a PR/reviewer said) belongs in CHANGELOG.md and the issue
-    # tracker, not inline (see CONTRIBUTING.md/CLAUDE.md's "Comment policy").
+    # tracker, not inline (see CONTRIBUTING.md's "Comment policy" section).
     # `tools/comment_history_lint.py` counts `#\d+`-and-history-phrase
     # comment lines per module and compares against
     # `tools/comment_history_thresholds.json`, whose values are today's
