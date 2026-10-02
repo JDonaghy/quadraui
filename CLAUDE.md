@@ -51,6 +51,43 @@ This is non-negotiable. Every architectural decision in this repo serves it.
 
 If you're tempted to take a shortcut — bypass the runner, copy-paste an example across backends, build a per-backend layout helper — **stop and ask: does this violate the portability commitment?** If yes, fix the trait gap first.
 
+### TUI is not a second-class backend — capabilities must *work* there, not merely report their absence
+
+**An app written on quadraui must actually be usable on TUI.** Menus, file and
+folder pickers, message dialogs, buttons, text boxes, lists — all of it has to
+function. It does not have to look like the GUI. It has to *work*. vimcode's TUI
+build is the existence proof: it drives the same `AppShell`, activity bar and
+omnibar as the GUI backends.
+
+So `Unsupported` / `None` is **not** an acceptable answer for a capability the
+user is meant to interact with. Reserve it for things that are *physically*
+absent on a terminal — a tray icon, a dock badge, an OS global shortcut. There
+is nothing to degrade to for those. There is always something to degrade to for
+a dialog.
+
+**The crate owns the degrade, not the app.** A `PlatformServices` method that
+returns `None` on TUI and tells the app to "provide an in-canvas picker instead"
+pushes the work onto every consumer — the duplication this crate exists to
+prevent. The degrade belongs in `compose/`, behind the same call, so one
+app-side call site gets a native dialog on GUI and an in-canvas one on TUI.
+
+`compose::FolderPickerController` is the pattern done right: it began as
+vimcode's TUI-local `FolderPickerState` and was lifted here verbatim, so today
+vimcode drives one backend-neutral picker on every backend and branches nowhere.
+Copy that shape. What is still missing is a **file** open/save picker (only the
+folder one exists) and a **message-dialog** controller — `primitives/dialog.rs`
+paints, but nothing drives the show-block-return-a-choice contract
+`show_message_dialog` has. Until those land, `show_file_open_dialog`,
+`show_file_save_dialog` and `show_message_dialog` are GUI-only.
+
+A synchronous in-canvas degrade is not a novelty: GTK's own
+`show_message_dialog` already pumps its loop (`pump_until_ready`) to make a
+native dialog block. A TUI nested draw-and-read loop is the same shape.
+
+When adding any capability, state its TUI story explicitly and ship a `tui_*`
+test for it. "Terminal, so no" is a conclusion that has to be *earned* per
+capability, not assumed.
+
 ## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
 
 quadraui is `publish = false`, `version = "0.0.1"`. **Nothing anywhere pins a published version of this crate.** `vimcode` depends on it by *relative path to a sibling checkout*, and its CI clones `develop`. `coord-tui` used to as well, but since `claude-coordinator#1973` (2026-08-10) it pins `quadraui` to a fixed git rev instead — a *deliberate, reviewable* dependency bump on coord-tui's side, not automatic drift:
