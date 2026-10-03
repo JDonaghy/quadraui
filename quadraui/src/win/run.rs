@@ -2733,9 +2733,24 @@ mod win32 {
                             v.bounds.y + v.bounds.height / 2.0,
                         )
                     });
+                // quadraui#1259: `status_layout`'s `hit_regions` bounds are
+                // bar-local (see `register_status_bar_segment_zones`'s
+                // doc in `win::backend`), so the real absolute probe
+                // point needs `status_rect`'s own origin added back in —
+                // deriving it from the bar-local bounds alone would (pre-
+                // fix) have landed near this band's *left* edge instead
+                // of the close button's real position near the right
+                // edge, and could pass "for the wrong reason" by luck
+                // landing inside an unrelated zone.
                 let close_button = status_layout.hit_regions.iter().find_map(|(r, hit)| {
-                    matches!(hit, crate::primitives::status_bar::StatusBarHit::Segment(_))
-                        .then(|| (r.x + r.width / 2.0, r.y + r.height / 2.0))
+                    matches!(hit, crate::primitives::status_bar::StatusBarHit::Segment(_)).then(
+                        || {
+                            (
+                                status_rect.x + r.x + r.width / 2.0,
+                                status_rect.y + r.y + r.height / 2.0,
+                            )
+                        },
+                    )
                 });
                 let search_box = cc_layout
                     .search_bounds
