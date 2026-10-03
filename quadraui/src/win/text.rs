@@ -15,6 +15,9 @@
 //! for why the rest of this repo's `--features win` compile gate stays
 //! meaningful without a Windows host.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use windows::core::{
     Error as WinError, IUnknown, Interface, Result as WinResult, BOOL, HSTRING, PCWSTR,
 };
@@ -72,6 +75,23 @@ pub struct DWrite {
     /// Nerd-Font fallback this handle was constructed with, if any —
     /// same reuse rationale as `family`.
     fallback: Option<IDWriteFontFallback>,
+    /// Lazily-built, same-family `IDWriteTextFormat`s at sizes other than
+    /// `text_format`/`bold_text_format`'s own, keyed by rounded DIP size
+    /// (issue #1267) — [`Self::minimap_text_format`]'s backing cache. A
+    /// `RefCell` rather than requiring `&mut self` because every call site
+    /// that reaches this (`win::minimap::paint_row_glyphs`, through
+    /// `WinBackend::draw_minimap`) only ever holds `&DWrite`; interior
+    /// mutability here mirrors `MinimapAtlasCache`'s role on the GTK/macOS
+    /// backends (owned by the backend, one build per distinct key) without
+    /// requiring a new `WinBackend` field and the matching plumbing through
+    /// every `draw_minimap_scaled` call. All rows of a `MinimapSizing::FixedPitch`
+    /// strip share one pitch (see `win::minimap::draw_minimap_scaled`'s own
+    /// comment on reading `row_px` from the first visible line), so within a
+    /// single paint this builds at most one format regardless of row count
+    /// — persisting it here means a *second* paint at the same pitch (the
+    /// common no-resize case) reuses it too, instead of rebuilding every
+    /// frame.
+    minimap_format_cache: RefCell<HashMap<i32, IDWriteTextFormat>>,
 }
 
 impl DWrite {
@@ -188,6 +208,7 @@ impl DWrite {
                 bold_text_format,
                 family: family.to_string(),
                 fallback: fallback.cloned(),
+                minimap_format_cache: RefCell::new(HashMap::new()),
             },
             line_height,
             char_width,
@@ -255,6 +276,71 @@ impl DWrite {
         } else {
             &self.text_format
         }
+    }
+
+    /// Build (or reuse from [`Self::minimap_format_cache`]) a same-family,
+    /// normal-weight `IDWriteTextFormat` at `size_dip` DIPs — issue #1267's
+    /// "cheaper first step": honour [`crate::primitives::minimap::minimap_font_px`]
+    /// instead of discarding it, by keying the cache on the *rounded* DIP
+    /// size so a minimap painting many rows at the same pitch (the common
+    /// case — see the cache field's doc) builds one format total rather
+    /// than one per row. Carries the same word-wrap/fallback setup
+    /// [`Self::new`] applies to `text_format`/`bold_text_format`, so a
+    /// minimap row painted through this format behaves identically to one
+    /// painted through the editor's own (clipping instead of wrapping,
+    /// falling back through the same Nerd-Font chain).
+    fn minimap_text_format(&self, size_dip: f64) -> WinResult<IDWriteTextFormat> {
+        // Degenerate sizes (zero/negative row pitch) would otherwise ask
+        // DirectWrite for a zero-or-negative font size, which
+        // `CreateTextFormat` rejects outright -- `minimap_font_px` already
+        // clamps to `[1.0, 64.0]` for every real caller, but this guards
+        // the cache key itself against a future caller that skips that
+        // clamp.
+        let key = (size_dip.round() as i32).max(1);
+        if let Some(existing) = self.minimap_format_cache.borrow().get(&key) {
+            return Ok(existing.clone());
+        }
+
+        let format = create_text_format(
+            &self.factory,
+            &self.family,
+            key as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+        )?;
+        // SAFETY: `format` is the live interface just created above;
+        // `SetWordWrapping` takes a plain enum value, no pointers. Same
+        // rationale as `Self::new`'s identical call on `text_format`.
+        unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+        if let Some(fallback) = &self.fallback {
+            if let Err(err) = apply_fallback_to_format(&format, fallback) {
+                crate::diagnostics::emit(format!(
+                    "quadraui: IDWriteTextFormat1::SetFontFallback failed for a minimap text \
+                     format at {key}dip ({err:?}); continuing without a Nerd-Font fallback"
+                ));
+            }
+        }
+
+        self.minimap_format_cache
+            .borrow_mut()
+            .insert(key, format.clone());
+        Ok(format)
+    }
+
+    /// Paint `text` inside `rect` (DIPs, target-relative) in `color`, using
+    /// an [`Self::minimap_text_format`] built for `size_dip` instead of
+    /// this handle's own `text_format` — [`crate::win::minimap::paint_row_glyphs`]'s
+    /// entry point for shaping a minimap row at its own
+    /// [`crate::primitives::minimap::minimap_font_px`] size (issue #1267).
+    pub(crate) fn draw_text_at_size(
+        &self,
+        target: &ID2D1RenderTarget,
+        text: &str,
+        rect: Rect,
+        color: Color,
+        size_dip: f64,
+    ) -> WinResult<()> {
+        let format = self.minimap_text_format(size_dip)?;
+        draw_text(target, &format, text, rect, color)
     }
 }
 
