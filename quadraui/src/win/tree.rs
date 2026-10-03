@@ -20,9 +20,12 @@
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod tree;` and `backend.rs`'s module
 //! docs for why the rest of this repo's `--features win` compile gate
-//! stays meaningful without a Windows host. See `win::status_bar`'s
-//! module doc for why colours come from `Theme::default()` rather than a
-//! live `WinBackend` theme field.
+//! stays meaningful without a Windows host.
+//!
+//! Takes the live theme as a `&Theme` parameter (issue #1261, mirroring
+//! quadraui#789's fix for `draw_menu_bar`/`draw_activity_bar`/etc.) — the
+//! caller ([`crate::win::WinBackend::draw_tree`]) passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes.
 //!
 //! # Scope for #26 (historical)
 //!
@@ -99,8 +102,8 @@ pub fn draw_tree(
     tree: &TreeView,
     line_height: f32,
     nerd_fonts_enabled: bool,
+    theme: &Theme,
 ) -> TreeViewLayout {
-    let theme = Theme::default();
     let layout = win_tree_layout(tree, rect, line_height);
 
     let mut surface = super::surface::D2dSurface {
@@ -114,7 +117,7 @@ pub fn draw_tree(
         line_height,
         nerd_fonts_enabled,
         &mut surface,
-        &theme,
+        theme,
     );
 
     layout
@@ -187,7 +190,15 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                );
             })
             .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
             .expect("paint tree");
@@ -254,7 +265,15 @@ mod tests {
 
         let layout = surface
             .paint(|target| {
-                draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                );
             })
             .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
             .expect("paint");
@@ -293,7 +312,15 @@ mod tests {
 
         let painted = surface
             .paint(|target| {
-                draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                );
             })
             .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
             .expect("paint");
@@ -343,6 +370,7 @@ mod tests {
                         &tree,
                         LINE_HEIGHT,
                         nerd_fonts_enabled,
+                        &Theme::default(),
                     );
                 })
                 .expect("paint");
@@ -380,10 +408,10 @@ mod tests {
     /// unchanged from pre-#1057 rendering. Empty row text (as in
     /// `nerd_fonts_flag_selects_glyph_or_fallback` above) means the icon
     /// glyph is the only ink in the row, so the most-inked pixel on the
-    /// row's mid-line is unambiguously the icon. `draw_tree` always
-    /// paints against `Theme::default()` (no theme parameter — see this
-    /// module's doc), so the test reads its expected colours from there
-    /// rather than injecting a theme.
+    /// row's mid-line is unambiguously the icon. This test passes
+    /// `&Theme::default()` explicitly and reads its expected colours
+    /// from the same instance, so it stays correct regardless of what
+    /// `draw_tree`'s caller wires through in production.
     #[test]
     fn icon_color_paints_icon_glyph_in_that_color_else_default_fg() {
         let icon_color = crate::types::Color::rgb(220, 80, 20);
@@ -413,7 +441,15 @@ mod tests {
             let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
             surface
                 .paint(|target| {
-                    draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                    draw_tree(
+                        target,
+                        &dwrite,
+                        rect,
+                        &tree,
+                        LINE_HEIGHT,
+                        false,
+                        &Theme::default(),
+                    );
                 })
                 .expect("paint");
 
@@ -484,7 +520,15 @@ mod tests {
             let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
             let layout = surface
                 .paint(|target| {
-                    draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                    draw_tree(
+                        target,
+                        &dwrite,
+                        rect,
+                        &tree,
+                        LINE_HEIGHT,
+                        false,
+                        &Theme::default(),
+                    );
                 })
                 .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
                 .expect("paint tree");
@@ -537,7 +581,15 @@ mod tests {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         surface
             .paint(|target| {
-                draw_tree(target, &dwrite, rect, &tree, LINE_HEIGHT, false);
+                draw_tree(
+                    target,
+                    &dwrite,
+                    rect,
+                    &tree,
+                    LINE_HEIGHT,
+                    false,
+                    &Theme::default(),
+                );
             })
             .expect("paint tree");
 
