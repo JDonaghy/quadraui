@@ -6886,6 +6886,56 @@ mod tests {
         assert_eq!(b.nc_hit_test(1.0, 16.0), Some(true));
     }
 
+    /// #1260 regression: when the Command Center's container is
+    /// deliberately *wider* than its centred content (arrows + gaps +
+    /// search box), the left/right padding inside the container — but
+    /// still inside the drag band — must read `Some(true)` (`HTCAPTION`),
+    /// not get swallowed by an over-eager exclusion. This is the shape
+    /// of #1260's bug report: a real `WM_NCHITTEST` sweep across the
+    /// title band found `HTCLIENT` almost everywhere between the menu
+    /// row and the caption buttons, including the blank strip the
+    /// Command Center's own padding should leave `HTCAPTION`.
+    /// `draw_command_center_registers_its_own_zones_inside_the_band`
+    /// above only ever probes a point *inside* the search box itself, so
+    /// it can't catch a content block that over-fills its own container
+    /// (or, symmetrically, a container with room to spare that isn't
+    /// correctly left unclaimed) — this test probes the gap between the
+    /// container's left edge and the centred content instead.
+    #[test]
+    fn draw_command_center_leaves_its_own_container_padding_as_caption() {
+        let mut b = WinBackend::new();
+        let band = Rect::new(0.0, 0.0, 900.0, 32.0);
+        Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
+
+        // A short label floors at `CommandCenterMeasure`'s 280px minimum
+        // search-box width, so the centred content (2 arrows + 2 gaps +
+        // the 280px floor) is well short of the 400px-wide container
+        // below — leaving real padding on both sides to probe.
+        let cc = CommandCenter {
+            id: WidgetId::new("titlebar:cc"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "x".into(),
+        };
+        let container = Rect::new(300.0, 0.0, 400.0, 32.0);
+        let layout = Backend::draw_command_center(&mut b, container, &cc);
+
+        let back = layout.back_bounds.expect("back arrow must be laid out");
+        assert!(
+            back.x > container.x,
+            "fixture must actually leave left padding to probe (back.x={}, container.x={})",
+            back.x,
+            container.x
+        );
+
+        // In the container, left of the back arrow, still inside the
+        // drag band: must read as a draggable caption point, not get
+        // excluded by a zone that over-claims the container's own
+        // padding.
+        let pad_x = (container.x + back.x) / 2.0;
+        assert_eq!(b.nc_hit_test(pad_x, 16.0), Some(true));
+    }
+
     /// A coarser zone that contains the whole band (e.g. `AppShell`'s own
     /// `"app-shell:window"` whole-window zone) must **not** be treated as
     /// an exclusion — otherwise every point in the band would read as
