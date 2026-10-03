@@ -823,6 +823,15 @@ impl crate::Backend for RecordingBackend {
         // like TUI's real backend does (quadraui#912).
         self.char_width
     }
+    fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
+        // Same rationale as `list_char_width` above: no real font to
+        // measure against, just the same char-cell arithmetic every
+        // caller used before `Backend::measure_text` existed (quadraui#1132).
+        (
+            text.chars().count() as f32 * self.char_width,
+            self.line_height,
+        )
+    }
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         // `RecordingBackend` only records call shape, not real font
         // metrics — same rationale as `list_char_width` above. No
