@@ -776,7 +776,20 @@ impl ResizeDebouncer {
 /// [`Backend::request_frame_in`]: crate::backend::Backend::request_frame_in
 /// [`Backend::waker`]: crate::backend::Backend::waker
 /// [`tui::run::run_inner`]: crate::tui::run
-#[cfg(feature = "tui")]
+///
+/// Also used by [`crate::win::backend::WinBackend`] (quadraui#1264) —
+/// not because Windows lacks a native timer (it has one, `SetTimer`/
+/// `WM_TIMER`, armed directly from `WinBackend::request_frame_in`, same
+/// as GTK/macOS), but because that real timer is a no-op before
+/// `attach_surface` has ever run (no `HWND` to arm it against — see
+/// that method's doc), which makes it unobservable from a headless
+/// `WinDriver` test that never attaches a live window. `WinBackend`
+/// records into this scheduler unconditionally, `hwnd` or not, purely
+/// as a test-facing call-count/deadline accessor
+/// (`WinBackend::frame_requests`/`pending_frame_delay`) mirroring
+/// `TuiBackend`'s — the live Win32 timer arm is untouched and still
+/// gated on `hwnd` being `Some`.
+#[cfg(any(feature = "tui", feature = "win"))]
 pub(crate) struct FrameScheduler {
     deadline: std::cell::Cell<Option<std::time::Instant>>,
     /// Total number of [`Self::request`] calls since construction — the
@@ -790,7 +803,7 @@ pub(crate) struct FrameScheduler {
     requests: std::cell::Cell<u64>,
 }
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "win"))]
 impl FrameScheduler {
     pub(crate) const fn new() -> Self {
         Self {
@@ -825,7 +838,18 @@ impl FrameScheduler {
             .get()
             .map(|d| d.saturating_duration_since(std::time::Instant::now()))
     }
+}
 
+// TUI is the only backend that needs these two: it has no native run
+// loop to arm a timer against (see this type's module doc), so its live
+// runner has to fold the pending deadline into its own `wait_events`
+// timeout (`poll_timeout`) and clear it itself once due
+// (`clear_if_due`). GTK/macOS/Windows arm a real native timer directly
+// from `request_frame_in` instead and never call either — under a
+// `win`-only build (no `tui`) these would be unused and trip `dead_code`
+// under this crate's workflow-wide `-D warnings`.
+#[cfg(feature = "tui")]
+impl FrameScheduler {
     /// How long the run loop may safely block in `wait_events` before it
     /// needs to re-check state: the time remaining until the pending
     /// deadline, clamped to `ceiling` — or `ceiling` itself if nothing is
