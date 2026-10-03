@@ -3583,6 +3583,136 @@ mod paste_dispatch_tests {
     }
 }
 
+/// Coverage for vimcode#1674 (quadraui issue #1262): does a registered
+/// Ctrl-chord accelerator actually reach the app once the *translated*
+/// `WM_CHAR` payload Windows is documented to deliver for each reported
+/// chord is fed through the real, shared `dispatch_event` →
+/// `crate::runtime::preprocess_event` → `BackendCore::match_keypress`
+/// pipeline?
+///
+/// Unlike `win::testing::WinDriver` (whose `ctrl_char` builds an
+/// already-decoded `UiEvent::KeyPressed` directly, bypassing
+/// `events.rs`'s `WM_CHAR` translation by design — see that type's doc),
+/// this module chains the translation step genuinely: it builds the raw
+/// `char` + modifiers payload a real `wndproc` would hand
+/// [`crate::win::events::wm_char_to_uievent`] for each chord, translates it
+/// through that function, and only then feeds the result to
+/// [`dispatch_event`] — so it exercises translation *and* accelerator
+/// dispatch together, not either in isolation. `dispatch_event` is
+/// deliberately not `target_os`-gated (see its doc comment), so unlike a
+/// `WinDriver`-based test this one **genuinely executes**, including on
+/// plain `cargo test --features win` on Linux.
+///
+/// This closes the "does translation + dispatch work for these two
+/// specific chords" half of #1262's investigation. It does **not** close
+/// the issue: whether a real Windows `wndproc` actually receives the
+/// `WM_CHAR`/`WM_KEYDOWN` messages this module assumes as input (Ctrl+`
+/// generating `WM_CHAR('`')` with `GetKeyState(VK_CONTROL)` true; Ctrl+B
+/// generating `WM_CHAR('\x02')`) for the bugbash's injected-input methods
+/// is a live-hardware fact no test in this repo can observe — see
+/// #1262's "Ask" section.
+#[cfg(test)]
+mod ctrl_accelerator_dispatch_tests_1674 {
+    use super::*;
+    use crate::runner::Reaction;
+    use crate::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding, Modifiers, UiEvent};
+
+    /// Records every event `handle` receives — same shape as
+    /// `paste_dispatch_tests::RecordingApp` above.
+    #[derive(Default)]
+    struct RecordingApp {
+        events: Vec<UiEvent>,
+    }
+
+    impl AppLogic for RecordingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.events.push(event);
+            Reaction::Continue
+        }
+    }
+
+    fn global_accelerator(id: &str, binding: &str) -> Accelerator {
+        Accelerator {
+            id: AcceleratorId::new(id),
+            binding: KeyBinding::Literal(binding.to_string()),
+            scope: AcceleratorScope::Global,
+            label: None,
+        }
+    }
+
+    /// Ctrl+B: Windows' keyboard driver converts Ctrl+letter to its C0
+    /// control code (`0x02` for B) via `TranslateMessage` before
+    /// `WM_CHAR` delivers it — `events::tests::char_ctrl_letter_recovers_base_letter`
+    /// already proves the translator recovers `Key::Char('b')` with
+    /// `ctrl == true` from that payload; this test carries the recovered
+    /// event one step further,
+    /// through a registered `<C-b>` accelerator, and asserts the app
+    /// sees `UiEvent::Accelerator`, not the raw keypress.
+    #[test]
+    fn ctrl_b_accelerator_reaches_the_app_via_dispatch_event() {
+        let mut backend = WinBackend::new();
+        backend.register_accelerator(&global_accelerator("toggle-sidebar", "<C-b>"));
+
+        let modifiers = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let event = crate::win::events::wm_char_to_uievent('\u{0002}', modifiers, false)
+            .expect("Ctrl+B's WM_CHAR payload must translate to a KeyPressed event");
+
+        let mut app = RecordingApp::default();
+        let _ = dispatch_event(event, &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![UiEvent::Accelerator(
+                AcceleratorId::new("toggle-sidebar"),
+                modifiers
+            )],
+            "a registered Ctrl+B accelerator must reach the app as \
+             UiEvent::Accelerator once WM_CHAR's '\\x02' payload is \
+             translated — got {:?}",
+            app.events
+        );
+    }
+
+    /// Ctrl+`: backtick is not a control character, so
+    /// `wm_char_to_uievent` never reaches its Ctrl-recovery branch — it
+    /// passes the literal backtick straight through with `ctrl` still
+    /// set on `modifiers`. That is already exactly the event a
+    /// registered `<C-`>` accelerator matches, so this chord needs no
+    /// special-case recovery at all once Windows delivers the `WM_CHAR`.
+    #[test]
+    fn ctrl_backtick_accelerator_reaches_the_app_via_dispatch_event() {
+        let mut backend = WinBackend::new();
+        backend.register_accelerator(&global_accelerator("toggle-terminal", "<C-`>"));
+
+        let modifiers = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let event = crate::win::events::wm_char_to_uievent('`', modifiers, false)
+            .expect("Ctrl+`'s WM_CHAR payload must translate to a KeyPressed event");
+
+        let mut app = RecordingApp::default();
+        let _ = dispatch_event(event, &mut backend, &mut app);
+        assert_eq!(
+            app.events,
+            vec![UiEvent::Accelerator(
+                AcceleratorId::new("toggle-terminal"),
+                modifiers
+            )],
+            "a registered Ctrl+` accelerator must reach the app as \
+             UiEvent::Accelerator once WM_CHAR's literal backtick payload \
+             is translated with ctrl held — got {:?}",
+            app.events
+        );
+    }
+}
+
 /// Coverage for #741: `dispatch_event`'s Ctrl-C/Ctrl-A/`MouseDown`/
 /// `TextSelectionChanged` text-selection pre-processing, plus
 /// [`route_mouse_down`]/[`route_mouse_move`]/[`route_mouse_up`]'s

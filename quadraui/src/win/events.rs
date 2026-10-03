@@ -872,6 +872,60 @@ mod tests {
         }
     }
 
+    // ── Ctrl-modified shortcuts (vimcode#1674 / quadraui#1262) ──────
+    //
+    // A real-hardware bugbash found Ctrl+` and Ctrl+B never reaching a
+    // Win-GUI app. `char_ctrl_letter_recovers_base_letter` and
+    // `char_ctrl_a_through_z_all_recover` above already prove the
+    // general Ctrl+letter recovery class; these two name the issue's
+    // exact two reported chords directly, so a future regression in
+    // either one's specific path shows up by name rather than only as a
+    // break in the general-letter sweep.
+
+    #[test]
+    fn ctrl_b_wm_char_recovers_the_base_letter_1674() {
+        // Windows' keyboard driver converts Ctrl+letter to its C0
+        // control code (0x02 for B) via TranslateMessage before WM_CHAR
+        // delivers it.
+        let mods = win_modifiers(true, false, false, false);
+        let ev = wm_char_to_uievent('\u{0002}', mods, false);
+        match ev {
+            Some(UiEvent::KeyPressed {
+                key: Key::Char(c),
+                modifiers,
+                ..
+            }) => {
+                assert_eq!(c, 'b');
+                assert!(modifiers.ctrl);
+            }
+            other => panic!("expected KeyPressed(Char('b'), ctrl), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_backtick_wm_char_passes_through_with_ctrl_held_1674() {
+        // Backtick is not a control character, so `c.is_control()` is
+        // false and the function never reaches its Ctrl-recovery branch
+        // at all — it passes the literal backtick straight through with
+        // `ctrl` still set on `modifiers`, which is already exactly the
+        // event a registered `<C-`>` accelerator (or
+        // `Engine::handle_vscode_key`'s `"grave" | "`"` arm, in vimcode)
+        // needs.
+        let mods = win_modifiers(true, false, false, false);
+        let ev = wm_char_to_uievent('`', mods, false);
+        match ev {
+            Some(UiEvent::KeyPressed {
+                key: Key::Char(c),
+                modifiers,
+                ..
+            }) => {
+                assert_eq!(c, '`');
+                assert!(modifiers.ctrl);
+            }
+            other => panic!("expected KeyPressed(Char('`'), ctrl), got {other:?}"),
+        }
+    }
+
     // ── Window resize ───────────────────────────────────────────────
 
     #[test]
