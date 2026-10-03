@@ -1101,6 +1101,35 @@ impl WinBackend {
         }
     }
 
+    /// Test-only hook (issue #1263): force `self.surface` back to the
+    /// "not attached" state a genuine `EndDraw` failure (device lost /
+    /// `D2DERR_RECREATE_TARGET`) leaves it in — see [`Self::end_frame`]'s
+    /// doc — without needing a real Direct2D error to get there.
+    ///
+    /// `self.surface`/`self.hwnd`/`self.headless_target` are all private
+    /// to this module, so nothing outside it — including
+    /// `super::testing::WinDriver`, the one place a downstream crate can
+    /// reach a `WinBackend` at all — can reproduce this state directly.
+    /// [`super::testing::WinDriver::drop_surface`] is this method's only
+    /// caller, and exists to close exactly that gap: before it, the only
+    /// way any test (in-crate or down) could observe
+    /// [`Backend::draw_minimap`]'s (or any other `draw_*`'s)
+    /// `painted: false` fallback was to never attach a surface in the
+    /// first place (`draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout`,
+    /// below) — proving the fallback on a backend that *had* a surface
+    /// and then lost it (the actual, narrower reported bug) was
+    /// impossible from outside this file. `self.hwnd`/`self.headless_target`
+    /// are left untouched, same as the real `EndDraw`-failure path in
+    /// [`Self::end_frame`], so [`Self::ensure_surface`] (called by every
+    /// production `WM_PAINT`/`WM_SIZE` handler, and by
+    /// [`super::testing::WinDriver::render`] before every frame) still
+    /// recreates it on the next call, exactly like the real failure this
+    /// simulates.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn drop_surface_for_testing(&mut self) {
+        self.surface = None;
+    }
+
     /// Resize the live render target to `width` x `height` device pixels.
     /// Called from `win::run`'s `WM_SIZE` handler (#19's "responds to
     /// resize without crashing" acceptance criterion).
