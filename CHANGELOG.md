@@ -408,6 +408,19 @@ release time.
 
 ### Fixed
 
+- Win-GUI (`WinBackend`) now paints 11 more `ChromePrimitive` rasterisers
+  — `Tree`, `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
+  `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
+  `Toolbar`, `TabBar` — through the chrome (UI) font (`chrome_dwrite`,
+  falling back to the editor `dwrite` handle if no live chrome one
+  exists yet) instead of the editor font, matching GTK's `ui_font` swap
+  (#624) and macOS's `chrome_font` (#1003) (issue #1266). Only `Dialog`
+  and `RichTextPopup` (#1077) were wired previously; `chrome_dwrite` had
+  sat built-but-unused since #724. A new private `ChromeSurface`
+  `NativeSurface` adapter (mirroring `MacBackend::ChromeSurface`) covers
+  the two primitives (`StatusBar`, `SidebarPanel`) that paint through the
+  shared `native_surface_paint` module rather than a per-backend
+  `D2dSurface`. No public API change.
 - `terminal_engine::TerminalSession::resize` no longer panics when a
   **width shrink** lands exactly between the two halves of a double-width
   (CJK/emoji) glyph (issue #1130). vt100 0.16.2's `Screen::set_size`

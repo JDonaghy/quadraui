@@ -598,10 +598,14 @@ pub struct WinBackend {
     /// (UI) font (`ui_font_family`/`ui_font_size_pt`) — the chrome twin
     /// of `dwrite` above. `None` until [`Self::attach_surface`] creates
     /// it; recreated alongside it the same way (#724). Read via
-    /// [`Self::chrome_dwrite`]; no `draw_*` rasteriser paints chrome text
-    /// with it yet — wiring individual rasterisers off `dwrite` (the
-    /// editor font) onto this is a follow-up, same posture as macOS's
-    /// still-open `set_ui_font` gap (`ACCEPTED_DEFAULTS`, #624).
+    /// [`Self::chrome_dwrite`]; `Dialog`/`RichTextPopup` (#1077) and, as
+    /// of #1266, every other `ChromePrimitive` rasteriser (`Tree`,
+    /// `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
+    /// `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
+    /// `Toolbar`, `TabBar`) paint chrome text through this handle,
+    /// falling back to the editor `dwrite` handle if no live chrome one
+    /// exists yet — matching GTK's `ui_font` swap (#624) and macOS's
+    /// `chrome_font` (#1003).
     #[cfg(target_os = "windows")]
     chrome_dwrite: Option<DWrite>,
     /// Chrome font family, parsed from the Pango-style description
@@ -861,21 +865,17 @@ impl WinBackend {
     /// Live DirectWrite handles for the current chrome (UI) font, once
     /// [`Self::attach_surface`]/[`Self::attach_headless`] has built them —
     /// `None` beforehand, same lifecycle as the editor `dwrite` field.
-    /// No `draw_*` rasteriser consumes this yet (see `chrome_dwrite`'s
-    /// field doc); exposed now so a follow-up wiring chrome text onto it
-    /// doesn't also need to add the accessor.
+    /// See `chrome_dwrite`'s field doc for the full list of `draw_*`
+    /// rasterisers that consume this (#1077/#1266).
     ///
-    /// Issue #1003 audit (ask #4): of the 13 `ChromePrimitive`s
-    /// (`crate::font_role`) — the same 16-GTK-method /
-    /// 14-macOS-gap list #1003 was filed over — Win-GUI wires **0**. Every
-    /// `draw_tree`/`draw_menu_bar`/`draw_status_bar_interactive`/etc.
-    /// still measures and paints through `self.current_char_width`/
-    /// `dwrite` (the *editor* font) exclusively; this field is built at
-    /// attach time and then never read. Bringing Win-GUI to parity is
-    /// out of this issue's scope (it targeted the GTK-vs-macOS drift
-    /// specifically) but is the next repeat this audit was meant to
-    /// flag — see #724, which added this field for exactly that
-    /// follow-up and hasn't landed the rasteriser wiring yet.
+    /// Issue #1003 audit (ask #4) history: of the 13 `ChromePrimitive`s
+    /// (`crate::font_role`) — the same 16-GTK-method / 14-macOS-gap list
+    /// #1003 was filed over — Win-GUI wired **0** as of that audit. #1077
+    /// wired `Dialog`/`RichTextPopup`; #1266 wired the remaining eleven
+    /// (`Tree`, `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
+    /// `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
+    /// `Toolbar`, `TabBar`), bringing Win-GUI to parity with GTK's
+    /// `ui_font` swap (#624) and macOS's `chrome_font` (#1003).
     #[cfg(target_os = "windows")]
     pub fn chrome_dwrite(&self) -> Option<&DWrite> {
         self.chrome_dwrite.as_ref()
@@ -2480,15 +2480,17 @@ impl Backend for WinBackend {
         WinBackend::set_current_char_width(self, char_width);
     }
 
-    /// Same value as [`Self::char_width`] today: [`Self::draw_list`]
-    /// (`super::list::draw_list`) still paints row text with `self.dwrite`
-    /// (the editor `IDWriteTextFormat`), not `self.chrome_dwrite` — see
-    /// `chrome_dwrite`'s doc for why that rasteriser wiring is tracked
-    /// separately (#724). The two must be updated together the day
-    /// `draw_list` moves to chrome text (issue #912): this method exists
-    /// now, ahead of that move, so a consumer that already calls
-    /// `list_char_width()` to budget `ListView` row text doesn't have to
-    /// change call sites when Windows catches up to GTK/macOS.
+    /// Same value as [`Self::char_width`] (the *editor* font's advance)
+    /// even though [`Self::draw_list`] (`super::list::draw_list`) now
+    /// paints row text through `self.chrome_dwrite` (#1266) — this
+    /// backend has no `chrome_char_width` field of its own to report
+    /// instead (unlike `GtkBackend::current_chrome_char_width`, a real
+    /// per-frame Pango re-measurement of `ui_font`). A consumer budgeting
+    /// `ListView` row width against this value may therefore get a
+    /// slightly wrong estimate when the chrome and editor fonts differ
+    /// in advance width; adding a real `chrome_char_width` field
+    /// (mirroring GTK's) is tracked separately (#912), unchanged by this
+    /// issue.
     fn list_char_width(&self) -> f32 {
         self.current_char_width
     }
@@ -2536,9 +2538,19 @@ impl Backend for WinBackend {
     /// "surface not attached yet" fallback posture. `draw_tree` returns
     /// `()` per the trait (unlike the chrome rasterisers) — hosts get
     /// hit-test data from [`Self::tree_layout`] instead.
+    ///
+    /// #1266: `Tree` is `ChromePrimitive::Tree` — row labels/badges/
+    /// chevrons are chrome, not editor content, same "whole-primitive
+    /// font swap, `line_height` stays at the editor's own metrics" shape
+    /// `MacBackend::draw_tree`/`GtkBackend::draw_tree` already ship (#1003/
+    /// #624) — paints through `chrome_dwrite`, falling back to the
+    /// editor `dwrite` handle if no live chrome one exists yet (same
+    /// "degrade, don't panic" convention as
+    /// `surface_draw_text_run_with_role`).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::tree::draw_tree(
                 &surface.target,
                 dwrite,
@@ -2556,10 +2568,13 @@ impl Backend for WinBackend {
         let _ = (rect, tree);
     }
 
-    /// #26: see [`Self::draw_tree`]'s doc.
+    /// #26: see [`Self::draw_tree`]'s doc. #1266: `List` is
+    /// `ChromePrimitive::List` — see `draw_tree`'s #1266 note for the
+    /// font-swap shape.
     fn draw_list(&mut self, rect: Rect, list: &ListView) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::list::draw_list(
                 &surface.target,
                 dwrite,
@@ -2829,6 +2844,15 @@ impl Backend for WinBackend {
     /// `self.surface`/`self.dwrite` are always populated together by
     /// [`Self::attach_surface`], so that only happens for a standalone
     /// `WinBackend` no window has ever attached to yet.
+    ///
+    /// #1266: `StatusBar` is `ChromePrimitive::StatusBar` — the segment
+    /// text is chrome, not editor content, so this paints through
+    /// [`ChromeSurface`] (routes text through `chrome_dwrite`, falling
+    /// back to the editor `dwrite` handle) rather than `self` directly
+    /// (which would paint through `self.dwrite`, the *editor* font, via
+    /// `WinBackend`'s own [`NativeSurface`] impl) — mirrors
+    /// `MacBackend::status_bar_paint_scaled`'s identical `ChromeSurface`
+    /// switch.
     fn draw_status_bar_interactive(
         &mut self,
         rect: Rect,
@@ -2839,9 +2863,10 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
+            let mut surface = ChromeSurface { backend: self };
             let layout = crate::primitives::status_bar::native_surface_paint::paint(
                 bar,
-                self,
+                &mut surface,
                 &theme,
                 rect.x,
                 rect.y,
@@ -2904,6 +2929,11 @@ impl Backend for WinBackend {
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// #1266: `TabBar` is `ChromePrimitive::TabBar` — see
+    /// [`Self::draw_tree`]'s #1266 note for the font-swap shape. The
+    /// no-paint [`Self::tab_bar_layout_icons`] twin swaps the same way,
+    /// so hit-testing agrees with what this paints.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn draw_tab_bar_icons(
         &mut self,
@@ -2914,6 +2944,7 @@ impl Backend for WinBackend {
     ) -> TabBarHits {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::tab_bar::draw_tab_bar_icons(
                 &surface.target,
                 dwrite,
@@ -2950,6 +2981,7 @@ impl Backend for WinBackend {
     ) -> TabBarLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::tab_bar::draw_tab_bar_icons_layout(
                 &surface.target,
                 dwrite,
@@ -2973,6 +3005,9 @@ impl Backend for WinBackend {
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// #1266: `ActivityBar` is `ChromePrimitive::ActivityBar` — see
+    /// [`Self::draw_tree`]'s #1266 note for the font-swap shape.
     fn draw_activity_bar(
         &mut self,
         rect: Rect,
@@ -2990,6 +3025,7 @@ impl Backend for WinBackend {
         }
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::activity_bar::draw_activity_bar(
                 &surface.target,
                 dwrite,
@@ -3011,9 +3047,15 @@ impl Backend for WinBackend {
     /// render target, so this works as soon as a surface has ever been
     /// attached (DirectWrite handles outlive device loss; see
     /// `Self::ensure_surface`'s docs).
+    ///
+    /// #1266: measures with `chrome_dwrite` (falling back to `dwrite`),
+    /// matching [`Self::draw_status_bar_interactive`]'s paint font — a
+    /// no-paint caller (hit-testing without repainting) must resolve the
+    /// same segment widths the paint path produced, same contract
+    /// `GtkBackend::status_bar_layout`'s #624 `ui_font` swap documents.
     fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::status_bar::win_status_bar_layout(dwrite, rect, bar);
         }
         super::status_bar::win_status_bar_layout(
@@ -3037,7 +3079,9 @@ impl Backend for WinBackend {
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
-    /// `self.dwrite`.
+    /// `self.dwrite`. #1266: see that method's doc for why this prefers
+    /// `chrome_dwrite` — must agree with [`Self::draw_tab_bar_icons`]'s
+    /// paint font.
     #[allow(deprecated)] // returns the deprecated `TabBarHits` — issue #823
     fn tab_bar_layout_icons(
         &self,
@@ -3046,7 +3090,7 @@ impl Backend for WinBackend {
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarHits {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::tab_bar::win_tab_bar_layout_icons(dwrite, rect, bar, icons);
         }
         super::tab_bar::win_tab_bar_layout_icons(
@@ -3061,7 +3105,8 @@ impl Backend for WinBackend {
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
     /// `self.dwrite`. Issue #919's `TabBarLayout`-returning counterpart
-    /// to [`Self::tab_bar_layout_icons`] above.
+    /// to [`Self::tab_bar_layout_icons`] above. #1266: see that method's
+    /// doc for why this prefers `chrome_dwrite`.
     fn resolve_tab_bar_layout_icons(
         &self,
         rect: Rect,
@@ -3069,7 +3114,7 @@ impl Backend for WinBackend {
         icons: &[Option<crate::TabIcon>],
     ) -> TabBarLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::tab_bar::win_tab_bar_native_layout_icons(dwrite, rect, bar, icons);
         }
         super::tab_bar::win_tab_bar_native_layout_icons(
@@ -3433,6 +3478,12 @@ impl Backend for WinBackend {
     /// collects the per-clickable-item hit rectangles. See
     /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
     /// fallback posture.
+    ///
+    /// #1266: `ContextMenu` is `ChromePrimitive::ContextMenu` (whole
+    /// primitive, same posture as `draw_dialog`'s #1077 fix — `layout`
+    /// is pre-resolved upstream, so only the paint font needs to change
+    /// here) — paints through `chrome_dwrite`, falling back to the
+    /// editor `dwrite` handle if no live chrome one exists yet.
     fn draw_context_menu(
         &mut self,
         menu: &ContextMenu,
@@ -3440,6 +3491,7 @@ impl Backend for WinBackend {
     ) -> Vec<(Rect, WidgetId)> {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::context_menu::draw_context_menu(
                 &surface.target,
                 dwrite,
@@ -3509,9 +3561,20 @@ impl Backend for WinBackend {
     /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.
+    ///
+    /// #1266: `MultiSectionView` is `ChromePrimitive::MultiSectionView`
+    /// — section headers and the `Tree`/`List` bodies it dispatches to
+    /// are sidebar chrome, not editor content, same "whole-primitive
+    /// font swap, `line_height`/`char_width` stay at the editor's own
+    /// values (embedded `Chart`/editor-adjacent content still measures
+    /// against those)" shape `MacBackend::draw_multi_section_view`'s
+    /// #1003 fix already ships — paints through `chrome_dwrite`,
+    /// falling back to the editor `dwrite` handle if no live chrome one
+    /// exists yet.
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::multi_section_view::draw_multi_section_view(
                 &surface.target,
                 dwrite,
@@ -3768,9 +3831,19 @@ impl Backend for WinBackend {
 
     /// #25: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// #1266: `MenuBar` is `ChromePrimitive::MenuBar` — see
+    /// [`Self::draw_tree`]'s #1266 note for the font-swap shape. Unlike
+    /// `draw_tree`, `win_menu_bar_layout` (called internally by
+    /// `super::menu_bar::draw_menu_bar`) does real `TextMeasure`
+    /// measurement against whichever `DWrite` handle is passed, so
+    /// passing `chrome_dwrite` here keeps layout and paint in agreement
+    /// — see [`Self::menu_bar_layout`]'s doc for the no-paint twin that
+    /// must resolve the same widths.
     fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             let layout = super::menu_bar::draw_menu_bar(
                 &surface.target,
                 dwrite,
@@ -3800,10 +3873,11 @@ impl Backend for WinBackend {
     }
 
     /// #25: see [`Self::status_bar_layout`]'s doc for why this only needs
-    /// `self.dwrite`.
+    /// `self.dwrite`. #1266: prefers `chrome_dwrite`, matching
+    /// [`Self::draw_menu_bar`]'s paint font.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::menu_bar::win_menu_bar_layout(dwrite, rect, bar);
         }
         super::menu_bar::win_menu_bar_layout(
@@ -4261,9 +4335,19 @@ impl Backend for WinBackend {
 
     /// #732: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// #1266: `CommandCenter` is `ChromePrimitive::CommandCenter` — see
+    /// [`Self::draw_tree`]'s #1266 note for the font-swap shape.
+    /// `char_width` (the search-box width estimate's own input) stays
+    /// at the editor's value, same as [`Self::command_center_layout`]
+    /// already uses — only the paint font changes here, matching
+    /// `GtkBackend::draw_command_center`'s identical split (layout
+    /// estimate stays char-width-based; only the Pango paint swaps to
+    /// `ui_font`).
     fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             let layout = super::command_center::draw_command_center(
                 &surface.target,
                 dwrite,
@@ -4304,6 +4388,13 @@ impl Backend for WinBackend {
 
     /// #730: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
+    ///
+    /// #1266: `Toolbar` is `ChromePrimitive::Toolbar` — see
+    /// [`Self::draw_menu_bar`]'s #1266 note for why passing
+    /// `chrome_dwrite` here keeps `win_toolbar_layout`'s internal
+    /// measurement and the paint in agreement; see
+    /// [`Self::toolbar_layout`]'s doc for the no-paint twin that must
+    /// resolve the same widths.
     fn draw_toolbar_with_options(
         &mut self,
         rect: Rect,
@@ -4314,6 +4405,7 @@ impl Backend for WinBackend {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             return super::toolbar::draw_toolbar_with_options(
                 &surface.target,
                 dwrite,
@@ -4333,14 +4425,15 @@ impl Backend for WinBackend {
     }
 
     /// #730: see [`Self::status_bar_layout`]'s doc for why this only
-    /// needs `self.dwrite`.
+    /// needs `self.dwrite`. #1266: prefers `chrome_dwrite`, matching
+    /// [`Self::draw_toolbar_with_options`]'s paint font.
     fn toolbar_layout(
         &self,
         rect: Rect,
         bar: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::toolbar::win_toolbar_layout(dwrite, rect, bar);
         }
         // No live DWrite handle — nominal char-width estimate instead
@@ -4361,6 +4454,11 @@ impl Backend for WinBackend {
     /// the shared
     /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
     /// (#862) rather than a per-backend `toolbar::draw_toolbar` call.
+    ///
+    /// #1266: `SidebarPanel` is `ChromePrimitive::SidebarPanel` (whole
+    /// primitive, including its embedded toolbar header) — see
+    /// [`Self::draw_status_bar_interactive`]'s doc for why this paints
+    /// through [`ChromeSurface`] instead of `self` directly.
     fn draw_sidebar_panel_interactive(
         &mut self,
         rect: Rect,
@@ -4379,9 +4477,10 @@ impl Backend for WinBackend {
             // `native_surface_paint` module doc, divergence 4, and
             // `WinBackend::draw_panel`'s identical note).
             let theme = crate::theme::Theme::default();
+            let mut surface = ChromeSurface { backend: self };
             return crate::primitives::sidebar_panel::native_surface_paint::paint(
                 panel,
-                self,
+                &mut surface,
                 &theme,
                 rect,
                 line_height,
@@ -4400,14 +4499,15 @@ impl Backend for WinBackend {
 
     /// #731: see [`Self::toolbar_layout`]'s doc for why this only needs
     /// `self.dwrite` (text measurement for the nested toolbar's button
-    /// widths), not a live render target.
+    /// widths), not a live render target. #1266: prefers `chrome_dwrite`,
+    /// matching [`Self::draw_sidebar_panel_interactive`]'s paint font.
     fn sidebar_panel_layout(
         &self,
         rect: Rect,
         panel: &crate::primitives::sidebar_panel::SidebarPanel,
     ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
         #[cfg(target_os = "windows")]
-        if let Some(dwrite) = &self.dwrite {
+        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
             return super::sidebar_panel::win_sidebar_panel_layout(
                 dwrite,
                 self.current_line_height,
@@ -5361,6 +5461,179 @@ impl NativeSurface for WinBackend {
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
         Backend::draw_image(self, rect, image)
+    }
+}
+
+/// #1266: Win-GUI twin of `MacBackend`'s `ChromeSurface` (see that
+/// struct's own doc) — wraps a `&mut WinBackend` so a primitive already
+/// migrated onto [`NativeSurface`] (today: [`Self::draw_status_bar_interactive`],
+/// [`Self::draw_sidebar_panel_interactive`]) paints through
+/// `chrome_dwrite` (falling back to the editor `dwrite` handle if no
+/// live chrome one exists yet — same "degrade, don't panic" convention
+/// as `WinBackend::surface_draw_text_run_with_role`) instead of
+/// `WinBackend`'s own [`NativeSurface`] impl above, which always
+/// resolves the editor `dwrite` handle. Only the four text-shaped
+/// methods below differ; every other verb forwards straight to
+/// `self.backend`.
+///
+/// Line height / char width are **not** swapped — row geometry stays
+/// seeded from the editor font's own metrics even while painting chrome
+/// text, matching [`Self::draw_dialog`]'s already-shipped behaviour (see
+/// that method's own test, "the row's clip box" paragraph, for why that
+/// divergence is already accepted on this backend). A future issue that
+/// gives `WinBackend` its own `chrome_line_height`/`chrome_char_width`
+/// fields — mirroring `MacBackend::chrome_line_height`/
+/// `chrome_char_width` — can revisit this; it is out of this issue's
+/// scope.
+struct ChromeSurface<'a> {
+    backend: &'a mut WinBackend,
+}
+
+impl NativeSurface for ChromeSurface<'_> {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        self.backend.surface_begin_frame(viewport)
+    }
+
+    fn surface_end_frame(&mut self) {
+        self.backend.surface_end_frame()
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        self.backend.surface_viewport()
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        self.backend.surface_line_height()
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        self.backend.surface_char_width()
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        #[cfg(target_os = "windows")]
+        if let Some(d) = self
+            .backend
+            .chrome_dwrite
+            .as_ref()
+            .or(self.backend.dwrite.as_ref())
+        {
+            if let Ok(m) = d.measure_text(text) {
+                return m;
+            }
+        }
+        self.backend.surface_measure_text(text)
+    }
+
+    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
+        #[cfg(target_os = "windows")]
+        if let Some(d) = self
+            .backend
+            .chrome_dwrite
+            .as_ref()
+            .or(self.backend.dwrite.as_ref())
+        {
+            if let Ok(m) = d.measure_text_styled(text, bold) {
+                return m;
+            }
+        }
+        self.backend.surface_measure_text_styled(text, bold)
+    }
+
+    fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
+        self.backend.surface_fill_rect(rect, color)
+    }
+
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: crate::Color) {
+        self.backend.surface_fill_rounded_rect(rect, radius, color)
+    }
+
+    fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
+        self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.backend.surface {
+            let dwrite = self
+                .backend
+                .chrome_dwrite
+                .as_ref()
+                .or(self.backend.dwrite.as_ref());
+            if let Some(dwrite) = dwrite {
+                let _ = dwrite.draw_text(&surface.target, text, rect, color);
+                return;
+            }
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
+        let _ = (rect, text, color);
+    }
+
+    /// Chrome twin of `WinBackend`'s own #810 override — same
+    /// `italic`/`underline`-unsupported posture, same `scale_x` support
+    /// via `super::text::with_horizontal_scale`, just against
+    /// `chrome_dwrite` (falling back to `dwrite`).
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: crate::Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (italic, underline);
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.backend.surface {
+            let dwrite = self
+                .backend
+                .chrome_dwrite
+                .as_ref()
+                .or(self.backend.dwrite.as_ref());
+            if let Some(dwrite) = dwrite {
+                if (scale_x - 1.0).abs() > f32::EPSILON {
+                    super::text::with_horizontal_scale(&surface.target, scale_x, rect.x, || {
+                        let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
+                    });
+                } else {
+                    let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
+                }
+                return;
+            }
+        }
+        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // no-op instead of panicking (issue #924).
+        let _ = (rect, text, color, bold, scale_x);
+    }
+
+    fn surface_draw_line(
+        &mut self,
+        from: Point,
+        to: Point,
+        color: crate::Color,
+        stroke_width: f32,
+    ) {
+        self.backend
+            .surface_draw_line(from, to, color, stroke_width)
+    }
+
+    fn surface_push_clip(&mut self, rect: Rect) {
+        self.backend.surface_push_clip(rect)
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.backend.surface_pop_clip()
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        self.backend.surface_draw_image(rect, image)
     }
 }
 
@@ -7387,6 +7660,462 @@ mod tests {
         );
     }
 
+    // ── #1266: the eleven remaining `ChromePrimitive` rasterisers ──────
+    //
+    // `Dialog`/`RichTextPopup` (above) and the `FontRole::Chrome`
+    // plumbing itself were already wired (#1073/#1077); this closes the
+    // gap for the rest of `font_role::ChromePrimitive::ALL`: `Tree`,
+    // `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
+    // `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
+    // `Toolbar`, `TabBar`.
+    //
+    // Each test below fails first: pre-#1266, every one of these always
+    // painted through the editor `dwrite` handle regardless of
+    // `set_ui_font`, so two renders that differ *only* in chrome font
+    // size were byte-identical. Diffing the whole painted frame (rather
+    // than measuring one glyph's ink extent, `win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size`'s
+    // approach above) is primitive-agnostic: it needs no per-primitive
+    // knowledge of background colour or exact glyph bounds, just "this
+    // primitive paints some real text".
+    #[cfg(target_os = "windows")]
+    fn chrome_font_diff_pixel_count(
+        w: u32,
+        h: u32,
+        ui_font_a: &str,
+        ui_font_b: &str,
+        paint: impl Fn(&mut WinBackend),
+    ) -> u32 {
+        use crate::win::testing::HeadlessSurface;
+
+        fn render(
+            w: u32,
+            h: u32,
+            ui_font: &str,
+            paint: &dyn Fn(&mut WinBackend),
+        ) -> HeadlessSurface {
+            let surface = HeadlessSurface::new(w, h).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            // Editor font held fixed across both renders — only the
+            // chrome (`ui_font`) one varies, same discipline
+            // `win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size`
+            // documents.
+            backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, 10.0);
+            backend.set_ui_font(ui_font);
+            backend
+                .attach_headless(surface.target().clone(), w, h)
+                .expect("attach headless surface");
+            backend.begin_frame(Viewport::new(w as f32, h as f32, 1.0));
+            paint(&mut backend);
+            backend.end_frame();
+            surface
+        }
+        let a = render(w, h, ui_font_a, &paint);
+        let b = render(w, h, ui_font_b, &paint);
+        let mut diff = 0u32;
+        for y in 0..h {
+            for x in 0..w {
+                if a.pixel_at(x, y) != b.pixel_at(x, y) {
+                    diff += 1;
+                }
+            }
+        }
+        diff
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_tree_paints_row_text_in_the_chrome_fonts_size() {
+        let tree = flat_tree(3);
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_tree(Rect::new(0.0, 0.0, 200.0, 120.0), &tree);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: varying only the chrome font size must repaint different pixels — \
+             draw_tree must paint row text through chrome_dwrite, not the (unchanged) \
+             editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_list_paints_row_text_in_the_chrome_fonts_size() {
+        let list = ListView {
+            id: WidgetId::new("list"),
+            title: None,
+            items: vec![
+                crate::primitives::list::ListItem {
+                    text: crate::types::StyledText::plain("alpha"),
+                    icon: None,
+                    detail: None,
+                    decoration: crate::types::Decoration::Normal,
+                },
+                crate::primitives::list::ListItem {
+                    text: crate::types::StyledText::plain("beta"),
+                    icon: None,
+                    detail: None,
+                    decoration: crate::types::Decoration::Normal,
+                },
+            ],
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            120,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_list(Rect::new(0.0, 0.0, 200.0, 120.0), &list);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_list must paint row text through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_menu_bar_paints_item_labels_in_the_chrome_fonts_size() {
+        let bar = MenuBar {
+            id: WidgetId::new("bar"),
+            items: vec![crate::primitives::menu_bar::MenuBarItem {
+                id: WidgetId::new("bar:file"),
+                label: "&File".into(),
+                disabled: false,
+                submenu: None,
+            }],
+            open_item: None,
+            focused_item: None,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            300,
+            32,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_menu_bar(Rect::new(0.0, 0.0, 300.0, 32.0), &bar);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_menu_bar must paint item labels through chrome_dwrite, not \
+             the (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_context_menu_paints_item_labels_in_the_chrome_fonts_size() {
+        let menu = ContextMenu {
+            id: WidgetId::new("ctx"),
+            items: vec![crate::primitives::context_menu::ContextMenuItem {
+                id: Some(WidgetId::new("ctx:copy")),
+                label: crate::types::StyledText::plain("copy"),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+        };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let layout = menu.layout(10.0, 10.0, viewport, 120.0, |_| {
+            crate::primitives::context_menu::ContextMenuItemMeasure::new(20.0)
+        });
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            100,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_context_menu(&menu, &layout);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_context_menu must paint item labels through chrome_dwrite, \
+             not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_command_center_paints_the_search_label_in_the_chrome_fonts_size() {
+        let cc = CommandCenter {
+            id: WidgetId::new("cc"),
+            back_enabled: true,
+            forward_enabled: true,
+            search_label: "project-name".into(),
+        };
+        let diff = chrome_font_diff_pixel_count(
+            300,
+            32,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_command_center(Rect::new(0.0, 0.0, 300.0, 32.0), &cc);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_command_center must paint the search label through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_multi_section_view_paints_header_titles_in_the_chrome_fonts_size() {
+        let view = MultiSectionView {
+            id: WidgetId::new("msv"),
+            sections: vec![crate::primitives::multi_section_view::Section {
+                id: "alpha".into(),
+                header: crate::primitives::multi_section_view::SectionHeader {
+                    icon: None,
+                    title: crate::types::StyledText::plain("alpha"),
+                    badge: None,
+                    actions: vec![],
+                    show_chevron: true,
+                },
+                body: crate::primitives::multi_section_view::SectionBody::Text(vec![
+                    crate::types::StyledText::plain("line one"),
+                ]),
+                aux: None,
+                size: crate::primitives::multi_section_view::SectionSize::EqualShare,
+                collapsed: false,
+                min_size: None,
+                max_size: None,
+            }],
+            active_section: Some(0),
+            axis: crate::primitives::multi_section_view::Axis::Vertical,
+            allow_resize: false,
+            allow_collapse: true,
+            scroll_mode: crate::primitives::multi_section_view::ScrollMode::PerSection,
+            has_focus: true,
+            panel_scroll: 0.0,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            150,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                backend.draw_multi_section_view(Rect::new(0.0, 0.0, 200.0, 150.0), &view);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_multi_section_view must paint section header titles through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_sidebar_panel_interactive_paints_the_toolbar_label_in_the_chrome_fonts_size(
+    ) {
+        let panel = crate::primitives::sidebar_panel::SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(crate::primitives::toolbar::Toolbar {
+                id: WidgetId::new("sb:toolbar"),
+                buttons: vec![ToolbarButton::Action {
+                    id: WidgetId::new("sb:refine"),
+                    label: "Refine".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+            }),
+            toolbar_height: None,
+        };
+        let interaction = crate::interaction::InteractionState::new();
+        let diff = chrome_font_diff_pixel_count(
+            200,
+            100,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_sidebar_panel_interactive(
+                    Rect::new(0.0, 0.0, 200.0, 100.0),
+                    &panel,
+                    &interaction,
+                );
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_sidebar_panel_interactive must paint the embedded toolbar's \
+             label through ChromeSurface (chrome_dwrite), not WinBackend's own \
+             NativeSurface impl (the editor dwrite handle)"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_status_bar_interactive_paints_segment_text_in_the_chrome_fonts_size() {
+        let bar = StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                text: "main.rs".into(),
+                fg: crate::types::Color::rgb(255, 255, 255),
+                bg: crate::types::Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let interaction = crate::interaction::InteractionState::new();
+        let diff = chrome_font_diff_pixel_count(
+            300,
+            24,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_status_bar_interactive(
+                    Rect::new(0.0, 0.0, 300.0, 24.0),
+                    &bar,
+                    &interaction,
+                );
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_status_bar_interactive must paint segment text through \
+             ChromeSurface (chrome_dwrite), not WinBackend's own NativeSurface impl \
+             (the editor dwrite handle)"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_activity_bar_paints_icon_glyphs_in_the_chrome_fonts_size() {
+        // #1157: the icon glyph always paints at a fixed, VS-Code-parity
+        // *size* (`ActivityBarStyle::resolved_icon_size_px`), independent
+        // of whichever `dwrite` handle's own point size is passed in —
+        // see `win::activity_bar`'s module doc — so varying only the
+        // chrome *size* (this test's siblings' approach) would prove
+        // nothing here even post-#1266. `win::activity_bar::draw_activity_bar`
+        // rebuilds its icon-sized `DWrite` via `dwrite.with_size`, which
+        // preserves `dwrite`'s own *family* — so varying the chrome
+        // *family* instead (holding the editor font fixed) still
+        // distinguishes "paints through chrome_dwrite" from "paints
+        // through the editor dwrite handle regardless of `set_ui_font`".
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![crate::primitives::activity_bar::ActivityItem {
+                id: WidgetId::new("activity:explorer"),
+                icon: crate::types::Icon::new("", "E"),
+                tooltip: String::new(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            bottom_items: Vec::new(),
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+        };
+        let diff =
+            chrome_font_diff_pixel_count(60, 200, "Segoe UI 12", "Courier New 12", |backend| {
+                let _ = backend.draw_activity_bar(Rect::new(0.0, 0.0, 60.0, 200.0), &bar, None);
+            });
+        assert!(
+            diff > 0,
+            "#1266: draw_activity_bar must paint icon glyphs through chrome_dwrite (whose \
+             family — not its point size, fixed by #1157's icon-size override — this test \
+             varies), not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_draw_toolbar_interactive_paints_button_labels_in_the_chrome_fonts_size() {
+        let bar = crate::primitives::toolbar::Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: vec![ToolbarButton::Action {
+                id: WidgetId::new("tb:on"),
+                label: "On".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        };
+        let interaction = crate::interaction::InteractionState::new();
+        let diff = chrome_font_diff_pixel_count(
+            100,
+            32,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_toolbar_interactive(
+                    Rect::new(0.0, 0.0, 100.0, 32.0),
+                    &bar,
+                    &interaction,
+                );
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_toolbar_interactive must paint button labels through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn win_backend_draw_tab_bar_paints_tab_labels_in_the_chrome_fonts_size() {
+        let bar = TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![crate::primitives::tab_bar::TabItem {
+                label: "main.rs".into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+        };
+        let diff = chrome_font_diff_pixel_count(
+            300,
+            30,
+            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
+            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
+            |backend| {
+                let _ = backend.draw_tab_bar(Rect::new(0.0, 0.0, 300.0, 30.0), &bar, None);
+            },
+        );
+        assert!(
+            diff > 0,
+            "#1266: draw_tab_bar must paint tab labels through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
+        );
+    }
+
     /// #1073: `surface_draw_icon_glyph` forwards to `surface_draw_text_run`
     /// on this backend (DirectWrite's font-fallback cascade is already
     /// baked into every `IDWriteTextFormat` — see the trait override's
@@ -7697,28 +8426,39 @@ mod tests {
     /// path once bold, once not, and asserts the bold segment's resolved
     /// (painted) width is strictly wider.
     ///
-    /// **The editor font is overridden on purpose — don't drop that call.**
-    /// `NativeSurface::surface_measure_text_styled` on this backend
-    /// measures through `self.dwrite`, i.e. the *editor* font, which
-    /// defaults to `DEFAULT_EDITOR_FONT_FAMILY` (`"Consolas"`). Consolas
-    /// is monospaced, and a monospaced family shares **one advance width
-    /// across every weight** by design (that's the whole point — bold code
-    /// must not reflow columns), so `measure_text_styled(t, true)` and
-    /// `measure_text_styled(t, false)` return byte-identical widths there
-    /// no matter how faithfully the `bold` flag is threaded through. This
-    /// test first landed against the default font and went red on
-    /// `windows-latest` for exactly that reason: `bold_width >
-    /// regular_width` is unsatisfiable under Consolas. Driving the backend
-    /// with a *proportional* editor font (`"Segoe UI"` — already this
-    /// backend's `DEFAULT_UI_FONT_FAMILY`, so it ships on every supported
-    /// Windows) makes "bold is wider" a property the font can actually
-    /// express, which is what lets this test observe the override at all.
+    /// **Both the editor and chrome fonts are overridden on purpose —
+    /// don't drop either call.** `NativeSurface::surface_measure_text_styled`
+    /// (the probe fixture guard above) measures through `self.dwrite`,
+    /// i.e. the *editor* font; `Backend::draw_status_bar_interactive`
+    /// itself (#1266) now measures/paints through `chrome_dwrite`
+    /// instead, falling back to `self.dwrite` only if no chrome handle
+    /// exists — see [`ChromeSurface`]'s doc. Both must be set to the
+    /// *same* `FONT`/`SIZE_PT` or the two sides of the final `assert_eq!`
+    /// below would compare DirectWrite's *editor*-font probe against a
+    /// paint that actually ran through a differently-sized *chrome*
+    /// font, which is a drift this test exists to rule out, not produce.
     ///
-    /// (That this chrome primitive measures through the *editor* handle
-    /// rather than `chrome_dwrite` is a pre-existing Win-GUI gap versus
-    /// GTK's #624 `ui_font` swap — orthogonal to #860's paint unification,
-    /// which preserved the pre-existing choice exactly, and deliberately
-    /// not changed here.)
+    /// `DEFAULT_EDITOR_FONT_FAMILY` (`"Consolas"`) is monospaced, and a
+    /// monospaced family shares **one advance width across every weight**
+    /// by design (that's the whole point — bold code must not reflow
+    /// columns), so `measure_text_styled(t, true)` and
+    /// `measure_text_styled(t, false)` return byte-identical widths
+    /// there no matter how faithfully the `bold` flag is threaded
+    /// through. This test first landed against the default font and
+    /// went red on `windows-latest` for exactly that reason:
+    /// `bold_width > regular_width` is unsatisfiable under Consolas.
+    /// Driving the backend with a *proportional* font (`"Segoe UI"` —
+    /// already this backend's `DEFAULT_UI_FONT_FAMILY`, so it ships on
+    /// every supported Windows) makes "bold is wider" a property the
+    /// font can actually express, which is what lets this test observe
+    /// the override at all.
+    ///
+    /// Pre-#1266, this chrome primitive measured through the *editor*
+    /// handle rather than `chrome_dwrite` — a gap versus GTK's #624
+    /// `ui_font` swap that #860's paint unification preserved exactly
+    /// rather than fixing. #1266 closes it; this test's fixture now sets
+    /// `set_ui_font` to match, instead of relying on the (now fixed) gap
+    /// to let a chrome-blind fixture still pass.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_status_bar_bold_segment_measures_wider() {
@@ -7767,6 +8507,13 @@ mod tests {
             // `set_editor_font`'s doc — a live surface doesn't rebuild
             // them on a later font change).
             backend.set_editor_font(FONT, SIZE_PT);
+            // #1266: `draw_status_bar_interactive` now measures/paints
+            // through `chrome_dwrite`, not `self.dwrite` — see this
+            // test's own doc. Set to the same `FONT`/`SIZE_PT` as the
+            // editor font above (and the probe `DWrite` instance), or
+            // the final `assert_eq!` below would compare against the
+            // wrong font entirely.
+            backend.set_ui_font(&format!("{FONT} {SIZE_PT}"));
             backend
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
