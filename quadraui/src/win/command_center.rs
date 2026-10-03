@@ -33,12 +33,34 @@ use crate::event::Rect;
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout, CommandCenterMeasure};
 use crate::theme::Theme;
 
+/// Horizontal padding added on top of the real measured search-label
+/// width, in DIPs — [`draw_command_center`]'s real-measurement twin of
+/// [`CommandCenterMeasure::from_char_width`]'s private
+/// `SEARCH_H_PAD_PX`. Kept as its own local constant rather than
+/// reaching into that private const, same posture
+/// `gtk::command_center`'s `GTK_SEARCH_PAD_PX` and
+/// `macos::command_center`'s `SEARCH_PAD_PX` already take — pinned to
+/// the identical value (`16.0` total, matching both siblings) by
+/// `search_pad_and_min_width_match_the_shared_estimate_formula` below.
+const SEARCH_H_PAD_PX: f32 = 16.0;
+/// Minimum search-box width (DIPs) regardless of how short the real
+/// measured label is — mirrors `from_char_width`'s private
+/// `SEARCH_MIN_WIDTH_PX`. See [`SEARCH_H_PAD_PX`]'s doc.
+const SEARCH_MIN_WIDTH_PX: f32 = 280.0;
+
 /// Compute the Win-GUI pixel/DIP layout for a [`CommandCenter`] without
 /// painting — the DirectWrite twin of [`draw_command_center`]'s internal
 /// layout call. Needs only `char_width` (no live `DWrite` measurer): the
 /// shared [`CommandCenterMeasure::from_char_width`] formula estimates the
 /// search box from `char_width` alone, exactly like
 /// `GtkBackend::command_center_layout`'s own no-paint query path (#732).
+///
+/// This is deliberately the cheap *estimate* used only when no live
+/// `DWrite` measurer is on hand (the `WinBackend::command_center_layout`
+/// trait method's "no surface attached yet" fallback, #924). Once a
+/// surface is live, [`draw_command_center`] sizes the search box from
+/// [`win_command_center_layout_measured`] instead — see that function's
+/// doc for why the two must not be conflated (issue #1260).
 ///
 /// Coordinate frame: **ABSOLUTE** (`rect.x`/`rect.y` baked into every
 /// bounds field), matching [`crate::Backend::command_center_layout`]'s
@@ -54,19 +76,74 @@ pub fn win_command_center_layout(
     )
 }
 
+/// Compute the Win-GUI layout for a [`CommandCenter`] from `dwrite`'s
+/// real measured search-label width, rather than the plain-`char_width`
+/// estimate [`win_command_center_layout`] uses. Mirrors
+/// `gtk::command_center::gtk_command_center_layout` (real Pango
+/// `pixel_size`) and `macos::command_center::mac_command_center_layout`
+/// (real Core Text `measure_text`) — both of those size their search
+/// box from a live font-layout measurement of the actual label, not an
+/// average-char-width guess.
+///
+/// Before this existed, [`draw_command_center`] called
+/// [`win_command_center_layout`] even though it already had `dwrite` on
+/// hand and called [`DWrite::measure_text`] on the very same label a few
+/// lines later (just to position the drawn glyphs) — the measured width
+/// was computed and then discarded, never fed back into the box's own
+/// size. On a real Win-GUI host, `char_width` is the *editor* font's
+/// average glyph width (see `WinBackend::attach_surface`'s doc: only the
+/// editor `DWrite::new` call's `char_width` is kept; the chrome-font
+/// one is discarded), which can disagree sharply with how wide the
+/// label actually renders in the *chrome* font `dwrite` here was built
+/// from — exactly the Command Center/`current_char_width` font-mismatch
+/// issue #1260's "leading hypothesis" named as the likely root cause of
+/// the registered search-box zone swallowing most of the title-bar
+/// band's blank strip. Measuring the real label removes that mismatch
+/// entirely, the same way the GTK/macOS rasterisers already do.
+fn win_command_center_layout_measured(
+    dwrite: &DWrite,
+    rect: Rect,
+    cc: &CommandCenter,
+) -> CommandCenterLayout {
+    let search_box_width = if cc.search_label.is_empty() {
+        0.0
+    } else {
+        let (text_w, _) = dwrite.measure_text(&cc.search_label).unwrap_or((0.0, 0.0));
+        (text_w + SEARCH_H_PAD_PX).max(SEARCH_MIN_WIDTH_PX)
+    };
+    cc.layout(
+        rect,
+        CommandCenterMeasure {
+            arrow_width: CommandCenterMeasure::ARROW_WIDTH_PX,
+            gap: CommandCenterMeasure::GAP_PX,
+            search_box_width,
+            height: rect.height,
+        },
+    )
+}
+
 /// Draw a [`CommandCenter`] into `rect` (DIPs) on `target`. Returns the
 /// resolved layout for host click dispatch.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_command_center(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
-    char_width: f32,
+    // #1260: no longer used to size the search box (see
+    // `win_command_center_layout_measured`'s doc) — kept in the
+    // signature, just unused, rather than removed, since this function
+    // is re-exported (`win::mod`'s `pub use command_center::{
+    // draw_command_center, ..}`) and dropping a parameter would be a
+    // breaking signature change for any direct caller outside this
+    // crate (rule 8). `WinBackend::draw_command_center`, the only
+    // in-tree caller, still has `self.current_char_width` on hand for
+    // free, so it costs nothing to keep passing it.
+    _char_width: f32,
     line_height: f32,
     rect: Rect,
     cc: &CommandCenter,
     theme: &Theme,
 ) -> CommandCenterLayout {
-    let layout = win_command_center_layout(char_width, rect, cc);
+    let layout = win_command_center_layout_measured(dwrite, rect, cc);
 
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return layout;
@@ -210,10 +287,16 @@ mod tests {
         assert!(layout.back_bounds.is_some());
     }
 
-    /// No-paint layout must agree byte-for-byte with what
+    /// No-paint *measured* layout must agree byte-for-byte with what
     /// `draw_command_center` painted — same contract every other `win::`
     /// rasteriser's `no_paint_layout_matches_paint_layout` test proves
-    /// (see `win::toolbar`, `win::sidebar_panel`).
+    /// (see `win::toolbar`, `win::sidebar_panel`), updated for #1260: the
+    /// paint path now sizes the search box from
+    /// `win_command_center_layout_measured` (real `DWrite` measurement),
+    /// not the plain-`char_width` estimate [`win_command_center_layout`]
+    /// still returns — see that function's doc. Comparing against the
+    /// estimate here would make this test fail by design after the fix,
+    /// not catch a real regression.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let cc = sample_cc();
@@ -233,10 +316,69 @@ mod tests {
                     &Theme::default(),
                 );
             })
-            .map(|_| win_command_center_layout(char_width, rect, &cc))
+            .map(|_| win_command_center_layout_measured(&dwrite, rect, &cc))
             .expect("paint");
-        let no_paint = win_command_center_layout(char_width, rect, &cc);
+        let no_paint = win_command_center_layout_measured(&dwrite, rect, &cc);
         assert_eq!(painted, no_paint);
+    }
+
+    /// #1260 regression: `draw_command_center`'s returned layout (and
+    /// therefore the zone `WinBackend::register_command_center_zones`
+    /// registers for `nc_hit_test`) must be sized from `dwrite`'s real
+    /// measured label width, not the plain-`char_width` estimate — this
+    /// is the bug the issue's "leading hypothesis" named: on a real host
+    /// `char_width` is the *editor* font's average glyph width, which
+    /// can disagree sharply with how wide the label renders in the
+    /// *chrome* font actually painted, so a search box sized from the
+    /// estimate can end up a different width than the box actually
+    /// drawn and hit-tested against. Pin the two measurements apart with
+    /// a label whose real glyph widths are nothing like a flat average
+    /// (a run of `"i"` is much narrower per-char than `"0"`, the glyph
+    /// [`super::text::DWrite::new`] measures `char_width` from) so a
+    /// regression back to the estimate is caught instead of silently
+    /// agreeing by coincidence.
+    #[test]
+    fn draw_command_center_sizes_search_box_from_real_measured_width_not_char_width_estimate() {
+        let cc = CommandCenter {
+            search_label: "i".repeat(60),
+            ..sample_cc()
+        };
+        let rect = Rect::new(0.0, 0.0, 900.0, H);
+        let (dwrite, _, char_width) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(900, H as u32).expect("create surface");
+
+        let painted = surface
+            .paint(|target| {
+                draw_command_center(
+                    target,
+                    &dwrite,
+                    char_width,
+                    16.0,
+                    rect,
+                    &cc,
+                    &Theme::default(),
+                );
+            })
+            .map(|_| win_command_center_layout_measured(&dwrite, rect, &cc))
+            .expect("paint");
+
+        let estimate = win_command_center_layout(char_width, rect, &cc);
+
+        let painted_width = painted
+            .search_bounds
+            .expect("non-empty search_label produces search_bounds")
+            .width;
+        let estimate_width = estimate
+            .search_bounds
+            .expect("non-empty search_label produces search_bounds")
+            .width;
+
+        assert_ne!(
+            painted_width, estimate_width,
+            "a run of narrow glyphs should measure differently than the flat \
+             char_width estimate — if this starts passing by equality, the \
+             fixture no longer exercises the real-vs-estimate gap #1260 fixed"
+        );
     }
 
     /// #732 acceptance bar: `win_command_center_layout` must delegate to
