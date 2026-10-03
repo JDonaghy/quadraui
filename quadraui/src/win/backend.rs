@@ -7485,8 +7485,17 @@ mod tests {
         let tb = layout
             .title_bar_bounds
             .expect("panel has a title, so a title bar is reserved");
+        // Sample near the title bar's right edge, not its horizontal
+        // centre: `paint`'s title text starts at `tb.x + 4.0` and
+        // "Terminal" is wide enough on a real Windows font to reach
+        // past the centre of this 100-DIP-wide panel, so a centre
+        // sample lands on anti-aliased glyph ink (a blend of
+        // `theme.foreground` and the fill) rather than the solid
+        // `title_bg` fill this test means to probe — bug caught only
+        // on real Windows (text metrics are a stub off-Windows), see
+        // issue #1261's CI-fix follow-up.
         let px = surface.pixel_at(
-            (tb.x + tb.width / 2.0) as u32,
+            (tb.x + tb.width - 2.0) as u32,
             (tb.y + tb.height / 2.0) as u32,
         );
         assert_eq!(
