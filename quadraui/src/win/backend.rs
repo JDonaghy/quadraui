@@ -2490,9 +2490,9 @@ impl Backend for WinBackend {
     }
 
     /// Real DirectWrite measurement via `DWrite::measure_text` against
-    /// `chrome_dwrite`/`dwrite` (quadraui#1132) — the same per-role
-    /// handle [`Self::surface_draw_text_run_with_role`] already resolves
-    /// (#1073), including its "chrome falls back to the editor handle
+    /// `chrome_dwrite`/`dwrite` — the same per-role handle
+    /// [`Self::surface_draw_text_run_with_role`] already resolves,
+    /// including its "chrome falls back to the editor handle
     /// if no live chrome one exists yet" degrade. Before a surface has
     /// attached (`dwrite`/`chrome_dwrite` both still `None`, e.g. an app
     /// measuring a `Dialog` before the first frame), falls back to a
@@ -5717,7 +5717,7 @@ mod tests {
         );
     }
 
-    /// Issue #1132, pre-attach fallback: before a surface/DirectWrite
+    /// Pre-attach fallback: before a surface/DirectWrite
     /// handle exists (`dwrite`/`chrome_dwrite` both `None`, the state any
     /// fresh `WinBackend` starts in, and the only state this crate's
     /// non-Windows CI leg ever exercises for this method — see
@@ -5738,7 +5738,7 @@ mod tests {
         assert_eq!(h, 18.0);
     }
 
-    /// Issue #1132: once a headless surface attaches, `measure_text` must
+    /// Once a headless surface attaches, `measure_text` must
     /// resolve a genuinely different `IDWriteTextFormat` per
     /// [`crate::FontRole`] — `chrome_dwrite` for
     /// [`crate::FontRole::Chrome`], `dwrite` for
