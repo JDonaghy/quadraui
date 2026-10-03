@@ -962,6 +962,12 @@ mod tests {
     // `target_os = "windows"`-gated items below), hence the `allow`.
     #[cfg_attr(not(target_os = "windows"), allow(unused_imports))]
     use super::*;
+    // Only the `target_os = "windows"`-gated `TickCountingApp`/
+    // `tick_calls_applogic_tick_and_applies_its_reaction` below reference
+    // `Duration` — gate the import the same way so it isn't flagged unused
+    // off Windows.
+    #[cfg(target_os = "windows")]
+    use std::time::Duration;
 
     #[cfg(target_os = "windows")]
     #[test]
