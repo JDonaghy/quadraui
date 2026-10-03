@@ -1133,6 +1133,28 @@ pub trait Backend: sealed::Sealed {
         crate::Theme::default()
     }
 
+    /// Set the active [`crate::Style`] on the backend — the non-colour
+    /// geometry tokens [`crate::Theme`] deliberately doesn't carry (issue
+    /// #1133; see that type's module doc for why it's a separate
+    /// struct). Same call-once-or-per-pane contract as [`Self::set_theme`].
+    ///
+    /// Default: no-op. Backends that carry a `current_style` field (GTK,
+    /// macOS, Win-GUI) override this to store the value so subsequent
+    /// `draw_*` calls consume it. TUI takes the default: every current
+    /// `Style` token's TUI story is "no-op" (see `Style`'s module doc),
+    /// so there is nothing yet for a TUI backend to store.
+    fn set_style(&mut self, _style: crate::Style) {}
+
+    /// Read back the backend's currently active [`crate::Style`] — the
+    /// last value passed to [`Self::set_style`], or the backend's own
+    /// default if it was never called. Mirrors [`Self::theme`]'s
+    /// contract and rationale.
+    ///
+    /// Default: [`crate::Style::default()`].
+    fn style(&self) -> crate::Style {
+        crate::Style::default()
+    }
+
     /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
     /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.

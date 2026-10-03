@@ -2343,3 +2343,124 @@ introducing a new type that can't pay for its own migration.**
   rejects.
 - It does not close issue #816. The six remaining LOCAL→ABSOLUTE
   conversions are unchanged follow-up work, same as before this PR.
+
+## D-017 — Styling beyond colours: a separate `Style` token struct, additive, one token at a time (issue #1133)
+
+### Question
+
+`Theme` (`theme.rs`) is a flat, 77-field colour struct. Padding, corner
+radii, border widths, per-role font sizes, and focus-ring weight are
+hardcoded per rasteriser instead — an app cannot change the geometric
+look of a primitive without forking a backend. Three questions:
+
+1. Do new style tokens live as fields on `Theme`, or a separate type?
+2. How does each token reach all three pixel backends without becoming
+   three independent literals to keep in sync?
+3. What does each token mean on TUI, which has no sub-cell geometry?
+
+### Decision
+
+**A separate `pub struct Style` (`src/style.rs`), `#[non_exhaustive]`
+from its first commit, read through the same `Backend::set_style`/
+`style()` pair `Theme` already uses for colours — and landed one token
+at a time, the same discipline D-005/D-016 already apply to other
+crate-wide conversions.**
+
+**1. Separate struct, not new `Theme` fields.** `theme.rs`'s own module
+doc already states the rule this decision inherits: adding a `pub`
+field to `Theme` is a breaking change, because `coord-tui` builds three
+of its four palettes with exhaustive struct literals and no
+`..Default::default()` spread (quadraui#620 — `tab_active_border_top`
+shipped as a field and had to come back as a method). A flat geometry
+struct would inherit that exact liability for no benefit: colour and
+geometry are independent axes an app may want to override separately
+(a high-contrast *colour* theme at the *same* density, or a
+compact-density preset layered under three different colour themes).
+`Style` is `#[non_exhaustive]` from commit one specifically so it never
+arrives at `Theme`'s position — every future token is additive by
+construction. `#[non_exhaustive]` blocks *any* struct-literal
+construction from outside this crate, including struct-update syntax
+(`rustc`'s E0639 — this is stricter than D-016's point 2 assumed before
+this entry was drafted, and the first draft of this decision had to be
+corrected once the example demo below hit that error for real), so
+`Style` follows #1251's already-established
+`new(required…)`/`with_*`/`Default` shape instead
+(`TextInput`/`Toolbar`/`Editor`): a downstream consumer customises it
+with `Style::default().with_focus_ring_width(4.0)`, which keeps
+compiling as fields are added because it never names every field at
+once.
+
+**2. Reaches all three pixel backends via the same accessor shape
+`Backend::theme`/`set_theme` already uses — `Backend::style()`/
+`set_style()`, both defaulted (no-op setter, `Style::default()`
+getter) so adding them is purely additive to the (sealed, in-tree-only)
+`Backend` trait.** `GtkBackend`, `MacBackend`, `WinBackend` each gain a
+`current_style: Style` field, set/read exactly like their existing
+`current_theme` field. `TuiBackend` takes the trait default and stores
+nothing — see point 3. This is the same "reach all three backends from
+one call site" property `NativeSurface` buys for drawing verbs
+(`native_surface.rs`'s module doc); `Style` reuses it rather than
+inventing a second plumbing mechanism, because Phase 4 of that
+milestone (`NativeSurface` Phase 4, 8/8 slices) was already complete at
+the time of this decision — the blocker the issue's "only possible
+after #785 Phase 4" named is cleared.
+
+**3. TUI story, stated once for the whole struct rather than
+per-field** (the shape quadraui#1097/D-014 asks every new capability to
+declare): TUI paints a whole-cell grid, so every `Style` token is
+either **no-op** (the TUI rasteriser for that primitive never reads
+`Style` at all — true of every token so far, since no primitive's TUI
+form has sub-cell geometry to refine) or, for a token shaped like
+spacing/padding, **cell-quantised** (rounds to whole cells, the same
+way `LayoutMetrics::cell_quantum` already quantises hit-test geometry).
+No token is N/A (D-014's tier for *physical* absence, like a tray
+icon) — every one is a pixel-only refinement with a well-defined
+coarsest-cell fallback, so the two tiers above cover the whole token
+set by construction.
+
+**First token shipped in this PR: `Style::focus_ring_width`
+(`f32`, default `2.0`).** Picked first because it was the one hardcoded
+geometry literal every pixel backend already agreed on byte-for-byte
+(the former `crate::focus::FOCUS_RING_STROKE_WIDTH` constant, now
+removed) and is painted through `NativeSurface::surface_stroke_rect`
+on all three — a real, visible end-to-end proof that an app can change
+a primitive's geometry via `Backend::set_style` alone, with zero
+behaviour change until it does (the default reproduces the former
+constant exactly). `gtk::backend::tests::gtk_backend_draw_focus_ring_honors_style_focus_ring_width`
+is the black-box proof: it paints the same rect at `focus_ring_width`
+2.0 vs 14.0 and shows a probe pixel 5px inside the edge goes from
+untouched to painted only at the wider value.
+
+**Every further token — padding, corner radius, border width, per-role
+font size on the primitives that still hardcode them — is its own
+follow-up PR, one token/primitive pair at a time.** Batching every
+hardcoded literal in the codebase into one PR repeats the #476 mistake
+`PRIMITIVE_RULES.md` rule 4 names, at a much larger scale than D-016's
+point 4 already declined for the LOCAL→ABSOLUTE `*_layout` conversions.
+`NativeSurface::surface_fill_rounded_rect` already exists (#1073) for a
+corner-radius token's eventual fill side; there is no
+`surface_stroke_rounded_rect` yet, so a radius token that also wants
+rounded *borders* needs that verb added first — named here so the first
+follow-up PR that reaches for it isn't surprised.
+
+### What this does NOT mean
+
+- It does not give every primitive styling today. Exactly one token,
+  on exactly one primitive (`draw_focus_ring`), is wired. The rest of
+  `CLAUDE.md`'s "styling beyond colours" ask — padding, radii, border
+  widths, per-role font *sizes* — is unstarted follow-up work, each its
+  own issue, each following this entry's shape.
+- It does not touch per-role *fonts* — `FontRole` (`font_role.rs`) and
+  `Backend::set_editor_font`/`set_chrome_font` already solved "which
+  font for which primitive family" before this issue was filed; this
+  entry's "per-role font" gap in the issue text is about *sizes* and
+  *weights* within a role, which remains open.
+- It does not retrofit `#[non_exhaustive]` onto `Theme`. `Theme`
+  already shipped without it and both downstream consumers already
+  build it with exhaustive literals — D-016's "reject the retrofit,
+  it can't pay for its own migration" reasoning applies there exactly
+  as it did to the `Px`/`Cell` newtype question. `Style` avoids that
+  trap only because it is new.
+- It does not add a `surface_stroke_rounded_rect` verb to
+  `NativeSurface`, or wire corner radius / border width / padding
+  anywhere. Those are named as the next tokens, not started here.

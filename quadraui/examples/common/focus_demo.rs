@@ -147,6 +147,18 @@ impl Default for FocusDemo {
 impl AppLogic for FocusDemo {
     type AreaId = ();
 
+    /// Demonstrates [`quadraui::Style::focus_ring_width`] (issue #1133)
+    /// through the same shared `AppLogic` every backend runs: a 4px ring
+    /// instead of the `2.0` default, applied with no per-backend branch.
+    /// On `gtk_focus_ring`/the macOS/Win-GUI runners this visibly
+    /// thickens the ring; on `tui_focus_ring` it is a no-op (see
+    /// `Style::focus_ring_width`'s doc — the TUI rasteriser always paints
+    /// a 1-cell box-drawing border, which this demo's own TUI driver
+    /// tests already pin without ever reading `Style`).
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        backend.set_style(quadraui::Style::default().with_focus_ring_width(4.0));
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let lh = backend.line_height();

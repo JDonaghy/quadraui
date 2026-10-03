@@ -222,6 +222,10 @@ pub struct GtkBackend {
     /// call so font-metrics setup doesn't repeat per primitive.
     current_layout_ptr: Cell<*const ()>,
     current_theme: crate::Theme,
+    /// Captured once per frame, mirroring `current_theme` — see
+    /// [`crate::Style`]'s module doc for why this is a separate field
+    /// rather than folded into `Theme` (issue #1133).
+    current_style: crate::Style,
     /// Decoded/scaled-`Pixbuf` cache for [`Backend::draw_image`] (issue
     /// #1014) — see [`crate::image_cache`]'s module doc. Keyed on
     /// `(image.source, target size, dpi_scale)`; survives across frames
@@ -564,6 +568,7 @@ impl GtkBackend {
             current_cr_ptr: Cell::new(std::ptr::null()),
             current_layout_ptr: Cell::new(std::ptr::null()),
             current_theme: crate::Theme::default(),
+            current_style: crate::Style::default(),
             image_cache: crate::image_cache::ImageCache::default(),
             minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
@@ -906,6 +911,19 @@ impl GtkBackend {
     /// to paint a full-DA background before each frame.
     pub fn current_theme(&self) -> &crate::Theme {
         &self.current_theme
+    }
+
+    /// Update the cached style. Mirrors [`Self::set_current_theme`] —
+    /// see [`crate::Style`]'s module doc.
+    #[allow(dead_code)]
+    pub fn set_current_style(&mut self, style: crate::Style) {
+        self.current_style = style;
+    }
+
+    /// Read-only accessor for the cached style. Mirrors
+    /// [`Self::current_theme`].
+    pub fn current_style(&self) -> &crate::Style {
+        &self.current_style
     }
 
     /// Issue #1016: push the app's chosen theme into GTK's own
@@ -1813,6 +1831,14 @@ impl Backend for GtkBackend {
         self.current_theme
     }
 
+    fn set_style(&mut self, style: crate::Style) {
+        self.set_current_style(style);
+    }
+
+    fn style(&self) -> crate::Style {
+        self.current_style
+    }
+
     fn set_nerd_fonts(&mut self, enabled: bool) {
         self.nerd_fonts_enabled = enabled;
     }
@@ -2021,7 +2047,8 @@ impl Backend for GtkBackend {
 
     fn draw_focus_ring(&mut self, rect: QRect) {
         let theme = self.current_theme;
-        self.surface_stroke_rect(rect, theme.accent_fg, crate::focus::FOCUS_RING_STROKE_WIDTH);
+        let stroke_width = self.current_style.focus_ring_width;
+        self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         // #492 C0 contract §5b: a chrome-only paint (no text of its own)
         // is only "observable" via a registered zone — mirrors
         // `draw_terminal_divider`'s identical registration.
@@ -9371,6 +9398,75 @@ mod tests {
         });
 
         backend.surface_end_frame();
+    }
+
+    // ── Style (#1133) ─────────────────────────────────────────────────
+
+    /// `Backend::draw_focus_ring` reads `Style::focus_ring_width`, not a
+    /// hardcoded literal — proven by painting the same rect at two very
+    /// different stroke widths and probing a pixel that only the wider
+    /// one reaches. A probe point close to a corner would also pick up
+    /// the perpendicular edge's own band, so this checks the midpoint of
+    /// the top edge instead, straight-line distance only.
+    #[test]
+    fn gtk_backend_draw_focus_ring_honors_style_focus_ring_width() {
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        // Rect top edge sits at y = 5; midpoint of the top edge is at
+        // x = 20. Cairo centers a stroked path on the line, so a stroke
+        // of width `w` covers `y` in `[5 - w/2, 5 + w/2]`. At `y = 10`
+        // (5 px below the edge): the default `2.0` width's half-width of
+        // `1.0` falls well short (`[4, 6]`), but a `14.0` width's
+        // half-width of `7.0` reaches it (`[-2, 12]`).
+        const RECT: QRect = QRect::new(5.0, 5.0, 30.0, 30.0);
+        const PROBE_X: i32 = 20;
+        const PROBE_Y: i32 = 10;
+
+        let paint_with_width = |focus_ring_width: f32| -> (u8, u8, u8) {
+            let mut surface =
+                ImageSurface::create(Format::ARgb32, 40, 40).expect("create ImageSurface");
+            let mut backend = GtkBackend::new();
+            let theme = crate::Theme {
+                accent_fg: Color::rgb(140, 200, 240),
+                ..crate::Theme::default()
+            };
+            backend.set_theme(theme);
+            backend.set_style(crate::Style::default().with_focus_ring_width(focus_ring_width));
+
+            {
+                let cr = Context::new(&surface).expect("Context::new");
+                // White background so the unpainted-vs-painted probe
+                // doesn't rely on cairo's zero-initialized (black,
+                // transparent) default — distinguishing "untouched" from
+                // "painted dark" would otherwise be ambiguous.
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.paint().ok();
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                let pango_layout = pango::Layout::new(&pango_ctx);
+                backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                    b.draw_focus_ring(RECT);
+                });
+            }
+
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            probe_pixel_417(&data, stride, PROBE_X, PROBE_Y)
+        };
+
+        let white = (255, 255, 255);
+        let accent = (140, 200, 240);
+
+        assert_eq!(
+            paint_with_width(2.0),
+            white,
+            "default-weight focus ring must not reach 5px inside the edge"
+        );
+        assert_eq!(
+            paint_with_width(14.0),
+            accent,
+            "a style-overridden wider focus ring must reach 5px inside the edge"
+        );
     }
 
     // ── #1073: surface_fill_rounded_rect / surface_fill_rect_alpha /

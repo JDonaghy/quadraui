@@ -677,6 +677,10 @@ pub struct WinBackend {
     /// `current_pointer_shape` below — so `set_theme`/`current_theme`
     /// stay testable on every host, not only `target_os = "windows"`.
     current_theme: crate::theme::Theme,
+    /// Captured once per frame, mirroring `current_theme` — see
+    /// [`crate::Style`]'s module doc for why this is a separate field
+    /// rather than folded into `Theme` (issue #1133).
+    current_style: crate::Style,
     /// The `PointerShape` [`Backend::set_cursor`] last applied — read back
     /// by `win::run`'s `WM_SETCURSOR` handler (#702) so the pointer glyph
     /// stays put across every `WM_SETCURSOR` Windows sends for the
@@ -801,6 +805,7 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             registered_font_bytes: Vec::new(),
             current_theme: crate::theme::Theme::default(),
+            current_style: crate::Style::default(),
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
             text_runs: Vec::new(),
@@ -856,6 +861,18 @@ impl WinBackend {
     /// `GtkBackend::current_theme`.
     pub fn current_theme(&self) -> &crate::theme::Theme {
         &self.current_theme
+    }
+
+    /// Update the cached style. Mirrors [`Self::set_current_theme`] —
+    /// see [`crate::Style`]'s module doc.
+    pub fn set_current_style(&mut self, style: crate::Style) {
+        self.current_style = style;
+    }
+
+    /// Read-only accessor for the cached style. Mirrors
+    /// [`Self::current_theme`].
+    pub fn current_style(&self) -> &crate::Style {
+        &self.current_style
     }
 
     /// Live DirectWrite handles for the current chrome (UI) font, once
@@ -1782,6 +1799,14 @@ impl Backend for WinBackend {
         self.current_theme
     }
 
+    fn set_style(&mut self, style: crate::Style) {
+        self.set_current_style(style);
+    }
+
+    fn style(&self) -> crate::Style {
+        self.current_style
+    }
+
     /// Store the nerd-fonts flag so `draw_tree` paints `Icon::glyph`
     /// instead of always falling back to `Icon::fallback` (#804).
     /// Mirrors `TuiBackend::set_nerd_fonts`/`GtkBackend::set_nerd_fonts`/
@@ -2172,7 +2197,8 @@ impl Backend for WinBackend {
 
     fn draw_focus_ring(&mut self, rect: Rect) {
         let theme = self.current_theme;
-        self.surface_stroke_rect(rect, theme.accent_fg, crate::focus::FOCUS_RING_STROKE_WIDTH);
+        let stroke_width = self.current_style.focus_ring_width;
+        self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
