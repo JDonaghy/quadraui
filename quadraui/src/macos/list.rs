@@ -62,13 +62,19 @@ use crate::theme::Theme;
 /// `hit_regions` are in **list-local** coords (origin at 0, 0),
 /// matching `tui_list_layout` and `gtk_list_layout`. Hosts must
 /// subtract the list's `area.x` / `area.y` from absolute click coords
-/// before calling [`ListViewLayout::hit_test`]. The `x` / `y` params
-/// are kept in the signature for symmetry with `draw_list` but do not
-/// affect output.
+/// before calling [`ListViewLayout::hit_test`].
+///
+/// Unlike an earlier revision of this function, there is no `(x, y)`
+/// parameter to ignore: the output is local by construction, so there
+/// is nothing for an origin to shift and no dead parameter to carry
+/// "for symmetry" (issue #1098 — `Rect`'s unit contract audit flagged
+/// this as the one `*_list_layout` sibling still carrying origin
+/// params its own body never reads; `gtk_list_layout` never had them,
+/// and `win_list_layout` takes a full `Rect` but only reads its
+/// `width`/`height`). Callers that need the list's screen position —
+/// `draw_list`, for clipping — keep tracking `(x, y)` themselves.
 pub fn mac_list_layout(
     list: &ListView,
-    _x: f64,
-    _y: f64,
     w: f64,
     h: f64,
     line_height: f64,
@@ -115,10 +121,10 @@ pub unsafe fn draw_list(
     let char_w = char_w.max(1.0);
 
     if w <= 0.0 || h <= 0.0 {
-        return mac_list_layout(list, x, y, w.max(0.0), h.max(0.0), line_height, char_w);
+        return mac_list_layout(list, w.max(0.0), h.max(0.0), line_height, char_w);
     }
 
-    let layout = mac_list_layout(list, x, y, w, h, line_height, char_w);
+    let layout = mac_list_layout(list, w, h, line_height, char_w);
 
     CGContextSaveGState(ctx);
     // Clip to the list rect so right-aligned detail / scroll-overflow
@@ -322,22 +328,30 @@ mod tests {
     fn layout_returns_local_coords_when_area_offset() {
         // Cross-backend contract: visible_items.bounds, title_bounds,
         // and hit_regions are in list-local coords (origin 0, 0),
-        // regardless of where `mac_list_layout` is called with as its
-        // (x, y) — matching `tui_list_layout` and `gtk_list_layout`.
-        // Hosts subtract area.x/area.y from absolute click coords
-        // before hit_test.
+        // regardless of where the list's `rect` sits on screen —
+        // matching `tui_list_layout` and `gtk_list_layout`. Hosts
+        // subtract `rect.x`/`rect.y` from absolute click coords before
+        // hit_test.
         //
-        // Regression for #190: prior to the fix, mac_list_layout
-        // shifted hit_regions to absolute coords. Latent today (no
-        // `Backend::list_layout` trait method exposes the layout to
-        // consumers), but ready to bite the moment one is added —
-        // same shape as #44's tree/form click drift.
+        // Regression for #190: prior to that fix, `mac_list_layout`
+        // shifted hit_regions to absolute coords. Exercised here through
+        // `Backend::list_layout` (PRIMITIVE_RULES.md's "every `*_layout`
+        // method needs a non-zero-origin regression test" — `area =
+        // (0, 0)` is exactly the case that hides a LOCAL/ABSOLUTE
+        // mixup). `mac_list_layout` itself dropped its `(x, y)`
+        // parameters in #1098 — they were read by no one, and this
+        // trait-level rect is where a real origin offset actually
+        // flows from.
         let list = sample_list();
-        // Area offset by (0, 60) — typical when a list lives below
+        // Rect offset by (0, 60) — typical when a list lives below
         // a header / search input.
-        let area_x: f64 = 0.0;
-        let area_y: f64 = 60.0;
-        let layout = mac_list_layout(&list, area_x, area_y, W as f64, H as f64, 16.0, 8.0);
+        let area_x: f32 = 0.0;
+        let area_y: f32 = 60.0;
+        let rect = QRect::new(area_x, area_y, W as f32, H as f32);
+        let mut backend = MacBackend::new();
+        backend.set_current_line_height(16.0);
+        backend.set_current_char_width(8.0);
+        let layout = backend.list_layout(rect, &list);
         // Locality: title_bounds.y must be 0, not 60.
         let tb = layout.title_bounds.expect("title present");
         assert_eq!(
@@ -349,10 +363,10 @@ mod tests {
         // painted row, localise the way AppLogic does, and assert it
         // hits the right row. Pre-fix this returned the wrong row.
         for vi in &layout.visible_items {
-            let abs_x = area_x as f32 + vi.bounds.x + vi.bounds.width * 0.5;
-            let abs_y = area_y as f32 + vi.bounds.y + vi.bounds.height * 0.5;
-            let local_x = abs_x - area_x as f32;
-            let local_y = abs_y - area_y as f32;
+            let abs_x = area_x + vi.bounds.x + vi.bounds.width * 0.5;
+            let abs_y = area_y + vi.bounds.y + vi.bounds.height * 0.5;
+            let local_x = abs_x - area_x;
+            let local_y = abs_y - area_y;
             assert_eq!(
                 layout.hit_test(local_x, local_y),
                 ListViewHit::Item(vi.item_idx),

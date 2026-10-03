@@ -362,6 +362,12 @@ ABSOLUTE table until every primitive listed in it has converged; a
 partially-converged table with rows removed early is worse than the
 current complete one.
 
+(Issue #1098 asked quadraui to finish this entire table's conversion in
+the same pass as an unrelated `Rect`-unit-contract fix. `docs/decisions/DECISIONS.md`
+D-016 declines that batching for the same one-primitive-per-PR reason
+stated above; the table above is unchanged by that decision and remains
+the tracker for each remaining conversion.)
+
 ## One primitive, one canonical paint path (issue #456)
 
 `quadraui` has two ways to paint a primitive: `backend.draw_<name>(rect,

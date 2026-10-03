@@ -88,6 +88,14 @@ or the layout returned by `backend.msv_layout(...)` /
 constants in shared render or event-handling code.** Constants
 belong on the backend, not on the consumer.
 
+**Update (issue #1098):** this and "Dropdown item sizing must use
+backend-native units" below are the two incidents `docs/decisions/DECISIONS.md`
+D-016 audited when asked whether a `Px`/`Cell` newtype would have
+caught them. It would not have — both are "hardcoded a literal instead
+of deriving" bugs, not type-confusion a newtype prevents. D-016 is the
+canonical record of `Rect`/`Point`'s unit contract; `quadraui/src/event.rs`'s
+module doc states it on the types themselves now, not only here.
+
 ## All runners must fire all UiEvent variants the consumer pattern needs
 
 GTK's runner had a `gdk_motion_to_uievent` translator helper but

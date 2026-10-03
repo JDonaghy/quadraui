@@ -2055,8 +2055,6 @@ impl Backend for MacBackend {
         // `current_char_width` `GtkBackend::list_layout` uses.
         super::list::mac_list_layout(
             list,
-            rect.x as f64,
-            rect.y as f64,
             rect.width as f64,
             rect.height as f64,
             self.current_line_height,
