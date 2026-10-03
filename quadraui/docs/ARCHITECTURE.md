@@ -94,3 +94,9 @@ they're the only path for primitives that don't have a `Surface`
 variant yet. See `docs/decisions/DECISIONS.md` D-006 and
 `docs/PRIMITIVE_RULES.md` "One primitive, one canonical paint path"
 (issue #456).
+
+**Audits.** `docs/audits/FRAMEWORK_AUDIT_2026-09-26.md` is the most recent
+independent review of quadraui as an app framework: its verdict, the
+measured numbers, and the severity-ranked roadmap behind epics #1095
+(widget model) and #1096 (language bindings). `docs/SMELL_AUDIT_2026-07.md`
+is the earlier code-smell audit.
