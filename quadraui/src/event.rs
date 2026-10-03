@@ -70,7 +70,7 @@
 //!
 //! 1. **A `Point`/`Rect` value's unit is whatever its *producing*
 //!    backend's [`Viewport`] uses** — TUI: whole cells. GTK / Win-GUI:
-//!    device-independent pixels. macOS (planned): Core Graphics points.
+//!    device-independent pixels. macOS: Core Graphics points.
 //!    A value never carries its own unit tag; the *call site* (which
 //!    `Backend` impl produced it) is the only thing that says which one
 //!    it is. There is no silent conversion between a TUI `Rect` and a
@@ -78,16 +78,22 @@
 //!    the same.
 //! 2. **[`Viewport::scale`] is a DPI/backing-scale factor *within* one
 //!    GUI backend** (physical pixels ÷ logical pixels — see
-//!    `GtkBackend::dpi_scale`), nothing more. It is pinned to `1.0` on
-//!    every backend's test harness and in practice only varies on a
-//!    live GTK/Win-GUI session with a non-1x display. **It is not a
-//!    cross-backend conversion factor** — there is no `scale` value that
-//!    turns a TUI cell count into a GTK pixel count, because a terminal
-//!    cell's pixel size is a font metric (`line_height`/`char_width`),
-//!    not a DPI ratio. A prior revision of this doc comment on
-//!    [`Point`] read "apps that need to convert should use
-//!    `Viewport::scale`" — that line was the bug: it told a reader
-//!    `scale` solves a problem it cannot solve. Removed; see point 3.
+//!    `GtkBackend::dpi_scale`), nothing more. GTK, Win-GUI, and macOS
+//!    each derive it live in their real run loops (GTK's
+//!    `notify::scale-factor` handler, Win-GUI's `GetDpiForWindow` /
+//!    `WM_DPICHANGED`, macOS's `backingScaleFactor()`), so it varies
+//!    whenever one of those backends runs on a non-1x display. Only
+//!    every backend's *test harness* pins it to `1.0` — a headless
+//!    surface has no live display to read a ratio from — and TUI pins
+//!    it to `1.0` unconditionally, since a terminal cell has no DPI
+//!    concept at all. **It is not a cross-backend conversion factor** —
+//!    there is no `scale` value that turns a TUI cell count into a GTK
+//!    pixel count, because a terminal cell's pixel size is a font
+//!    metric (`line_height`/`char_width`), not a DPI ratio. A prior
+//!    revision of this doc comment on [`Point`] read "apps that need to
+//!    convert should use `Viewport::scale`" — that line was the bug: it
+//!    told a reader `scale` solves a problem it cannot solve. Removed;
+//!    see point 3.
 //! 3. **Cross-backend-portable code derives sizes, it never hardcodes
 //!    them.** Any shared `AppLogic`/compose-helper code that needs a
 //!    dimension — a status-bar height, a dropdown row pitch — must
@@ -192,7 +198,7 @@ pub struct ButtonMask {
 /// - **TUI**: whole cells (typically integral values stored as `f32`).
 /// - **GTK**: device-independent pixels (Cairo / Pango coordinates).
 /// - **Win-GUI**: Direct2D DIPs.
-/// - **macOS** (planned): Core Graphics points.
+/// - **macOS**: Core Graphics points.
 ///
 /// See this module's "Unit contract" doc section for what "native
 /// units" means precisely and why [`Viewport::scale`] does **not** help
@@ -227,7 +233,7 @@ impl ScrollDelta {
 /// Rectangular region in the backend's native units.
 ///
 /// Same unit contract as [`Point`] — TUI cells, GTK/Win-GUI DIPs,
-/// macOS (planned) points — see this module's "Unit contract" doc
+/// macOS points — see this module's "Unit contract" doc
 /// section. A `Rect` produced by one backend is not meaningful passed
 /// to another; there is no implicit conversion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
