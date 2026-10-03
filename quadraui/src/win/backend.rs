@@ -756,6 +756,20 @@ pub struct WinBackend {
     /// is a plain `Vec` with no WinAPI dependency, same rationale as
     /// `events`/`user_events` above.
     zones: Vec<crate::testing::ZoneRec>,
+    /// Test-facing [`Backend::request_frame_in`] call-count/deadline
+    /// bookkeeping (quadraui#1264), mirroring
+    /// [`crate::tui::TuiBackend`]'s own `frame_scheduler` field — see
+    /// [`crate::runtime::FrameScheduler`]'s doc for why Windows, which
+    /// already has a real native timer (`SetTimer`/`WM_TIMER`, armed
+    /// directly from [`Self::request_frame_in`]), still needs this: that
+    /// real timer is a no-op before [`Self::attach_surface`] has ever
+    /// run (no `HWND` yet), which is exactly the state a headless
+    /// [`super::testing::WinDriver`] test runs in. `request_frame_in`
+    /// records into this unconditionally, `hwnd` or not; read back via
+    /// [`Self::frame_requests`]/[`Self::pending_frame_delay`]. Not
+    /// `target_os`-gated: a plain value with no WinAPI dependency, same
+    /// rationale as `zones`/`user_events` above.
+    frame_scheduler: crate::runtime::FrameScheduler,
 }
 
 impl WinBackend {
@@ -813,6 +827,7 @@ impl WinBackend {
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             zones: Vec::new(),
+            frame_scheduler: crate::runtime::FrameScheduler::new(),
         }
     }
 
@@ -1389,6 +1404,38 @@ impl WinBackend {
     /// isn't — see its doc.
     pub(crate) fn text_runs(&self) -> &[crate::testing::TextRun] {
         &self.text_runs
+    }
+
+    // ── request_frame_in scheduling (quadraui#1264) ─────────────────────
+
+    /// How many times [`Backend::request_frame_in`] has been called on
+    /// this backend since it was constructed — [`crate::tui::TuiBackend::
+    /// frame_requests`]'s twin for Win-GUI.
+    ///
+    /// Real hosts never need this. It exists so a headless
+    /// [`super::testing::WinDriver`] test can assert on an app's
+    /// *scheduling* behaviour even though [`Self::request_frame_in`]'s
+    /// real `SetTimer` arm is a no-op before [`Self::attach_surface`]
+    /// has ever run (no live `HWND` yet — exactly `WinDriver`'s
+    /// situation) — see [`Self::frame_scheduler`]'s field doc. Not
+    /// `target_os`-gated, for the same reason
+    /// [`Self::set_painted_text_recording`] isn't: the field it reads has
+    /// no WinAPI dependency, and its caller exists on every host `win`
+    /// compiles on.
+    ///
+    /// Monotonic: a fired deadline clears the pending wake (see
+    /// [`Self::pending_frame_delay`]), not the count.
+    pub fn frame_requests(&self) -> u64 {
+        self.frame_scheduler.requests()
+    }
+
+    /// Time remaining until the pending [`Backend::request_frame_in`]
+    /// deadline, or `None` when no frame is scheduled — the companion to
+    /// [`Self::frame_requests`]: that one proves *how often* an app
+    /// asked, this one proves *what interval* it asked for. Not
+    /// `target_os`-gated, same reason as [`Self::frame_requests`].
+    pub fn pending_frame_delay(&self) -> Option<Duration> {
+        self.frame_scheduler.pending_delay()
     }
 
     // ── Text selection (#741) ────────────────────────────────────────────
@@ -2077,7 +2124,14 @@ impl Backend for WinBackend {
     /// wake earlier... but never required to fire at all before a native
     /// event exists to carry it" posture — there is no event loop yet for
     /// an unattached backend to wake.
+    ///
+    /// Records into [`Self::frame_scheduler`] unconditionally, `hwnd` or
+    /// not (quadraui#1264) — that bookkeeping is test-facing only (see
+    /// [`Self::frame_requests`]/[`Self::pending_frame_delay`]) and must
+    /// not depend on the real `SetTimer` arm below, which stays exactly
+    /// as no-op-before-attach as before.
     fn request_frame_in(&self, delay: Duration) {
+        self.frame_scheduler.request(delay);
         #[cfg(target_os = "windows")]
         {
             if let Some(hwnd) = self.hwnd {
@@ -2096,10 +2150,6 @@ impl Backend for WinBackend {
                     );
                 }
             }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = delay;
         }
     }
 
@@ -6160,6 +6210,29 @@ mod tests {
     fn request_frame_in_before_a_window_is_attached_does_not_panic() {
         let backend = WinBackend::new();
         Backend::request_frame_in(&backend, Duration::from_millis(50));
+    }
+
+    /// quadraui#1264: `frame_requests`/`pending_frame_delay` must observe
+    /// every `request_frame_in` call even with no `HWND` attached — the
+    /// whole point of this bookkeeping existing alongside the real
+    /// `SetTimer` arm (which stays silently no-op in this exact state,
+    /// per the test above). Mirrors `TuiBackend`'s identically-shaped
+    /// `frame_requests`/`pending_frame_delay` unit coverage.
+    #[test]
+    fn frame_requests_and_pending_delay_observe_calls_with_no_hwnd() {
+        let backend = WinBackend::new();
+        assert_eq!(backend.frame_requests(), 0);
+        assert!(backend.pending_frame_delay().is_none());
+
+        Backend::request_frame_in(&backend, Duration::from_millis(50));
+        assert_eq!(backend.frame_requests(), 1);
+        assert!(backend.pending_frame_delay().is_some());
+
+        // A second call at the same interval coalesces to the earlier
+        // deadline but still increments the call count — the
+        // chained-re-arm behaviour `TuiBackend`'s own test documents.
+        Backend::request_frame_in(&backend, Duration::from_millis(50));
+        assert_eq!(backend.frame_requests(), 2);
     }
 
     /// Regression test for the review finding on `WinBackend::waker`: a
