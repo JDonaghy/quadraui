@@ -113,8 +113,6 @@ use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_input::{TextInput, TextInputLayout};
-#[allow(deprecated)]
-use crate::primitives::toast::ToastStack;
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 use crate::primitives::toolbar::{Toolbar, ToolbarLayout, ToolbarPaintOptions};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
@@ -2436,14 +2434,18 @@ pub trait Backend: sealed::Sealed {
     /// Superseded by [`Self::draw_status_bar_interactive`], which reads
     /// the same two values out of one [`InteractionState`] keyed by
     /// [`WidgetId`] instead of two positional `Option<&WidgetId>`
-    /// slots. Kept as a *working* forwarding shim — not a stub — per
-    /// `CLAUDE.md` rule 3's two-PR deprecate-then-remove protocol:
-    /// `vimcode` calls this method directly today (see the PR's
-    /// *Downstream impact* section), so removing it outright would
-    /// break its build on the next `develop` pull.
+    /// slots. Both real downstream consumers migrated off this ahead of
+    /// issue #1251 (the v0.1.0 breaking batch, phase 2) — but this one
+    /// stays, unlike its `draw_toolbar`/`draw_sidebar_panel`/
+    /// `draw_toast_stack` siblings #1251 did remove, because the sealed
+    /// milestone acceptance slices `tests/acceptance/ms-11/{structural_parity,c0_paint_smoke}.rs`
+    /// still call it positionally and this crate cannot edit anything
+    /// under `tests/acceptance/` (see `quadraui/tests/acceptance.rs`'s
+    /// module doc). Removal target: whichever Gate A pass migrates
+    /// those two slices off the positional call, not before v0.2.0.
     #[deprecated(
         since = "0.0.1",
-        note = "use `draw_status_bar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
+        note = "use `draw_status_bar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819; removal target: once the sealed `tests/acceptance/ms-11` slices that still call this positionally migrate, not before v0.2.0"
     )]
     fn draw_status_bar(
         &mut self,
@@ -2455,6 +2457,7 @@ pub trait Backend: sealed::Sealed {
         let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
         self.draw_status_bar_interactive(rect, bar, &interaction)
     }
+
     /// Draw a tab bar. `hovered_close_tab` carries per-frame hover
     /// state so the rasteriser can paint a hover background behind the
     /// hovered tab's close glyph (the primitive itself carries no
@@ -3371,29 +3374,6 @@ pub trait Backend: sealed::Sealed {
     /// coordinate frame as [`Self::toast_stack_layout`] (ABSOLUTE).
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout;
 
-    /// Draw a pre-#1185 [`ToastStack`] — deprecated forwarding shim over
-    /// [`Self::draw_toast_overlay`].
-    ///
-    /// This is the one method on this trait with a default body, and it
-    /// is deliberately **not** a rule-7 exception (PRIMITIVE_RULES.md):
-    /// nothing implements it, in-tree or out. It exists only so the two
-    /// downstream consumers that call `backend.draw_toast_stack(rect,
-    /// &stack)` with the pre-#1185 struct-literal shape keep compiling
-    /// through #1185's field changes, with a deprecation warning naming
-    /// their fix (CLAUDE.md rule 3). It converts with
-    /// [`ToastStack::to_overlay`] — so a legacy stack paints exactly
-    /// like the equivalent overlay: same box geometry, same hit regions,
-    /// its single action secondary-styled, and no focus ring. Deleted,
-    /// together with the legacy structs, once both consumers migrate.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `draw_toast_overlay` with a `ToastOverlay` — see quadraui#1185"
-    )]
-    #[allow(deprecated)]
-    fn draw_toast_stack(&mut self, rect: Rect, stack: &ToastStack) -> ToastStackLayout {
-        self.draw_toast_overlay(rect, &stack.to_overlay())
-    }
-
     /// Compute the toast-stack layout without painting. Hosts call
     /// this in click handlers to resolve hits.
     ///
@@ -3537,8 +3517,7 @@ pub trait Backend: sealed::Sealed {
     /// `CLAUDE.md`'s *Downstream consumers* rule 2.
     ///
     /// Backends implement [`Self::draw_toolbar_with_options`]; this is
-    /// a forwarding default, and the positional [`Self::draw_toolbar`]
-    /// is a deprecated shim over the same path.
+    /// a forwarding default.
     fn draw_toolbar_interactive(
         &mut self,
         rect: Rect,
@@ -3558,8 +3537,8 @@ pub trait Backend: sealed::Sealed {
     /// [`ToolbarPaintOptions`]'s own doc.
     ///
     /// This is the implemented method — every `Backend` writes its
-    /// rasteriser here, and the two shims above forward into it with
-    /// [`ToolbarPaintOptions::default()`] (`ToolbarVAlign::Top`,
+    /// rasteriser here, and [`Self::draw_toolbar_interactive`] forwards
+    /// into it with [`ToolbarPaintOptions::default()`] (`ToolbarVAlign::Top`,
     /// byte-identical to the pre-#260 paint on a 1-row slot).
     fn draw_toolbar_with_options(
         &mut self,
@@ -3568,35 +3547,6 @@ pub trait Backend: sealed::Sealed {
         interaction: &InteractionState,
         options: ToolbarPaintOptions,
     ) -> ToolbarLayout;
-
-    /// Draw a [`Toolbar`] with hover/pressed supplied positionally.
-    ///
-    /// # Deprecated (issue #819)
-    ///
-    /// Superseded by [`Self::draw_toolbar_interactive`], which reads
-    /// the same two values out of one [`InteractionState`] keyed by
-    /// [`WidgetId`] instead of two positional `Option<&WidgetId>`
-    /// slots. Kept as a *working* forwarding shim — not a stub — per
-    /// `CLAUDE.md` rule 3's two-PR deprecate-then-remove protocol: both
-    /// `coord-tui` and `vimcode` call this method directly today (see
-    /// the PR's *Downstream impact* section), so removing it outright
-    /// would break their builds on the next `develop` pull. Always
-    /// forwards [`ToolbarPaintOptions::default()`] — callers that need
-    /// `valign` go through [`Self::draw_toolbar_with_options`] directly.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `draw_toolbar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
-    )]
-    fn draw_toolbar(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        hovered_id: Option<&WidgetId>,
-        pressed_id: Option<&WidgetId>,
-    ) -> ToolbarLayout {
-        let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
-        self.draw_toolbar_with_options(rect, bar, &interaction, ToolbarPaintOptions::default())
-    }
 
     /// Compute toolbar layout without painting. Hosts call this after
     /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
@@ -3616,41 +3566,13 @@ pub trait Backend: sealed::Sealed {
     /// Same coordinate frame as [`Self::sidebar_panel_layout`]
     /// (ABSOLUTE).
     ///
-    /// This is the implemented method; the positional
-    /// [`Self::draw_sidebar_panel`] is a deprecated shim over it.
+    /// This is the implemented method.
     fn draw_sidebar_panel_interactive(
         &mut self,
         rect: Rect,
         panel: &SidebarPanel,
         interaction: &InteractionState,
     ) -> SidebarPanelLayout;
-
-    /// Draw a [`SidebarPanel`] with toolbar hover/pressed supplied
-    /// positionally.
-    ///
-    /// # Deprecated (issue #819)
-    ///
-    /// Superseded by [`Self::draw_sidebar_panel_interactive`], which
-    /// reads the same two values out of one [`InteractionState`] keyed
-    /// by [`WidgetId`]. Kept as a *working* forwarding shim — not a
-    /// stub — per `CLAUDE.md` rule 3's two-PR deprecate-then-remove
-    /// protocol: both `coord-tui` and `vimcode` call this method
-    /// directly today (see the PR's *Downstream impact* section).
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `draw_sidebar_panel_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819"
-    )]
-    fn draw_sidebar_panel(
-        &mut self,
-        rect: Rect,
-        panel: &SidebarPanel,
-        hovered_toolbar_id: Option<&WidgetId>,
-        pressed_toolbar_id: Option<&WidgetId>,
-    ) -> SidebarPanelLayout {
-        let interaction =
-            InteractionState::from_parts(hovered_toolbar_id.cloned(), pressed_toolbar_id.cloned());
-        self.draw_sidebar_panel_interactive(rect, panel, &interaction)
-    }
 
     /// Compute sidebar-panel layout without painting. Hosts call this
     /// in click handlers to resolve hits to the toolbar / content /

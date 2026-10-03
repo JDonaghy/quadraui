@@ -34,11 +34,10 @@
 //!
 //! [`ToastOverlay`] (a corner's worth of toasts) holds [`Toast`]s, each
 //! holding [`ToastButton`]s. Their pre-#1185 single-action counterparts —
-//! [`ToastStack`], [`ToastItem`], [`ToastAction`] — are still here,
-//! `#[deprecated]`, so downstream keeps compiling while it migrates; see
-//! the *Legacy single-action shapes* section below for why the new shapes
-//! needed new names at all, and `CHANGELOG.md`'s *Deprecated* entry for
-//! the removal plan.
+//! `ToastStack`, `ToastItem`, `ToastAction` — were deprecated alongside
+//! these shapes and removed outright in issue #1251, once both known
+//! consumers had migrated (zero remaining uses); see `CHANGELOG.md`'s
+//! `Removed` entry.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -57,7 +56,7 @@ pub struct ToastOverlay {
     /// `None` — the common case, since toasts are non-modal and never
     /// steal focus on their own — paints with no focus ring. Set this
     /// from [`crate::compose::ToastStackController::focus`] before
-    /// calling [`crate::Backend::draw_toast_stack`] to make the
+    /// calling [`crate::Backend::draw_toast_overlay`] to make the
     /// controller's cursor visible; the primitive itself never mutates
     /// this field (declarative, like every other field here).
     #[serde(default)]
@@ -146,141 +145,6 @@ pub enum ToastFocusTarget {
     /// One of the toast's action buttons, by index into
     /// [`Toast::actions`].
     Action(usize),
-}
-
-// ── Legacy single-action shapes (pre-#1185 compatibility) ───────────────────
-//
-// #1185 needed three things the pre-#1185 shapes cannot express: several
-// actions per toast, a primary/secondary distinction between them, and a
-// keyboard-focus cursor on the stack. All three are *added fields*, and a
-// struct literal — which is exactly how both downstream consumers build
-// these (`coord-tui`'s `App::push_toast`/`toast_stack`, `vimcode`'s
-// `render::build_toast_stack`) — has to name every field, so there is no
-// additive shape that keeps them compiling. CLAUDE.md's rule 3 answer is
-// to deprecate first: the pre-#1185 structs keep their names, their exact
-// field sets and their public paths (`quadraui::ToastItem`,
-// `quadraui::primitives::toast::ToastItem`, …), gain a `#[deprecated]`
-// note naming the replacement, and convert into the new shapes on the way
-// to any backend via [`Backend::draw_toast_stack`]'s forwarding default
-// (see `crate::backend::Backend::draw_toast_stack`). A follow-up PR
-// deletes this section once both consumers have migrated.
-
-/// Pre-#1185 declarative description of a toast stack for one corner.
-///
-/// Superseded by [`ToastOverlay`], which additionally carries
-/// [`ToastOverlay::focus`]. Converts with [`ToastStack::to_overlay`].
-#[deprecated(
-    since = "0.0.1",
-    note = "use `ToastOverlay` (adds `focus`, and its toasts take `actions: Vec<ToastButton>`) — see quadraui#1185"
-)]
-#[allow(deprecated)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToastStack {
-    pub id: WidgetId,
-    /// Which corner of the viewport the stack occupies.
-    pub corner: ToastCorner,
-    /// Toasts in temporal order — oldest first. Visual order depends on
-    /// `corner` (bottom corners stack upward, top corners stack downward).
-    #[allow(deprecated)]
-    pub toasts: Vec<ToastItem>,
-}
-
-/// Pre-#1185 single-action toast notification.
-///
-/// Superseded by [`Toast`], whose `actions: Vec<ToastButton>` replaces
-/// this type's `action: Option<ToastAction>`.
-#[deprecated(
-    since = "0.0.1",
-    note = "use `Toast`, whose `actions: Vec<ToastButton>` replaces `action: Option<ToastAction>` — see quadraui#1185"
-)]
-#[allow(deprecated)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToastItem {
-    pub id: WidgetId,
-    pub title: String,
-    /// Body text. Can be empty for minimal "File saved" style toasts.
-    #[serde(default)]
-    pub body: String,
-    /// Visual severity — backends tint the box accordingly.
-    #[serde(default)]
-    pub severity: ToastSeverity,
-    /// Optional action button. `None` = no action shown; just the
-    /// dismiss affordance is clickable.
-    #[serde(default)]
-    #[allow(deprecated)]
-    pub action: Option<ToastAction>,
-    /// Override severity's default tint. Most toasts use `None` and let
-    /// the theme decide.
-    #[serde(default)]
-    pub accent: Option<Color>,
-}
-
-/// Pre-#1185 action button on a toast.
-///
-/// Superseded by [`ToastButton`], which adds [`ToastButton::primary`].
-#[deprecated(
-    since = "0.0.1",
-    note = "use `ToastButton` (adds `primary`) — see quadraui#1185"
-)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToastAction {
-    pub id: WidgetId,
-    pub label: String,
-}
-
-#[allow(deprecated)]
-impl From<ToastAction> for ToastButton {
-    /// A legacy action is always **secondary** (`primary: false`): before
-    /// #1185 there was no primary/secondary distinction, and every
-    /// backend drew the single action as a plain label — so keeping it
-    /// secondary is what preserves the pre-#1185 look.
-    fn from(a: ToastAction) -> Self {
-        ToastButton {
-            id: a.id,
-            label: a.label,
-            primary: false,
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl From<ToastItem> for Toast {
-    fn from(t: ToastItem) -> Self {
-        Toast {
-            id: t.id,
-            title: t.title,
-            body: t.body,
-            severity: t.severity,
-            actions: t.action.into_iter().map(ToastButton::from).collect(),
-            accent: t.accent,
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl From<ToastStack> for ToastOverlay {
-    fn from(s: ToastStack) -> Self {
-        ToastOverlay {
-            id: s.id,
-            corner: s.corner,
-            toasts: s.toasts.into_iter().map(Toast::from).collect(),
-            // No pre-#1185 caller could express keyboard focus, so the
-            // converted overlay paints without a focus ring — the same
-            // thing every backend did before #1185.
-            focus: None,
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl ToastStack {
-    /// Convert into the #1185 [`ToastOverlay`] shape, by clone — the
-    /// borrowing counterpart of `From<ToastStack>`, for the common case
-    /// where the caller only has a `&ToastStack` (e.g.
-    /// [`crate::Backend::draw_toast_stack`]'s forwarding default).
-    pub fn to_overlay(&self) -> ToastOverlay {
-        ToastOverlay::from(self.clone())
-    }
 }
 
 // ── Text wrapping (#1182) ───────────────────────────────────────────────────
@@ -1830,120 +1694,5 @@ mod tests {
             shifted.hit_test(db.x + 5.0, db.y + 10.0),
             ToastHit::Dismiss(WidgetId::new("t1")),
         );
-    }
-}
-
-// ── Legacy (pre-#1185) compatibility tests ──────────────────────────────────
-//
-// Kept in their own module rather than folded into `tests` above so the
-// whole block — like the legacy structs themselves — can be deleted in one
-// piece once both downstream consumers have migrated (CLAUDE.md rule 3).
-#[cfg(test)]
-#[allow(deprecated)]
-mod legacy_compat_tests {
-    use super::*;
-
-    fn legacy_stack() -> ToastStack {
-        ToastStack {
-            id: WidgetId::new("toasts"),
-            corner: ToastCorner::BottomRight,
-            toasts: vec![
-                ToastItem {
-                    id: WidgetId::new("t1"),
-                    title: "Install Markdown Language Server?".to_string(),
-                    body: "Recommended for .md files".to_string(),
-                    severity: ToastSeverity::Warning,
-                    action: Some(ToastAction {
-                        id: WidgetId::new("install"),
-                        label: "Install".to_string(),
-                    }),
-                    accent: None,
-                },
-                ToastItem {
-                    id: WidgetId::new("t2"),
-                    title: "File saved".to_string(),
-                    body: String::new(),
-                    severity: ToastSeverity::Info,
-                    action: None,
-                    accent: None,
-                },
-            ],
-        }
-    }
-
-    /// Every pre-#1185 field survives the conversion, the single optional
-    /// action becomes a one-entry `actions` vec, and nothing invents a
-    /// focus cursor (no legacy caller could express one).
-    #[test]
-    fn legacy_stack_converts_field_for_field() {
-        let overlay = legacy_stack().to_overlay();
-
-        assert_eq!(overlay.id, WidgetId::new("toasts"));
-        assert_eq!(overlay.corner, ToastCorner::BottomRight);
-        assert_eq!(overlay.focus, None);
-        assert_eq!(overlay.toasts.len(), 2);
-
-        let with_action = &overlay.toasts[0];
-        assert_eq!(with_action.id, WidgetId::new("t1"));
-        assert_eq!(with_action.title, "Install Markdown Language Server?");
-        assert_eq!(with_action.body, "Recommended for .md files");
-        assert_eq!(with_action.severity, ToastSeverity::Warning);
-        assert_eq!(with_action.actions.len(), 1);
-        assert_eq!(with_action.actions[0].id, WidgetId::new("install"));
-        assert_eq!(with_action.actions[0].label, "Install");
-        // Pre-#1185 had no primary/secondary distinction and drew the
-        // single action as a plain label — staying secondary is what
-        // preserves that look.
-        assert!(!with_action.actions[0].primary);
-
-        let without_action = &overlay.toasts[1];
-        assert!(without_action.actions.is_empty());
-    }
-
-    /// A converted legacy stack lays out exactly like the equivalent
-    /// hand-built [`ToastOverlay`]: same boxes, same hit regions. This is
-    /// what makes [`crate::Backend::draw_toast_stack`]'s forwarding
-    /// default a no-op change in behaviour for existing callers.
-    #[test]
-    fn converted_legacy_stack_lays_out_like_an_overlay() {
-        let converted = legacy_stack().to_overlay();
-        let hand_built = ToastOverlay {
-            id: WidgetId::new("toasts"),
-            corner: ToastCorner::BottomRight,
-            toasts: vec![
-                Toast {
-                    id: WidgetId::new("t1"),
-                    title: "Install Markdown Language Server?".to_string(),
-                    body: "Recommended for .md files".to_string(),
-                    severity: ToastSeverity::Warning,
-                    actions: vec![ToastButton {
-                        id: WidgetId::new("install"),
-                        label: "Install".to_string(),
-                        primary: false,
-                    }],
-                    accent: None,
-                },
-                Toast {
-                    id: WidgetId::new("t2"),
-                    title: "File saved".to_string(),
-                    body: String::new(),
-                    severity: ToastSeverity::Info,
-                    actions: Vec::new(),
-                    accent: None,
-                },
-            ],
-            focus: None,
-        };
-        assert_eq!(converted, hand_built);
-
-        let measure = |_: usize| ToastMeasure {
-            width: 300.0,
-            height: 64.0,
-            dismiss_rect: Some(Rect::new(276.0, 4.0, 20.0, 16.0)),
-            action_rects: vec![Rect::new(210.0, 40.0, 80.0, 20.0)],
-        };
-        let a = converted.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
-        let b = hand_built.layout(0.0, 0.0, 800.0, 600.0, 16.0, 8.0, measure);
-        assert_eq!(a, b);
     }
 }

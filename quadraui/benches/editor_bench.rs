@@ -26,7 +26,6 @@ use quadraui::{
     Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
     EditorStyledSpan, Rect, WidgetId,
 };
-use std::collections::{HashMap, HashSet};
 use std::hint::black_box;
 
 const TOTAL_LINES: usize = 4_000;
@@ -88,38 +87,29 @@ fn build_editor(scroll_top: usize) -> Editor {
     let lines: Vec<EditorLine> = (scroll_top..scroll_top + VISIBLE_LINES)
         .map(build_line)
         .collect();
-    Editor {
-        id: WidgetId::new("bench-editor"),
-        rect: Rect::new(0.0, 0.0, 800.0, VISIBLE_LINES as f32 * 18.0),
-        lines,
-        cursor: Some(EditorCursor {
-            pos: EditorCursorPos {
-                view_line: 0,
-                col: 4,
-            },
-            shape: EditorCursorShape::Block,
-        }),
-        extra_cursors: Vec::new(),
-        selection: None,
-        extra_selections: Vec::new(),
-        yank_highlight: None,
-        scroll_top,
-        scroll_left: 0,
-        total_lines: TOTAL_LINES,
-        max_col: MAX_COL,
-        gutter_char_width: 5,
-        is_active: true,
-        show_active_bg: true,
-        has_git_diff: true,
-        has_breakpoints: true,
-        diagnostic_gutter: HashMap::new(),
-        code_action_lines: HashSet::new(),
-        bracket_match_positions: Vec::new(),
-        active_indent_col: Some(4),
-        tabstop: 4,
-        cursorline: true,
-        lightbulb_glyph: '\u{f0eb}',
-    }
+    Editor::new(
+        WidgetId::new("bench-editor"),
+        Rect::new(0.0, 0.0, 800.0, VISIBLE_LINES as f32 * 18.0),
+    )
+    .with_lines(lines)
+    .with_cursor(EditorCursor {
+        pos: EditorCursorPos {
+            view_line: 0,
+            col: 4,
+        },
+        shape: EditorCursorShape::Block,
+    })
+    .with_scroll_top(scroll_top)
+    .with_total_lines(TOTAL_LINES)
+    .with_max_col(MAX_COL)
+    .with_gutter_char_width(5)
+    .with_is_active(true)
+    .with_show_active_bg(true)
+    .with_has_git_diff(true)
+    .with_has_breakpoints(true)
+    .with_active_indent_col(4)
+    .with_cursorline(true)
+    .with_lightbulb_glyph('\u{f0eb}')
 }
 
 fn bench_frame_build(c: &mut Criterion) {

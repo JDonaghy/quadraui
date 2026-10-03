@@ -30,8 +30,9 @@
 //! from `quadraui::types::StyledSpan` only by module path — ambiguous
 //! to read and to import). It is now defined as `EditorStyledSpan`,
 //! matching the name the crate root already re-exported it under; the
-//! old name survives as a `#[deprecated]` `pub type` alias in this
-//! module per `PRIMITIVE_RULES.md` rule 8.
+//! old name survived as a `#[deprecated]` `pub type` alias per
+//! `PRIMITIVE_RULES.md` rule 8 until issue #1251 removed it, once
+//! `vimcode`'s own migration off it had merged.
 //!
 //! ## `EditorSelection::cols_on` (#1082)
 //!
@@ -288,15 +289,6 @@ pub struct EditorStyledSpan {
     pub style: Style,
 }
 
-/// Pre-#822 name of [`EditorStyledSpan`]. Renamed to resolve a same-crate
-/// name clash with [`crate::types::StyledSpan`] (a different, owned-text
-/// shape) — both were called `StyledSpan`, ambiguous to read and to
-/// import. Kept as a source-compatible alias per `PRIMITIVE_RULES.md`
-/// rule 8; the crate root's `EditorStyledSpan` re-export is unaffected
-/// (it already used this name).
-#[deprecated(since = "0.0.1", note = "renamed to `EditorStyledSpan` (#822)")]
-pub type StyledSpan = EditorStyledSpan;
-
 // ─── DiagnosticMark ─────────────────────────────────────────────────────────
 
 /// LSP diagnostic span on one line — drives inline underline / squiggle
@@ -413,18 +405,13 @@ pub struct EditorLine {
 /// line was lifted to `quadraui::WindowStatusLine` in Session 241 —
 /// Stage 1 of #276 does not touch that surface).
 ///
-/// **Adding a field here is a breaking change today** — see
-/// `editor_exhaustive_struct_literal_still_compiles` in
-/// `quadraui/tests/downstream_struct_literals.rs`, transcribed from
-/// `vimcode`'s only call site.
-///
-/// [`Editor::new`] plus a
-/// `with_*` builder per field below (besides `id`/`rect`, which `new`
-/// already requires), and a `Default` impl, so a consumer can already
-/// stop writing an exhaustive literal. `#[non_exhaustive]` itself is
-/// gated behind the off-by-default `strict-descriptors` feature, which a
-/// consumer builds with to prove it uses no exhaustive literals.
-#[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
+/// **Adding a field here used to be a breaking change** — see issue
+/// #1251 (the v0.1.0 breaking batch, phase 2), which made this struct
+/// `#[non_exhaustive]` for real once both known consumers had migrated
+/// off exhaustive literals onto [`Editor::new`] plus the `with_*`
+/// builder per field below (besides `id`/`rect`, which `new` already
+/// requires), and a `Default` impl.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Editor {
     pub id: WidgetId,

@@ -671,21 +671,29 @@ impl TabChrome {
 ///
 /// # Deprecated (issue #823)
 ///
-/// The struct itself now carries `#[deprecated]`, per CLAUDE.md rule 8's
-/// deprecate-then-remove protocol. This is a *shim* PR only: it does not
+/// The struct itself carries `#[deprecated]`, per CLAUDE.md rule 8's
+/// deprecate-then-remove protocol. Marking it deprecated does not
 /// change what `draw_tab_bar` / `tab_bar_layout` (or their icon/chrome
 /// twins) return — that six-method, four-backend signature change is
 /// still the "real, separate follow-up work" described above, tracked
 /// as a coordinated pair of PRs (this repo + a linked `vimcode` issue for
 /// its consumer migration) once the replacement rasterisers exist. What
-/// this PR does do: mark the type deprecated so every remaining
+/// the deprecation does do: mark the type deprecated so every remaining
 /// dependency on its `f64` shape is visible at the type level, and name
 /// [`TabBarLayout`] — already real, already f32/`Rect`/[`TabBarHit`]-based,
 /// already what every in-tree rasteriser computes *before* narrowing to
 /// this struct — as the eventual replacement return type.
+///
+/// Issue #1251 (the v0.1.0 breaking batch's phase 2) removed every other
+/// item #1109 had left deprecated pending a lagging consumer migration —
+/// this is the one exception, and deliberately: its blocker isn't a
+/// consumer that still builds the type, it's the six-method/four-backend
+/// signature swap above, which is unstarted. Removal target: the PR that
+/// lands that swap (tracked in #823), not before v0.2.0 — i.e. not in
+/// the upcoming v0.1.0 tag.
 #[deprecated(
     since = "0.0.1",
-    note = "f64-tuple pre-D6 hit struct; the eventual replacement is `TabBarLayout` (`Rect` + `TabBarHit`) — issue #823"
+    note = "f64-tuple pre-D6 hit struct; the eventual replacement is `TabBarLayout` (`Rect` + `TabBarHit`) — issue #823; removal target: the #823 six-method/four-backend signature swap, not before v0.2.0"
 )]
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TabBarHits {

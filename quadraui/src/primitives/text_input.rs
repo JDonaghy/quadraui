@@ -84,21 +84,17 @@ use crate::undo::UndoStack;
 /// being fields here (short version: adding **any** field, `pub` or
 /// private, breaks external exhaustive `TextInput { .. }` literals).
 ///
-/// **Adding a field to this struct is a breaking change today.** The
-/// `text_input_exhaustive_struct_literal_still_compiles` guard in
-/// `quadraui/tests/downstream_struct_literals.rs` fails in this repo's
-/// own CI if one is added, instead of the break surfacing later in a
-/// consumer's build.
+/// **Adding a field to this struct used to be a breaking change** — see
+/// issue #1251 (the v0.1.0 breaking batch, phase 2), which made this
+/// struct `#[non_exhaustive]` for real once both known consumers had
+/// migrated off exhaustive literals.
 ///
 /// Every field below has a
 /// matching `with_*` builder on [`TextInput::new`], and the type
-/// implements `Default`, so a consumer can already stop writing an
-/// exhaustive struct literal — construct with `TextInput::new(id)` /
-/// `TextInput::default()` and chain `with_*` instead. `#[non_exhaustive]`
-/// itself is **not** applied yet; it is gated behind the off-by-default
-/// `strict-descriptors` feature (`cfg_attr` below) so a consumer can
-/// prove its own migration is complete by building with that feature on.
-#[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
+/// implements `Default`, so a consumer constructs with
+/// `TextInput::new(id)` / `TextInput::default()` and chains `with_*`
+/// instead of an exhaustive struct literal.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {
     pub id: WidgetId,

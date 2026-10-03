@@ -53,11 +53,6 @@ use quadraui::{
     TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
-// Pre-#1185 single-action toast shapes, for the `draw_toast_stack`
-// deprecation-shim case at the bottom of `CASES` (issue #1185).
-#[allow(deprecated)]
-use quadraui::{ToastItem, ToastStack};
-
 use super::runner::{DriverFactory, DynDriver};
 
 /// Backend-neutral viewport, generous enough that no descriptor below
@@ -1327,19 +1322,21 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_image(area, &image);
         },
     },
-    // ── Deprecated positional hover/pressed shims (issue #819) ────────
+    // ── Deprecated positional hover/pressed shim (issue #819) ─────────
     //
-    // `draw_status_bar` / `draw_toolbar` / `draw_sidebar_panel` are no
-    // longer implemented by any backend: they are `#[deprecated]` trait
-    // *defaults* that rebuild an `InteractionState` and forward to the
-    // `*_interactive` twin above. `cases_cover_every_draw_method_on_the_trait`
-    // requires an entry per `fn draw_*` regardless, and these earn their
-    // keep — a C0 row here is the only automated proof that the shim
-    // actually reaches a rasteriser rather than silently painting
-    // nothing, which is exactly the breakage the shim exists to prevent
-    // for `coord-tui` and `vimcode`. `#[allow(deprecated)]` is scoped to
-    // the one call in each closure, deliberately: everywhere else in
-    // this repo the `-D warnings` gate must keep rejecting these names.
+    // `draw_status_bar` is no longer implemented by any backend: it is
+    // a `#[deprecated]` trait *default* that rebuilds an
+    // `InteractionState` and forwards to `draw_status_bar_interactive`.
+    // `cases_cover_every_draw_method_on_the_trait` requires an entry
+    // per `fn draw_*` regardless, and this one earns its keep — a C0
+    // row here is the only automated proof that the shim actually
+    // reaches a rasteriser rather than silently painting nothing, which
+    // is exactly the breakage the shim exists to prevent for the sealed
+    // `tests/acceptance/ms-11` slices that still call it this way (see
+    // that method's own doc for why it outlived its #1251 siblings).
+    // `#[allow(deprecated)]` is scoped to the one call in this closure,
+    // deliberately: everywhere else in this repo the `-D warnings` gate
+    // must keep rejecting this name.
     Case {
         method: "draw_status_bar",
         needle: Some("c0stsh"),
@@ -1358,79 +1355,6 @@ pub const CASES: &[Case] = &[
             };
             #[allow(deprecated)]
             let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
-        },
-    },
-    Case {
-        method: "draw_toolbar",
-        needle: Some("c0tbsh"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = Toolbar::new(id("toolbar-shim")).with_buttons(vec![ToolbarButton::Action {
-                id: id("toolbar-shim-button"),
-                label: "c0tbsh".to_string(),
-                icon: None,
-                key_hint: None,
-                enabled: true,
-                is_active: false,
-                tooltip: String::new(),
-            }]);
-            #[allow(deprecated)]
-            let _ = b.draw_toolbar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
-        },
-    },
-    Case {
-        method: "draw_sidebar_panel",
-        needle: Some("c0sbsh"),
-        paint: |b, area| {
-            let toolbar = Toolbar::new(id("sidebar-shim-toolbar")).with_buttons(vec![
-                ToolbarButton::Action {
-                    id: id("sidebar-shim-toolbar-button"),
-                    label: "c0sbsh".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                },
-            ]);
-            let panel = SidebarPanel {
-                id: id("sidebar-panel-shim"),
-                toolbar: Some(toolbar),
-                toolbar_height: None,
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_sidebar_panel(area, &panel, None, None);
-        },
-    },
-    // ── Deprecated single-action toast shim (issue #1185) ─────────────
-    //
-    // Same shape and same rationale as the #819 shims above:
-    // `draw_toast_stack` is a `#[deprecated]` trait *default* that
-    // converts a pre-#1185 `ToastStack` with `ToastStack::to_overlay()`
-    // and forwards to `draw_toast_overlay`. The C0 row is the
-    // cross-backend proof that the conversion reaches a real rasteriser
-    // on every backend — not just TUI, where
-    // `legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay`
-    // pins it cell-for-cell.
-    Case {
-        method: "draw_toast_stack",
-        needle: Some("c0tosh"),
-        paint: |b, area| {
-            #[allow(deprecated)]
-            let stack = ToastStack {
-                id: id("toast-stack-shim"),
-                corner: ToastCorner::BottomRight,
-                toasts: vec![ToastItem {
-                    id: id("toast-shim"),
-                    title: "c0tosh".to_string(),
-                    body: String::new(),
-                    severity: ToastSeverity::Info,
-                    action: None,
-                    accent: None,
-                }],
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_toast_stack(area, &stack);
         },
     },
 ];

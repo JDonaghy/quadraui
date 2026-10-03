@@ -72,19 +72,12 @@ fn default_true() -> bool {
 
 /// Declarative description of a horizontal toolbar.
 ///
-/// **Adding a field here is a breaking change today** — see
-/// `toolbar_exhaustive_struct_literal_still_compiles` in
-/// `quadraui/tests/downstream_struct_literals.rs`, which both `coord-tui`
-/// and `vimcode` reproduce with real exhaustive literals from their own
-/// source.
-///
-/// [`Toolbar::new`] plus a
-/// `with_*` builder per field below, and a `Default` impl, so a consumer
-/// can already stop writing an exhaustive literal. `#[non_exhaustive]`
-/// itself is gated behind the off-by-default `strict-descriptors`
-/// feature, which a consumer builds with to prove it uses no
-/// exhaustive literals.
-#[cfg_attr(feature = "strict-descriptors", non_exhaustive)]
+/// **Adding a field here used to be a breaking change** — see issue
+/// #1251 (the v0.1.0 breaking batch, phase 2), which made this struct
+/// `#[non_exhaustive]` for real once both known consumers had migrated
+/// off exhaustive literals onto [`Toolbar::new`] plus the `with_*`
+/// builder per field below (and a `Default` impl).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toolbar {
     pub id: WidgetId,
@@ -217,9 +210,8 @@ pub enum ToolbarButton {
 /// ```
 /// use quadraui::{Icon, Toolbar, ToolbarButton, ToolbarIcons, WidgetId};
 ///
-/// let bar = Toolbar {
-///     id: WidgetId::new("sc:toolbar"),
-///     buttons: vec![ToolbarButton::Action {
+/// let bar = Toolbar::new(WidgetId::new("sc:toolbar")).with_buttons(vec![
+///     ToolbarButton::Action {
 ///         id: WidgetId::new("sc:refresh"),
 ///         label: "Refresh".into(),
 ///         icon: None,
@@ -227,10 +219,8 @@ pub enum ToolbarButton {
 ///         enabled: true,
 ///         is_active: false,
 ///         tooltip: String::new(),
-///     }],
-///     bg: None,
-///     focused_index: None,
-/// };
+///     },
+/// ]);
 /// let icons = ToolbarIcons::new()
 ///     .with(WidgetId::new("sc:refresh"), Icon::new("\u{f021}", "R"));
 ///
@@ -243,14 +233,16 @@ pub enum ToolbarButton {
 /// ## Why a side table, not a `Toolbar` field
 ///
 /// `Toolbar` is an all-`pub`-field paint-time snapshot that both external
-/// consumers build with **exhaustive struct literals** (four sites in
-/// `coord-tui`, two in `vimcode` — see `tests/downstream_struct_literals.rs`).
-/// Growing it by one field fails every one of those literals with `E0063`,
-/// and `#[non_exhaustive]` fails them with `E0639` instead — both are hard
-/// breaks with no deprecation shim available, which CLAUDE.md's *Downstream
-/// consumers* rule exists to prevent. Keeping the pairs in a separate type
-/// the host composes on its own side is the same non-breaking escape hatch
-/// `TextEditor` uses for `TextInput` (issue #833).
+/// consumers used to build with **exhaustive struct literals** (four
+/// sites in `coord-tui`, two in `vimcode` — see
+/// `tests/downstream_struct_literals.rs`) before migrating to its
+/// `new`/`with_*` builder ahead of issue #1251 making it
+/// `#[non_exhaustive]` for real. Growing the field list is still a
+/// breaking change for anyone still on the old literal shape (now a
+/// hard `E0639`, with no deprecation shim available for a struct
+/// literal). Keeping the pairs in a separate type the host composes on
+/// its own side is the same non-breaking escape hatch `TextEditor` uses
+/// for `TextInput` (issue #833).
 ///
 /// ## Why resolution happens here and not inside each rasteriser
 ///
