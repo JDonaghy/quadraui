@@ -1904,6 +1904,22 @@ impl Backend for MacBackend {
         self.chrome_char_width as f32
     }
 
+    /// Real Core Text measurement via [`super::text::measure_text`]
+    /// against `chrome_font`/`current_font` (quadraui#1132) — the same
+    /// per-role `CTFont` resolution
+    /// [`Self::surface_draw_text_run_with_role`] already uses (#1073),
+    /// including its #1117 "falls back to `chrome_font`, never panics"
+    /// behaviour for [`crate::FontRole::Editor`] before
+    /// [`Self::set_current_font`] has been called.
+    fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
+        let font = match role {
+            crate::FontRole::Chrome => &self.chrome_font,
+            crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
+        };
+        let (w, h) = super::text::measure_text(font, text);
+        (w as f32, h as f32)
+    }
+
     // ── Drawing ────────────────────────────────────────────────────
 
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
@@ -7189,6 +7205,48 @@ mod tests {
                 .family_name(),
             "Menlo",
         );
+    }
+
+    /// Issue #1132: `measure_text` must resolve a genuinely different
+    /// `CTFont` per [`crate::FontRole`] — `chrome_font` for
+    /// [`crate::FontRole::Chrome`], `current_font` for
+    /// [`crate::FontRole::Editor`] — not the same cached advance twice.
+    /// A much larger chrome font must measure the same string wider than
+    /// a small editor font does; this would pass vacuously if `role`
+    /// were ignored and both arms measured against whichever font
+    /// happened to be installed.
+    #[test]
+    fn measure_text_resolves_a_different_font_per_role() {
+        use crate::{Backend, FontRole};
+
+        let mut b = MacBackend::new();
+        b.set_editor_font("Menlo", 10.0);
+        Backend::set_ui_font(&mut b, "Helvetica 40");
+
+        let (chrome_w, _) = Backend::measure_text(&b, "quadraui", FontRole::Chrome);
+        let (editor_w, _) = Backend::measure_text(&b, "quadraui", FontRole::Editor);
+
+        assert!(
+            chrome_w > editor_w * 2.0,
+            "a 40pt chrome font should measure \"quadraui\" much wider than a \
+             10pt editor font: chrome_w={chrome_w}, editor_w={editor_w}"
+        );
+    }
+
+    /// #1117's "falls back to `chrome_font`, never panics" degrade,
+    /// exercised through `measure_text` instead of
+    /// `surface_draw_text_run_with_role`: a fresh `MacBackend` with no
+    /// [`MacBackend::set_current_font`] call yet must still return a
+    /// real (non-zero) measurement for [`crate::FontRole::Editor`],
+    /// resolved against `chrome_font`.
+    #[test]
+    fn measure_text_editor_role_falls_back_to_chrome_font_before_set_current_font() {
+        use crate::{Backend, FontRole};
+
+        let b = MacBackend::new();
+        let (w, h) = Backend::measure_text(&b, "quadraui", FontRole::Editor);
+        assert!(w > 0.0, "expected a real measurement, got width {w}");
+        assert!(h > 0.0, "expected a real measurement, got height {h}");
     }
 
     /// Issue #1156: `default_fonts()` reports macOS's VS-Code-alignment

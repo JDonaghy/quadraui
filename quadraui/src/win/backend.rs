@@ -2489,6 +2489,36 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
+    /// Real DirectWrite measurement via `DWrite::measure_text` against
+    /// `chrome_dwrite`/`dwrite` (quadraui#1132) — the same per-role
+    /// handle [`Self::surface_draw_text_run_with_role`] already resolves
+    /// (#1073), including its "chrome falls back to the editor handle
+    /// if no live chrome one exists yet" degrade. Before a surface has
+    /// attached (`dwrite`/`chrome_dwrite` both still `None`, e.g. an app
+    /// measuring a `Dialog` before the first frame), falls back to a
+    /// `current_char_width`-scaled estimate — the same "degrade, don't
+    /// panic" convention [`Self::draw_tree`]'s own doc describes for the
+    /// pre-attach window on this backend.
+    fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
+        #[cfg(target_os = "windows")]
+        {
+            let dwrite = match role {
+                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
+                crate::FontRole::Editor => self.dwrite.as_ref(),
+            };
+            if let Some(dwrite) = dwrite {
+                if let Ok((w, h)) = dwrite.measure_text(text) {
+                    return (w, h);
+                }
+            }
+        }
+        let _ = role;
+        (
+            text.chars().count() as f32 * self.current_char_width,
+            self.current_line_height,
+        )
+    }
+
     /// Store the editor font family + size for the next
     /// [`Self::attach_surface`]/[`Self::ensure_surface`] call to build an
     /// `IDWriteTextFormat` from (#21). Mirrors `GtkBackend::set_editor_font`
@@ -5684,6 +5714,59 @@ mod tests {
             sb.track.width, expected_row_h,
             "track width (and row pitch) must match tree_layout's non-header \
              item_height, not the raw line_height"
+        );
+    }
+
+    /// Issue #1132, pre-attach fallback: before a surface/DirectWrite
+    /// handle exists (`dwrite`/`chrome_dwrite` both `None`, the state any
+    /// fresh `WinBackend` starts in, and the only state this crate's
+    /// non-Windows CI leg ever exercises for this method — see
+    /// `Backend::measure_text`'s doc), `measure_text` degrades to a
+    /// `current_char_width`-scaled estimate, matching every other
+    /// pre-attach degrade on this backend. Cross-platform: no
+    /// `target_os = "windows"` gate needed, same rationale as
+    /// `win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height`
+    /// above.
+    #[test]
+    fn win_backend_measure_text_falls_back_to_char_width_before_a_surface_attaches() {
+        let mut backend = WinBackend::new();
+        backend.current_char_width = 9.0;
+        backend.current_line_height = 18.0;
+
+        let (w, h) = Backend::measure_text(&backend, "abcd", crate::FontRole::Chrome);
+        assert_eq!(w, 4.0 * 9.0);
+        assert_eq!(h, 18.0);
+    }
+
+    /// Issue #1132: once a headless surface attaches, `measure_text` must
+    /// resolve a genuinely different `IDWriteTextFormat` per
+    /// [`crate::FontRole`] — `chrome_dwrite` for
+    /// [`crate::FontRole::Chrome`], `dwrite` for
+    /// [`crate::FontRole::Editor`] — mirroring
+    /// `measure_text_resolves_a_different_font_per_role` in
+    /// `macos::backend`'s own test module. Windows-only: DirectWrite
+    /// isn't available to attach a real surface against on the ubuntu
+    /// `cargo check --features win` leg.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn win_backend_measure_text_resolves_a_different_font_per_role() {
+        use crate::win::testing::HeadlessSurface;
+
+        let surface = HeadlessSurface::new(100, 100).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend.set_editor_font(DEFAULT_EDITOR_FONT_FAMILY, 10.0);
+        backend.set_ui_font(&format!("{DEFAULT_UI_FONT_FAMILY} 40"));
+        backend
+            .attach_headless(surface.target().clone(), 100, 100)
+            .expect("attach headless surface");
+
+        let (chrome_w, _) = Backend::measure_text(&backend, "quadraui", crate::FontRole::Chrome);
+        let (editor_w, _) = Backend::measure_text(&backend, "quadraui", crate::FontRole::Editor);
+
+        assert!(
+            chrome_w > editor_w * 2.0,
+            "a 40pt chrome font should measure \"quadraui\" much wider than a \
+             10pt editor font: chrome_w={chrome_w}, editor_w={editor_w}"
         );
     }
 
