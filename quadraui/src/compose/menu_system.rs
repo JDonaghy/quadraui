@@ -26,12 +26,9 @@ use crate::types::WidgetId;
 use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
 
 /// Derive a dropdown or submenu's width from its items' real label/detail
-/// text via [`Backend::measure_text`] (quadraui#1132) — this used to be a
-/// flat `20.0 * lh` guess at both of this function's call sites below,
-/// which fit by luck on TUI's fixed grid and nothing else: too narrow
-/// for any label longer than ~18 chars, needlessly wide for a short one,
-/// and oblivious to a proportional chrome font on GTK/macOS/Win (whose
-/// `char_width` isn't even meaningful for chrome text — see
+/// text via [`Backend::measure_text`]. A flat width guess cannot fit
+/// both TUI's fixed grid and a proportional chrome font on GTK/macOS/Win
+/// (whose `char_width` isn't meaningful for chrome text — see
 /// `Backend::measure_text`'s own doc). Mirrors [`ContextMenu::
 /// measure_generic_width`]'s per-item accounting (a leading `✓ ` slot
 /// when [`ContextMenuItem::checked`] is `Some(_)`, a trailing gap plus
@@ -62,11 +59,9 @@ fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> 
             w
         })
         .fold(0.0_f32, f32::max);
-    // Interior margin: a budget expressed in line-heights, the same unit
-    // the pre-#1132 flat guess (`20.0 * lh`) already mixed into a width
-    // estimate at both call sites below, rather than assuming a
-    // meaningful relationship between `lh` and the chrome font's space
-    // advance.
+    // Interior margin: a budget expressed in line-heights rather than
+    // assuming a meaningful relationship between `lh` and the chrome
+    // font's space advance.
     (max_content_w + lh * 3.0).max(lh * 8.0)
 }
 
@@ -671,10 +666,9 @@ impl MenuSystem {
             let Some(sub_items) = sub_items_opt else {
                 break;
             };
-            // quadraui#1132: each depth gets its own real-measured width
-            // instead of reusing one flat guess across every level — a
-            // deeper submenu with longer labels than its parent no
-            // longer gets clipped to the parent's width.
+            // Each depth is measured from its own items, so a deeper
+            // submenu with longer labels than its parent is not clipped
+            // to the parent's width.
             let menu_width = dropdown_width(backend, &sub_items, lh);
 
             // Pull-right anchor with left-flip on overflow.
@@ -1370,9 +1364,8 @@ mod tests {
         ContextMenuItem::default()
     }
 
-    /// quadraui#1132: `dropdown_width` must track the real content of
-    /// each item it's given, not a dialog-shape-independent flat guess —
-    /// a menu with a much longer label must come back wider.
+    /// `dropdown_width` must track the real content of each item it's
+    /// given: a menu with a much longer label must come back wider.
     #[test]
     fn dropdown_width_tracks_the_longest_label() {
         let backend = MockBackend::new();
