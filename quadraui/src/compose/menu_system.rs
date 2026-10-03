@@ -23,7 +23,52 @@ use crate::primitives::context_menu::{
 };
 use crate::primitives::menu_bar::{MenuBar, MenuBarHit, MenuBarItem};
 use crate::types::WidgetId;
-use crate::{Key, Modifiers, MouseButton, NamedKey};
+use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
+
+/// Derive a dropdown or submenu's width from its items' real label/detail
+/// text via [`Backend::measure_text`] (quadraui#1132) — this used to be a
+/// flat `20.0 * lh` guess at both of this function's call sites below,
+/// which fit by luck on TUI's fixed grid and nothing else: too narrow
+/// for any label longer than ~18 chars, needlessly wide for a short one,
+/// and oblivious to a proportional chrome font on GTK/macOS/Win (whose
+/// `char_width` isn't even meaningful for chrome text — see
+/// `Backend::measure_text`'s own doc). Mirrors [`ContextMenu::
+/// measure_generic_width`]'s per-item accounting (a leading `✓ ` slot
+/// when [`ContextMenuItem::checked`] is `Some(_)`, a trailing gap plus
+/// either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text) but
+/// measures the real chrome-font advance instead of counting characters.
+/// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
+/// same omission `measure_generic_width` documents for itself.
+fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> f32 {
+    let role = FontRole::Chrome;
+    let space_w = backend.measure_text(" ", role).0;
+    let checked_w = backend.measure_text("✓", role).0 + space_w;
+    let arrow_w = space_w + backend.measure_text("▶", role).0;
+    let max_content_w = items
+        .iter()
+        .filter(|item| !item.is_separator())
+        .map(|item| {
+            let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
+            let mut w = backend.measure_text(&label, role).0;
+            if item.checked.is_some() {
+                w += checked_w;
+            }
+            if item.submenu.is_some() {
+                w += arrow_w;
+            } else if let Some(det) = &item.detail {
+                let text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
+                w += space_w + backend.measure_text(&text, role).0;
+            }
+            w
+        })
+        .fold(0.0_f32, f32::max);
+    // Interior margin: a budget expressed in line-heights, the same unit
+    // the pre-#1132 flat guess (`20.0 * lh`) already mixed into a width
+    // estimate at both call sites below, rather than assuming a
+    // meaningful relationship between `lh` and the chrome font's space
+    // advance.
+    (max_content_w + lh * 3.0).max(lh * 8.0)
+}
 
 /// One top-level menu and its dropdown items.
 #[derive(Debug, Clone)]
@@ -572,8 +617,8 @@ impl MenuSystem {
         );
         let viewport = backend.viewport();
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        let menu_width = 20.0 * lh;
         let ctx_menu = self.build_dropdown(open_idx);
+        let menu_width = dropdown_width(backend, &ctx_menu.items, lh);
         let item_h = (lh * 1.4).round().max(lh);
         let sep_h = (lh * 0.5).round().max(1.0);
         let layout = ctx_menu.layout_at(anchor, viewport_rect, menu_width, |i| {
@@ -604,7 +649,6 @@ impl MenuSystem {
         let lh = backend.line_height();
         let item_h = (lh * 1.4).round().max(lh);
         let sep_h = (lh * 0.5).round().max(1.0);
-        let menu_width = 20.0 * lh;
         let viewport = backend.viewport();
         let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
 
@@ -627,6 +671,11 @@ impl MenuSystem {
             let Some(sub_items) = sub_items_opt else {
                 break;
             };
+            // quadraui#1132: each depth gets its own real-measured width
+            // instead of reusing one flat guess across every level — a
+            // deeper submenu with longer labels than its parent no
+            // longer gets clipped to the parent's width.
+            let menu_width = dropdown_width(backend, &sub_items, lh);
 
             // Pull-right anchor with left-flip on overflow.
             let preferred_x = parent_bounds.x + parent_bounds.width + 1.0;
@@ -832,6 +881,9 @@ mod tests {
         }
         fn list_char_width(&self) -> f32 {
             1.0
+        }
+        fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
+            (text.chars().count() as f32, 1.0)
         }
         fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
             crate::backend::PlatformFontDefaults {
@@ -1316,6 +1368,54 @@ mod tests {
 
     fn separator() -> ContextMenuItem {
         ContextMenuItem::default()
+    }
+
+    /// quadraui#1132: `dropdown_width` must track the real content of
+    /// each item it's given, not a dialog-shape-independent flat guess —
+    /// a menu with a much longer label must come back wider.
+    #[test]
+    fn dropdown_width_tracks_the_longest_label() {
+        let backend = MockBackend::new();
+        let short = [action("a", "Undo")];
+        let long = [action("a", "Undo Last 20 Changes")];
+
+        let short_w = dropdown_width(&backend, &short, 1.0);
+        let long_w = dropdown_width(&backend, &long, 1.0);
+        assert!(
+            long_w > short_w,
+            "a longer label must widen the dropdown: short={short_w}, long={long_w}"
+        );
+    }
+
+    /// A `checked` item's leading `✓ ` slot and a submenu item's trailing
+    /// `▶` arrow must each widen the result beyond the bare label width —
+    /// otherwise the glyph would overlap the label or get clipped.
+    #[test]
+    fn dropdown_width_reserves_space_for_checked_prefix_and_submenu_arrow() {
+        let backend = MockBackend::new();
+        let plain = [action("a", "Word Wrap")];
+        let mut checked = plain.clone();
+        checked[0].checked = Some(true);
+        let mut with_submenu = plain.clone();
+        with_submenu[0].submenu = Some(vec![action("b", "On")]);
+
+        let plain_w = dropdown_width(&backend, &plain, 1.0);
+        let checked_w = dropdown_width(&backend, &checked, 1.0);
+        let submenu_w = dropdown_width(&backend, &with_submenu, 1.0);
+
+        assert!(checked_w > plain_w, "checked={checked_w}, plain={plain_w}");
+        assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
+    }
+
+    /// Separators never gate the width computation on their own (empty)
+    /// label — a menu that is otherwise all separators plus one real item
+    /// must size off that one item, not panic or report `0.0`.
+    #[test]
+    fn dropdown_width_ignores_separators() {
+        let backend = MockBackend::new();
+        let items = [separator(), action("a", "Save All"), separator()];
+        let w = dropdown_width(&backend, &items, 1.0);
+        assert!(w > 0.0);
     }
 
     fn sample_menus() -> Vec<MenuDef> {

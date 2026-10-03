@@ -2254,6 +2254,46 @@ impl Backend for GtkBackend {
         self.current_chrome_char_width as f32
     }
 
+    /// Real Pango measurement against a fresh `pango::Layout` built from
+    /// `role`'s `FontDescription` (quadraui#1132) — `crate::gtk::
+    /// chrome_font_description(&self.ui_font)` for [`crate::FontRole::Chrome`],
+    /// [`Self::editor_font_pango_string`] for [`crate::FontRole::Editor`],
+    /// the same two descriptions [`Self::surface_draw_text_run_with_role`]
+    /// already resolves per role (#1073). Built against the stable
+    /// widget-realized `pango_ctx`, not the per-frame `cr`/`layout` pair
+    /// from [`Self::current_frame_refs`] — same "works outside a frame
+    /// too" posture as [`Self::data_table_layout`]'s own `pango_ctx` use,
+    /// since an app computing a `Dialog`/`ContextMenu` measure has no
+    /// live frame to borrow from.
+    ///
+    /// Falls back to a `char_width`-scaled estimate (mirroring
+    /// `PangoTextMeasure`'s own pre-realization fallback) when no
+    /// `pango_ctx` has been set yet — e.g. a `GtkBackend` queried before
+    /// its widget realizes.
+    fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
+        let Some(ctx) = self.pango_ctx.as_ref() else {
+            let char_w = match role {
+                crate::FontRole::Chrome => self.current_chrome_char_width as f32,
+                crate::FontRole::Editor => self.current_char_width as f32,
+            };
+            return (
+                (text.chars().count() as f32 * char_w).ceil() + 2.0,
+                self.current_line_height as f32,
+            );
+        };
+        let layout = pango::Layout::new(ctx);
+        let desc = match role {
+            crate::FontRole::Chrome => crate::gtk::chrome_font_description(&self.ui_font),
+            crate::FontRole::Editor => {
+                pango::FontDescription::from_string(&self.editor_font_pango_string())
+            }
+        };
+        layout.set_font_description(Some(&desc));
+        layout.set_text(text);
+        let (w, h) = layout.pixel_size();
+        (w as f32, h as f32)
+    }
+
     /// GTK's `ScrolledWindow` overlay scrollbar draws on top of the
     /// content edge. CSS requests 4px but GTK may allocate slightly
     /// more; 8px is a safe reserve so text never renders behind it
@@ -8099,6 +8139,31 @@ mod tests {
              {char_count_width} (byte-length bug would have produced {byte_length_width})",
             layout.columns[0].width,
         );
+    }
+
+    /// Issue #1132, no-`pango_ctx` fallback branch: before a widget
+    /// realizes, `measure_text` must still pick the *role*-appropriate
+    /// cached advance (`current_chrome_char_width` for
+    /// [`crate::FontRole::Chrome`], `current_char_width` for
+    /// [`crate::FontRole::Editor`]) rather than the same one for both —
+    /// the same #912 mismatch hazard [`Backend::list_char_width`]'s own
+    /// doc describes, generalised to this new method.
+    #[test]
+    fn measure_text_fallback_picks_the_role_appropriate_char_width() {
+        use crate::{Backend, FontRole};
+
+        let mut backend = GtkBackend::new();
+        backend.current_char_width = 8.0;
+        backend.current_chrome_char_width = 20.0;
+        backend.current_line_height = 16.0;
+
+        let (chrome_w, chrome_h) = Backend::measure_text(&backend, "ab", FontRole::Chrome);
+        let (editor_w, editor_h) = Backend::measure_text(&backend, "ab", FontRole::Editor);
+
+        assert_eq!(chrome_w, (2.0_f32 * 20.0).ceil() + 2.0);
+        assert_eq!(editor_w, (2.0_f32 * 8.0).ceil() + 2.0);
+        assert_eq!(chrome_h, 16.0);
+        assert_eq!(editor_h, 16.0);
     }
 
     /// `form_layout` is documented **LOCAL** (issue #505): `GtkBackend`'s

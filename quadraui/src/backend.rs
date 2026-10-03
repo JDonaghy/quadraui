@@ -2171,6 +2171,58 @@ pub trait Backend: sealed::Sealed {
         }
     }
 
+    /// Real `(width, height)`, in this backend's native units, of `text`
+    /// rendered in `role`'s font (issue #1132).
+    ///
+    /// Before this existed, an app building a `*Layout` for a primitive
+    /// with no `Backend::X_layout` entry point of its own — [`Dialog`]
+    /// and [`ContextMenu`] are the two in this crate; see
+    /// [`Dialog::measure_generic`] and
+    /// [`ContextMenu::measure_generic_width`]'s own docs for the exact
+    /// gap — had no portable way to ask "how wide does this label render
+    /// in the chrome font." It fell back to `char_width() * label.chars().count()`,
+    /// which is exactly right for TUI's fixed cell grid and exactly
+    /// wrong for a proportional chrome font (GTK's default `ui_font` is
+    /// `"Sans 11"`, macOS's is the CoreText system UI font) — the same
+    /// `#912` bug class [`Self::list_char_width`] exists to fix for
+    /// `ListView`, generalised to arbitrary text instead of one average
+    /// advance.
+    ///
+    /// Primitives whose paint already migrated onto `NativeSurface`
+    /// (`TabBar`, `MenuBar`, `Toolbar`, `StatusBar`, …) solved this
+    /// internally, years before this method existed: each one threads a
+    /// [`crate::primitives::layout_metrics::TextMeasure`] (or an inline
+    /// closure of the same shape) from its own backend module into the
+    /// shared `layout_metrics` function, so their width math was never
+    /// char-cell arithmetic in the first place — this method does not
+    /// change any of their call sites. It exists for everything above
+    /// that layer: an app computing a `Dialog`/`ContextMenu` `*Measure`
+    /// by hand, or a future primitive that needs the same seam without
+    /// re-deriving it per backend.
+    ///
+    /// D-014 (`docs/decisions/DECISIONS.md`) settles the TUI story as
+    /// **degrade, not full parity**: GUI backends return the font's real
+    /// shaped advance; TUI returns
+    /// [`crate::text_util::display_width`]'s cell count (same value
+    /// [`Self::char_width`]-based arithmetic already produced there, so
+    /// TUI layouts are bit-for-bit unchanged) with a `height` of `1.0`.
+    /// `role` is accepted but has nothing to select between on TUI — a
+    /// terminal cell grid has one font by definition (see
+    /// [`crate::FontRole`]'s module doc).
+    ///
+    /// No default: a monospace fallback (`char_width() * text.chars().count()`)
+    /// would quietly reproduce the exact bug this method exists to fix on
+    /// three of the four in-tree backends, the same reasoning
+    /// [`Self::list_char_width`] already documents for itself. Every
+    /// in-tree backend measures for real: `GtkBackend` via a scratch
+    /// `pango::Layout` built from the role's `FontDescription`,
+    /// `MacBackend` via `macos::text::measure_text` against
+    /// `chrome_font`/`current_font`, `WinBackend` via
+    /// `DWrite::measure_text` against `chrome_dwrite`/`dwrite` (falling
+    /// back to a `char_width`-scaled estimate before a surface attaches,
+    /// matching every other pre-attach degrade on that backend).
+    fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32);
+
     /// Width this backend reserves for its own native scrollbar overlay
     /// alongside scrollable content — e.g. a GTK `ScrolledWindow`'s
     /// overlay scrollbar, drawn on top of the content edge rather than

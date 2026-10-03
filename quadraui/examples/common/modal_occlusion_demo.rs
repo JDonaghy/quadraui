@@ -44,8 +44,8 @@
 
 use quadraui::{
     AppLogic, Backend, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure,
-    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    ToolbarItemMeasure, UiEvent, WidgetId,
+    FontRole, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
 };
 
 /// Id the dialog is registered under in the [`crate::ModalStack`]. The
@@ -114,14 +114,27 @@ impl ModalOcclusionDemo {
         let lh = m.line_height;
         let char_w = m.char_width;
         let viewport = backend.viewport();
+        let dialog = self.dialog();
+        // quadraui#1132: real per-label measurement via `Backend::
+        // measure_text` instead of a flat `char_w * 10.0` guess wide
+        // enough for both "OK" and "Cancel" on TUI's fixed grid but
+        // meaningless once the chrome font is proportional -- see
+        // `dialog_table_demo`'s `measure` for the same fix with more
+        // detail in its doc.
+        let button_width = dialog
+            .buttons
+            .iter()
+            .map(|b| backend.measure_text(&b.label, FontRole::Chrome).0)
+            .fold(0.0_f32, f32::max)
+            + char_w * 2.0;
         let measure = DialogMeasure {
             width: (viewport.width * 0.5).clamp(char_w * 24.0, char_w * 48.0),
             title_height: lh,
-            body_height: lh * self.dialog().body.len() as f32,
+            body_height: lh * dialog.body.len() as f32,
             table_height: 0.0,
             input_height: 0.0,
             button_row_height: lh,
-            button_width: char_w * 10.0,
+            button_width,
             button_gap: char_w * 2.0,
             padding: lh,
         };
@@ -132,8 +145,7 @@ impl ModalOcclusionDemo {
         // region disagree by one cell. Two body lines keep the total even
         // (padding 2 + title 1 + body 2 + buttons 1 = 6) and the two agree.
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        self.dialog()
-            .layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0))
+        dialog.layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0))
     }
 
     /// Row index whose band contains `y`, if any. Rows start at the top

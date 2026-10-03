@@ -1647,6 +1647,18 @@ impl Backend for TuiBackend {
         1.0
     }
 
+    /// `role` is ignored — a terminal cell grid has one font by
+    /// definition (see [`crate::FontRole`]'s module doc) — and `height`
+    /// is always one cell. `width` is [`display_width`]'s cell count,
+    /// the same value every TUI layout already derived from
+    /// `char_width() * text.chars().count()` before this method existed
+    /// (quadraui#1132, D-014: TUI's story is "degrade", i.e. stay
+    /// char-cell while GUI backends go proportional — this call site is
+    /// bit-for-bit unchanged).
+    fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
+        (display_width(text) as f32, 1.0)
+    }
+
     /// All-sentinel — see [`crate::backend::PlatformFontDefaults`]'s
     /// doc: a terminal cell grid has no font concept to default, the
     /// same structural reason [`Self::set_editor_font`]/
@@ -3916,6 +3928,10 @@ mod tests {
             1.0
         }
 
+        fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
+            (text.chars().count() as f32, 1.0)
+        }
+
         fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
             crate::backend::PlatformFontDefaults {
                 editor_family: String::new(),
@@ -4515,6 +4531,24 @@ mod tests {
         let handle = backend.modal_stack_handle();
         let _first = handle.borrow_mut();
         let _second = handle.borrow_mut(); // must panic: real double-borrow check
+    }
+
+    /// Issue #1132, D-014's "degrade" story: TUI's `measure_text` ignores
+    /// `role` (one font by definition on a terminal grid) and reports
+    /// [`display_width`]'s cell count for both — a CJK string must come
+    /// back wider than its `chars().count()` would suggest, same as
+    /// every other TUI cell-width call site.
+    #[test]
+    fn tui_backend_measure_text_uses_display_width_and_ignores_role() {
+        let backend = TuiBackend::new();
+
+        let (w, h) = Backend::measure_text(&backend, "ab日本", crate::FontRole::Chrome);
+        assert_eq!(w, 6.0, "2 ASCII + 2 double-width CJK cells = 6");
+        assert_eq!(h, 1.0);
+
+        let (chrome_w, _) = Backend::measure_text(&backend, "ab日本", crate::FontRole::Chrome);
+        let (editor_w, _) = Backend::measure_text(&backend, "ab日本", crate::FontRole::Editor);
+        assert_eq!(chrome_w, editor_w, "role has nothing to select on TUI");
     }
 
     /// Issue #1156: TUI has no font concept at all, so `default_fonts()`
