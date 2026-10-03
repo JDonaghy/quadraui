@@ -617,6 +617,31 @@ impl<A: AppLogic> WinDriver<A> {
         self.apply_outcome(outcome)
     }
 
+    /// Advance idle scheduling by calling [`AppLogic::tick`] directly,
+    /// mirroring [`crate::tui::testing::TuiDriver::tick`] /
+    /// [`crate::macos::testing::MacDriver::tick`] (quadraui#1264) — until
+    /// now `WinDriver` had no way to drive `tick` at all short of a real
+    /// `WM_TIMER`, which never fires in a headless test. Repaints on
+    /// redraw and latches `exited`, via the same [`Self::apply_outcome`]
+    /// plumbing [`Self::dispatch`] uses.
+    ///
+    /// Note this only exercises the `AppLogic::tick` half of the
+    /// scheduling loop, not whether a real Win32 `SetTimer`/`WM_TIMER`
+    /// round-trip would have called it on a live message loop in the
+    /// first place — see [`WinBackend::frame_requests`]/
+    /// [`WinBackend::pending_frame_delay`] for asserting on *that* half
+    /// without a live `HWND`.
+    pub fn tick(&mut self) -> Reaction {
+        if self.core.exited() {
+            return Reaction::Exit;
+        }
+        let reaction = {
+            let (backend, app) = self.core.parts_mut();
+            app.tick(backend)
+        };
+        self.apply_outcome(reaction.into())
+    }
+
     /// Shared outcome→[`Reaction`] bookkeeping [`Self::dispatch`] and
     /// [`Self::mouse_down`]/[`Self::mouse_move`]/[`Self::mouse_up`] (#741)
     /// all need: repaint on redraw, latch `exited` on exit. Thin wrapper
@@ -1402,5 +1427,68 @@ mod tests {
             "WinDriver::render must recover the dropped surface via \
              ensure_surface, same as a real EndDraw-failure recovery"
         );
+    }
+
+    /// An `AppLogic` whose `tick` counts its own calls and, on the
+    /// first one only, asks to be woken again — the minimal shape
+    /// [`WinDriver::tick`] (quadraui#1264) needs to exercise both halves
+    /// of the contract: that it actually calls `AppLogic::tick`, and
+    /// that it applies the returned `Reaction` the same way
+    /// `WinDriver::dispatch` applies a dispatched event's outcome.
+    /// `target_os`-gated: constructing a `WinDriver` at all needs a real
+    /// `HeadlessSurface` (see this module's doc).
+    #[cfg(target_os = "windows")]
+    struct TickCountingApp {
+        ticks: std::cell::Cell<u32>,
+    }
+
+    #[cfg(target_os = "windows")]
+    impl AppLogic for TickCountingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn crate::Backend, _area: ()) {}
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            Reaction::Continue
+        }
+
+        fn tick(&mut self, _backend: &mut dyn crate::Backend) -> Reaction {
+            let n = self.ticks.get() + 1;
+            self.ticks.set(n);
+            if n == 1 {
+                Reaction::RedrawAfter(Duration::from_millis(100))
+            } else {
+                Reaction::Continue
+            }
+        }
+    }
+
+    /// quadraui#1264's acceptance criterion: before this, `WinDriver` had
+    /// no `tick` method at all, so there was no way to drive
+    /// `AppLogic::tick` through it short of a real `WM_TIMER`, which
+    /// never fires in a headless test. RED before this landed (the
+    /// method didn't exist to call).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tick_calls_applogic_tick_and_applies_its_reaction() {
+        let mut driver = WinDriver::new(
+            TickCountingApp {
+                ticks: std::cell::Cell::new(0),
+            },
+            64,
+            64,
+        );
+
+        let reaction = driver.tick();
+        assert_eq!(
+            driver.app().ticks.get(),
+            1,
+            "tick() must call AppLogic::tick"
+        );
+        assert_eq!(reaction, Reaction::RedrawAfter(Duration::from_millis(100)));
+
+        let reaction = driver.tick();
+        assert_eq!(driver.app().ticks.get(), 2);
+        assert_eq!(reaction, Reaction::Continue);
     }
 }
