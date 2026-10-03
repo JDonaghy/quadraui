@@ -3512,6 +3512,71 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    /// #1131: the 2026-09-26 framework audit flagged "6 non-test
+    /// `todo!()` in `win/run.rs`" as unverified. Re-measured at this
+    /// commit there are 2 (the count has moved since the audit's
+    /// snapshot, not grown) — [`run`] and [`run_with`]'s
+    /// `#[cfg(not(target_os = "windows"))]` stand-ins a few lines above
+    /// this module, never reachable on an actual Windows build. This
+    /// source scan (same technique `tests/conformance/caps.rs` uses for
+    /// backend-honesty checks) pins both claims as a regression guard: a
+    /// future `todo!()` added to this file outside a `#[cfg(test)]`
+    /// module, with no `cfg(not(target_os = "windows"))` guard directly
+    /// above its function, fails this test instead of silently shipping
+    /// a reachable panic on Windows.
+    #[test]
+    fn every_non_test_todo_in_this_file_is_a_cfg_not_windows_stand_in() {
+        let src = include_str!("run.rs");
+        // Everything from the first `#[cfg(test)]` module onward is test
+        // code (verified by eye above: `mod tests`, `paste_dispatch_tests`,
+        // `text_selection_dispatch_tests`, `panic_guard_tests` are the
+        // only things left in the file after this point). Scanning only
+        // the prefix before it is what "non-test" means here.
+        let test_mod_start = src
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("this file must still have its `mod tests` block");
+        let non_test_src = &src[..test_mod_start];
+
+        let lines: Vec<&str> = non_test_src.lines().collect();
+        let mut todo_count = 0;
+        for (idx, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("todo!(") {
+                continue;
+            }
+            todo_count += 1;
+            // Walk back from the `todo!(` call to the nearest preceding
+            // `#[cfg(...)]` line (skipping the `fn` signature line and any
+            // doc comments in between) and require it to be the
+            // non-Windows guard.
+            let guard = lines[..idx]
+                .iter()
+                .rev()
+                .find(|l| l.trim_start().starts_with("#[cfg("))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "todo!() at non-test line {} has no preceding #[cfg(...)] guard at all",
+                        idx + 1
+                    )
+                });
+            assert_eq!(
+                guard.trim(),
+                r#"#[cfg(not(target_os = "windows"))]"#,
+                "todo!() at non-test line {} must be guarded by \
+                 #[cfg(not(target_os = \"windows\"))], found {:?} instead — \
+                 a todo!() reachable on a real Windows build must become a \
+                 real BackendError::Unsupported instead (#1131)",
+                idx + 1,
+                guard.trim()
+            );
+        }
+        assert_eq!(
+            todo_count, 2,
+            "expected exactly 2 non-test todo!() call sites in win/run.rs \
+             (run/run_with's non-Windows stand-ins) — if this changed, \
+             re-verify #1131's claim and update this test's expectation"
+        );
+    }
+
     #[test]
     fn new_sets_the_title() {
         let config = RunConfig::new("kubeui");
