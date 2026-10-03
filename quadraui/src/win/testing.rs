@@ -755,6 +755,34 @@ impl<A: AppLogic> WinDriver<A> {
         self.core.backend_mut()
     }
 
+    /// Force the backend's surface back to the "not attached" state a
+    /// genuine `EndDraw` failure (device lost / `D2DERR_RECREATE_TARGET`)
+    /// leaves it in, without needing to manufacture a real Direct2D error
+    /// to get there — the testing-infrastructure half of issue #1263.
+    ///
+    /// `WinBackend::surface`/`attach_surface`/`attach_headless` are all
+    /// `pub(crate)`, so before this, nothing outside quadraui itself
+    /// could reach the "had a surface, then lost it" state at all —
+    /// only the "never attached one in the first place" state (plain
+    /// `WinBackend::new()`, with no `WinDriver` involved). That gap is
+    /// why `draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout`
+    /// (`win::backend`'s own test module) could only prove the fallback
+    /// contract for the *never-attached* case — this method plus
+    /// [`Self::backend_mut`] lets a downstream regression test (in this
+    /// crate or a consumer) drive the *transient-loss* case the same
+    /// way: call this, then assert whatever `draw_*` fallback behaviour
+    /// the fix under test is supposed to guarantee against
+    /// [`Self::backend_mut`] directly, bypassing [`Self::render`] (which
+    /// would otherwise immediately paper over the dropped state via its
+    /// own `ensure_surface` call before any assertion gets to see it).
+    /// The next [`Self::render`] (or a direct `ensure_surface` call on
+    /// [`Self::backend_mut`]) recreates it again, exactly like the real
+    /// recovery path this simulates.
+    pub fn drop_surface(&mut self) {
+        #[cfg(target_os = "windows")]
+        self.core.backend_mut().drop_surface_for_testing();
+    }
+
     /// Access the underlying offscreen surface.
     pub fn surface(&self) -> &HeadlessSurface {
         &self.surface
@@ -1287,6 +1315,92 @@ mod tests {
             (divider_color.r, divider_color.g, divider_color.b),
             "frame 2 (after a caught panic in frame 1) must still paint — the \
              BeginDraw/EndDraw bracket must have stayed balanced despite the panic"
+        );
+    }
+
+    /// Issue #1263's testing-infrastructure ask: prove [`WinDriver::drop_surface`]
+    /// actually reaches the same `painted: false` fallback contract a real
+    /// `EndDraw` failure leaves `WinBackend` in — on a driver that *had* a
+    /// real surface attached, not just a bare `WinBackend::new()` that
+    /// never got one in the first place.
+    /// `win::backend::tests::draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout`
+    /// already covers that narrower (never-attached) case, in-crate only —
+    /// this is the downstream-shaped version of the actual reported gap:
+    /// a backend that *lost* a surface it once had.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn drop_surface_reaches_the_same_unpainted_fallback_a_real_end_draw_failure_does() {
+        use crate::Backend;
+
+        struct NoopApp;
+        impl AppLogic for NoopApp {
+            type AreaId = ();
+            fn render(&self, _backend: &mut dyn crate::Backend, _area: ()) {}
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let minimap = crate::primitives::minimap::Minimap {
+            id: crate::types::WidgetId::new("minimap"),
+            lines: (0..10)
+                .map(|i| crate::primitives::minimap::MinimapLine {
+                    text: format!("line {i}"),
+                    line_idx: i,
+                })
+                .collect(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 5,
+            total_buffer_lines: 10,
+        };
+        let rect = Rect::new(0.0, 0.0, 20.0, 64.0);
+
+        let mut driver = WinDriver::new(NoopApp, 64, 64);
+        let viewport = Viewport::new(64.0, 64.0, 1.0);
+
+        // Every real `draw_*` call happens inside a `begin_frame`/`end_frame`
+        // bracket (`render_frame`'s contract) — probing `draw_minimap`
+        // directly still has to honour that, or the underlying Direct2D
+        // render target (reused by `ensure_surface`'s recovery below, not
+        // recreated from scratch) is left in an undefined state outside
+        // its documented `BeginDraw`/`EndDraw` usage.
+        driver.backend_mut().begin_frame(viewport);
+        let before = driver.backend_mut().draw_minimap(rect, &minimap);
+        driver.backend_mut().end_frame();
+        assert!(
+            before.painted,
+            "sanity: a freshly-built WinDriver has a real surface attached"
+        );
+
+        driver.drop_surface();
+        driver.backend_mut().begin_frame(viewport);
+        let after = driver.backend_mut().draw_minimap(rect, &minimap);
+        driver.backend_mut().end_frame();
+        assert!(
+            !after.painted,
+            "drop_surface must reach the same `painted: false` fallback a \
+             real EndDraw failure leaves behind"
+        );
+        assert_eq!(
+            after.layout, before.layout,
+            "the fallback layout must still agree with the real paint's \
+             layout — same contract \
+             draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout \
+             proves in-crate"
+        );
+
+        // Recovery: the next `WinDriver::render` call's `ensure_surface`
+        // recreates the surface, exactly like the real recovery path
+        // (issue #805).
+        driver.render();
+        driver.backend_mut().begin_frame(viewport);
+        let recovered = driver.backend_mut().draw_minimap(rect, &minimap);
+        driver.backend_mut().end_frame();
+        assert!(
+            recovered.painted,
+            "WinDriver::render must recover the dropped surface via \
+             ensure_surface, same as a real EndDraw-failure recovery"
         );
     }
 }

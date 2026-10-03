@@ -1412,16 +1412,84 @@ mod win32 {
             }
         }
 
+        // Issue #1263: paint the real first frame into the swap chain
+        // *before* the window becomes visible, not after. `attach_surface`
+        // above only creates the `ID2D1HwndRenderTarget` — nothing has
+        // called `BeginDraw`/`Clear`/`EndDraw` on it yet, so the backing
+        // surface DWM would composite the instant `ShowWindow` (below)
+        // makes this window visible still holds whatever undefined
+        // contents a brand-new swap-chain backbuffer starts with
+        // (reported downstream as a flat, raw-OS-white minimap strip
+        // regardless of theme — see `WinBackend::draw_minimap`'s doc for
+        // why that symptom traces back to exactly this unpainted-first-
+        // frame gap, not a theme-wiring bug). `render_frame` — the same
+        // `begin_frame`/`app.render`/`end_frame` bracket `WM_PAINT`'s
+        // handler below runs — works on any `WinBackend` with *a*
+        // surface attached regardless of whether its `HWND` is visible
+        // yet (`EndDraw`'s `Present` writes into the backbuffer either
+        // way), so calling it here, while the window is still hidden,
+        // guarantees the current theme's background (and whatever
+        // `app.render` paints on top of it) is already the first thing
+        // DWM ever composites for this window — the standard mitigation
+        // for the Win32/Direct2D "first-frame white flash" class of bug.
+        //
+        // Routed through the same `super::guarded_call`/`ModalPumpGuard`
+        // bracket the `WM_PAINT` handler below uses, for the same
+        // reentrancy reason `attach_surface` above is guarded: `app.render`
+        // is arbitrary consumer code, and nothing yet guarantees it can't
+        // synchronously trigger a nested message on this thread. A `None`
+        // result (the guard already armed, which nothing before this
+        // point in `run_inner` can actually trigger) just means this
+        // priming frame is skipped — the first real `WM_PAINT` after
+        // `ShowWindow` below still recovers it, same as any other missed
+        // frame.
+        //
+        // One retry if `EndDraw` itself failed (device lost /
+        // `D2DERR_RECREATE_TARGET` — `end_frame`'s own doc): `ensure_surface`
+        // rebuilds the render target exactly the way the next `WM_PAINT`
+        // would, so a transient failure right here gets the same
+        // recovery a transient failure mid-session already gets, instead
+        // of this window showing with nothing painted after all. Bounded
+        // at one retry, not a loop until success — a persistently
+        // unavailable device (no GPU, broken driver) must never block
+        // the window from ever appearing; `Self::last_error`'s doc
+        // already documents this as a "recovered lazily, not
+        // immediately" contract, which a bounded retry upholds without
+        // turning into a hang.
+        {
+            // SAFETY: `state_ptr` is valid and not concurrently referenced
+            // here — same as the `attach_surface`/app-icon/smoke-timer
+            // borrows above and below.
+            let ws: &WindowState<A> = unsafe { &*state_ptr };
+            let _ = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
+                let viewport = run_state.backend.viewport();
+                let RunState { app, backend } = run_state;
+                super::render_frame(backend, app, viewport);
+                if matches!(
+                    Backend::last_error(backend),
+                    Some(crate::backend::BackendError::SurfaceLost)
+                ) && backend.ensure_surface().is_ok()
+                {
+                    let viewport = backend.viewport();
+                    super::render_frame(backend, app, viewport);
+                }
+            });
+        }
+
         // SAFETY: `hwnd` is the live window created above; both calls
         // take only a handle (plus, for `ShowWindow`, a plain show-command
         // enum) — no pointer.
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
-        // Forces the first `WM_PAINT` synchronously rather than waiting
-        // for it to reach the front of the message queue, so "opens a
-        // Win32 window with a cleared Direct2D surface" (#19's second
-        // acceptance criterion) is true by the time this function
-        // returns control to the message loop below, not just
-        // eventually.
+        // The priming render above already painted the real first frame
+        // into the surface while the window was still hidden (#1263), so
+        // this is now belt-and-suspenders rather than the primary
+        // mechanism it used to be: it still forces a synchronous repaint
+        // of whatever became invalid between the priming render and here
+        // (e.g. a nested nonclient-area recalculation), so "opens a Win32
+        // window with an already-painted Direct2D surface" (#19's second
+        // acceptance criterion, now strictly stronger than "cleared")
+        // stays true by the time this function returns control to the
+        // message loop below.
         //
         // SAFETY: same as `ShowWindow` immediately above.
         let _ = unsafe { UpdateWindow(hwnd) };
@@ -2835,6 +2903,121 @@ mod win32 {
             // handles (the `WM_CLOSE` arm above) — `LiveWindowApp::handle`
             // always resolves it to `Reaction::Exit`, so this ends the
             // message loop `runner`'s thread is pumping.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner.join();
+        }
+    }
+
+    /// Issue #1263: a real window must never report itself visible
+    /// (`IsWindowVisible`) before its first real frame has actually
+    /// painted — see `run_inner`'s priming-render comment, right before
+    /// its `ShowWindow` call, for the full rationale (the standard
+    /// mitigation for the Win32/Direct2D "first-frame white flash" class
+    /// of bug). This proves the *ordering* directly by racing a tight
+    /// polling thread against `IsWindowVisible` — rather than reading
+    /// back composited pixel colour, which `ID2D1HwndRenderTarget`'s own
+    /// presentation path makes unreliable to sample through plain GDI
+    /// `GetPixel` (it is not a GDI surface) — so this would have been
+    /// flaky-to-failing before the fix (`ShowWindow` ran strictly before
+    /// any paint) and is deterministic after it (the paint now runs
+    /// strictly before `ShowWindow`, on the same thread, with no
+    /// intervening yield point).
+    #[cfg(test)]
+    mod first_paint_before_show_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+        struct PaintFlagApp {
+            painted: Arc<AtomicBool>,
+        }
+
+        impl AppLogic for PaintFlagApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {
+                self.painted.store(true, Ordering::SeqCst);
+            }
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::WindowClose => Reaction::Exit,
+                    _ => Reaction::Continue,
+                }
+            }
+        }
+
+        /// Self-guarding (stderr diagnostic + early return, same posture
+        /// as `live_window_nchittest_tests` above) if the window never
+        /// becomes visible within the timeout — this test's contract is
+        /// "a live interactive window station", not every CI sandbox.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn window_is_never_visible_before_its_first_frame_has_painted() {
+            let painted = Arc::new(AtomicBool::new(false));
+            let app = PaintFlagApp {
+                painted: painted.clone(),
+            };
+            let title = format!(
+                "quadraui-first-paint-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::win::run::RunConfig::new(title.clone());
+
+            let runner = std::thread::spawn(move || run(app, config));
+
+            // Tight, unslept poll — this must catch `IsWindowVisible`
+            // flipping true as close to the instant it happens as
+            // possible; sleeping between checks (the other live-window
+            // tests' usual posture) would give `render` ample time to
+            // run regardless of which order the real code uses, erasing
+            // exactly the signal this test exists to catch.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let mut observed: Option<(HWND, bool)> = None;
+            loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    // SAFETY: `hwnd` is the handle `FindWindowW` just
+                    // returned as live.
+                    if unsafe { IsWindowVisible(hwnd) }.as_bool() {
+                        observed = Some((hwnd, painted.load(Ordering::SeqCst)));
+                        break;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
+
+            let Some((hwnd, painted_before_visible)) = observed else {
+                eprintln!(
+                    "quadraui: skipping \
+                     window_is_never_visible_before_its_first_frame_has_painted — \
+                     the test window never became visible within 10s (no \
+                     interactive window station on this host?)"
+                );
+                return;
+            };
+
+            assert!(
+                painted_before_visible,
+                "the window reported `IsWindowVisible` before \
+                 `AppLogic::render` ever ran — the swap chain's backbuffer \
+                 had nothing real painted into it the instant DWM could \
+                 first composite it, reopening issue #1263's white-flash \
+                 gap"
+            );
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // its normal user-close path.
             unsafe {
                 SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
             }
