@@ -388,6 +388,23 @@ release time.
   contributors at (`ARCHITECTURE.md`, `PRIMITIVE_RULES.md`,
   `CONSUMER_PATTERNS.md`, `TESTING.md`, `LESSONS.md`). All internal links
   updated; no content changed.
+- `TextInput`, `Toolbar`, `Editor` are `#[non_exhaustive]` unconditionally
+  (issue #1251, phase 2 of the v0.1.0 breaking batch) — the off-by-default
+  `strict-descriptors` feature #1108 added to let a consumer opt into
+  proving its own migration early is gone; there's nothing left to opt
+  into. coord-tui#119 and vimcode#1652 both migrated off exhaustive
+  struct literals ahead of this landing; `quadraui/tests/downstream_struct_literals.rs`'s
+  guards are inverted (assert the `new`/`with_*` builders cover every field
+  each consumer's literal used to set) rather than deleted, since the
+  external-literal-still-compiles shape they guarded is now impossible by
+  construction.
+- `gtk::draw_status_bar`'s `#[deprecated]` attribute (issue #1109) is
+  dropped — `vimcode`'s `src/gtk/mod.rs` test helper, its one external
+  caller, migrated off it, but `kubeui-gtk/src/main.rs`'s `draw` closure
+  (a bare `cr`/`layout` with no `GtkBackend` in scope) has no alternative
+  route to the shared paint (`CairoSurface` is `pub(crate)`), so this one
+  stays public and un-deprecated rather than following its siblings below
+  into `Removed`.
 
 ### Fixed
 
@@ -480,65 +497,30 @@ release time.
 
 ### Deprecated
 
-- `primitives::toast::{ToastStack, ToastItem, ToastAction}` and
-  `Backend::draw_toast_stack` (issue #1185) — the pre-#1185 single-action
-  toast shapes. This is **PR 1 of the rule-3 deprecate-then-remove pair**
-  (`CLAUDE.md` *Downstream consumers*): the three structs keep their exact
-  field sets and their public paths (`quadraui::ToastItem`,
-  `quadraui::primitives::toast::ToastItem`, …), so every existing struct
-  literal still compiles, and `Backend::draw_toast_stack` survives as a
-  forwarding default that converts with `ToastStack::to_overlay()` and
-  calls `draw_toast_overlay` — same box geometry, same hit regions, the
-  single action secondary-styled, no focus ring (covered by
-  `legacy_draw_toast_stack_shim_paints_like_draw_toast_overlay` and
-  `primitives::toast::legacy_compat_tests`). Replacements: `Toast`,
-  `ToastOverlay`, `ToastButton`, `Backend::draw_toast_overlay`. Issue
-  #1109 found zero uses of `ToastStack`/`draw_toast_stack` in coord-tui's
-  `main`, and zero uses of `ToastAction` in either consumer, but
-  `coord-tui` still constructs `ToastItem` directly (`src/app/mod.rs`),
-  which holds `ToastAction` through its own `action` field — so all three
-  structs and the trait method stay deprecated pending that migration.
-
-  **Downstream impact.** Blast-radius grep of both consumers' CI branches
-  (`grep -rn 'ToastItem\|ToastStack\|ToastAction\|draw_toast_stack'` over
-  `coord-tui/src` + `vimcode/src`):
-  - `coord-tui` — `src/app/mod.rs` (`ToastItem { … action: None … }` at two
-    call sites, `Vec<(ToastItem, …)>`, `ToastStack { … }`),
-    `src/app/dialogs.rs` (reads `item.title` / `item.body`),
-    `src/app/render.rs` (`backend.draw_toast_stack(…)`).
-  - `vimcode` — zero hits (migrated off `ToastStack`/`ToastItem`/
-    `ToastAction`/`draw_toast_stack` already; its `FrameOp::ToastStack` is
-    its own unrelated enum variant).
-
-  Every one of those still compiles against this PR — verified by running
-  the `downstream` job's own command, `cargo check --all-targets`, in each
-  consumer with its `quadraui` repointed at this branch: both exit 0, with
-  `deprecated` warnings only (that job sets `RUSTFLAGS: ""`, which is
-  exactly the policy split `CLAUDE.md` rule 3 describes). Consumer
-  migration PR is a follow-up in coord-tui, filed by the coordinator.
+- `Backend::draw_status_bar` (issue #819) — both known consumers migrated
+  off this positional hover/pressed shim ahead of issue #1251 (#1109's
+  "Remaining deprecated items" list), and every one of its #1251 siblings
+  (`draw_toolbar`, `draw_sidebar_panel`, `ShellApp::on_shell_event`) was
+  removed outright once that was confirmed. This one stays deprecated
+  instead, because the sealed milestone acceptance slices
+  `tests/acceptance/ms-11/{structural_parity,c0_paint_smoke}.rs` still
+  call it positionally and no PR may edit anything under
+  `tests/acceptance/` (see that method's own doc). Removal target:
+  whichever Gate A pass migrates those two slices off the positional
+  call, not before v0.2.0.
 - `primitives::tab_bar::TabBarHits` — the f64-tuple pre-D6 hit struct still
   returned by `Backend::draw_tab_bar` / `draw_tab_bar_icons` /
   `draw_tab_bar_with_chrome` / `tab_bar_layout` / `tab_bar_layout_icons` /
-  `tab_bar_layout_with_chrome`. This PR is the shim step only — it marks the
-  struct `#[deprecated]` without changing any of those six methods'
-  signatures; the eventual replacement is `TabBarLayout` (already real,
-  already `Rect`/`TabBarHit`-based, already what every in-tree rasteriser
-  computes before narrowing to `TabBarHits`). The six-method/four-backend
-  signature swap is separate, larger follow-up work — see
-  `primitives/tab_bar.rs`'s `TabBarHits` doc for why (two of the four
+  `tab_bar_layout_with_chrome`. Issue #1251 confirmed both known consumers
+  have zero remaining code-level uses of this type, but did not remove it
+  (unlike every other item on #1109's "Remaining deprecated items" list):
+  its removal is blocked on this crate's own unstarted six-method/four-
+  backend signature swap to `TabBarLayout` (already real, already
+  `Rect`/`TabBarHit`-based, already what every in-tree rasteriser computes
+  before narrowing to `TabBarHits`), not a lagging consumer migration —
+  see `primitives/tab_bar.rs`'s `TabBarHits` doc for why (two of the four
   backends construct it with no intermediate `TabBarLayout`). Tracked in
-  #823; matching `vimcode` consumer-migration issue to be filed alongside
-  this PR.
-- `primitives::editor::StyledSpan` — renamed to `EditorStyledSpan` (the
-  crate-root export was already using this name) to resolve a bare-name
-  clash with the unrelated `types::StyledSpan`. Old name kept as a
-  `#[deprecated]` `pub type` alias in `editor.rs`. PR 2 (shim removal),
-  tracked in #822.
-- `primitives::minimap::SyntaxSpan` — merged into the byte-identical
-  `MinimapSpan` (both were the same four-field struct, distinguished only
-  by which side of `aggregate_spans` produced them). Old name kept as a
-  `#[deprecated]` `pub type` alias, still re-exported at the crate root
-  behind `#[allow(deprecated)]`. PR 2 (shim removal), tracked in #822.
+  #823. Removal target: the PR that lands that swap, not before v0.2.0.
 
 ### Removed
 
@@ -591,10 +573,14 @@ release time.
   identical `gtk::` set **except** `gtk::draw_status_bar` (issue #1109):
   that one has a real consumer (vimcode's `src/gtk/mod.rs` calls
   `quadraui::gtk::draw_status_bar` directly in a test helper), so it
-  stays deprecated pending that migration; every other free function in
+  stayed deprecated pending that migration; every other free function in
   the list had zero uses in coord-tui's `main` and vimcode's `develop`.
   Replacement for all of them: the corresponding `Backend::draw_*` trait
-  method, which every in-tree call site already used.
+  method, which every in-tree call site already used. (`gtk::draw_status_bar`
+  itself: once that migration landed, issue #1251 dropped its
+  `#[deprecated]` attribute rather than removing it too — see the
+  `Changed` entry above for why `kubeui-gtk` keeps it un-deprecated and
+  public.)
 - `compose::key_map::{KeyMap, KeyContext}` (#473) — the "one convention
   #10" adopt-or-demote pass (#825) found zero constructors anywhere: no
   hit in this crate's own examples or tests beyond its own unit-test
@@ -609,3 +595,31 @@ release time.
   `FolderPickerController`, `BottomPanelController`,
   `TabGroupController`) each keep their public API — see the PR
   description for each one's recorded disposition.
+- `primitives::toast::{ToastStack, ToastItem, ToastAction}` and
+  `Backend::draw_toast_stack` (issue #1251, PR 2 of the #1185
+  deprecate-then-remove pair the `Deprecated` section above used to list)
+  — coord-tui#119 migrated its last call sites (`src/app/mod.rs`'s two
+  `ToastItem` construction sites, `src/app/render.rs`'s
+  `draw_toast_stack` call) onto `Toast`/`ToastOverlay`/`ToastButton`/
+  `Backend::draw_toast_overlay`; `vimcode` had zero uses already.
+  Replacements unchanged: `Toast`, `ToastOverlay`, `ToastButton`,
+  `Backend::draw_toast_overlay`.
+- `primitives::editor::StyledSpan` (renamed to `EditorStyledSpan`, issue
+  #822) and `primitives::minimap::SyntaxSpan` (merged into `MinimapSpan`,
+  issue #822) — PR 2 shim removals; both consumers had zero remaining
+  uses by the time coord-tui#119 / vimcode#1652 merged.
+- `ShellApp::on_shell_event` (the ctx-less panel-switch hook, issue #617)
+  — `on_shell_event_ctx`'s default implementation forwarded to this;
+  coord-tui#119 was its last override (moved the routing logic to a
+  plain `CoordApp::route_panel_changed` method `on_shell_event_ctx` now
+  calls directly), so the default is a plain no-op now. Replacement:
+  implement `ShellApp::on_shell_event_ctx` instead.
+- `Backend::draw_toolbar` and `Backend::draw_sidebar_panel` (the
+  positional hover/pressed shims, issue #819) — both coord-tui#119 and
+  vimcode#1652 moved to `draw_toolbar_interactive`/
+  `draw_toolbar_with_options` and `draw_sidebar_panel_interactive`.
+  `Backend::draw_status_bar`, the third sibling in this #819 family,
+  stays — see the `Deprecated` section above for why.
+- `strict-descriptors` cargo feature (issue #1251) — see the `Changed`
+  entry above; `TextInput`/`Toolbar`/`Editor` are `#[non_exhaustive]`
+  unconditionally now, so there is nothing left for the feature to gate.

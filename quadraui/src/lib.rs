@@ -447,18 +447,6 @@ pub use primitives::minimap::{
     MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing, MinimapSpan,
     VisibleMinimapLine,
 };
-// #822: `SyntaxSpan` was merged into `MinimapSpan` (byte-identical
-// four-field structs). `SyntaxSpan` survives as a `#[deprecated]` `pub
-// type` alias in `minimap.rs` — see that module's doc for why. Re-exported
-// here (rather than dropping the re-export) is the point: `vimcode`
-// constructs `quadraui::SyntaxSpan` directly with no version pin on this
-// crate. `#[allow(deprecated)]` because a `pub use` of a deprecated item
-// is itself a `deprecated`-lint use site, and this crate denies that
-// lint in-repo (`RUSTFLAGS: -D warnings`) — see CLAUDE.md's "the
-// `deprecated` lint is denied in-repo and allowed downstream" section
-// for why that split is deliberate.
-#[allow(deprecated)]
-pub use primitives::minimap::SyntaxSpan;
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
     HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit,
@@ -499,10 +487,15 @@ pub use primitives::status_bar::{
 };
 // `TabBarHits` is `#[deprecated]` (issue #823 — f64-tuple pre-D6 hit
 // struct; `TabBarLayout` is the eventual `Rect`/`TabBarHit` replacement).
-// `#[allow(deprecated)]` for the same reason as `SyntaxSpan` above: a `pub
-// use` of a deprecated item is itself a `deprecated`-lint use site, and
-// dropping the re-export would break `vimcode`, which constructs
-// `quadraui::TabBarHits` directly with no version pin on this crate.
+// `#[allow(deprecated)]` because a `pub use` of a deprecated item is
+// itself a `deprecated`-lint use site, and this crate denies that lint
+// in-repo (`RUSTFLAGS: -D warnings`) — see CLAUDE.md's "the `deprecated`
+// lint is denied in-repo and allowed downstream" section for why that
+// split is deliberate. Unlike every other item issue #1251 removed, this
+// one's removal is still blocked on real, separate follow-up work (the
+// six-method/four-backend signature swap to `TabBarLayout` — see
+// `TabBarHits`'s own doc), not a lagging consumer migration, so this
+// re-export stays.
 #[allow(deprecated)]
 pub use primitives::tab_bar::{
     tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarHit, TabBarHits,
@@ -525,13 +518,6 @@ pub use primitives::toast::{
     Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastMeasure,
     ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast,
 };
-// Pre-#1185 single-action toast shapes, kept re-exported at the crate
-// root under their original names so downstream `quadraui::ToastItem` /
-// `quadraui::ToastStack` / `quadraui::ToastAction` paths keep resolving
-// while consumers migrate (CLAUDE.md rule 3). Removed with the structs
-// themselves — see `primitives::toast`'s legacy section.
-#[allow(deprecated)]
-pub use primitives::toast::{ToastAction, ToastItem, ToastStack};
 pub use primitives::toolbar::{
     Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemKind, ToolbarItemMeasure,
     ToolbarLayout, ToolbarPaintOptions, ToolbarVAlign, VisibleToolbarItem,

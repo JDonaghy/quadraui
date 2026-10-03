@@ -8,12 +8,21 @@
 //! applying the already-fixed quadraui#791 shape uniformly) found while
 //! unifying `gtk::draw_status_bar`, `macos::status_bar::draw_status_bar`
 //! and `win::status_bar::draw_status_bar` into one implementation. This
-//! module now only carries the deprecated [`draw_status_bar`]
-//! compatibility shim over the shared [`super::surface::CairoSurface`]
-//! adapter (#1072 — consolidated from this module's own private
-//! `RawGtkStatusBarSurface`). `MIN_GAP_PX` stays put — it's still
-//! `GtkBackend::status_bar_layout`'s own no-paint measurer constant,
-//! untouched by this migration.
+//! module now only carries [`draw_status_bar`] over the shared
+//! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from
+//! this module's own private `RawGtkStatusBarSurface`).
+//!
+//! `draw_status_bar` was `#[deprecated]` pending two migrations (#1109,
+//! #1251): `vimcode`'s `src/gtk/mod.rs` test helper, its last direct
+//! external caller, has since moved on. It stays un-deprecated and
+//! public, though — [`super::surface::CairoSurface`] is `pub(crate)`,
+//! so `kubeui-gtk/src/main.rs`'s `draw` closure (a bare `cr`/`layout`
+//! with no `GtkBackend` in scope) has no other way to reach the shared
+//! paint, and that is a real, permanent in-tree caller, not a lagging
+//! migration — see rule 8: nothing to deprecate when there's no
+//! non-breaking alternative to deprecate *toward*. `MIN_GAP_PX` stays
+//! put too — it's still `GtkBackend::status_bar_layout`'s own no-paint
+//! measurer constant, untouched by either migration.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -22,24 +31,15 @@ use crate::primitives::status_bar::{StatusBar, StatusBarLayout};
 use crate::theme::Theme;
 use crate::types::WidgetId;
 
-/// 16-pixel minimum gap between left and right segment groups, matching
-/// the existing vimcode GTK behaviour. Still used by
-/// `GtkBackend::status_bar_layout`'s own no-paint measurer — the shared
-/// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
-/// its own independent copy of the same value (see that module's doc).
-pub const MIN_GAP_PX: f32 = 16.0;
-
-/// Deprecated free-function shim (#860, CLAUDE.md rule 8): reproduces
-/// the pre-#860 signature exactly for any external caller that held a
-/// direct `quadraui::gtk::draw_status_bar` reference rather than going
-/// through [`crate::Backend::draw_status_bar`] — the sanctioned entry
-/// point, and the one every in-tree call site already uses, which is why
-/// this shim has no in-repo caller left to trip the `-D warnings`-denied
-/// `deprecated` lint.
-#[deprecated(
-    since = "0.0.1",
-    note = "call `Backend::draw_status_bar` instead — this free function is a compatibility shim over the shared #860 implementation"
-)]
+/// The sanctioned entry point for a caller holding a bare `cr`/`layout`
+/// with no [`crate::gtk::backend::GtkBackend`] in scope —
+/// [`super::surface::CairoSurface`] is `pub(crate)`, so this free
+/// function is how `kubeui-gtk/src/main.rs` (and any future such
+/// caller) reaches the shared
+/// [`crate::primitives::status_bar::native_surface_paint::paint`].
+/// Every in-tree `Backend::draw_status_bar_interactive` call site goes
+/// through [`crate::gtk::backend::GtkBackend`] instead, which owns its
+/// own `CairoSurface`.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_status_bar(
     cr: &Context,
@@ -70,6 +70,13 @@ pub fn draw_status_bar(
         pressed_id,
     )
 }
+
+/// 16-pixel minimum gap between left and right segment groups, matching
+/// the existing vimcode GTK behaviour. Still used by
+/// `GtkBackend::status_bar_layout`'s own no-paint measurer — the shared
+/// [`crate::primitives::status_bar::native_surface_paint::paint`] carries
+/// its own independent copy of the same value (see that module's doc).
+pub const MIN_GAP_PX: f32 = 16.0;
 
 #[cfg(test)]
 mod tests {
@@ -111,10 +118,10 @@ mod tests {
     /// equivalent for.
     ///
     /// Exercises the shared paint through [`super::super::surface::CairoSurface`]
-    /// directly rather than the deprecated [`draw_status_bar`] shim, so
-    /// this test doesn't trip the `-D warnings`-denied `deprecated` lint
-    /// (CLAUDE.md rule 3; mirrors `gtk::panel`'s identical test-migration
-    /// note).
+    /// directly rather than [`draw_status_bar`] — both reach the same
+    /// `native_surface_paint::paint` body, so this is just the more
+    /// direct of the two equally-valid paths (mirrors `gtk::panel`'s
+    /// identical test shape).
     fn round_trip_at(x: f64, y: f64) {
         let (surface, pango_layout) = headless_cairo_and_pango();
         let cr = CairoContext::new(&surface).expect("Context::new");

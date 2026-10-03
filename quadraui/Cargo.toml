@@ -48,17 +48,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lib]
 
 [features]
-# Marks a small set of "paint-time
-# snapshot" primitive descriptors (`TextInput`, `Toolbar`, `Editor` so
-# far) `#[non_exhaustive]` via `cfg_attr`, purely so a consumer can prove
-# its own migration off exhaustive struct literals is complete by
-# building with this feature on. Off by default — turning it on does
-# nothing to this crate's own public API surface for anyone who doesn't
-# opt in. The `new(..)`/`with_*`/`Default` constructors these
-# descriptors ship are additive and always on, no feature needed. No dependency changes — this only toggles an
-# attribute, so it pulls in nothing new.
-strict-descriptors = []
-
 # PTY + vt100 + scrollback engine. No rasteriser — pairs with any backend.
 # Enables `quadraui::terminal_engine`. Pulls in portable-pty and vt100.
 terminal = ["dep:portable-pty", "dep:vt100"]

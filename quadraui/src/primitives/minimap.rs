@@ -150,18 +150,6 @@ pub struct MinimapSpan {
     pub color: Color,
 }
 
-/// Pre-#822 name for the raw syntax-highlight span passed into
-/// [`aggregate_spans`]. `SyntaxSpan` and [`MinimapSpan`] were
-/// byte-identical four-field structs — one named for the *input* to
-/// `aggregate_spans`, the other for its *output* — with nothing in the
-/// type system actually preventing either from being used as the other
-/// (all fields `pub`, no invariant enforced by construction). Merged
-/// into a single type per `PRIMITIVE_RULES.md` rule 8; this alias keeps
-/// old call sites (and the `quadraui::SyntaxSpan` crate-root re-export)
-/// source-compatible.
-#[deprecated(since = "0.0.1", note = "merged into `MinimapSpan` (#822)")]
-pub type SyntaxSpan = MinimapSpan;
-
 /// The region [`aggregate_spans`] folds raw [`MinimapSpan`]s into.
 ///
 /// `rows` / `cols` bound the output grid (spans outside it are dropped);

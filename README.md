@@ -123,15 +123,12 @@ real apps under development.
 - `win` — Windows rasteriser (`quadraui::win::draw_*`), via Direct2D +
   DirectWrite (`windows-rs`). Compiles on every host — only the real
   WinAPI calls inside are `cfg(target_os = "windows")`-gated.
-- `strict-descriptors` — not a backend. Off by default, pulls in no
-  dependencies, and adds no API: it only applies `#[non_exhaustive]` to the
-  paint-time snapshot descriptors that have grown `new()`/`with_*()`/
-  `Default` builders (`TextInput`, `Toolbar`, `Editor` so far), so a
-  consumer can *prove* its migration off exhaustive struct literals is
-  complete by building with the feature on. Issue #1251 is the follow-up
-  that makes the attribute unconditional — the actual breaking change —
-  once `coord-tui` and `vimcode` have migrated. Enabling it early costs
-  nothing for anyone who doesn't opt in.
+quadraui's paint-time snapshot descriptors that have grown `new()`/
+`with_*()`/`Default` builders (`TextInput`, `Toolbar`, `Editor`) are
+`#[non_exhaustive]` unconditionally as of issue #1251 (the v0.1.0
+breaking batch, phase 2) — the formerly off-by-default
+`strict-descriptors` feature that let a consumer opt into proving its
+own migration early is gone; there's nothing left to opt into.
 
 quadraui is not published to crates.io — a bare `version = "0.0.1"` crates.io
 dependency line will not resolve for anyone. Both of this repo's real

@@ -3,10 +3,11 @@
 //!
 //! ## Why this file exists
 //!
-//! Several of quadraui's public primitives are all-`pub`-field "paint-time
-//! snapshot" structs, and external consumers build them with **exhaustive
-//! struct literals** — no `..base`, no `..Default::default()`. The live
-//! example that motivated this file is `vimcode`'s
+//! Three of quadraui's public primitives — `TextInput`, `Toolbar`,
+//! `Editor` — used to be all-`pub`-field "paint-time snapshot" structs,
+//! and external consumers built them with **exhaustive struct
+//! literals** — no `..base`, no `..Default::default()`. The live
+//! example that motivated this file was `vimcode`'s
 //! `src/render.rs::sc_commit_message_to_text_input()`:
 //!
 //! ```text
@@ -14,113 +15,83 @@
 //! /home/john/src/vimcode/src/render.rs:13998:    TextInput {
 //! ```
 //!
-//! ```ignore
-//! TextInput {
-//!     id: WidgetId::new("sc:commit_input"),
-//!     lines,
-//!     cursor_line,
-//!     cursor_col,
-//!     placeholder: ...,
-//!     scroll_offset: 0,
-//!     scroll_col: 0,
-//!     has_focus: sc.commit_input_active,
-//! }
-//! ```
+//! Rust gives no way to grow such a struct without breaking that call
+//! site: adding a **private** field makes every external
+//! `TextInput { .. }` literal fail with `E0451` (and `..Default::default()`
+//! does *not* rescue it), and adding a **public** field makes the same
+//! literal fail with `E0063` (`missing field`). Issue #833 hit both
+//! variants in succession, each time discovered only at review.
 //!
-//! Rust gives no way to grow such a struct without breaking that call site:
+//! ## #1108 → #1251: builders, then `#[non_exhaustive]` for real
 //!
-//! * adding a **private** field makes every external `TextInput { .. }`
-//!   literal fail with `E0451`, and `..Default::default()` does *not*
-//!   rescue it;
-//! * adding a **public** field makes the same literal fail with `E0063`
-//!   (`missing field`).
+//! #1108 gave all three types a `new(..)`/`with_*`/`Default` builder
+//! trio covering every field, so both consumers could migrate off
+//! exhaustive literals ahead of the break, and added an off-by-default
+//! `strict-descriptors` feature a consumer could opt into early to
+//! *prove* its own migration was complete. #1251 (the v0.1.0 breaking
+//! batch, phase 2) is the follow-up that actually lands the break, once
+//! `coord-tui`#119 and `vimcode`#1652 had merged their migrations: all
+//! three structs are `#[non_exhaustive]` unconditionally now, and the
+//! `strict-descriptors` feature is gone — there's nothing left to opt
+//! into.
 //!
-//! Issue #833 hit both variants in succession, each time discovered only
-//! at review. An integration test is the right home for the guard because
-//! `tests/` compiles as a **separate crate** — exactly the position a
-//! downstream consumer is in — so it catches the private-field (`E0451`)
-//! case too, which an in-crate `#[cfg(test)] mod tests` cannot see.
+//! ## What this file guards now
 //!
-//! ## How to react when this file stops compiling
+//! An external crate (this one, compiling as a separate crate — exactly
+//! the position a downstream consumer is in) can no longer build
+//! `TextInput`/`Toolbar`/`Editor` with a struct literal at all, so the
+//! old "literal still compiles" guard is impossible to keep. Inverted
+//! per issue #1251: these tests instead assert that the `new(..)`/
+//! `with_*`/`Default` builders cover every field each consumer's own
+//! struct literal used to set — i.e. the migration path #1108 offered
+//! was never missing a field. If a future field addition has no
+//! matching `with_*`, that is caught here before it reaches a consumer
+//! that has no struct-literal escape hatch left to fall back on.
 //!
-//! It is not a test to "fix" by adding the new field here. A compile error
-//! here means the change is **breaking for real consumers**. Follow rule 8:
-//! prefer a non-breaking shape (put the new state on a wrapper type, as
-//! `TextEditor` does for #833's selection anchor and undo history); if it
-//! genuinely must break, land the consumer migration alongside it and put
-//! the `grep` output in the PR's `## Downstream impact` section.
-//!
-//! ## Interaction with `strict-descriptors` (quadraui#1108)
-//!
-//! `TextInput`/`Toolbar`/`Editor` are `#[cfg_attr(feature =
-//! "strict-descriptors", non_exhaustive)]` as of #1108 — an off-by-default
-//! feature a consumer opts into to prove its own migration off exhaustive
-//! literals (onto the `new(..)`/`with_*`/`Default` constructors those
-//! three types now also ship) is complete. Every test below that builds
-//! one of those three types with an exhaustive literal is therefore
-//! `#[cfg(not(feature = "strict-descriptors"))]`: under the default
-//! feature set (what every real consumer builds against today, and what
-//! this repo's own CI exercises) the guard above still holds exactly as
-//! described; building `--features strict-descriptors` is a deliberate,
-//! separate proof that the literal-free path exists, not a claim that
-//! today's literal has become non-breaking. quadraui#1251 is what
-//! actually flips the attribute on unconditionally — at that point these
-//! `cfg`s (and the tests they guard) are what gets deleted or inverted,
-//! per this file's module doc above.
+//! `AppShellLayout` (below) is a different primitive, untouched by
+//! #1108/#1251 — it keeps its exhaustive-literal guard unchanged.
 
-#[cfg(not(feature = "strict-descriptors"))]
-use quadraui::{TextInput, WidgetId};
+use quadraui::WidgetId;
 
-/// `TextInput`'s exhaustive struct literal, transcribed from vimcode's
-/// `sc_commit_message_to_text_input()` — field-for-field, and pointedly
-/// with no `..base`. If this stops compiling, so does that consumer.
-///
-/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
-/// doc, *Interaction with `strict-descriptors`*.
+/// `TextInput`'s builder chain, covering every field vimcode's
+/// `sc_commit_message_to_text_input()` used to set via an exhaustive
+/// struct literal (transcribed field-for-field from that call site)
+/// before #1251 made `#[non_exhaustive]` unconditional.
 #[test]
-#[cfg(not(feature = "strict-descriptors"))]
-fn text_input_exhaustive_struct_literal_still_compiles() {
-    let ti = TextInput {
-        id: WidgetId::new("sc:commit_input"),
-        lines: vec!["subject".to_string(), String::new(), "body".to_string()],
-        cursor_line: 2,
-        cursor_col: 4,
-        placeholder: Some("Message (press c)".to_string()),
-        scroll_offset: 0,
-        scroll_col: 0,
-        has_focus: true,
-    };
+fn text_input_builder_covers_every_consumer_set_field() {
+    use quadraui::TextInput;
+
+    let ti = TextInput::new(WidgetId::new("sc:commit_input"))
+        .with_lines(vec![
+            "subject".to_string(),
+            String::new(),
+            "body".to_string(),
+        ])
+        .with_cursor_line(2)
+        .with_cursor_col(4)
+        .with_placeholder("Message (press c)")
+        .with_scroll_offset(0)
+        .with_scroll_col(0)
+        .with_has_focus(true);
 
     assert_eq!(ti.lines.len(), 3);
     assert_eq!((ti.cursor_line, ti.cursor_col), (2, 4));
+    assert_eq!(ti.placeholder.as_deref(), Some("Message (press c)"));
     assert!(ti.has_focus);
 }
 
 /// The editing state #833 added is reachable **without** touching
-/// `TextInput`'s field list: an external crate wraps the same
-/// exhaustively-constructed value in a `TextEditor` and edits it.
-///
-/// This is the other half of the guard above — it proves the wrapper is a
-/// real substitute for the fields that were *not* added, rather than the
-/// literal above being kept alive by amputating the feature.
-///
-/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
-/// doc, *Interaction with `strict-descriptors`*.
+/// `TextInput`'s field list: an external crate wraps a builder-
+/// constructed value in a `TextEditor` and edits it.
 #[test]
-#[cfg(not(feature = "strict-descriptors"))]
 fn editing_is_available_without_new_text_input_fields() {
-    use quadraui::{EditOp, TextEditor};
+    use quadraui::{EditOp, TextEditor, TextInput};
 
-    let mut ed = TextEditor::new(TextInput {
-        id: WidgetId::new("sc:commit_input"),
-        lines: vec!["hello".to_string()],
-        cursor_line: 0,
-        cursor_col: 0,
-        placeholder: None,
-        scroll_offset: 0,
-        scroll_col: 0,
-        has_focus: true,
-    });
+    let mut ed = TextEditor::new(
+        TextInput::new(WidgetId::new("sc:commit_input"))
+            .with_lines(vec!["hello".to_string()])
+            .with_has_focus(true),
+    );
 
     // Select "he", type over it, then undo — all three capabilities the
     // issue asked for, none of them a new `TextInput` field.
@@ -141,9 +112,10 @@ fn editing_is_available_without_new_text_input_fields() {
     assert_eq!(painted.id, WidgetId::new("sc:commit_input"));
 }
 
-/// `Toolbar`'s exhaustive struct literal, transcribed from `coord-tui`'s
-/// `src/app/sidebar.rs::sidebar_panel()` — again pointedly with no
-/// `..base`. Four such literals live in `coord-tui` and two in `vimcode`:
+/// `Toolbar`'s builder chain, covering every field `coord-tui`'s
+/// `src/app/sidebar.rs::sidebar_panel()` used to set via an exhaustive
+/// struct literal. Four such literals lived in `coord-tui` and two in
+/// `vimcode`:
 ///
 /// ```text
 /// $ grep -rn 'Toolbar {' ~/src/coord-tui/src ~/src/vimcode/src
@@ -155,24 +127,18 @@ fn editing_is_available_without_new_text_input_fields() {
 /// /home/john/src/vimcode/src/render.rs:13824:    Toolbar {
 /// ```
 ///
-/// Issue #913 first tried to grow `Toolbar` by an `icon_overrides` field
-/// and then, when that broke those literals with `E0063`, to mark the
-/// struct `#[non_exhaustive]` — which breaks them with `E0639` instead
-/// (`#[non_exhaustive]` rejects bare struct-literal syntax outright,
-/// `..Default::default()` included). CI's *downstream consumers* job
-/// caught the second attempt; this test is what catches the next one
-/// here, before it costs a merge-gate round trip.
-///
-/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
-/// doc, *Interaction with `strict-descriptors`*.
+/// Issue #913 first tried to grow `Toolbar` by an `icon_overrides`
+/// field and then, when that broke those literals with `E0063`, to mark
+/// the struct `#[non_exhaustive]` — which would have broken them with
+/// `E0639` instead, before either consumer had a builder to fall back
+/// on. Both migrated to the builder below ahead of #1251 flipping the
+/// attribute on for real.
 #[test]
-#[cfg(not(feature = "strict-descriptors"))]
-fn toolbar_exhaustive_struct_literal_still_compiles() {
+fn toolbar_builder_covers_every_consumer_set_field() {
     use quadraui::{Toolbar, ToolbarButton};
 
-    let bar = Toolbar {
-        id: WidgetId::new("sidebar-action-bar"),
-        buttons: vec![ToolbarButton::Action {
+    let bar = Toolbar::new(WidgetId::new("sidebar-action-bar")).with_buttons(vec![
+        ToolbarButton::Action {
             id: WidgetId::new("sidebar:refresh"),
             label: "Refresh".to_string(),
             icon: None,
@@ -180,10 +146,8 @@ fn toolbar_exhaustive_struct_literal_still_compiles() {
             enabled: true,
             is_active: false,
             tooltip: String::new(),
-        }],
-        bg: None,
-        focused_index: None,
-    };
+        },
+    ]);
 
     assert_eq!(bar.buttons.len(), 1);
     assert_eq!(bar.focused_index, None);
@@ -191,23 +155,14 @@ fn toolbar_exhaustive_struct_literal_still_compiles() {
 
 /// #913's Nerd-Font glyph + ASCII fallback pairs are reachable **without**
 /// touching `Toolbar`'s field list: an external crate keeps building the
-/// same exhaustive literal above and composes a `ToolbarIcons` table
-/// beside it.
-///
-/// This is the other half of the guard — it proves the side table is a
-/// real substitute for the field that was *not* added, rather than the
-/// literal above being kept alive by dropping the feature.
-///
-/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
-/// doc, *Interaction with `strict-descriptors`*.
+/// same builder-constructed value above and composes a `ToolbarIcons`
+/// table beside it.
 #[test]
-#[cfg(not(feature = "strict-descriptors"))]
 fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
     use quadraui::{Icon, Toolbar, ToolbarButton, ToolbarIcons};
 
-    let bar = Toolbar {
-        id: WidgetId::new("sidebar-action-bar"),
-        buttons: vec![ToolbarButton::Action {
+    let bar = Toolbar::new(WidgetId::new("sidebar-action-bar")).with_buttons(vec![
+        ToolbarButton::Action {
             id: WidgetId::new("sidebar:refresh"),
             label: "Refresh".to_string(),
             icon: Some("~".to_string()),
@@ -215,10 +170,8 @@ fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
             enabled: true,
             is_active: false,
             tooltip: String::new(),
-        }],
-        bg: None,
-        focused_index: None,
-    };
+        },
+    ]);
     let icons =
         ToolbarIcons::new().with(WidgetId::new("sidebar:refresh"), Icon::new("\u{f021}", "R"));
 
@@ -239,9 +192,9 @@ fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
     assert_eq!(ToolbarIcons::new().apply(&bar, true), bar);
 }
 
-/// `Editor`'s exhaustive struct literal, transcribed from vimcode's
-/// `render.rs::to_q_editor()` — field-for-field, and pointedly with no
-/// `..base`:
+/// `Editor`'s builder chain, covering every field vimcode's
+/// `render.rs::to_q_editor()` used to set via an exhaustive struct
+/// literal:
 ///
 /// ```text
 /// $ grep -n 'Editor {$' ~/src/vimcode/src/render.rs
@@ -252,59 +205,46 @@ fn nerd_font_fallbacks_are_available_without_new_toolbar_fields() {
 /// at all.) #968 added scrollbar-suppression as
 /// `quadraui::EditorPaintOptions` + `gtk::draw_editor_with_options`
 /// *instead of* a new field directly on `Editor`, specifically to keep
-/// this literal (and the one real consumer building it) compiling
-/// untouched — see that primitive's module doc and
-/// `docs/PRIMITIVE_RULES.md` rule 8. If this test stops compiling, a
-/// future change grew `Editor`'s field list the breaking way instead.
-///
-/// `#[cfg(not(feature = "strict-descriptors"))]`: see this file's module
-/// doc, *Interaction with `strict-descriptors`*.
+/// this call site's migration a pure builder-chain swap rather than a
+/// field-list change — see that primitive's module doc and
+/// `docs/PRIMITIVE_RULES.md` rule 8. Fields left at [`Editor::new`]'s
+/// own default (`lines`, `extra_cursors`, `selection`,
+/// `extra_selections`, `yank_highlight`, `scroll_top`, `scroll_left`,
+/// `total_lines`, `max_col`, `show_active_bg`, `has_git_diff`,
+/// `has_breakpoints`, `diagnostic_gutter`, `code_action_lines`,
+/// `bracket_match_positions`, `active_indent_col`, `tabstop`) need no
+/// `with_*` call — only fields that differ from the constructor's
+/// default do, same as the real migration.
 #[test]
-#[cfg(not(feature = "strict-descriptors"))]
-fn editor_exhaustive_struct_literal_still_compiles() {
-    use quadraui::{Editor, EditorCursor, EditorCursorPos, EditorCursorShape, Rect, WidgetId};
-    use std::collections::{HashMap, HashSet};
+fn editor_builder_covers_every_consumer_set_field() {
+    use quadraui::{Editor, EditorCursor, EditorCursorPos, EditorCursorShape, Rect};
 
-    let ed = Editor {
-        id: WidgetId::new("editor:0"),
-        rect: Rect::new(0.0, 0.0, 80.0, 24.0),
-        lines: Vec::new(),
-        cursor: Some(EditorCursor {
+    let ed = Editor::new(WidgetId::new("editor:0"), Rect::new(0.0, 0.0, 80.0, 24.0))
+        .with_cursor(EditorCursor {
             pos: EditorCursorPos {
                 view_line: 0,
                 col: 0,
             },
             shape: EditorCursorShape::Bar,
-        }),
-        extra_cursors: Vec::new(),
-        selection: None,
-        extra_selections: Vec::new(),
-        yank_highlight: None,
-        scroll_top: 0,
-        scroll_left: 0,
-        total_lines: 0,
-        max_col: 0,
-        gutter_char_width: 4,
-        is_active: true,
-        show_active_bg: false,
-        has_git_diff: false,
-        has_breakpoints: false,
-        diagnostic_gutter: HashMap::new(),
-        code_action_lines: HashSet::new(),
-        bracket_match_positions: Vec::new(),
-        active_indent_col: None,
-        tabstop: 4,
-        cursorline: true,
-        lightbulb_glyph: '!',
-    };
+        })
+        .with_gutter_char_width(4)
+        .with_is_active(true)
+        .with_cursorline(true)
+        .with_lightbulb_glyph('!');
 
     assert!(ed.is_active);
     assert_eq!(ed.tabstop, 4);
+    assert_eq!(ed.gutter_char_width, 4);
+    assert!(ed.cursorline);
+    assert_eq!(ed.lightbulb_glyph, '!');
 }
 
 /// `AppShellLayout`'s exhaustive struct literal, transcribed from vimcode's
 /// `render.rs::bare_shell_layout()` — field-for-field, and pointedly with
-/// no `..base` (`AppShellLayout` has no `Default` impl):
+/// no `..base` (`AppShellLayout` has no `Default` impl). Unlike
+/// `TextInput`/`Toolbar`/`Editor` above, `AppShellLayout` was not part of
+/// #1108/#1251's builder migration — it stays exhaustive-literal built,
+/// so this guard is unchanged:
 ///
 /// ```text
 /// $ grep -rn "AppShellLayout {" ~/src/vimcode/src ~/src/coord-tui/src
@@ -350,8 +290,8 @@ fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
 
 // ── `Backend::draw_toolbar*` call shapes (issue #260) ──────────────────
 
-/// The *call shapes* both known consumers use to paint a `Toolbar`, as
-/// an external crate — the other half of the struct-literal guards
+/// The *call shapes* a known consumer uses to paint a `Toolbar`, as an
+/// external crate — the other half of the builder-coverage guards
 /// above. A struct can break a consumer by growing a field; a trait
 /// method or free function breaks one just as hard by growing a
 /// **parameter** (`E0061`), and nothing in `tests/` caught that until
@@ -362,15 +302,20 @@ fn app_shell_layout_exhaustive_struct_literal_still_compiles() {
 /// $ grep -rn 'draw_toolbar' ~/src/coord-tui/src ~/src/vimcode/src
 /// /home/john/src/coord-tui/src/app/render.rs:396:   backend.draw_toolbar_interactive(bar_rect, &toolbar, &InteractionState::from_parts(..))
 /// /home/john/src/coord-tui/src/app/dialogs.rs:6435: backend.draw_toolbar_interactive(bar_rect, &toolbar, &InteractionState::new())
-/// /home/john/src/vimcode/src/render.rs:12341:       b.draw_toolbar(rect, &bar, hovered.as_ref(), pressed.as_ref())
 /// ```
+///
+/// (`vimcode`'s positional `draw_toolbar(rect, &bar, hovered, pressed)`
+/// call — the third call shape this module used to cover — migrated to
+/// `draw_toolbar_interactive` alongside its #1251 builder migration;
+/// `Backend::draw_toolbar` itself was removed in the same issue, once
+/// that was the only remaining caller.)
 ///
 /// `ToolbarVAlign` reaches the rasteriser through
 /// [`quadraui::ToolbarPaintOptions`] + `draw_toolbar_with_options`
 /// instead — a *new* method beside the old ones, per `CLAUDE.md`'s
-/// *Downstream consumers* rule 2 — so all three call sites above keep
+/// *Downstream consumers* rule 2 — so both call sites above keep
 /// compiling untouched. This test fails to compile if a future change
-/// grows any of them again.
+/// grows either of them again.
 #[cfg(feature = "tui")]
 mod toolbar_paint_call_shapes {
     use quadraui::tui::testing::TuiDriver;
@@ -380,7 +325,7 @@ mod toolbar_paint_call_shapes {
     };
 
     /// Paints one toolbar into a 3-row slot, through whichever of the
-    /// three public entry points `call_shape` selects.
+    /// two public entry points `call_shape` selects.
     struct ToolbarPainter {
         call_shape: CallShape,
     }
@@ -389,17 +334,11 @@ mod toolbar_paint_call_shapes {
     enum CallShape {
         /// coord-tui's shape: `(rect, bar, &InteractionState)`.
         Interactive,
-        /// vimcode's shape: `(rect, bar, hovered, pressed)` (deprecated).
-        Positional,
         /// #260's new shape: the above plus `ToolbarPaintOptions`.
         WithOptions(ToolbarVAlign),
     }
 
     fn bar() -> Toolbar {
-        // This module is about the three `draw_toolbar*` *call shapes*,
-        // not about exhaustive-literal construction (that's the other
-        // tests in this file), so it builds via `Toolbar::new`/`with_*`
-        // rather than the literal above — unaffected by `strict-descriptors`.
         Toolbar::new(WidgetId::new("downstream-bar")).with_buttons(vec![ToolbarButton::Action {
             id: WidgetId::new("downstream:go"),
             label: "Go".to_string(),
@@ -423,8 +362,6 @@ mod toolbar_paint_call_shapes {
                 CallShape::Interactive => {
                     backend.draw_toolbar_interactive(rect, &bar, &InteractionState::new())
                 }
-                #[allow(deprecated)]
-                CallShape::Positional => backend.draw_toolbar(rect, &bar, None, None),
                 CallShape::WithOptions(valign) => backend.draw_toolbar_with_options(
                     rect,
                     &bar,
@@ -456,14 +393,8 @@ mod toolbar_paint_call_shapes {
         assert_eq!(painted_row(CallShape::Interactive), 0);
     }
 
-    /// vimcode's positional (deprecated, still working) call shape.
-    #[test]
-    fn vimcode_positional_call_still_paints() {
-        assert_eq!(painted_row(CallShape::Positional), 0);
-    }
-
-    /// #260's opt-in: the new method moves the painted row, and the two
-    /// shims above agree with `ToolbarVAlign::Top` (the default).
+    /// #260's opt-in: the new method moves the painted row, and the
+    /// shim above agrees with `ToolbarVAlign::Top` (the default).
     #[test]
     fn with_options_moves_the_painted_row_and_defaults_to_top() {
         assert_eq!(painted_row(CallShape::WithOptions(ToolbarVAlign::Top)), 0);

@@ -119,15 +119,11 @@ pub use sidebar_panel::gtk_sidebar_panel_layout;
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::gtk_split_layout;
 pub use split_tree::gtk_split_tree_layout;
-// `draw_status_bar` is still `#[deprecated]`, but — unlike every other
-// per-backend `draw_*` free-function shim in this module, all removed by
-// issue #1109 (zero uses in coord-tui's `main` and vimcode's `develop`)
-// — it has a real consumer: vimcode's `src/gtk/mod.rs` calls
-// `quadraui::gtk::draw_status_bar` directly in a test helper. See that
-// issue's "Remaining deprecated items" table. `#[allow(deprecated)]`
-// because a `pub use` of a deprecated item is itself a `deprecated`-lint
-// use site, and this crate denies that lint in-repo.
-#[allow(deprecated)]
+// `draw_status_bar` stays public and un-deprecated (issue #1251 dropped
+// the `#[deprecated]` attribute #1109 had put on it, once `vimcode`'s
+// `src/gtk/mod.rs` test helper — its one external caller — migrated
+// off it): `kubeui-gtk/src/main.rs` still calls it directly, and has no
+// alternative — see `status_bar.rs`'s module doc.
 pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 pub use tab_bar::{
     draw_tab_bar, draw_tab_bar_icons, draw_tab_bar_icons_with_chrome, draw_tab_bar_with_chrome,
