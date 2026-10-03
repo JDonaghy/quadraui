@@ -2607,6 +2607,7 @@ impl Backend for WinBackend {
                 tree,
                 self.current_line_height,
                 self.nerd_fonts_enabled,
+                &self.current_theme,
             );
             return;
         }
@@ -3001,6 +3002,7 @@ impl Backend for WinBackend {
                 bar,
                 icons,
                 hovered_close_tab,
+                &self.current_theme,
             );
         }
         // No surface/DWrite yet — compute the real layout via the same
@@ -3038,6 +3040,7 @@ impl Backend for WinBackend {
                 bar,
                 icons,
                 hovered_close_tab,
+                &self.current_theme,
             );
         }
         // See `draw_tab_bar_icons`'s doc.
@@ -3738,6 +3741,7 @@ impl Backend for WinBackend {
                 editor,
                 self.current_char_width,
                 self.current_line_height,
+                &self.current_theme,
             );
         }
         // No surface/DWrite yet — paint nothing and report no cursor
@@ -3945,11 +3949,10 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let layout = super::split::win_split_layout(rect, split);
-            // `Theme::default()`, not `self.current_theme` — preserves
-            // the pre-#864 `win::split::draw_split` behaviour exactly
-            // (see that module's doc, "# Theme" section: `WinBackend`
-            // has no live theme wired through to split chrome yet).
-            let theme = crate::theme::Theme::default();
+            // `self.current_theme`, not `Theme::default()` (issue
+            // #1261) — the live theme `Backend::set_theme` writes, same
+            // as every other rasteriser in this file.
+            let theme = self.current_theme;
             crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
             return layout;
         }
@@ -3985,12 +3988,10 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let layout = super::split_tree::win_split_tree_layout(rect, tree);
-            // `Theme::default()`, not `self.current_theme` — preserves
-            // the pre-#863 `win::split_tree::draw_split_tree` behaviour
-            // exactly (see that module's doc, "# Theme" section:
-            // `WinBackend` has no live theme wired through to
-            // split-tree chrome yet).
-            let theme = crate::theme::Theme::default();
+            // `self.current_theme`, not `Theme::default()` (issue
+            // #1261) — the live theme `Backend::set_theme` writes, same
+            // as every other rasteriser in this file.
+            let theme = self.current_theme;
             crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
             return layout;
         }
@@ -4157,12 +4158,10 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let line_height = self.current_line_height;
             let layout = super::panel::win_panel_layout(rect, panel, line_height);
-            // `Theme::default()`, not `self.current_theme` — preserves
-            // the pre-#859 `win::panel::draw_panel` behaviour exactly
-            // (see `win::panel`'s module doc, "# Theme" section:
-            // `WinBackend` has no live theme wired through to panel
-            // chrome yet).
-            let theme = crate::theme::Theme::default();
+            // `self.current_theme`, not `Theme::default()` (issue
+            // #1261) — the live theme `Backend::set_theme` writes, same
+            // as `draw_toast_overlay` above.
+            let theme = self.current_theme;
             crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
             return layout;
         }
@@ -4519,13 +4518,10 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let line_height = self.current_line_height;
-            // `Theme::default()`, not `self.current_theme` — preserves
-            // the pre-#862 `win::sidebar_panel::draw_sidebar_panel`
-            // behaviour exactly (it delegated to `win::toolbar::draw_toolbar`,
-            // which has never taken a live theme — see this primitive's
-            // `native_surface_paint` module doc, divergence 4, and
-            // `WinBackend::draw_panel`'s identical note).
-            let theme = crate::theme::Theme::default();
+            // `self.current_theme`, not `Theme::default()` (issue
+            // #1261) — the live theme `Backend::set_theme` writes, same
+            // as `WinBackend::draw_panel` above.
+            let theme = self.current_theme;
             let mut surface = ChromeSurface { backend: self };
             return crate::primitives::sidebar_panel::native_surface_paint::paint(
                 panel,
@@ -7289,6 +7285,398 @@ mod tests {
             (px.r, px.g, px.b),
             (custom_bg.r, custom_bg.g, custom_bg.b),
             "find/replace panel background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `draw_editor` used to build its own
+    /// `Theme::default()` instead of reading `WinBackend::current_theme`
+    /// — a dark-themed app got a light editor background regardless of
+    /// `:colorscheme`/`set_theme`. Same pixel-probe pattern as
+    /// quadraui#789's `set_theme_reaches_the_activity_bar` et al.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_editor() {
+        use crate::primitives::editor::Editor;
+        use crate::theme::Theme;
+        use crate::types::{Color, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 80;
+        const H: u32 = 40;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0x77, 0x88, 0x99);
+        assert_ne!(
+            custom_bg,
+            Theme::default().background,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            background: custom_bg,
+            ..Theme::default()
+        });
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let editor = Editor::new(WidgetId::new("editor"), rect);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let _ = backend.draw_editor(rect, &editor);
+        backend.end_frame();
+
+        let px = surface.pixel_at(W / 2, H / 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "editor background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `draw_tree` (the Explorer sidebar's own
+    /// content rasteriser) used to build its own `Theme::default()`
+    /// instead of reading `WinBackend::current_theme`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_tree() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 80;
+        const H: u32 = 40;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0xaa, 0xbb, 0xcc);
+        assert_ne!(
+            custom_bg,
+            Theme::default().tab_bar_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            tab_bar_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        let tree = flat_tree(1);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.draw_tree(rect, &tree);
+        backend.end_frame();
+
+        // Sample past the single row's band — still inside the tree's
+        // own background fill, clear of any row chrome.
+        let px = surface.pixel_at(W / 2, H - 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "Explorer sidebar (tree) background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `paint_tab_bar_icons_from_layout` used to
+    /// build its own `Theme::default()` instead of reading
+    /// `WinBackend::current_theme`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_tab_bar() {
+        use crate::theme::Theme;
+        use crate::types::Color;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 24;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_bg = Color::rgb(0x33, 0x66, 0x99);
+        assert_ne!(
+            custom_bg,
+            Theme::default().tab_bar_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            tab_bar_bg: custom_bg,
+            ..Theme::default()
+        });
+
+        #[allow(deprecated)]
+        let tab_bar = TabBar {
+            id: WidgetId::new("tab-bar"),
+            tabs: Vec::new(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: false,
+            compact: false,
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        #[allow(deprecated)]
+        let _ = backend.draw_tab_bar(rect, &tab_bar, None);
+        backend.end_frame();
+
+        let px = surface.pixel_at(W / 2, H / 2);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_bg.r, custom_bg.g, custom_bg.b),
+            "tab bar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `draw_panel`'s title-bar chrome used to
+    /// hardcode `Theme::default()` — see this fn's pre-fix comment,
+    /// "preserves the pre-#859 behaviour exactly".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_panel() {
+        use crate::primitives::panel::Panel;
+        use crate::theme::Theme;
+        use crate::types::{Color, StyledText, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 60;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_separator = Color::rgb(0x12, 0x99, 0x34);
+        assert_ne!(
+            custom_separator,
+            Theme::default().separator,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            separator: custom_separator,
+            ..Theme::default()
+        });
+
+        let panel = Panel {
+            id: WidgetId::new("panel"),
+            title: Some(StyledText::plain("Terminal")),
+            actions: Vec::new(),
+            accent: None,
+            collapsed: false,
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_panel(rect, &panel);
+        backend.end_frame();
+
+        let tb = layout
+            .title_bar_bounds
+            .expect("panel has a title, so a title bar is reserved");
+        let px = surface.pixel_at(
+            (tb.x + tb.width / 2.0) as u32,
+            (tb.y + tb.height / 2.0) as u32,
+        );
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_separator.r, custom_separator.g, custom_separator.b),
+            "panel title-bar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `draw_sidebar_panel_interactive`'s
+    /// embedded toolbar chrome used to hardcode `Theme::default()` — see
+    /// this fn's pre-fix comment, "preserves the pre-#862 behaviour
+    /// exactly".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_sidebar_panel_toolbar() {
+        use crate::theme::Theme;
+        use crate::types::{Color, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 60;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_header_bg = Color::rgb(0x55, 0x11, 0x77);
+        assert_ne!(
+            custom_header_bg,
+            Theme::default().header_bg,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            header_bg: custom_header_bg,
+            ..Theme::default()
+        });
+
+        let panel = crate::primitives::sidebar_panel::SidebarPanel {
+            id: WidgetId::new("sidebar-panel"),
+            toolbar: Some(crate::primitives::toolbar::Toolbar {
+                id: WidgetId::new("toolbar"),
+                buttons: Vec::new(),
+                bg: None,
+                focused_index: None,
+            }),
+            toolbar_height: Some(24.0),
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let interaction = crate::interaction::InteractionState::default();
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_sidebar_panel_interactive(rect, &panel, &interaction);
+        backend.end_frame();
+
+        let tb = layout
+            .toolbar_bounds
+            .expect("panel has a toolbar, so a toolbar slot is reserved");
+        let px = surface.pixel_at(
+            (tb.x + tb.width / 2.0) as u32,
+            (tb.y + tb.height / 2.0) as u32,
+        );
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_header_bg.r, custom_header_bg.g, custom_header_bg.b),
+            "sidebar panel toolbar background must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `draw_split`'s divider chrome used to
+    /// hardcode `Theme::default()` — see this fn's pre-fix comment,
+    /// "has no live theme wired through to split chrome yet".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_split() {
+        use crate::primitives::split::{Split, SplitDirection};
+        use crate::theme::Theme;
+        use crate::types::{Color, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 60;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_separator = Color::rgb(0x44, 0x22, 0x88);
+        assert_ne!(
+            custom_separator,
+            Theme::default().separator,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            separator: custom_separator,
+            ..Theme::default()
+        });
+
+        let split = Split {
+            id: WidgetId::new("split"),
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
+        };
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_split(rect, &split);
+        backend.end_frame();
+
+        let db = layout.divider_bounds;
+        let px = surface.pixel_at(
+            (db.x + db.width / 2.0) as u32,
+            (db.y + db.height / 2.0) as u32,
+        );
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_separator.r, custom_separator.g, custom_separator.b),
+            "split divider must reflect the live theme, not `Theme::default()`",
+        );
+    }
+
+    /// Issue #1261 acceptance: `draw_split_tree`'s divider chrome used
+    /// to hardcode `Theme::default()` — see this fn's pre-fix comment,
+    /// "has no live theme wired through to split-tree chrome yet".
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_theme_reaches_the_split_tree() {
+        use crate::primitives::split::SplitDirection;
+        use crate::primitives::split_tree::SplitTree;
+        use crate::theme::Theme;
+        use crate::types::{Color, WidgetId};
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 100;
+        const H: u32 = 60;
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        let custom_separator = Color::rgb(0x66, 0x33, 0x99);
+        assert_ne!(
+            custom_separator,
+            Theme::default().separator,
+            "test fixture bug: the probe colour must differ from the default theme's"
+        );
+        backend.set_theme(Theme {
+            separator: custom_separator,
+            ..Theme::default()
+        });
+
+        let tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.5,
+            SplitTree::leaf(WidgetId::new("left")),
+            SplitTree::leaf(WidgetId::new("right")),
+        );
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.draw_split_tree(rect, &tree);
+        backend.end_frame();
+
+        let div = layout
+            .dividers
+            .first()
+            .expect("one divider between two leaves");
+        let (cx, cy) = match div.direction {
+            SplitDirection::Horizontal => (
+                div.position + div.thickness / 2.0,
+                div.cross_start + div.cross_size / 2.0,
+            ),
+            SplitDirection::Vertical => (
+                div.cross_start + div.cross_size / 2.0,
+                div.position + div.thickness / 2.0,
+            ),
+        };
+        let px = surface.pixel_at(cx as u32, cy as u32);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (custom_separator.r, custom_separator.g, custom_separator.b),
+            "split-tree divider must reflect the live theme, not `Theme::default()`",
         );
     }
 

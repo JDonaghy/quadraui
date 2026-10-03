@@ -17,9 +17,13 @@
 //! DirectWrite type in their signature — so they compile and run
 //! everywhere, including a plain `cargo test --features win` on Linux.
 //! `super::mod`'s `mod tab_bar;` is no longer whole-module gated; see
-//! `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
-//! colours come from `Theme::default()` rather than a live `WinBackend`
-//! theme field.
+//! `backend.rs`'s module docs.
+//!
+//! Takes the live theme as a `&Theme` parameter (issue #1261, mirroring
+//! quadraui#789's fix for `draw_menu_bar`/`draw_activity_bar`/etc.) — the
+//! caller ([`crate::win::WinBackend::draw_tab_bar_icons`] /
+//! `draw_tab_bar_icons_layout`) passes `&self.current_theme`, the same
+//! field `Backend::set_theme` writes.
 //!
 //! Scope for #25: no [`crate::TabChrome`] / bracket-frame support (the
 //! `Backend` trait gives `draw_tab_bar_with_chrome` /
@@ -241,9 +245,19 @@ pub fn draw_tab_bar_icons(
     bar: &TabBar,
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
+    theme: &Theme,
 ) -> TabBarHits {
     let (layout, corrected_scroll_offset, available_cols) = pixel_layout(dwrite, rect, bar, icons);
-    paint_tab_bar_icons_from_layout(target, dwrite, rect, bar, icons, hovered_close_tab, &layout);
+    paint_tab_bar_icons_from_layout(
+        target,
+        dwrite,
+        rect,
+        bar,
+        icons,
+        hovered_close_tab,
+        &layout,
+        theme,
+    );
     hits_from_layout(rect, bar, &layout, corrected_scroll_offset, available_cols)
 }
 
@@ -261,9 +275,19 @@ pub fn draw_tab_bar_icons_layout(
     bar: &TabBar,
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
+    theme: &Theme,
 ) -> TabBarLayout {
     let layout = compute_layout(dwrite, rect, bar, icons);
-    paint_tab_bar_icons_from_layout(target, dwrite, rect, bar, icons, hovered_close_tab, &layout);
+    paint_tab_bar_icons_from_layout(
+        target,
+        dwrite,
+        rect,
+        bar,
+        icons,
+        hovered_close_tab,
+        &layout,
+        theme,
+    );
     layout
 }
 
@@ -281,8 +305,8 @@ fn paint_tab_bar_icons_from_layout(
     icons: &[Option<TabIcon>],
     hovered_close_tab: Option<usize>,
     layout: &TabBarLayout,
+    theme: &Theme,
 ) {
-    let theme = Theme::default();
     let _ = fill_rect(target, rect, theme.tab_bar_bg);
 
     let close_w = close_glyph_width(dwrite, bar);
@@ -407,8 +431,9 @@ pub fn draw_tab_bar(
     rect: Rect,
     bar: &TabBar,
     hovered_close_tab: Option<usize>,
+    theme: &Theme,
 ) -> TabBarHits {
-    draw_tab_bar_icons(target, dwrite, rect, bar, &[], hovered_close_tab)
+    draw_tab_bar_icons(target, dwrite, rect, bar, &[], hovered_close_tab, theme)
 }
 
 /// Draw a [`TabBar`] with no per-tab icons, returning [`TabBarLayout`]
@@ -421,8 +446,9 @@ pub fn draw_tab_bar_layout(
     rect: Rect,
     bar: &TabBar,
     hovered_close_tab: Option<usize>,
+    theme: &Theme,
 ) -> TabBarLayout {
-    draw_tab_bar_icons_layout(target, dwrite, rect, bar, &[], hovered_close_tab)
+    draw_tab_bar_icons_layout(target, dwrite, rect, bar, &[], hovered_close_tab, theme)
 }
 
 // #1078: every test below paints through a real `DWrite`/`HeadlessSurface`
@@ -488,7 +514,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_tab_bar(target, &dwrite, rect, &bar, None);
+                draw_tab_bar(target, &dwrite, rect, &bar, None, &Theme::default());
             })
             .expect("paint tab bar");
 
@@ -550,7 +576,14 @@ mod tests {
         let mut painted = None;
         surface
             .paint(|target| {
-                painted = Some(draw_tab_bar(target, &dwrite, rect, &bar, None));
+                painted = Some(draw_tab_bar(
+                    target,
+                    &dwrite,
+                    rect,
+                    &bar,
+                    None,
+                    &Theme::default(),
+                ));
             })
             .expect("paint");
         let painted = painted.expect("draw_tab_bar ran");
@@ -577,7 +610,14 @@ mod tests {
         let mut painted = None;
         surface
             .paint(|target| {
-                painted = Some(draw_tab_bar_layout(target, &dwrite, rect, &bar, None));
+                painted = Some(draw_tab_bar_layout(
+                    target,
+                    &dwrite,
+                    rect,
+                    &bar,
+                    None,
+                    &Theme::default(),
+                ));
             })
             .expect("paint");
         let painted = painted.expect("draw_tab_bar_layout ran");

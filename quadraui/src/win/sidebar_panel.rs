@@ -7,8 +7,10 @@
 //! for the four named divergences found while unifying
 //! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
 //! and `win::sidebar_panel::draw_sidebar_panel` into one implementation
-//! (including divergence 4: this backend never wired a live `Theme`
-//! through to the embedded toolbar — preserved as-is, not fixed here).
+//! (divergence 4 was this backend never wiring a live `Theme` through to
+//! the embedded toolbar — fixed by issue #1261:
+//! `WinBackend::draw_sidebar_panel_interactive` now passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes).
 //! This module now only carries [`win_sidebar_panel_layout`] (pure
 //! layout, still needed by `WinBackend::sidebar_panel_layout` for
 //! no-paint hit-test queries); the deprecated `draw_sidebar_panel`
