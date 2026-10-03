@@ -1343,10 +1343,32 @@ impl WinBackend {
     /// vimcode inline minimize/maximize/close buttons are ordinary
     /// `action_id`-bearing status-bar segments drawn into the title-bar
     /// band. See the section doc above.
-    fn register_status_bar_segment_zones(&mut self, layout: &StatusBarLayout) {
+    ///
+    /// Unlike [`Self::register_menu_bar_item_zones`]/
+    /// [`Self::register_command_center_zones`], `StatusBar::layout`/
+    /// `layout_padded` (`primitives/status_bar.rs`) returns bounds in
+    /// **bar-local** coordinates — origin `(0, 0)` at the bar's own
+    /// top-left, by design (see `compose::status_bar_interaction::
+    /// StatusBarInteraction::hit_test`, which subtracts the bar's own
+    /// `x`/`y` from an incoming click position for exactly this reason).
+    /// `rect` is the same absolute `Rect` the caller passed into
+    /// `draw_status_bar_interactive`, so every `bounds` here must be
+    /// translated by `rect.x`/`rect.y` before being handed to
+    /// `register_zone`, which — like `nc_hit_test`'s `z.bounds.contains`
+    /// check — compares against absolute, window-space coordinates
+    /// (quadraui#1259).
+    fn register_status_bar_segment_zones(&mut self, rect: Rect, layout: &StatusBarLayout) {
         for (bounds, hit) in &layout.hit_regions {
             if let StatusBarHit::Segment(id) = hit {
-                self.register_zone(id.clone(), *bounds);
+                self.register_zone(
+                    id.clone(),
+                    Rect::new(
+                        rect.x + bounds.x,
+                        rect.y + bounds.y,
+                        bounds.width,
+                        bounds.height,
+                    ),
+                );
             }
         }
     }
@@ -2859,7 +2881,7 @@ impl Backend for WinBackend {
             // Harmless outside the band: `nc_hit_test` only treats a
             // zone as an exclusion when it falls inside the registered
             // `TITLE_BAR_DRAG_ZONE`.
-            self.register_status_bar_segment_zones(&layout);
+            self.register_status_bar_segment_zones(rect, &layout);
             return layout;
         }
         // No surface/DWrite yet — compute the real layout via the same
@@ -2874,7 +2896,7 @@ impl Backend for WinBackend {
             rect,
             bar,
         );
-        self.register_status_bar_segment_zones(&layout);
+        self.register_status_bar_segment_zones(rect, &layout);
         layout
     }
 
@@ -6443,12 +6465,8 @@ mod tests {
             ],
         };
         let interaction = crate::interaction::InteractionState::new();
-        let layout = Backend::draw_status_bar_interactive(
-            &mut b,
-            Rect::new(600.0, 0.0, 200.0, 32.0),
-            &bar,
-            &interaction,
-        );
+        let status_rect = Rect::new(600.0, 0.0, 200.0, 32.0);
+        let layout = Backend::draw_status_bar_interactive(&mut b, status_rect, &bar, &interaction);
         let (close_rect, hit) = layout
             .hit_regions
             .iter()
@@ -6457,13 +6475,83 @@ mod tests {
             })
             .expect("close segment must be a registered hit region");
         let _ = hit;
+        // quadraui#1259: `close_rect` is bar-local (the layout's own,
+        // documented contract — see `register_status_bar_segment_zones`'s
+        // doc). The probe point must be derived independently of that
+        // bar-local layout by adding `status_rect`'s own absolute origin
+        // back in, not by reusing whatever the (potentially still buggy)
+        // registered zone reports — otherwise a future regression of this
+        // exact "local vs. absolute" shape could ship past this test
+        // again undetected.
         let (cx, cy) = (
-            close_rect.x + close_rect.width / 2.0,
-            close_rect.y + close_rect.height / 2.0,
+            status_rect.x + close_rect.x + close_rect.width / 2.0,
+            status_rect.y + close_rect.y + close_rect.height / 2.0,
         );
-        // On the close button: must reach the app as a normal click.
+        // On the close button's real, absolute screen position: must
+        // reach the app as a normal click, not get swallowed as a
+        // caption drag.
         assert_eq!(b.nc_hit_test(cx, cy), Some(false));
         assert_eq!(b.nc_hit_test(10.0, 16.0), Some(true));
+    }
+
+    /// quadraui#1259: the regression above with a non-zero `rect.x`/
+    /// `rect.y` specifically targeted — the exact gap that let the bug
+    /// ship past `draw_status_bar_interactive_registers_its_own_segment_
+    /// zones_inside_the_band` above, whose non-zero `rect.x` alone wasn't
+    /// enough because its probe point was derived from the same
+    /// (buggy) bar-local layout the production code also mis-registered.
+    /// This test instead asserts directly on the *registered* zone's
+    /// `bounds`, bypassing `nc_hit_test` band containment entirely, so it
+    /// cannot pass "for the wrong reason."
+    #[test]
+    fn register_status_bar_segment_zones_translates_bar_local_bounds_by_rect_origin() {
+        let mut b = WinBackend::new();
+        let bar = StatusBar {
+            id: WidgetId::new("titlebar:controls"),
+            left_segments: vec![],
+            right_segments: vec![crate::primitives::status_bar::StatusBarSegment {
+                text: "X".into(),
+                fg: crate::types::Color::rgb(255, 255, 255),
+                bg: crate::types::Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: Some(WidgetId::new("titlebar:close")),
+            }],
+        };
+        let interaction = crate::interaction::InteractionState::new();
+        // Both x and y non-zero, matching vimcode#1656's measured
+        // real-world geometry (a controls bar anchored near the window's
+        // right edge).
+        let status_rect = Rect::new(850.0, 4.0, 150.0, 28.0);
+        let layout = Backend::draw_status_bar_interactive(&mut b, status_rect, &bar, &interaction);
+        let (close_rect, _) = layout
+            .hit_regions
+            .iter()
+            .find(|(_, hit)| {
+                matches!(hit, StatusBarHit::Segment(id) if *id == WidgetId::new("titlebar:close"))
+            })
+            .expect("close segment must be a registered hit region");
+
+        let registered = b
+            .zones
+            .iter()
+            .find(|z| z.id == WidgetId::new("titlebar:close"))
+            .expect("close segment zone must be registered")
+            .bounds;
+
+        // The registered zone's bounds must be `status_rect`'s absolute
+        // origin plus the layout's bar-local bounds — not the bar-local
+        // bounds verbatim (the pre-fix behaviour, which left the zone
+        // overlapping whatever was painted at the left edge of the band
+        // instead of the button's real position near the right edge).
+        assert_eq!(registered.x, status_rect.x + close_rect.x);
+        assert_eq!(registered.y, status_rect.y + close_rect.y);
+        assert_eq!(registered.width, close_rect.width);
+        assert_eq!(registered.height, close_rect.height);
+        assert!(
+            registered.x > 0.0,
+            "regression guard: bar-local bounds alone would be well under \
+             status_rect.x's 850.0, not reflecting the real absolute position"
+        );
     }
 
     /// Same regression for `Backend::draw_command_center` — the
