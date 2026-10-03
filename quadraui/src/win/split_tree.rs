@@ -24,9 +24,10 @@
 //!
 //! # Theme
 //!
-//! `WinBackend` does not yet carry a live [`Theme`] — see `win::status_bar`'s
-//! module doc for the "placeholder until a later issue wires the app's
-//! real theme through" posture this module shares.
+//! `WinBackend::draw_split_tree` passes `&self.current_theme` to the
+//! shared [`crate::primitives::split_tree::native_surface_paint::paint`]
+//! (issue #1261) — the same live theme `Backend::set_theme` writes, the
+//! same shape `win::status_bar`'s module doc documents.
 
 #[cfg(test)]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;

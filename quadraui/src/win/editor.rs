@@ -9,8 +9,12 @@
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod editor;` and `backend.rs`'s
-//! module docs. See `win::status_bar`'s module doc for why colours come
-//! from `Theme::default()` rather than a live `WinBackend` theme field.
+//! module docs.
+//!
+//! Takes the live theme as a `&Theme` parameter (issue #1261, mirroring
+//! quadraui#789's fix for `draw_menu_bar`/`draw_activity_bar`/etc.) — the
+//! caller ([`crate::win::WinBackend::draw_editor`]) passes
+//! `&self.current_theme`, the same field `Backend::set_theme` writes.
 //!
 //! # Scope for #26
 //!
@@ -64,8 +68,8 @@ pub fn draw_editor(
     editor: &Editor,
     cell_width: f32,
     line_height: f32,
+    theme: &Theme,
 ) -> EditorPaintResult {
-    let theme = Theme::default();
     let rect = editor.rect;
     let layout = editor.layout(rect, cell_width, line_height);
 
@@ -107,6 +111,7 @@ pub fn draw_editor(
             cell_width,
             theme.selection,
             theme.selection_alpha,
+            theme.background,
         );
     }
     for sel in &editor.extra_selections {
@@ -120,6 +125,7 @@ pub fn draw_editor(
             cell_width,
             theme.selection,
             theme.selection_alpha,
+            theme.background,
         );
     }
     if let Some(sel) = &editor.yank_highlight {
@@ -133,6 +139,7 @@ pub fn draw_editor(
             cell_width,
             theme.yank_highlight_bg,
             theme.yank_highlight_alpha,
+            theme.background,
         );
     }
     pop_clip(target);
@@ -266,6 +273,7 @@ fn paint_selection(
     cell_width: f32,
     color: Color,
     alpha: f32,
+    bg: Color,
 ) {
     for (view_idx, line) in lines.iter().enumerate() {
         let Some(cols) = sel.cols_on(line) else {
@@ -274,7 +282,7 @@ fn paint_selection(
         let y = rect.y + view_idx as f32 * line_height;
         let x = text_x + cols.start as f32 * cell_width;
         let w = (cols.end - cols.start) as f32 * cell_width;
-        let blended = Theme::default().background.blend(color, alpha as f64);
+        let blended = bg.blend(color, alpha as f64);
         let _ = fill_rect(target, Rect::new(x, y, w, line_height), blended);
     }
 }
@@ -471,7 +479,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_editor(target, &dwrite, &e, CELL_W, LINE_H);
+                draw_editor(target, &dwrite, &e, CELL_W, LINE_H, &Theme::default());
             })
             .expect("paint editor");
 
@@ -525,7 +533,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_editor(target, &dwrite, &e, CELL_W, LINE_H);
+                draw_editor(target, &dwrite, &e, CELL_W, LINE_H, &Theme::default());
             })
             .expect("paint editor");
 
@@ -596,7 +604,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_editor(target, &dwrite, &e, CELL_W, LINE_H);
+                draw_editor(target, &dwrite, &e, CELL_W, LINE_H, &Theme::default());
             })
             .expect("paint editor");
 
@@ -668,7 +676,7 @@ mod tests {
 
         surface
             .paint(|target| {
-                draw_editor(target, &dwrite, &e, CELL_W, LINE_H);
+                draw_editor(target, &dwrite, &e, CELL_W, LINE_H, &Theme::default());
             })
             .expect("paint editor");
 
