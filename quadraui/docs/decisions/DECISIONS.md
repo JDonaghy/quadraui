@@ -2193,29 +2193,48 @@ onto `ABSOLUTE` coordinates (issue #816).
 
 ### Audit
 
-`Rect::new`/`Rect { .. }` construction sites: **2,277 occurrences across
+`Rect::new`/`Rect { .. }` construction sites: **2,278 occurrences across
 226 files** in `quadraui/src` alone (measured via `grep -rn 'Rect::new\|Rect {'
-quadraui/src | wc -l` at the commit this issue landed on). Every
-primitive's `layout()`, every TUI/GTK/Win-GUI/macOS rasteriser, every
-`*_layout` trait method, `layout.rs`'s `Anchor`/`visible_range_walk`
+quadraui/src | wc -l`; re-verified during fix-review on 2026-10-02 — this
+count drifts by a line or two commit-to-commit as unrelated work lands,
+so treat it as "thousands, not hundreds," not a number to pin exactly).
+Every primitive's `layout()`, every TUI/GTK/Win-GUI/macOS rasteriser,
+every `*_layout` trait method, `layout.rs`'s `Anchor`/`visible_range_walk`
 infrastructure, and both downstream consumers' call sites (`coord-tui`,
 `vimcode` — `grep -rln 'quadraui::Rect\|quadraui::Point\|Rect::new\|Point::new'
-~/src/coord-tui/src ~/src/vimcode/src` → 33 files) construct or consume
-a bare `f32`-field `Rect`/`Point` today.
+~/src/coord-tui/src ~/src/vimcode/src` → 36 files as of the same
+re-verification; this one drifts independently of quadraui's own tree
+since both sibling checkouts move on their own schedule) construct or
+consume a bare `f32`-field `Rect`/`Point` today.
 
 `Viewport.scale`'s actual semantics, traced through every
-`Viewport::new` call site: it is seeded from `GtkBackend::dpi_scale()`
-(`gtk/run.rs`, GTK's `notify::scale-factor` handler) or hardcoded `1.0`
-everywhere else (TUI, Win-GUI, macOS, every backend's test harness). It
-is a **physical-px ÷ logical-px DPI ratio local to one GUI backend's
-live display**, never a factor that relates one backend's unit to
-another's. `Point`'s pre-existing doc comment — "Apps that need to
-convert should use `Viewport::scale`" — told readers the opposite: that
-`scale` is the general cross-backend conversion mechanism. It has
-never been usable that way (there is no `scale` value that turns a TUI
-cell count into a GTK pixel count — a cell's pixel size is a font
-metric, `line_height`/`char_width`, not a DPI ratio), and nothing in
-the audited history shows it was ever load-bearing for that claim.
+`Viewport::new` call site: **GTK, Win-GUI, and macOS all derive a live
+per-backend DPI/backing-scale ratio in their real run loops** — GTK
+from `GtkBackend::dpi_scale()` (`gtk/run.rs`, GTK's
+`notify::scale-factor` handler); Win-GUI from a live
+`GetDpiForWindow(hwnd) / 96.0` read in `WinBackend::attach_surface`
+(`win/backend.rs:929-930`, via `dpi_scale_for_window`), tracked in
+`self.dpi_scale` and refreshed on `WM_DPICHANGED`
+(`win/run.rs:1887-1923`); macOS from a live
+`NSWindow::backingScaleFactor()` read in both `drawRect:` and
+`viewFrameDidChange:` (`macos/run.rs:515-523`, `:760-767`), which is
+`2.0`+ on any Retina display. TUI has no live DPI concept at all — a
+terminal cell has no sub-pixel scale factor — so TUI's `Viewport::new`
+call sites simply pass `1.0`, and this is the one case that genuinely
+*is* a hardcode rather than a stand-in for something not yet wired up.
+Only the test harnesses across every backend (including GTK's,
+Win-GUI's `attach_headless` at `win/backend.rs:1005-1006`, and macOS's)
+pin `scale` to `1.0`, because a headless surface has no live display to
+read a ratio from. In every case `scale` is a **physical-px ÷
+logical-px DPI ratio local to one GUI backend's live display**, never
+a factor that relates one backend's unit to another's. `Point`'s
+pre-existing doc comment — "Apps that need to convert should use
+`Viewport::scale`" — told readers the opposite: that `scale` is the
+general cross-backend conversion mechanism. It has never been usable
+that way (there is no `scale` value that turns a TUI cell count into a
+GTK pixel count — a cell's pixel size is a font metric,
+`line_height`/`char_width`, not a DPI ratio), and nothing in the
+audited history shows it was ever load-bearing for that claim.
 
 Both `docs/LESSONS.md` unit incidents this issue cites —
 `STATUS_BAR_PX = 24.0` zeroing the TUI sidebar (#14), and
@@ -2248,8 +2267,9 @@ hits (`grep -rn mac_list_layout ~/src/coord-tui/src ~/src/vimcode/src`
 introducing a new type that can't pay for its own migration.**
 
 1. **(b) `Px`/`Cell` newtypes are rejected outright, now and as a
-   future retrofit.** 2,277 in-tree call sites plus 33 downstream files
-   is not a PR, it's a rule-8 breaking change campaign with no
+   future retrofit.** Thousands of in-tree call sites plus dozens of
+   downstream files (see the Audit section's counts above) is not a PR,
+   it's a rule-8 breaking change campaign with no
    deprecation shim shape that keeps call sites compiling through the
    transition (a newtype wrapping every `f32` field is not additive —
    every arithmetic expression on `rect.width`, every struct literal,
