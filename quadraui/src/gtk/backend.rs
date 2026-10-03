@@ -5173,6 +5173,30 @@ mod tests {
         );
     }
 
+    // ── issue #1131: tray honesty ────────────────────────────────────────
+
+    /// There is no `gtk/tray.rs` and `GtkBackend` has no `fn tray`
+    /// override, so both halves of the trait default apply: `tray()`
+    /// returns `None` and `backend_caps().tray` is `false`. The 2026-09-26
+    /// framework audit flagged this pair as unverified; this pins the
+    /// honest answer as a concrete runtime assertion, on top of (not
+    /// instead of) `tests/conformance/caps.rs`'s generic source-parsed
+    /// "declared ⇔ overridden" check for the `tray` capability across
+    /// every backend.
+    #[test]
+    fn gtk_backend_reports_no_tray_support() {
+        let mut b = GtkBackend::new();
+        assert!(
+            !b.backend_caps().tray,
+            "#1131: GtkBackend has no tray() override, so backend_caps().tray must stay false"
+        );
+        assert!(
+            b.tray().is_none(),
+            "#1131: GtkBackend::tray() must honestly report Unsupported (None) — \
+             there is no gtk/tray.rs backing it"
+        );
+    }
+
     /// Garbage bytes are not a font Fontconfig's FreeType backend can
     /// parse — `register_font_from_memory` must report that as `None`,
     /// not a fabricated family, matching `MacBackend`/`WinBackend`'s own

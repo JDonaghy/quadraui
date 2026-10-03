@@ -647,6 +647,72 @@ jobs:
           path: target/conformance-matrix.txt
           if-no-files-found: warn
 
+  musl-static:
+    # #1131: the 2026-09-26 framework audit flagged "does a fully static
+    # musl build of a `tui`-only app work" as unverified, specifically
+    # because `tui` unconditionally pulls in `keyring` (Secret Service /
+    # D-Bus) and `trash` — both plausible static-link hazards on paper.
+    # Verified by hand first (no CI changes needed to find the answer):
+    # `keyring`'s Linux store is `zbus-secret-service-keyring-store`, and
+    # `zbus` is a pure-Rust D-Bus client (no `libdbus` C library, no
+    # `dbus-sys`); `trash`'s Linux implementation is pure Rust too (no
+    # `libtrash`/portal dependency pulled in by this feature set). Neither
+    # crate's build script shells out to a C compiler or links a system
+    # library quadraui's own musl target lacks. A real build proved it:
+    # `cargo build -p quadraui --target x86_64-unknown-linux-musl
+    # --no-default-features --features tui --example tui_app` with
+    # `-C target-feature=+crt-static` produces a `static-pie linked`
+    # binary (`file`/`ldd` both confirm no dynamic interpreter) using only
+    # rustup's self-contained musl CRT objects — no `musl-tools`/
+    # `musl-gcc` apt package needed, so this job has no extra
+    # `apt-get install` step. This job is the standing proof of that
+    # finding: if a future dependency bump (`keyring`, `trash`, or
+    # anything pulled in transitively under `tui`) reintroduces a glibc-
+    # only or dynamically-linked-only dependency, this is what goes red.
+    #
+    # `--example tui_app` (not a bare lib build): a `cargo build -p
+    # quadraui` with no binary/example target only compiles the rlib,
+    # which proves nothing about *linking* a real binary — the actual
+    # risk surface here is link-time (missing symbols, no static libc),
+    # not compile-time. `tui_app` is an ordinary existing example with no
+    # extra fixture needed.
+    name: musl static build (tui feature, keyring/trash — #1131)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Toolchain is pinned in rust-toolchain.toml (see its header comment
+      # for why); rustup's own override resolution honors that file
+      # regardless of what this action installs as its "default".
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-static
+      - name: Build tui_app example statically (musl, crt-static)
+        # `-C link-self-contained=yes -C linker=rust-lld` links against
+        # rustup's bundled musl CRT objects via LLVM's lld, which ships
+        # with every `dtolnay/rust-toolchain@stable` install — no system
+        # `musl-gcc`/`musl-tools` package required.
+        env:
+          RUSTFLAGS: "-D warnings -C target-feature=+crt-static -C link-self-contained=yes -C linker-flavor=ld.lld -C linker=rust-lld"
+        run: |
+          cargo build -p quadraui --target x86_64-unknown-linux-musl \
+            --no-default-features --features tui --example tui_app
+      - name: Verify the binary is fully static (no dynamic interpreter)
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/debug/examples/tui_app
+          file "$BIN"
+          if ! file "$BIN" | grep -q "static-pie linked\|statically linked"; then
+            echo "::error::expected a statically-linked musl binary; 'file' output above does not confirm static linkage"
+            exit 1
+          fi
+          ldd "$BIN" 2>&1 | tee /tmp/ldd-out.txt
+          if ! grep -q "not a dynamic executable\|statically linked" /tmp/ldd-out.txt; then
+            echo "::error::ldd reports dynamic linkage on what should be a static musl binary"
+            exit 1
+          fi
+
   downstream:
     # Compile truth for the two external consumers (#528). quadraui is
     # `publish = false`, nothing pins a published version, and vimcode's own
