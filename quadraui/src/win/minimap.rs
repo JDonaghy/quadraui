@@ -23,17 +23,27 @@
 //! module only converts the shared `f32` geometry to Direct2D paint calls.
 //!
 //! [`MinimapRenderMode::Characters`] — real glyphs at a font size scaled to
-//! the row pitch — is deliberately painted with the backend's single
-//! configured [`DWrite`] text format rather than a per-row-pitch size, the
-//! same divergence `win::board`'s module doc notes for badge/title fonts:
-//! DirectWrite text formats aren't cheap to vary per call without a format
-//! cache no Win-GUI rasteriser has yet. `ROW_PITCH_PX` (2 DIP) stays below
-//! `LEGIBILITY_FLOOR_PX` (4 DIP) today, so `Characters` is not reachable
-//! through this rasteriser's own fixed pitch — same as GTK's default —
-//! and is exercised directly in this module's tests rather than through
-//! [`draw_minimap`] itself, mirroring `gtk::minimap`'s own
+//! the row pitch — is painted via [`paint_row_glyphs`] against an
+//! [`DWrite::minimap_text_format`]-built, same-family [`DWrite`] text
+//! format sized to [`minimap_font_px`] (issue #1267), not the backend's
+//! single editor-size format: that earlier shim shaped every row at the
+//! full editor point size, which doesn't fit a few-DIP-tall row band and
+//! renders as nothing but clipped whitespace. `DWrite` caches that format
+//! by rounded DIP size (`win::text`'s `minimap_format_cache`) so a strip
+//! with many rows at the same pitch — the common case under
+//! `MinimapSizing::FixedPitch`, where every row shares one pitch — builds
+//! one format total, not one per row, the same "cheaper first step" (vs.
+//! a full downsampled glyph atlas) the issue proposes. `ROW_PITCH_PX` (2
+//! DIP) stays below `LEGIBILITY_FLOOR_PX` (4 DIP), so `Characters` is not
+//! reachable through this rasteriser's *default* fixed pitch — same as
+//! GTK's default — but is reachable at [`MinimapScale::Two`] (issue
+//! #1143), and is also exercised directly in this module's tests,
+//! mirroring `gtk::minimap`'s own
 //! `characters_branch_truncates_to_the_column_capacity_before_shaping`
-//! test.
+//! test. A downsampled DirectWrite sample-sheet atlas mirroring GTK's
+//! (#1035) / macOS's (#1153) remains open follow-up work for a
+//! Windows-hosted session — this module's fix stops at "legible", not
+//! "atlas-cached across distinct glyph shapes."
 //!
 //! Colour lookups (both branches) walk `syntax_spans` once per paint via
 //! [`SpanCursor`], not once per row — same O(rows + spans) merge-walk
@@ -103,19 +113,16 @@ pub fn draw_minimap(
 /// [`MinimapScale::Two`] the row pitch clears
 /// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`], so `render_mode`
 /// resolves to [`MinimapRenderMode::Characters`] and this rasteriser paints
-/// real `DrawText` glyph runs via [`paint_row_glyphs`] — unlike GTK's atlas
-/// blit (#1035), this still shapes with the backend's single configured
-/// [`DWrite`] text format rather than a downsampled sample-sheet tile (see
-/// the module doc's divergence note); a DirectWrite sample-sheet atlas
-/// mirroring GTK's is left as follow-up work for a Windows-hosted session
-/// (see `CLAUDE.md`'s "Win-GUI: building and testing for real" — an
-/// FFI-heavy pixel-readback port like this needs to be verified against a
-/// live Direct2D/WARP surface, not just `cargo check`). Issue #1153 ported
-/// the identical fix to `macos::minimap` (a Core Text sample-sheet atlas,
-/// verifiable there via `headless::BitmapSurface` on a macOS CI runner) —
-/// this module's own gap is the same shape, still open, and still needs a
-/// Windows-hosted session to build+verify (`HeadlessSurface` is real
-/// Direct2D/WARP, not a stub, but this repo has no such host in CI today).
+/// real `DrawText` glyph runs via [`paint_row_glyphs`], shaped at
+/// [`minimap_font_px`] via [`DWrite::minimap_text_format`] rather than the
+/// backend's single editor-size format (issue #1267) — unlike GTK's/macOS's
+/// atlas blit (#1035/#1153), this still shapes a real run per row instead of
+/// blitting a downsampled sample-sheet tile (see the module doc's "follow-up
+/// work" note); a DirectWrite sample-sheet atlas mirroring those is left as
+/// further follow-up for a Windows-hosted session (see `CLAUDE.md`'s
+/// "Win-GUI: building and testing for real" — an FFI-heavy pixel-readback
+/// port like this needs to be verified against a live Direct2D/WARP
+/// surface, not just `cargo check`).
 ///
 /// [`WinBackend::draw_minimap`]: crate::win::backend::WinBackend
 pub(crate) fn draw_minimap_scaled(
@@ -190,15 +197,15 @@ pub(crate) fn draw_minimap_scaled(
     layout
 }
 
-/// `Characters` branch: paint `text` with the backend's single configured
-/// [`DWrite`] text format — see the module doc's "Divergence from the GTK
-/// twin" note for why this doesn't vary the font size per `row_px` the way
-/// `gtk::minimap::paint_row_glyphs` does. Still bounds its cost to
-/// [`COLUMN_CAPACITY`] characters (#667 pt. 3), and still colours the row
-/// from its own `row_spans` — the first span's colour wins (DirectWrite
-/// needs a custom text renderer for true per-run colour within one
-/// `DrawText` call, out of scope for a branch this rasteriser's own fixed
-/// pitch never reaches).
+/// `Characters` branch: paint `text` with a same-family [`DWrite`] text
+/// format sized to this row's own [`minimap_font_px`] (issue #1267), via
+/// [`DWrite::draw_text_at_size`] — rather than the backend's single
+/// editor-size format, which doesn't fit a few-DIP-tall row band at all.
+/// Still bounds its cost to [`COLUMN_CAPACITY`] characters (#667 pt. 3),
+/// and still colours the row from its own `row_spans` — the first span's
+/// colour wins (DirectWrite needs a custom text renderer for true per-run
+/// colour within one `DrawText` call, out of scope for a branch this
+/// rasteriser's own default fixed pitch never reaches).
 fn paint_row_glyphs(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -207,19 +214,24 @@ fn paint_row_glyphs(
     row_spans: &[MinimapSpan],
     theme: &Theme,
 ) {
-    // `minimap_font_px` is the shared pitch->size mapping every backend's
-    // `Characters` branch is keyed on; Win-GUI can't act on it without a
-    // format cache (see module doc), but computing it here keeps this
-    // branch honestly wired to the same decision function rather than
-    // silently ignoring it.
-    let _ = minimap_font_px(vline.bounds.height as f64);
+    let font_px = minimap_font_px(vline.bounds.height as f64);
 
     let truncated = truncate_to_columns(text, COLUMN_CAPACITY);
     let fg = row_spans
         .first()
         .map(|s| s.color)
         .unwrap_or(theme.foreground);
-    let _ = dwrite.draw_text(target, truncated, vline.bounds, fg);
+    // A `minimap_text_format` build failure (format cache's `?` inside
+    // `draw_text_at_size`) degrades to the editor-size format rather than
+    // painting nothing at all for the row -- same "cosmetic feature,
+    // degrade don't fail" posture `DWrite::new`'s own fallback-apply
+    // errors take.
+    if dwrite
+        .draw_text_at_size(target, truncated, vline.bounds, fg, font_px)
+        .is_err()
+    {
+        let _ = dwrite.draw_text(target, truncated, vline.bounds, fg);
+    }
 }
 
 /// `ColumnBlocks` branch: paint one `cell_w`-DIP-wide block per non-blank
@@ -466,5 +478,104 @@ mod tests {
             }
         }
         assert!(painted_any, "expected the Characters branch to paint text");
+    }
+
+    /// Issue #1267 regression: at [`MinimapScale::Two`] (row pitch 4 DIP,
+    /// which clears `LEGIBILITY_FLOOR_PX` into the `Characters` branch),
+    /// the pre-fix `paint_row_glyphs` shaped every row with the backend's
+    /// single editor-size `DWrite` format (here, 10pt — tens of DIPs tall)
+    /// clipped into a 4-DIP row box: essentially nothing but background
+    /// and a handful of faint antialiased edge pixels survives that clip,
+    /// which is exactly the illegible strip the issue reports. The fix
+    /// (`DWrite::draw_text_at_size`, sized to `minimap_font_px`) must
+    /// produce real, substantially-covered ink in each row's own span
+    /// colour — checked with a loose colour-distance tolerance rather than
+    /// an exact `Color::rgb` match, since even a correctly-sized glyph's
+    /// edges are still antialiased (mirrors `win::status_bar`'s
+    /// `row_contains` doc on why exact-pixel glyph assertions are
+    /// brittle).
+    #[test]
+    fn scale_two_paints_both_span_colours_in_the_glyph_render_band() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let theme = Theme {
+            background: Color::rgb(255, 255, 255),
+            foreground: Color::rgb(0, 0, 0),
+            ..Theme::default()
+        };
+        let red = Color::rgb(220, 20, 20);
+        let blue = Color::rgb(20, 20, 220);
+        let mm = Minimap {
+            id: WidgetId::new("mm"),
+            lines: vec![
+                MinimapLine {
+                    text: "fn main() {}".into(),
+                    line_idx: 0,
+                },
+                MinimapLine {
+                    text: "struct Foo;".into(),
+                    line_idx: 1,
+                },
+            ],
+            syntax_spans: vec![
+                MinimapSpan {
+                    line_idx: 0,
+                    start_col: 0,
+                    end_col: 12,
+                    color: red,
+                },
+                MinimapSpan {
+                    line_idx: 1,
+                    start_col: 0,
+                    end_col: 11,
+                    color: blue,
+                },
+            ],
+            visible_row_start: 0,
+            visible_row_count: 0,
+            total_buffer_lines: 2,
+        };
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = surface
+            .paint(|target| {
+                draw_minimap_scaled(target, &dwrite, rect, &mm, &theme, MinimapScale::Two);
+            })
+            .map(|_| win_minimap_layout_scaled(&mm, rect, MinimapScale::Two))
+            .expect("paint minimap");
+        assert_eq!(layout.visible_lines.len(), 2, "expected both rows visible");
+
+        // Manhattan colour distance -- loose enough to tolerate the
+        // antialiased edges of a correctly-sized glyph, tight enough that
+        // a faint, mostly-background-blended edge pixel (the pre-fix
+        // symptom) does not count.
+        let close_to = |px: Color, target: Color| -> bool {
+            let d = (px.r as i32 - target.r as i32).unsigned_abs()
+                + (px.g as i32 - target.g as i32).unsigned_abs()
+                + (px.b as i32 - target.b as i32).unsigned_abs();
+            d <= 120
+        };
+
+        let mut saw_red = false;
+        let mut saw_blue = false;
+        for x in 0..W as u32 {
+            for y in 0..H as u32 {
+                let px = surface.pixel_at(x, y);
+                if close_to(px, red) {
+                    saw_red = true;
+                }
+                if close_to(px, blue) {
+                    saw_blue = true;
+                }
+            }
+        }
+        assert!(
+            saw_red,
+            "expected the first row's red span colour to appear legibly in the strip"
+        );
+        assert!(
+            saw_blue,
+            "expected the second row's blue span colour to appear legibly in the strip"
+        );
     }
 }
