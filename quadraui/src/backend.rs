@@ -1134,9 +1134,9 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Set the active [`crate::Style`] on the backend — the non-colour
-    /// geometry tokens [`crate::Theme`] deliberately doesn't carry (issue
-    /// #1133; see that type's module doc for why it's a separate
-    /// struct). Same call-once-or-per-pane contract as [`Self::set_theme`].
+    /// geometry tokens [`crate::Theme`] deliberately doesn't carry (see
+    /// that type's module doc for why it's a separate struct). Same
+    /// call-once-or-per-pane contract as [`Self::set_theme`].
     ///
     /// Default: no-op. Backends that carry a `current_style` field (GTK,
     /// macOS, Win-GUI) override this to store the value so subsequent

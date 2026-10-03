@@ -1,33 +1,32 @@
 //! [`Style`] — non-colour visual tokens (spacing, radius, border width,
 //! focus-ring weight, …), the geometry half of theming that
-//! [`crate::Theme`] deliberately does not cover (issue #1133).
+//! [`crate::Theme`] deliberately does not cover.
 //!
 //! # Why this is a separate struct, not new `Theme` fields
 //!
 //! `Theme`'s own module doc already states the rule: adding a `pub`
 //! field to `Theme` is a breaking change, because `coord-tui` builds
 //! three of its four palettes with exhaustive struct literals and no
-//! `..Default::default()` spread (quadraui#620). A flat colour struct
-//! and a flat geometry struct would share that exact liability, for no
-//! benefit — colour and geometry are independent axes an app may want
-//! to override separately (a high-contrast *colour* theme with the
-//! *same* spacing, or a compact-density *geometry* preset layered under
-//! three different colour themes). Keeping them as two independently
-//! defaulted types means a consumer who only ever wants to touch
-//! colours — today, both of them — never has to look at this file at
-//! all, and a later field goes through the ordinary additive path this
-//! file sets up from its first commit, not through #620's lesson a
-//! second time.
+//! `..Default::default()` spread. A flat colour struct and a flat
+//! geometry struct would share that exact liability, for no benefit —
+//! colour and geometry are independent axes an app may want to override
+//! separately (a high-contrast *colour* theme with the *same* spacing,
+//! or a compact-density *geometry* preset layered under three different
+//! colour themes). Keeping them as two independently defaulted types
+//! means a consumer who only ever wants to touch colours — today, both
+//! of them — never has to look at this file at all, and a later field
+//! goes through the ordinary additive path this file sets up from its
+//! first commit.
 //!
 //! # Where each token maps on TUI
 //!
-//! quadraui#1097 (D-014 in `docs/decisions/DECISIONS.md`) requires every
-//! new capability to declare its TUI story. Every [`Style`] token's is
-//! the same shape, stated once here rather than per-field: TUI paints a
-//! whole-cell grid, so a sub-cell geometry token has nothing to refine
-//! — see [`crate::native_surface`]'s module doc, "Why TUI stays out",
-//! for the identical reasoning applied to the drawing-verb trait this
-//! struct's tokens are consumed through. Concretely:
+//! D-014 in `docs/decisions/DECISIONS.md` requires every new capability
+//! to declare its TUI story. Every [`Style`] token's is the same shape,
+//! stated once here rather than per-field: TUI paints a whole-cell
+//! grid, so a sub-cell geometry token has nothing to refine — see
+//! [`crate::native_surface`]'s module doc, "Why TUI stays out", for the
+//! identical reasoning applied to the drawing-verb trait this struct's
+//! tokens are consumed through. Concretely:
 //!
 //! - **No-op** — the token has no effect because the TUI rasteriser
 //!   for that primitive doesn't read [`Style`] at all. [`Self::focus_ring_width`]
@@ -50,22 +49,19 @@
 //!
 //! This is deliberately a **one-token start**, not the full tokens
 //! `CLAUDE.md` eventually wants (padding, corner radius, border width,
-//! per-role font size, …). [`Self::focus_ring_width`] was picked first
-//! because it is the one hardcoded geometry literal every pixel backend
-//! already agreed on byte-for-byte before this change
-//! ([`crate::focus`]'s now-removed `FOCUS_RING_STROKE_WIDTH` constant),
-//! painted through the shared [`crate::native_surface::NativeSurface`]
-//! trait on all three pixel backends (`NativeSurface` Phase 4 — see that
-//! module's doc — landed before this change, which is what makes "reach
-//! all three pixel backends from one call site" true today rather than
-//! aspirational). Each further token — padding, corner radius, border
-//! width on the primitives that still hardcode them — is its own
-//! follow-up PR, one token/primitive pair at a time, the same discipline
+//! per-role font size, …). [`Self::focus_ring_width`] is first because
+//! it is the one geometry value all three pixel backends agree on
+//! byte-for-byte, and it is painted through the shared
+//! [`crate::native_surface::NativeSurface`] trait, so a single call
+//! site reaches `GtkBackend`, `MacBackend` and `WinBackend` at once.
+//! Each further token — padding, corner radius, border width on the
+//! primitives that still hardcode them — is its own follow-up PR, one
+//! token/primitive pair at a time, the same discipline
 //! `docs/decisions/DECISIONS.md` already applies to the `*_layout`
-//! coordinate-frame conversions (D-005) and the LOCAL→ABSOLUTE migration
-//! (D-016's point 4): batching every hardcoded literal in the codebase
-//! into one PR repeats the #476 mistake `PRIMITIVE_RULES.md` rule 4
-//! names, at a much larger scale.
+//! coordinate-frame conversions (D-005) and the LOCAL→ABSOLUTE
+//! migration (D-016's point 4): batching every hardcoded literal in the
+//! codebase into one PR is what `PRIMITIVE_RULES.md` rule 4 forbids, at
+//! a much larger scale.
 //!
 //! See `docs/decisions/DECISIONS.md` D-017 for the full design — token
 //! catalogue, why a separate struct, and the TUI-mapping rule — this
@@ -80,9 +76,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// `#[non_exhaustive]`, from this struct's first commit: every future
 /// token (padding, corner radius, border width, …) lands as a purely
-/// additive field, with no retrofit later needed — the same shape issue
-/// #1251 already brought to `TextInput`/`Toolbar`/`Editor`
-/// (`new(required…)`/`with_*`/`Default`, see [`Style::default`] and
+/// additive field, with no retrofit later needed — the same
+/// `Default`/`with_*` shape `TextInput`, `Toolbar` and `Editor` carry
+/// (see [`Style::default`] and
 /// [`Style::with_focus_ring_width`]). Unlike a plain struct,
 /// `#[non_exhaustive]` blocks *any* struct-literal construction from
 /// outside this crate — including `Style { focus_ring_width: 4.0,
@@ -90,8 +86,8 @@ use serde::{Deserialize, Serialize};
 /// through `Default::default()` plus a `with_*` builder, which is the
 /// construction shape that keeps compiling as fields are added. Compare
 /// `Theme`'s own doc, which explains why it *can't* adopt this attribute
-/// now that `coord-tui` already builds it with exhaustive literals
-/// (quadraui#620) — `Style` avoids that trap only because it is new.
+/// while `coord-tui` builds it with exhaustive literals — `Style`
+/// avoids that trap only because it is new.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Style {
@@ -106,10 +102,8 @@ pub struct Style {
     /// weight on a terminal grid to refine. See the module doc's *Where
     /// each token maps on TUI* section.
     ///
-    /// Default `2.0` — the exact value every pixel backend's
-    /// now-removed `FOCUS_RING_STROKE_WIDTH` constant carried before
-    /// this field existed, so adopting [`Style::default()`] changes no
-    /// backend's painted output.
+    /// Default `2.0` — the one stroke width all three pixel backends
+    /// agree on, so [`Style::default()`] paints the stock focus ring.
     pub focus_ring_width: f32,
 }
 
@@ -138,10 +132,9 @@ impl Style {
 mod tests {
     use super::*;
 
-    /// Pins the one value every pre-#1133 pixel backend agreed on
-    /// (`crate::focus::FOCUS_RING_STROKE_WIDTH` was `2.0`) so a future
-    /// edit to this default is a deliberate, reviewed visual change —
-    /// not an accidental one.
+    /// Pins the stock `2.0` stroke width every pixel backend paints, so
+    /// a future edit to this default is a deliberate, reviewed visual
+    /// change — not an accidental one.
     #[test]
     fn default_focus_ring_width_matches_pre_style_constant() {
         assert_eq!(Style::default().focus_ring_width, 2.0);
