@@ -57,6 +57,51 @@
 //! for GTK/Win/macOS — issue #951 closed the macOS gap — with TUI's
 //! legitimate non-applicability tracked as a separate, non-gap
 //! disposition).
+//!
+//! ## Unit contract — `Point`, `Rect`, `Viewport` (issue #1098)
+//!
+//! `Point`/`Rect`'s fields are bare `f32` — no `Px`/`Cell` newtype, no
+//! marker generic. That is a deliberate, audited choice, not an
+//! oversight: see `docs/decisions/DECISIONS.md` D-016 for the full
+//! blast-radius argument (2000+ call sites across every primitive and
+//! both rasterisers) against introducing one now. What *is* new here is
+//! making the contract a type-level statement instead of an implicit
+//! convention every call site has to already know:
+//!
+//! 1. **A `Point`/`Rect` value's unit is whatever its *producing*
+//!    backend's [`Viewport`] uses** — TUI: whole cells. GTK / Win-GUI:
+//!    device-independent pixels. macOS (planned): Core Graphics points.
+//!    A value never carries its own unit tag; the *call site* (which
+//!    `Backend` impl produced it) is the only thing that says which one
+//!    it is. There is no silent conversion between a TUI `Rect` and a
+//!    GTK `Rect` — they are not interchangeable even though the type is
+//!    the same.
+//! 2. **[`Viewport::scale`] is a DPI/backing-scale factor *within* one
+//!    GUI backend** (physical pixels ÷ logical pixels — see
+//!    `GtkBackend::dpi_scale`), nothing more. It is pinned to `1.0` on
+//!    every backend's test harness and in practice only varies on a
+//!    live GTK/Win-GUI session with a non-1x display. **It is not a
+//!    cross-backend conversion factor** — there is no `scale` value that
+//!    turns a TUI cell count into a GTK pixel count, because a terminal
+//!    cell's pixel size is a font metric (`line_height`/`char_width`),
+//!    not a DPI ratio. A prior revision of this doc comment on
+//!    [`Point`] read "apps that need to convert should use
+//!    `Viewport::scale`" — that line was the bug: it told a reader
+//!    `scale` solves a problem it cannot solve. Removed; see point 3.
+//! 3. **Cross-backend-portable code derives sizes, it never hardcodes
+//!    them.** Any shared `AppLogic`/compose-helper code that needs a
+//!    dimension — a status-bar height, a dropdown row pitch — must
+//!    compute it from [`crate::Backend::line_height`],
+//!    [`crate::Backend::char_width`], [`crate::Backend::viewport`], or
+//!    a `*_layout()` result. A bare numeric literal (`24.0`, `lh +
+//!    4.0`) smuggles in an implicit unit assumption that is wrong on at
+//!    least one backend. This isn't new policy — `docs/LESSONS.md`'s
+//!    "Shared AppLogic code must not hardcode backend-native units" and
+//!    "Dropdown item sizing must use backend-native units" entries are
+//!    the two real incidents this generalises from — but it previously
+//!    lived only in LESSONS.md, discoverable after the fact. It is now
+//!    also stated here, on the types themselves, where `rustdoc` surfaces
+//!    it before a third incident.
 
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -149,7 +194,9 @@ pub struct ButtonMask {
 /// - **Win-GUI**: Direct2D DIPs.
 /// - **macOS** (planned): Core Graphics points.
 ///
-/// Apps that need to convert should use [`Viewport::scale`].
+/// See this module's "Unit contract" doc section for what "native
+/// units" means precisely and why [`Viewport::scale`] does **not** help
+/// convert a `Point` from one backend's unit to another's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f32,
@@ -178,6 +225,11 @@ impl ScrollDelta {
 }
 
 /// Rectangular region in the backend's native units.
+///
+/// Same unit contract as [`Point`] — TUI cells, GTK/Win-GUI DIPs,
+/// macOS (planned) points — see this module's "Unit contract" doc
+/// section. A `Rect` produced by one backend is not meaningful passed
+/// to another; there is no implicit conversion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
     pub x: f32,
@@ -203,8 +255,14 @@ impl Rect {
 
 /// Backend viewport dimensions in native units.
 ///
-/// TUI: `width` and `height` are cell counts; `scale = 1.0`.
-/// GTK / Win-GUI / macOS: pixel-ish units with `scale` = DPI ratio.
+/// TUI: `width` and `height` are cell counts; `scale` is always `1.0`
+/// (a terminal has no DPI concept). GTK / Win-GUI / macOS: pixel-ish
+/// units with `scale` = backing/DPI ratio (physical px ÷ logical px).
+///
+/// `scale` answers "how many physical pixels per logical pixel on
+/// *this* GUI backend's display", not "how do I convert this value
+/// from one backend's unit into another's" — see this module's "Unit
+/// contract" doc section.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Viewport {
     pub width: f32,

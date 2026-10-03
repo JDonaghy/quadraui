@@ -2172,3 +2172,154 @@ Neither is pre-chosen. W1 (#320) must not start without that decision.
   record of the D7 reasoning, now marked shelved.
 - It does not affect `NativeSurface` itself, which stays the single
   paint layer for GTK, macOS and Windows.
+
+## D-016 — One unit contract for `Rect`/`Point`; `Px`/`Cell` newtypes rejected for now (issue #1098)
+
+### Question
+
+An independent framework audit (`develop @ ed402b4`) flagged
+`Rect { x, y, width, height: f32 }` (`event.rs`) as having "no unit":
+`Viewport.scale` is a separate field with no type-level link back to
+`Rect`, no `Px`/`Cell` newtype exists to stop a TUI cell value and a
+GTK pixel value from being added together at compile time, three
+`docs/LESSONS.md` entries are bugs that trace to exactly this
+ambiguity, and `macos/list.rs` carried a `mac_list_layout(_x: f64, _y:
+f64, ...)` signature whose origin params no sibling backend's
+equivalent function even has. It asked quadraui to pick one of two
+designs — (a) `Rect` is always logical px, with TUI converting
+cells↔px at its boundary, or (b) `Px`/`Cell` newtypes — and, in the
+same pass, finish converging every remaining `LOCAL`-frame primitive
+onto `ABSOLUTE` coordinates (issue #816).
+
+### Audit
+
+`Rect::new`/`Rect { .. }` construction sites: **2,277 occurrences across
+226 files** in `quadraui/src` alone (measured via `grep -rn 'Rect::new\|Rect {'
+quadraui/src | wc -l` at the commit this issue landed on). Every
+primitive's `layout()`, every TUI/GTK/Win-GUI/macOS rasteriser, every
+`*_layout` trait method, `layout.rs`'s `Anchor`/`visible_range_walk`
+infrastructure, and both downstream consumers' call sites (`coord-tui`,
+`vimcode` — `grep -rln 'quadraui::Rect\|quadraui::Point\|Rect::new\|Point::new'
+~/src/coord-tui/src ~/src/vimcode/src` → 33 files) construct or consume
+a bare `f32`-field `Rect`/`Point` today.
+
+`Viewport.scale`'s actual semantics, traced through every
+`Viewport::new` call site: it is seeded from `GtkBackend::dpi_scale()`
+(`gtk/run.rs`, GTK's `notify::scale-factor` handler) or hardcoded `1.0`
+everywhere else (TUI, Win-GUI, macOS, every backend's test harness). It
+is a **physical-px ÷ logical-px DPI ratio local to one GUI backend's
+live display**, never a factor that relates one backend's unit to
+another's. `Point`'s pre-existing doc comment — "Apps that need to
+convert should use `Viewport::scale`" — told readers the opposite: that
+`scale` is the general cross-backend conversion mechanism. It has
+never been usable that way (there is no `scale` value that turns a TUI
+cell count into a GTK pixel count — a cell's pixel size is a font
+metric, `line_height`/`char_width`, not a DPI ratio), and nothing in
+the audited history shows it was ever load-bearing for that claim.
+
+Both `docs/LESSONS.md` unit incidents this issue cites —
+`STATUS_BAR_PX = 24.0` zeroing the TUI sidebar (#14), and
+`MenuSystem::dropdown_layout`'s `lh + 4.0` landing on fractional,
+gap-producing TUI rows (issue behind "Dropdown item sizing must use
+backend-native units") — were **not** type-confusion bugs a `Px`/`Cell`
+newtype would have caught at compile time. Both were "shared code
+assumed a numeric literal means the same thing on every backend"
+bugs: the literal (`24.0`, `4.0`) was always a bare, correctly-typed
+`f32` on every backend; the type system had no way to know it should
+have been `backend.line_height() * N` instead, because a newtype
+wrapping `f32` still permits an author to write `Cell(24.0)` just as
+wrongly as `24.0`. A newtype prevents *adding a `Px` to a `Cell`*; it
+does not prevent *hardcoding a `Px`-shaped constant into TUI's cell
+space*, which is the actual shape of both incidents.
+
+`macos/list.rs`'s `mac_list_layout(_x: f64, _y: f64, w, h, ...)`: audit
+confirms its siblings don't carry this baggage at all — `gtk_list_layout`
+takes no origin parameters; `win_list_layout` takes a full `Rect` but
+reads only `.width`/`.height`. `mac_list_layout` is genuinely the one
+place carrying two parameters its own body never reads. Zero downstream
+hits (`grep -rn mac_list_layout ~/src/coord-tui/src ~/src/vimcode/src`
+→ none; macOS has no live consumer yet), two in-tree call sites
+(`draw_list`, `MacBackend::list_layout`), both updated in this PR.
+
+### Decision
+
+**Reject both (a) and (b) as a retrofit; keep `f32`-field `Rect`/`Point`
+— document and enforce the contract that already exists instead of
+introducing a new type that can't pay for its own migration.**
+
+1. **(b) `Px`/`Cell` newtypes are rejected outright, now and as a
+   future retrofit.** 2,277 in-tree call sites plus 33 downstream files
+   is not a PR, it's a rule-8 breaking change campaign with no
+   deprecation shim shape that keeps call sites compiling through the
+   transition (a newtype wrapping every `f32` field is not additive —
+   every arithmetic expression on `rect.width`, every struct literal,
+   every destructure breaks at once). The audit above shows it would
+   not even have caught either cited incident, so the blast radius buys
+   no bug-class elimination — only the dead-param class `mac_list_layout`
+   exemplified, which a doc-comment contract plus the existing
+   paint/click round-trip harness (`PRIMITIVE_RULES.md` rule 4) already
+   catches structurally, per `docs/LESSONS.md`'s very first entry.
+2. **(a) "`Rect` is always logical px, TUI converts at its boundary" is
+   rejected as a retrofit for the same reason, with the same evidence
+   D-005 already established for the mirror-image LOCAL/ABSOLUTE
+   question**: every TUI primitive's internal layout math — row
+   pitch, visible-range walks, hit-test quantisation
+   (`LayoutMetrics::cell_quantum`) — is written in whole cells today,
+   by construction, specifically so paint and hit-test agree on a
+   discrete unit (`docs/LESSONS.md`'s "Paint/click drift" entry).
+   Forcing every one of those call sites through a px→cell boundary
+   conversion is the same 226-file blast radius as (b), for a design
+   whose sole benefit is uniformity — not a fix for a bug the audit
+   found. `coord-tui`/`vimcode` CI (see `CLAUDE.md`'s *Downstream
+   consumers*) would go red the instant this merged, with no version
+   bump to pin the break to.
+3. **What actually ships in this PR**: the contract implicit in
+   `Point`'s existing per-backend doc comment is promoted to a named,
+   grep-able "Unit contract" section in `event.rs`'s module doc (TUI
+   cells / GTK+Win-GUI DIPs / macOS points, `Rect` referring back to
+   it), the `Viewport::scale` doc is corrected to state plainly what it
+   is (a single-backend DPI ratio) and is **not** (a cross-backend
+   conversion factor) — removing the misleading claim that caused this
+   audit to read the type as unitless in the first place — and
+   `mac_list_layout` drops its two dead parameters, bringing it in line
+   with `gtk_list_layout`/`win_list_layout`. Zero behaviour change;
+   zero new downstream breakage (confirmed by the grep above).
+4. **The #816 "finish the absolute-frame migration in the same pass"**
+   ask is explicitly declined as part of this PR. `PRIMITIVE_RULES.md`'s
+   own "Converging on one convention, ABSOLUTE-only" section already
+   states the remaining LOCAL-frame primitives (`tree_layout`,
+   `form_layout`, `data_table_layout`, `text_display_layout`,
+   `status_bar_layout`, `activity_bar_layout` — six trait methods, each
+   touching TUI + GTK + macOS + Win-GUI rasterisers, every in-tree
+   composer that calls them, and `PRIMITIVE_RULES.md` rule 8's two-PR
+   deprecation protocol per method) convert **one primitive, one PR at
+   a time** — the same discipline D-005 already chose for the mirror
+   direction. Batching all six into this PR would repeat the exact
+   mistake `PRIMITIVE_RULES.md` rule 4 ("Don't batch unrelated
+   removals") names issue #476 for, at six times the scale, entangled
+   with an unrelated unit-contract doc change. #816's table in
+   `PRIMITIVE_RULES.md` is unchanged by this PR and remains the tracker
+   for that follow-up work; this decision does not start or schedule
+   any of the six conversions.
+
+### What this does NOT mean
+
+- It does not mean unit bugs can't recur. The structural fix this PR
+  ships is documentation plus the pre-existing "derive from
+  `Backend::line_height()`/`char_width()`/`viewport()`/`*_layout()`,
+  never hardcode" rule (now stated on the types themselves, not only in
+  `docs/LESSONS.md`) — a reviewer discipline, not a compiler-enforced
+  one. If a fourth incident of this bug class ships, that is evidence
+  the doc-contract approach is insufficient and (b) should be
+  re-litigated with a concrete transition plan (e.g. a
+  `#[deprecated]`-shimmed parallel `Px`/`Cell` API introduced
+  primitive-by-primitive, the same way #816 itself converges frames) —
+  not evidence to reopen this decision wholesale.
+- It does not block a future, narrower newtype: a `Px`/`Cell` wrapper
+  scoped to *one* new call site (e.g. a from-scratch primitive, or
+  `layout.rs`'s shared infrastructure once #816 primitives actually
+  start consuming it) costs nothing retroactively and is a normal
+  rule-8 additive change, not the breaking retrofit this decision
+  rejects.
+- It does not close issue #816. The six remaining LOCAL→ABSOLUTE
+  conversions are unchanged follow-up work, same as before this PR.
