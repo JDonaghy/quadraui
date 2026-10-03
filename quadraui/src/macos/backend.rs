@@ -160,6 +160,10 @@ pub struct MacBackend {
     /// struct doesn't need a lifetime parameter.
     current_cg_ptr: Cell<*const ()>,
     current_theme: Theme,
+    /// Captured once per frame, mirroring `current_theme` — see
+    /// [`crate::Style`]'s module doc for why this is a separate field
+    /// rather than folded into `Theme` (issue #1133).
+    current_style: crate::Style,
     /// Decoded-`CGImage` cache for [`Backend::draw_image`] (issue #1014)
     /// — see [`crate::image_cache`]'s module doc and
     /// [`super::image::draw_image`]'s "Decode cache" section for why
@@ -602,6 +606,7 @@ impl MacBackend {
             services: MacPlatformServices::new(),
             current_cg_ptr: Cell::new(std::ptr::null()),
             current_theme: Theme::default(),
+            current_style: crate::Style::default(),
             image_cache: crate::image_cache::ImageCache::default(),
             minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             current_font: None,
@@ -805,6 +810,17 @@ impl MacBackend {
     /// read this for per-primitive colour resolution.
     pub fn current_theme(&self) -> &Theme {
         &self.current_theme
+    }
+
+    /// Override the current style. Mirrors [`Self::set_current_theme`]
+    /// — see [`crate::Style`]'s module doc.
+    pub fn set_current_style(&mut self, style: crate::Style) {
+        self.current_style = style;
+    }
+
+    /// The current style. Mirrors [`Self::current_theme`].
+    pub fn current_style(&self) -> &crate::Style {
+        &self.current_style
     }
 
     /// Shared handle to the backend's event queue. The runner clones
@@ -1239,6 +1255,14 @@ impl Backend for MacBackend {
         self.current_theme
     }
 
+    fn set_style(&mut self, style: crate::Style) {
+        self.set_current_style(style);
+    }
+
+    fn style(&self) -> crate::Style {
+        self.current_style
+    }
+
     fn set_nerd_fonts(&mut self, enabled: bool) {
         self.nerd_fonts_enabled = enabled;
     }
@@ -1577,7 +1601,8 @@ impl Backend for MacBackend {
 
     fn draw_focus_ring(&mut self, rect: Rect) {
         let theme = self.current_theme;
-        self.surface_stroke_rect(rect, theme.accent_fg, crate::focus::FOCUS_RING_STROKE_WIDTH);
+        let stroke_width = self.current_style.focus_ring_width;
+        self.surface_stroke_rect(rect, theme.accent_fg, stroke_width);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 

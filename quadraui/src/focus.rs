@@ -125,19 +125,16 @@
 use crate::event::Rect;
 use crate::types::WidgetId;
 
-/// Stroke width (native units — GTK/macOS/Win-GUI pixels) for the
-/// focus-ring convention [`crate::Backend::draw_focus_ring`] paints on
-/// the three `NativeSurface`-backed pixel backends. Shared so every one
-/// agrees on the same visual weight without three independent literals
-/// to keep in sync. TUI's own rasteriser (`crate::tui::draw_focus_ring`)
-/// always draws a 1-cell border and has no use for this constant — same
-/// gate as `crate::native_surface`, whose consumers are identical.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-pub(crate) const FOCUS_RING_STROKE_WIDTH: f32 = 2.0;
+// Focus-ring stroke width used to live here as a shared
+// `FOCUS_RING_STROKE_WIDTH` constant (native units — GTK/macOS/Win-GUI
+// pixels) so every `NativeSurface`-backed pixel backend's
+// `Backend::draw_focus_ring` painted the same weight without three
+// independent literals to keep in sync. Issue #1133 promoted it to
+// [`crate::Style::focus_ring_width`] — a themeable, app-overridable
+// token with the same `2.0` default — read via `Backend::style()`
+// instead of this now-removed constant. See that field's doc for the
+// TUI story (`crate::tui::draw_focus_ring` never consumed this constant
+// either, and still doesn't consume `Style`).
 
 /// Single owner of keyboard focus (issue #830). See the module doc for
 /// the full rationale and the six representations this replaces (or, in

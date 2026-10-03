@@ -190,6 +190,7 @@ pub mod layout;
 pub mod prelude;
 pub mod primitives;
 pub mod shell;
+pub mod style;
 pub mod terminal_style;
 pub mod testing;
 pub mod text_util;
@@ -530,6 +531,7 @@ pub use primitives::tree::{
     TreeEvent, TreeRow, TreeRowEditState, TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout,
     VisibleTreeRow,
 };
+pub use style::Style;
 pub use text_util::{
     fuzzy_score, next_char_boundary, prev_char_boundary, safe_prefix, safe_slice,
     snap_to_char_boundary, word_wrap, wrap_spans, WrapPolicy,

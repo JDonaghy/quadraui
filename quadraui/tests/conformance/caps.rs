@@ -891,6 +891,29 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "menu_style().resolve(&backend_caps()) — derived purely from two already-overridden/\
          required methods, nothing backend-specific to add (#1187)",
     ),
+    // ── issue #1133: `Style` carries non-colour geometry tokens for the
+    // three `NativeSurface`-backed pixel backends (GTK/macOS/Win, each of
+    // which does override `set_style`/`style` with a real `current_style`
+    // field). TUI takes the trait's no-op default on purpose, not as
+    // unfinished work: every `Style` token shipped so far (today, just
+    // `focus_ring_width`) has a TUI story of "no-op" — see `Style`'s own
+    // module doc's *Where each token maps on TUI* section —  because the
+    // TUI rasterisers it would apply to never read sub-cell geometry at
+    // all. There is nothing for a TUI `current_style` field to do yet;
+    // the day a cell-quantised token lands, TUI gains a real override and
+    // this pair of entries is deleted.
+    (
+        "tui",
+        "set_style",
+        "every Style token so far maps to a TUI no-op (Style's own module doc) — nothing for a \
+         TUI-side current_style field to store yet (#1133)",
+    ),
+    (
+        "tui",
+        "style",
+        "mirrors set_style above — default Style::default() is correct since TUI never stores \
+         an override (#1133)",
+    ),
 ];
 
 /// The capabilities `name`'s `backend_caps` declares, parsed from source.
