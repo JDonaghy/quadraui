@@ -15,14 +15,17 @@
 //! for why the rest of this repo's `--features win` compile gate stays
 //! meaningful without a Windows host.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+
 use windows::core::{
     Error as WinError, IUnknown, Interface, Result as WinResult, BOOL, HSTRING, PCWSTR,
 };
 use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1RenderTarget, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_ROUNDED_RECT,
+    ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection,
@@ -609,11 +612,9 @@ fn measure_text(
 }
 
 /// Paint `text` inside `rect` (DIPs, target-relative) in `color`, clipped
-/// to the rect. Creates a throwaway `ID2D1SolidColorBrush` per call —
-/// fine for this issue's infrastructure role; a rasteriser painting many
-/// runs per frame should hoist brush creation once real callers land
-/// (same "seam, not yet wired" posture as every other `todo!()` in
-/// `backend.rs`).
+/// to the rect. Brush creation goes through [`get_or_create_brush`], so
+/// repeated calls with the same `(target, color)` reuse one cached
+/// `ID2D1SolidColorBrush` instead of creating a fresh one per call.
 ///
 /// This is the single choke point every Win-GUI chrome rasteriser paints
 /// text through (`win::status_bar`, `win::tab_bar`, `win::activity_bar`,
@@ -640,10 +641,7 @@ fn draw_text(
         crate::testing::record_text_run(text, rect);
     }
     let wide: Vec<u16> = text.encode_utf16().collect();
-    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
-    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
-    // `None` for brush properties asks for the default (opaque) brush.
-    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let brush = get_or_create_brush(target, color)?;
     let layout_rect = D2D_RECT_F {
         left: rect.x,
         top: rect.y,
@@ -652,8 +650,10 @@ fn draw_text(
     };
     // SAFETY: `target` is still the live render target; `wide` is a
     // local `Vec<u16>` that outlives this synchronous call; `format` is
-    // the caller's live interface; `layout_rect`/`brush` are the locals
-    // built immediately above, both borrowed only for this call.
+    // the caller's live interface; `layout_rect` is a local built
+    // immediately above and `brush` a live interface (just created or
+    // fetched from `get_or_create_brush`'s cache), both borrowed only for
+    // this call.
     unsafe {
         target.DrawText(
             &wide,
@@ -676,6 +676,130 @@ pub(crate) fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
     }
 }
 
+// ─── Brush cache ─────────────────────────────────────────────────────────
+//
+// Without it, every one of `fill_rect`/`fill_rounded_rect`/`stroke_rect`/
+// `draw_line`/`draw_text` created a fresh `ID2D1SolidColorBrush` and let it
+// drop at the end of the call — one `CreateSolidColorBrush` per primitive,
+// per frame. Measured on a real 1639x1079 window that's 647 brushes/frame
+// for a palette of only ~20 distinct colors, and `CreateSolidColorBrush`
+// is not free: it's a real allocation + device call, not a value
+// constructor, so that scaled the frame's draw cost with primitive count
+// rather than with color count.
+//
+// `BRUSH_CACHE` fixes that by memoizing brushes per `(render target
+// identity, Color)`. Keying on identity (not just `Color`) matters because
+// an `ID2D1SolidColorBrush` is tied to the device that created it — reusing
+// one against a *different* render target is a Direct2D resource-domain
+// error, not merely redundant work, and more than one render target can be
+// live in a single process at a time (e.g. two independent
+// `super::testing::HeadlessSurface`s in the same test). A brush has no
+// stable Rust identity of its own to key on, so this uses
+// `Interface::as_raw` on the owning `&ID2D1RenderTarget` — the raw COM
+// pointer backing whichever concrete target (`ID2D1HwndRenderTarget` or
+// `ID2D1DCRenderTarget`, see `backend::RenderTarget`) the caller derefs
+// from.
+//
+// `thread_local!`, not a field threaded through every one of this module's
+// ~140 call sites: every paint helper here already takes a bare
+// `&ID2D1RenderTarget` (not `&mut Surface`/`&mut WinBackend`), and widening
+// every one of those signatures (and every caller across
+// `win::activity_bar`, `win::status_bar`, … dozens of other files) to
+// thread a cache parameter through would be a much larger diff, touching
+// far more than just this module and `backend.rs`, for the same outcome.
+// Win-GUI's live message loop and every `WinDriver` test both run
+// single-threaded, matching the precedent `crate::testing`'s own
+// paint-time recording sink (`text_run_sink_active`/`record_text_run`,
+// used by `draw_text` below) already sets for per-thread paint-time state
+// in this crate.
+//
+// Cleared in full by [`clear_brush_cache`] whenever a render target is
+// (re)created — see that function's doc for the exact call sites — so a
+// brush from a torn-down device is never resurrected against its
+// replacement, and so this map never grows past the number of distinct
+// `(target, color)` pairs actually live at once.
+thread_local! {
+    // `HashMap::new` isn't a `const fn`, so (unlike `BRUSH_CREATIONS`
+    // below) this initializer can't move into a `const { .. }` block —
+    // clippy's `missing_const_for_thread_local` suggestion doesn't apply
+    // here.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static BRUSH_CACHE: RefCell<HashMap<(usize, Color), ID2D1SolidColorBrush>> =
+        RefCell::new(HashMap::new());
+    /// Count of brushes actually created via `CreateSolidColorBrush`
+    /// inside [`get_or_create_brush`] (cache misses only) — written
+    /// unconditionally (every brush creation, test or not, increments
+    /// it), but only *read* through the `#[cfg(test)]`-gated
+    /// [`brush_creation_count`]/[`reset_brush_creation_count`]
+    /// accessors below. This is this issue's acceptance-test hook:
+    /// "render the same frame twice; the second frame must create zero
+    /// new brushes."
+    static BRUSH_CREATIONS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Get the cached `ID2D1SolidColorBrush` for `(target, color)`, creating
+/// and caching one on a miss. See the `BRUSH_CACHE` module doc above for
+/// the caching/keying rationale.
+fn get_or_create_brush(
+    target: &ID2D1RenderTarget,
+    color: Color,
+) -> WinResult<ID2D1SolidColorBrush> {
+    let key = (target.as_raw() as usize, color);
+    if let Some(brush) = BRUSH_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+        return Ok(brush);
+    }
+    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
+    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
+    // `None` for brush properties asks for the default (opaque) brush.
+    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    BRUSH_CREATIONS.with(|count| count.set(count.get() + 1));
+    BRUSH_CACHE.with(|cache| cache.borrow_mut().insert(key, brush.clone()));
+    Ok(brush)
+}
+
+/// Drop every cached brush, for every render target — called whenever a
+/// render target is (re)created: [`super::backend::WinBackend::attach_surface`]
+/// (a brand-new `ID2D1Factory` + `ID2D1HwndRenderTarget`, genuinely a new
+/// device), [`super::backend::WinBackend::attach_headless`] (ditto for the
+/// headless `ID2D1DCRenderTarget` path), and
+/// [`super::backend::WinBackend::ensure_surface`]'s headless-reuse branch
+/// (the device doesn't actually change there, but clearing anyway keeps
+/// this one rule — "every surface (re)attach clears the cache" — simple
+/// and exception-free, at the cost of a handful of extra
+/// `CreateSolidColorBrush` calls on the next frame after a recovery, which
+/// is already the slow/rare path).
+///
+/// Does *not* run on [`super::backend::WinBackend::resize_surface`] (an
+/// `ID2D1HwndRenderTarget::Resize` call) or a DPI-scale update: neither
+/// touches the underlying COM render-target object, so brushes created
+/// against it before either call remain perfectly valid afterward — only
+/// an actual new target invalidates the brushes built from the old one.
+pub(crate) fn clear_brush_cache() {
+    BRUSH_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Count of brushes created (cache misses) since the process started or
+/// the last [`reset_brush_creation_count`] call — see `BRUSH_CREATIONS`'s
+/// doc. `#[cfg(test)]`: this issue's only caller is
+/// `backend::tests::repaint_reuses_cached_brushes_creating_no_new_ones`,
+/// and leaving the accessor compiled into a normal (non-test) build would
+/// make it `dead_code` there — a build failure under `ci.yml`'s
+/// `RUSTFLAGS: "-D warnings"` on the real-Windows `Build (win feature)`/
+/// `Clippy (win feature)` steps, which build examples (not tests) and so
+/// never reach a `#[cfg(test)]` call site either.
+#[cfg(test)]
+pub(crate) fn brush_creation_count() -> u32 {
+    BRUSH_CREATIONS.with(|count| count.get())
+}
+
+/// Reset [`brush_creation_count`]'s counter to `0` — lets a test measure
+/// creations over just the frame(s) it cares about instead of everything
+/// since process start. `#[cfg(test)]`: see `brush_creation_count`'s doc.
+#[cfg(test)]
+pub(crate) fn reset_brush_creation_count() {
+    BRUSH_CREATIONS.with(|count| count.set(0));
+}
+
 /// Fill `rect` (DIPs, target-relative) with a solid `color` on `target`.
 ///
 /// Shared by every chrome rasteriser in `crate::win` (status bar, tab bar,
@@ -687,19 +811,17 @@ pub(crate) fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
 /// the headless test surface; this version assumes the caller is already
 /// inside a frame (or a `HeadlessSurface::paint` closure).
 pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) -> WinResult<()> {
-    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
-    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
-    // `None` for brush properties asks for the default (opaque) brush.
-    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let brush = get_or_create_brush(target, color)?;
     let rect_f = D2D_RECT_F {
         left: rect.x,
         top: rect.y,
         right: rect.x + rect.width,
         bottom: rect.y + rect.height,
     };
-    // SAFETY: `target` is still the live render target; `rect_f`/`brush`
-    // are the locals built immediately above, both borrowed only for
-    // this call.
+    // SAFETY: `target` is still the live render target; `rect_f` is a
+    // local built immediately above and `brush` a live interface (just
+    // created or fetched from the cache), both borrowed only for this
+    // call.
     unsafe { target.FillRectangle(&rect_f, &brush) };
     Ok(())
 }
@@ -719,10 +841,7 @@ pub(crate) fn fill_rounded_rect(
     radius: f32,
     color: Color,
 ) -> WinResult<()> {
-    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
-    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
-    // `None` for brush properties asks for the default (opaque) brush.
-    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let brush = get_or_create_brush(target, color)?;
     let r = radius.min(rect.width / 2.0).min(rect.height / 2.0).max(0.0);
     let rounded = D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
@@ -734,9 +853,10 @@ pub(crate) fn fill_rounded_rect(
         radiusX: r,
         radiusY: r,
     };
-    // SAFETY: `target` is still the live render target; `rounded`/`brush`
-    // are the locals built immediately above, both borrowed only for
-    // this call.
+    // SAFETY: `target` is still the live render target; `rounded` is a
+    // local built immediately above and `brush` a live interface (just
+    // created or fetched from the cache), both borrowed only for this
+    // call.
     unsafe { target.FillRoundedRectangle(&rounded, &brush) };
     Ok(())
 }
@@ -772,10 +892,7 @@ pub(crate) fn stroke_rect(
     color: Color,
     stroke_width: f32,
 ) -> WinResult<()> {
-    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
-    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
-    // `None` for brush properties asks for the default (opaque) brush.
-    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let brush = get_or_create_brush(target, color)?;
     let inset = (stroke_width / 2.0)
         .min(rect.width / 2.0)
         .min(rect.height / 2.0)
@@ -786,9 +903,10 @@ pub(crate) fn stroke_rect(
         right: rect.x + rect.width - inset,
         bottom: rect.y + rect.height - inset,
     };
-    // SAFETY: `target` is still the live render target; `rect_f`/`brush`
-    // are the locals built above, both borrowed only for this call;
-    // `None` for stroke style asks for Direct2D's default solid stroke.
+    // SAFETY: `target` is still the live render target; `rect_f` is a
+    // local built above and `brush` a live interface (just created or
+    // fetched from the cache), both borrowed only for this call; `None`
+    // for stroke style asks for Direct2D's default solid stroke.
     unsafe { target.DrawRectangle(&rect_f, &brush, stroke_width, None) };
     Ok(())
 }
@@ -839,12 +957,10 @@ pub(crate) fn draw_line(
     color: Color,
     stroke_width: f32,
 ) -> WinResult<()> {
-    // SAFETY: `target` is the caller's live render target; `color_to_d2d`
-    // builds a plain stack `D2D1_COLOR_F` borrowed only for this call;
-    // `None` for brush properties asks for the default (opaque) brush.
-    let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
+    let brush = get_or_create_brush(target, color)?;
     // SAFETY: `target` is still the live render target; `brush` is the
-    // live interface just created; `Vector2`s are plain stack structs;
+    // live interface just created or fetched from the cache; `Vector2`s
+    // are plain stack structs;
     // `None` for stroke style asks for Direct2D's default solid stroke,
     // per this function's own doc comment.
     unsafe {
