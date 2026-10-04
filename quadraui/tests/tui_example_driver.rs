@@ -5059,8 +5059,8 @@ fn form_groups_click_toggle_flips_rendered_value() {
 // ─── FormAllFieldsApp (quadraui#808): every FieldKind variant paints ──────
 //
 // Baseline for the shared `tests/cross_backend_parity.rs` needle set:
-// TUI's `tui::form` rasteriser is untouched by #808 (NativeSurface
-// deliberately excludes TUI — see `native_surface.rs`'s module doc), so
+// TUI's `tui::form` rasteriser is untouched by #808 (PaintSurface
+// deliberately excludes TUI — see `paint_surface.rs`'s module doc), so
 // every one of these has always painted here. The value is asserting it
 // as a fixed baseline other backends are checked against, not finding a
 // TUI regression.

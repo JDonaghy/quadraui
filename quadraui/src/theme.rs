@@ -733,7 +733,7 @@ impl Theme {
     /// `round(0.30*255)=77`) as the one shared value; the ~1/255 shift
     /// from Win-GUI's old literal is visually immaterial (its own
     /// pixel-readback tests assert a blend-direction threshold, not an
-    /// exact channel value — see `win_backend_native_surface_fill_rect_*`
+    /// exact channel value — see `win_backend_paint_surface_fill_rect_*`
     /// and the mirrored macOS test).
     ///
     /// **A method, not a `Theme` field, on purpose** — same reasoning as

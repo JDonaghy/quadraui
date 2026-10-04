@@ -198,7 +198,7 @@ impl Split {
     }
 }
 
-// ── NativeSurface paint (#864, Phase 2d slice 7/9 of the NativeSurface
+// ── PaintSurface paint (#864, Phase 2d slice 7/9 of the PaintSurface
 // milestone, child of #811) ────────────────────────────────────────────
 //
 // Before this, `gtk::draw_split` (Cairo), `macos::split::draw_split`
@@ -206,7 +206,7 @@ impl Split {
 // independently painted the same divider-only chrome with their own
 // drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
 // §5). `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of
 // any one backend's drawing API.
 //
 // Re-verified while migrating, per this issue's "re-verify before you
@@ -278,7 +278,7 @@ impl Split {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::SplitLayout;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Paint a [`SplitLayout`]'s divider onto `surface` as a filled
@@ -289,7 +289,7 @@ pub(crate) mod native_surface_paint {
     /// hit-test can never disagree. Pane content is NOT painted —
     /// every backend leaves `first_bounds`/`second_bounds` to the host,
     /// same contract as before this migration.
-    pub(crate) fn paint(layout: &SplitLayout, surface: &mut dyn NativeSurface, theme: &Theme) {
+    pub(crate) fn paint(layout: &SplitLayout, surface: &mut dyn PaintSurface, theme: &Theme) {
         surface.surface_fill_rect(layout.divider_bounds, theme.separator);
     }
 
@@ -311,7 +311,7 @@ pub(crate) mod native_surface_paint {
             fills: Vec<(QRect, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

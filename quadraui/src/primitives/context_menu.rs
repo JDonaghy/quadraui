@@ -483,10 +483,10 @@ impl ContextMenu {
     }
 }
 
-// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::palette::native_surface_paint` for the
 // same pattern applied one primitive earlier (#1076, slice 3/8).
 //
@@ -499,15 +499,15 @@ impl ContextMenu {
 // - **Box corner rounding.** GTK alone drew a 3px-radius rounded
 //   rectangle (both the bg fill and the border stroke) via
 //   `rounded_rect_path`; macOS/Windows both used a plain square rect.
-//   `paint` adopts the majority (square) — [`NativeSurface`] has a
-//   [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+//   `paint` adopts the majority (square) — [`PaintSurface`] has a
+//   [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
 //   verb but no rounded-stroke equivalent, so keeping GTK's rounding
 //   would mean a rounded fill under a square border stroke, a visible
 //   seam at the corners worse than just picking one. Low real-world
 //   impact (3px radius on a small chrome popup).
 // - **Separator stroke weight.** GTK stroked at `0.5` width; macOS
 //   filled a `1.0`-tall rect; Windows drew a `1.0`-width line. `paint`
-//   uses [`NativeSurface::surface_draw_line`] at `1.0` — the 2-of-3
+//   uses [`PaintSurface::surface_draw_line`] at `1.0` — the 2-of-3
 //   majority.
 //
 // Every other pixel (bg colour, selection highlight inset, text
@@ -523,7 +523,7 @@ impl ContextMenu {
 pub(crate) mod native_surface_paint {
     use super::{ContextMenu, ContextMenuItem, ContextMenuLayout};
     use crate::accelerator::{render_accelerator, Platform};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::WidgetId;
     use crate::{Point, Rect};
@@ -553,7 +553,7 @@ pub(crate) mod native_surface_paint {
         menu: &ContextMenu,
         menu_layout: &ContextMenuLayout,
         platform: Platform,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;

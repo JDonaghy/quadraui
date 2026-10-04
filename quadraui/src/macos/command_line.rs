@@ -3,7 +3,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::command_line::native_surface_paint::paint`]
-//! (#1083, `NativeSurface` Phase 4 6/8) — see that fn's doc for the named
+//! (#1083, `PaintSurface` Phase 4 6/8) — see that fn's doc for the named
 //! divergences this closed (this module used to paint no selection
 //! highlight at all, and anchored its insert cursor at `text_x +
 //! prefix_width` via a real Core Text glyph-prefix measurement rather
@@ -11,7 +11,7 @@
 //! fixed-advance column — the latter is what the unified `paint` uses
 //! now). [`draw_command_line`]/[`draw_command_line_selection`] below are
 //! thin wrappers over it, using [`crate::macos::surface::CgSurface`] as
-//! the `NativeSurface` adapter.
+//! the `PaintSurface` adapter.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;

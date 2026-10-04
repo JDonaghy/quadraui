@@ -184,8 +184,8 @@ impl CommandLine {
     }
 }
 
-/// Shared [`NativeSurface`](crate::native_surface::NativeSurface)-backed
-/// paint for [`CommandLine`] (`NativeSurface` Phase 4 6/8, #1083) —
+/// Shared [`PaintSurface`](crate::paint_surface::PaintSurface)-backed
+/// paint for [`CommandLine`] (`PaintSurface` Phase 4 6/8, #1083) —
 /// replaces the three per-backend copies `gtk::command_line::draw_command_line_selection`,
 /// `macos::command_line::draw_command_line` and
 /// `win::command_line::draw_command_line` used to carry independently.
@@ -234,7 +234,7 @@ impl CommandLine {
 pub(crate) mod native_surface_paint {
     use super::{CommandLine, CommandLineLayout, CommandLineMeasure};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Insert-cursor width in surface-native units (px/DIP/pt) — matches
@@ -255,7 +255,7 @@ pub(crate) mod native_surface_paint {
     /// module's doc, "Zero-size guard".
     pub(crate) fn paint(
         cmd: &CommandLine,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
         char_width: f32,
@@ -321,7 +321,7 @@ pub(crate) mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> crate::Viewport {

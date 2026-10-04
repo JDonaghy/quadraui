@@ -4,7 +4,7 @@
 //! measurement to size each item. Content painting (background,
 //! active/disabled colouring, label text, Alt-key underline) moved to
 //! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
-//! (#1081, `NativeSurface` Phase 4 slice 5/8), which also **closes this
+//! (#1081, `PaintSurface` Phase 4 slice 5/8), which also **closes this
 //! backend's own documented gap**: pre-migration macOS painted no
 //! Alt-key underline at all (Core Text's `kCTUnderlineStyleAttributeName`
 //! needs attributed-string plumbing `super::text::draw_text` never had —

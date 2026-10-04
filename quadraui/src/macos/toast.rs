@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
-//! `NativeSurface` Phase 2d slice 4/9) — see that fn's doc for the named
+//! `PaintSurface` Phase 2d slice 4/9) — see that fn's doc for the named
 //! divergences (Win never took a live theme; Win's dismiss/action text
 //! wasn't centred in its sub-region) found while unifying
 //! `gtk::toast::draw_toast_stack`, `macos::toast::draw_toast_stack` and
@@ -36,7 +36,7 @@ use crate::theme::Theme;
 ///
 /// Still its own Core Text-based measurer, independent of the shared
 /// paint's internal layout computation (which measures via
-/// [`crate::native_surface::NativeSurface::surface_measure_text`]) — same
+/// [`crate::paint_surface::PaintSurface::surface_measure_text`]) — same
 /// "no-paint layout stays put" posture as `MacBackend::status_bar_layout`
 /// (#860). Shares its geometry with `gtk_toast_stack_layout` /
 /// `win_toast_stack_layout` via [`pixel_toast_stack_layout`] (issue

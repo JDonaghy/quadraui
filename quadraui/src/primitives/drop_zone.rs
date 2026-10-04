@@ -272,7 +272,7 @@ pub fn drop_zone_overlay(
     }
 }
 
-// ── NativeSurface paint (#865, Phase 2d slice 8/9 of the NativeSurface
+// ── PaintSurface paint (#865, Phase 2d slice 8/9 of the PaintSurface
 // milestone, #811 / #785) ───────────────────────────────────────────────
 //
 // Before this, `gtk::draw_drop_overlay` (Cairo), `macos::drop_overlay::
@@ -280,7 +280,7 @@ pub fn drop_zone_overlay(
 // draw_drop_overlay` (Direct2D) each independently painted the same
 // highlight-rect + insertion-bar geometry with their own drawing API.
 // `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of
 // any one backend's drawing API — same shape as `scrollbar`'s #811
 // slice 1/9 migration (commit `2a47547`).
 //
@@ -304,7 +304,7 @@ pub fn drop_zone_overlay(
 // `win::scrollbar::draw_scrollbar` — but unlike scrollbar's migration
 // (slice 1/9), where the win side had *already* been fixed independently
 // before the migration started, drop_overlay's win-side premix was still
-// live going into this slice. `NativeSurface::surface_fill_rect` itself
+// live going into this slice. `PaintSurface::surface_fill_rect` itself
 // — the shared verb this `paint` fn calls — has painted a real alpha
 // blend on every one of the three pixel backends since #791 (Windows)
 // and slice 1/9 (GTK's `cr.set_source_rgba` fix; macOS's
@@ -329,7 +329,7 @@ pub fn drop_zone_overlay(
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::DropOverlay;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Paint a [`DropOverlay`] onto `surface`: a translucent highlight
@@ -338,7 +338,7 @@ pub(crate) mod native_surface_paint {
     /// in `theme.accent_fg`. `ghost_position` is not painted here — no
     /// backend renders a ghost label (see the per-backend module docs),
     /// so callers that want one draw it themselves on top.
-    pub(crate) fn paint(overlay: &DropOverlay, surface: &mut dyn NativeSurface, theme: &Theme) {
+    pub(crate) fn paint(overlay: &DropOverlay, surface: &mut dyn PaintSurface, theme: &Theme) {
         if let Some(h) = overlay.highlight {
             if h.width > 0.0 && h.height > 0.0 {
                 surface.surface_fill_rect(
@@ -380,7 +380,7 @@ pub(crate) mod native_surface_paint {
             fills: Vec<(Rect, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

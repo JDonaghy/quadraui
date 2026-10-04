@@ -5,7 +5,7 @@
 //! (matching `gtk::activity_bar` / `win::activity_bar`, since #1081 — see
 //! below). Content painting moved to the shared
 //! [`crate::primitives::activity_bar::native_surface_paint::paint`]
-//! (#1081, `NativeSurface` Phase 4 slice 5/8) — see that fn's module doc
+//! (#1081, `PaintSurface` Phase 4 slice 5/8) — see that fn's module doc
 //! for the drift it resolved, including two real gaps this backend used
 //! to have (no keyboard-selection highlight at all, and a private
 //! `row_plan` helper that ordered `visible_items` differently from GTK/

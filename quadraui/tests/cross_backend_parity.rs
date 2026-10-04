@@ -184,14 +184,14 @@ fn pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state() {
 // only 10 of 14 variants — a form using `Slider` / `ColorPicker` /
 // `Dropdown` / `TextArea` rendered nothing on macOS for that field, with
 // no error anywhere. Painting now goes through the one shared
-// `primitives::form::paint` (written against `NativeSurface`) for every
+// `primitives::form::paint` (written against `PaintSurface`) for every
 // pixel backend, so this asserts the fix at the only level that would
 // have caught the original bug: painting a form with every variant and
 // checking each one's value text actually appears, on every backend that
 // paints pixels. `tests/tui_example_driver.rs`'s
 // `form_all_fields_paints_every_field_kind_value` establishes the TUI
 // baseline these needles are drawn from (TUI's rasteriser is untouched
-// by #808 — see `native_surface.rs`'s module doc for why TUI stays a
+// by #808 — see `paint_surface.rs`'s module doc for why TUI stays a
 // separate implementation).
 
 /// One needle per `FieldKind` variant `FormAllFieldsApp` uses, chosen so

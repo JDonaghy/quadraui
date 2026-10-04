@@ -3,7 +3,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::drop_zone::native_surface_paint::paint`] (#865,
-//! `NativeSurface` Phase 2d slice 8/9) — see that fn's doc for the one
+//! `PaintSurface` Phase 2d slice 8/9) — see that fn's doc for the one
 //! named divergence this migration found and reported (rather than
 //! silently resolving): this module's pre-migration `draw_drop_overlay`
 //! CPU-premixed the highlight tint against `theme.background` via
@@ -14,7 +14,7 @@
 //! against whatever is *actually* underneath. Unlike `win::scrollbar`
 //! (#791 already fixed its equivalent premix before the #811 slice 1/9
 //! migration started), this module's premix was **not** already fixed —
-//! `super::text::fill_rect`, the verb `NativeSurface::surface_fill_rect`
+//! `super::text::fill_rect`, the verb `PaintSurface::surface_fill_rect`
 //! calls on this backend, has honoured `color.a` with a real
 //! `ID2D1SolidColorBrush` alpha blend since #791, so routing this
 //! primitive's paint through the shared `surface_fill_rect` verb (same

@@ -8,14 +8,14 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::command_line::native_surface_paint::paint`]
-//! (#1083, `NativeSurface` Phase 4 6/8) — see that fn's doc for the named
+//! (#1083, `PaintSurface` Phase 4 6/8) — see that fn's doc for the named
 //! divergences this closed on the other two backends (this module's own
 //! `char_bounds`-based cursor and lack of any selection paint were
 //! already what the port converged everyone onto, so this file's own
 //! behaviour is unchanged by the move — only its implementation is now
 //! shared). [`draw_command_line`]/[`draw_command_line_selection`] below
 //! are thin wrappers over it, using [`crate::win::surface::D2dSurface`]
-//! as the `NativeSurface` adapter.
+//! as the `PaintSurface` adapter.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 

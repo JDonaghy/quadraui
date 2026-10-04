@@ -3,7 +3,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::diff_view::native_surface_paint::paint`] (#866,
-//! `NativeSurface` Phase 2d slice 9/9) — see that fn's doc for the two
+//! `PaintSurface` Phase 2d slice 9/9) — see that fn's doc for the two
 //! named divergences (row/header text vertical alignment; header-label
 //! ellipsize vs. hard-clip) found while unifying
 //! `gtk::diff_view::draw_diff_view`, `macos::diff_view::draw_diff_view`

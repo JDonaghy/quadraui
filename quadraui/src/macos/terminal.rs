@@ -1,14 +1,14 @@
 //! macOS support for [`crate::Terminal`] cell grids.
 //!
 //! Painting moved to the shared [`crate::primitives::terminal::paint`] /
-//! [`crate::primitives::terminal::paint_divider`] (#810, NativeSurface
+//! [`crate::primitives::terminal::paint_divider`] (#810, PaintSurface
 //! Phase 2c) — see that fn's doc for the divergence (per-cell
 //! bold/italic/underline styling) resolved while unifying
 //! `gtk::terminal::draw_terminal_cells`, `macos::terminal::draw_terminal_cells`
 //! and `win::terminal::draw_terminal_cells` into one implementation.
 //! macOS gained no new styling capability from this (it never rendered
 //! bold/italic/underline before #810 either — see
-//! [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]'s
+//! [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]'s
 //! doc), but keeps the wide-glyph horizontal-scale fix (#500/#703) it
 //! already had.
 //!

@@ -3,12 +3,12 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::message_list::native_surface_paint::paint`]
-//! (#1084, `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! (#1084, `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
 //! per-backend divergence survey (most notably: `macos::message_list`
 //! used to ignore `row.spans` entirely; this module's own italic/
 //! underline/scale gap, described below, is unchanged by the move).
 //! [`draw_message_list`] below is now a thin wrapper over the shared
-//! paint, using [`crate::win::surface::D2dSurface`] as the `NativeSurface`
+//! paint, using [`crate::win::surface::D2dSurface`] as the `PaintSurface`
 //! adapter. `gtk::message_list::draw_message_list` is *not* migrated; see
 //! the shared `paint`'s doc for why.
 //!
@@ -16,7 +16,7 @@
 //!
 //! When a row's `spans` vector is **non-empty**, each span paints in its
 //! own `fg` (falling back to `row.fg`) and `bold` weight, via
-//! [`NativeSurface::surface_draw_text_run_styled`]'s `D2dSurface`
+//! [`PaintSurface::surface_draw_text_run_styled`]'s `D2dSurface`
 //! implementation (`DWrite::draw_text_styled`). `italic` / `underline` /
 //! `scale` are **not yet** applied: `DWrite` has no italic text format,
 //! underline attribute, or per-run font-scale wired up today (GTK applies

@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
-//! `NativeSurface` Phase 2d slice 3/9) — see that fn's doc for the named
+//! `PaintSurface` Phase 2d slice 3/9) — see that fn's doc for the named
 //! divergences (bold-aware measurement: GTK/Win measured a segment's own
 //! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
 //! applying the already-fixed quadraui#791 shape uniformly) found while

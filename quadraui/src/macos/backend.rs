@@ -59,7 +59,7 @@ use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
-use crate::native_surface::NativeSurface;
+use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::chart::{Chart, ChartLayout};
@@ -1114,7 +1114,7 @@ impl MacBackend {
         // paints through `ChromeSurface` (routes text through
         // `chrome_font`/`chrome_line_height`) rather than `self` directly
         // (which would paint through `current_font`, the *editor* font,
-        // via `MacBackend`'s own `NativeSurface` impl below).
+        // via `MacBackend`'s own `PaintSurface` impl below).
         let theme = self.current_theme;
         // #1179: was `self.chrome_line_height`, so a caller that hands
         // this a `rect` taller than the chrome font's own line height
@@ -1608,6 +1608,14 @@ impl Backend for MacBackend {
 
     fn services(&self) -> &dyn PlatformServices {
         &self.services
+    }
+
+    /// #1101: `MacBackend` implements [`PaintSurface`] directly (see this
+    /// module's own `impl PaintSurface for MacBackend` block below), so
+    /// this always answers `Some(self)` — never the `None` default
+    /// `Backend::paint_surface` falls back to.
+    fn paint_surface(&mut self) -> Option<&mut dyn PaintSurface> {
+        Some(self)
     }
 
     fn register_zone(&mut self, id: WidgetId, bounds: Rect) {
@@ -2664,7 +2672,7 @@ impl Backend for MacBackend {
         crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
     }
     /// #996: see `Backend::draw_solid_fill`'s doc — a pixel backend can
-    /// honor `rect` exactly via `NativeSurface::surface_fill_rect`.
+    /// honor `rect` exactly via `PaintSurface::surface_fill_rect`.
     fn draw_solid_fill(&mut self, rect: Rect, color: Color) {
         self.surface_fill_rect(rect, color);
         // #492: chrome-only paint (no text of its own) — see
@@ -2745,7 +2753,7 @@ impl Backend for MacBackend {
     /// ever painted. Now builds the layout via
     /// [`super::text_input::mac_text_input_layout`] and hands it to the
     /// shared [`crate::primitives::text_input::paint`] through this
-    /// backend's own [`NativeSurface`] impl below, mirroring
+    /// backend's own [`PaintSurface`] impl below, mirroring
     /// `draw_text_display`'s / `draw_form`'s shape.
     fn draw_text_input(
         &mut self,
@@ -2965,7 +2973,7 @@ impl Backend for MacBackend {
         );
         // Issue #1117: no `set_current_font` precondition here anymore —
         // `crate::primitives::find_replace::paint` reaches text rendering
-        // through `NativeSurface`, whose `current_font`-reading methods
+        // through `PaintSurface`, whose `current_font`-reading methods
         // (`surface_measure_text`/`surface_draw_text_run*`) now fall back
         // to `chrome_font` on their own (see those methods' docs) instead
         // of requiring this precondition.
@@ -3097,7 +3105,7 @@ impl Backend for MacBackend {
         )
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
-        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
         // each debug_assert/expect their own frame + font internally —
         // see `Self::surface_fill_rect`/`Self::surface_measure_text` — so
         // this method needs no separate ctx/font fetch of its own,
@@ -3367,7 +3375,7 @@ impl Backend for MacBackend {
         rect: Rect,
         view: &crate::primitives::diff_view::DiffView,
     ) -> crate::primitives::diff_view::DiffViewLayout {
-        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
         // each debug_assert their own `!ctx.is_null()` internally — see
         // `Self::surface_fill_rect` — so this method needs no separate
         // ctx/font fetch of its own, matching `Self::draw_status_bar`'s
@@ -3773,7 +3781,7 @@ impl crate::backend::TrayService for MacBackend {
     }
 }
 
-// ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────
+// ─── PaintSurface (#807, Phase 1) ───────────────────────────────────────────
 //
 // The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
 // helpers this backend already had privately — every macOS rasteriser module
@@ -3781,14 +3789,14 @@ impl crate::backend::TrayService for MacBackend {
 // copy of `color_to_cg`/`fill_rect`/`stroke_rect`/the `CGContext*` extern
 // block; this impl is one canonical copy, scoped to this file, that Phase 2
 // can point those ~30 call sites at instead of their own duplicate. Phase 1
-// itself changes no behaviour: nothing calls through `NativeSurface` yet, so
+// itself changes no behaviour: nothing calls through `PaintSurface` yet, so
 // every existing rasteriser keeps using its own private copy untouched.
-// See `native_surface`'s module doc for the full scope note and why these
+// See `paint_surface`'s module doc for the full scope note and why these
 // methods are `surface_`-prefixed instead of colliding with `Backend`'s.
-/// Adapts `&mut MacBackend` to [`NativeSurface`], routing text
+/// Adapts `&mut MacBackend` to [`PaintSurface`], routing text
 /// measurement and painting through `chrome_font`/`chrome_line_height`/
 /// `chrome_char_width` instead of the `current_font`/`current_line_height`/
-/// `current_char_width` `MacBackend`'s own `NativeSurface` impl (below)
+/// `current_char_width` `MacBackend`'s own `PaintSurface` impl (below)
 /// uses — that impl is the shared choke point every other `self`-as-surface
 /// primitive (`draw_form`, `draw_chart`, `draw_scrollbar`, …) still paints
 /// through, so it has to keep serving `current_font`; this adapter exists
@@ -3812,7 +3820,7 @@ struct ChromeSurface<'a> {
     backend: &'a mut MacBackend,
 }
 
-impl NativeSurface for ChromeSurface<'_> {
+impl PaintSurface for ChromeSurface<'_> {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         self.backend.surface_begin_frame(viewport)
     }
@@ -3932,7 +3940,7 @@ impl NativeSurface for ChromeSurface<'_> {
     }
 }
 
-impl NativeSurface for MacBackend {
+impl PaintSurface for MacBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }
@@ -4057,7 +4065,7 @@ impl NativeSurface for MacBackend {
     /// #1073: overrides the default (which ignores `role`) — `chrome_font`
     /// and `current_font` are already genuinely different `CTFont`s on
     /// this backend (see `chrome_font`'s field doc), so a `dyn
-    /// NativeSurface` caller holding a live `MacBackend` can now paint
+    /// PaintSurface` caller holding a live `MacBackend` can now paint
     /// either without a separate [`ChromeSurface`] wrapper. `italic` is
     /// dropped, matching [`Self::surface_draw_text_run_styled`]'s own
     /// documented "not rendered yet" posture — adding real italic
@@ -4198,7 +4206,7 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
 /// angle" primitive as convenient to chain as Cairo's.
 ///
 /// `radius` is clamped to half of `rect`'s shorter side — see
-/// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]'s
+/// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]'s
 /// doc for why every implementation of that verb does this.
 ///
 /// # Safety
@@ -4262,7 +4270,7 @@ pub(crate) unsafe fn ns_draw_line(
 /// CoreGraphics has no clip-only push/pop pair, so (as every macOS
 /// rasteriser that clips already does — e.g. `macos::board`'s column/card
 /// clipping) this piggybacks on the save/restore GState stack:
-/// `MacBackend`'s `NativeSurface::surface_pop_clip` impl calls
+/// `MacBackend`'s `PaintSurface::surface_pop_clip` impl calls
 /// `CGContextRestoreGState` directly to match.
 ///
 /// # Safety
@@ -4276,7 +4284,7 @@ pub(crate) unsafe fn ns_push_clip(ctx: CGContextRef, rect: Rect) {
 /// caller with only a raw `CGContextRef` (no live `MacBackend`) — e.g.
 /// [`crate::primitives::multi_section_view`]'s embedded-`Form` section
 /// body — can balance its own `ns_push_clip` call the same way
-/// `MacBackend`'s `NativeSurface::surface_pop_clip` impl does.
+/// `MacBackend`'s `PaintSurface::surface_pop_clip` impl does.
 ///
 /// # Safety
 /// Same contract as [`ns_fill_rect`].
@@ -6050,18 +6058,18 @@ mod tests {
         );
     }
 
-    // ── NativeSurface (#807, Phase 1) ────────────────────────────────
+    // ── PaintSurface (#807, Phase 1) ────────────────────────────────
     //
     // Unlike the GTK/Windows twins of these two tests, these only run on
     // a real Mac — this whole module (`mod macos` in `lib.rs`) is gated
     // `#[cfg(all(feature = "macos", target_os = "macos"))]`, so there is
     // no "type-checks on Linux, runs for real on CI" split to call out
-    // here the way `win_backend_native_surface_verbs_do_not_panic` does:
+    // here the way `win_backend_paint_surface_verbs_do_not_panic` does:
     // if this file compiles at all, it's on `macos.yml`'s `macos-latest`
     // runner, and these tests run there for real, pixels and all.
 
     #[test]
-    fn mac_backend_native_surface_fill_rect_paints_solid_color() {
+    fn mac_backend_paint_surface_fill_rect_paints_solid_color() {
         use super::super::headless::BitmapSurface;
         use crate::types::Color;
 
@@ -6088,20 +6096,20 @@ mod tests {
     }
 
     /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
-    /// above) — this exercises every remaining `NativeSurface` method at
+    /// above) — this exercises every remaining `PaintSurface` method at
     /// least once end-to-end (frame lifecycle, measurement, stroke, line,
     /// clip push/pop, text run, image) so an implementation bug (wrong arg
     /// order, a swapped field, a panic inside the frame-scope guard) fails
     /// a test instead of shipping silently — the same coverage
-    /// `gtk_backend_native_surface_verbs_do_not_panic` /
-    /// `win_backend_native_surface_verbs_do_not_panic` give their
+    /// `gtk_backend_paint_surface_verbs_do_not_panic` /
+    /// `win_backend_paint_surface_verbs_do_not_panic` give their
     /// backends, closing the gap this issue's review flagged: until this
     /// test existed, nothing anywhere called a `MacBackend::surface_*`
     /// method, so the hand-written `ns_fill_rect`/`ns_stroke_rect`/
     /// `ns_draw_line`/`ns_push_clip` CoreGraphics FFI was verified by
     /// nothing beyond "it compiles".
     #[test]
-    fn mac_backend_native_surface_verbs_do_not_panic() {
+    fn mac_backend_paint_surface_verbs_do_not_panic() {
         use super::super::headless::BitmapSurface;
         use crate::types::Color;
 
@@ -6164,10 +6172,10 @@ mod tests {
 
     /// A corner pixel well inside the fillet radius must stay untouched
     /// while the box's centre paints solid — the `ns_fill_rounded_rect`
-    /// twin of `mac_backend_native_surface_fill_rect_paints_solid_color`
+    /// twin of `mac_backend_paint_surface_fill_rect_paints_solid_color`
     /// above.
     #[test]
-    fn mac_backend_native_surface_fill_rounded_rect_clips_the_corners() {
+    fn mac_backend_paint_surface_fill_rounded_rect_clips_the_corners() {
         use super::super::headless::BitmapSurface;
         use crate::types::Color;
 
@@ -6204,7 +6212,7 @@ mod tests {
     /// background must land a real alpha composite — neither the fill
     /// colour verbatim nor the background untouched.
     #[test]
-    fn mac_backend_native_surface_fill_rect_alpha_blends_with_the_background() {
+    fn mac_backend_paint_surface_fill_rect_alpha_blends_with_the_background() {
         use super::super::headless::BitmapSurface;
         use crate::types::Color;
 
@@ -6245,7 +6253,7 @@ mod tests {
     /// huge chrome-font size versus a tiny editor-font size painting
     /// visibly different amounts of ink for the same glyph.
     #[test]
-    fn mac_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
+    fn mac_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
         use super::super::headless::BitmapSurface;
         use crate::types::Color;
 
@@ -6330,7 +6338,7 @@ mod tests {
     /// `surface_draw_icon_glyph` must reach real CoreGraphics painting,
     /// not silently drop the call.
     #[test]
-    fn mac_backend_native_surface_draw_icon_glyph_paints_real_ink() {
+    fn mac_backend_paint_surface_draw_icon_glyph_paints_real_ink() {
         use super::super::headless::BitmapSurface;
         use crate::types::Color;
 
@@ -6361,7 +6369,7 @@ mod tests {
         );
     }
 
-    // ── Form (#808, NativeSurface Phase 2a) ──────────────────────────
+    // ── Form (#808, PaintSurface Phase 2a) ──────────────────────────
 
     /// Regression for #808: pre-fix, `macos::form::draw_form` matched
     /// only 10 of 14 `FieldKind` variants and silently fell through
@@ -6487,7 +6495,7 @@ mod tests {
         }
     }
 
-    // ── find_replace (#809, `NativeSurface` Phase 2b) ──────────────────
+    // ── find_replace (#809, `PaintSurface` Phase 2b) ──────────────────
     //
     // `macos::find_replace` used to carry its own `#[cfg(test)]` module
     // with `panel_paints_surface_bg`, `panel_with_multibyte_query_does_not_panic`
@@ -6500,7 +6508,7 @@ mod tests {
     // tests are the twin that stays macOS-only for a reason: they prove
     // the *plumbing* — `MacBackend::draw_find_replace` really does reach
     // `paint` and `paint` really does land real Core Text pixels through
-    // `MacBackend`'s `NativeSurface` impl — not the paint logic itself.
+    // `MacBackend`'s `PaintSurface` impl — not the paint logic itself.
 
     fn find_replace_sample_panel(w: f32, h: f32) -> FindReplacePanel {
         let (hit_regions, _input_width) =
@@ -6528,7 +6536,7 @@ mod tests {
 
     /// End-to-end pixel probe: `Backend::draw_find_replace` on a real
     /// `MacBackend`, over a headless `BitmapSurface`, must actually paint
-    /// the popup background — proving `MacBackend`'s `NativeSurface`
+    /// the popup background — proving `MacBackend`'s `PaintSurface`
     /// impl really reaches Core Graphics, not just that the shared
     /// painter emits the right verb (the primitive-level
     /// `RecordingSurface` test already covers that half, portably).
@@ -6573,7 +6581,7 @@ mod tests {
             (r, g, b),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
             "find/replace popup background must be painted through MacBackend's \
-             real NativeSurface impl",
+             real PaintSurface impl",
         );
     }
 
@@ -6615,7 +6623,7 @@ mod tests {
     // reproduce (both assertions below fail) against the unfixed stub.
     // `draw_text_input` now routes through the shared
     // `primitives::text_input::paint` via this backend's own
-    // `NativeSurface` impl — this drives that real Core Text/CoreGraphics
+    // `PaintSurface` impl — this drives that real Core Text/CoreGraphics
     // path end to end, the same "acceptance bar" shape
     // `mac_backend_draw_find_replace_paints_popup_background` and
     // `mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop`

@@ -658,14 +658,14 @@ pub fn format_tick_value(v: f64) -> String {
     }
 }
 
-// ── NativeSurface paint (#810, Phase 2c of the NativeSurface milestone) ────
+// ── PaintSurface paint (#810, Phase 2c of the PaintSurface milestone) ────
 //
 // Before this, `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
 // `win::chart::draw_chart` each independently painted every `ChartKind`
 // with their own Cairo / CoreGraphics / Direct2D calls (quadraui#785
 // child #810, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
 // shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API.
 //
 // Behavioural divergences found while unifying (not resolved silently,
@@ -686,7 +686,7 @@ pub fn format_tick_value(v: f64) -> String {
 //     all — its own (now-deleted) module doc read: "it needs a filled
 //     polygon path, which this backend doesn't build a
 //     `ID2D1PathGeometry` for yet; only the line stroke itself paints."
-//     `NativeSurface` has no polygon-fill verb (only axis-aligned
+//     `PaintSurface` has no polygon-fill verb (only axis-aligned
 //     `surface_fill_rect`), so there is no way to reproduce an
 //     arbitrary under-the-line fill through it. `paint` adopts
 //     Windows's pre-existing, documented scope limitation instead of
@@ -711,7 +711,7 @@ pub fn format_tick_value(v: f64) -> String {
 //   - **The crosshair.** GTK drew a dashed, 50%-alpha line plus each
 //     series' value at the crosshair position. Windows drew the same
 //     per-series labels but a solid, fully opaque line. macOS drew only
-//     a plain solid line, no labels at all. `NativeSurface` has no
+//     a plain solid line, no labels at all. `PaintSurface` has no
 //     dashed-line verb, so `paint` adopts the two-out-of-three shape —
 //     solid line, per-series value labels — approximating GTK's
 //     50%-alpha tint with `blend` against `theme.background` instead of
@@ -729,7 +729,7 @@ pub fn format_tick_value(v: f64) -> String {
 //   - **The hover marker.** GTK and Windows drew a real two-ring circle
 //     (`cr.arc`/`fill_circle`); macOS approximated it with a single
 //     filled square, since its own private rasteriser never grew a
-//     circle helper. `NativeSurface` has no circle verb either (see its
+//     circle helper. `PaintSurface` has no circle verb either (see its
 //     module doc's "~15 drawing verbs" — a circle isn't one of them),
 //     so `paint` adopts macOS's square approximation, sized to the same
 //     footprint GTK/Windows already used (radius 5 / radius 8 rings →
@@ -772,7 +772,7 @@ pub fn format_tick_value(v: f64) -> String {
 #[allow(dead_code)]
 mod native_surface_paint {
     use super::{Chart, ChartKind, ChartLayout};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::Color;
     use crate::Rect;
@@ -794,13 +794,13 @@ mod native_surface_paint {
     }
 
     /// Stroke a polyline through `points` as `points.len() - 1` separate
-    /// segments — `NativeSurface::surface_draw_line` only draws one
+    /// segments — `PaintSurface::surface_draw_line` only draws one
     /// segment at a time (mirrors how `win::chart`'s pre-#810 rasteriser
     /// already built every polyline, one `draw_line` call per segment,
     /// since Direct2D's `ID2D1RenderTarget` has no multi-segment stroke
     /// helper here either).
     fn stroke_polyline(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         points: &[(f32, f32)],
         color: Color,
         stroke_width: f32,
@@ -827,7 +827,7 @@ mod native_surface_paint {
     pub(crate) fn paint(
         chart: &Chart,
         layout: &ChartLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         hovered_point: Option<(usize, usize)>,
         crosshair_x: Option<f64>,
@@ -858,7 +858,7 @@ mod native_surface_paint {
     }
 
     fn paint_sparkline(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         chart: &Chart,
         theme: &Theme,
@@ -900,7 +900,7 @@ mod native_surface_paint {
     }
 
     fn paint_line(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         chart: &Chart,
         theme: &Theme,
@@ -943,7 +943,7 @@ mod native_surface_paint {
     }
 
     fn paint_bar(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         chart: &Chart,
         theme: &Theme,
@@ -997,7 +997,7 @@ mod native_surface_paint {
     }
 
     fn paint_legend(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         chart: &Chart,
         theme: &Theme,
@@ -1026,7 +1026,7 @@ mod native_surface_paint {
     }
 
     fn paint_axis_labels(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         chart: &Chart,
         theme: &Theme,
@@ -1108,7 +1108,7 @@ mod native_surface_paint {
     }
 
     fn paint_crosshair(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         chart: &Chart,
         theme: &Theme,
@@ -1157,7 +1157,7 @@ mod native_surface_paint {
     }
 
     fn paint_hover_marker(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         layout: &ChartLayout,
         series_idx: usize,
         data_idx: usize,
@@ -1211,7 +1211,7 @@ mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

@@ -1,9 +1,9 @@
 //! GTK rasteriser + layout helper for [`crate::TextDisplay`].
 //!
 //! Field-kind *painting* moved to the shared
-//! [`crate::primitives::text_display::paint`] (#810, NativeSurface Phase
+//! [`crate::primitives::text_display::paint`] (#810, PaintSurface Phase
 //! 2c) — see that fn's doc for the divergence (Windows's bold-span
-//! support, dropped since `NativeSurface` has no weight parameter)
+//! support, dropped since `PaintSurface` has no weight parameter)
 //! resolved while unifying `gtk::text_display::draw_text_display`,
 //! `macos::text_display::draw_text_display` and
 //! `win::text_display::draw_text_display` into one implementation. This

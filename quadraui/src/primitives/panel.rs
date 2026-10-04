@@ -209,7 +209,7 @@ impl Panel {
     }
 }
 
-// ── NativeSurface paint (#859, Phase 2d slice 2/9 of the NativeSurface
+// ── PaintSurface paint (#859, Phase 2d slice 2/9 of the PaintSurface
 // milestone) ─────────────────────────────────────────────────────────────
 //
 // Before this, `gtk::draw_panel` (Cairo/Pango), `macos::panel::draw_panel`
@@ -218,7 +218,7 @@ impl Panel {
 // action-button chrome with their own drawing API (quadraui#785 child
 // #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
 // shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API.
 //
 // The three deleted copies were near-identical: title bar filled with
@@ -273,7 +273,7 @@ impl Panel {
 pub(crate) mod native_surface_paint {
     use super::{Panel, PanelLayout};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     fn plain_text(t: &crate::types::StyledText) -> String {
@@ -290,7 +290,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(
         panel: &Panel,
         layout: &PanelLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         let Some(tb) = layout.title_bar_bounds else {
@@ -352,7 +352,7 @@ pub(crate) mod native_surface_paint {
             text_runs: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

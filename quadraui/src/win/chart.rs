@@ -2,7 +2,7 @@
 //! [`crate::primitives::chart::Chart`] (issue #26).
 //!
 //! Painting moved to the shared [`crate::primitives::chart::paint`]
-//! (#810, NativeSurface Phase 2c) — see that fn's doc for the
+//! (#810, PaintSurface Phase 2c) — see that fn's doc for the
 //! divergences resolved while unifying `gtk::chart::draw_chart`,
 //! `macos::chart::draw_chart` and `win::chart::draw_chart` into one
 //! implementation, including the quadraui#791 clip this backend never

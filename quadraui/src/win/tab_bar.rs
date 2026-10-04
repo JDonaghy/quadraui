@@ -35,14 +35,14 @@
 //!
 //! Still a per-backend paint loop: **#1081 did NOT migrate `TabBar`.**
 //! Unlike `win::menu_bar` / `win::toolbar` / `win::activity_bar`, which
-//! `NativeSurface` Phase 4 slice 5/8 collapsed into
+//! `PaintSurface` Phase 4 slice 5/8 collapsed into
 //! `primitives::<name>::native_surface_paint::paint`, every pixel
 //! `paint_tab_bar_icons_from_layout` below draws is still Direct2D-
 //! specific and still triplicated with `gtk::tab_bar` / `macos::tab_bar`
 //! — the two scope gaps just above (no bracket chrome, no italic preview
 //! styling; this module also ignores `theme.tab_preview_*_fg` entirely)
 //! are three of the five live drifts between those copies. See
-//! [`crate::primitives::tab_bar`]'s "`NativeSurface` migration status"
+//! [`crate::primitives::tab_bar`]'s "`PaintSurface` migration status"
 //! section for the full drift table, the macOS `close_bounds`-convention
 //! prerequisite that blocks the move, and why #1081 stays open rather
 //! than closing as complete.

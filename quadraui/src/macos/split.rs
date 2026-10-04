@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::split::native_surface_paint::paint`] (#864,
-//! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
+//! `PaintSurface` Phase 2d slice 7/9, child of #811) — see that fn's
 //! module doc for a reported divergence between this module and GTK's:
 //! macOS's `CGContextSetRGBFillColor` (via `ns_fill_rect`) always
 //! honoured a translucent `theme.separator`, while pre-migration GTK

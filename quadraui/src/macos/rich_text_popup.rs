@@ -2,7 +2,7 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::rich_text_popup::native_surface_paint::paint`]
-//! (#1077, `NativeSurface` Phase 4 slice 4/8 — GTK is deliberately not
+//! (#1077, `PaintSurface` Phase 4 slice 4/8 — GTK is deliberately not
 //! part of this migration, see that fn's module doc). macOS gains
 //! several capabilities its own pre-migration "Scope omissions" doc
 //! (kept below for the historical record) listed as missing: selection

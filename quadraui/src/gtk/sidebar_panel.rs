@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-//! (#862, `NativeSurface` Phase 2d slice 5/9) — see that fn's module doc
+//! (#862, `PaintSurface` Phase 2d slice 5/9) — see that fn's module doc
 //! for the four named divergences found while unifying
 //! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
 //! and `win::sidebar_panel::draw_sidebar_panel` into one implementation.
@@ -10,7 +10,7 @@
 //! layout via the Pango-measuring [`PangoMeasure`] adapter, still needed
 //! by `GtkBackend::sidebar_panel_layout` for no-paint hit-test queries —
 //! the shared `paint` recomputes its own layout via
-//! `NativeSurface::surface_measure_text` instead, so it never calls this
+//! `PaintSurface::surface_measure_text` instead, so it never calls this
 //! fn). The deprecated `draw_sidebar_panel` compatibility shim over the
 //! shared [`super::surface::CairoSurface`] adapter (#1072 — consolidated
 //! from this module's own private `RawSidebarPanelSurface`; opaque fill

@@ -61,12 +61,12 @@ instead of duplicated per-runner:
   consumer renders only its own content. `shell_adapter.rs` is the
   shared `AppLogic` impl every backend's shell runner instantiates to
   avoid re-deriving that routing per backend.
-- `native_surface.rs` — the low-level drawing-verb trait underneath the
-  three pixel backends (GTK, macOS, Windows), factoring the "how the
-  platform draws at all" half of `Backend` (frame lifecycle,
+- `paint_surface.rs` — `PaintSurface`, the low-level drawing-verb trait
+  underneath the three pixel backends (GTK, macOS, Windows), factoring the
+  "how the platform draws at all" half of `Backend` (frame lifecycle,
   measurement, fill/stroke/text primitives) out from the "what to
   paint" half — one `draw_*`/`*_layout` method per primitive (issue
-  #807).
+  #807; `pub` since issue #1101, reached via `Backend::paint_surface`).
 
 **Backend trait** in `quadraui/src/backend.rs` plumbs frame state, the
 `set_theme` / `set_nerd_fonts` setters hosts call once per frame, *and*

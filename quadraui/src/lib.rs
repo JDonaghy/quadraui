@@ -261,21 +261,19 @@ pub mod accelerator;
 pub mod backend;
 pub mod event;
 
-// ── NativeSurface (#807, Phase 1 of the NativeSurface milestone) ───────────
+// ── PaintSurface (#807 Phase 1; public since #1101) ─────────────────────
 // The ~15-verb drawing trait underneath the three pixel backends —
 // extracted from helpers each of GtkBackend/MacBackend/WinBackend already
-// had privately. `pub(crate)`, not `pub`: purely an internal decomposition
-// of `Backend`'s existing (sealed) implementors, so it adds no new public
-// API surface. TUI is deliberately excluded (see `native_surface`'s module
-// doc); gated the same way `text_selection` below is, on the backends that
-// actually implement it, so a `tui`-only build doesn't carry a trait with
-// zero implementors under `-D warnings`' dead-code lint.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-mod native_surface;
+// had privately. `pub`, not `pub(crate)`, since #1101: this is the public
+// backend-paint seam, reached off `Backend::paint_surface` the same way
+// `Backend::window`/`Backend::services` expose `WindowControl`/
+// `PlatformServices`. TUI is deliberately excluded (see `paint_surface`'s
+// module doc) — compiled unconditionally rather than feature-gated:
+// a `pub` trait with zero implementors on a `tui`-only build is not
+// "dead code" from a library's own crate boundary (an external crate can
+// still implement it), so no `-D warnings` dead-code lint applies here the
+// way it did back when this was `pub(crate)`.
+pub mod paint_surface;
 
 // Host-independent paint-geometry helpers (#857) — pure rect/inset
 // arithmetic pulled out from behind `src/macos/`'s whole-module
@@ -559,10 +557,12 @@ pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
     MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
 };
+// #1101: the public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
     FrameZone, ScreenLayout, Surface,
 };
+pub use paint_surface::PaintSurface;
 // #819: `InteractionState` — a single hover/pressed store keyed by
 // `WidgetId`, meant to replace the bespoke per-primitive trackers
 // (`ToolbarHoverTracker`, `StatusBarInteraction`) and the positional

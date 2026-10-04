@@ -171,8 +171,8 @@ impl ProgressBar {
     }
 }
 
-// ── NativeSurface paint (shared gtk/macos/win implementation, issue #1085,
-// NativeSurface Phase 4 8/8) ────────────────────────────────────────────
+// ── PaintSurface paint (shared gtk/macos/win implementation, issue #1085,
+// PaintSurface Phase 4 8/8) ────────────────────────────────────────────
 //
 // Before this, `gtk::progress::draw_progress` (Cairo + Pango),
 // `macos::progress::draw_progress` (Core Graphics + Core Text) and
@@ -180,7 +180,7 @@ impl ProgressBar {
 // independently painted the same track/fill/label/cancel geometry
 // (already unified by [`ProgressBar::layout`]/[`pixel_progress_layout`])
 // with their own drawing API. `paint` below is the one shared
-// implementation, written against [`crate::native_surface::NativeSurface`]
+// implementation, written against [`crate::paint_surface::PaintSurface`]
 // (#807, Phase 1) instead of any one backend's drawing API — same shape
 // as `diff_view`'s #866 migration and this issue's `board`/`pipeline_view`
 // slices above.
@@ -208,7 +208,7 @@ impl ProgressBar {
 pub(crate) mod native_surface_paint {
     use super::{ProgressBar, ProgressBarLayout};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel, pixel_progress_layout};
     use crate::theme::Theme;
 
@@ -217,7 +217,7 @@ pub(crate) mod native_surface_paint {
     /// every deleted per-backend `draw_progress`.
     pub(crate) fn paint(
         bar: &ProgressBar,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
     ) -> ProgressBarLayout {
@@ -298,7 +298,7 @@ pub(crate) mod native_surface_paint {
             text_runs: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

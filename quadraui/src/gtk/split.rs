@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::split::native_surface_paint::paint`] (#864,
-//! `NativeSurface` Phase 2d slice 7/9, child of #811) — see that fn's
+//! `PaintSurface` Phase 2d slice 7/9, child of #811) — see that fn's
 //! module doc for a **reported divergence**: the old free-function
 //! `draw_split` painted the divider opaque-only (`set_source`), while
 //! the live `Backend::draw_split` path now honours `theme.separator`'s

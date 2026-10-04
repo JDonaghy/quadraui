@@ -3,7 +3,7 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::rich_text_popup::native_surface_paint::paint`]
-//! (#1077, `NativeSurface` Phase 4 slice 4/8 — GTK is deliberately not
+//! (#1077, `PaintSurface` Phase 4 slice 4/8 — GTK is deliberately not
 //! part of this migration, see that fn's module doc). This backend was
 //! already the richest of the three pre-migration (selection bg, bold,
 //! focused-link underline, link hit regions); the shared `paint` closes

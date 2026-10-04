@@ -236,14 +236,14 @@ impl MenuBar {
     }
 }
 
-// ── NativeSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::context_menu::native_surface_paint` for
 // the same pattern applied three primitives earlier (#1077, slice 1/8 of
 // that issue's own numbering; this repo's issue tracker also carries it
-// forward as slice 5/8 of the overall `NativeSurface` Phase 4 run).
+// forward as slice 5/8 of the overall `PaintSurface` Phase 4 run).
 //
 // Pre-migration, `gtk::menu_bar`, `macos::menu_bar` and `win::menu_bar`
 // agreed on layout, background/active/disabled colouring, and centred
@@ -252,7 +252,7 @@ impl MenuBar {
 //
 // - **GTK** underlined the activation character via a Pango
 //   `AttrList`/`AttrInt::new_underline` range on just that character —
-//   real per-glyph underline metrics, but a mechanism [`NativeSurface`]
+//   real per-glyph underline metrics, but a mechanism [`PaintSurface`]
 //   has no verb for (there is no "underline this byte range of a text
 //   run" primitive, only whole-run `surface_draw_text_run_styled`, whose
 //   `underline` flag would underline the entire label).
@@ -269,9 +269,9 @@ impl MenuBar {
 //
 // `paint` adopts Windows' manual-rectangle approach for all three
 // backends: it is the only one of the three that maps directly onto
-// [`NativeSurface`]'s existing verbs
-// ([`crate::native_surface::NativeSurface::surface_measure_text`] +
-// [`crate::native_surface::NativeSurface::surface_fill_rect`]), and
+// [`PaintSurface`]'s existing verbs
+// ([`crate::paint_surface::PaintSurface::surface_measure_text`] +
+// [`crate::paint_surface::PaintSurface::surface_fill_rect`]), and
 // adopting it closes macOS's gap instead of leaving a third rendering
 // path unported. Visually near-identical to GTK's Pango underline at
 // the sizes this bar renders at (a 2px solid bar under one character).
@@ -284,7 +284,7 @@ impl MenuBar {
 pub(crate) mod native_surface_paint {
     use super::{MenuBar, MenuBarLayout};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Thickness (surface-native units) of the Alt-key underline
@@ -298,7 +298,7 @@ pub(crate) mod native_surface_paint {
         label.chars().filter(|&c| c != '&').collect()
     }
 
-    /// The **char index** (not byte index — [`NativeSurface::surface_measure_text`]
+    /// The **char index** (not byte index — [`PaintSurface::surface_measure_text`]
     /// works over substrings, not byte ranges) into the display string
     /// of the Alt-activation character (the character immediately after
     /// `&`), or `None` when `label` carries no `&` at all — mirrors
@@ -324,7 +324,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(
         bar: &MenuBar,
         layout: &MenuBarLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         surface.surface_fill_rect(layout.bounds, theme.tab_bar_bg);
@@ -428,7 +428,7 @@ pub(crate) mod native_surface_paint {
             texts: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

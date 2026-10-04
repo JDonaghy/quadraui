@@ -1,8 +1,8 @@
 //! macOS layout helper for [`crate::TextDisplay`].
 //!
 //! Painting moved to the shared [`crate::primitives::text_display::paint`]
-//! (#810, NativeSurface Phase 2c) — see that fn's doc for the divergence
-//! (Windows's bold-span support, dropped since `NativeSurface` has no
+//! (#810, PaintSurface Phase 2c) — see that fn's doc for the divergence
+//! (Windows's bold-span support, dropped since `PaintSurface` has no
 //! weight parameter) resolved while unifying
 //! `gtk::text_display::draw_text_display`,
 //! `macos::text_display::draw_text_display` and

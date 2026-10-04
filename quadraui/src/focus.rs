@@ -127,7 +127,7 @@ use crate::types::WidgetId;
 
 // Focus-ring stroke width is not a constant in this module: it is the
 // app-overridable [`crate::Style::focus_ring_width`] token (native
-// units — GTK/macOS/Win-GUI pixels), which every `NativeSurface`-backed
+// units — GTK/macOS/Win-GUI pixels), which every `PaintSurface`-backed
 // pixel backend's `Backend::draw_focus_ring` reads via
 // `Backend::style()` so all three paint the same weight without three
 // independent literals to keep in sync. See that field's doc for the

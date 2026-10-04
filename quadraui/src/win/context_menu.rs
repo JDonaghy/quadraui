@@ -2,7 +2,7 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::context_menu::native_surface_paint::paint`]
-//! (#1077, `NativeSurface` Phase 4 slice 4/8) — see that fn's module
+//! (#1077, `PaintSurface` Phase 4 slice 4/8) — see that fn's module
 //! doc for the two small drifts it resolved (box corner rounding,
 //! separator stroke weight). This module only builds the
 //! [`crate::win::surface::D2dSurface`] adapter and delegates.

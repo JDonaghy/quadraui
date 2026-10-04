@@ -350,13 +350,13 @@ impl TreeView {
     }
 }
 
-// ── NativeSurface paint (#1075, NativeSurface Phase 4 slice 2/8) ───────────
+// ── PaintSurface paint (#1075, PaintSurface Phase 4 slice 2/8) ───────────
 //
 // Before this, `gtk::draw_tree` (Cairo), `macos::tree::draw_tree` (Core
 // Graphics) and `win::tree::draw_tree` (Direct2D) each independently
 // painted the same row/chevron/icon/badge/scrollbar content with their
 // own drawing API. `paint` below is the one shared implementation,
-// written against [`crate::native_surface::NativeSurface`] instead of
+// written against [`crate::paint_surface::PaintSurface`] instead of
 // any one backend's API — see `crate::primitives::list::native_surface_paint`
 // for the same pattern applied one primitive earlier.
 //
@@ -392,7 +392,7 @@ impl TreeView {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{TreeRowEditState, TreeView, TreeViewLayout};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::text_util::{safe_prefix, snap_to_char_boundary};
     use crate::theme::Theme;
     use crate::types::Decoration;
@@ -416,7 +416,7 @@ pub(crate) mod native_surface_paint {
         tree_layout: &TreeViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
@@ -542,7 +542,7 @@ pub(crate) mod native_surface_paint {
             // at its full measured width via `surface_draw_text_run_styled`,
             // so an over-long label's last glyphs painted straight through
             // (and often past) the badge with no gap, mirroring the TUI
-            // bug this issue reports. `NativeSurface` has no ellipsize verb
+            // bug this issue reports. `PaintSurface` has no ellipsize verb
             // (see `diff_view::native_surface_paint`'s identical note), so
             // GUI backends hard-clip rather than ellipsize — TUI is the
             // only backend that can cheaply measure+truncate a column
@@ -615,7 +615,7 @@ pub(crate) mod native_surface_paint {
     /// rasterisers with the full treatment — see this module's doc).
     #[allow(clippy::too_many_arguments)]
     fn paint_edit_input(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         text_x: f32,
         row_y: f32,
         row_h: f32,
@@ -695,7 +695,7 @@ pub(crate) mod native_surface_paint {
             clips: Vec<Rect>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {
@@ -953,7 +953,7 @@ pub(crate) mod native_surface_paint {
         /// `paint` fn) must clamp an over-long label before a right-aligned
         /// badge the same way TUI does — a gap between the label's clip
         /// boundary and the badge, never the badge painted flush against
-        /// (or on top of) the label. `NativeSurface` has no ellipsize verb
+        /// (or on top of) the label. `PaintSurface` has no ellipsize verb
         /// (see `paint`'s inline #1183 note), so this asserts the hard-clip
         /// boundary sits strictly left of the badge's start, not a literal
         /// `…` glyph — that part of the fix is TUI-only.

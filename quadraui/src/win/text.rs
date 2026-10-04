@@ -711,7 +711,7 @@ pub(crate) fn fill_rect(target: &ID2D1RenderTarget, rect: Rect, color: Color) ->
 /// flowing through unclamped) so a radius wider than the box it
 /// outlines can't produce Direct2D's own degenerate "radius bigger than
 /// the rect" shape (the same clamp
-/// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]'s
+/// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]'s
 /// doc requires of every implementor).
 pub(crate) fn fill_rounded_rect(
     target: &ID2D1RenderTarget,

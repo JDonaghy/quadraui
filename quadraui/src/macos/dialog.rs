@@ -2,7 +2,7 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
-//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
 //! drift it resolved. macOS's own font-role behaviour (the whole dialog
 //! paints in `self.chrome_font`, per issue #1003) is unchanged by this
 //! migration — it was already the answer the shared `paint` adopted for

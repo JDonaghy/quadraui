@@ -3,7 +3,7 @@
 //! Content painting (background, rows, chevron/icon/badge/text or
 //! inline-edit, vertical scrollbar) moved to the shared
 //! [`crate::primitives::tree::native_surface_paint::paint`] (#1075,
-//! `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc for
+//! `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc for
 //! what's shared. Notably: this rasteriser previously never painted
 //! `TreeRow::edit` at all (see *Scope for #26* below — inherited from
 //! before this migration, kept for the historical record); it now

@@ -3,7 +3,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-//! (#1085, `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the
+//! (#1085, `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the
 //! seven named divergences found while unifying
 //! `gtk::pipeline_view::draw_pipeline_view`,
 //! `macos::pipeline_view::draw_pipeline_view` and
@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// Regression for #1085 divergence 4: the action-button tint is now a
-    /// real [`crate::native_surface::NativeSurface::surface_fill_rect_alpha`]
+    /// real [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`]
     /// composite instead of a CPU-side `Color::blend` — probing just
     /// above the button's centre (clear of the label glyphs) must show a
     /// colour strictly between the plain box background and a fully

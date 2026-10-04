@@ -654,10 +654,10 @@ impl Toolbar {
     }
 }
 
-// ── NativeSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::menu_bar::native_surface_paint` for the
 // same pattern applied one primitive earlier in this issue.
 //
@@ -676,13 +676,13 @@ impl Toolbar {
 //   inset helper exists yet in `win::text`".
 //
 // That blocker no longer applies: issue #1073 added
-// [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
 // to every pixel backend specifically to unblock chrome primitives like
 // this one (see that verb's own doc). `paint` below uses it
 // unconditionally for the highlight fill — closing macOS's and
 // Windows' gap onto GTK's nicer pill shape, rather than flattening GTK
 // down to the 2-of-3 majority. The focus ring stays a **square**
-// stroke on all three: [`NativeSurface`] has no rounded-stroke verb
+// stroke on all three: [`PaintSurface`] has no rounded-stroke verb
 // (same gap noted in `primitives::context_menu::native_surface_paint`'s
 // module doc), so keeping GTK's rounded ring would need a fill-shaped
 // workaround uglier than just picking the square the other two already
@@ -698,7 +698,7 @@ pub(crate) mod native_surface_paint {
         action_text, valign_offset_y, Toolbar, ToolbarButton, ToolbarLayout, ToolbarPaintOptions,
     };
     use crate::event::{Point, Rect};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::WidgetId;
 
@@ -716,7 +716,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(
         bar: &Toolbar,
         layout: &ToolbarLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,

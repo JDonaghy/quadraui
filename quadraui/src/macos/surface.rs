@@ -1,4 +1,4 @@
-//! The one shared [`NativeSurface`] adapter over a bare `CGContextRef`,
+//! The one shared [`PaintSurface`] adapter over a bare `CGContextRef`,
 //! consolidating the 10 private per-file `Raw*Surface` copies that #811's
 //! Phase 2d slices each left behind (issue #1072). Every one of those
 //! copies differed from its neighbours only in struct name and
@@ -46,13 +46,13 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::backend::ImagePaintResult;
-use crate::native_surface::NativeSurface;
+use crate::paint_surface::PaintSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
 use super::text::{draw_text, measure_text};
 
 /// See the module doc for [`Self::font`], the one field that carries
-/// genuine per-call-site behaviour; every other [`NativeSurface`] verb
+/// genuine per-call-site behaviour; every other [`PaintSurface`] verb
 /// below is one shared implementation.
 pub(crate) struct CgSurface<'a> {
     pub(crate) ctx: CGContextRef,
@@ -72,7 +72,7 @@ impl<'a> CgSurface<'a> {
     }
 }
 
-impl NativeSurface for CgSurface<'_> {
+impl PaintSurface for CgSurface<'_> {
     fn surface_begin_frame(&mut self, _viewport: Viewport) {
         unreachable!("CgSurface has no backend frame lifecycle to begin")
     }

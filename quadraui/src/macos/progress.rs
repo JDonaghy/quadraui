@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::progress::native_surface_paint::paint`] (#1085,
-//! `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the one
+//! `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the one
 //! named divergence (Windows previously ignored the host's theme
 //! entirely) found while unifying `gtk::progress::draw_progress`,
 //! `macos::progress::draw_progress` and `win::progress::draw_progress`

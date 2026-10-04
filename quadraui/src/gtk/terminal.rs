@@ -1,14 +1,14 @@
 //! GTK support for [`crate::Terminal`] cell grids.
 //!
 //! Painting moved to the shared [`crate::primitives::terminal::paint`] /
-//! [`crate::primitives::terminal::paint_divider`] (#810, NativeSurface
+//! [`crate::primitives::terminal::paint_divider`] (#810, PaintSurface
 //! Phase 2c) — see that fn's doc for the divergences (per-cell
 //! bold/italic/underline styling, and #492's incidental `painted_text`
 //! tracking fix) resolved while unifying
 //! `gtk::terminal::draw_terminal_cells`,
 //! `macos::terminal::draw_terminal_cells` and
 //! `win::terminal::draw_terminal_cells` into one implementation. GTK's
-//! own [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]
+//! own [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]
 //! override applies all three style flags via Pango's `AttrList`,
 //! matching this module's pre-#810 behaviour exactly.
 //!
@@ -30,7 +30,7 @@
 //! [`crate::terminal_style::wide_cell_advance`] (shared with
 //! `macos`/`win`, #500), paints their background across two columns,
 //! skips the continuation column, and scales the glyph horizontally
-//! (via `NativeSurface::surface_draw_text_run_styled`'s `scale_x`, see
+//! (via `PaintSurface::surface_draw_text_run_styled`'s `scale_x`, see
 //! [`crate::terminal_style::wide_glyph_x_scale`]) so it spans exactly
 //! `cell_w` — the same #439/#703 fix this module's own rasteriser used
 //! to apply directly.

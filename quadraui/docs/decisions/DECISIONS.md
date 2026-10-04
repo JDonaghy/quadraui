@@ -2399,11 +2399,13 @@ getter) so adding them is purely additive to the (sealed, in-tree-only)
 `current_theme` field. `TuiBackend` takes the trait default and stores
 nothing — see point 3. This is the same "reach all three backends from
 one call site" property `NativeSurface` buys for drawing verbs
-(`native_surface.rs`'s module doc); `Style` reuses it rather than
-inventing a second plumbing mechanism, because Phase 4 of that
-milestone (`NativeSurface` Phase 4, 8/8 slices) was already complete at
-the time of this decision — the blocker the issue's "only possible
-after #785 Phase 4" named is cleared.
+(`paint_surface.rs`'s module doc — `NativeSurface` was renamed
+`PaintSurface` and made `pub` by issue #1101, after this decision was
+written); `Style` reuses it rather than inventing a second plumbing
+mechanism, because Phase 4 of that milestone (`NativeSurface` Phase 4,
+8/8 slices) was already complete at the time of this decision — the
+blocker the issue's "only possible after #785 Phase 4" named is
+cleared.
 
 **3. TUI story, stated once for the whole struct rather than
 per-field** (the shape quadraui#1097/D-014 asks every new capability to
@@ -2464,3 +2466,108 @@ follow-up PR that reaches for it isn't surprised.
 - It does not add a `surface_stroke_rounded_rect` verb to
   `NativeSurface`, or wire corner radius / border width / padding
   anywhere. Those are named as the next tokens, not started here.
+
+---
+
+## D-018 — `NativeSurface` renamed `PaintSurface` and made `pub`; reached via `Backend::paint_surface` (issue #1101)
+
+### Question
+
+Issue #1101 asked quadraui's framework audit's remaining ask for the
+`NativeSurface` milestone (#785/#807): once Phase 4 moved pixel paint
+for the bulk of primitives into `primitives::*::native_surface_paint`
+helpers taking `&mut dyn NativeSurface` — true by the time this issue
+landed, per D-017's "Phase 4, 8/8 slices... already complete" note —
+make that trait the crate's public paint-verb seam, so a future pixel
+backend (or any external code that wants to paint a primitive's shared
+rasteriser) only needs to implement ~15 verbs, not `Backend`'s full
+71-method `draw_*`/`*_layout` surface.
+
+### Decision
+
+**Make the existing trait `pub`, rename it `PaintSurface` (to match the
+issue's own naming and to read correctly once it sits beside the two
+other public per-concern traits `Backend` already exposes —
+`PlatformServices` via `Backend::services`, `WindowControl` via
+`Backend::window`), and add `Backend::paint_surface(&mut self) ->
+Option<&mut dyn PaintSurface>` as the third accessor in that family,
+defaulted to `None`.**
+
+This completes the "split" the issue's title names, but not by moving
+anything out of the sealed `Backend` trait (D-013): `PlatformServices`
+and `WindowControl` were already separate, already-public traits
+reached the same `Option`/accessor way — only the paint-verb third of
+the trio was still `pub(crate)`. `Backend` itself stays sealed and
+keeps its 71 `draw_*`/`*_layout` methods; this issue does not attempt
+to delete or re-home them, for two reasons:
+
+1. Most of those methods have already converged onto one shared,
+   generic implementation per primitive (the `native_surface_paint`
+   helpers) — the duplication the issue is really after is already
+   gone for those. Deleting the `Backend::draw_*` method itself (not
+   just its body) would be a breaking change to nothing — `Backend` has
+   no external implementors (D-013) — but would still cost every
+   in-tree call site (compose helpers, `ScreenLayout::draw`,
+   `AppShell`) a signature change for primitives that have not finished
+   migrating, which is real churn with no portability benefit to show
+   for it yet.
+2. A handful of primitives have not migrated onto `native_surface_paint`
+   at all — `command_center`, `completions`, `editor`, `minimap`,
+   `spinner`, `image`, plus the documented `tab_bar` holdout (#1081,
+   blocked on a `close_bounds` convention unification that is a layout
+   change, not a paint change). Until every primitive routes through
+   one shared paint function, `Backend::draw_*` for those primitives is
+   still real, non-generic, per-backend logic — there is nothing to
+   delete yet, only to finish migrating, which is its own (also
+   parallelisable-per-primitive) follow-up, not this issue's scope.
+
+**Zero downstream impact.** `NativeSurface` was `pub(crate)` from the
+day it was created (#807) — no external crate could ever have named,
+implemented, or called it, so `CLAUDE.md`'s blast-radius grep has
+nothing to find for either the rename or the visibility change. The
+`pub`-ness is purely additive: existing call sites
+(`crate::paint_surface::PaintSurface`, `&mut dyn PaintSurface`) keep
+compiling unchanged after the rename, since the rename was applied
+crate-wide in the same change.
+
+**`paint_surface()`'s shape mirrors `window()`/`services()` exactly**
+(`Option<&mut dyn _>`, `&mut self`, defaulted `None`) rather than
+inventing a fourth pattern — see `Backend::window`'s own doc for why
+`Option` (not a capability-flag `bool`) is the right shape for a
+*structural* absence: TUI genuinely cannot answer `Some` here (see
+`PaintSurface`'s own module doc, "Why TUI stays out" — a cell grid has
+no sub-cell `Rect`), so `tests/conformance/caps.rs`'s
+`ACCEPTED_DEFAULTS` records `tui/paint_surface` as a declared gap, not
+a silent one (quadraui#492).
+
+Making the trait `pub` without a feature-gate (previously gated on
+`any(feature = "gtk", feature = "win", all(feature = "macos",
+target_os = "macos"))`, to dodge `-D warnings`' dead-code lint on a
+`tui`-only build with zero implementors) turned out not to need a
+replacement gate at all: a `pub` trait with zero in-crate implementors
+is not "dead code" from a library crate's own lint pass — only a
+`pub(crate)`/private item with no reachable use is. Verified empirically
+(`cargo build --features tui --workspace --exclude kubeui-gtk`, zero
+warnings) rather than assumed.
+
+### What this does NOT mean
+
+- It does not split `Backend` itself into `PaintSurface + Services +
+  WindowHost` as separate *required* supertraits — `PlatformServices`/
+  `WindowControl`/`PaintSurface` all stay optional accessors
+  (`services()` is the one exception, required since every backend has
+  always had services; `window()`/`paint_surface()` stay `Option`).
+  `Backend: sealed::Sealed` (D-013) is unchanged.
+- It does not finish `NativeSurface` Phase 4 for `command_center`,
+  `completions`, `editor`, `minimap`, `spinner`, `image`, or `tab_bar`
+  (#1081) — those primitives' `Backend::draw_*` methods are still
+  per-backend, non-generic code today. Each is its own follow-up issue.
+- It does not change any `draw_*`/`*_layout` method's signature, default,
+  or behaviour on `Backend` — this issue only adds the new
+  `paint_surface()` accessor and renames/unseals the already-existing
+  verb trait underneath it.
+- It does not add a GTK/macOS/Win-specific `Canvas`-style escape hatch
+  for apps (`docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`'s "no custom
+  drawing" critical finding) — that is a new public primitive built atop
+  this seam, not a consequence of unsealing it; still open follow-up
+  work.

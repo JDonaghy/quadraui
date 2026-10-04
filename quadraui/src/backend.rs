@@ -2051,6 +2051,35 @@ pub trait Backend: sealed::Sealed {
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
     fn services(&self) -> &dyn PlatformServices;
 
+    // ─── Paint surface (issue #1101) ────────────────────────────────────
+    /// This backend's [`crate::PaintSurface`] — the ~15-verb drawing
+    /// primitive seam every `primitives::*::native_surface_paint` helper
+    /// paints through — or `None` on a backend with no pixel canvas to
+    /// offer one against.
+    ///
+    /// Mirrors [`Self::window`] and [`Self::services`]'s shape exactly:
+    /// `Option`, not a required method, because `None` here is a
+    /// *structural* absence, not a missing override — see
+    /// [`crate::PaintSurface`]'s module doc, "Why TUI stays out", for why
+    /// [`crate::tui::backend::TuiBackend`] can never meaningfully answer
+    /// `Some` (a cell grid has no sub-cell `Rect` to paint into). A
+    /// caller that only ever sees `Option` cannot forget to check it the
+    /// way a silently-false-returning capability flag can be forgotten.
+    ///
+    /// `&mut self`, not `&self`: every [`crate::PaintSurface`] method
+    /// mutates the render target — matches [`Self::window`]'s identical
+    /// reasoning for `WindowControl`.
+    ///
+    /// Default: `None`. [`crate::gtk::backend::GtkBackend`],
+    /// [`crate::macos::backend::MacBackend`] and
+    /// [`crate::win::backend::WinBackend`] each override this to return
+    /// `Some(self)`, since each already implements [`crate::PaintSurface`]
+    /// directly on its own backend struct (see that trait's `impl` block
+    /// in each backend module).
+    fn paint_surface(&mut self) -> Option<&mut dyn crate::PaintSurface> {
+        None
+    }
+
     // ─── Capability declaration ─────────────────────────────────────────
     /// This backend's declared [`BackendCaps`] — which optional surfaces
     /// (quadraui#492) it actually implements, versus which ones are still
@@ -2189,7 +2218,7 @@ pub trait Backend: sealed::Sealed {
     /// `ListView`, generalised to arbitrary text instead of one average
     /// advance.
     ///
-    /// Primitives whose paint already migrated onto `NativeSurface`
+    /// Primitives whose paint already migrated onto `PaintSurface`
     /// (`TabBar`, `MenuBar`, `Toolbar`, `StatusBar`, …) solved this
     /// internally, years before this method existed: each one threads a
     /// [`crate::primitives::layout_metrics::TextMeasure`] (or an inline

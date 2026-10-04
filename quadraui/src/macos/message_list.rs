@@ -2,13 +2,13 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::message_list::native_surface_paint::paint`]
-//! (#1084, `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! (#1084, `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
 //! per-backend divergence survey, most notably: this module used to
 //! ignore [`crate::primitives::message_list::MessageRow::spans`]
 //! entirely, painting every row flat regardless of any rich styling a
 //! caller supplied. [`draw_message_list`] below is now a thin wrapper
 //! over the shared paint, using [`crate::macos::surface::CgSurface`] as
-//! the `NativeSurface` adapter — mirroring
+//! the `PaintSurface` adapter — mirroring
 //! [`crate::win::message_list::draw_message_list`]'s equivalent
 //! migration. `gtk::message_list::draw_message_list` is *not* migrated;
 //! see the shared `paint`'s doc for why.

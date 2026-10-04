@@ -324,14 +324,14 @@ pub fn visible_window(
     (start, end)
 }
 
-// ── NativeSurface paint (#811, Phase 2d of the NativeSurface milestone) ────
+// ── PaintSurface paint (#811, Phase 2d of the PaintSurface milestone) ────
 //
 // Before this, `gtk::draw_scrollbar` (Cairo), `macos::scrollbar::draw_scrollbar`
 // (Core Graphics) and `win::scrollbar::draw_scrollbar` (Direct2D) each
 // independently painted the same overlay track+thumb geometry with their
 // own drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
 // §5). `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API.
 //
 // Unlike `primitives::chart`'s divergence-heavy unification (#810), the
@@ -349,7 +349,7 @@ pub fn visible_window(
 // reported here rather than silently assumed.
 //
 // What #791 did *not* reach, because the code didn't exist yet:
-// `NativeSurface::surface_fill_rect`'s own GTK implementation (added
+// `PaintSurface::surface_fill_rect`'s own GTK implementation (added
 // later, by the #808/#810 migrations that gave `primitives::{chart,form,
 // terminal,text_display}` a shared paint path) called
 // `crate::gtk::set_source` — `cr.set_source_rgb`, which drops `Color::a`
@@ -375,7 +375,7 @@ pub fn visible_window(
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{ScrollAxis, Scrollbar};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::Rect;
 
@@ -384,7 +384,7 @@ pub(crate) mod native_surface_paint {
     /// hover/drag. See this module's doc for the one known divergence
     /// (quadraui#791) re-verified (already fixed) while unifying three
     /// per-backend copies into this one.
-    pub(crate) fn paint(scrollbar: &Scrollbar, surface: &mut dyn NativeSurface, theme: &Theme) {
+    pub(crate) fn paint(scrollbar: &Scrollbar, surface: &mut dyn PaintSurface, theme: &Theme) {
         let track = scrollbar.track;
         if track.width <= 0.0 || track.height <= 0.0 {
             return;
@@ -439,7 +439,7 @@ pub(crate) mod native_surface_paint {
             fills: Vec<(Rect, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

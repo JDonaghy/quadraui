@@ -168,7 +168,7 @@ mod split_tree;
 /// #1078: only its deprecated paint shim is Windows-only — see its
 /// module docs.
 mod status_bar;
-/// Shared `NativeSurface` adapter over a bare `&ID2D1RenderTarget`
+/// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`
 /// (issue #1072). Windows-only — same gating as the per-primitive
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]

@@ -153,15 +153,15 @@ pub fn set_source(cr: &Context, c: Color) {
 /// (see [`cairo_rgb`]'s doc for why that one drops it).
 ///
 /// Used by [`crate::gtk::backend::GtkBackend::surface_fill_rect`]
-/// (issue #811, `NativeSurface` Phase 2d) so a translucent fill —
+/// (issue #811, `PaintSurface` Phase 2d) so a translucent fill —
 /// `primitives::scrollbar::paint`'s overlay track/thumb, most notably —
 /// blends against whatever is already on the target instead of
 /// silently rendering opaque. Before this, `GtkBackend`'s own
-/// `NativeSurface::surface_fill_rect` was the *one* of the three pixel
+/// `PaintSurface::surface_fill_rect` was the *one* of the three pixel
 /// backends whose fill didn't honour alpha (macOS's `ns_fill_rect` and
 /// Windows's `win::text::fill_rect` both already paint a real
 /// translucent brush/fill — see quadraui#791, which fixed Windows's
-/// side of this same gap for the pre-`NativeSurface`
+/// side of this same gap for the pre-`PaintSurface`
 /// `win::scrollbar::draw_scrollbar`). Every existing
 /// `surface_fill_rect` caller (`primitives::{chart,form,terminal,
 /// text_display}`) always passes an opaque (`a: 255`) `Color`, so

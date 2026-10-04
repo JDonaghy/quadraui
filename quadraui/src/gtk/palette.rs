@@ -3,7 +3,7 @@
 //! Content painting (background, border, title/query/item rows,
 //! scrollbar, create row, preview pane) moved to the shared
 //! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
-//! `NativeSurface` Phase 4 slice 3/8) — see that fn's module doc for
+//! `PaintSurface` Phase 4 slice 3/8) — see that fn's module doc for
 //! what's shared, including the three-way geometry drift it fixes
 //! (`query_height`, row flooring, scrollbar width) and the per-backend
 //! feature gaps it closes (match-position highlighting, icon rendering,

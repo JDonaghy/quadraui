@@ -525,7 +525,7 @@ impl SplitTreeLayout {
     }
 }
 
-// ── NativeSurface paint (#863, Phase 2d slice 6/9 of the NativeSurface
+// ── PaintSurface paint (#863, Phase 2d slice 6/9 of the PaintSurface
 // milestone, child of #811) ────────────────────────────────────────────
 //
 // Before this, `gtk::draw_split_tree` (Cairo), `macos::split_tree::draw_split_tree`
@@ -533,7 +533,7 @@ impl SplitTreeLayout {
 // independently painted the same divider-only chrome with their own
 // drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
 // §5). `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of
 // any one backend's drawing API.
 //
 // Unlike `primitives::scrollbar`'s translucent-overlay identity (#811
@@ -572,7 +572,7 @@ impl SplitTreeLayout {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{SplitDirection, SplitTreeLayout};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::Rect;
 
@@ -584,7 +584,7 @@ pub(crate) mod native_surface_paint {
     /// and hit-test can never disagree. Leaf content is NOT painted —
     /// every backend leaves the leaf rects (`layout.leaves`) to the
     /// host, same contract as before this migration.
-    pub(crate) fn paint(layout: &SplitTreeLayout, surface: &mut dyn NativeSurface, theme: &Theme) {
+    pub(crate) fn paint(layout: &SplitTreeLayout, surface: &mut dyn PaintSurface, theme: &Theme) {
         for div in &layout.dividers {
             let rect = match div.direction {
                 SplitDirection::Horizontal => {
@@ -616,7 +616,7 @@ pub(crate) mod native_surface_paint {
             fills: Vec<(Rect, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

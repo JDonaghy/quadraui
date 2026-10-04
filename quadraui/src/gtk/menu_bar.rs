@@ -4,7 +4,7 @@
 //! text measurement to size each item. Content painting (background,
 //! active/disabled colouring, label text, Alt-key underline) moved to
 //! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
-//! (#1081, `NativeSurface` Phase 4 slice 5/8) — see that fn's module
+//! (#1081, `PaintSurface` Phase 4 slice 5/8) — see that fn's module
 //! doc for the underline-mechanism drift it resolved (GTK's Pango
 //! per-character `AttrList` underline vs. Windows' manual rectangle vs.
 //! macOS having no underline at all).

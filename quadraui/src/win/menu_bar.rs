@@ -8,7 +8,7 @@
 //! `backend.rs`'s module docs). Content painting (background,
 //! active/disabled colouring, label text, Alt-key underline) moved to
 //! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
-//! (#1081, `NativeSurface` Phase 4 slice 5/8) — see that fn's module doc
+//! (#1081, `PaintSurface` Phase 4 slice 5/8) — see that fn's module doc
 //! for the underline-mechanism drift it resolved (this backend's own
 //! manual-rectangle underline was the one every backend adopted; GTK's
 //! Pango per-character attribute and macOS's total absence of underline

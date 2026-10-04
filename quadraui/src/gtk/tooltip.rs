@@ -3,7 +3,7 @@
 //! Content painting (background, border chrome, title punch, plain/
 //! styled text) moved to the shared
 //! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
-//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
 //! one drift it resolved (styled-line span bold/italic/underline, which
 //! GTK gains here for the first time).
 //!
@@ -326,7 +326,7 @@ mod tests {
     }
 
     /// #1077: styled-line spans now render `bold` through
-    /// `NativeSurface::surface_draw_text_run_styled` — GTK's
+    /// `PaintSurface::surface_draw_text_run_styled` — GTK's
     /// pre-migration rasteriser cleared Pango attributes before drawing
     /// each span, silently dropping it. Observed RED before the port
     /// (GTK ignored `span.bold` entirely, so this failed): paint the

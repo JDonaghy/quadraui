@@ -475,7 +475,7 @@ impl Palette {
     }
 }
 
-// ── NativeSurface paint (#1076, NativeSurface Phase 4 slice 3/8) ───────────
+// ── PaintSurface paint (#1076, PaintSurface Phase 4 slice 3/8) ───────────
 //
 // Before this, `gtk::draw_palette` (Cairo), `macos::palette::draw_palette`
 // (Core Graphics) and `win::palette::draw_palette` (Direct2D) each
@@ -517,7 +517,7 @@ impl Palette {
 // geometry copy is left to drift again.
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::tree::native_surface_paint` for the same
 // pattern applied one primitive earlier. Feature gaps found while
 // unifying (adopted the richer/majority behaviour rather than silently
@@ -543,7 +543,7 @@ impl Palette {
 // - **Icon rendering** (`PaletteItem::icon`): GTK painted it (with the
 //   Nerd-Font-fallback swap #416 documents); macOS/Windows never did.
 //   `paint` paints it for every backend via
-//   [`crate::native_surface::NativeSurface::surface_draw_icon_glyph`],
+//   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`],
 //   which already carries the fallback swap per-backend where needed.
 // - **Query cursor**: GTK/macOS both painted a filled cursor block
 //   (inverting the character underneath, terminal-style); Windows drew
@@ -582,7 +582,7 @@ impl Palette {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::text_util::safe_prefix;
     use crate::theme::Theme;
     use crate::Rect;
@@ -677,7 +677,7 @@ pub(crate) mod native_surface_paint {
     /// tall), colouring highlighted runs (per [`matched_runs`]) in
     /// `match_fg` and the rest in `fg`. Returns the total painted width.
     fn draw_matched_text(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         text: &str,
         match_positions: &[usize],
         row: Rect,
@@ -718,7 +718,7 @@ pub(crate) mod native_surface_paint {
         rows_h: f32,
         line_height: f32,
         nerd_fonts_enabled: bool,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         if area.width < 20.0 || area.height < line_height * 4.0 {
@@ -1065,7 +1065,7 @@ pub(crate) mod native_surface_paint {
             texts: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

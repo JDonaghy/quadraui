@@ -124,7 +124,7 @@ use crate::Rect;
 /// exposed as a per-backend text-run attribute like bold/italic/
 /// underline: faint has no font-weight equivalent, and blending toward
 /// the resolved background is theme-correct on both dark and light
-/// themes with zero new `NativeSurface` surface area.
+/// themes with zero new `PaintSurface` surface area.
 pub fn resolve_cell_style(cell: &TerminalCell, theme: &Theme) -> (Color, Color) {
     if cell.is_cursor
         && cell.cursor_shape == TerminalCursorShape::Block

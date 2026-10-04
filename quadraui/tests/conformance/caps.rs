@@ -892,7 +892,7 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          required methods, nothing backend-specific to add (#1187)",
     ),
     // ── issue #1133: `Style` carries non-colour geometry tokens for the
-    // three `NativeSurface`-backed pixel backends (GTK/macOS/Win, each of
+    // three `PaintSurface`-backed pixel backends (GTK/macOS/Win, each of
     // which does override `set_style`/`style` with a real `current_style`
     // field). TUI takes the trait's no-op default on purpose, not as
     // unfinished work: every `Style` token shipped so far (today, just
@@ -913,6 +913,21 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "style",
         "mirrors set_style above — default Style::default() is correct since TUI never stores \
          an override (#1133)",
+    ),
+    // ── TUI: `paint_surface` (issue #1101) exposes the public
+    // `PaintSurface` pixel-paint-verb seam — `Rect`/`Point`-taking fills,
+    // strokes, rounded rects, text runs. TUI paints a cell grid, not a
+    // pixel canvas (no sub-cell `Rect`, no fractional stroke width, no
+    // clip rect narrower than a whole cell — see `PaintSurface`'s own
+    // module doc, "Why TUI stays out"), so `None` here is the honest
+    // structural answer, not a missing override — `TuiBackend` could
+    // never implement this trait meaningfully. GTK/macOS/Win all override
+    // it because each has a real pixel canvas to hand back.
+    (
+        "tui",
+        "paint_surface",
+        "a terminal cell grid has no sub-cell Rect to paint into — PaintSurface's own module \
+         doc, \"Why TUI stays out\", explains why TuiBackend never implements this trait (#1101)",
     ),
 ];
 
