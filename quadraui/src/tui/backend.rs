@@ -308,6 +308,17 @@ pub struct TuiBackend {
     /// `tui::run::run_inner` frame loop, and
     /// [`crate::tui::testing::TuiDriver::render`] on the headless path.
     full_repaint_requested: bool,
+    /// Latched `true` once [`Self::poll_events`]/[`Self::wait_events`]
+    /// detect that the input fd (stdin — a real terminal or pty slave) is
+    /// permanently gone: hung up, with no bytes left to read (quadraui#1295).
+    /// Never cleared once set — there is no path back from "the fd is
+    /// gone" to "input is working again." Read by
+    /// [`super::run::TuiRunner::run_one`] to turn the condition into a
+    /// clean [`crate::runner::StepOutcome::Exited`] instead of looping
+    /// back into another `wait_events`/`poll_events` call. See
+    /// [`Self::input_gone`]'s doc and the `stdin_hung_up` guard (below in
+    /// this file) for the full rationale.
+    input_gone: bool,
 }
 
 impl TuiBackend {
@@ -344,6 +355,7 @@ impl TuiBackend {
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
             full_repaint_requested: false,
+            input_gone: false,
         }
     }
 
@@ -385,6 +397,24 @@ impl TuiBackend {
     /// so the request is never double-applied.
     pub(crate) fn take_full_repaint_requested(&mut self) -> bool {
         std::mem::take(&mut self.full_repaint_requested)
+    }
+
+    /// Whether [`Self::poll_events`]/[`Self::wait_events`] have detected
+    /// that the input fd is permanently gone (quadraui#1295) — see the
+    /// `input_gone` field's doc comment for the full rationale. A plain
+    /// read, not a `take`: once true, it stays true for the rest of this
+    /// backend's lifetime, so every subsequent `run_one` check sees the
+    /// same answer.
+    ///
+    /// `pub`, not `pub(crate)` — unlike the other internal-plumbing
+    /// accessors on this impl, a host embedding [`super::run::TuiRunner`]
+    /// (issue #1100) directly via `step`/`pump` has a legitimate reason
+    /// to read this off [`super::run::TuiRunner::backend`] after seeing
+    /// [`super::run::StepOutcome::Exited`], to tell "the app chose to
+    /// exit" apart from "the input source disappeared out from under
+    /// us."
+    pub fn input_gone(&self) -> bool {
+        self.input_gone
     }
 
     /// How many times [`Backend::request_frame_in`] has been called on
@@ -1351,6 +1381,107 @@ fn coalesce_mouse_moved(raw: Vec<UiEvent>) -> Vec<UiEvent> {
     out
 }
 
+/// Dead-PTY busy-loop guard (quadraui#1295).
+///
+/// crossterm 0.29's unix event source
+/// (`UnixInternalEventSource::try_read`, `src/event/source/unix/mio.rs`)
+/// has a TTY-readiness read loop whose only break arm is
+/// `ErrorKind::WouldBlock` — a bare `Ok(0)` (EOF) read falls through with
+/// no break and no event, so the loop calls `read()` again immediately.
+/// Once a pty's master side is fully closed, every `read()` on the slave
+/// returns `Ok(0)` forever (confirmed empirically — Linux does **not**
+/// turn this into an `EIO`), and mio's own `poll()` keeps reporting the
+/// fd "ready" regardless of requested timeout (a hangup condition is
+/// always "ready" to `poll(2)`/`epoll`). The result is a genuine,
+/// unbounded, un-rate-limited spin inside `crossterm::event::poll`/
+/// `read` with **no way for the caller to interrupt it** — once that
+/// call is made, control never returns to us.
+///
+/// This matters specifically for a pty that was never the process's
+/// *controlling* terminal (no implicit `SIGHUP` backstop on hangup —
+/// e.g. a pty wired up via `std::process::Command` without `setsid`/
+/// `TIOCSCTTY`, which is exactly what drives a headless `vcd` session).
+/// A real controlling terminal's hangup kills the process outright via
+/// the default `SIGHUP` disposition, long before this code would ever
+/// run.
+///
+/// The fix lives here, not in crossterm (third-party, see this issue's
+/// own "root cause" writeup for the upstream-reporting question): check
+/// *our own* `poll(2)` on the fd, non-blocking, **before** ever calling
+/// into `ratatui::crossterm::event::poll`/`read`. Any of `POLLHUP`/
+/// `POLLERR`/`POLLNVAL` means "this fd's far end is gone and it will
+/// never produce another real event" — crossterm is never entered at
+/// all in that case, which is what makes this a guard rather than a
+/// mitigation: the vulnerable code path is simply never reached once
+/// the hangup is visible to us from the outside, regardless of how it
+/// would have behaved if we had called in.
+///
+/// **`POLLIN` is not a useful signal to subtract here, and an earlier
+/// version of this function tried to** (`hung_up && !has_data`, on the
+/// theory that `POLLHUP` alongside `POLLIN` means "real buffered bytes
+/// are still queued ahead of the hangup, let crossterm drain them
+/// first"). A real macOS repro (`posix_openpt`/`grantpt`/`unlockpt`,
+/// close the master, `poll()` the slave with zero bytes ever written in
+/// either direction) disproved that: `revents` came back `POLLIN |
+/// POLLHUP` — `0x11` — even though there was nothing to read at all.
+/// `POLLIN` means "a `read()` would not block," and a read that returns
+/// `Ok(0)` (EOF) satisfies that exactly as much as a read that returns
+/// real bytes — `poll(2)` cannot tell the two apart, only an actual
+/// `read()` call can, and this function deliberately never performs one
+/// (see below). So this guard cannot promise delivery of a few
+/// legitimate bytes that happened to be queued in the exact instant the
+/// far end hung up; it promises the thing this issue actually asks for,
+/// which is no busy-spin, ever, on both platforms this crate targets
+/// (quadraui#1295's "Platform scope" note) — a strictly better outcome
+/// than the alternative of calling into crossterm to find out which
+/// case it was, which is itself the unbounded-hang risk.
+///
+/// Deliberately **not** a raw `read()` probe instead of `poll()`: doing
+/// our own `read()` here would, on every ordinary non-hungup call (i.e.
+/// nearly all of them), either race crossterm's own read of the exact
+/// same fd or require re-implementing crossterm's ANSI parser to avoid
+/// dropping whatever bytes we stole from it. `poll()` is non-destructive
+/// — it never consumes a byte — which is exactly why it's safe to call
+/// on *every* `poll_events`/`wait_events` invocation, not just a
+/// suspected-dead one.
+///
+/// Returns `false` (never guards) when `poll(2)` itself times out or
+/// errors (e.g. `EINTR`) — neither is a confirmed hangup, and the normal
+/// crossterm path handles both already.
+#[cfg(unix)]
+fn stdin_hung_up() -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let stdin = std::io::stdin();
+    let fd = stdin.as_raw_fd();
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `pollfd` is a single valid `libc::pollfd` on the stack;
+    // `poll(2)` only reads/writes through the pointer+length (1) it's
+    // given, for the duration of this call. Zero timeout makes this a
+    // non-blocking readiness check, never a wait.
+    let ready = unsafe { libc::poll(&mut pollfd, 1, 0) };
+    if ready <= 0 {
+        // 0 = nothing ready yet (no hangup, no data); negative = e.g.
+        // `EINTR`. Neither is a confirmed hangup — let the normal
+        // crossterm path run.
+        return false;
+    }
+    pollfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+}
+
+/// Non-unix hosts (Windows, via ConPTY) use a completely different
+/// crossterm event source (`src/event/sys/windows`, native console
+/// input APIs) that doesn't share this `read()`-loop shape at all — see
+/// this issue's own "Platform scope" note. Never guards there.
+#[cfg(not(unix))]
+fn stdin_hung_up() -> bool {
+    false
+}
+
 impl crate::backend::sealed::Sealed for TuiBackend {}
 
 impl Backend for TuiBackend {
@@ -1428,6 +1559,17 @@ impl Backend for TuiBackend {
     }
 
     fn poll_events(&mut self) -> Vec<UiEvent> {
+        // quadraui#1295: refuse to delegate into crossterm at all once
+        // the input fd has hung up with nothing left to read — see
+        // `stdin_hung_up`'s doc for why entering crossterm's own
+        // poll/read here risks an unbounded busy-spin we have no way to
+        // interrupt once inside it.
+        if stdin_hung_up() {
+            self.input_gone = true;
+            let mut out = Vec::new();
+            self.user_events.drain_into(&mut out);
+            return out;
+        }
         // Drain every queued crossterm event; never blocks. Each
         // native event translates to zero, one, or more `UiEvent`s
         // via [`super::events::crossterm_to_uievents_scaled`] (dividing a
@@ -1465,6 +1607,17 @@ impl Backend for TuiBackend {
     }
 
     fn wait_events(&mut self, timeout: Duration) -> Vec<UiEvent> {
+        // quadraui#1295: same guard as `poll_events` above, and even more
+        // important here — `timeout` is typically non-zero (up to
+        // `IDLE_POLL_CEILING`), and a non-zero `crossterm::event::poll`
+        // call is exactly the shape that reaches the vulnerable mio
+        // `try_read` path once the fd is readiness-flagged by a hangup.
+        if stdin_hung_up() {
+            self.input_gone = true;
+            let mut out = Vec::new();
+            self.user_events.drain_into(&mut out);
+            return out;
+        }
         // Block up to `timeout` for the first native event, then drain
         // the remainder of the queue non-blocking so a burst of events
         // (e.g. a fast mouse drag) is processed in a single frame instead
