@@ -115,6 +115,19 @@
 //! double-borrow scenario it prevents — are unit-tested off Windows; see
 //! the `tests` module below.
 //!
+//! Ceding a *message* this way is safe for input — the next one simply
+//! arrives later — but `WM_SIZE`/`WM_DPICHANGED` are one-shot state
+//! notifications with no later arrival to fall back on (quadraui#1280):
+//! `ShowWindow(SW_MAXIMIZE)`, called synchronously from
+//! `WinBackend::toggle_window_maximize` inside a guarded `app.handle`,
+//! sends `WM_SIZE` re-entrantly, and ceding it outright left the render
+//! target stretched over the new client area with stale hit-testing.
+//! `WindowState::pending_resize_resync` plus `win32::resync_pending_resize`
+//! close that gap: the top-of-`wndproc` check records the ceded
+//! notification instead of dropping it, and the next non-reentrant
+//! `wndproc` call replays it — via `GetClientRect`, since the original
+//! `lparam` is long gone — before doing its own work.
+//!
 //! # Headless smoke mode (#702, adopting `desktop::SmokeConfig`)
 //!
 //! Mirrors `gtk::run`'s "Headless smoke mode" (quadraui#450, GD-5): two
@@ -905,6 +918,27 @@ mod win32 {
         /// rescheduling the same timer and only the final call's deadline
         /// ever actually fires).
         resize_debouncer: RefCell<ResizeDebouncer>,
+        /// Issue #1280: set by the top-of-`wndproc` `pump_depth.is_pumping()`
+        /// re-entrancy check (#702) when the message it just ceded to
+        /// `DefWindowProcW` was `WM_SIZE` or `WM_DPICHANGED` — i.e. a
+        /// synchronous Win32 call made from inside a live `guarded_call`
+        /// (`ShowWindow(SW_MAXIMIZE)` from a drawn maximize-button click,
+        /// chiefly) sent a size/DPI notification that re-entered `wndproc`
+        /// and got bounced before `wndproc`'s own `WM_SIZE`/`WM_DPICHANGED`
+        /// arms ever ran. Those arms are a one-shot state notification, not
+        /// input — ceding them without remembering the attempt silently
+        /// drops the resize for good (the bug this issue reports: a
+        /// stretched render target and stale hit-testing after the OS
+        /// window maximizes). Checked at the top of every *non-reentrant*
+        /// `wndproc` call (right after the `is_pumping()` check that would
+        /// itself otherwise cede again) and cleared there: by that point
+        /// `pump_depth` is back to 0, so `GetClientRect` reads the real,
+        /// settled post-maximize/post-DPI-change size and the normal
+        /// `WM_SIZE` path (`resize_surface`, debouncer `note`,
+        /// `RESIZE_TIMER_ID`, `InvalidateRect`) runs against it — the same
+        /// ordering a posted `WM_APP` message would give for free, without
+        /// needing one.
+        pending_resize_resync: Cell<bool>,
     }
 
     /// Encode a Rust `&str` (already `\0`-terminated by its caller) as
@@ -1257,6 +1291,7 @@ mod win32 {
             smoke,
             smoke_failed: smoke_failed.clone(),
             resize_debouncer: RefCell::new(ResizeDebouncer::new()),
+            pending_resize_resync: Cell::new(false),
         }));
 
         // SAFETY: `class_name`/`window_title` are `Vec<u16>`s that outlive
@@ -1868,6 +1903,82 @@ mod win32 {
         (paths, pt.x as i16, pt.y as i16)
     }
 
+    /// The actual work of `wndproc`'s `WM_SIZE` arm — `resize_surface`,
+    /// debounce `note`, (re)arm [`RESIZE_TIMER_ID`], `InvalidateRect` —
+    /// factored out so issue #1280's resync path (below) can run the
+    /// identical sequence against a size read from `GetClientRect` rather
+    /// than `WM_SIZE`'s own `lparam`, once a ceded `WM_SIZE`/
+    /// `WM_DPICHANGED` notification needs replaying after the fact. See
+    /// `WindowState::pending_resize_resync`'s doc for why that replay is
+    /// necessary at all.
+    fn apply_resize<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND, width: i32, height: i32) {
+        let viewport = {
+            let mut s = ws.state.borrow_mut();
+            // Recreate the render target first if a prior `EndDraw`
+            // failure (see `backend.rs`'s `end_frame`) dropped it —
+            // `resize_surface` alone is a no-op on the render-target side
+            // while `surface` is `None`.
+            let _ = s.backend.ensure_surface();
+            // Best-effort: a failed resize (device lost mid-drag) leaves
+            // the old-sized target in place for this frame; the next
+            // `WM_PAINT`/`WM_SIZE` tries `ensure_surface` again.
+            let _ = s.backend.resize_surface(width, height);
+            s.backend.viewport()
+        };
+        // Debounce the `WindowResized` *dispatch* to the app
+        // (quadraui#780) — painting stays live regardless, via
+        // `resize_surface` above and `InvalidateRect` below on every call.
+        // `note()` stashes the latest size; `SetTimer` (re)arms the
+        // shared `RESIZE_TIMER_ID` timer, which Win32 resets rather than
+        // stacking when it's already pending on this `hwnd` — so a live
+        // resize drag keeps pushing the deadline out and only the final
+        // `WM_TIMER`, once the drag settles for `RESIZE_SETTLE`, actually
+        // fires and dispatches.
+        ws.resize_debouncer.borrow_mut().note(viewport);
+        // SAFETY: `hwnd` is this dispatch's own window; `SetTimer` with
+        // `lpTimerFunc: None` posts `WM_TIMER` through the normal message
+        // queue rather than invoking a raw function pointer.
+        unsafe {
+            SetTimer(
+                Some(hwnd),
+                RESIZE_TIMER_ID,
+                RESIZE_SETTLE.as_millis() as u32,
+                None,
+            );
+        }
+        // SAFETY: `hwnd` is this dispatch's own window; `InvalidateRect`
+        // takes only handles/rects.
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+
+    /// Issue #1280: replays a `WM_SIZE`/`WM_DPICHANGED` notification that
+    /// the top-of-`wndproc` `pump_depth.is_pumping()` check (#702) ceded
+    /// to `DefWindowProcW` instead of handling, because it arrived
+    /// re-entrantly while a `super::guarded_call` borrow was already live
+    /// on this thread (chiefly: `ShowWindow(SW_MAXIMIZE)`, called
+    /// synchronously from `WinBackend::toggle_window_maximize` inside
+    /// `app.handle`, sends `WM_SIZE` before it returns). Called from the
+    /// top of `wndproc`, *after* the `is_pumping()` check has already
+    /// confirmed no guard is live — so `ws.state.borrow_mut()` here can't
+    /// collide with anything, and `GetClientRect` reads the real, settled
+    /// post-maximize/post-DPI-change size rather than whatever `lparam`
+    /// the (ceded, now-stale) original message carried.
+    fn resync_pending_resize<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) {
+        if !ws.pending_resize_resync.replace(false) {
+            return;
+        }
+        let mut rect = RECT::default();
+        // SAFETY: `rect` is stack-local and outlives this call; `hwnd` is
+        // caller-supplied and still live.
+        let (width, height) = unsafe {
+            let _ = GetClientRect(hwnd, &mut rect);
+            (rect.right - rect.left, rect.bottom - rect.top)
+        };
+        apply_resize(ws, hwnd, width, height);
+    }
+
     /// The Win32 window procedure. Monomorphized once per concrete `A`
     /// (see module docs) so `RegisterClassExW` gets a real function
     /// pointer despite `run` being generic.
@@ -1947,59 +2058,37 @@ mod win32 {
         // touching `ws.state` while that's a live possibility; the next
         // non-reentrant message (once the outer guarded call returns)
         // handles normally.
+        //
+        // Issue #1280: `WM_SIZE`/`WM_DPICHANGED` are a one-shot state
+        // notification, not input — unlike every other message this
+        // cedes, there is no later arrival of the *same* notification to
+        // fall back on, so ceding one silently loses it (the "stretched,
+        // mis-hit-tested window after a drawn maximize button" bug this
+        // issue reports). Record that a resync is owed instead; the
+        // `resync_pending_resize` call below, run from the next
+        // non-reentrant invocation of this function, replays it once it's
+        // actually safe to touch `ws.state` again.
         if ws.pump_depth.is_pumping() {
+            if msg == WM_SIZE || msg == WM_DPICHANGED {
+                ws.pending_resize_resync.set(true);
+            }
             // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW` above.
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
+
+        // Issue #1280: replay any `WM_SIZE`/`WM_DPICHANGED` the branch
+        // above deferred while a guarded call was in flight. Must run
+        // before `match msg` below so a resize that settles exactly on
+        // this message (e.g. this very message is the first `WM_PAINT`
+        // after a maximize) still sees the corrected surface size.
+        resync_pending_resize(ws, hwnd);
 
         match msg {
             WM_SIZE => {
                 // `lparam`'s low/high words are the new client width/height
                 // in pixels — the standard `WM_SIZE` payload shape.
                 let (width, height) = size_from_lparam(lparam.0);
-                let viewport = {
-                    let mut s = ws.state.borrow_mut();
-                    // Recreate the render target first if a prior
-                    // `EndDraw` failure (see `backend.rs`'s `end_frame`)
-                    // dropped it — `resize_surface` alone is a no-op on
-                    // the render-target side while `surface` is `None`.
-                    let _ = s.backend.ensure_surface();
-                    // Best-effort: a failed resize (device lost mid-drag)
-                    // leaves the old-sized target in place for this
-                    // frame; the next `WM_PAINT`/`WM_SIZE` tries
-                    // `ensure_surface` again.
-                    let _ = s.backend.resize_surface(width, height);
-                    s.backend.viewport()
-                };
-                // Debounce the `WindowResized` *dispatch* to the app
-                // (quadraui#780) — painting stays live regardless, via
-                // `resize_surface` above and `InvalidateRect` below on
-                // every single `WM_SIZE`, matching `crate::runtime::
-                // RESIZE_SETTLE`'s doc. `note()` stashes the latest size;
-                // `SetTimer` (re)arms the shared `RESIZE_TIMER_ID` timer,
-                // which Win32 resets rather than stacking when it's
-                // already pending on this `hwnd` — so a live resize drag
-                // keeps pushing the deadline out and only the final
-                // `WM_TIMER`, once the drag settles for `RESIZE_SETTLE`,
-                // actually fires and dispatches.
-                ws.resize_debouncer.borrow_mut().note(viewport);
-                // SAFETY: `hwnd` is this dispatch's own window; `SetTimer`
-                // with `lpTimerFunc: None` posts `WM_TIMER` through the
-                // normal message queue rather than invoking a raw function
-                // pointer.
-                unsafe {
-                    SetTimer(
-                        Some(hwnd),
-                        RESIZE_TIMER_ID,
-                        RESIZE_SETTLE.as_millis() as u32,
-                        None,
-                    );
-                }
-                // SAFETY: `hwnd` is this dispatch's own window;
-                // `InvalidateRect` takes only handles/rects.
-                unsafe {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
+                apply_resize(ws, hwnd, width, height);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -3414,6 +3503,7 @@ pub fn run_with<A: AppLogic + 'static>(_app: A, _config: RunConfig) -> std::proc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn new_sets_the_title() {
@@ -3681,6 +3771,101 @@ mod tests {
         // Once the guard is gone, the same fake `wndproc` arm behaves
         // like an ordinary, non-reentrant message and runs normally.
         assert_eq!(fake_wndproc_arm(&state, &depth), Some(101));
+    }
+
+    /// Issue #1280: the ceded-but-lossless-resync contract the fix adds.
+    /// Before the fix, `wndproc`'s top-of-function `is_pumping()` check
+    /// (reproduced above by `fake_wndproc_arm`/the two tests just above
+    /// this one) ceded a reentrant `WM_SIZE` to `DefWindowProcW` and
+    /// forgot it ever happened — fine for input, which arrives again,
+    /// but `WM_SIZE` is a one-shot state notification: dropping it left
+    /// the render target at the old pixel size after a drawn maximize
+    /// button's synchronous `ShowWindow(SW_MAXIMIZE)` sent `WM_SIZE`
+    /// re-entrantly from inside `app.handle`.
+    ///
+    /// Models the fix's two halves at the same pure-logic seam the tests
+    /// above use (no real `wndproc`/`WinBackend`, both Windows-only):
+    /// `pending_resize_resync` stands in for `WindowState`'s new
+    /// `Cell<bool>` field, and `fake_wndproc` stands in for `wndproc`'s
+    /// new shape — set the flag instead of silently dropping a ceded
+    /// `WM_SIZE`, then replay it (against the *current* size, like
+    /// `resync_pending_resize`'s `GetClientRect` read) from the next
+    /// non-reentrant call, before that call does its own work. Fails
+    /// before the fix: the old shape never remembered the ceded message,
+    /// so the final `surface_size`/`resized_dispatched` assertions below
+    /// would see the stale 800×600 size and no resize reaching the app.
+    #[test]
+    fn ceded_resize_is_replayed_once_the_guard_releases() {
+        let depth = ModalPumpDepth::new();
+        let pending_resize_resync = Cell::new(false);
+        // Stand-ins for `WinBackend`'s surface size and whether
+        // `UiEvent::WindowResized` reached the app — plain `Cell`s, not a
+        // real backend/app, because this test is proving the *replay
+        // contract* `wndproc` must uphold, not re-exercising
+        // `apply_resize`'s WinAPI calls (those only compile and run on
+        // real Windows; see this issue's "Acceptance" section for that
+        // coverage).
+        let surface_size = Cell::new((800, 600));
+        let resized_dispatched = Cell::new(false);
+
+        // Mirrors `wndproc`'s shape end to end: cede-and-remember while a
+        // guard is held (the top-of-function `is_pumping()` check, now
+        // widened by #1280); otherwise replay any pending resync first
+        // (`resync_pending_resize`), then handle `msg` itself.
+        let fake_wndproc = |is_size: bool, current_size: (i32, i32)| {
+            if depth.is_pumping() {
+                if is_size {
+                    pending_resize_resync.set(true);
+                }
+                return; // DefWindowProcW stand-in: never touches `surface_size`.
+            }
+            if pending_resize_resync.replace(false) {
+                surface_size.set(current_size);
+                resized_dispatched.set(true);
+            }
+            if is_size {
+                surface_size.set(current_size);
+                resized_dispatched.set(true);
+            }
+        };
+
+        // The maximize-button click handler (`app.handle` →
+        // `toggle_window_maximize`) holds the guard and, from inside it,
+        // synchronously triggers `WM_SIZE` — `ShowWindow(SW_MAXIMIZE)`'s
+        // real reentrancy, per this issue's root-cause trace.
+        {
+            let _guard = ModalPumpGuard::new(&depth);
+            fake_wndproc(true, (1920, 1080));
+            assert_eq!(
+                surface_size.get(),
+                (800, 600),
+                "a WM_SIZE arriving while the guard is held must not touch \
+                 the surface yet — only the next non-reentrant call may"
+            );
+            assert!(
+                !resized_dispatched.get(),
+                "must not dispatch WindowResized while the guard is held"
+            );
+        }
+        assert!(
+            !depth.is_pumping(),
+            "depth must return to 0 once the guard around the click handler drops"
+        );
+
+        // The next message — a mouse move, `WM_PAINT`, anything — must
+        // replay the deferred resize before doing its own work, not lose
+        // it.
+        fake_wndproc(false, (1920, 1080));
+        assert_eq!(
+            surface_size.get(),
+            (1920, 1080),
+            "the resize ceded during the guarded call must be replayed, \
+             not dropped, once the guard releases"
+        );
+        assert!(
+            resized_dispatched.get(),
+            "the app must still learn the window was resized"
+        );
     }
 
     #[test]
