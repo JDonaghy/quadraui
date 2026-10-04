@@ -111,9 +111,10 @@ comfortable with a pre-1.0 API.
 
 ## Status
 
-`0.0.x` — pre-1.0. The first published release, `0.1.0`, is being
-prepared (quadraui#1111); until then, depend on it by git revision.
-Breaking changes are batched and recorded in `CHANGELOG.md`.
+`0.1.x` — pre-1.0. The crate is prepared for its first publish to
+crates.io (quadraui#1111); until an operator actually runs `cargo
+publish` and tags `v0.1.0`, depend on it by git revision as shown
+above. Breaking changes are batched and recorded in `CHANGELOG.md`.
 
 | Backend | State |
 |---|---|

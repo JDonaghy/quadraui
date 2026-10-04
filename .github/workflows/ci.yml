@@ -110,6 +110,32 @@ jobs:
       - name: cargo package (default features, full build verification)
         run: cargo package -p quadraui --locked
 
+  publish-dry-run:
+    # quadraui#1111: keeps the crate publishable on every PR, not just at
+    # release time. `package` above already proves the tarball builds;
+    # this job proves the *upload* path specifically — `cargo publish
+    # --dry-run` runs cargo's own pre-upload checks (manifest completeness,
+    # e.g. a missing `description`/`license`, plus everything `package`
+    # already checks) and stops just short of the network PUT
+    # (`aborting upload due to dry run`), so it needs no crates.io token.
+    # `cargo package --list` is the companion piece: a tarball *contents*
+    # regression (e.g. a future PR accidentally un-excluding `tests/`)
+    # shows up as a diff-able file list in this job's log, and the
+    # `cargo publish --dry-run` step below separately prints the actual
+    # packaged size (`Packaged N files, X MiB (Y compressed)`) on every
+    # run — neither is enforced as a hard size limit here; this is
+    # visibility, not a gate, until an actual limit is worth picking.
+    name: cargo publish --dry-run (publishability gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo package --list (tarball contents + size)
+        run: cargo package --list -p quadraui --locked
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run -p quadraui --locked
+
   doc:
     # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal` only if they build
     # clean under `cargo doc` — this is the local proxy for that, run with

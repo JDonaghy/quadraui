@@ -94,8 +94,9 @@
 //!
 //! ## Status
 //!
-//! `0.0.x` — pre-1.0, not yet published to crates.io, breaking changes
-//! allowed. 40 primitives shipped. The TUI and GTK backends have full
+//! `0.1.x` — pre-1.0, prepared for its first publish to crates.io
+//! (quadraui#1111) but not yet published, breaking changes allowed. 40
+//! primitives shipped. The TUI and GTK backends have full
 //! feature parity and are battle-tested by vimcode (5000+ tests). The
 //! macOS backend implements the whole `Backend` trait and is built/tested
 //! for real on `macos-latest` CI. The Windows backend's window/event/

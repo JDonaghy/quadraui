@@ -1,10 +1,28 @@
 [package]
 name = "quadraui"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
-description = "Cross-platform UI primitives with native Windows, Linux, macOS, and TUI rendering backends"
+description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
 repository.workspace = true
+# crates.io/docs.rs metadata (quadraui#1111). `readme` points *above* this
+# crate's own dir on purpose — the authoritative README lives at the repo
+# root (it documents the whole workspace, not just this crate), and cargo
+# copies whatever `readme` resolves to into the package root under its
+# original filename at pack time, so a path outside the crate dir works
+# fine here even though `include`/`exclude` globs below cannot reach
+# outside it. Keep this in sync with `tests/readme_truth.rs`'s
+# `root_readme()`, which reads the same file by a different, repo-root-
+# relative path.
+readme = "../README.md"
+documentation = "https://docs.rs/quadraui"
+# crates.io caps this at 5 entries, each <= 20 bytes, lowercase ASCII +
+# `-`/`_`/digits only.
+keywords = ["gui", "tui", "cross-platform", "widgets", "framework"]
+# Must be slugs from https://crates.io/category_slugs — `cargo publish`
+# rejects an unrecognised one at upload time, not at `cargo package` time,
+# so there is no local dry-run check for a typo here beyond this comment.
+categories = ["gui", "command-line-interface"]
 # Matches `rust-toolchain.toml`'s pin exactly (see that file's header for why
 # the pin exists at all — every stable release can ship new clippy lints and
 # this repo runs `-D warnings`). Keeping the two in lockstep means an older
@@ -13,6 +31,20 @@ repository.workspace = true
 # Bumping the toolchain pin and this field is one commit, not two — do them
 # together.
 rust-version = "1.97.1"
+# Package hygiene (quadraui#1111): the published `.crate` ships `src/`,
+# `examples/` (the README points readers at them directly, and they are
+# useful on crates.io's own source viewer) and `docs/`, but not the
+# in-repo-only test/bench machinery — `tests/` carries this crate's own
+# conformance-scenario fixtures and driver harnesses, `benches/` carries
+# criterion benches — nothing a consumer depending on this crate needs at
+# build or run time, and both are excluded here purely to keep the tarball
+# smaller (verified with `cargo package --list -p quadraui`: dropping them
+# took the package from 629 files / 3.3MiB compressed to 580 files /
+# 3.0MiB compressed). `cargo package`/`cargo publish` happily verify-build
+# a manifest whose `[[bench]]`/non-lib `[[test]]`-implied paths point at
+# now-excluded files — it only warns ("ignoring benchmark ... as ... is not
+# included in the published package") and skips them, it does not error.
+exclude = ["tests/", "benches/"]
 
 # docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`)
 # so a published crate actually renders all backends' public API instead of
@@ -48,6 +80,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lib]
 
 [features]
+# No `default` key, deliberately (quadraui#1111): a bare `cargo add
+# quadraui` (or `quadraui = "0.1"` with no `features = [...]`) must not
+# silently pull in a rendering backend the consumer didn't ask for — every
+# feature below is opt-in, including every backend. This is the same
+# "none of them are default features" fact `[package.metadata.docs.rs]`'s
+# comment above already depends on (it lists every backend explicitly
+# because none would otherwise be on).
 # PTY + vt100 + scrollback engine. No rasteriser — pairs with any backend.
 # Enables `quadraui::terminal_engine`. Pulls in portable-pty and vt100.
 terminal = ["dep:portable-pty", "dep:vt100"]
