@@ -142,7 +142,7 @@
 //!    [`crate::tui::backend::TuiBackend::set_cell_pixel_size`], surfaced to
 //!    an app via [`crate::backend::BackendCaps::sgr_pixel_mouse`].
 //!
-//! ## Underline-colour (SGR 58) support (quadraui#1284)
+//! ## Underline-colour (SGR 58) support
 //!
 //! `ratatui-crossterm`'s `SetUnderlineColor` only ever emits SGR 58 in the
 //! semicolon form (`ESC[58;5;Nm` / `ESC[58;2;R;G;Bm`). ConPTY — the pty
@@ -472,7 +472,7 @@ fn query_sgr_pixel_decrqm() -> Option<u8> {
 /// Whether this terminal correctly renders SGR 58 (`underline_color`) in
 /// the semicolon form crossterm emits — see the module doc's
 /// "Underline-colour (SGR 58) support" section for the full ConPTY
-/// misparse this guards against (quadraui#1284).
+/// misparse this guards against.
 ///
 /// Unconditionally `false` on every Windows build and `true` everywhere
 /// else: unlike [`detect_color_depth`]/[`detect_kitty_keyboard`]/
@@ -841,7 +841,7 @@ mod tests {
         }
     }
 
-    // ── Underline-colour (SGR 58) support (quadraui#1284) ───────────────
+    // ── Underline-colour (SGR 58) support ───────────────
 
     /// This test runs on whichever host CI happens to build for, so it
     /// can only assert the one invariant that holds regardless of

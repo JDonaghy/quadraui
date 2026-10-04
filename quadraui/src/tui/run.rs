@@ -738,7 +738,7 @@ where
                 }
             });
             // Clear any `underline_color` ConPTY would misparse as
-            // blink/faint (quadraui#1284) before any further
+            // blink/faint before any further
             // post-processing touches the buffer — see
             // `TuiBackend::strip_unsupported_underline_colors`'s doc for
             // why this single per-frame sweep, not a parameter threaded

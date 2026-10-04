@@ -255,8 +255,8 @@ pub struct TuiBackend {
     /// changing the grid's row/column count.
     cell_pixel_size: TerminalCellSize,
     /// Whether this session's terminal correctly renders SGR 58
-    /// (`Cell::underline_color`) in the semicolon form crossterm emits
-    /// (quadraui#1284) — seeded from
+    /// (`Cell::underline_color`) in the semicolon form crossterm emits,
+    /// seeded from
     /// [`super::caps::detect_underline_color_support`] at construction
     /// time, overridable via [`Self::set_underline_color_supported`] for
     /// tests that want to exercise the Windows/ConPTY degrade without an
@@ -530,7 +530,7 @@ impl TuiBackend {
 
     /// Whether this session's terminal correctly renders SGR 58
     /// (`underline_color`) — see [`Self::set_underline_color_supported`]
-    /// and `super::caps`'s module doc (quadraui#1284).
+    /// and `super::caps`'s module doc.
     pub fn underline_color_supported(&self) -> bool {
         self.underline_color_supported
     }
@@ -538,7 +538,7 @@ impl TuiBackend {
     /// Override the detected underline-colour-support flag. Real hosts
     /// never need this — [`Self::new`] already detects it from
     /// `cfg!(windows)` — but a test that wants to exercise the
-    /// Windows/ConPTY degrade (quadraui#1284) without an actual Windows
+    /// Windows/ConPTY degrade without an actual Windows
     /// host calls this to force the unsupported path.
     pub fn set_underline_color_supported(&mut self, supported: bool) {
         self.underline_color_supported = supported;
@@ -546,15 +546,15 @@ impl TuiBackend {
 
     /// Clear every painted cell's `underline_color` back to
     /// [`ratatui::style::Color::Reset`] when this session's terminal
-    /// cannot correctly render SGR 58 (quadraui#1284) — a no-op when
+    /// cannot correctly render SGR 58 — a no-op when
     /// [`Self::underline_color_supported`] is `true`.
     ///
     /// Runs once per frame, over the whole buffer, from
     /// [`super::run::paint_frame`] right after every rasteriser for the
     /// frame has painted — not threaded as a parameter through
     /// `draw_tab_bar`/`draw_editor`/`draw_terminal` (the three call
-    /// sites that currently set `underline_color`, per quadraui#1284's
-    /// issue). A single per-frame sweep here can't miss a call site a
+    /// sites that currently set `underline_color`). A
+    /// single per-frame sweep here can't miss a call site a
     /// future primitive adds, costs nothing beyond one extra `bool`
     /// branch per cell on the common (`true`) case, and is exactly what
     /// `TuiDriver`-based tests observe too, since both the live runner
@@ -6677,7 +6677,7 @@ mod tests {
         );
     }
 
-    // ── Underline-colour (SGR 58) ConPTY misparse (quadraui#1284) ───────
+    // ── Underline-colour (SGR 58) ConPTY misparse ───────
     //
     // ConPTY only recognises SGR 58 in the colon form; crossterm's
     // `SetUnderlineColor` only ever emits the semicolon form, so ConPTY
@@ -6826,7 +6826,7 @@ mod tests {
         );
     }
 
-    /// quadraui#1284's core acceptance case: with capabilities
+    /// Core acceptance case: with capabilities
     /// representing Windows/ConPTY (`underline_color_supported ==
     /// false`), no cell painted by the active tab's accent underline or
     /// the editor's diagnostic/spell-error underlines may carry a
@@ -6854,7 +6854,7 @@ mod tests {
         }
     }
 
-    /// The byte-level half of quadraui#1284's acceptance test: the real
+    /// The byte-level half of the acceptance test: the real
     /// ANSI stream a `CrosstermBackend` would send to the terminal must
     /// contain no `ESC[58` (SGR 58, underline colour) at all when
     /// capabilities represent Windows/ConPTY — the exact sequence ConPTY
