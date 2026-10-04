@@ -17,6 +17,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::{Rc, Weak};
 
 use windows::core::{
     Error as WinError, IUnknown, Interface, Result as WinResult, BOOL, HSTRING, PCWSTR,
@@ -682,70 +683,88 @@ pub(crate) fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
 // `draw_line`/`draw_text` created a fresh `ID2D1SolidColorBrush` and let it
 // drop at the end of the call — one `CreateSolidColorBrush` per primitive,
 // per frame. Measured on a real 1639x1079 window that's 647 brushes/frame
-// for a palette of only ~20 distinct colors, and `CreateSolidColorBrush`
-// is not free: it's a real allocation + device call, not a value
-// constructor, so that scaled the frame's draw cost with primitive count
-// rather than with color count.
+// for a palette of only ~20 distinct colors.
 //
-// `BRUSH_CACHE` fixes that by memoizing brushes per `(render target
-// identity, Color)`. Keying on identity (not just `Color`) matters because
-// an `ID2D1SolidColorBrush` is tied to the device that created it — reusing
-// one against a *different* render target is a Direct2D resource-domain
-// error, not merely redundant work, and more than one render target can be
-// live in a single process at a time (e.g. two independent
-// `super::testing::HeadlessSurface`s in the same test). A brush has no
-// stable Rust identity of its own to key on, so this uses
-// `Interface::as_raw` on the owning `&ID2D1RenderTarget` — the raw COM
-// pointer backing whichever concrete target (`ID2D1HwndRenderTarget` or
-// `ID2D1DCRenderTarget`, see `backend::RenderTarget`) the caller derefs
-// from.
+// Ownership: the cache ([`BrushCache`]) is a field of the backend's
+// `Surface` — it lives exactly as long as the render target its brushes
+// were created against, and is dropped (releasing every brush) through an
+// ordinary Rust drop when that surface is replaced or torn down. A
+// re-attach / `ensure_surface` recreate therefore starts from an empty
+// cache with no explicit "clear" call to forget.
 //
-// `thread_local!`, not a field threaded through every one of this module's
-// ~140 call sites: every paint helper here already takes a bare
-// `&ID2D1RenderTarget` (not `&mut Surface`/`&mut WinBackend`), and widening
-// every one of those signatures (and every caller across
-// `win::activity_bar`, `win::status_bar`, … dozens of other files) to
-// thread a cache parameter through would be a much larger diff, touching
-// far more than just this module and `backend.rs`, for the same outcome.
-// Win-GUI's live message loop and every `WinDriver` test both run
-// single-threaded, matching the precedent `crate::testing`'s own
-// paint-time recording sink (`text_run_sink_active`/`record_text_run`,
-// used by `draw_text` below) already sets for per-thread paint-time state
-// in this crate.
+// Lookup: every paint helper in this module takes a bare
+// `&ID2D1RenderTarget`, not the backend, so `WinBackend::begin_frame`
+// *activates* its surface's cache for the duration of the frame via
+// [`activate_brush_cache`] and `end_frame` deactivates it. The
+// thread-local only ever holds a `Weak` reference plus the owning
+// target's raw pointer:
 //
-// Cleared in full by [`clear_brush_cache`] whenever a render target is
-// (re)created — see that function's doc for the exact call sites — so a
-// brush from a torn-down device is never resurrected against its
-// replacement, and so this map never grows past the number of distinct
-// `(target, color)` pairs actually live at once.
+// - **No COM release in a TLS destructor.** An earlier revision kept the
+//   brushes themselves in a `thread_local!`, so every thread that painted
+//   released D2D brushes (and, through them, the last reference to their
+//   `ID2D1Factory`) from its TLS destructor at thread exit. On Windows
+//   those destructors run under the loader lock, and factory teardown
+//   there deadlocked the whole `cargo test --features win` run on real
+//   Windows. Dropping a `Weak` never drops the value it points at.
+// - **No cross-target reuse.** A brush is tied to the device that created
+//   it. Helpers called against any target other than the active one (or
+//   outside a backend frame, e.g. a test painting straight onto a
+//   `HeadlessSurface`) bypass the cache and create a one-off brush, the
+//   pre-cache behaviour. The pointer comparison can't be fooled by address
+//   reuse: the `Weak` only upgrades while the `Surface` — and so the
+//   target it holds a reference to — is still alive.
+
+/// Per-render-target brush memo, owned by the backend's `Surface`. See the
+/// `Brush cache` section comment above.
+pub(crate) type BrushCache = Rc<RefCell<HashMap<Color, ID2D1SolidColorBrush>>>;
+
+/// A fresh, empty [`BrushCache`] for a newly (re)created surface.
+pub(crate) fn new_brush_cache() -> BrushCache {
+    Rc::new(RefCell::new(HashMap::new()))
+}
+
 thread_local! {
-    // `HashMap::new` isn't a `const fn`, so (unlike `BRUSH_CREATIONS`
-    // below) this initializer can't move into a `const { .. }` block —
-    // clippy's `missing_const_for_thread_local` suggestion doesn't apply
-    // here.
-    #[allow(clippy::missing_const_for_thread_local)]
-    static BRUSH_CACHE: RefCell<HashMap<(usize, Color), ID2D1SolidColorBrush>> =
-        RefCell::new(HashMap::new());
+    /// The cache [`get_or_create_brush`] consults, plus the raw pointer
+    /// of the render target it belongs to. Set by
+    /// [`activate_brush_cache`] for the duration of a backend frame.
+    static ACTIVE_BRUSH_CACHE: RefCell<Option<(usize, Weak<RefCell<HashMap<Color, ID2D1SolidColorBrush>>>)>> =
+        const { RefCell::new(None) };
     /// Count of brushes actually created via `CreateSolidColorBrush`
-    /// inside [`get_or_create_brush`] (cache misses only) — written
-    /// unconditionally (every brush creation, test or not, increments
-    /// it), but only *read* through the `#[cfg(test)]`-gated
-    /// [`brush_creation_count`]/[`reset_brush_creation_count`]
-    /// accessors below. This is this issue's acceptance-test hook:
-    /// "render the same frame twice; the second frame must create zero
-    /// new brushes."
+    /// inside [`get_or_create_brush`] — written unconditionally, only read
+    /// through the `#[cfg(test)]` accessors below (this issue's
+    /// acceptance-test hook).
     static BRUSH_CREATIONS: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Get the cached `ID2D1SolidColorBrush` for `(target, color)`, creating
-/// and caching one on a miss. See the `BRUSH_CACHE` module doc above for
-/// the caching/keying rationale.
+/// Make `cache` (owned by the surface wrapping `target`) the one
+/// [`get_or_create_brush`] uses on this thread until
+/// [`deactivate_brush_cache`].
+pub(crate) fn activate_brush_cache(target: &ID2D1RenderTarget, cache: &BrushCache) {
+    let entry = (target.as_raw() as usize, Rc::downgrade(cache));
+    ACTIVE_BRUSH_CACHE.with(|active| *active.borrow_mut() = Some(entry));
+}
+
+/// Stop routing brush lookups through any cache on this thread.
+pub(crate) fn deactivate_brush_cache() {
+    ACTIVE_BRUSH_CACHE.with(|active| *active.borrow_mut() = None);
+}
+
+/// Get the cached `ID2D1SolidColorBrush` for `color` when `target` is the
+/// active cache's target, creating (and caching) one on a miss; otherwise
+/// create a one-off brush.
 fn get_or_create_brush(
     target: &ID2D1RenderTarget,
     color: Color,
 ) -> WinResult<ID2D1SolidColorBrush> {
-    let key = (target.as_raw() as usize, color);
-    if let Some(brush) = BRUSH_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
+    let raw = target.as_raw() as usize;
+    let cache = ACTIVE_BRUSH_CACHE.with(|active| match &*active.borrow() {
+        Some((owner, weak)) if *owner == raw => weak.upgrade(),
+        _ => None,
+    });
+    if let Some(brush) = cache
+        .as_ref()
+        .and_then(|cache| cache.borrow().get(&color).cloned())
+    {
         return Ok(brush);
     }
     // SAFETY: `target` is the caller's live render target; `color_to_d2d`
@@ -753,48 +772,21 @@ fn get_or_create_brush(
     // `None` for brush properties asks for the default (opaque) brush.
     let brush = unsafe { target.CreateSolidColorBrush(&color_to_d2d(color), None)? };
     BRUSH_CREATIONS.with(|count| count.set(count.get() + 1));
-    BRUSH_CACHE.with(|cache| cache.borrow_mut().insert(key, brush.clone()));
+    if let Some(cache) = cache {
+        cache.borrow_mut().insert(color, brush.clone());
+    }
     Ok(brush)
 }
 
-/// Drop every cached brush, for every render target — called whenever a
-/// render target is (re)created: [`super::backend::WinBackend::attach_surface`]
-/// (a brand-new `ID2D1Factory` + `ID2D1HwndRenderTarget`, genuinely a new
-/// device), [`super::backend::WinBackend::attach_headless`] (ditto for the
-/// headless `ID2D1DCRenderTarget` path), and
-/// [`super::backend::WinBackend::ensure_surface`]'s headless-reuse branch
-/// (the device doesn't actually change there, but clearing anyway keeps
-/// this one rule — "every surface (re)attach clears the cache" — simple
-/// and exception-free, at the cost of a handful of extra
-/// `CreateSolidColorBrush` calls on the next frame after a recovery, which
-/// is already the slow/rare path).
-///
-/// Does *not* run on [`super::backend::WinBackend::resize_surface`] (an
-/// `ID2D1HwndRenderTarget::Resize` call) or a DPI-scale update: neither
-/// touches the underlying COM render-target object, so brushes created
-/// against it before either call remain perfectly valid afterward — only
-/// an actual new target invalidates the brushes built from the old one.
-pub(crate) fn clear_brush_cache() {
-    BRUSH_CACHE.with(|cache| cache.borrow_mut().clear());
-}
-
-/// Count of brushes created (cache misses) since the process started or
-/// the last [`reset_brush_creation_count`] call — see `BRUSH_CREATIONS`'s
-/// doc. `#[cfg(test)]`: this issue's only caller is
-/// `backend::tests::repaint_reuses_cached_brushes_creating_no_new_ones`,
-/// and leaving the accessor compiled into a normal (non-test) build would
-/// make it `dead_code` there — a build failure under `ci.yml`'s
-/// `RUSTFLAGS: "-D warnings"` on the real-Windows `Build (win feature)`/
-/// `Clippy (win feature)` steps, which build examples (not tests) and so
-/// never reach a `#[cfg(test)]` call site either.
+/// Count of brushes created since the thread started or the last
+/// [`reset_brush_creation_count`] call. `#[cfg(test)]` so a non-test
+/// build doesn't carry it as dead code.
 #[cfg(test)]
 pub(crate) fn brush_creation_count() -> u32 {
     BRUSH_CREATIONS.with(|count| count.get())
 }
 
-/// Reset [`brush_creation_count`]'s counter to `0` — lets a test measure
-/// creations over just the frame(s) it cares about instead of everything
-/// since process start. `#[cfg(test)]`: see `brush_creation_count`'s doc.
+/// Reset [`brush_creation_count`]'s counter to `0`.
 #[cfg(test)]
 pub(crate) fn reset_brush_creation_count() {
     BRUSH_CREATIONS.with(|count| count.set(0));

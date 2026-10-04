@@ -251,7 +251,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 #[cfg(target_os = "windows")]
-use super::text::{clear_brush_cache, DWrite};
+use super::text::{new_brush_cache, BrushCache, DWrite};
 
 /// Default editor font family for the Win-GUI backend — the historical
 /// default monospace face shipped with every Windows version since Vista,
@@ -380,6 +380,11 @@ struct Surface {
     #[allow(dead_code)]
     factory: Option<ID2D1Factory>,
     target: RenderTarget,
+    /// Brushes created against `target`, reused across frames (#1282).
+    /// Lives and dies with this `Surface`, so a recreated target always
+    /// starts from an empty cache — see `super::text`'s `Brush cache`
+    /// section for how paint helpers reach it.
+    brushes: BrushCache,
 }
 
 /// Position tolerance, in DIPs, for [`WinBackend::fold_double_click`]'s
@@ -957,13 +962,8 @@ impl WinBackend {
         self.surface = Some(Surface {
             factory: Some(factory),
             target: RenderTarget::Hwnd(target),
+            brushes: new_brush_cache(),
         });
-        // This is a brand-new `ID2D1Factory` + `ID2D1HwndRenderTarget` —
-        // any brush `super::text`'s cache is still holding was created
-        // against whatever device the previous surface attached to, which
-        // this one has nothing to do with, so drop them all rather than
-        // let a later paint call reuse (and fail against) a stale one.
-        clear_brush_cache();
         self.hwnd = Some(hwnd);
         // Keep the waker's live mirror in sync (issue #831 review fix) —
         // see `Self::hwnd_raw`'s doc for why this can't just be read off
@@ -1045,11 +1045,8 @@ impl WinBackend {
         self.surface = Some(Surface {
             factory: None,
             target: RenderTarget::Dc(target),
+            brushes: new_brush_cache(),
         });
-        // Same rationale as `attach_surface`'s call above — `target` here
-        // may be an entirely different device from whatever
-        // `super::text`'s brush cache last held.
-        clear_brush_cache();
 
         // Same DirectWrite bootstrap as `attach_surface` — text formats
         // aren't tied to which kind of render target they paint onto.
@@ -1128,12 +1125,8 @@ impl WinBackend {
             self.surface = Some(Surface {
                 factory: None,
                 target: RenderTarget::Dc(target),
+                brushes: new_brush_cache(),
             });
-            // Keeps "every surface (re)attach clears the brush cache" an
-            // exception-free rule, even though this particular branch
-            // reuses the same underlying `ID2D1DCRenderTarget` rather
-            // than creating a new one — see `clear_brush_cache`'s doc.
-            clear_brush_cache();
             return Ok(());
         }
         match self.hwnd {
@@ -1816,6 +1809,9 @@ impl Backend for WinBackend {
             unsafe {
                 surface.target.BeginDraw();
             }
+            // Route this frame's paint helpers through the surface's
+            // brush cache (#1282); `end_frame` deactivates it.
+            super::text::activate_brush_cache(&surface.target, &surface.brushes);
             // #1179: was a hard-coded placeholder dark clear colour left
             // over from issue #19's bootstrap. Unpainted areas — e.g.
             // the gap a status bar used to leave when it painted short
@@ -1848,6 +1844,8 @@ impl Backend for WinBackend {
         if self.painted_text_recording {
             self.text_runs = crate::testing::take_text_run_sink(None);
         }
+        #[cfg(target_os = "windows")]
+        super::text::deactivate_brush_cache();
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
             // `EndDraw` fails for two distinct reasons, both handled the
@@ -5997,6 +5995,38 @@ mod tests {
              {})",
             crate::win::text::brush_creation_count()
         );
+
+        // Render-target recreate (the `EndDraw`-failure path): the new
+        // surface starts with an empty cache, so the next frame re-creates
+        // exactly one brush per color, and the frame after that none.
+        backend.drop_surface_for_testing();
+        backend.ensure_surface().expect("recreate headless surface");
+        crate::win::text::reset_brush_creation_count();
+        paint_frame(&mut backend);
+        assert_eq!(
+            crate::win::text::brush_creation_count() as usize,
+            colors.len(),
+            "a recreated render target must not reuse the old target's brushes"
+        );
+        paint_frame(&mut backend);
+        assert_eq!(
+            crate::win::text::brush_creation_count() as usize,
+            colors.len(),
+            "repainting after a recreate must hit the new surface's cache"
+        );
+
+        // Outside a backend frame no cache is active, so helpers painting
+        // straight onto the target create one-off brushes, as before.
+        crate::win::text::reset_brush_creation_count();
+        surface
+            .paint(|target| {
+                crate::win::text::fill_rect(target, Rect::new(0.0, 0.0, 2.0, 2.0), colors[0])
+                    .expect("fill_rect");
+                crate::win::text::fill_rect(target, Rect::new(2.0, 0.0, 2.0, 2.0), colors[0])
+                    .expect("fill_rect");
+            })
+            .expect("headless paint");
+        assert_eq!(crate::win::text::brush_creation_count(), 2);
     }
 
     /// Issue #1156: `default_fonts()` reports Win-GUI's VS-Code-alignment
