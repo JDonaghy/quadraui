@@ -235,8 +235,9 @@ with one primitive. For each primitive in that backend:
 2. The **adapter** in `src/render.rs` already exists — reuse
    verbatim.
 3. Write a **new rasteriser** `quadraui_{backend}::draw_{primitive}`
-   that takes `&Primitive + &Layout + &Theme + &NativeSurface` and
-   paints it. Dimensions are in the backend's native unit (pixels for
+   that takes `&Primitive + &Layout + &Theme + &mut dyn PaintSurface`
+   (the public paint-verb seam, issue #1101 — `src/paint_surface.rs`)
+   and paints it. Dimensions are in the backend's native unit (pixels for
    GTK, not cells) — pass those through to the primitive's `layout()`
    call via your measurement closure.
 4. Route clicks through the primitive's `hit_test(x, y)` method.
