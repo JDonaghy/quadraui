@@ -13,6 +13,7 @@
 
 pub mod activity_bar;
 pub mod board;
+pub mod canvas;
 pub mod chart;
 pub mod command_center;
 pub mod command_line;

@@ -47,7 +47,7 @@
 //!   `progress_layout`, `spinner_layout`, `command_center_layout`,
 //!   `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`,
 //!   `minimap_layout`, `msv_layout`, `text_input_layout`, `board_layout`,
-//!   `editor_layout`, `command_line_layout`).
+//!   `editor_layout`, `command_line_layout`, `canvas_layout`).
 //!
 //! A third category returns no coordinates at all — `diff_view_layout`
 //! returns row *counts* (`visible_rows` / `total_rows`), not positions —
@@ -78,6 +78,7 @@ use crate::interaction::InteractionState;
 use crate::modal_stack::ModalStack;
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
+use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
@@ -3846,6 +3847,45 @@ pub trait Backend: sealed::Sealed {
     /// `todo!()` if the primitive is out of scope for that backend for
     /// now (`PRIMITIVE_RULES.md` rule 7).
     fn draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
+
+    /// Paint a [`Canvas`]'s `ops` into `rect` (issue #1102). Every
+    /// `DrawOp` coordinate is LOCAL to `rect` — see [`Canvas`]'s own
+    /// module doc for the full coordinate-frame contract.
+    ///
+    /// The three pixel backends (GTK/macOS/Win) share one
+    /// implementation, [`crate::primitives::canvas::native_surface_paint::paint`],
+    /// routed through [`crate::paint_surface::PaintSurface`] — there is
+    /// no backend-specific *policy* here, only a passthrough, unlike
+    /// [`Self::draw_panel`]/[`Self::draw_toast_overlay`] which resolve
+    /// theme colours and chrome metrics. TUI has no pixel grid, so it
+    /// rasterises the same ops into cells instead of reporting
+    /// `Unsupported` — see [`Canvas`]'s module doc's degrade table
+    /// (issue #1097/D-014: `Canvas` is a **degrade** capability, not
+    /// N/A).
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error, same as [`Self::draw_image`] (`PRIMITIVE_RULES.md`
+    /// rule 7).
+    fn draw_canvas(&mut self, rect: Rect, canvas: &Canvas) -> CanvasLayout;
+
+    /// Compute the canvas layout without painting.
+    ///
+    /// Coordinate frame: **ABSOLUTE** — `bounds` is exactly `rect`
+    /// (issue #505) — see [`CanvasLayout`]'s own doc for why no backend
+    /// has any further metric to add.
+    ///
+    /// Defaulted: a pure function of `rect` alone (`CanvasLayout {
+    /// bounds: rect }`), with no backend-specific input at all — a
+    /// stronger case for a default body than `terminal_layout`/
+    /// `editor_layout` (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`),
+    /// which still depend on `char_width()`/`line_height()`. Every
+    /// backend takes this default; see `ACCEPTED_DEFAULTS`'s
+    /// `canvas_layout` entries for the from-scratch justification each
+    /// one records.
+    fn canvas_layout(&self, rect: Rect, canvas: &Canvas) -> CanvasLayout {
+        let _ = canvas;
+        CanvasLayout { bounds: rect }
+    }
 }
 
 /// Paint-side data returned by [`Backend::draw_minimap`]. See

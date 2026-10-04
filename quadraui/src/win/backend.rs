@@ -4312,6 +4312,25 @@ impl Backend for WinBackend {
         panel.layout(rect, measure)
     }
 
+    /// Unlike [`Self::draw_panel`]/[`Self::draw_toast_overlay`] above,
+    /// this needs no `#[cfg(target_os = "windows")]`/"no surface yet"
+    /// branch at all: every [`PaintSurface`] verb
+    /// [`crate::primitives::canvas::native_surface_paint::paint`] calls
+    /// already degrades to a no-op when `self.surface`/`self.dwrite` are
+    /// absent (see e.g. [`Self::surface_fill_rect`]'s own doc), so
+    /// calling it unconditionally is correct on every target: a real
+    /// paint once attached, and the same graceful "nothing happened yet"
+    /// this file's other rasterisers reach for explicitly (issue #924).
+    fn draw_canvas(
+        &mut self,
+        rect: Rect,
+        canvas: &crate::primitives::canvas::Canvas,
+    ) -> crate::primitives::canvas::CanvasLayout {
+        let layout = canvas.layout(rect);
+        crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
+        layout
+    }
+
     /// #29: see [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture. #861: paints via the shared
     /// [`crate::primitives::toast::native_surface_paint::paint`] now,

@@ -1179,6 +1179,9 @@ mod tests {
         fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
             unimplemented!()
         }
+        fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
+            unimplemented!()
+        }
         fn draw_toast_overlay(
             &mut self,
             _r: Rect,

@@ -3715,6 +3715,23 @@ impl Backend for TuiBackend {
         crate::tui::tui_panel_layout(panel, area)
     }
 
+    fn draw_canvas(
+        &mut self,
+        rect: QRect,
+        canvas: &crate::primitives::canvas::Canvas,
+    ) -> crate::primitives::canvas::CanvasLayout {
+        let area = q_rect_to_ratatui(rect);
+        let theme = self.current_theme;
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_canvas called outside enter_frame_scope"
+            );
+            return self.canvas_layout(rect, canvas);
+        };
+        crate::tui::draw_canvas(frame.buffer_mut(), area, canvas, &theme)
+    }
+
     fn draw_toast_overlay(
         &mut self,
         rect: QRect,
@@ -4663,6 +4680,15 @@ mod tests {
         ) -> crate::primitives::panel::PanelLayout {
             let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
             panel.layout(bounds, crate::primitives::panel::PanelMeasure::new(1.0))
+        }
+
+        fn draw_canvas(
+            &mut self,
+            r: QRect,
+            canvas: &crate::primitives::canvas::Canvas,
+        ) -> crate::primitives::canvas::CanvasLayout {
+            let bounds = crate::event::Rect::new(r.x, r.y, r.width, r.height);
+            canvas.layout(bounds)
         }
 
         fn draw_toast_overlay(

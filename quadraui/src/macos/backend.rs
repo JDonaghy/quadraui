@@ -62,6 +62,7 @@ use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
+use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::CommandLine;
@@ -3103,6 +3104,11 @@ impl Backend for MacBackend {
             rect.height as f64,
             self.current_line_height,
         )
+    }
+    fn draw_canvas(&mut self, rect: Rect, canvas: &Canvas) -> CanvasLayout {
+        let layout = canvas.layout(rect);
+        crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
+        layout
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
