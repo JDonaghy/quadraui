@@ -737,6 +737,13 @@ where
                     b.draw_focus_ring(rect);
                 }
             });
+            // Clear any `underline_color` ConPTY would misparse as
+            // blink/faint (quadraui#1284) before any further
+            // post-processing touches the buffer — see
+            // `TuiBackend::strip_unsupported_underline_colors`'s doc for
+            // why this single per-frame sweep, not a parameter threaded
+            // through each rasteriser, is the chosen choke point.
+            backend.strip_unsupported_underline_colors(frame.buffer_mut());
             // After app.render: overlay selection highlight on the rendered
             // buffer. Done outside enter_frame_scope so the closure lifetime
             // doesn't conflict with the frame borrow.

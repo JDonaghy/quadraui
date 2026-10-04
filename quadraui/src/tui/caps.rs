@@ -141,6 +141,31 @@
 //!    [`crate::tui::backend::TuiBackend::set_sgr_pixel_mouse`] /
 //!    [`crate::tui::backend::TuiBackend::set_cell_pixel_size`], surfaced to
 //!    an app via [`crate::backend::BackendCaps::sgr_pixel_mouse`].
+//!
+//! ## Underline-colour (SGR 58) support (quadraui#1284)
+//!
+//! `ratatui-crossterm`'s `SetUnderlineColor` only ever emits SGR 58 in the
+//! semicolon form (`ESC[58;5;Nm` / `ESC[58;2;R;G;Bm`). ConPTY — the pty
+//! layer every native Windows terminal (including Windows Terminal) sits
+//! behind — only recognises the *colon* form (`ESC[58:5:Nm`); fed the
+//! semicolon form, it drops the leading `58` and reinterprets the
+//! remaining numbers as unrelated SGR parameters (`5` → blink, `2` →
+//! faint, …), so any cell this crate paints with `underline_color` set
+//! blinks or fades on Windows instead of showing an underline in that
+//! colour. [`detect_underline_color_support`] is a structural fact about
+//! the Win32 console subsystem, not a per-terminal environment heuristic
+//! like the sections above — every Windows build sits behind ConPTY, and
+//! there is no terminal on that platform this crate can identify as
+//! parsing the semicolon form correctly, so this is a hardcoded
+//! `cfg!(windows)` check rather than a `detect_*_from(getenv)` split.
+//! [`crate::tui::backend::TuiBackend::new`] seeds
+//! [`crate::tui::backend::TuiBackend::underline_color_supported`] with
+//! this; [`crate::tui::backend::TuiBackend::set_underline_color_supported`]
+//! overrides it for tests that want to exercise the degrade without an
+//! actual Windows host. [`crate::tui::backend::TuiBackend::strip_unsupported_underline_colors`]
+//! is where the flag is actually acted on — see that method's doc for why
+//! a single per-frame sweep, not a parameter threaded through every
+//! rasteriser, is the chosen choke point.
 
 use crate::backend::{ColorDepth, SystemTheme};
 
@@ -442,6 +467,28 @@ fn query_sgr_pixel_decrqm() -> Option<u8> {
 #[cfg(not(unix))]
 fn query_sgr_pixel_decrqm() -> Option<u8> {
     None
+}
+
+/// Whether this terminal correctly renders SGR 58 (`underline_color`) in
+/// the semicolon form crossterm emits — see the module doc's
+/// "Underline-colour (SGR 58) support" section for the full ConPTY
+/// misparse this guards against (quadraui#1284).
+///
+/// Unconditionally `false` on every Windows build and `true` everywhere
+/// else: unlike [`detect_color_depth`]/[`detect_kitty_keyboard`]/
+/// [`detect_sgr_pixel_mouse`], there is no terminal-identity signal to
+/// read here — every Windows process sits behind ConPTY regardless of
+/// which terminal emulator (Windows Terminal, the legacy console host,
+/// an IDE's integrated terminal) is hosting it, and none of them parse
+/// the semicolon form correctly. A Windows build genuinely running
+/// outside ConPTY does not exist today, so the cheaper failure mode
+/// mirrors [`detect_kitty_keyboard_from`]'s reasoning, not
+/// [`detect_color_depth_from`]'s: a wrongly-`true` answer reproduces the
+/// exact blink/fade bug this function exists to prevent, while a
+/// wrongly-`false` answer only costs a plain (uncoloured) underline on a
+/// terminal that could have shown an accent colour.
+pub fn detect_underline_color_support() -> bool {
+    !cfg!(windows)
 }
 
 /// System dark/light detection (quadraui#952) — the TUI half of
@@ -792,6 +839,18 @@ mod tests {
                 "Ps={ps} must resolve to unsupported"
             );
         }
+    }
+
+    // ── Underline-colour (SGR 58) support (quadraui#1284) ───────────────
+
+    /// This test runs on whichever host CI happens to build for, so it
+    /// can only assert the one invariant that holds regardless of
+    /// platform: the answer tracks `cfg!(windows)` exactly, with no
+    /// environment signal able to override it (unlike every other
+    /// detector in this module).
+    #[test]
+    fn underline_color_support_matches_windows_cfg() {
+        assert_eq!(detect_underline_color_support(), !cfg!(windows));
     }
 
     /// A timeout (no reply parsed at all — represented as `None`, the same

@@ -254,6 +254,17 @@ pub struct TuiBackend {
     /// a font-size change alters the cell's pixel dimensions without
     /// changing the grid's row/column count.
     cell_pixel_size: TerminalCellSize,
+    /// Whether this session's terminal correctly renders SGR 58
+    /// (`Cell::underline_color`) in the semicolon form crossterm emits
+    /// (quadraui#1284) — seeded from
+    /// [`super::caps::detect_underline_color_support`] at construction
+    /// time, overridable via [`Self::set_underline_color_supported`] for
+    /// tests that want to exercise the Windows/ConPTY degrade without an
+    /// actual Windows host. `false` means
+    /// [`Self::strip_unsupported_underline_colors`] clears every painted
+    /// cell's `underline_color` back to `Reset` each frame, instead of
+    /// leaving behind the colour ConPTY misparses as blink/faint.
+    underline_color_supported: bool,
     /// Single owner of keyboard focus (issue #830) — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
     /// Tab/Shift+Tab intercept in [`crate::runtime::preprocess_event`]
@@ -328,6 +339,7 @@ impl TuiBackend {
             mouse_enabled: true,
             sgr_pixel_mouse: super::caps::detect_sgr_pixel_mouse(),
             cell_pixel_size: TerminalCellSize::new(1.0, 1.0),
+            underline_color_supported: super::caps::detect_underline_color_support(),
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
@@ -514,6 +526,46 @@ impl TuiBackend {
     /// terminal.
     pub fn set_cell_pixel_size(&mut self, size: TerminalCellSize) {
         self.cell_pixel_size = size;
+    }
+
+    /// Whether this session's terminal correctly renders SGR 58
+    /// (`underline_color`) — see [`Self::set_underline_color_supported`]
+    /// and `super::caps`'s module doc (quadraui#1284).
+    pub fn underline_color_supported(&self) -> bool {
+        self.underline_color_supported
+    }
+
+    /// Override the detected underline-colour-support flag. Real hosts
+    /// never need this — [`Self::new`] already detects it from
+    /// `cfg!(windows)` — but a test that wants to exercise the
+    /// Windows/ConPTY degrade (quadraui#1284) without an actual Windows
+    /// host calls this to force the unsupported path.
+    pub fn set_underline_color_supported(&mut self, supported: bool) {
+        self.underline_color_supported = supported;
+    }
+
+    /// Clear every painted cell's `underline_color` back to
+    /// [`ratatui::style::Color::Reset`] when this session's terminal
+    /// cannot correctly render SGR 58 (quadraui#1284) — a no-op when
+    /// [`Self::underline_color_supported`] is `true`.
+    ///
+    /// Runs once per frame, over the whole buffer, from
+    /// [`super::run::paint_frame`] right after every rasteriser for the
+    /// frame has painted — not threaded as a parameter through
+    /// `draw_tab_bar`/`draw_editor`/`draw_terminal` (the three call
+    /// sites that currently set `underline_color`, per quadraui#1284's
+    /// issue). A single per-frame sweep here can't miss a call site a
+    /// future primitive adds, costs nothing beyond one extra `bool`
+    /// branch per cell on the common (`true`) case, and is exactly what
+    /// `TuiDriver`-based tests observe too, since both the live runner
+    /// and the headless driver share this same `paint_frame` call.
+    pub(crate) fn strip_unsupported_underline_colors(&self, buf: &mut ratatui::buffer::Buffer) {
+        if self.underline_color_supported {
+            return;
+        }
+        for cell in &mut buf.content {
+            cell.underline_color = ratatui::style::Color::Reset;
+        }
     }
 
     /// Enter the frame-scope: stash the `&mut Frame<'_>` pointer for
@@ -6623,6 +6675,239 @@ mod tests {
             crate::backend::ImagePaintResult::Unsupported,
             "mirrors the win/macOS \"no rasteriser available\" report (issue #924)"
         );
+    }
+
+    // ── Underline-colour (SGR 58) ConPTY misparse (quadraui#1284) ───────
+    //
+    // ConPTY only recognises SGR 58 in the colon form; crossterm's
+    // `SetUnderlineColor` only ever emits the semicolon form, so ConPTY
+    // drops the `58` and reinterprets the trailing numbers as unrelated
+    // SGR attributes (blink/faint) — see `tui::caps`'s module doc. These
+    // tests exercise the fix end to end: a real `AppLogic` painting the
+    // two primitives the issue names (the active tab's accent underline,
+    // an editor's diagnostic + spell-error underlines), driven through
+    // the exact `paint_frame` the live runner and `TuiDriver` both call.
+
+    /// `TabBar` with one active tab and an accent colour — the fixture
+    /// `tab_bar::draw_tab_bar`'s `set_cell_styled` call sets
+    /// `Cell::underline_color` for.
+    fn underline_fixture_tab_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs"),
+            tabs: vec![crate::primitives::tab_bar::TabItem {
+                label: "app.rs".into(),
+                is_active: true,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            }],
+            right_segments: vec![],
+            active_accent: Some(crate::Color::rgb(80, 160, 255)),
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+        }
+    }
+
+    /// One-line `Editor` carrying a diagnostic and a spell error at
+    /// distinct columns — the two decoration categories `editor::draw_editor`
+    /// sets `Cell::underline_color` for.
+    fn underline_fixture_editor() -> crate::Editor {
+        let line = crate::EditorLine {
+            raw_text: "x".repeat(20),
+            gutter_text: String::new(),
+            spans: Vec::new(),
+            line_idx: 0,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: vec![crate::DiagnosticMark {
+                start_col: 2,
+                end_col: 5,
+                severity: crate::DiagnosticSeverity::Error,
+                message: String::new(),
+            }],
+            spell_errors: vec![crate::SpellMark {
+                start_col: 8,
+                end_col: 10,
+            }],
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: false,
+            segment_col_offset: 0,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: Vec::new(),
+            colorcolumns: Vec::new(),
+        };
+        crate::Editor {
+            id: WidgetId::new("ed"),
+            rect: QRect::new(0.0, 1.0, 20.0, 4.0),
+            lines: vec![line],
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 1,
+            max_col: 20,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '!',
+        }
+    }
+
+    /// Paints [`underline_fixture_tab_bar`] + [`underline_fixture_editor`]
+    /// through the real `Backend` trait methods — the production call
+    /// path, not the free rasteriser functions directly.
+    struct UnderlineFixtureApp;
+    impl crate::runner::AppLogic for UnderlineFixtureApp {
+        type AreaId = ();
+        fn render(&self, backend: &mut dyn crate::backend::Backend, _area: ()) {
+            let bar = underline_fixture_tab_bar();
+            backend.draw_tab_bar(QRect::new(0.0, 0.0, 20.0, 1.0), &bar, None);
+            let editor = underline_fixture_editor();
+            backend.draw_editor(editor.rect, &editor);
+        }
+        fn handle(
+            &mut self,
+            _event: crate::UiEvent,
+            _backend: &mut dyn crate::backend::Backend,
+        ) -> crate::runner::Reaction {
+            crate::runner::Reaction::Continue
+        }
+    }
+
+    /// Sanity half of the acceptance test: with the *default* (non-Windows)
+    /// caps, [`UnderlineFixtureApp`] must still leave a real,
+    /// non-`Reset` `underline_color` painted somewhere — otherwise the
+    /// "stripped on Windows" assertion below would pass vacuously even
+    /// if `draw_tab_bar`/`draw_editor` stopped setting `underline_color`
+    /// at all. This is also the explicit non-regression case the issue
+    /// asks for: a non-Windows terminal's accent underline must be
+    /// unaffected by this fix.
+    #[test]
+    fn non_windows_caps_leave_underline_colors_intact() {
+        use ratatui::backend::TestBackend;
+
+        let mut backend = TuiBackend::new();
+        assert!(
+            backend.underline_color_supported(),
+            "default construction must assume underline colour is supported \
+             (this test runs on a non-Windows CI leg)"
+        );
+        let mut terminal =
+            ratatui::Terminal::new(TestBackend::new(20, 5)).expect("TestBackend terminal");
+        super::super::run::paint_frame(&mut terminal, &mut backend, &UnderlineFixtureApp)
+            .expect("TestBackend render is infallible");
+
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf.content
+                .iter()
+                .any(|c| c.underline_color != ratatui::style::Color::Reset),
+            "fixture sanity: expected at least one cell with underline_color set \
+             when underline colour support is on"
+        );
+    }
+
+    /// quadraui#1284's core acceptance case: with capabilities
+    /// representing Windows/ConPTY (`underline_color_supported ==
+    /// false`), no cell painted by the active tab's accent underline or
+    /// the editor's diagnostic/spell-error underlines may carry a
+    /// non-`Reset` `underline_color` after a real frame paints.
+    #[test]
+    fn windows_conpty_caps_strip_every_underline_color() {
+        use ratatui::backend::TestBackend;
+
+        let mut backend = TuiBackend::new();
+        backend.set_underline_color_supported(false);
+
+        let mut terminal =
+            ratatui::Terminal::new(TestBackend::new(20, 5)).expect("TestBackend terminal");
+        super::super::run::paint_frame(&mut terminal, &mut backend, &UnderlineFixtureApp)
+            .expect("TestBackend render is infallible");
+
+        let buf = terminal.backend().buffer();
+        for (i, cell) in buf.content.iter().enumerate() {
+            assert_eq!(
+                cell.underline_color,
+                ratatui::style::Color::Reset,
+                "cell {i} still carries underline_color {:?} on simulated Windows/ConPTY caps",
+                cell.underline_color
+            );
+        }
+    }
+
+    /// The byte-level half of quadraui#1284's acceptance test: the real
+    /// ANSI stream a `CrosstermBackend` would send to the terminal must
+    /// contain no `ESC[58` (SGR 58, underline colour) at all when
+    /// capabilities represent Windows/ConPTY — the exact sequence ConPTY
+    /// misparses as blink/faint — and must still contain one on
+    /// non-Windows caps, so the fix doesn't silently regress every other
+    /// platform's accent underline.
+    #[test]
+    fn windows_conpty_caps_emit_no_sgr_58_bytes() {
+        use ratatui::backend::CrosstermBackend;
+        use std::cell::RefCell;
+        use std::io;
+        use std::rc::Rc;
+
+        /// `io::Write` sink that just retains every byte written —
+        /// enough to assert on the raw escape sequence, unlike
+        /// `vt_testing::VtSink` (which feeds a `vt100::Parser` and keeps
+        /// no raw bytes around to inspect).
+        #[derive(Clone, Default)]
+        struct RawSink(Rc<RefCell<Vec<u8>>>);
+        impl io::Write for RawSink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.borrow_mut().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        for (supported, should_contain_sgr_58) in [(true, true), (false, false)] {
+            let sink = RawSink::default();
+            let crossterm_backend = CrosstermBackend::new(sink.clone());
+            let mut terminal = ratatui::Terminal::with_options(
+                crossterm_backend,
+                ratatui::TerminalOptions {
+                    viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 20, 5)),
+                },
+            )
+            .expect("CrosstermBackend + Viewport::Fixed never queries a real terminal");
+
+            let mut backend = TuiBackend::new();
+            backend.set_underline_color_supported(supported);
+            super::super::run::paint_frame(&mut terminal, &mut backend, &UnderlineFixtureApp)
+                .expect("CrosstermBackend render into an in-memory sink is infallible");
+
+            let bytes = sink.0.borrow();
+            let contains_sgr_58 = bytes.windows(4).any(|w| w == b"\x1b[58");
+            assert_eq!(
+                contains_sgr_58, should_contain_sgr_58,
+                "underline_color_supported={supported}: expected ESC[58 presence to be \
+                 {should_contain_sgr_58}, got {contains_sgr_58}"
+            );
+        }
     }
 }
 
