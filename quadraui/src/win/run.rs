@@ -117,7 +117,7 @@
 //!
 //! Ceding a *message* this way is safe for input — the next one simply
 //! arrives later — but `WM_SIZE`/`WM_DPICHANGED` are one-shot state
-//! notifications with no later arrival to fall back on (quadraui#1280):
+//! notifications with no later arrival to fall back on:
 //! `ShowWindow(SW_MAXIMIZE)`, called synchronously from
 //! `WinBackend::toggle_window_maximize` inside a guarded `app.handle`,
 //! sends `WM_SIZE` re-entrantly, and ceding it outright left the render
@@ -918,7 +918,7 @@ mod win32 {
         /// rescheduling the same timer and only the final call's deadline
         /// ever actually fires).
         resize_debouncer: RefCell<ResizeDebouncer>,
-        /// Issue #1280: set by the top-of-`wndproc` `pump_depth.is_pumping()`
+        /// Set by the top-of-`wndproc` `pump_depth.is_pumping()`
         /// re-entrancy check (#702) when the message it just ceded to
         /// `DefWindowProcW` was `WM_SIZE` or `WM_DPICHANGED` — i.e. a
         /// synchronous Win32 call made from inside a live `guarded_call`
@@ -1905,7 +1905,7 @@ mod win32 {
 
     /// The actual work of `wndproc`'s `WM_SIZE` arm — `resize_surface`,
     /// debounce `note`, (re)arm [`RESIZE_TIMER_ID`], `InvalidateRect` —
-    /// factored out so issue #1280's resync path (below) can run the
+    /// factored out so the resync path (below) can run the
     /// identical sequence against a size read from `GetClientRect` rather
     /// than `WM_SIZE`'s own `lparam`, once a ceded `WM_SIZE`/
     /// `WM_DPICHANGED` notification needs replaying after the fact. See
@@ -1953,7 +1953,7 @@ mod win32 {
         }
     }
 
-    /// Issue #1280: replays a `WM_SIZE`/`WM_DPICHANGED` notification that
+    /// Replays a `WM_SIZE`/`WM_DPICHANGED` notification that
     /// the top-of-`wndproc` `pump_depth.is_pumping()` check (#702) ceded
     /// to `DefWindowProcW` instead of handling, because it arrived
     /// re-entrantly while a `super::guarded_call` borrow was already live
@@ -2066,7 +2066,7 @@ mod win32 {
         // non-reentrant message (once the outer guarded call returns)
         // handles normally.
         //
-        // Issue #1280: `WM_SIZE`/`WM_DPICHANGED` are a one-shot state
+        // `WM_SIZE`/`WM_DPICHANGED` are a one-shot state
         // notification, not input — unlike every other message this
         // cedes, there is no later arrival of the *same* notification to
         // fall back on, so ceding one silently loses it (the "stretched,
@@ -2083,7 +2083,7 @@ mod win32 {
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
 
-        // Issue #1280: replay any `WM_SIZE`/`WM_DPICHANGED` the branch
+        // Replay any `WM_SIZE`/`WM_DPICHANGED` the branch
         // above deferred while a guarded call was in flight. Must run
         // before `match msg` below so a resize that settles exactly on
         // this message (e.g. this very message is the first `WM_PAINT`
@@ -3780,7 +3780,7 @@ mod tests {
         assert_eq!(fake_wndproc_arm(&state, &depth), Some(101));
     }
 
-    /// Issue #1280: the ceded-but-lossless-resync contract the fix adds.
+    /// The ceded-but-lossless-resync contract.
     /// Before the fix, `wndproc`'s top-of-function `is_pumping()` check
     /// (reproduced above by `fake_wndproc_arm`/the two tests just above
     /// this one) ceded a reentrant `WM_SIZE` to `DefWindowProcW` and
@@ -3816,8 +3816,9 @@ mod tests {
         let resized_dispatched = Cell::new(false);
 
         // Mirrors `wndproc`'s shape end to end: cede-and-remember while a
-        // guard is held (the top-of-function `is_pumping()` check, now
-        // widened by #1280); otherwise replay any pending resync first
+        // guard is held (the top-of-function `is_pumping()` check,
+        // pending resync first (`resync_pending_resize`), then handle `msg`
+        // itself.
         // (`resync_pending_resize`), then handle `msg` itself.
         let fake_wndproc = |is_size: bool, current_size: (i32, i32)| {
             if depth.is_pumping() {
