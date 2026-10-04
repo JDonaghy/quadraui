@@ -5487,13 +5487,17 @@ mod tests {
     /// `cargo test --lib` unit test contending for the global context.
     #[test]
     fn request_frame_in_does_not_panic_with_or_without_a_wake_callback_installed() {
+        // `timeout_add_local_once` panics ("default main context already
+        // acquired by another thread") if a parallel test happens to own
+        // the default context at that instant — the same race
+        // `with_owned_main_context` documents. Own it for the call.
         let backend = GtkBackend::new();
-        Backend::request_frame_in(&backend, Duration::from_millis(50));
+        with_owned_main_context(|| Backend::request_frame_in(&backend, Duration::from_millis(50)));
 
         let fired = Rc::new(Cell::new(false));
         let fired_from_callback = Rc::clone(&fired);
         backend.set_wake_callback(Rc::new(move || fired_from_callback.set(true)));
-        Backend::request_frame_in(&backend, Duration::from_millis(50));
+        with_owned_main_context(|| Backend::request_frame_in(&backend, Duration::from_millis(50)));
     }
 
     /// The blocking finding from #831's review round, pinned as a test.
