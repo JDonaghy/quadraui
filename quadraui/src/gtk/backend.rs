@@ -4158,6 +4158,16 @@ impl Backend for GtkBackend {
         )
     }
 
+    fn draw_canvas(
+        &mut self,
+        rect: QRect,
+        canvas: &crate::primitives::canvas::Canvas,
+    ) -> crate::primitives::canvas::CanvasLayout {
+        let layout = canvas.layout(rect);
+        crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
+        layout
+    }
+
     fn draw_toast_overlay(
         &mut self,
         rect: QRect,

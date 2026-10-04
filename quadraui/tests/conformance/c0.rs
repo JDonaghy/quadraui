@@ -35,22 +35,23 @@
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, BadgeStatus,
-    BoardCard, BoardColumn, BoardModel, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign,
-    ColumnWidth, CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure, Completions,
-    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable,
-    Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
-    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
-    EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, Image, ImageFit, ImageSource,
-    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel,
-    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
-    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, Series, SidebarPanel, Spinner, Split, SplitDirection, SplitTree,
-    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome, TabFrame,
-    TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput, Toast,
-    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    BoardCard, BoardColumn, BoardModel, Canvas, CardBadge, Chart, ChartKind, Color, Column,
+    ColumnAlign, ColumnWidth, CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure,
+    Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
+    DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode,
+    DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor, EditorCursorPos,
+    EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind, FindReplacePanel,
+    Form, FormField, Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar,
+    MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, Palette,
+    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
+    Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar,
+    Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner,
+    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
+    StyledText, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay,
+    TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar,
+    ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder,
+    TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent,
+    WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1110,6 +1111,22 @@ pub const CASES: &[Case] = &[
                 collapsed: false,
             };
             let _ = b.draw_panel(area, &panel);
+        },
+    },
+    Case {
+        method: "draw_canvas",
+        needle: Some("c0cnvs"),
+        paint: |b, area| {
+            let lh = b.line_height();
+            let canvas = Canvas {
+                id: id("canvas"),
+                ops: vec![DrawOp::TextRun {
+                    rect: Rect::new(0.0, 0.0, area.width, lh),
+                    text: "c0cnvs".to_string(),
+                    color: Color::rgb(255, 255, 255),
+                }],
+            };
+            let _ = b.draw_canvas(area, &canvas);
         },
     },
     Case {

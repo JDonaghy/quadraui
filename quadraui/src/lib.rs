@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 40 primitives (one module each under `src/primitives/`), each
+//! 41 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -395,6 +395,7 @@ pub use primitives::board::{
     board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
+pub use primitives::canvas::{Canvas, CanvasHit, CanvasLayout, DrawOp};
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
 };

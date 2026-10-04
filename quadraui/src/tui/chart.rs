@@ -7,7 +7,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::braille::pack_braille_cell;
+use super::braille::{interpolate_dots, pack_braille_cell};
 use super::{ratatui_color, set_cell};
 use crate::primitives::chart::{Chart, ChartKind, ChartLayout, ChartMeasure};
 use crate::theme::Theme;
@@ -223,23 +223,6 @@ fn paint_line(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &The
 
     paint_legend(buf, layout, chart, theme);
     paint_axis_labels(buf, layout, chart, theme);
-}
-
-fn interpolate_dots(grid: &mut [Vec<bool>], x0: usize, y0: usize, x1: usize, y1: usize) {
-    let dx = (x1 as isize - x0 as isize).abs();
-    let dy = (y1 as isize - y0 as isize).abs();
-    let steps = dx.max(dy);
-    if steps == 0 {
-        return;
-    }
-    for step in 0..=steps {
-        let t = step as f64 / steps as f64;
-        let ix = (x0 as f64 + t * (x1 as f64 - x0 as f64)).round() as usize;
-        let iy = (y0 as f64 + t * (y1 as f64 - y0 as f64)).round() as usize;
-        if iy < grid.len() && ix < grid[0].len() {
-            grid[iy][ix] = true;
-        }
-    }
 }
 
 fn paint_bar(buf: &mut Buffer, layout: &ChartLayout, chart: &Chart, theme: &Theme) {

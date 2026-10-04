@@ -1491,6 +1491,21 @@ name = "gtk_image"
 path = "examples/gtk_image.rs"
 required-features = ["gtk"]
 
+# #1102 — `Canvas` primitive (app-defined drawing). Both entries are
+# mandatory (see #595's note above): without an explicit `[[example]]`,
+# `gtk_canvas.rs` gets autodiscovered with no `required-features` and
+# fails `cargo test --features tui` on `quadraui::gtk` being configured
+# out.
+[[example]]
+name = "tui_canvas"
+path = "examples/tui_canvas.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_canvas"
+path = "examples/gtk_canvas.rs"
+required-features = ["gtk"]
+
 # #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
 # inside an `AppShell` panel. Both entries are mandatory (see #595's note
 # above): without an explicit `[[example]]`, `gtk_workspace.rs` gets

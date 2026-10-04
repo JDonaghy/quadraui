@@ -190,13 +190,14 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**40 primitives**, one module each under `quadraui/src/primitives/`: a
+**41 primitives**, one module each under `quadraui/src/primitives/`: a
 declarative description, a shared layout, and a rasteriser per backend.
 Among them:
 
 - Content: `TreeView`, `ListView`, `DataTable`, `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
-  `Minimap`.
+  `Minimap`, `Canvas` (app-defined drawing, painted through the public
+  `PaintSurface` seam).
 - Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
   `CommandCenter`, `Scrollbar`.
 - Containers: `Split`, `SplitTree`, `Panel`, `MultiSectionView`.

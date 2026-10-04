@@ -71,6 +71,21 @@ release time.
   apart from "its pty's input fd disappeared out from under it." Latched by
   the new dead-pty busy-loop guard described under `### Fixed` below; see
   that entry for the behavior it exposes.
+- `Canvas { id, ops: Vec<DrawOp> }` (issue #1102) — the app-defined
+  drawing escape hatch the framework audit's "closed widget catalogue"
+  finding asked for. `DrawOp` covers rect, rounded rect, line, path,
+  text run, image, and push/pop clip; GTK/macOS/Win paint it through the
+  existing public `PaintSurface` seam (`Backend::paint_surface`, #1101)
+  with no backend-specific policy at all. TUI's story is **degrade**,
+  not `Unsupported` (issue #1097/D-014): shape ops rasterise into the
+  same sub-cell braille dot grid `Chart`'s line charts already use;
+  `TextRun`/`Image` snap to the nearest whole cell; `PushClip`/`PopClip`
+  quantise outward to whole cells — see `primitives::canvas`'s module
+  doc for the full per-op degrade table and the TUI rasteriser's own doc
+  for its documented shapes-under-text z-order caveat. `Backend::canvas_layout`
+  is a defaulted, backend-independent pure function of `rect` alone
+  (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`); `Backend::draw_canvas`
+  has no default, per rule 7.
 - `TextInput::new`/`with_*`, `Toolbar::new`/`with_*`, `Editor::new`/`with_*`,
   and a `Default` impl for all three (issue #1108, phase 1 of #1251) — every
   field a consumer previously had to set via an exhaustive struct literal

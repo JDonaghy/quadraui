@@ -1204,6 +1204,10 @@ impl crate::Backend for RecordingBackend {
     fn panel_layout(&self, _r: Rect, _p: &crate::Panel) -> crate::PanelLayout {
         unimplemented!("RecordingBackend has no Panel layout algorithm")
     }
+    fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
+        self.record("draw_canvas");
+        unimplemented!("RecordingBackend has no Canvas paint algorithm")
+    }
     fn draw_toast_overlay(
         &mut self,
         _r: Rect,

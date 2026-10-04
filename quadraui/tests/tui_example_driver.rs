@@ -38,6 +38,8 @@ mod ai_transcript;
 mod appshell_demo;
 #[path = "../examples/common/bottom_panel_demo.rs"]
 mod bottom_panel_demo;
+#[path = "../examples/common/canvas_app.rs"]
+mod canvas_app;
 #[path = "../examples/common/caret_shape_demo.rs"]
 mod caret_shape_demo;
 // `ChartApp::last_chart_rect` is write-only in the shared example source
@@ -171,6 +173,7 @@ use activity_style_demo::ActivityStyleDemo;
 use ai_transcript::AiTranscript;
 use appshell_demo::AppShellDemo;
 use bottom_panel_demo::BottomPanelDemo;
+use canvas_app::CanvasApp;
 use caret_shape_demo::CaretShapeDemo;
 use chart_app::ChartApp;
 use chat_demo::ChatDemo;
@@ -7220,6 +7223,125 @@ fn image_demo_q_exits() {
     let mut driver = TuiDriver::new(ImageApp::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the image demo");
+}
+
+// ─── CanvasApp (#1102): the `Canvas` primitive's custom gauge ─────────────
+//
+// `Canvas`'s TUI story is *degrade*, not `Unsupported` (issue #1097/D-014):
+// these tests prove the gauge's `DrawOp::Rect`/`DrawOp::TextRun` ops
+// actually reach the screen end to end through `Backend::draw_canvas` and
+// `Backend::canvas_layout`, the same way `image_paints_fallback_text_left_of_the_shifted_menu_items`
+// above proves `Image`'s degrade end to end.
+
+#[test]
+fn canvas_demo_paints_the_initial_gauge_label() {
+    let driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    assert!(
+        driver.screen_contains("30%"),
+        "the gauge should start at 30%:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_demo_plus_key_raises_the_value() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.type_char('+');
+    assert!(
+        driver.screen_contains("40%"),
+        "'+' should raise the gauge from 30% to 40%:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_demo_up_arrow_raises_the_value() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.press_named(NamedKey::Up);
+    assert!(
+        driver.screen_contains("40%"),
+        "Up should raise the gauge from 30% to 40%, same as '+':\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_demo_minus_key_lowers_the_value() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.type_char('-');
+    assert!(
+        driver.screen_contains("20%"),
+        "'-' should lower the gauge from 30% to 20%:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_demo_value_never_exceeds_100_or_drops_below_0() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    for _ in 0..20 {
+        driver.type_char('+');
+    }
+    assert!(
+        driver.screen_contains("100%"),
+        "repeated '+' should clamp at 100%, not wrap or overflow:\n{}",
+        driver.screen()
+    );
+    for _ in 0..20 {
+        driver.type_char('-');
+    }
+    assert!(
+        driver.screen_contains("0%") && !driver.screen_contains("100%"),
+        "repeated '-' should clamp at 0%, not underflow (and must have actually moved off \
+         100%, not just coincidentally matched its trailing \"0%\"):\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking inside the gauge jumps straight to that position's value —
+/// the same `rect`/`Backend::canvas_layout` both `render` and this
+/// handler build the canvas from, so paint and click-routing can never
+/// disagree (`examples/common/canvas_app.rs`'s own doc comment). The
+/// gauge spans `x` in `[1, 99)` at `y = 2` on a 100-wide viewport
+/// (one-line-height margin on each side); clicking near the right edge
+/// must land near 100%, near the left edge near 0%.
+#[test]
+fn canvas_demo_clicking_the_gauge_jumps_to_that_positions_value() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.click(90.0, 2.0);
+    assert!(
+        driver.screen_contains("91%"),
+        "clicking near the gauge's right edge should jump close to 100%:\n{}",
+        driver.screen()
+    );
+
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.click(5.0, 2.0);
+    assert!(
+        driver.screen_contains("4%"),
+        "clicking near the gauge's left edge should jump close to 0%:\n{}",
+        driver.screen()
+    );
+}
+
+/// A click outside the gauge's own row must not change the value at all
+/// — `CanvasHit::Outside` is a no-op, not a clamped-in-range guess.
+#[test]
+fn canvas_demo_clicking_outside_the_gauge_does_not_change_the_value() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.click(50.0, 8.0);
+    assert!(
+        driver.screen_contains("30%"),
+        "a click outside the gauge's row should leave the value at 30%:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn canvas_demo_q_exits() {
+    let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the canvas demo");
 }
 
 // ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel (#596) ───

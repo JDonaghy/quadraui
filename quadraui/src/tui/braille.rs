@@ -64,6 +64,51 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
 /// always returns `false` — dithering only has any effect strictly
 /// *between* those two extremes.
 ///
+/// Set every dot on the straight line between `(x0, y0)` and `(x1, y1)`
+/// in `grid` (indexed `grid[row][col]`, i.e. `grid[y][x]`), including
+/// both endpoints. Lifted out of `tui/chart.rs`'s line-chart painter
+/// (issue #1102) into this shared module for the same reason every
+/// other dot-grid helper here lives in one place: [`super::chart`]'s
+/// line charts and [`super::canvas`]'s `DrawOp::Line`/`DrawOp::Path`
+/// degrade (issue #1102/D-014) both need to connect two dot-grid
+/// coordinates with a solid stroke, and a second, independently-tuned
+/// copy of a line-rasterisation loop is exactly the kind of drift this
+/// module's own doc comment already warns about for the bit-packing
+/// table above.
+///
+/// Out-of-bounds coordinates (`iy >= grid.len()` or `ix >= grid[0].len()`)
+/// are silently skipped rather than panicking — a caller that clamps its
+/// own endpoints to the grid never hits this, but the interpolated path
+/// between two in-bounds endpoints cannot itself leave the grid (each
+/// step is a convex combination of two in-bounds points), so this guard
+/// is defensive rather than load-bearing.
+///
+/// **`(x0, y0) == (x1, y1)` is a no-op**, matching the pre-#1102
+/// `tui/chart.rs` behaviour this was lifted from exactly (no silent
+/// behaviour change on the migration, per `PRIMITIVE_RULES.md`'s "don't
+/// batch a lift with a behaviour fix" rule) — every existing caller
+/// already sets a coincident single point's own dot itself before
+/// calling this for the *connecting* segment, so a caller that wants a
+/// lone point rendered when both endpoints coincide must set it
+/// separately; see [`super::canvas`]'s `DrawOp::Line` handling for an
+/// example.
+pub(crate) fn interpolate_dots(grid: &mut [Vec<bool>], x0: usize, y0: usize, x1: usize, y1: usize) {
+    let dx = (x1 as isize - x0 as isize).abs();
+    let dy = (y1 as isize - y0 as isize).abs();
+    let steps = dx.max(dy);
+    if steps == 0 {
+        return;
+    }
+    for step in 0..=steps {
+        let t = step as f64 / steps as f64;
+        let ix = (x0 as f64 + t * (x1 as f64 - x0 as f64)).round() as usize;
+        let iy = (y0 as f64 + t * (y1 as f64 - y0 as f64)).round() as usize;
+        if iy < grid.len() && ix < grid[0].len() {
+            grid[iy][ix] = true;
+        }
+    }
+}
+
 /// Re-exported from [`crate::primitives::minimap`] rather than defined
 /// here (issue #1012 pt. 2): that module's `sample_blocks` uses the exact
 /// same matrix and threshold formula to make an analogous decision one

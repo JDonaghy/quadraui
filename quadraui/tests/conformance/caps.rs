@@ -725,6 +725,34 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
     ),
+    // ── issue #1102: `canvas_layout` is `CanvasLayout { bounds: rect }` —
+    // a pure fn of `rect` alone, with no backend-specific metric at all
+    // (unlike `terminal_layout`/`editor_layout` above, which still depend
+    // on `char_width()`/`line_height()`). `Canvas`'s `DrawOp` coordinates
+    // are already LOCAL to `rect` (see that primitive's module doc), so
+    // there is nothing for any backend to resolve beyond the rect it was
+    // already given. All four backends take the default; none has a
+    // reason to override it.
+    (
+        "tui",
+        "canvas_layout",
+        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
+    ),
+    (
+        "gtk",
+        "canvas_layout",
+        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
+    ),
+    (
+        "macos",
+        "canvas_layout",
+        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
+    ),
+    (
+        "win",
+        "canvas_layout",
+        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
+    ),
     // ── issue #776: `scrollbar_reserve` is the width of *toolkit* scrollbar
     // chrome that a backend paints over the content edge, which a caller
     // must subtract before it computes a content viewport width. GTK is
