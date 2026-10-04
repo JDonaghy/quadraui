@@ -268,15 +268,13 @@ fn paint_body(
             // fallback-only behaviour for tree bodies nested in an MSV.
             //
             // `theme` here is `draw_multi_section_view`'s own local
-            // `Theme::default()` (see this function's caller) — issue
-            // #1261 did not touch `multi_section_view.rs` (it isn't one
-            // of the seven rasterisers that PR wired to
-            // `current_theme`), so this stays scoped to *compiling*
-            // against `super::tree::draw_tree`'s new `&Theme` parameter
-            // (added by #1261) rather than threading the live theme
-            // through MSV's own call chain — that is still separate,
-            // unstarted scope, same as the `nerd_fonts_enabled` gap
-            // noted above.
+            // `Theme::default()` (see this function's caller) —
+            // `multi_section_view.rs` is not one of the Win-GUI
+            // rasterisers wired to `current_theme`, so this stays scoped
+            // to *compiling* against `super::tree::draw_tree`'s `&Theme`
+            // parameter rather than threading the live theme through
+            // MSV's own call chain — that is still separate, unstarted
+            // scope, same as the `nerd_fonts_enabled` gap noted above.
             let _ = super::tree::draw_tree(target, dwrite, bounds, t, line_height, false, theme);
         }
         SectionBody::List(l) => {

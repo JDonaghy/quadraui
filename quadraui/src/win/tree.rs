@@ -22,10 +22,10 @@
 //! docs for why the rest of this repo's `--features win` compile gate
 //! stays meaningful without a Windows host.
 //!
-//! Takes the live theme as a `&Theme` parameter (issue #1261, mirroring
-//! quadraui#789's fix for `draw_menu_bar`/`draw_activity_bar`/etc.) — the
-//! caller ([`crate::win::WinBackend::draw_tree`]) passes
-//! `&self.current_theme`, the same field `Backend::set_theme` writes.
+//! Takes the live theme as a `&Theme` parameter, matching every other
+//! Win-GUI rasteriser's convention — the caller
+//! ([`crate::win::WinBackend::draw_tree`]) passes `&self.current_theme`,
+//! the same field `Backend::set_theme` writes.
 //!
 //! # Scope for #26 (historical)
 //!

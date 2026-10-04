@@ -19,9 +19,9 @@
 //! `super::mod`'s `mod tab_bar;` is no longer whole-module gated; see
 //! `backend.rs`'s module docs.
 //!
-//! Takes the live theme as a `&Theme` parameter (issue #1261, mirroring
-//! quadraui#789's fix for `draw_menu_bar`/`draw_activity_bar`/etc.) — the
-//! caller ([`crate::win::WinBackend::draw_tab_bar_icons`] /
+//! Takes the live theme as a `&Theme` parameter, matching every other
+//! Win-GUI rasteriser's convention — the caller
+//! ([`crate::win::WinBackend::draw_tab_bar_icons`] /
 //! `draw_tab_bar_icons_layout`) passes `&self.current_theme`, the same
 //! field `Backend::set_theme` writes.
 //!

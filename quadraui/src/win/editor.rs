@@ -11,10 +11,10 @@
 //! `#[cfg(target_os = "windows")] mod editor;` and `backend.rs`'s
 //! module docs.
 //!
-//! Takes the live theme as a `&Theme` parameter (issue #1261, mirroring
-//! quadraui#789's fix for `draw_menu_bar`/`draw_activity_bar`/etc.) — the
-//! caller ([`crate::win::WinBackend::draw_editor`]) passes
-//! `&self.current_theme`, the same field `Backend::set_theme` writes.
+//! Takes the live theme as a `&Theme` parameter, matching every other
+//! Win-GUI rasteriser's convention — the caller
+//! ([`crate::win::WinBackend::draw_editor`]) passes `&self.current_theme`,
+//! the same field `Backend::set_theme` writes.
 //!
 //! # Scope for #26
 //!
