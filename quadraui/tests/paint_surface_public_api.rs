@@ -29,6 +29,7 @@
 //! complementary: prove the *seam* (the trait, and the accessor that reaches
 //! it) is public, not that every verb paints correctly.
 
+#[cfg(any(feature = "tui", feature = "gtk", feature = "win"))]
 use quadraui::Backend;
 #[cfg(any(feature = "gtk", feature = "win"))]
 use quadraui::{PaintSurface, Viewport};
