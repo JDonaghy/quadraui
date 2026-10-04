@@ -6806,11 +6806,16 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let mut backend = TuiBackend::new();
-        assert!(
+        // The default is platform-detected: off on Windows (ConPTY
+        // misparses SGR 58), on everywhere else. Pin that, then force
+        // "supported" so this non-regression case runs on every CI leg —
+        // including windows-latest.
+        assert_eq!(
             backend.underline_color_supported(),
-            "default construction must assume underline colour is supported \
-             (this test runs on a non-Windows CI leg)"
+            !cfg!(windows),
+            "default underline-colour support must be off exactly on Windows"
         );
+        backend.set_underline_color_supported(true);
         let mut terminal =
             ratatui::Terminal::new(TestBackend::new(20, 5)).expect("TestBackend terminal");
         super::super::run::paint_frame(&mut terminal, &mut backend, &UnderlineFixtureApp)
