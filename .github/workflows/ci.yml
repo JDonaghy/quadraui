@@ -684,8 +684,39 @@ jobs:
       # for why); rustup's own override resolution honors that file
       # regardless of what this action installs as its "default".
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
+      # Install the musl `rust-std` with an explicit `rustup target add`,
+      # NOT with `dtolnay/rust-toolchain`'s `targets:` input. The two are
+      # not equivalent here, and that difference is what first made this
+      # job red:
+      #
+      # The action installs its targets *onto the toolchain it installs* —
+      # `stable`. But every cargo invocation under this checkout resolves
+      # to the `rust-toolchain.toml`-pinned 1.97.1 via rustup's
+      # per-directory override, and that file has no `targets` key (it only
+      # lists `components`), so rustup auto-installs 1.97.1 with rustfmt +
+      # clippy and *no* musl std. The build then fails with `can't find
+      # crate for 'core'` / "the `x86_64-unknown-linux-musl` target may not
+      # be installed" — a cross-compile failure that says nothing about
+      # `keyring`/`trash` static-linkability, which is the thing this job
+      # exists to measure.
+      #
+      # A bare `run: rustup target add …` instead executes *inside the
+      # checkout*, so the same directory override applies and the std lands
+      # on 1.97.1 where cargo will actually look for it. `src/macos/`'s
+      # cross-target compile check above (`rustup target add
+      # aarch64-apple-darwin`) already does it this way for exactly this
+      # reason — keep both in that shape, and don't "tidy" either back into
+      # the action's `targets:` input.
+      - name: Install the musl target for the pinned toolchain
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          # Fail loudly here, rather than 2 minutes into a dependency build
+          # with a confusing `can't find crate for 'core'`, if the override
+          # resolution above ever stops putting the std where cargo looks.
+          rustup target list --installed | grep -qx x86_64-unknown-linux-musl || {
+            echo "::error::x86_64-unknown-linux-musl rust-std is missing from the toolchain this checkout resolves to ($(rustup show active-toolchain)); see this step's comment"
+            exit 1
+          }
       - uses: Swatinem/rust-cache@v2
         with:
           key: musl-static
