@@ -123,6 +123,10 @@ jobs:
   macos:
     name: macos (build, test, clippy)
     runs-on: macos-latest
+    # #1292: build/test/clippy/doc for the macos feature plus the
+    # conformance matrix and the gtk+tui+macos cross-backend-parity test
+    # (with a Homebrew gtk4 install) — normally 10-15 min on macos-latest.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml (see its header comment

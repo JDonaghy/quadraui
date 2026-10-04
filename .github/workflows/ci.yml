@@ -14,6 +14,11 @@ jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
+    # #1292: every job gets an explicit timeout so a hung step fails in
+    # minutes, not GitHub's 6h job default. Sized ~3-5x normal duration
+    # (this job is a single `cargo fmt --check`, normally well under a
+    # minute once the toolchain is cached).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml (see its header comment
@@ -40,6 +45,9 @@ jobs:
     # runs `tools/example_coverage.py` explicitly rather than as a test.
     name: repo-lint (maintainer-workflow guards)
     runs-on: ubuntu-latest
+    # #1292: single `cargo run -p quadraui-repo-lint`, normally under a
+    # couple of minutes including the toolchain/cache steps.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -75,6 +83,9 @@ jobs:
     # output; keep it that way if this job's step order ever changes.
     name: patch-guard (no vendored crates-io patches)
     runs-on: ubuntu-latest
+    # #1292: a grep plus `cargo package --no-verify` (resolution only, no
+    # build) — normally a couple of minutes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -103,6 +114,9 @@ jobs:
     # Cargo.lock instead of silently re-resolving over it.
     name: cargo package (build verification)
     runs-on: ubuntu-latest
+    # #1292: a full `cargo package` build of the assembled tarball,
+    # normally a few minutes with a warm cache.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -127,6 +141,9 @@ jobs:
     # visibility, not a gate, until an actual limit is worth picking.
     name: cargo publish --dry-run (publishability gate)
     runs-on: ubuntu-latest
+    # #1292: `cargo package --list` + `cargo publish --dry-run`, normally
+    # a few minutes with a warm cache (same build cost as `package` above).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -156,6 +173,9 @@ jobs:
     # so this fails at gtk4's build-script pkg-config step without them.
     name: cargo doc (docs.rs proxy, all Linux-buildable backend features)
     runs-on: ubuntu-latest
+    # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,
+    # normally under 10 minutes with a warm cache.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -194,6 +214,9 @@ jobs:
     name: Example-test coverage
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # #1292: a full-history checkout plus one Python script, normally
+    # under a couple of minutes.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -224,6 +247,9 @@ jobs:
     # `pull_request`.
     name: Comment-history lint (ratchet)
     runs-on: ubuntu-latest
+    # #1292: one Python script over the repo tree, normally well under a
+    # minute.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Comment-history lint
@@ -252,6 +278,12 @@ jobs:
     # If a Windows-specific flake ever wedges unrelated work, reverting is
     # this comment plus one line — but prefer fixing the flake, because the
     # non-blocking state is indistinguishable from having no Windows CI.
+    # #1292: this job's steps (build/test/clippy across tui+win+macos
+    # compile checks, benches, pty smoke, terminal_engine, conformance
+    # matrix) normally take ~5-10 min per matrix leg; 30 gives headroom
+    # without masking a real hang (see PR #1287/#1282's 4h+ stuck
+    # `Test (win feature, real Windows)` step this issue exists to catch).
+    timeout-minutes: 30
     strategy:
       # One platform failing must not cancel the other — seeing both columns
       # is the entire reason this is a matrix rather than two hardcoded jobs.
@@ -479,9 +511,18 @@ jobs:
       # collection (#21's DirectWrite metrics) — neither headless.
       # Blocking (no continue-on-error): see the flip rationale and evidence
       # in the comment above `Build (win feature)`.
+      #
+      # #1292: this step hung 4h+ on PR #1287 (#1282, run 37175984917) while
+      # every other check stayed green — normal runtime on develop is
+      # ~40-60s. A tight step-level `timeout-minutes` turns that into a red
+      # step within minutes instead of eating GitHub's 6h job default, and
+      # `--test-threads=1` serializes execution so the last `test ... ok`
+      # line in the log names the test that ran immediately before a hang
+      # (the next one in libtest's deterministic order is the culprit).
       - name: Test (win feature, real Windows)
         if: matrix.os == 'windows-latest'
-        run: cargo test -p quadraui --features win
+        timeout-minutes: 10
+        run: cargo test -p quadraui --features win -- --test-threads=1
       # C0 + Tier-1 `win` burn-down tables, actually surfaced (quadraui#722
       # review). The step above already runs this same `conformance.rs`
       # binary under `--features win` — `c0_paint_smoke` registers a `win`
@@ -495,9 +536,14 @@ jobs:
       # started failing. `--test conformance` scopes this to the one
       # binary that matters; every other `--features win` test already ran
       # in the step above, so nothing here re-runs work.
+      # #1292: same tight step-level timeout and serialized execution as
+      # `Test (win feature, real Windows)` above, for the same reason — a
+      # hang here should fail in minutes and name the last test that
+      # started, not run until the job's default timeout.
       - name: Conformance matrix (win)
         if: matrix.os == 'windows-latest'
-        run: cargo test -p quadraui --features win --test conformance -- --nocapture
+        timeout-minutes: 10
+        run: cargo test -p quadraui --features win --test conformance -- --test-threads=1 --nocapture
       # `c0_paint_smoke`'s table (quadraui#722) — its own file
       # (`conformance-matrix-c0.txt`, written by `write_artifact` in
       # `tests/conformance.rs`) so it can't race with `conformance_matrix`'s
@@ -600,6 +646,10 @@ jobs:
   gtk:
     name: gtk (build, test, clippy)
     runs-on: ubuntu-latest
+    # #1292: build/test/clippy under gtk+tui plus benches, the
+    # gtk_terminal example and the conformance matrix — normally well
+    # under 10 min with a warm cache.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml (see its header comment
@@ -704,6 +754,9 @@ jobs:
     # extra fixture needed.
     name: musl static build (tui feature, keyring/trash — #1131)
     runs-on: ubuntu-latest
+    # #1292: a single statically-linked example build plus a `file`/`ldd`
+    # check, normally a few minutes with a warm cache.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml (see its header comment
@@ -799,6 +852,10 @@ jobs:
     # unconditional.
     name: downstream consumers (compile truth)
     runs-on: ubuntu-latest
+    # #1292: clones + `cargo check --all-targets` on up to two consumers,
+    # with a possible control-run retry on failure — normally 10-15 min
+    # with a warm cache across both consumer target dirs.
+    timeout-minutes: 45
     env:
       # The workflow-level `RUSTFLAGS: "-D warnings"` above applies to every
       # job unless overridden. A `#[deprecated]` shim — the entire point of
