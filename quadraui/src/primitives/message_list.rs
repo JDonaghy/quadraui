@@ -167,7 +167,7 @@ impl MessageList {
     }
 }
 
-// ── NativeSurface paint (issue #1084, NativeSurface Phase 4 7/8) ───────────
+// ── PaintSurface paint (issue #1084, PaintSurface Phase 4 7/8) ───────────
 //
 // `paint` below is shared by the **macOS and Windows** rasterisers only —
 // `gtk::message_list::draw_message_list` is **not** migrated and stays a
@@ -180,7 +180,7 @@ impl MessageList {
 // `AttrList` (per-span fg/bold/italic/underline, plus a whole-row
 // `AttrFloat::new_scale` for markdown heading rows) — real shaped-line
 // glyph positions, immune to the "measure each span, advance x by its
-// width" drift that issue #214 fixed in `rich_text_popup`. `NativeSurface`
+// width" drift that issue #214 fixed in `rich_text_popup`. `PaintSurface`
 // has no "shape one line with N attribute ranges" verb, only single-
 // style runs (`surface_draw_text_run(_styled)`), so migrating GTK onto
 // `paint` below would mean reintroducing that previously-fixed bug class.
@@ -202,7 +202,7 @@ impl MessageList {
 //   RED-before-the-port case — see `macos::message_list`'s
 //   `styled_row_paints_per_span_colour` test, which has no pre-#1084
 //   equivalent because there was no way to even ask for it.
-// - **Per-span bold.** Carried via [`NativeSurface::surface_draw_text_run_styled`]
+// - **Per-span bold.** Carried via [`PaintSurface::surface_draw_text_run_styled`]
 //   on both backends now. Win's `D2dSurface` honours it for real
 //   (`DWrite::draw_text_styled`, matching this module's pre-#1084
 //   behaviour exactly); macOS's `CgSurface` takes that verb's *default*,
@@ -220,7 +220,7 @@ impl MessageList {
 //   style-dropping default) — no Direct2D italic text format or underline
 //   attribute is wired up today, matching `win::message_list`'s pre-#1084
 //   module doc verbatim. Not a new gap introduced by this migration.
-// - **`MessageRow::scale`** (markdown heading rows). `NativeSurface` has
+// - **`MessageRow::scale`** (markdown heading rows). `PaintSurface` has
 //   no font-*size* verb (`surface_draw_text_run_styled`'s `scale_x` is a
 //   horizontal *stretch* of the same-size glyph, for the wide-CJK-glyph
 //   fix — see that verb's own doc — not a point-size change), so there is
@@ -247,7 +247,7 @@ impl MessageList {
 pub(crate) mod native_surface_paint {
     use super::MessageList;
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
 
     /// Paint a [`MessageList`] into `rect` on `surface` — see this
     /// module's doc for the full per-backend divergence survey this
@@ -259,7 +259,7 @@ pub(crate) mod native_surface_paint {
     /// touching `surface` at all.
     pub(crate) fn paint(
         list: &MessageList,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         rect: Rect,
         line_height: f32,
     ) {
@@ -322,7 +322,7 @@ pub(crate) mod native_surface_paint {
             styled_runs: Vec<(Rect, String, Color, bool, bool, bool)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> crate::Viewport {

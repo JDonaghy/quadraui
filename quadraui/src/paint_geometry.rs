@@ -56,7 +56,7 @@
 //!
 //! Every item here is `#[allow(dead_code)]`: on a `--features tui` or
 //! `--features gtk,tui` build (or a bare, feature-less build), nothing calls
-//! in — same shape `native_surface.rs`'s own `#[allow(dead_code)]`
+//! in — same shape `paint_surface.rs`'s own `#[allow(dead_code)]`
 //! documents, one level up the call chain, and the same reason
 //! `native_surface_paint` (`primitives::form.rs`) carries the same
 //! attribute.

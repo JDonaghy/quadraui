@@ -746,7 +746,7 @@ where
     resolved
 }
 
-// ── NativeSurface paint (issue #1084, NativeSurface Phase 4 7/8) ───────────
+// ── PaintSurface paint (issue #1084, PaintSurface Phase 4 7/8) ───────────
 //
 // `paint` below is shared by the **macOS and Windows** rasterisers only —
 // `gtk::data_table::draw_data_table` is **not** migrated and stays a full,
@@ -759,7 +759,7 @@ where
 // `AttrList` rather than "measure each span, advance x by its width" —
 // exactly the shape issue #214 fixed `rich_text_popup` away from, because
 // summed per-span widths can drift from one line's real shaped glyph
-// positions for a proportional font. `NativeSurface` has no "shape one
+// positions for a proportional font. `PaintSurface` has no "shape one
 // line with N attribute ranges" verb, only single-style runs
 // (`surface_draw_text_run(_styled)`), so migrating GTK onto `paint` below
 // would mean reintroducing that bug class for the sake of a mechanical
@@ -778,10 +778,10 @@ where
 //   `0.5` hover mix) — Windows approximates it with a CPU-side
 //   [`crate::types::Color::blend`] against an assumed `theme.background`
 //   because its `fill_rect` only took an opaque colour before
-//   `NativeSurface` existed. `macos::data_table`'s own module doc named
+//   `PaintSurface` existed. `macos::data_table`'s own module doc named
 //   this outright: "macOS paints a solid `selection_bg` pixel today"
 //   (no blending at all) — a real, documented scope omission. `paint`
-//   uses [`NativeSurface::surface_fill_rect_alpha`] uniformly now, which
+//   uses [`PaintSurface::surface_fill_rect_alpha`] uniformly now, which
 //   `CgSurface`'s default forwards to a real alpha-blended
 //   `surface_fill_rect` (see that adapter's own doc — no CPU-side
 //   approximation needed, unlike the pre-#1084 Windows shape), so both
@@ -835,7 +835,7 @@ where
 //   unreviewed geometry choice.
 //
 // Not changed: per-span **bold** in header/footer text is carried via
-// [`NativeSurface::surface_draw_text_run_styled`] on both backends now —
+// [`PaintSurface::surface_draw_text_run_styled`] on both backends now —
 // `D2dSurface` honours it for real (matching this module's pre-#1084
 // behaviour exactly); `CgSurface` takes that verb's *default*, which
 // drops style entirely — inert on macOS (no visual regression, no new
@@ -850,7 +850,7 @@ where
 pub(crate) mod native_surface_paint {
     use super::{ColumnAlign, DataTable, DataTableLayout, SortDirection};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel_data_table_layout, TextMeasure};
     use crate::primitives::scrollbar::Scrollbar;
     use crate::theme::Theme;
@@ -860,14 +860,14 @@ pub(crate) mod native_surface_paint {
     /// `gtk::data_table`'s hardcoded `0.5`.
     const HOVER_ALPHA: f32 = 0.5;
 
-    /// Adapts a live `&dyn NativeSurface`'s plain (non-bold) text
+    /// Adapts a live `&dyn PaintSurface`'s plain (non-bold) text
     /// measurement into the [`TextMeasure`] `pixel_data_table_layout`
     /// needs for `ColumnWidth::Content` sizing — mirrors what
     /// `mac_data_table_layout`/`win_data_table_layout` already pass
     /// (`&CTFont` / `&DWrite`, both plain-metric measurers; neither
     /// backend's *layout* pass ever needed bold-aware widths, only the
     /// separate paint-time header/footer alignment measurement does).
-    struct SurfaceTextMeasure<'a>(&'a dyn NativeSurface);
+    struct SurfaceTextMeasure<'a>(&'a dyn PaintSurface);
 
     impl TextMeasure for SurfaceTextMeasure<'_> {
         fn width_of(&self, text: &str) -> f32 {
@@ -895,7 +895,7 @@ pub(crate) mod native_surface_paint {
     /// non-positive Direct2D fill/clip rect was already a no-op there).
     pub(crate) fn paint(
         table: &DataTable,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
         line_height: f32,
@@ -1169,7 +1169,7 @@ pub(crate) mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: crate::Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> crate::Viewport {

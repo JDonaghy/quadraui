@@ -3,7 +3,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-//! (#862, `NativeSurface` Phase 2d slice 5/9) — see that fn's module doc
+//! (#862, `PaintSurface` Phase 2d slice 5/9) — see that fn's module doc
 //! for the four named divergences found while unifying
 //! `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
 //! and `win::sidebar_panel::draw_sidebar_panel` into one implementation

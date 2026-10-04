@@ -24,7 +24,7 @@
 //! to declare its TUI story. Every [`Style`] token's is the same shape,
 //! stated once here rather than per-field: TUI paints a whole-cell
 //! grid, so a sub-cell geometry token has nothing to refine — see
-//! [`crate::native_surface`]'s module doc, "Why TUI stays out", for the
+//! [`crate::paint_surface`]'s module doc, "Why TUI stays out", for the
 //! identical reasoning applied to the drawing-verb trait this struct's
 //! tokens are consumed through. Concretely:
 //!
@@ -52,7 +52,7 @@
 //! per-role font size, …). [`Self::focus_ring_width`] is first because
 //! it is the one geometry value all three pixel backends agree on
 //! byte-for-byte, and it is painted through the shared
-//! [`crate::native_surface::NativeSurface`] trait, so a single call
+//! [`crate::paint_surface::PaintSurface`] trait, so a single call
 //! site reaches `GtkBackend`, `MacBackend` and `WinBackend` at once.
 //! Each further token — padding, corner radius, border width on the
 //! primitives that still hardcode them — is its own follow-up PR, one
@@ -93,7 +93,7 @@ use serde::{Deserialize, Serialize};
 pub struct Style {
     /// Stroke width, in surface-native pixels, of the focus ring
     /// [`crate::Backend::draw_focus_ring`] paints on every pixel
-    /// backend. Consumed via [`crate::native_surface::NativeSurface::surface_stroke_rect`]
+    /// backend. Consumed via [`crate::paint_surface::PaintSurface::surface_stroke_rect`]
     /// — see that trait's module doc for why this reaches `GtkBackend`,
     /// `MacBackend` and `WinBackend` from one call site.
     ///

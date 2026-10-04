@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-//! (#1085, `NativeSurface` Phase 4 slice 8/8) — see that fn's doc for the
+//! (#1085, `PaintSurface` Phase 4 slice 8/8) — see that fn's doc for the
 //! seven named divergences found while unifying
 //! `gtk::pipeline_view::draw_pipeline_view`,
 //! `macos::pipeline_view::draw_pipeline_view` and

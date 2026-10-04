@@ -1364,10 +1364,10 @@ fn push_aux_hits(
     }
 }
 
-// ── NativeSurface chrome paint (#1074, NativeSurface Phase 4) ──────────────
+// ── PaintSurface chrome paint (#1074, PaintSurface Phase 4) ──────────────
 
 /// Shared chrome-paint helpers for the `MultiSectionView` rasterisers
-/// (issue #1074, `NativeSurface` Phase 4, primitive 1/8).
+/// (issue #1074, `PaintSurface` Phase 4, primitive 1/8).
 ///
 /// Only the **chrome** — header row, aux row, per-section and panel-level
 /// scrollbars, divider strip, `Text`/`Empty` bodies — moves here. Each
@@ -1376,10 +1376,10 @@ fn push_aux_hits(
 /// dispatcher: `SectionBody::Tree`/`List`/`MessageList` still call each
 /// backend's own native rasteriser (`gtk::draw_tree`, `win::list::draw_list`,
 /// …), which take a raw `(&Context, &pango::Layout)` / `(&ID2D1RenderTarget,
-/// &DWrite)` pair, not `&mut dyn NativeSurface` — those primitives haven't
-/// been ported onto this trait yet (see `crate::native_surface`'s own doc
+/// &DWrite)` pair, not `&mut dyn PaintSurface` — those primitives haven't
+/// been ported onto this trait yet (see `crate::paint_surface`'s own doc
 /// for the full ported/unported split). Moving only what's already
-/// expressible through the ~15 verbs on `NativeSurface` mirrors exactly how
+/// expressible through the ~15 verbs on `PaintSurface` mirrors exactly how
 /// `crate::primitives::form::native_surface_paint` left `FieldKind::Toolbar`
 /// (no rounded-rect/hover chrome available) to each backend's own
 /// `draw_form` wrapper.
@@ -1394,7 +1394,7 @@ fn push_aux_hits(
 /// width *is* set on the layout). A title wider than its title/badge
 /// region bled ink past the header's own trailing margin on GTK. This
 /// shared [`paint_header`] always brackets the title draw in
-/// [`NativeSurface::surface_push_clip`]/[`NativeSurface::surface_pop_clip`],
+/// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`],
 /// unifying on the already-majority-correct behaviour. See
 /// `gtk::multi_section_view::tests::gtk_header_clips_long_title_before_right_margin`
 /// for the regression test (observed RED against the pre-port
@@ -1416,7 +1416,7 @@ fn push_aux_hits(
 pub(crate) mod native_surface_paint {
     use super::{EmptyBody, SectionAux, SectionHeader};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
 
@@ -1431,7 +1431,7 @@ pub(crate) mod native_surface_paint {
     /// optional badge after the title. See this module's doc for the
     /// drift this clip closes.
     pub(crate) fn paint_header(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         bounds: Rect,
         header: &SectionHeader,
         collapsed: bool,
@@ -1515,7 +1515,7 @@ pub(crate) mod native_surface_paint {
     /// Win) passes `true` unconditionally, reproducing their pre-port
     /// always-on-while-focused behaviour exactly.
     pub(crate) fn paint_aux(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         bounds: Rect,
         aux: &SectionAux,
         theme: &Theme,
@@ -1584,7 +1584,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a `SectionBody::Text` body: background fill, then one row
     /// per `StyledText` line (dropped once rows would overflow `bounds`).
     pub(crate) fn paint_text_lines(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         bounds: Rect,
         lines: &[StyledText],
         theme: &Theme,
@@ -1612,7 +1612,7 @@ pub(crate) mod native_surface_paint {
     /// stack of (optional icon, primary text, optional hint, optional
     /// action) blocks.
     pub(crate) fn paint_empty_body(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         bounds: Rect,
         empty: &EmptyBody,
         theme: &Theme,
@@ -1675,7 +1675,7 @@ pub(crate) mod native_surface_paint {
     /// 20%-tall top-anchored placeholder thumb, preserving the pre-#9
     /// visual for other overflowing body types.
     pub(crate) fn paint_scrollbar(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         gutter: Rect,
         thumb_bounds: Option<Rect>,
         theme: &Theme,
@@ -1703,7 +1703,7 @@ pub(crate) mod native_surface_paint {
     /// backends that have ever painted this scrollbar (GTK, Win, and now
     /// fixed here, macOS).
     pub(crate) fn paint_panel_scrollbar(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         bounds: Rect,
         thumb_bounds: Option<Rect>,
         theme: &Theme,
@@ -1723,7 +1723,7 @@ pub(crate) mod native_surface_paint {
     }
 
     /// Paint a draggable divider strip between two adjacent sections.
-    pub(crate) fn paint_divider(surface: &mut dyn NativeSurface, bounds: Rect, theme: &Theme) {
+    pub(crate) fn paint_divider(surface: &mut dyn PaintSurface, bounds: Rect, theme: &Theme) {
         surface.surface_fill_rect(bounds, theme.separator);
     }
 
@@ -1753,7 +1753,7 @@ pub(crate) mod native_surface_paint {
             clips: Vec<Rect>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

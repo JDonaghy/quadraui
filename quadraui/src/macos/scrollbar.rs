@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::scrollbar::native_surface_paint::paint`] (#811,
-//! `NativeSurface` Phase 2d) — see that fn's doc for the one named
+//! `PaintSurface` Phase 2d) — see that fn's doc for the one named
 //! divergence (quadraui#791) re-verified (already fixed) while unifying
 //! `gtk::draw_scrollbar`, `macos::scrollbar::draw_scrollbar` and
 //! `win::scrollbar::draw_scrollbar` into one implementation. This module

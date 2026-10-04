@@ -15,12 +15,12 @@
 //! `stroke_line` (and the `CGContextMoveToPoint`/`CGContextAddLineToPoint`/
 //! `CGContextStrokePath` extern decls it alone used) was removed in #1077
 //! once its only caller, `macos::tooltip`'s `TooltipBorder::Sides` arm,
-//! moved onto `NativeSurface::surface_draw_line` (`CgSurface` →
+//! moved onto `PaintSurface::surface_draw_line` (`CgSurface` →
 //! `super::backend::ns_draw_line`) instead. `stroke_rect` (and the
 //! `CGContextSetRGBStrokeColor`/`CGContextSetLineWidth`/`CGContextStrokeRect`
 //! extern decls it alone used) was removed the same way once its last
 //! caller, `macos::rich_text_popup`, moved onto
-//! `NativeSurface::surface_stroke_rect` instead.
+//! `PaintSurface::surface_stroke_rect` instead.
 //!
 //! Not every `src/macos/` file that touches CoreGraphics draws through
 //! here — `backend.rs`, `board.rs`, `headless.rs`, `image.rs`,

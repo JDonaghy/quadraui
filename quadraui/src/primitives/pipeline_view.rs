@@ -359,8 +359,8 @@ impl PipelineView {
     }
 }
 
-// ── NativeSurface paint (shared gtk/macos/win implementation, issue #1085,
-// NativeSurface Phase 4 8/8) ────────────────────────────────────────────
+// ── PaintSurface paint (shared gtk/macos/win implementation, issue #1085,
+// PaintSurface Phase 4 8/8) ────────────────────────────────────────────
 //
 // Before this, `gtk::pipeline_view::draw_pipeline_view` (Cairo + Pango),
 // `macos::pipeline_view::draw_pipeline_view` (Core Graphics + Core Text)
@@ -368,7 +368,7 @@ impl PipelineView {
 // each independently painted the same stage/arrow geometry (already
 // unified by [`PipelineView::layout`]/[`pixel_pipeline_view_layout`])
 // with their own drawing API. `paint` below is the one shared
-// implementation, written against [`crate::native_surface::NativeSurface`]
+// implementation, written against [`crate::paint_surface::PaintSurface`]
 // (#807, Phase 1) instead of any one backend's drawing API — same shape
 // as `diff_view`'s #866 migration and `board`'s #1085 slice above.
 //
@@ -396,7 +396,7 @@ impl PipelineView {
 //    `bb.width - 2 * PIPELINE_H_PAD` and let `DWrite::draw_text`'s
 //    `D2D1_DRAW_TEXT_OPTIONS_CLIP` cut it off. `macos::pipeline_view` did
 //    neither — an overlong label could paint past the box into the next
-//    stage or the arrow connector, uncropped. `NativeSurface` has no
+//    stage or the arrow connector, uncropped. `PaintSurface` has no
 //    ellipsize verb (see `diff_view`'s #866 "Header-label overflow
 //    handling" and `board`'s #1085 divergence 1/2 for the identical
 //    tradeoff), so `paint` clamps the label's drawn width like
@@ -409,10 +409,10 @@ impl PipelineView {
 //    `win::pipeline_view` approximated the same tint with a CPU-side
 //    [`crate::types::Color::blend`] against `theme.surface_bg` — exactly
 //    the "`Color::blend` instead of a real alpha composite" smell
-//    [`crate::native_surface::NativeSurface::surface_fill_rect_alpha`]'s
+//    [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`]'s
 //    own doc names as the reason that verb exists.
 //    `macos::pipeline_view` painted no tint at all. `paint` uses
-//    [`crate::native_surface::NativeSurface::surface_fill_rect_alpha`] to
+//    [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`] to
 //    fill the full `action_bounds` with a real alpha composite over
 //    `theme.accent_bg` at the same `0.15` alpha every backend already
 //    agreed on — macOS gains the tint it was missing, and Windows's CPU
@@ -429,7 +429,7 @@ impl PipelineView {
 //    `▼` focus indicator and the arrow connector's head.
 //    `win::pipeline_view` drew each as two stroked line segments instead
 //    — `win::text` exposes no filled-arbitrary-path primitive (only
-//    rects, rounded rects, lines, and circles). `NativeSurface` has the
+//    rects, rounded rects, lines, and circles). `PaintSurface` has the
 //    identical gap (`surface_draw_line`/`surface_fill_rect`/
 //    `surface_fill_rounded_rect`, no fill-path verb), so `paint` adopts
 //    Windows's two-line chevron on every backend. GTK/macOS's solid
@@ -439,7 +439,7 @@ impl PipelineView {
 //    `macos::pipeline_view` stroked a *rounded*-rect border
 //    (`pixel::CORNER_RADIUS`); `win::pipeline_view` could only stroke a
 //    straight rectangle (no rounded-stroke primitive — see divergence 6's
-//    same underlying gap). `NativeSurface::surface_stroke_rect` is
+//    same underlying gap). `PaintSurface::surface_stroke_rect` is
 //    axis-aligned only, so `paint` strokes every stage-box border as a
 //    straight rectangle — mirrors `board`'s #1085 divergence 3 exactly.
 //    GTK/macOS boxes lose their rounded-pill corners; `pixel::CORNER_RADIUS`
@@ -453,7 +453,7 @@ impl PipelineView {
 pub(crate) mod native_surface_paint {
     use super::{status_color, status_glyph, PipelineView, PipelineViewLayout};
     use crate::event::{Point, Rect};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::{pixel, pixel_pipeline_view_layout};
     use crate::theme::Theme;
 
@@ -467,7 +467,7 @@ pub(crate) mod native_surface_paint {
     /// every deleted per-backend `draw_pipeline_view`.
     pub(crate) fn paint(
         view: &PipelineView,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
     ) -> PipelineViewLayout {
@@ -616,7 +616,7 @@ pub(crate) mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

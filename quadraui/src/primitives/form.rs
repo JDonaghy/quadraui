@@ -435,7 +435,7 @@ impl Form {
     }
 }
 
-// ── NativeSurface paint (#808, Phase 2a of the NativeSurface milestone) ────
+// ── PaintSurface paint (#808, Phase 2a of the PaintSurface milestone) ────
 //
 // Before this, `gtk::form::draw_form`, `macos::form::draw_form` and
 // `win::form::draw_form` each independently matched every `FieldKind` and
@@ -447,7 +447,7 @@ impl Form {
 // those rendered nothing on macOS, with no error anywhere.
 //
 // `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API. It handles all 14 variants, so the silent
 // macOS fall-through disappears by construction rather than by
 // four more copy-pasted match arms.
@@ -461,7 +461,7 @@ impl Form {
 // win leg (`cargo check -p quadraui --features win`) runs — compiles this
 // module (the `cfg` above is satisfied) but reaches none of those call
 // sites, so nothing here is "dead" in the sense the lint means; it's the
-// same shape `native_surface.rs`'s own `#[allow(dead_code)]` documents,
+// same shape `paint_surface.rs`'s own `#[allow(dead_code)]` documents,
 // one level up the call chain.
 #[cfg(any(
     feature = "gtk",
@@ -472,7 +472,7 @@ impl Form {
 mod native_surface_paint {
     use super::{FieldKind, Form, FormLayout, ValidationState};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     // The selected-item background pill's rect *and* the widget-state
     // decision of whether to paint it at all are extracted to
     // `paint_geometry` (#857) so both are unit-tested outside this
@@ -506,7 +506,7 @@ mod native_surface_paint {
         t.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
-    /// Paint a laid-out [`Form`] using `surface`'s [`NativeSurface`]
+    /// Paint a laid-out [`Form`] using `surface`'s [`PaintSurface`]
     /// verbs.
     ///
     /// `flayout` must be the *same* [`FormLayout`] the caller uses for
@@ -524,7 +524,7 @@ mod native_surface_paint {
     ///
     /// # `FieldKind::Toolbar` is not painted here
     ///
-    /// `NativeSurface`'s drawing verbs have no rounded-rect or
+    /// `PaintSurface`'s drawing verbs have no rounded-rect or
     /// hover/pressed/focus-state support, so a `Toolbar` field's full
     /// chrome (see `crate::gtk::toolbar`'s module doc for the state
     /// table every pixel backend already implements) can't be
@@ -540,7 +540,7 @@ mod native_surface_paint {
     pub(crate) fn paint(
         form: &Form,
         flayout: &FormLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         origin: crate::Point,
     ) {
@@ -903,7 +903,7 @@ mod native_surface_paint {
     /// copy had and macOS's never gained).
     #[allow(clippy::too_many_arguments)]
     fn paint_bracketed_text(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         row_rect: Rect,
         label_right: f32,
         no_label: bool,
@@ -1053,7 +1053,7 @@ mod native_surface_paint {
             }
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {
@@ -1302,7 +1302,7 @@ mod native_surface_paint {
         // above still own is the one thing `paint_geometry`'s pure-math
         // tests can't see: that `paint()` actually wires `Form` state
         // through to `selected_item_fill` and issues the resulting fill
-        // via `NativeSurface`, exercised through `RecordingSurface`.
+        // via `PaintSurface`, exercised through `RecordingSurface`.
     }
 }
 

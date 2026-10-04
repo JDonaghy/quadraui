@@ -652,7 +652,7 @@ impl TextDisplay {
     }
 }
 
-// ── NativeSurface paint (#810, Phase 2c of the NativeSurface milestone) ────
+// ── PaintSurface paint (#810, Phase 2c of the PaintSurface milestone) ────
 //
 // Before this, `gtk::text_display::draw_text_display`,
 // `macos::text_display::draw_text_display` and
@@ -663,7 +663,7 @@ impl TextDisplay {
 // `gtk::text_display::draw_text_display`"; Windows's: "Mirrors
 // `macos::text_display::draw_text_display`"). `paint` below is the one
 // shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1).
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1).
 //
 // Each backend keeps its own `*_text_display_layout` free function
 // (`gtk_text_display_layout`/`mac_text_display_layout`/
@@ -681,7 +681,7 @@ impl TextDisplay {
 // `DWrite::measure_text_styled`/`draw_text_styled(.., span.bold)`; GTK
 // and macOS never read `StyledSpan::bold` at all — Pango/Core Text
 // bold-weight selection was never wired into either rasteriser.
-// `NativeSurface::surface_measure_text`/`surface_draw_text_run` carry no
+// `PaintSurface::surface_measure_text`/`surface_draw_text_run` carry no
 // bold parameter (see that trait's module doc's "~15 drawing verbs" —
 // weight selection isn't one of them), so there is no way to preserve
 // Windows's behaviour through this trait. `paint` adopts the
@@ -704,7 +704,7 @@ mod native_surface_paint {
         content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count, TextDisplay,
         TextDisplayLineMeasure, WRAP_CONTINUATION_MARKER,
     };
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::Decoration;
     use crate::Rect;
@@ -736,7 +736,7 @@ mod native_surface_paint {
     pub(crate) fn paint(
         display: &TextDisplay,
         rect: Rect,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         line_height: f32,
         char_width: f32,
@@ -914,7 +914,7 @@ mod native_surface_paint {
             text_runs: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

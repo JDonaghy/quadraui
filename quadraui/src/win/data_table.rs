@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::data_table::native_surface_paint::paint`] (#1084,
-//! `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
 //! per-backend divergence survey this closed, most notably: this module
 //! used to hand-roll flat, non-hover-aware scrollbar fills (see the old
 //! "Scope for #26" note below) instead of the shared, translucent
@@ -12,7 +12,7 @@
 //! composite, and silently discarded every footer span's own `fg`,
 //! painting the whole footer cell in one colour. [`draw_data_table`]
 //! below is now a thin wrapper over the shared paint, using
-//! [`crate::win::surface::D2dSurface`] as the `NativeSurface` adapter —
+//! [`crate::win::surface::D2dSurface`] as the `PaintSurface` adapter —
 //! mirroring [`crate::macos::data_table::draw_data_table`]'s equivalent
 //! migration. `gtk::data_table::draw_data_table` is *not* migrated; see
 //! the shared `paint`'s doc for why. [`win_data_table_layout`] (pure

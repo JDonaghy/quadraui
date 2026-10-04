@@ -2,12 +2,12 @@
 //! that anchors at the top-right of the active editor group.
 //!
 //! This primitive owns the data shape, hit-region layout, and click-
-//! target enum, plus (as of #809, `NativeSurface` Phase 2b) the shared
+//! target enum, plus (as of #809, `PaintSurface` Phase 2b) the shared
 //! [`native_surface_paint::paint`] rasteriser every pixel backend
 //! (GTK/macOS/Win) calls through `Backend::draw_find_replace`. TUI
 //! stays a separate rasteriser, [`crate::tui::draw_find_replace`] —
-//! see `native_surface.rs`'s module doc for why TUI never implements
-//! `NativeSurface` (a cell grid has no sub-cell `Rect`).
+//! see `paint_surface.rs`'s module doc for why TUI never implements
+//! `PaintSurface` (a cell grid has no sub-cell `Rect`).
 //!
 //! # Why a primitive (and not just a `StatusBar` variant)
 //!
@@ -308,7 +308,7 @@ impl FindReplacePanel {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// NativeSurface Phase 2b (#809): shared paint implementation
+// PaintSurface Phase 2b (#809): shared paint implementation
 // ─────────────────────────────────────────────────────────────────────
 //
 // Before this, `gtk::find_replace::draw_find_replace`,
@@ -337,7 +337,7 @@ impl FindReplacePanel {
 // (`paint_bracketed_text`, #808): fill the selection rect first, at
 // full opacity, then draw the field's text in three runs (prefix /
 // selected / suffix) on top, so the selected characters stay legible
-// on every backend. `NativeSurface::surface_fill_rect` doesn't
+// on every backend. `PaintSurface::surface_fill_rect` doesn't
 // guarantee alpha blending — GTK's implementation discards the alpha
 // channel entirely (`GtkBackend::surface_fill_rect` calls
 // `crate::gtk::set_source`, which is `cr.set_source_rgb`) — so an
@@ -350,7 +350,7 @@ impl FindReplacePanel {
 // `Backend::draw_find_replace` call site once compiled in, and by this
 // module's own `RecordingSurface` tests on every leg that enables one
 // of the three cfg'd features (gtk, win, or macos-on-macos) — see
-// `native_surface.rs`'s module doc for why that's not actually dead
+// `paint_surface.rs`'s module doc for why that's not actually dead
 // under `--features win` on a non-Windows host, the same shape this
 // module borrows from `primitives::form`'s `native_surface_paint`.
 #[cfg(any(
@@ -361,7 +361,7 @@ impl FindReplacePanel {
 #[allow(dead_code)]
 mod native_surface_paint {
     use super::{FindReplaceClickTarget, FindReplacePanel};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::Color;
     use crate::Rect;
@@ -392,7 +392,7 @@ mod native_surface_paint {
     /// Paint a plain text label at a cell position — no background, no
     /// centering. Used for the chevron and the match-count string.
     fn paint_label(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         m: &Metrics,
         col: u16,
         row: u16,
@@ -410,7 +410,7 @@ mod native_surface_paint {
     /// `separator` and normal text otherwise.
     #[allow(clippy::too_many_arguments)]
     fn paint_toggle(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         m: &Metrics,
         col: u16,
@@ -439,7 +439,7 @@ mod native_surface_paint {
     /// [`paint_toggle`]'s inactive state.
     #[allow(clippy::too_many_arguments)]
     fn paint_glyph(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         m: &Metrics,
         col: u16,
@@ -471,7 +471,7 @@ mod native_surface_paint {
     /// disagreed on.
     #[allow(clippy::too_many_arguments)]
     fn paint_input(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         m: &Metrics,
         col: u16,
@@ -545,13 +545,13 @@ mod native_surface_paint {
     }
 
     /// Paint a laid-out [`FindReplacePanel`] using `surface`'s
-    /// [`NativeSurface`] verbs.
+    /// [`PaintSurface`] verbs.
     ///
     /// Walks `panel.hit_regions` — the same list
     /// [`super::compute_hit_regions`] builds once at panel construction
     /// and every backend's click dispatch hit-tests against — so paint
     /// and click can never disagree about where a target lives.
-    pub(crate) fn paint(panel: &FindReplacePanel, surface: &mut dyn NativeSurface, theme: &Theme) {
+    pub(crate) fn paint(panel: &FindReplacePanel, surface: &mut dyn PaintSurface, theme: &Theme) {
         use FindReplaceClickTarget as T;
 
         let cw = surface.surface_char_width().max(1.0);
@@ -770,7 +770,7 @@ mod native_surface_paint {
             text_runs: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {
@@ -943,7 +943,7 @@ mod native_surface_paint {
     }
 }
 
-// ── #818: hit_test (ungated — no NativeSurface feature needed) ─────────────
+// ── #818: hit_test (ungated — no PaintSurface feature needed) ─────────────
 
 #[cfg(test)]
 mod hit_test_tests {

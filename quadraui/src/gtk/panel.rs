@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::panel::native_surface_paint::paint`] (#859,
-//! `NativeSurface` Phase 2d slice 2/9) — see that fn's doc for the named
+//! `PaintSurface` Phase 2d slice 2/9) — see that fn's doc for the named
 //! divergences (unclamped glyph centring vs. win's `.max(0.0)`; GTK's
 //! `set_source` alpha-drop, fixed at the source by #811) found while
 //! unifying `gtk::draw_panel`, `macos::panel::draw_panel` and

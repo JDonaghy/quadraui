@@ -586,7 +586,7 @@ impl DiffView {
     }
 }
 
-// ── NativeSurface paint (#866, Phase 2d slice 9/9 of the NativeSurface
+// ── PaintSurface paint (#866, Phase 2d slice 9/9 of the PaintSurface
 // milestone, #811 / #785) ───────────────────────────────────────────────
 //
 // Before this, `gtk::diff_view::draw_diff_view` (Cairo + Pango),
@@ -595,7 +595,7 @@ impl DiffView {
 // independently painted the same row/pane geometry (already unified by
 // #737's `DiffView::layout`) with their own drawing API. `paint` below is
 // the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API — same shape as `scrollbar`'s #811 slice 1/9
 // migration (commit `2a47547`).
 //
@@ -613,7 +613,7 @@ impl DiffView {
 //    `win::text::create_text_format` never calls
 //    `IDWriteTextFormat::SetParagraphAlignment`, so DirectWrite defaults
 //    to top alignment too. Every already-migrated primitive that draws a
-//    fixed-height row through [`crate::native_surface::NativeSurface::surface_draw_text_run`]
+//    fixed-height row through [`crate::paint_surface::PaintSurface::surface_draw_text_run`]
 //    (`status_bar`, `text_display`) draws at the row rect's own `y` with
 //    no manual centring offset, so that is this trait method's
 //    established contract — `paint` below follows it (top alignment on
@@ -626,7 +626,7 @@ impl DiffView {
 //    `EllipsizeMode::End` (a trailing "…"). `macos::diff_view` and
 //    `win::diff_view` both hard-clipped instead (`CGContextClipToRect` /
 //    `D2D1_DRAW_TEXT_OPTIONS_CLIP`), cutting the glyph run off exactly at
-//    the pane edge with no ellipsis. `NativeSurface` has no ellipsize
+//    the pane edge with no ellipsis. `PaintSurface` has no ellipsize
 //    verb, so `paint` hard-clips header labels on every backend — the
 //    macOS/Windows behaviour. An overlong label on GTK now hard-clips
 //    instead of ellipsizing.
@@ -648,7 +648,7 @@ pub(crate) mod native_surface_paint {
         DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
     };
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::Color;
 
@@ -664,7 +664,7 @@ pub(crate) mod native_surface_paint {
     /// deleted per-backend `draw_diff_view`.
     pub(crate) fn paint(
         view: &DiffView,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
         line_height: f32,
@@ -689,7 +689,7 @@ pub(crate) mod native_surface_paint {
     /// non-positive `rect` or empty `text` paints nothing — mirrors
     /// `macos::diff_view`'s pre-migration `clipped_text` guard.
     fn paint_clipped_text(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         rect: Rect,
         pad: f32,
         text: &str,
@@ -714,7 +714,7 @@ pub(crate) mod native_surface_paint {
 
     fn paint_side_by_side(
         view: &DiffView,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         geometry: &DiffViewGeometry,
     ) {
@@ -764,7 +764,7 @@ pub(crate) mod native_surface_paint {
 
     fn paint_unified(
         view: &DiffView,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         geometry: &DiffViewGeometry,
     ) {
@@ -831,7 +831,7 @@ pub(crate) mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

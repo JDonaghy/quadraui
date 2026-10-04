@@ -2,7 +2,7 @@
 //!
 //! Content painting (background, title, rows, h/v scrollbars) moved to
 //! the shared [`crate::primitives::list::native_surface_paint::paint`]
-//! (#1075, `NativeSurface` Phase 4 slice 2/8) — see that fn's module doc
+//! (#1075, `PaintSurface` Phase 4 slice 2/8) — see that fn's module doc
 //! for what's shared and what stays per-backend. This module still owns
 //! the [`ListView::bordered`] frame itself: a plain (square-cornered)
 //! 1-DIP rectangle border painted *after* the shared content paint (see

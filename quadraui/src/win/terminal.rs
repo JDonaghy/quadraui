@@ -2,7 +2,7 @@
 //! (issue #30).
 //!
 //! Painting moved to the shared [`crate::primitives::terminal::paint`] /
-//! [`crate::primitives::terminal::paint_divider`] (#810, NativeSurface
+//! [`crate::primitives::terminal::paint_divider`] (#810, PaintSurface
 //! Phase 2c) — see that fn's doc for the divergence (per-cell
 //! bold/italic/underline styling: this backend keeps `bold` via
 //! `DWrite::draw_text_styled`, `italic`/`underline` are still not wired

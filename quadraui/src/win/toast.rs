@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::toast::native_surface_paint::paint`] (#861,
-//! `NativeSurface` Phase 2d slice 4/9) — see that fn's doc for the named
+//! `PaintSurface` Phase 2d slice 4/9) — see that fn's doc for the named
 //! divergences found while unifying `gtk::toast::draw_toast_stack`,
 //! `macos::toast::draw_toast_stack` and `win::toast::draw_toast_stack`
 //! into one implementation:
@@ -46,7 +46,7 @@ use crate::theme::Theme;
 /// agrees with what the last paint drew. Pure geometry over [`TextMeasure`]
 /// (issue #1078) — `measure` may be a live `&DWrite` (when painting) or
 /// [`super::backend`]'s nominal measurer (no surface yet); independent of
-/// [`crate::native_surface::NativeSurface::surface_measure_text`] — same
+/// [`crate::paint_surface::PaintSurface::surface_measure_text`] — same
 /// "no-paint layout stays put" posture as `WinBackend::status_bar_layout`
 /// (#860). Shares its geometry with `gtk_toast_stack_layout` /
 /// `mac_toast_stack_layout` via [`pixel_toast_stack_layout`] (issue

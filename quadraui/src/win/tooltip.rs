@@ -2,10 +2,10 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
-//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
 //! one drift it resolved (styled-line span bold/italic/underline; this
 //! backend already applied `span.bold` via `DWrite::draw_text_styled`,
-//! which is exactly what `NativeSurface::surface_draw_text_run_styled`'s
+//! which is exactly what `PaintSurface::surface_draw_text_run_styled`'s
 //! Windows override still does, unchanged).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s

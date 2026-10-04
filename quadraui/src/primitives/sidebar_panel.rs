@@ -217,7 +217,7 @@ impl SidebarPanel {
     }
 }
 
-// ── NativeSurface paint (#862, Phase 2d slice 5/9 of the NativeSurface
+// ── PaintSurface paint (#862, Phase 2d slice 5/9 of the PaintSurface
 // milestone) ─────────────────────────────────────────────────────────────
 //
 // Before this, `gtk::draw_sidebar_panel`, `macos::sidebar_panel::draw_sidebar_panel`
@@ -226,20 +226,20 @@ impl SidebarPanel {
 // backend's `toolbar::draw_toolbar` free function (quadraui#785 child
 // #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
 // shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API.
 //
 // `SidebarPanel` paints *nothing* of its own — its entire visible surface
 // is the optional [`Toolbar`] header (the content region is always left
 // to the host, unchanged by this migration). That means unifying this
 // primitive's paint necessarily means porting the toolbar-button
-// rendering itself to `NativeSurface`, even though `Toolbar` is not one
+// rendering itself to `PaintSurface`, even though `Toolbar` is not one
 // of this issue's files and hasn't had its own Phase 2d slice yet (it's
 // one of the remaining eight #811 slices, still open, and
 // `gtk::toolbar::draw_toolbar` / `macos::toolbar::draw_toolbar` /
 // `win::toolbar::draw_toolbar` are untouched by this PR — standalone
 // `Backend::draw_toolbar` still calls them directly). `paint_toolbar_header`
-// below is therefore a `NativeSurface`-generic duplicate of that
+// below is therefore a `PaintSurface`-generic duplicate of that
 // rendering logic, scoped to what a sidebar panel's header needs. When
 // `Toolbar` gets its own Phase 2d slice, that issue should either extract
 // a helper both primitives share or delete this copy in favour of that
@@ -254,11 +254,11 @@ impl SidebarPanel {
 //    4px-radius rounded-rect pill (`gtk::rounded_rect_path`); macOS and
 //    Win already painted plain rectangles (win's own module doc called
 //    this out as a scope gap: "no rounded-rect / stroke-inset helper
-//    exists yet in `win::text`"). `NativeSurface::surface_fill_rect` /
+//    exists yet in `win::text`"). `PaintSurface::surface_fill_rect` /
 //    `surface_stroke_rect` have no rounded-rect verb, so the unified
 //    `paint_toolbar_header` necessarily follows the 2-of-3 majority
 //    (macOS/Win's plain rect) — GTK's toolbar-header buttons lose their
-//    rounded corners. A future issue could add a `NativeSurface`
+//    rounded corners. A future issue could add a `PaintSurface`
 //    rounded-rect verb if the corner treatment is worth restoring.
 // 2. **Missing clip on Win.** GTK (`cr.clip()`) and macOS
 //    (`CGContextClipToRect`) both clipped painting to the toolbar
@@ -299,7 +299,7 @@ impl SidebarPanel {
 pub(crate) mod native_surface_paint {
     use super::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
     use crate::event::{Point, Rect};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::TextMeasure;
     use crate::primitives::toolbar::{
         action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
@@ -307,12 +307,12 @@ pub(crate) mod native_surface_paint {
     use crate::theme::Theme;
     use crate::types::WidgetId;
 
-    /// Adapts a live `&dyn NativeSurface` to the shared [`TextMeasure`]
+    /// Adapts a live `&dyn PaintSurface` to the shared [`TextMeasure`]
     /// trait so [`measure_button`] never has to name a backend-specific
     /// font type — generalises `gtk::toolbar::PangoMeasure` /
     /// `macos::toolbar::CtFontMeasure` / `win::toolbar::DWriteMeasure`
     /// into the one adapter every backend now shares.
-    struct SurfaceMeasure<'a>(&'a dyn NativeSurface);
+    struct SurfaceMeasure<'a>(&'a dyn PaintSurface);
 
     impl TextMeasure for SurfaceMeasure<'_> {
         fn width_of(&self, text: &str) -> f32 {
@@ -340,7 +340,7 @@ pub(crate) mod native_surface_paint {
     /// return layout; }` guard.
     pub(crate) fn paint(
         panel: &SidebarPanel,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         bounds: Rect,
         default_toolbar_height: f32,
@@ -383,14 +383,14 @@ pub(crate) mod native_surface_paint {
     }
 
     /// Paint `bar`'s buttons into `tb_bounds` on `surface` — see this
-    /// module's doc for why this exists (a `NativeSurface`-generic port
+    /// module's doc for why this exists (a `PaintSurface`-generic port
     /// of `gtk`/`macos`/`win`'s own `toolbar::draw_toolbar`, scoped to
     /// what a sidebar panel's header needs) and for the four named
     /// divergences found while porting it.
     fn paint_toolbar_header(
         bar: &Toolbar,
         toolbar_layout: &ToolbarLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         tb_bounds: Rect,
         hovered_id: Option<&WidgetId>,
@@ -429,7 +429,7 @@ pub(crate) mod native_surface_paint {
                     // Highlight background: pressed/active > hovered >
                     // none. Plain rect — see divergence 1 (GTK's
                     // pre-#862 rounded-rect pill isn't reproducible
-                    // against `NativeSurface`).
+                    // against `PaintSurface`).
                     let highlight = if is_pressed || *is_active {
                         Some(theme.selected_bg)
                     } else if is_hovered {
@@ -517,7 +517,7 @@ pub(crate) mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

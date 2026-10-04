@@ -1047,7 +1047,7 @@ impl TextInput {
     }
 }
 
-// ── NativeSurface paint (#1093) ─────────────────────────────────────────
+// ── PaintSurface paint (#1093) ─────────────────────────────────────────
 //
 // macOS's `draw_text_input` used to be a bare layout-only stub (issue
 // #1093: "paints nothing and no `BackendCaps` flag says so") — unlike
@@ -1056,7 +1056,7 @@ impl TextInput {
 // rasterisers, so this module does *not* replace either of those the way
 // #808/#809/#810 did. It exists solely so `MacBackend::draw_text_input`
 // has a real implementation to call, built once against the portable
-// `NativeSurface` verbs rather than a fourth bespoke per-backend copy.
+// `PaintSurface` verbs rather than a fourth bespoke per-backend copy.
 //
 // Shape mirrors `win::text_input::draw_text_input` (the simplest of the
 // three existing twins — no selection-range painting, since `TextInput`
@@ -1074,7 +1074,7 @@ impl TextInput {
 mod native_surface_paint {
     use super::{TextInput, TextInputLayout};
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Insert-cursor width in surface-native units. Matches
@@ -1094,11 +1094,11 @@ mod native_surface_paint {
 
     /// Paint `ti` using `layout` (must be the same layout the caller
     /// hit-tests against — typically `ti.layout(rect, measure)`'s own
-    /// return value) via `surface`'s [`NativeSurface`] verbs.
+    /// return value) via `surface`'s [`PaintSurface`] verbs.
     pub(crate) fn paint(
         ti: &TextInput,
         layout: &TextInputLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         let rect = layout.bounds;
@@ -1149,7 +1149,7 @@ mod native_surface_paint {
         use crate::types::{Color, WidgetId};
         use crate::{Image, Point, Viewport};
 
-        /// Records every `NativeSurface` verb `paint` calls, without a
+        /// Records every `PaintSurface` verb `paint` calls, without a
         /// real pixel backend — the same fake shape
         /// `find_replace::native_surface_paint::tests::RecordingSurface`
         /// and `form::native_surface_paint::tests::RecordingSurface`
@@ -1161,7 +1161,7 @@ mod native_surface_paint {
             text_runs: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

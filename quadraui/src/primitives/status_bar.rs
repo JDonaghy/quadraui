@@ -495,7 +495,7 @@ impl StatusBar {
     }
 }
 
-// ── NativeSurface paint (#860, Phase 2d slice 3/9 of the NativeSurface
+// ── PaintSurface paint (#860, Phase 2d slice 3/9 of the PaintSurface
 // milestone) ─────────────────────────────────────────────────────────────
 //
 // Before this, `gtk::status_bar::draw_status_bar` (Cairo/Pango),
@@ -504,7 +504,7 @@ impl StatusBar {
 // independently painted the same bar-fill + per-segment chrome with
 // their own drawing API (quadraui#785 child #811, `docs/SMELL_AUDIT_2026-07.md`
 // §5). `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API.
 //
 // # Divergences found — reported, not silently resolved
@@ -516,8 +516,8 @@ impl StatusBar {
 //    (and rendered) every segment at the same non-bold weight — its own
 //    module doc names this explicitly ("Bold segments — Tracked
 //    separately... bold is currently ignored"). This migration adds
-//    [`NativeSurface::surface_measure_text_styled`] (mirroring
-//    [`NativeSurface::surface_draw_text_run_styled`]'s #810 shape), whose
+//    [`PaintSurface::surface_measure_text_styled`] (mirroring
+//    [`PaintSurface::surface_draw_text_run_styled`]'s #810 shape), whose
 //    default drops `bold` — exactly macOS's existing behaviour, so
 //    `MacBackend` needs no override — while `GtkBackend` and `WinBackend`
 //    override it to measure the real bold weight, preserving what they
@@ -580,7 +580,7 @@ pub(crate) mod native_surface_paint {
         PIXEL_SEGMENT_PADDING,
     };
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::WidgetId;
 
@@ -612,7 +612,7 @@ pub(crate) mod native_surface_paint {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &StatusBar,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         x: f32,
         y: f32,
@@ -749,7 +749,7 @@ pub(crate) mod native_surface_paint {
 
         const BOLD_BONUS_PX: f32 = 100.0;
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

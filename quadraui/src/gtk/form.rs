@@ -1,7 +1,7 @@
 //! GTK settings-chrome rasteriser for [`crate::Form`].
 //!
 //! Field-kind *painting* moved to the shared
-//! [`crate::primitives::form::paint`] (#808, NativeSurface Phase 2a) —
+//! [`crate::primitives::form::paint`] (#808, PaintSurface Phase 2a) —
 //! this module now only carries `draw_settings_chrome` (unrelated: form
 //! *body* chrome, not field painting) over the shared
 //! [`super::surface::CairoSurface`] adapter (#1072 — consolidated from

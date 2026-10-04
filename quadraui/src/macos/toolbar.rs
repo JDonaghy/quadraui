@@ -3,12 +3,12 @@
 //! `mac_toolbar_layout` stays here — it needs Core Text's own
 //! measurement to size each item. Content painting moved to the shared
 //! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
-//! `NativeSurface` Phase 4 slice 5/8), which also **closes this
+//! `PaintSurface` Phase 4 slice 5/8), which also **closes this
 //! backend's own square-corner gap**: pre-migration macOS painted the
 //! hover/pressed/active highlight as a plain rectangle (Core Graphics
 //! has no rounded-rect-fill convenience this file used to reach for).
 //! The shared `paint` now fills a real rounded pill via
-//! [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+//! [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
 //! (#1073) — see that fn's module doc for the full drift it resolved.
 //! Per D6: layout policy lives in [`crate::primitives::toolbar::Toolbar::layout`];
 //! this rasteriser now only builds the [`super::surface::CgSurface`]

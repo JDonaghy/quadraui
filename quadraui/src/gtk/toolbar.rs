@@ -5,7 +5,7 @@
 //! per-state colouring, hover/pressed/active highlight, focus ring,
 //! separators, labels) moved to the shared
 //! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
-//! `NativeSurface` Phase 4 slice 5/8) — see that fn's module doc for
+//! `PaintSurface` Phase 4 slice 5/8) — see that fn's module doc for
 //! the highlight-corner drift it resolved (this backend's rounded pill
 //! is now what every backend paints, closing macOS's and Windows'
 //! square-corner gap instead of flattening this one down to match

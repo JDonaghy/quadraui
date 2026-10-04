@@ -2,10 +2,10 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::tooltip::native_surface_paint::paint`] (#1077,
-//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
 //! one drift it resolved (styled-line span bold/italic/underline; macOS
 //! keeps ignoring all three, unchanged from before this migration — see
-//! [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]'s
+//! [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]'s
 //! doc for why the macOS adapter takes that verb's default).
 //!
 //! [`draw_tooltip`] keeps its pre-#541 signature and renders

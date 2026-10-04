@@ -2,11 +2,11 @@
 //!
 //! Content painting (background, title, rows, h/v scrollbars) moved to
 //! the shared [`crate::primitives::list::native_surface_paint::paint`]
-//! (#1075, `NativeSurface` Phase 4 slice 2/8) — see that fn's module
+//! (#1075, `PaintSurface` Phase 4 slice 2/8) — see that fn's module
 //! doc for what's shared and what stays per-backend. This module still
 //! owns the [`ListView::bordered`] frame itself: a rounded-rectangle
 //! clip + stroke (3px corner radius) around the shared content paint,
-//! since no `NativeSurface` verb exists for a rounded stroke and GTK's
+//! since no `PaintSurface` verb exists for a rounded stroke and GTK's
 //! rounded frame is a real, documented visual divergence from Windows'
 //! square one and macOS's absent one (see the shared `paint`'s module
 //! doc).

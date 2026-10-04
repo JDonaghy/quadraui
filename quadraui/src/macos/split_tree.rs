@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::split_tree::native_surface_paint::paint`] (#863,
-//! `NativeSurface` Phase 2d slice 6/9, child of #811) — see that fn's
+//! `PaintSurface` Phase 2d slice 6/9, child of #811) — see that fn's
 //! module doc for why the three per-backend copies were found to be
 //! already identical (no divergence). This module now carries
 //! [`mac_split_tree_layout`]; the deprecated `draw_split_tree`

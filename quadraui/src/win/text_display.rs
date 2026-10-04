@@ -2,10 +2,10 @@
 //! (issue #30).
 //!
 //! Painting moved to the shared [`crate::primitives::text_display::paint`]
-//! (#810, NativeSurface Phase 2c) — see that fn's doc for the divergence
+//! (#810, PaintSurface Phase 2c) — see that fn's doc for the divergence
 //! (this backend's `StyledSpan::bold` support via
 //! `DWrite::measure_text_styled`/`draw_text_styled`, dropped since
-//! `NativeSurface` has no weight parameter) resolved while unifying
+//! `PaintSurface` has no weight parameter) resolved while unifying
 //! `gtk::text_display::draw_text_display`,
 //! `macos::text_display::draw_text_display` and
 //! `win::text_display::draw_text_display` into one implementation. This

@@ -530,10 +530,10 @@ pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     }
 }
 
-// ── NativeSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 5/8 (#1081) ─────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::toolbar::native_surface_paint` for the
 // same pattern applied one primitive earlier in this issue.
 //
@@ -590,7 +590,7 @@ pub(crate) mod native_surface_paint {
         ActivityBar, ActivityBarLayout, ActivityBarRowHit, ActivityBarStyle, ActivitySide,
     };
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Paint an [`ActivityBar`] at its caller-resolved `layout` onto
@@ -606,7 +606,7 @@ pub(crate) mod native_surface_paint {
         bar: &ActivityBar,
         layout: &ActivityBarLayout,
         style: &ActivityBarStyle,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         hovered_idx: Option<usize>,
         nerd_fonts_enabled: bool,

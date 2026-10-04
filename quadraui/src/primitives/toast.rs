@@ -684,7 +684,7 @@ impl ToastOverlay {
     }
 }
 
-// ── NativeSurface paint (#861, Phase 2d slice 4/9 of the NativeSurface
+// ── PaintSurface paint (#861, Phase 2d slice 4/9 of the PaintSurface
 // milestone) ────────────────────────────────────────────────────────────
 //
 // Before this, `gtk::toast::draw_toast_stack` (Cairo/Pango),
@@ -694,7 +694,7 @@ impl ToastOverlay {
 // glyph, action label) with their own drawing API (quadraui#785 child
 // #811, `docs/SMELL_AUDIT_2026-07.md` §5). `paint` below is the one
 // shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API — matching the pattern #811 (scrollbar), #859
 // (panel) and #860 (status_bar) already established.
 //
@@ -785,7 +785,7 @@ pub(crate) mod native_surface_paint {
         ToastMeasure, ToastOverlay, ToastSeverity, ToastStackLayout, VisibleToast, MAX_BODY_LINES,
     };
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::Color;
 
@@ -801,8 +801,8 @@ pub(crate) mod native_surface_paint {
 
     /// Severity → fallback background tint, used when `Toast::accent`
     /// is `None`. Duplicated verbatim across `tui::toast` (out of scope
-    /// for this `NativeSurface` migration — see the module doc's TUI
-    /// note in `native_surface.rs`) — lifting these hardcoded colours
+    /// for this `PaintSurface` migration — see the module doc's TUI
+    /// note in `paint_surface.rs`) — lifting these hardcoded colours
     /// into `Theme` is quadraui#815's job, not this one.
     fn severity_bg(severity: ToastSeverity, theme: &Theme) -> Color {
         match severity {
@@ -825,7 +825,7 @@ pub(crate) mod native_surface_paint {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         stack: &ToastOverlay,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         origin_x: f32,
         origin_y: f32,
@@ -929,7 +929,7 @@ pub(crate) mod native_surface_paint {
     /// title's own *measured* height, not the nominal `line_height`
     /// (divergence 3), each subsequent line advancing by `line_height`.
     fn paint_toast(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         vt: &VisibleToast,
         toast: &Toast,
@@ -1036,7 +1036,7 @@ pub(crate) mod native_surface_paint {
             measured_text_height: Option<f32>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

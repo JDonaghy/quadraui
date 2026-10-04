@@ -162,14 +162,14 @@ pub unsafe fn draw_multi_section_view(
     }
 }
 
-// #1074 (NativeSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// #1074 (PaintSurface Phase 4): header/aux/text/empty/scrollbar/divider
 // chrome painting moved to the shared
 // [`crate::primitives::multi_section_view::native_surface_paint`] — these
 // wrappers just build a [`super::surface::CgSurface`] adapter and forward.
 // `paint_body` (below) stays here: `Tree`/`List` bodies still dispatch to
 // this backend's own `super::tree::draw_tree`/`super::list::draw_list`,
 // which take a raw `(CGContextRef, &CTFont)` pair, not `&mut dyn
-// NativeSurface`.
+// PaintSurface`.
 //
 // Pre-port, this rasteriser already clipped the title paint the same way
 // the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]

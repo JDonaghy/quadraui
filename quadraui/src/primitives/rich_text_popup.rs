@@ -465,7 +465,7 @@ impl RichTextPopup {
     }
 }
 
-// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
 //
 // `paint` below is shared by the **macOS and Windows** rasterisers only
 // — `gtk::rich_text_popup::draw_rich_text_popup` is **not** migrated,
@@ -488,12 +488,12 @@ impl RichTextPopup {
 // the whole line, using `index_to_pos` afterward only to *locate* spans
 // it already painted.
 //
-// `NativeSurface` has no verb for "shape one line with N attribute
+// `PaintSurface` has no verb for "shape one line with N attribute
 // ranges, then ask where each range landed" — only single-color/single-
 // style runs (`surface_draw_text_run(_styled)`). Migrating GTK onto
 // `paint` below would mean going back to the per-span manual-advance
 // shape #214 fixed, i.e. deliberately reintroducing a previously-fixed
-// bug, or extending `NativeSurface` with a new attributed-line verb —
+// bug, or extending `PaintSurface` with a new attributed-line verb —
 // a real, separate design decision outside this issue's scope (#1073's
 // verb set), not a mechanical "move the code" migration. Per this
 // issue's own "do not tranche silently" instruction: this is that call,
@@ -514,7 +514,7 @@ impl RichTextPopup {
 //   `paint` carries it for both now.
 // - **Bold span styling.** Windows already read `span.bold`; macOS's
 //   doc listed this as a scope omission too. `paint` reads it uniformly
-//   via `NativeSurface::surface_draw_text_run_styled` — macOS's own
+//   via `PaintSurface::surface_draw_text_run_styled` — macOS's own
 //   adapter (`CgSurface`) takes that verb's *default*, which drops
 //   style entirely (see that default's own doc), so this is inert on
 //   macOS: no visual regression, but no new bold rendering there either,
@@ -557,7 +557,7 @@ impl RichTextPopup {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::{Point, Rect};
 
@@ -619,7 +619,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(
         popup: &RichTextPopup,
         layout: &RichTextPopupLayout,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) -> Vec<(Rect, String)> {
         let bounds = layout.bounds;

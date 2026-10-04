@@ -150,14 +150,14 @@ pub fn draw_multi_section_view(
 
 // ── Section paint helpers ──────────────────────────────────────────────────
 //
-// #1074 (NativeSurface Phase 4): header/aux/text/empty/scrollbar/divider
+// #1074 (PaintSurface Phase 4): header/aux/text/empty/scrollbar/divider
 // chrome painting moved to the shared
 // [`crate::primitives::multi_section_view::native_surface_paint`] — these
 // wrappers just build a [`super::surface::CairoSurface`] adapter and
 // forward. `paint_body` (below) stays here: `Tree`/`List`/`MessageList`
 // bodies still dispatch to this backend's own `draw_tree`/`draw_list`/
 // `draw_message_list`, which take a raw `(&Context, &pango::Layout)` pair,
-// not `&mut dyn NativeSurface`.
+// not `&mut dyn PaintSurface`.
 
 /// #1074: GTK's header row painted at an integer-rounded `y`/`height`
 /// pre-port (`by`/`bh` were `.round()`ed; `bx`/`bw` were not) — a

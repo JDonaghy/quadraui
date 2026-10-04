@@ -79,7 +79,7 @@ use crate::event::{Point, Rect, UiEvent, Viewport};
 #[cfg(target_os = "windows")]
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
-use crate::native_surface::NativeSurface;
+use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
@@ -2314,6 +2314,20 @@ impl Backend for WinBackend {
         &self.services
     }
 
+    // ─── Paint surface (issue #1101) ───────────────────────────────────
+
+    /// #1101: `WinBackend` implements [`PaintSurface`] directly (see this
+    /// module's own `impl PaintSurface for WinBackend` block below), so
+    /// this always answers `Some(self)` — never the `None` default
+    /// `Backend::paint_surface` falls back to. Each verb degrades on its
+    /// own (see e.g. `surface_measure_text`'s doc) when `self.surface`/
+    /// `self.dwrite` aren't attached yet, matching `Backend::draw_*`'s
+    /// existing "no surface yet" posture — there is no additional check
+    /// to make here.
+    fn paint_surface(&mut self) -> Option<&mut dyn PaintSurface> {
+        Some(self)
+    }
+
     // ─── Cursor ───────────────────────────────────────────────────────
 
     /// #702: maps `shape` onto a `SetCursor(LoadCursorW(..))` call via
@@ -3002,7 +3016,7 @@ impl Backend for WinBackend {
     /// [`ChromeSurface`] (routes text through `chrome_dwrite`, falling
     /// back to the editor `dwrite` handle) rather than `self` directly
     /// (which would paint through `self.dwrite`, the *editor* font, via
-    /// `WinBackend`'s own [`NativeSurface`] impl) — mirrors
+    /// `WinBackend`'s own [`PaintSurface`] impl) — mirrors
     /// `MacBackend::status_bar_paint_scaled`'s identical `ChromeSurface`
     /// switch.
     fn draw_status_bar_interactive(
@@ -3391,7 +3405,7 @@ impl Backend for WinBackend {
     }
 
     /// #996: see [`Backend::draw_solid_fill`]'s doc — a pixel backend
-    /// can honor `rect` exactly via `NativeSurface::surface_fill_rect`,
+    /// can honor `rect` exactly via `PaintSurface::surface_fill_rect`,
     /// which already degrades to a no-op when no surface is attached
     /// (see its own doc), so this can call it unconditionally — same
     /// shape as [`Self::draw_focus_ring`] above.
@@ -3407,7 +3421,7 @@ impl Backend for WinBackend {
     /// #810: shared text-display painting lives in
     /// [`crate::primitives::text_display::paint`] now — see that fn's
     /// doc for the divergence (this backend's `StyledSpan::bold`
-    /// support, dropped since `NativeSurface` has no weight parameter)
+    /// support, dropped since `PaintSurface` has no weight parameter)
     /// resolved while unifying `gtk::text_display::draw_text_display`,
     /// `macos::text_display::draw_text_display` and
     /// `win::text_display::draw_text_display` into one implementation.
@@ -3912,7 +3926,7 @@ impl Backend for WinBackend {
         let _ = (popup, layout);
     }
 
-    /// #809 (`NativeSurface` Phase 2b): real Direct2D/DirectWrite
+    /// #809 (`PaintSurface` Phase 2b): real Direct2D/DirectWrite
     /// rendering via [`crate::primitives::find_replace::paint`] once a
     /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
     /// "surface not attached yet" fallback posture.
@@ -5347,7 +5361,7 @@ fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
     Ok(info.rcMonitor)
 }
 
-// ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────
+// ─── PaintSurface (#807, Phase 1) ───────────────────────────────────────────
 //
 // The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
 // helpers this backend already had privately: `super::text::fill_rect`/
@@ -5362,10 +5376,10 @@ fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
 // as every other method on this backend. See the module doc's
 // "Implementation notes" for why that keeps `cargo check --features win`
 // meaningful on
-// Linux. See `native_surface`'s module doc for the full scope note and why
+// Linux. See `paint_surface`'s module doc for the full scope note and why
 // these methods are `surface_`-prefixed instead of colliding with
 // `Backend`'s.
-impl NativeSurface for WinBackend {
+impl PaintSurface for WinBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }
@@ -5609,12 +5623,12 @@ impl NativeSurface for WinBackend {
 
 /// Win-GUI twin of `MacBackend`'s `ChromeSurface` (see that
 /// struct's own doc) — wraps a `&mut WinBackend` so a primitive already
-/// migrated onto [`NativeSurface`] (today: [`Self::draw_status_bar_interactive`],
+/// migrated onto [`PaintSurface`] (today: [`Self::draw_status_bar_interactive`],
 /// [`Self::draw_sidebar_panel_interactive`]) paints through
 /// `chrome_dwrite` (falling back to the editor `dwrite` handle if no
 /// live chrome one exists yet — same "degrade, don't panic" convention
 /// as `WinBackend::surface_draw_text_run_with_role`) instead of
-/// `WinBackend`'s own [`NativeSurface`] impl above, which always
+/// `WinBackend`'s own [`PaintSurface`] impl above, which always
 /// resolves the editor `dwrite` handle. Only the four text-shaped
 /// methods below differ; every other verb forwards straight to
 /// `self.backend`.
@@ -5628,11 +5642,21 @@ impl NativeSurface for WinBackend {
 /// fields — mirroring `MacBackend::chrome_line_height`/
 /// `chrome_char_width` — can revisit this; it is out of this issue's
 /// scope.
+// `ChromeSurface` is only ever constructed inside a `#[cfg(target_os =
+// "windows")]` block (see `Self::draw_status_bar_interactive`/
+// `Self::draw_sidebar_panel_interactive`), so a non-Windows `--features
+// win` check (this crate's `win` CI leg, run on Linux — see `CLAUDE.md`'s
+// "Win-GUI: building and testing for real") never constructs it. Before
+// issue #1101 made `PaintSurface` `pub`, that was masked by the trait's
+// own now-removed `#[allow(dead_code)]`; this mirrors the identical
+// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]` already used
+// elsewhere in this file for the same reason (e.g. the fields above).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct ChromeSurface<'a> {
     backend: &'a mut WinBackend,
 }
 
-impl NativeSurface for ChromeSurface<'_> {
+impl PaintSurface for ChromeSurface<'_> {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         self.backend.surface_begin_frame(viewport)
     }
@@ -7972,7 +7996,7 @@ mod tests {
         );
     }
 
-    // ── NativeSurface (#807, Phase 1) ────────────────────────────────
+    // ── PaintSurface (#807, Phase 1) ────────────────────────────────
     //
     // Real Direct2D execution, like every other headless-surface test in
     // this file — `#[cfg(target_os = "windows")]`-gated because
@@ -7983,7 +8007,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_native_surface_fill_rect_paints_solid_color() {
+    fn win_backend_paint_surface_fill_rect_paints_solid_color() {
         use crate::types::Color;
         use crate::win::testing::HeadlessSurface;
 
@@ -8077,7 +8101,7 @@ mod tests {
     }
 
     /// #1073: real `FillRoundedRectangle` execution, mirroring
-    /// `gtk_backend_native_surface_fill_rounded_rect_clips_the_corners` —
+    /// `gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners` —
     /// a centre pixel must land the fill colour, and a corner pixel well
     /// inside a generous radius must stay at [`begin_frame`](Backend::begin_frame)'s
     /// clear colour (see [`cleared_frame_background`] for why that isn't
@@ -8085,7 +8109,7 @@ mod tests {
     /// `surface_fill_rect` under a new name.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_native_surface_fill_rounded_rect_clips_the_corners() {
+    fn win_backend_paint_surface_fill_rounded_rect_clips_the_corners() {
         use crate::types::Color;
         use crate::win::testing::HeadlessSurface;
 
@@ -8127,14 +8151,14 @@ mod tests {
     }
 
     /// #1073: `surface_fill_rect_alpha` has no `WinBackend` override —
-    /// it inherits `NativeSurface`'s default, which forwards to
+    /// it inherits `PaintSurface`'s default, which forwards to
     /// `surface_fill_rect` with `color.a` replaced. This proves that
     /// default genuinely blends on Direct2D's own compositing pipeline
     /// (not merely that the Rust dispatch is correct), the Win-GUI twin
-    /// of `gtk_backend_native_surface_fill_rect_alpha_blends_with_the_background`.
+    /// of `gtk_backend_paint_surface_fill_rect_alpha_blends_with_the_background`.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_native_surface_fill_rect_alpha_blends_with_the_background() {
+    fn win_backend_paint_surface_fill_rect_alpha_blends_with_the_background() {
         use crate::types::Color;
         use crate::win::testing::HeadlessSurface;
 
@@ -8191,10 +8215,10 @@ mod tests {
     /// `dwrite` one), not a documented no-op — proven by a huge chrome
     /// font size versus a tiny editor font size painting visibly
     /// different amounts of ink for the same glyph. Win-GUI twin of
-    /// `gtk_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size`.
+    /// `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
+    fn win_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
         use crate::types::Color;
         use crate::win::testing::HeadlessSurface;
 
@@ -8692,7 +8716,7 @@ mod tests {
             diff > 0,
             "#1266: draw_sidebar_panel_interactive must paint the embedded toolbar's \
              label through ChromeSurface (chrome_dwrite), not WinBackend's own \
-             NativeSurface impl (the editor dwrite handle)"
+             PaintSurface impl (the editor dwrite handle)"
         );
     }
 
@@ -8727,7 +8751,7 @@ mod tests {
         assert!(
             diff > 0,
             "#1266: draw_status_bar_interactive must paint segment text through \
-             ChromeSurface (chrome_dwrite), not WinBackend's own NativeSurface impl \
+             ChromeSurface (chrome_dwrite), not WinBackend's own PaintSurface impl \
              (the editor dwrite handle)"
         );
     }
@@ -8850,10 +8874,10 @@ mod tests {
     /// baked into every `IDWriteTextFormat` — see the trait override's
     /// doc) — this proves that forward actually paints real ink rather
     /// than silently no-opping. Win-GUI twin of
-    /// `gtk_backend_native_surface_draw_icon_glyph_paints_real_ink`.
+    /// `gtk_backend_paint_surface_draw_icon_glyph_paints_real_ink`.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_native_surface_draw_icon_glyph_paints_real_ink() {
+    fn win_backend_paint_surface_draw_icon_glyph_paints_real_ink() {
         use crate::types::Color;
         use crate::win::testing::HeadlessSurface;
 
@@ -8899,7 +8923,7 @@ mod tests {
 
     /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
     /// above, and the dedicated #1073 rounded-rect/alpha/role/icon tests
-    /// above it) — this exercises every remaining `NativeSurface` method
+    /// above it) — this exercises every remaining `PaintSurface` method
     /// at least once end-to-end (frame lifecycle, measurement, stroke,
     /// line, clip push/pop, text run, rounded rect, alpha fill, role text,
     /// icon glyph, image) so an implementation bug (wrong arg order, a
@@ -8907,7 +8931,7 @@ mod tests {
     /// test instead of shipping silently.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_native_surface_verbs_do_not_panic() {
+    fn win_backend_paint_surface_verbs_do_not_panic() {
         use crate::types::Color;
         use crate::win::testing::HeadlessSurface;
 
@@ -9156,7 +9180,7 @@ mod tests {
     /// (painted) width is strictly wider.
     ///
     /// **Both the editor and chrome fonts are overridden on purpose —
-    /// don't drop either call.** `NativeSurface::surface_measure_text_styled`
+    /// don't drop either call.** `PaintSurface::surface_measure_text_styled`
     /// (the probe fixture guard above) measures through `self.dwrite`,
     /// i.e. the *editor* font; `Backend::draw_status_bar_interactive`
     /// itself now measures/paints through `chrome_dwrite`
@@ -9672,7 +9696,7 @@ mod tests {
     /// surface-less state a fresh `WinBackend::new()` starts in *and*
     /// the state `end_frame` drops back to after a device-lost
     /// `EndDraw` failure — survives a full `begin_frame` -> a spread of
-    /// `draw_*`/`*_layout`/`NativeSurface` calls spanning every
+    /// `draw_*`/`*_layout`/`PaintSurface` calls spanning every
     /// return-type group this issue's fallbacks touch (`()`, a
     /// `*PaintResult`, a `*Layout`, and the two measurement methods) ->
     /// `end_frame`, without panicking. No `target_os = "windows"` gate:
@@ -9752,10 +9776,10 @@ mod tests {
         // fixture needed to exercise the code path meaningfully; covered
         // by inspection, not repeated here.
 
-        // `NativeSurface` measurement category (nominal char-width
+        // `PaintSurface` measurement category (nominal char-width
         // estimate).
-        let _ = NativeSurface::surface_measure_text(&backend, "hello");
-        let _ = NativeSurface::surface_measure_text_styled(&backend, "hello", true);
+        let _ = PaintSurface::surface_measure_text(&backend, "hello");
+        let _ = PaintSurface::surface_measure_text_styled(&backend, "hello", true);
 
         Backend::end_frame(&mut backend);
     }
@@ -9873,7 +9897,7 @@ mod tests {
     // directly wherever it's constructed (e.g. `Default::default()` in
     // `src/backend.rs`'s own tests).
 
-    /// `NativeSurface::surface_measure_text`/`surface_measure_text_styled`
+    /// `PaintSurface::surface_measure_text`/`surface_measure_text_styled`
     /// on a surface-less backend must return a finite nominal estimate
     /// (`char_width` per character) instead of panicking — chosen over
     /// `(0.0, 0.0)` so a host doing hit-testing against the "measurement"
@@ -9882,11 +9906,11 @@ mod tests {
     #[test]
     fn surface_measure_text_with_no_surface_returns_a_nominal_estimate() {
         let backend = WinBackend::new();
-        let (w, h) = NativeSurface::surface_measure_text(&backend, "hello");
+        let (w, h) = PaintSurface::surface_measure_text(&backend, "hello");
         assert_eq!(w, 5.0 * backend.current_char_width);
         assert_eq!(h, backend.current_line_height);
 
-        let (w2, h2) = NativeSurface::surface_measure_text_styled(&backend, "hello", true);
+        let (w2, h2) = PaintSurface::surface_measure_text_styled(&backend, "hello", true);
         assert_eq!(w2, 5.0 * backend.current_char_width);
         assert_eq!(h2, backend.current_line_height);
     }

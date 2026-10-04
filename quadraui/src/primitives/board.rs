@@ -608,8 +608,8 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
     count.max(1)
 }
 
-// ── NativeSurface paint (shared gtk/macos/win implementation, issue #1085,
-// NativeSurface Phase 4 8/8) ────────────────────────────────────────────
+// ── PaintSurface paint (shared gtk/macos/win implementation, issue #1085,
+// PaintSurface Phase 4 8/8) ────────────────────────────────────────────
 //
 // Before this, `gtk::board::draw_board` (Cairo + Pango),
 // `macos::board::draw_board` (Core Graphics + Core Text) and
@@ -617,7 +617,7 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 // painted the same column/card geometry (already unified by #736's
 // `BoardLayout`/[`pixel_board_layout`]) with their own drawing API.
 // `paint` below is the one shared implementation, written against
-// [`crate::native_surface::NativeSurface`] (#807, Phase 1) instead of any
+// [`crate::paint_surface::PaintSurface`] (#807, Phase 1) instead of any
 // one backend's drawing API — same shape as `diff_view`'s #866 migration.
 //
 // ## Divergences found (re-verified, reported here rather than silently
@@ -629,7 +629,7 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 //    next column. `macos::board` wrapped its header draw in
 //    `CGContextSaveGState`/`CGContextClipToRect(header_bounds)`.
 //    `win::board` relied on `DWrite::draw_text`'s own
-//    `D2D1_DRAW_TEXT_OPTIONS_CLIP`. `NativeSurface` has no wrap/ellipsize
+//    `D2D1_DRAW_TEXT_OPTIONS_CLIP`. `PaintSurface` has no wrap/ellipsize
 //    verb (see `diff_view`'s #866 "Header-label overflow handling"
 //    divergence for the identical tradeoff), so `paint` below hard-clips
 //    every column header to its own bounds on every backend — the
@@ -650,11 +650,11 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 //    *rounded*-rect border (`BOARD_CARD_CORNER_RADIUS_PX`); `win::board`
 //    could only stroke a straight rectangle (`win::text` has no
 //    `ID2D1RoundedRectangleGeometry`-backed rounded stroke — see that
-//    module's former doc). `NativeSurface::surface_stroke_rect` is
+//    module's former doc). `PaintSurface::surface_stroke_rect` is
 //    axis-aligned only (there is no `surface_stroke_rounded_rect`), so
 //    `paint` strokes every card border as a straight rectangle on every
 //    backend — the Windows behaviour. Card fills stay flat rectangles
-//    too (not [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`])
+//    too (not [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`])
 //    so the fill and its border never mismatch in shape. GTK/macOS cards
 //    lose their rounded-pill corners; `BOARD_CARD_CORNER_RADIUS_PX` is no
 //    longer consumed by any rasteriser (TUI has no notion of rounded
@@ -670,10 +670,10 @@ fn count_fitting_columns(available: usize, col_w: f32, gap: f32, total_width: f3
 //    with the backend's single ambient font/`CTFont`/`DWrite` text
 //    format as a "divergence from the GTK twin (deliberate)", because
 //    per-element sizing needs a format/attribute cache neither
-//    rasteriser had. `NativeSurface` has no per-call font-size verb at
+//    rasteriser had. `PaintSurface` has no per-call font-size verb at
 //    all (only `scale_x`/bold/italic/underline via
 //    `surface_draw_text_run_styled` — confirmed against
-//    `native_surface.rs`), so `paint` below paints every run — header,
+//    `paint_surface.rs`), so `paint` below paints every run — header,
 //    title, badges, hint — at the ambient surface font on every
 //    backend: the macOS/Windows (2-of-3) behaviour, GTK now matching
 //    rather than the reverse. GTK's default ambient font at the point
@@ -706,7 +706,7 @@ pub(crate) mod native_surface_paint {
         badge_fg_color, badge_icon, BoardCard, BoardLayout, BoardModel, BOARD_CARD_H_PAD_PX,
     };
     use crate::event::Rect;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::primitives::layout_metrics::pixel_board_layout;
     use crate::theme::Theme;
 
@@ -735,7 +735,7 @@ pub(crate) mod native_surface_paint {
     /// deleted per-backend `draw_board`.
     pub(crate) fn paint(
         model: &BoardModel,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
     ) -> BoardLayout {
@@ -905,7 +905,7 @@ pub(crate) mod native_surface_paint {
             clip_pops: usize,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {
@@ -1053,7 +1053,7 @@ pub(crate) mod native_surface_paint {
             /// shrink badge/hint text back down to 9pt).
             struct TallTextSurface(RecordingSurface);
 
-            impl NativeSurface for TallTextSurface {
+            impl PaintSurface for TallTextSurface {
                 fn surface_begin_frame(&mut self, v: Viewport) {
                     self.0.surface_begin_frame(v)
                 }

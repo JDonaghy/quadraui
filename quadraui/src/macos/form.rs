@@ -1,7 +1,7 @@
 //! macOS layout + settings-chrome rasteriser for [`crate::Form`].
 //!
 //! Field-kind *painting* moved to the shared
-//! [`crate::primitives::form::paint`] (#808, NativeSurface Phase 2a) —
+//! [`crate::primitives::form::paint`] (#808, PaintSurface Phase 2a) —
 //! `mac_form_layout` here only computes geometry (used both for
 //! hit-testing via `MacBackend::form_layout` and to feed `paint` from
 //! `MacBackend::draw_form`). Before #808, this module's own `draw_form`

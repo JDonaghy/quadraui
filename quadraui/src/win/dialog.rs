@@ -2,7 +2,7 @@
 //!
 //! Content painting moved to the shared
 //! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
-//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
 //! drift it resolved, several of which were Windows-only gaps this
 //! backend gains here for the first time: per-button border stroke,
 //! `DialogButton::tint`, button-label/text-input vertical centring, and
@@ -18,7 +18,7 @@
 //!
 //! `DialogInput::Toolbar` still renders inline here, unchanged — Windows
 //! never delegated to a shared toolbar rasteriser (there is no
-//! `win::toolbar`-via-`NativeSurface` equivalent yet; out of #1077's
+//! `win::toolbar`-via-`PaintSurface` equivalent yet; out of #1077's
 //! scope, see the shared `paint`'s module doc).
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s

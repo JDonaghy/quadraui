@@ -484,7 +484,7 @@ pub enum TerminalEvent {
     Scroll { delta: i32 },
 }
 
-// ── NativeSurface paint (#810, Phase 2c of the NativeSurface milestone) ────
+// ── PaintSurface paint (#810, Phase 2c of the PaintSurface milestone) ────
 //
 // Before this, `gtk::terminal::draw_terminal_cells`,
 // `macos::terminal::draw_terminal_cells` and
@@ -495,20 +495,20 @@ pub enum TerminalEvent {
 // (`resolve_cell_style`, `wide_cell_advance`, `wide_glyph_x_scale`,
 // `divider_geometry`), so only the actual paint calls were duplicated.
 // `paint`/`paint_divider` below are the one shared implementation,
-// written against [`crate::native_surface::NativeSurface`] (#807, Phase
+// written against [`crate::paint_surface::PaintSurface`] (#807, Phase
 // 1).
 //
 // Per-cell glyph styling (`TerminalCell::bold`/`italic`/`underline`) and
 // the wide-glyph horizontal scale (#439/#500/#703) both needed a new
 // verb this trait didn't have at the end of Phase 1 —
-// [`NativeSurface::surface_draw_text_run_styled`] — added in this same
+// [`PaintSurface::surface_draw_text_run_styled`] — added in this same
 // PR specifically so unifying this primitive wouldn't force GTK's full
 // bold/italic/underline support and Windows's bold support to regress to
 // macOS's weaker (undocumented-as-a-bug, deliberately deferred) "no
 // per-cell styling at all" posture. See that method's own doc for
 // exactly which of the three flags (plus `scale_x`) each backend's
-// `NativeSurface` override actually applies — this crate's own
-// `native_surface.rs` is sealed (`pub(crate)`, no downstream consumer
+// `PaintSurface` override actually applies — this crate's own
+// `paint_surface.rs` is sealed (`pub(crate)`, no downstream consumer
 // can see it), so growing its vocabulary here is not a breaking change
 // (see that module's doc).
 //
@@ -546,7 +546,7 @@ pub enum TerminalEvent {
 #[allow(dead_code)]
 mod native_surface_paint {
     use super::Terminal;
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::terminal_style::{
         cursor_accent_rect, cursor_accent_visible, divider_geometry, resolve_cell_style,
         wide_cell_advance, wide_glyph_x_scale,
@@ -573,7 +573,7 @@ mod native_surface_paint {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         term: &Terminal,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
         x: f32,
         y: f32,
@@ -668,7 +668,7 @@ mod native_surface_paint {
     /// `theme.separator`. Geometry comes from
     /// [`crate::terminal_style::divider_geometry`].
     pub(crate) fn paint_divider(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         x: f32,
         y: f32,
         height: f32,
@@ -700,7 +700,7 @@ mod native_surface_paint {
             styled_runs: Vec<(Rect, String, Color, bool, bool, bool, f32)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

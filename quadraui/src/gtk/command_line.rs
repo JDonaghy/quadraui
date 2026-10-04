@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::command_line::native_surface_paint::paint`]
-//! (#1083, `NativeSurface` Phase 4 6/8) — see that fn's doc for the named
+//! (#1083, `PaintSurface` Phase 4 6/8) — see that fn's doc for the named
 //! divergences (macOS/Windows silently dropping the `selection` argument;
 //! GTK's own cursor-anchor formula ignoring right-align) found while
 //! unifying `gtk::command_line::draw_command_line_selection`,
@@ -11,7 +11,7 @@
 //! module now only carries [`gtk_command_line_layout`] (pure measurement,
 //! still used directly by `GtkBackend::command_line_layout`) and thin
 //! wrappers over the shared paint, using
-//! [`crate::gtk::surface::CairoSurface`] as the `NativeSurface` adapter.
+//! [`crate::gtk::surface::CairoSurface`] as the `PaintSurface` adapter.
 
 use gtk4::cairo::Context;
 use gtk4::pango;

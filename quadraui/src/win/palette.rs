@@ -3,7 +3,7 @@
 //! Content painting (background, border, title/query/item rows,
 //! scrollbar, create row, preview pane) moved to the shared
 //! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
-//! `NativeSurface` Phase 4 slice 3/8) — see that fn's module doc for
+//! `PaintSurface` Phase 4 slice 3/8) — see that fn's module doc for
 //! what's shared, including the three-way geometry drift it fixes and
 //! the per-backend feature gaps it closes. Windows already had
 //! match-position highlighting (its own `matched_runs`/
@@ -43,7 +43,7 @@ pub fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> Pa
 /// ASCII fallback (issue #804), matching every other backend's
 /// `draw_palette`. Colours come from `Theme::default()` rather than a
 /// live `WinBackend` theme field — same convention `win::status_bar`
-/// and every other pre-`NativeSurface` Win-GUI rasteriser use.
+/// and every other pre-`PaintSurface` Win-GUI rasteriser use.
 pub fn draw_palette(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,

@@ -611,10 +611,10 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
     })
 }
 
-// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::tooltip::native_surface_paint` for the
 // same pattern applied one primitive earlier in this slice (#1077, part
 // 2/4). Unlike Palette/ContextMenu/Tooltip, Dialog's three per-backend
@@ -684,7 +684,7 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 // (Windows), called by the wrapper *after* `paint` returns, exactly as
 // before this migration. `src/{gtk,macos,win}/toolbar.rs` are not part
 // of this issue's file list — porting the toolbar rasteriser itself onto
-// `NativeSurface` is a separate, future slice, and folding it in here
+// `PaintSurface` is a separate, future slice, and folding it in here
 // would mean either duplicating its considerably richer layout logic
 // (icons, key hints, per-state colouring) into this file or leaving it
 // half-migrated. Skipping it here changes nothing a caller can observe:
@@ -698,7 +698,7 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Dialog, DialogInput, DialogLayout, DialogTable};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::Rect;
 
@@ -711,13 +711,13 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`DialogTable`] at `(bounds.x, bounds.y)`, top-left
     /// anchored. Column widths are auto-computed from content via
-    /// [`NativeSurface::surface_measure_text`], honouring
+    /// [`PaintSurface::surface_measure_text`], honouring
     /// `table.column_widths` as a per-column minimum. A header row
     /// (when present) is followed by a plain dash separator row — no
     /// `┼` junction, matching every backend's pre-migration
     /// simplification.
     fn draw_table(
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         table: &DialogTable,
         bounds: Rect,
         line_height: f32,
@@ -729,7 +729,7 @@ pub(crate) mod native_surface_paint {
             return;
         }
 
-        let measure_w = |surface: &dyn NativeSurface, s: &str| surface.surface_measure_text(s).0;
+        let measure_w = |surface: &dyn PaintSurface, s: &str| surface.surface_measure_text(s).0;
 
         let mut col_w = vec![0.0f32; ncols];
         if let Some(headers) = &table.headers {
@@ -811,7 +811,7 @@ pub(crate) mod native_surface_paint {
         dialog: &Dialog,
         dialog_layout: &DialogLayout,
         line_height: f32,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) -> Vec<Rect> {
         let bounds = dialog_layout.bounds;

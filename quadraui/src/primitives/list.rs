@@ -674,13 +674,13 @@ mod vscrollbar_tests {
     }
 }
 
-// ── NativeSurface paint (#1075, NativeSurface Phase 4 slice 2/8) ───────────
+// ── PaintSurface paint (#1075, PaintSurface Phase 4 slice 2/8) ───────────
 //
 // Before this, `gtk::draw_list` (Cairo), `macos::list::draw_list` (Core
 // Graphics) and `win::list::draw_list` (Direct2D) each independently
 // painted the same title/row/decoration/scrollbar content with their own
 // drawing API. `paint` below is the one shared implementation, written
-// against [`crate::native_surface::NativeSurface`] instead of any one
+// against [`crate::paint_surface::PaintSurface`] instead of any one
 // backend's API — see `crate::primitives::split_tree::native_surface_paint`
 // and `crate::primitives::scrollbar::native_surface_paint` for the same
 // pattern applied to earlier primitives.
@@ -698,7 +698,7 @@ mod vscrollbar_tests {
 // clips to (and later strokes) a *rounded* rect, Windows fills a plain
 // square 1-DIP frame, and macOS renders no frame at all yet (see
 // `macos::list`'s module doc, "Scope omissions"). None of the three
-// backends has a `NativeSurface` verb for a rounded stroke, and
+// backends has a `PaintSurface` verb for a rounded stroke, and
 // unifying "does this backend draw a frame at all" is a real,
 // documented per-backend capability difference rather than paint/click
 // drift — so each backend's thin wrapper still paints its own frame
@@ -717,7 +717,7 @@ mod vscrollbar_tests {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{ListView, ListViewLayout};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::Decoration;
     use crate::Rect;
@@ -750,7 +750,7 @@ pub(crate) mod native_surface_paint {
         nerd_fonts_enabled: bool,
         supports_border: bool,
         supports_hscrollbar: bool,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         if area.width <= 0.0 || area.height <= 0.0 {
@@ -991,7 +991,7 @@ pub(crate) mod native_surface_paint {
             texts: Vec<(Rect, String, Color)>,
         }
 
-        impl NativeSurface for RecordingSurface {
+        impl PaintSurface for RecordingSurface {
             fn surface_begin_frame(&mut self, _viewport: Viewport) {}
             fn surface_end_frame(&mut self) {}
             fn surface_viewport(&self) -> Viewport {

@@ -1,7 +1,7 @@
 //! GTK layout helper for [`crate::Chart`].
 //!
 //! Painting moved to the shared [`crate::primitives::chart::paint`]
-//! (#810, NativeSurface Phase 2c) — see that fn's doc for the
+//! (#810, PaintSurface Phase 2c) — see that fn's doc for the
 //! divergences (the quadraui#791 clip, most notably) resolved while
 //! unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
 //! `win::chart::draw_chart` into one implementation. This module now

@@ -7,17 +7,17 @@
 //! module just supplies the DirectWrite measurer. Content painting
 //! moved to the shared
 //! [`crate::primitives::toolbar::native_surface_paint::paint`] (#1081,
-//! `NativeSurface` Phase 4 slice 5/8), which also **closes this
+//! `PaintSurface` Phase 4 slice 5/8), which also **closes this
 //! backend's own square-corner gap** described below under "Scope for
 //! #730" — that scope note is now stale: issue #1073 added
-//! [`crate::native_surface::NativeSurface::surface_fill_rounded_rect`]
+//! [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]
 //! to every pixel backend (including this one, via
 //! [`super::text::fill_rounded_rect`]), so the hover/pressed/active
 //! highlight now paints a real rounded pill instead of a plain
 //! rectangle. See that verb's own doc, and
 //! `native_surface_paint::paint`'s module doc, for the full drift it
 //! resolved. The focus ring stays a **square** stroke on all three
-//! backends — [`NativeSurface`] has no rounded-stroke verb.
+//! backends — [`PaintSurface`] has no rounded-stroke verb.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod toolbar;` and `backend.rs`'s

@@ -464,10 +464,10 @@ impl Tooltip {
     }
 }
 
-// ── NativeSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
+// ── PaintSurface Phase 4 slice 4/8 (#1077) ─────────────────────────────────
 //
 // `paint` below is the one shared paint implementation, written against
-// [`crate::native_surface::NativeSurface`] instead of any one backend's
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API — see `crate::primitives::context_menu::native_surface_paint` for
 // the same pattern applied one primitive earlier in this slice (#1077,
 // part 1/4).
@@ -487,10 +487,10 @@ impl Tooltip {
 //   ignored all three — GTK explicitly cleared Pango attributes before
 //   drawing each span, and macOS's `draw_text`/`measure_text` never took
 //   a style parameter at all. `paint` calls
-//   [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]
+//   [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]
 //   /`surface_measure_text_styled` for every backend now: Windows keeps
 //   its bold rendering exactly as before (dropping italic/underline, per
-//   [`crate::native_surface::NativeSurface::surface_draw_text_run_styled`]'s
+//   [`crate::paint_surface::PaintSurface::surface_draw_text_run_styled`]'s
 //   own documented per-backend override survey); GTK gains real
 //   bold/italic/underline rendering it never had; macOS's adapter takes
 //   the verb's default (ignore style, forward to the plain measure/draw)
@@ -505,7 +505,7 @@ impl Tooltip {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
-    use crate::native_surface::NativeSurface;
+    use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::{Point, Rect};
 
@@ -516,7 +516,7 @@ pub(crate) mod native_surface_paint {
     /// `line_height` / `padding_x` are in `surface`-native units
     /// (character cells for TUI-shaped callers, pixels for every pixel
     /// backend — though TUI itself never calls this, see the module
-    /// doc's *Why TUI stays out* on [`NativeSurface`]). `padding_x` is
+    /// doc's *Why TUI stays out* on [`PaintSurface`]). `padding_x` is
     /// halved when `chrome.border` is [`TooltipBorder::None`], since
     /// there is no border column to clear first.
     pub(crate) fn paint(
@@ -525,7 +525,7 @@ pub(crate) mod native_surface_paint {
         chrome: &TooltipChrome,
         line_height: f32,
         padding_x: f32,
-        surface: &mut dyn NativeSurface,
+        surface: &mut dyn PaintSurface,
         theme: &Theme,
     ) {
         let bounds = tooltip_layout.bounds;

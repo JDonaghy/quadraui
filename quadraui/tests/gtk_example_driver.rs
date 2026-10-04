@@ -762,12 +762,12 @@ fn workspace_ctrl_tab_cycles_and_wraps() {
     }
 }
 
-// ─── SplitApp: the shared `NativeSurface` divider paint (#864) ───────────────
+// ─── SplitApp: the shared `PaintSurface` divider paint (#864) ───────────────
 //
 // Driver-tier cover for `primitives::split::native_surface_paint::paint`,
 // the one shared implementation that replaced `gtk::draw_split`'s,
 // `macos::split::draw_split`'s and `win::split::draw_split`'s three
-// separate divider fills (#864, `NativeSurface` Phase 2d slice 7/9, child
+// separate divider fills (#864, `PaintSurface` Phase 2d slice 7/9, child
 // of #811). The macOS and Windows halves of that path have their own
 // in-crate pixel tests, but neither compiles on the Linux `gtk` CI leg —
 // these are the tests that actually run there, driving the *same*
@@ -834,7 +834,7 @@ fn separator_run_in_col(driver: &mut GtkDriver<SplitApp>, x: i32) -> Option<(i32
 /// both panes left untouched (pane content is the host's job on every
 /// backend, before and after #864).
 #[test]
-fn split_divider_paints_a_separator_band_through_the_shared_native_surface_path() {
+fn split_divider_paints_a_separator_band_through_the_shared_paint_surface_path() {
     let mut driver = GtkDriver::new(SplitApp::new(), W, H);
     // Well below the pane labels' one-line-high status bars, well above
     // the bottom status bar.

@@ -3,7 +3,7 @@
 //! Content painting (background, border, title/query/item rows,
 //! scrollbar, create row, preview pane) moved to the shared
 //! [`crate::primitives::palette::native_surface_paint::paint`] (#1076,
-//! `NativeSurface` Phase 4 slice 3/8) — see that fn's module doc for
+//! `PaintSurface` Phase 4 slice 3/8) — see that fn's module doc for
 //! what's shared. Notably, this migration upgrades macOS's item rows
 //! from plain-fg-only text (this module's pre-migration "Scope
 //! omissions" below, kept for the historical record) to the same
@@ -286,7 +286,7 @@ mod tests {
 
     /// Regression for #1076: pre-migration, macOS's `draw_palette` never
     /// rendered `PaletteItem::icon` at all — only GTK did. `paint` now
-    /// paints it via `NativeSurface::surface_draw_icon_glyph` on every
+    /// paints it via `PaintSurface::surface_draw_icon_glyph` on every
     /// backend.
     #[test]
     fn item_icon_paints_left_of_the_label() {

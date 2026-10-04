@@ -44,7 +44,7 @@
 //!   the active selection + `TextRegion` into row-relative, then
 //!   pixel-space, rectangles — that *was* duplicated (byte-identical
 //!   modulo variable names) across all three; it now runs once. The
-//!   `#[cfg(...)]` gate mirrors [`crate::native_surface`]'s: only the
+//!   `#[cfg(...)]` gate mirrors [`crate::paint_surface`]'s: only the
 //!   pixel-based backends call it, so a `tui`-only build doesn't carry
 //!   dead code under `-D warnings`.
 //! - **macOS's universal-binding modifier translation**

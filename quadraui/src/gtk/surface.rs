@@ -1,4 +1,4 @@
-//! The one shared [`NativeSurface`] adapter over a bare Cairo context,
+//! The one shared [`PaintSurface`] adapter over a bare Cairo context,
 //! consolidating the 10 private per-file `Raw*Surface` copies that #811's
 //! Phase 2d slices each left behind (issue #1072). Every one of those
 //! copies differed from its neighbours only in struct name, `unreachable!`
@@ -42,7 +42,7 @@
 //! default, which drops `bold`); implementing them here unconditionally
 //! is likewise inert for every primitive besides `StatusBar` — no other
 //! `native_surface_paint::paint` calls either styled verb (see
-//! `crate::native_surface::NativeSurface`'s own doc for the cross-backend
+//! `crate::paint_surface::PaintSurface`'s own doc for the cross-backend
 //! survey; only `primitives::terminal` and `primitives::status_bar` call
 //! them, and `terminal` paints through a live `GtkBackend`, never through
 //! this adapter).
@@ -59,12 +59,12 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::backend::ImagePaintResult;
-use crate::native_surface::NativeSurface;
+use crate::paint_surface::PaintSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
 /// See the module doc for the two fields that carry genuine
 /// per-call-site behaviour ([`Self::layout`], [`Self::translucent_fill`]);
-/// every other [`NativeSurface`] verb below is one shared implementation.
+/// every other [`PaintSurface`] verb below is one shared implementation.
 pub(crate) struct CairoSurface<'a> {
     pub(crate) cr: &'a Context,
     /// `None` for primitives that never paint text through this adapter
@@ -86,7 +86,7 @@ impl<'a> CairoSurface<'a> {
     }
 }
 
-impl NativeSurface for CairoSurface<'_> {
+impl PaintSurface for CairoSurface<'_> {
     fn surface_begin_frame(&mut self, _viewport: Viewport) {
         unreachable!("CairoSurface has no backend frame lifecycle to begin")
     }
@@ -269,7 +269,7 @@ mod tests {
 
     /// #1073: `CairoSurface::surface_fill_rounded_rect` must reach the
     /// same real rounded-corner Cairo path `GtkBackend`'s own override
-    /// does (`gtk_backend_native_surface_fill_rounded_rect_clips_the_corners`'s
+    /// does (`gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners`'s
     /// twin, at the adapter level) — proven by a corner staying
     /// untouched while the box's centre paints solid.
     #[test]

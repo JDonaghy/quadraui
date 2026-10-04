@@ -3,7 +3,7 @@
 //! Content painting (background, border, title, body, table, text-input
 //! slot, buttons) moved to the shared
 //! [`crate::primitives::dialog::native_surface_paint::paint`] (#1077,
-//! `NativeSurface` Phase 4 slice 4/8) — see that fn's module doc for the
+//! `PaintSurface` Phase 4 slice 4/8) — see that fn's module doc for the
 //! substantial drift it resolved (font role, per-button border, button
 //! tint, label/input vertical centring, table `column_widths` +
 //! separator sizing).
@@ -77,7 +77,7 @@ pub fn draw_dialog(
     );
 
     // DialogInput::Toolbar isn't painted by the shared `paint` — the
-    // toolbar rasteriser hasn't moved onto `NativeSurface` yet (out of
+    // toolbar rasteriser hasn't moved onto `PaintSurface` yet (out of
     // #1077's scope; see the shared `paint`'s module doc) — so render it
     // here, exactly as before this migration.
     if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =

@@ -61,7 +61,7 @@ pub mod spinner;
 pub mod split;
 pub mod split_tree;
 pub mod status_bar;
-// Shared `NativeSurface` adapter over a bare `CGContextRef` (issue
+// Shared `PaintSurface` adapter over a bare `CGContextRef` (issue
 // #1072). `mod`, not `pub mod`: internal decomposition only, mirroring
 // `cg`'s visibility above.
 mod surface;

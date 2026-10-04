@@ -52,7 +52,7 @@ use crate::backend::{activity_bar_hits, tab_bar_hits_from_layout, BackendError};
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::{Point, Rect};
-use crate::native_surface::NativeSurface;
+use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
@@ -1482,7 +1482,7 @@ impl GtkBackend {
         // save the editor font that's on the shared layout, swap in
         // `ui_font` for the paint (and the shared `paint`'s own internal
         // width measurement, which shares this same layout via
-        // `NativeSurface::surface_measure_text_styled`), then restore the
+        // `PaintSurface::surface_measure_text_styled`), then restore the
         // editor font so later draws in this frame aren't left painting
         // chrome-sized text.
         let saved_font = {
@@ -2057,6 +2057,14 @@ impl Backend for GtkBackend {
 
     fn services(&self) -> &dyn PlatformServices {
         &self.services
+    }
+
+    /// #1101: `GtkBackend` implements [`PaintSurface`] directly (see this
+    /// module's own `impl PaintSurface for GtkBackend` block below), so
+    /// this always answers `Some(self)` — never the `None` default
+    /// `Backend::paint_surface` falls back to.
+    fn paint_surface(&mut self) -> Option<&mut dyn PaintSurface> {
+        Some(self)
     }
 
     /// quadraui#492: honest per-method, not aspirational.
@@ -4155,7 +4163,7 @@ impl Backend for GtkBackend {
         rect: QRect,
         stack: &crate::primitives::toast::ToastOverlay,
     ) -> crate::primitives::toast::ToastStackLayout {
-        // `NativeSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
+        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
         // each require an active frame internally — see
         // `Self::surface_fill_rect` — so this method needs no separate
         // cr/pango fetch of its own, matching `Self::draw_status_bar`'s
@@ -4866,7 +4874,7 @@ impl crate::backend::WindowControl for GtkBackend {
     }
 }
 
-// ─── NativeSurface (#807, Phase 1) ───────────────────────────────────────────
+// ─── PaintSurface (#807, Phase 1) ───────────────────────────────────────────
 //
 // The ~15-verb drawing surface underneath `Backend::draw_*`, extracted from
 // helpers this backend already had privately: `set_source`/`cr.rectangle`/
@@ -4874,9 +4882,9 @@ impl crate::backend::WindowControl for GtkBackend {
 // verb below either forwards to the identically-named `Backend` method
 // (frame lifecycle, measurement, image) or does exactly what the private
 // helpers already did, so no `draw_*` call site's behaviour changes. See
-// `native_surface`'s module doc for the full scope note and why these
+// `paint_surface`'s module doc for the full scope note and why these
 // methods are `surface_`-prefixed instead of colliding with `Backend`'s.
-impl NativeSurface for GtkBackend {
+impl PaintSurface for GtkBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }
@@ -4934,7 +4942,7 @@ impl NativeSurface for GtkBackend {
             .expect("GtkBackend::surface_fill_rect called outside enter_frame_scope");
         // `set_source_rgba`, not `set_source` — see that fn's doc
         // (issue #811) for why a translucent fill must honour `color.a`
-        // here to match macOS/Windows's `NativeSurface::surface_fill_rect`.
+        // here to match macOS/Windows's `PaintSurface::surface_fill_rect`.
         crate::gtk::set_source_rgba(cr, color);
         cr.rectangle(
             rect.x as f64,
@@ -4947,7 +4955,7 @@ impl NativeSurface for GtkBackend {
 
     /// #1073: `crate::gtk::rounded_rect_path` was already private plumbing
     /// for the context menu / `ListView` / command-center rasterisers —
-    /// this is the first `NativeSurface` verb to expose it. `radius` is
+    /// this is the first `PaintSurface` verb to expose it. `radius` is
     /// clamped to half of `rect`'s shorter side, matching this trait
     /// method's own doc for why (an unclamped radius overlaps the
     /// opposite corner's arc on every one of the three native path APIs).
@@ -5046,7 +5054,7 @@ impl NativeSurface for GtkBackend {
     /// one real backend where chrome and editor text already resolve to
     /// two genuinely different `pango::FontDescription`s
     /// (`crate::gtk::chrome_font_description(&self.ui_font)` vs
-    /// `self.editor_font_pango_string()`), so a `dyn NativeSurface`
+    /// `self.editor_font_pango_string()`), so a `dyn PaintSurface`
     /// caller that only held the trait default could never reach the
     /// chrome one. Saves and restores the layout's font description
     /// around the call, mirroring the save/restore recipe every
@@ -8663,7 +8671,7 @@ mod tests {
 
     /// #416 review follow-up: `SidebarPanel` composes a `Toolbar` header
     /// internally — its button text is measured/drawn via
-    /// `NativeSurface::surface_measure_text`/`surface_draw_text_run`
+    /// `PaintSurface::surface_measure_text`/`surface_draw_text_run`
     /// (`crate::primitives::sidebar_panel::native_surface_paint::paint`,
     /// #862), which just uses whatever font is live on the shared
     /// `pango_layout` — so the same editor-font leak the previous test
@@ -9394,10 +9402,10 @@ mod tests {
         );
     }
 
-    // ── NativeSurface (#807, Phase 1) ────────────────────────────────
+    // ── PaintSurface (#807, Phase 1) ────────────────────────────────
 
     #[test]
-    fn gtk_backend_native_surface_fill_rect_paints_solid_color() {
+    fn gtk_backend_paint_surface_fill_rect_paints_solid_color() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let mut surface =
@@ -9430,16 +9438,16 @@ mod tests {
     }
 
     /// Not a pixel-precision test for every verb (that's `fill_rect`'s job
-    /// above) — this exercises every remaining `NativeSurface` method at
+    /// above) — this exercises every remaining `PaintSurface` method at
     /// least once end-to-end (frame lifecycle, measurement, stroke, line,
     /// clip push/pop, text run, image) so the trait has a real caller
     /// (dead_code would otherwise fire — nothing else calls
-    /// `NativeSurface` methods yet, by Phase 1's design) and so an
+    /// `PaintSurface` methods yet, by Phase 1's design) and so an
     /// implementation bug (wrong arg order, a swapped field, a panic
     /// inside the frame-scope guard) fails a test instead of shipping
     /// silently.
     #[test]
-    fn gtk_backend_native_surface_verbs_do_not_panic() {
+    fn gtk_backend_paint_surface_verbs_do_not_panic() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let surface = ImageSurface::create(Format::ARgb32, 100, 60).expect("create ImageSurface");
@@ -9569,7 +9577,7 @@ mod tests {
     /// while the box's centre paints solid — proving the corners are
     /// genuinely rounded, not just a rectangle with a misleading name.
     #[test]
-    fn gtk_backend_native_surface_fill_rounded_rect_clips_the_corners() {
+    fn gtk_backend_paint_surface_fill_rounded_rect_clips_the_corners() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let mut surface =
@@ -9606,7 +9614,7 @@ mod tests {
     /// background must land a real alpha composite — neither the fill
     /// colour verbatim nor the background untouched.
     #[test]
-    fn gtk_backend_native_surface_fill_rect_alpha_blends_with_the_background() {
+    fn gtk_backend_paint_surface_fill_rect_alpha_blends_with_the_background() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let mut surface =
@@ -9652,7 +9660,7 @@ mod tests {
     /// a tiny editor-font size painting visibly different amounts of ink
     /// for the same glyph.
     #[test]
-    fn gtk_backend_native_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
+    fn gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         fn ink_pixel_count(surface: &mut ImageSurface) -> usize {
@@ -9746,7 +9754,7 @@ mod tests {
     /// the fallback-wrapped font description) rather than silently
     /// dropping the call.
     #[test]
-    fn gtk_backend_native_surface_draw_icon_glyph_paints_real_ink() {
+    fn gtk_backend_paint_surface_draw_icon_glyph_paints_real_ink() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let mut surface =
@@ -9780,7 +9788,7 @@ mod tests {
         );
     }
 
-    // ── find_replace (#809, `NativeSurface` Phase 2b) ──────────────────
+    // ── find_replace (#809, `PaintSurface` Phase 2b) ──────────────────
     //
     // `gtk::find_replace` used to carry its own `#[cfg(test)]` module
     // with a `draw_find_replace_with_multibyte_query_does_not_panic`
@@ -9794,7 +9802,7 @@ mod tests {
     // output (the popup background pixel), proving the *plumbing* —
     // `GtkBackend::draw_find_replace` really does reach `paint` and
     // `paint` really does land real Cairo pixels through `GtkBackend`'s
-    // `NativeSurface` impl — not just that it doesn't panic.
+    // `PaintSurface` impl — not just that it doesn't panic.
     #[test]
     fn gtk_backend_draw_find_replace_paints_popup_background() {
         use crate::primitives::find_replace::{compute_hit_regions, FindReplacePanel};
@@ -9859,7 +9867,7 @@ mod tests {
             (r8, g8, b8),
             (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
             "find/replace popup background must be painted through GtkBackend's \
-             real NativeSurface impl",
+             real PaintSurface impl",
         );
     }
 

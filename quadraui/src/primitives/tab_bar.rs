@@ -16,13 +16,13 @@
 //! existing engine-side `TabBarClickTarget` enum. `TabBarEvent` exists
 //! for a later stage where plugin-defined tab bars use event-driven clicks.
 //!
-//! # `NativeSurface` migration status — NOT migrated (issue #1081)
+//! # `PaintSurface` migration status — NOT migrated (issue #1081)
 //!
 //! **`TabBar` paint is still per-backend.** There is deliberately no
 //! `native_surface_paint` module in this file, unlike
 //! [`crate::primitives::menu_bar`], [`crate::primitives::toolbar`] and
 //! [`crate::primitives::activity_bar`] — the three primitives that
-//! `NativeSurface` Phase 4 slice 5/8 (#1081) *did* move. `gtk::tab_bar`,
+//! `PaintSurface` Phase 4 slice 5/8 (#1081) *did* move. `gtk::tab_bar`,
 //! `macos::tab_bar` and `win::tab_bar` each still carry a full Cairo /
 //! Core Graphics / Direct2D paint loop, and the three copies have
 //! already drifted:

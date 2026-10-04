@@ -1,4 +1,4 @@
-//! The one shared [`NativeSurface`] adapter over a bare
+//! The one shared [`PaintSurface`] adapter over a bare
 //! `&ID2D1RenderTarget`, consolidating the 10 private per-file `Raw*Surface`
 //! copies that #811's Phase 2d slices each left behind (issue #1072).
 //! Every one of those copies differed from its neighbours only in struct
@@ -53,7 +53,7 @@
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use crate::backend::ImagePaintResult;
-use crate::native_surface::NativeSurface;
+use crate::paint_surface::PaintSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
 use super::text::{
@@ -62,7 +62,7 @@ use super::text::{
 };
 
 /// See the module doc for [`Self::dwrite`], the one field that carries
-/// genuine per-call-site behaviour; every other [`NativeSurface`] verb
+/// genuine per-call-site behaviour; every other [`PaintSurface`] verb
 /// below is one shared implementation.
 pub(crate) struct D2dSurface<'a> {
     pub(crate) target: &'a ID2D1RenderTarget,
@@ -82,7 +82,7 @@ impl<'a> D2dSurface<'a> {
     }
 }
 
-impl NativeSurface for D2dSurface<'_> {
+impl PaintSurface for D2dSurface<'_> {
     fn surface_begin_frame(&mut self, _viewport: Viewport) {
         unreachable!("D2dSurface has no backend frame lifecycle to begin")
     }

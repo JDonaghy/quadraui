@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::data_table::native_surface_paint::paint`] (#1084,
-//! `NativeSurface` Phase 4 7/8) — see that fn's doc for the full
+//! `PaintSurface` Phase 4 7/8) — see that fn's doc for the full
 //! per-backend divergence survey this closed, most notably: this module
 //! used to paint a fully opaque `selection_bg` pixel for the selected row
 //! (no alpha blending at all — a documented "Scope omission" prior to
@@ -11,7 +11,7 @@
 //! [`crate::primitives::scrollbar::native_surface_paint::paint`]
 //! `gtk::data_table` already used. [`draw_data_table`] below is now a
 //! thin wrapper over the shared paint, using
-//! [`crate::macos::surface::CgSurface`] as the `NativeSurface` adapter —
+//! [`crate::macos::surface::CgSurface`] as the `PaintSurface` adapter —
 //! mirroring [`crate::win::data_table::draw_data_table`]'s equivalent
 //! migration. `gtk::data_table::draw_data_table` is *not* migrated; see
 //! the shared `paint`'s doc for why. [`mac_data_table_layout`] (pure

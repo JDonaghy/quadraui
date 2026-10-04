@@ -4,7 +4,7 @@
 //! [`ACTIVITY_ROW_DIP`] as the item height; content painting moved to
 //! the shared
 //! [`crate::primitives::activity_bar::native_surface_paint::paint`]
-//! (#1081, `NativeSurface` Phase 4 slice 5/8), which also **adds this
+//! (#1081, `PaintSurface` Phase 4 slice 5/8), which also **adds this
 //! backend's missing right-edge separator**: pre-migration
 //! `win::activity_bar` was the only one of the three that never painted
 //! the 1px `theme.separator` column GTK and macOS both had — no doc

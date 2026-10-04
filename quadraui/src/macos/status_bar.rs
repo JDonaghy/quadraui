@@ -2,7 +2,7 @@
 //!
 //! Painting moved to the shared
 //! [`crate::primitives::status_bar::native_surface_paint::paint`] (#860,
-//! `NativeSurface` Phase 2d slice 3/9) — see that fn's doc for the named
+//! `PaintSurface` Phase 2d slice 3/9) — see that fn's doc for the named
 //! divergences (bold-aware measurement: GTK/Win measured a segment's own
 //! `bold` weight, macOS ignored it; GTK's missing zero-size guard, now
 //! applying the already-fixed quadraui#791 shape uniformly) found while
@@ -19,17 +19,17 @@
 //! ## Bold segments
 //!
 //! Tracked separately — `bold` on a segment was, and remains, ignored on
-//! this backend: [`NativeSurface::surface_measure_text_styled`]'s default
-//! (drop `bold`, forward to [`NativeSurface::surface_measure_text`])
+//! this backend: [`PaintSurface::surface_measure_text_styled`]'s default
+//! (drop `bold`, forward to [`PaintSurface::surface_measure_text`])
 //! reproduces this file's pre-#860 measurement exactly, so `MacBackend`
 //! needed no override. Bold support requires materialising a bold
 //! variant of the active font via `CTFontCreateCopyWithSymbolicTraits`
 //! and is out of scope for #38; follow-up after the chrome batch lands.
 //!
 //! [`Backend`]: crate::Backend
-//! [`NativeSurface`]: crate::native_surface::NativeSurface
-//! [`NativeSurface::surface_measure_text_styled`]: crate::native_surface::NativeSurface::surface_measure_text_styled
-//! [`NativeSurface::surface_measure_text`]: crate::native_surface::NativeSurface::surface_measure_text
+//! [`PaintSurface`]: crate::paint_surface::PaintSurface
+//! [`PaintSurface::surface_measure_text_styled`]: crate::paint_surface::PaintSurface::surface_measure_text_styled
+//! [`PaintSurface::surface_measure_text`]: crate::paint_surface::PaintSurface::surface_measure_text
 
 use core_text::font::CTFont;
 

@@ -1,5 +1,5 @@
-//! `NativeSurface` — the low-level drawing-verb trait underneath the
-//! three pixel backends (issue #807, Phase 1 of the `NativeSurface`
+//! `PaintSurface` — the low-level drawing-verb trait underneath the
+//! three pixel backends (issue #807, Phase 1 of the `PaintSurface`
 //! milestone; child of #785; `docs/SMELL_AUDIT_2026-07.md` §5).
 //!
 //! # The problem this starts to fix
@@ -17,7 +17,7 @@
 //! `DWrite::draw_text` (also crate-private) — but nothing names it as a
 //! shared shape, so nothing can be written once against it.
 //!
-//! `NativeSurface` is that shape: ~15 backend-primitive verbs, every one
+//! `PaintSurface` is that shape: ~15 backend-primitive verbs, every one
 //! `Rect`/`Point`-taking rather than a loose bag of `x`/`y`/`w`/`h`
 //! scalars (the shape change that also lets a future phase drop the
 //! `#[allow(clippy::too_many_arguments)]`s scattered across `gtk::*`,
@@ -36,7 +36,7 @@
 //!
 //! It does **not**: migrate any of the 71 `Backend::draw_*`/`*_layout`
 //! methods, or any per-primitive rasteriser module, to call through
-//! `NativeSurface` instead of their own private helpers. Every existing
+//! `PaintSurface` instead of their own private helpers. Every existing
 //! call site is untouched, so this phase changes zero paint/click
 //! behaviour — it only proves the trait is implementable, honestly,
 //! against what each backend already has. Wiring `Backend`'s `draw_*`
@@ -71,15 +71,44 @@
 //! already avoids by keeping TUI a first-class separate implementation
 //! (see `Backend`'s own module doc, and this issue's description).
 //!
-//! # Sealed to this crate
+//! # Public since issue #1101 — the unsealed paint seam
 //!
-//! `pub(crate)`, not `pub`: this is an internal decomposition of
-//! `Backend`'s existing (sealed, in-tree-only) implementors, not new
-//! public API. Nothing outside this crate can see or implement it, so
-//! adding, removing, or reshaping a verb here is never a breaking change
-//! to `coord-tui`/`vimcode` — see `CLAUDE.md`'s *Downstream consumers*
-//! section; this file adds zero surface those blast-radius rules apply
-//! to.
+//! Phase 1 (above) shipped this trait `pub(crate)`: an internal
+//! decomposition of `Backend`'s existing (sealed, in-tree-only)
+//! implementors, not new public API. By the time #1101 was filed, Phase 2/3
+//! had already wired the bulk of `Backend`'s `draw_*` methods through
+//! `primitives::<name>::native_surface_paint` helpers that take `&mut dyn
+//! PaintSurface` (see each primitive module's own doc for which ones;
+//! `tab_bar` is the one documented holdout, issue #1081) — so this trait had
+//! already become the real paint seam in practice, just not a nameable one
+//! outside this crate.
+//!
+//! #1101 makes that seam `pub`: the ~15 verbs below are now this crate's
+//! public paint-primitive surface, exposed off [`crate::Backend`] via
+//! [`crate::Backend::paint_surface`] — mirroring how [`crate::Backend::window`]
+//! exposes [`crate::WindowControl`] and [`crate::Backend::services`] exposes
+//! [`crate::PlatformServices`]. A future pixel backend (macOS/Windows today;
+//! any later platform) now only needs to implement this ~15-verb trait, plus
+//! `Services`/`WindowHost`, to paint every primitive whose rasteriser has
+//! already migrated onto it — it does not need to reimplement any of
+//! `Backend`'s 71 `draw_*`/`*_layout` methods for those primitives, since
+//! the shared `native_surface_paint::paint` helpers do that work once,
+//! generically, against `&mut dyn PaintSurface`.
+//!
+//! This is additive, not breaking: the trait was never visible outside this
+//! crate, so no downstream consumer (`coord-tui`, `vimcode`) could ever have
+//! implemented or named it — `CLAUDE.md`'s *Downstream consumers* blast-radius
+//! rule has nothing to grep for. `Backend` itself stays sealed
+//! (`sealed::Sealed`, still `pub(crate)`) — only this one piece of it is
+//! unsealed.
+//!
+//! What #1101 does **not** do: it does not migrate the remaining
+//! `draw_*` methods whose primitives haven't grown a `native_surface_paint`
+//! module yet (`command_center`, `completions`, `editor`, `minimap`,
+//! `spinner`, plus the documented `tab_bar` holdout, #1081), and it does not
+//! split the *rest* of `Backend` (frame lifecycle, per-primitive `draw_*`/
+//! `*_layout`, focus ring, modal stack) into further public pieces — only
+//! the paint-verb layer. Those remain tracked separately.
 
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
@@ -90,31 +119,16 @@ use crate::{Color, Image, Point, Rect, Viewport};
 /// [`crate::win::backend::WinBackend`] already had privately. See the
 /// module doc for scope, naming, and why TUI does not implement this.
 ///
-/// `#[allow(dead_code)]`: Phase 1's whole point is that no production call
-/// site is wired up yet (see the module doc's *Scope* section) — every
-/// method is exercised by each backend's own test suite (proving the
-/// implementations are real, not just type-checked stubs) but nothing in
-/// the shipped library calls through this trait until Phase 2 migrates a
-/// `Backend::draw_*` method onto it. Without this, `-D warnings` fails the
-/// ordinary (non-test) build the moment this file lands, for a gap that is
-/// this phase's entire scope, not a bug — see this issue's PR description
-/// for why that tradeoff is deliberate here rather than pulled forward.
-///
-/// "Each backend's own test suite" runs on different hosts, not this one:
-/// `gtk::backend`'s and `win::backend`'s `native_surface_*` tests execute
-/// on this dev machine (the win ones behind a further `target_os =
-/// "windows"` per-test gate, since `HeadlessSurface` needs a real
-/// Direct2D device); `macos::backend`'s can only execute on `macos.yml`'s
-/// `macos-latest` runner, because `mod macos` itself only compiles under
-/// `#[cfg(all(feature = "macos", target_os = "macos"))]` (see `lib.rs`).
-/// A Linux `cargo check --features macos --target aarch64-apple-darwin`
-/// type-checks the mac tests but never runs them.
-#[allow(dead_code)]
-pub(crate) trait NativeSurface {
+/// `pub` since issue #1101 (previously `pub(crate)` — see the module doc's
+/// *Public since issue #1101* section): this is the public backend-paint
+/// seam. A caller outside this crate can now write a function generic over
+/// `&mut dyn PaintSurface` the same way every `primitives::*::native_surface_paint`
+/// helper in this crate already does.
+pub trait PaintSurface {
     // ─── Frame + viewport ──────────────────────────────────────────────
     /// Begin a frame at `viewport`. Phase 1 implementations simply
     /// forward to [`crate::Backend::begin_frame`] — this verb exists so
-    /// a future call site that only holds `&mut dyn NativeSurface` (a
+    /// a future call site that only holds `&mut dyn PaintSurface` (a
     /// primitive rasteriser that has been migrated off direct cairo/
     /// CoreGraphics/Direct2D access) doesn't need `Backend` in scope too.
     fn surface_begin_frame(&mut self, viewport: Viewport);
@@ -173,7 +187,7 @@ pub(crate) trait NativeSurface {
 
     /// Fill `rect` with `color`, corners rounded to `radius` — the shape
     /// every chrome background/border rasteriser not yet ported onto
-    /// `NativeSurface` needs (dialogs, context menus, buttons, the
+    /// `PaintSurface` needs (dialogs, context menus, buttons, the
     /// bordered `ListView`/command-center panels — see
     /// `crate::gtk::rounded_rect_path`'s call sites for the current,
     /// per-backend-private equivalents) and the reason none of them
@@ -204,7 +218,7 @@ pub(crate) trait NativeSurface {
     /// [`Self::surface_fill_rect`] with `color`'s own alpha channel
     /// overridden by `alpha` (`0.0`..=`1.0`, clamped) — the explicit,
     /// discoverable "fill translucently" entry point every large
-    /// primitive not yet ported onto `NativeSurface` needs (issue
+    /// primitive not yet ported onto `PaintSurface` needs (issue
     /// #1073; see `primitives::chart`'s module doc, "The crosshair" and
     /// "The grid line color", for two spots that pre-#1073 approximated
     /// this with a CPU-side [`Color::blend`] against a hardcoded
@@ -301,7 +315,7 @@ pub(crate) trait NativeSurface {
     /// [`Self::surface_fill_rounded_rect`]/[`Self::surface_fill_rect_alpha`])
     /// blocking the remaining chrome paint code from moving onto this
     /// trait. Before this verb, a primitive migrated to take
-    /// `&mut dyn NativeSurface` could not paint one label in the chrome
+    /// `&mut dyn PaintSurface` could not paint one label in the chrome
     /// font and another in the editor font from the same call site —
     /// the concrete backends resolve that today only by handing a
     /// *different, backend-specific* adapter to each caller (e.g.
