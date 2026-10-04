@@ -226,6 +226,10 @@ Also in `compose`: a Markdown-to-`StyledText` adapter, and
 `notify_or_toast`, which sends a system notification where the platform
 has one and shows a toast where it does not.
 
+See [`quadraui/docs/COMPOSE.md`](quadraui/docs/COMPOSE.md) for what each
+controller owns, the events it emits, the smallest wiring snippet, and
+which example file demonstrates it.
+
 **Platform services:** clipboard, file open/save and folder dialogs,
 message dialogs, notifications, `open_url`, reveal-in-file-manager, move
 to trash, secret storage, OS file drop, window control and a tray icon.
@@ -287,6 +291,7 @@ for how to regenerate it.
 ## Design documents
 
 - [`quadraui/docs/UI_CRATE_DESIGN.md`](quadraui/docs/UI_CRATE_DESIGN.md) — goals, non-goals and the core invariants.
+- [`quadraui/docs/COMPOSE.md`](quadraui/docs/COMPOSE.md) — every compose controller: what it owns, the events it emits, the smallest wiring example, and which example file shows it.
 - [`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md) — the rules every primitive follows, including the public-API lifecycle.
 - [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md) — architectural decision log.
 - [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) — pitfalls found building the native backends.
