@@ -4051,9 +4051,8 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let layout = super::split::win_split_layout(rect, split);
-            // `self.current_theme`, not `Theme::default()` (issue
-            // #1261) — the live theme `Backend::set_theme` writes, same
-            // as every other rasteriser in this file.
+            // `self.current_theme` is the live theme `Backend::set_theme`
+            // writes, same as every other rasteriser in this file.
             let theme = self.current_theme;
             crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
             return layout;
@@ -4090,9 +4089,8 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let layout = super::split_tree::win_split_tree_layout(rect, tree);
-            // `self.current_theme`, not `Theme::default()` (issue
-            // #1261) — the live theme `Backend::set_theme` writes, same
-            // as every other rasteriser in this file.
+            // `self.current_theme` is the live theme `Backend::set_theme`
+            // writes, same as every other rasteriser in this file.
             let theme = self.current_theme;
             crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
             return layout;
@@ -4260,9 +4258,8 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let line_height = self.current_line_height;
             let layout = super::panel::win_panel_layout(rect, panel, line_height);
-            // `self.current_theme`, not `Theme::default()` (issue
-            // #1261) — the live theme `Backend::set_theme` writes, same
-            // as `draw_toast_overlay` above.
+            // `self.current_theme` is the live theme `Backend::set_theme`
+            // writes, same as `draw_toast_overlay` above.
             let theme = self.current_theme;
             crate::primitives::panel::native_surface_paint::paint(panel, &layout, self, &theme);
             return layout;
@@ -4620,9 +4617,8 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() && self.dwrite.is_some() {
             let line_height = self.current_line_height;
-            // `self.current_theme`, not `Theme::default()` (issue
-            // #1261) — the live theme `Backend::set_theme` writes, same
-            // as `WinBackend::draw_panel` above.
+            // `self.current_theme` is the live theme `Backend::set_theme`
+            // writes, same as `WinBackend::draw_panel` above.
             let theme = self.current_theme;
             let mut surface = ChromeSurface { backend: self };
             return crate::primitives::sidebar_panel::native_surface_paint::paint(
@@ -7582,11 +7578,10 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `draw_editor` used to build its own
-    /// `Theme::default()` instead of reading `WinBackend::current_theme`
-    /// — a dark-themed app got a light editor background regardless of
-    /// `:colorscheme`/`set_theme`. Same pixel-probe pattern as
-    /// quadraui#789's `set_theme_reaches_the_activity_bar` et al.
+    /// `draw_editor` must read the live theme from `WinBackend::current_theme`
+    /// rather than building its own `Theme::default()`, so a dark-themed app
+    /// gets a dark editor background after `:colorscheme`/`set_theme`. Same
+    /// pixel-probe pattern as the activity bar's `set_theme` coverage.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_editor() {
@@ -7630,9 +7625,9 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `draw_tree` (the Explorer sidebar's own
-    /// content rasteriser) used to build its own `Theme::default()`
-    /// instead of reading `WinBackend::current_theme`.
+    /// `draw_tree` (the Explorer sidebar's own content rasteriser) must read
+    /// the live theme from `WinBackend::current_theme` rather than building
+    /// its own `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_tree() {
@@ -7677,9 +7672,9 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `paint_tab_bar_icons_from_layout` used to
-    /// build its own `Theme::default()` instead of reading
-    /// `WinBackend::current_theme`.
+    /// `paint_tab_bar_icons_from_layout` must read the live theme from
+    /// `WinBackend::current_theme` rather than building its own
+    /// `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_tab_bar() {
@@ -7732,9 +7727,8 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `draw_panel`'s title-bar chrome used to
-    /// hardcode `Theme::default()` — see this fn's pre-fix comment,
-    /// "preserves the pre-#859 behaviour exactly".
+    /// `draw_panel`'s title-bar chrome must paint from the live theme
+    /// rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_panel() {
@@ -7785,9 +7779,8 @@ mod tests {
         // past the centre of this 100-DIP-wide panel, so a centre
         // sample lands on anti-aliased glyph ink (a blend of
         // `theme.foreground` and the fill) rather than the solid
-        // `title_bg` fill this test means to probe — bug caught only
-        // on real Windows (text metrics are a stub off-Windows), see
-        // issue #1261's CI-fix follow-up.
+        // `title_bg` fill this test means to probe. Text metrics are a
+        // stub off-Windows, so this only matters on real Windows runs.
         let px = surface.pixel_at(
             (tb.x + tb.width - 2.0) as u32,
             (tb.y + tb.height / 2.0) as u32,
@@ -7799,10 +7792,8 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `draw_sidebar_panel_interactive`'s
-    /// embedded toolbar chrome used to hardcode `Theme::default()` — see
-    /// this fn's pre-fix comment, "preserves the pre-#862 behaviour
-    /// exactly".
+    /// `draw_sidebar_panel_interactive`'s embedded toolbar chrome must
+    /// paint from the live theme rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_sidebar_panel_toolbar() {
@@ -7861,9 +7852,8 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `draw_split`'s divider chrome used to
-    /// hardcode `Theme::default()` — see this fn's pre-fix comment,
-    /// "has no live theme wired through to split chrome yet".
+    /// `draw_split`'s divider chrome must paint from the live theme rather
+    /// than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_split() {
@@ -7917,9 +7907,8 @@ mod tests {
         );
     }
 
-    /// Issue #1261 acceptance: `draw_split_tree`'s divider chrome used
-    /// to hardcode `Theme::default()` — see this fn's pre-fix comment,
-    /// "has no live theme wired through to split-tree chrome yet".
+    /// `draw_split_tree`'s divider chrome must paint from the live theme
+    /// rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_split_tree() {

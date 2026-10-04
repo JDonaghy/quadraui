@@ -26,8 +26,8 @@
 //!
 //! `WinBackend::draw_split_tree` passes `&self.current_theme` to the
 //! shared [`crate::primitives::split_tree::native_surface_paint::paint`]
-//! (issue #1261) — the same live theme `Backend::set_theme` writes, the
-//! same shape `win::status_bar`'s module doc documents.
+//! — the same live theme `Backend::set_theme` writes, the same shape
+//! `win::status_bar`'s module doc documents.
 
 #[cfg(test)]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;

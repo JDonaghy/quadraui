@@ -22,9 +22,9 @@
 //! # Theme
 //!
 //! `WinBackend::draw_panel` passes `&self.current_theme` to the shared
-//! [`crate::primitives::panel::native_surface_paint::paint`] (issue
-//! #1261) — the same live theme `Backend::set_theme` writes, the same
-//! shape `win::status_bar`'s module doc documents.
+//! [`crate::primitives::panel::native_surface_paint::paint`] — the same
+//! live theme `Backend::set_theme` writes, the same shape
+//! `win::status_bar`'s module doc documents.
 
 #[cfg(test)]
 use super::text::DWrite;
