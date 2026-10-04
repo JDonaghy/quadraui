@@ -2051,7 +2051,7 @@ pub trait Backend: sealed::Sealed {
     /// Clipboard, file dialogs, notifications, URL opening, platform name.
     fn services(&self) -> &dyn PlatformServices;
 
-    // ─── Paint surface (issue #1101) ────────────────────────────────────
+    // ─── Paint surface ──────────────────────────────────────────────────
     /// This backend's [`crate::PaintSurface`] — the ~15-verb drawing
     /// primitive seam every `primitives::*::native_surface_paint` helper
     /// paints through — or `None` on a backend with no pixel canvas to

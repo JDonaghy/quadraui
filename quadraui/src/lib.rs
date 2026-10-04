@@ -261,10 +261,10 @@ pub mod accelerator;
 pub mod backend;
 pub mod event;
 
-// ── PaintSurface (#807 Phase 1; public since #1101) ─────────────────────
+// ── PaintSurface ────────────────────────────────────────────────────────
 // The ~15-verb drawing trait underneath the three pixel backends —
 // extracted from helpers each of GtkBackend/MacBackend/WinBackend already
-// had privately. `pub`, not `pub(crate)`, since #1101: this is the public
+// had privately. `pub`, not `pub(crate)`: this is the public
 // backend-paint seam, reached off `Backend::paint_surface` the same way
 // `Backend::window`/`Backend::services` expose `WindowControl`/
 // `PlatformServices`. TUI is deliberately excluded (see `paint_surface`'s
@@ -557,7 +557,7 @@ pub use event::{
     mouse_down, mouse_moved, mouse_up, scroll, window_resized, BackendNativeEvent, ButtonMask, Key,
     MouseButton, NamedKey, Point, Rect, ScrollDelta, UiEvent, UserPayload, Viewport,
 };
-// #1101: the public paint-verb seam — see `paint_surface`'s module doc.
+// The public paint-verb seam — see `paint_surface`'s module doc.
 pub use frame::{
     check_frame_order, compose_frame, FrameHitMap, FrameOrderViolation, FramePresence, FrameRung,
     FrameZone, ScreenLayout, Surface,
