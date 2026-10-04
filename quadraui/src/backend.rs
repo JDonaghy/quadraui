@@ -1589,8 +1589,9 @@ pub trait Backend: sealed::Sealed {
     /// `crate::runtime::FrameScheduler`.
     ///
     /// This one-shot timer is independent of, and doesn't replace, the
-    /// separate always-repeating idle-poll fallback TUI/GTK/macOS also
-    /// keep (`crate::runtime::IDLE_POLL_CEILING` — see
+    /// separate always-repeating idle-poll fallback every backend keeps
+    /// (`crate::runtime::IDLE_POLL_CEILING`, since quadraui#1265 gave
+    /// Windows parity with TUI/GTK/macOS — see
     /// [`crate::runner::AppLogic::tick`]'s per-backend cadence table):
     /// this method exists for an app that knows the *exact* interval it
     /// wants to be woken after, the fallback for an app that doesn't ask
