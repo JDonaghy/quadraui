@@ -5,7 +5,7 @@ edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
 repository.workspace = true
-# crates.io/docs.rs metadata (quadraui#1111). `readme` points *above* this
+# crates.io/docs.rs metadata. `readme` points *above* this
 # crate's own dir on purpose — the authoritative README lives at the repo
 # root (it documents the whole workspace, not just this crate), and cargo
 # copies whatever `readme` resolves to into the package root under its
@@ -31,7 +31,7 @@ categories = ["gui", "command-line-interface"]
 # Bumping the toolchain pin and this field is one commit, not two — do them
 # together.
 rust-version = "1.97.1"
-# Package hygiene (quadraui#1111): the published `.crate` ships `src/`,
+# Package hygiene: the published `.crate` ships `src/`,
 # `examples/` (the README points readers at them directly, and they are
 # useful on crates.io's own source viewer) and `docs/`, but not the
 # in-repo-only test/bench machinery — `tests/` carries this crate's own
@@ -80,7 +80,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lib]
 
 [features]
-# No `default` key, deliberately (quadraui#1111): a bare `cargo add
+# No `default` key, deliberately: a bare `cargo add
 # quadraui` (or `quadraui = "0.1"` with no `features = [...]`) must not
 # silently pull in a rendering backend the consumer didn't ask for — every
 # feature below is opt-in, including every backend. This is the same

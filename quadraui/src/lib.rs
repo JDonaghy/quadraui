@@ -95,7 +95,7 @@
 //! ## Status
 //!
 //! `0.1.x` — pre-1.0, prepared for its first publish to crates.io
-//! (quadraui#1111) but not yet published, breaking changes allowed. 40
+//! but not yet published, breaking changes allowed. 40
 //! primitives shipped. The TUI and GTK backends have full
 //! feature parity and are battle-tested by vimcode (5000+ tests). The
 //! macOS backend implements the whole `Backend` trait and is built/tested
@@ -648,7 +648,7 @@ mod tests {
     /// The expectation is *derived from the manifest text*, never a
     /// hardcoded literal: a literal makes every release bump two edits
     /// instead of one, and forgetting the second is precisely how the
-    /// `v0.1.0` bump (quadraui#1111) turned this test red. `include_str!`
+    /// `v0.1.0` bump turned this test red. `include_str!`
     /// resolves relative to this source file and cargo always ships a
     /// normalised `Cargo.toml` at the package root, so this works inside
     /// the published `.crate` as well as in-tree — on every platform, since
