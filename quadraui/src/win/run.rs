@@ -1561,22 +1561,12 @@ mod win32 {
             if !args.is_empty() {
                 // SAFETY: same as the smoke-timer borrow just above.
                 let ws: &WindowState<A> = unsafe { &*state_ptr };
-                if dispatch(ws, hwnd, classify_open_args(args)) == Reaction::Exit {
-                    // Mirrors every other in-loop `Reaction::Exit`
-                    // handling (e.g. `WM_QUADRAUI_USER_EVENT` below):
-                    // `DestroyWindow` posts `WM_QUIT` via `WM_DESTROY`,
-                    // so the message loop below still runs, sees it
-                    // immediately, and exits cleanly instead of this
-                    // function skipping straight past it.
-                    //
-                    // SAFETY: `hwnd` is still the live window; `dispatch`
-                    // just above only borrowed `ws.state` transiently
-                    // (via `guarded_call`), and that borrow has already
-                    // ended by the time control reaches here.
-                    unsafe {
-                        let _ = DestroyWindow(hwnd);
-                    }
-                }
+                // #1278: `dispatch` (via `dispatch_with`) already acts on
+                // `Reaction::Exit` itself — `DestroyWindow` posts
+                // `WM_QUIT` via `WM_DESTROY`, so the message loop below
+                // still runs, sees it immediately, and exits cleanly. No
+                // need to repeat the check here.
+                dispatch(ws, hwnd, classify_open_args(args));
             }
         }
 
@@ -1695,6 +1685,28 @@ mod win32 {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
         }
+        // #1278: this is the *only* place a `Reaction::Exit` gets acted
+        // on. Every call site below used to repeat its own
+        // `== Reaction::Exit { DestroyWindow(hwnd) }` check; several
+        // event arms (mouse buttons/move/wheel, key down/up, focus,
+        // resize-settle, drop-files, `WM_COPYDATA`'s open-args) forgot
+        // to, so an app returning `Exit` from those paths (e.g. a
+        // drawn-menu "Quit" click delivered as `WM_LBUTTONUP`, or `:q`
+        // via `WM_KEYDOWN`) never got torn down — the window just sat
+        // there, looking frozen (#1278). Centralizing here means no
+        // future arm can repeat that mistake.
+        if reaction == Reaction::Exit {
+            // SAFETY: `hwnd` is a caller-supplied still-live window (see
+            // above); `DestroyWindow` re-enters `wndproc` synchronously
+            // for `WM_DESTROY`/`WM_NCDESTROY` on this same thread, which
+            // is fine — `ws`/`state_ptr` stay valid for the whole of
+            // `run_inner`'s message loop, and a second `DestroyWindow` on
+            // an already-destroyed handle (e.g. if a caller also checks
+            // the returned `Reaction` itself) just fails harmlessly.
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
         reaction
     }
 
@@ -1724,7 +1736,19 @@ mod win32 {
             Reaction::RedrawAfter(delay) => {
                 ws.state.borrow().backend.request_frame_in(delay);
             }
-            Reaction::Continue | Reaction::Exit => {}
+            // #1278: mirrors `dispatch_with`'s identical handling — see
+            // its doc for why this is the only place `Exit` gets acted
+            // on. `tick` is reached from both the scheduled-wake timer
+            // and the unconditional idle-poll safety net (this
+            // function's own doc), so it needs the same treatment.
+            Reaction::Exit => {
+                // SAFETY: same as `dispatch_with`'s identical call above
+                // — `hwnd` is caller-supplied and still live.
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+            }
+            Reaction::Continue => {}
         }
         reaction
     }
@@ -2417,12 +2441,10 @@ mod win32 {
                 // no-op, not an error, if that id isn't currently armed
                 // (e.g. two timers racing to fire the same tick), so
                 // there's no "must be armed" precondition to uphold.
-                // `DestroyWindow` re-enters `wndproc` synchronously on
-                // this thread for `WM_DESTROY`/`WM_NCDESTROY`, same as
-                // every other in-loop `Reaction::Exit`/exit-timer call
-                // site in this function — `ws`/`state_ptr` stay valid
-                // throughout because `run_inner` only frees them after
-                // `GetMessageW`'s loop (driven by this same `hwnd`) exits.
+                // #1278: `tick`/`dispatch` below already act on
+                // `Reaction::Exit` themselves (see `dispatch_with`'s
+                // doc), so this arm doesn't need its own
+                // `== Reaction::Exit { DestroyWindow(hwnd) }` check.
                 if wparam.0 == SMOKE_TIMER_ID {
                     // SAFETY: see this arm's opening comment above.
                     unsafe {
@@ -2454,13 +2476,9 @@ mod win32 {
                     // arrived — run `tick` (quadraui#832). `tick` itself
                     // re-arms a fresh timer via `request_frame_in` if it
                     // wants to be woken again (the chained-rearm pattern
-                    // `Reaction::RedrawAfter`'s doc describes).
-                    if tick(ws, hwnd) == Reaction::Exit {
-                        // SAFETY: see this arm's opening comment above.
-                        unsafe {
-                            let _ = DestroyWindow(hwnd);
-                        }
-                    }
+                    // `Reaction::RedrawAfter`'s doc describes), and acts
+                    // on `Reaction::Exit` itself (#1278).
+                    tick(ws, hwnd);
                     LRESULT(0)
                 } else if wparam.0 == IDLE_POLL_TIMER_ID {
                     // The coarse safety-net fire. Deliberately never
@@ -2469,12 +2487,7 @@ mod win32 {
                     // regardless of whether `tick`/anything else asked to
                     // be woken, exactly like TUI/GTK's unconditional idle
                     // poll and macOS's repeating `idlePollTick:` `NSTimer`.
-                    if tick(ws, hwnd) == Reaction::Exit {
-                        // SAFETY: see this arm's opening comment above.
-                        unsafe {
-                            let _ = DestroyWindow(hwnd);
-                        }
-                    }
+                    tick(ws, hwnd);
                     LRESULT(0)
                 } else {
                     // SAFETY: same as `WM_NCCREATE`'s `DefWindowProcW`
@@ -2494,16 +2507,11 @@ mod win32 {
                 // `dispatch` helper every other message in this match uses.
                 let events = ws.state.borrow_mut().backend.drain_user_events();
                 for event in events {
+                    // #1278: `dispatch` already acts on `Reaction::Exit`
+                    // itself (see `dispatch_with`'s doc) — this just
+                    // stops feeding the app further queued events once
+                    // it has asked to exit.
                     if dispatch(ws, hwnd, event) == Reaction::Exit {
-                        // SAFETY: `hwnd` is this dispatch's own, still-live
-                        // window; `DestroyWindow` re-enters `wndproc`
-                        // synchronously for `WM_DESTROY`/`WM_NCDESTROY` on
-                        // this thread — same shape as `WM_TIMER`'s exit
-                        // paths above, `ws`/`state_ptr` stay valid for the
-                        // same `run_inner`-lifetime reason.
-                        unsafe {
-                            let _ = DestroyWindow(hwnd);
-                        }
                         break;
                     }
                 }
@@ -2530,33 +2538,21 @@ mod win32 {
                     // synchronously on `TrackPopupMenuEx`, the same
                     // modal-pop-up posture
                     // `macos::menu_bar_install::show_context_menu` has.
+                    // #1278: `dispatch` already acts on `Reaction::Exit`
+                    // itself (see `dispatch_with`'s doc) — the early
+                    // `return` below just skips the `ContextMenuDismissed`
+                    // dispatch once the app has already asked to exit,
+                    // same as before.
                     if let Some(id) = crate::win::tray::track_menu(hwnd, &menu) {
                         if dispatch(ws, hwnd, UiEvent::ContextMenuItemActivated(id))
                             == Reaction::Exit
                         {
-                            // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
-                            // `DestroyWindow` above.
-                            unsafe {
-                                let _ = DestroyWindow(hwnd);
-                            }
                             return LRESULT(0);
                         }
                     }
-                    if dispatch(ws, hwnd, UiEvent::ContextMenuDismissed) == Reaction::Exit {
-                        // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
-                        // `DestroyWindow` above.
-                        unsafe {
-                            let _ = DestroyWindow(hwnd);
-                        }
-                    }
-                } else if dispatch(ws, hwnd, crate::win::tray::plain_click_event(button))
-                    == Reaction::Exit
-                {
-                    // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
-                    // `DestroyWindow` above.
-                    unsafe {
-                        let _ = DestroyWindow(hwnd);
-                    }
+                    dispatch(ws, hwnd, UiEvent::ContextMenuDismissed);
+                } else {
+                    dispatch(ws, hwnd, crate::win::tray::plain_click_event(button));
                 }
                 LRESULT(0)
             }
@@ -2643,17 +2639,14 @@ mod win32 {
                 // in turn resolves to this same `WM_CLOSE` — so the veto
                 // decision below is Alt+F4's veto decision too, with no
                 // separate Alt+F4 code path to keep in sync.
-                if dispatch(ws, hwnd, UiEvent::WindowClose) == Reaction::Exit {
-                    // SAFETY: same as `WM_QUADRAUI_USER_EVENT`'s
-                    // `DestroyWindow` above.
-                    unsafe {
-                        let _ = DestroyWindow(hwnd);
-                    }
-                }
-                // An app returning `Reaction::Continue`/`Redraw` here
-                // vetoes the close, matching the GTK runner's
+                //
+                // #1278: `dispatch` already acts on `Reaction::Exit`
+                // itself (see `dispatch_with`'s doc) by destroying the
+                // window. An app returning `Reaction::Continue`/`Redraw`
+                // here vetoes the close, matching the GTK runner's
                 // `Reaction::Exit => window.close()` — every other
                 // reaction leaves the window open.
+                dispatch(ws, hwnd, UiEvent::WindowClose);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -3092,6 +3085,180 @@ mod win32 {
                  appearing, with no explicit RedrawAfter/request_frame_in — \
                  the IDLE_POLL_TIMER_ID safety net (quadraui#1265) isn't \
                  firing"
+            );
+        }
+    }
+
+    /// Issue #1278: proves `dispatch_with`'s `Reaction::Exit` handling is
+    /// reached from a real mouse-up and a real key-down, not just
+    /// `WM_CLOSE`/the exit-timer arms this file already checked. Before
+    /// the fix, `WM_LBUTTONUP`/`WM_KEYDOWN` discarded `dispatch`'s return
+    /// value entirely, so an app returning `Exit` from either path (e.g.
+    /// a drawn-menu "Quit" click, or `:q`) left the window alive forever —
+    /// the "frozen window" symptom the issue describes. `WinDriver` can't
+    /// cover this: it calls `dispatch_event`/`route_mouse_*` directly and
+    /// latches `exited` itself, never going through `wndproc`'s own
+    /// `dispatch`/`dispatch_with` call sites — so this needs a real
+    /// message loop, same posture as `live_window_nchittest_tests` and
+    /// `idle_poll_fallback_tests` above.
+    #[cfg(test)]
+    mod mouse_and_key_exit_tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        /// Exits on `MouseUp`/`KeyPressed`, continues on everything else —
+        /// the exact two event families #1278 names as silently dropping
+        /// `Reaction::Exit`.
+        struct ExitOnInputApp;
+
+        impl AppLogic for ExitOnInputApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    // `WindowClose` is included only so a failing test's
+                    // own `WM_CLOSE` cleanup (see
+                    // `assert_exit_reaction_destroys_window`'s `else`
+                    // branch) can still tear the window down — it isn't
+                    // part of what #1278 is testing.
+                    UiEvent::MouseUp { .. } | UiEvent::KeyPressed { .. } | UiEvent::WindowClose => {
+                        Reaction::Exit
+                    }
+                    _ => Reaction::Continue,
+                }
+            }
+        }
+
+        /// Spins up a real window running `ExitOnInputApp`, waits for it
+        /// to become findable (self-guarding — stderr diagnostic + early
+        /// return, same posture as this module's siblings above — if
+        /// there's no interactive window station on this host), calls
+        /// `trigger` with the live `HWND`, then asserts the window is
+        /// actually torn down within a bound well above any plausible
+        /// dispatch latency: a regression back to "Exit is dropped" would
+        /// leave the window sitting there indefinitely (the live #1278
+        /// symptom), not merely destroy it a little late.
+        fn assert_exit_reaction_destroys_window(test_name: &str, trigger: impl FnOnce(HWND)) {
+            let title = format!(
+                "quadraui-exit-reaction-probe-{test_name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::win::run::RunConfig::new(title.clone());
+
+            let runner = std::thread::spawn(move || run(ExitOnInputApp, config));
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping {test_name} — the test window never \
+                     became findable within 10s (no interactive window \
+                     station on this host?)"
+                );
+                return;
+            };
+
+            trigger(hwnd);
+
+            let exit_deadline = Instant::now() + Duration::from_secs(5);
+            let destroyed = loop {
+                // SAFETY: `class_name` is still the live `Vec<u16>` from
+                // above.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                let still_there = found.is_ok();
+                if !still_there {
+                    break true;
+                }
+                if Instant::now() >= exit_deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+
+            if destroyed {
+                // `WM_DESTROY`'s `PostQuitMessage` already ended
+                // `run_inner`'s loop by this point, so this returns
+                // promptly rather than hanging the test process.
+                let _ = runner.join();
+            } else {
+                // SAFETY: `hwnd` is still the live (never-destroyed, per
+                // `destroyed == false` above) test window; `WM_CLOSE` is
+                // its normal user-close path (`ExitOnInputApp::handle`
+                // exits on it too, specifically so this cleanup still
+                // works when the real `MouseUp`/`KeyPressed` assertion
+                // below is about to fail) — used here only to tear the
+                // window down after an already-failing test rather than
+                // leak a window and a blocked thread past this test's own
+                // scope.
+                unsafe {
+                    SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+                let _ = runner.join();
+            }
+
+            assert!(
+                destroyed,
+                "{test_name}: window was never destroyed within 5s of an \
+                 app `handle` returning Reaction::Exit — the reaction was \
+                 dropped (quadraui#1278)"
+            );
+        }
+
+        #[test]
+        fn mouse_up_exit_reaction_destroys_window() {
+            assert_exit_reaction_destroys_window(
+                "mouse_up_exit_reaction_destroys_window",
+                |hwnd| {
+                    // A plain left click: down then up at an arbitrary client
+                    // point. `ExitOnInputApp::handle` exits on the `MouseUp`
+                    // this produces via `route_mouse_up` -> `dispatch_event`
+                    // (no scrollbar/text-selection drag state to intercept
+                    // it).
+                    let lparam = LPARAM((20i32 << 16 | 20i32) as isize);
+                    // SAFETY: `hwnd` is the live test window from the caller's
+                    // `FindWindowW` poll; `SendMessageW` blocks until
+                    // `wndproc` returns, so there's no re-entrancy/lifetime
+                    // hazard beyond the ones `wndproc` itself already
+                    // documents.
+                    unsafe {
+                        SendMessageW(hwnd, WM_LBUTTONDOWN, Some(WPARAM(0)), Some(lparam));
+                        SendMessageW(hwnd, WM_LBUTTONUP, Some(WPARAM(0)), Some(lparam));
+                    }
+                },
+            );
+        }
+
+        #[test]
+        fn key_down_exit_reaction_destroys_window() {
+            assert_exit_reaction_destroys_window(
+                "key_down_exit_reaction_destroys_window",
+                |hwnd| {
+                    // `VK_ESCAPE` (0x1B) is one of `wm_keydown_to_uievent`'s
+                    // named-key cases, so it reaches `ExitOnInputApp::handle`
+                    // as `KeyPressed` directly off `WM_KEYDOWN` — no
+                    // `WM_CHAR`/keyboard-layout resolution needed, unlike a
+                    // printable key.
+                    const VK_ESCAPE: usize = 0x1B;
+                    // SAFETY: same as the mouse case above.
+                    unsafe {
+                        SendMessageW(hwnd, WM_KEYDOWN, Some(WPARAM(VK_ESCAPE)), Some(LPARAM(0)));
+                    }
+                },
             );
         }
     }
