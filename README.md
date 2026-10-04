@@ -1,288 +1,258 @@
 # quadraui
 
-Cross-platform UI primitives with native rendering backends for **TUI**
-(via ratatui), **GTK4** (via gtk4-rs + Cairo + Pango), **macOS** (Core
-Graphics + Core Text), and **Windows** (Direct2D + DirectWrite via
-`windows-rs`) — see *Status* below for how far each backend actually
-gets.
+**One Rust UI codebase that runs in a terminal and as a native desktop window.**
 
-The premise: declarative widget descriptions (`TreeView`, `MultiSectionView`,
-`TabBar`, etc.) are produced once by the host app, and each backend
-rasterises them in its native idiom. Paint and click consume **one**
-layout instance — primitives expose a `layout(...)` helper that the
-rasteriser uses internally and that hosts call to drive hit-testing.
-This rules out the "paint and click drift" bug class structurally.
+quadraui is a widget toolkit with four rendering backends: **TUI** (via
+ratatui), **GTK4** (Cairo + Pango), **macOS** (Core Graphics + Core Text)
+and **Windows** (Direct2D + DirectWrite). You write your app once, as a
+single `AppLogic` implementation. The same code runs over SSH in a
+terminal or as a native window, and only the one-line runner call in
+`main` changes.
+
+```rust
+use quadraui::prelude::*;
+
+struct Hello { keys_pressed: u32 }
+
+impl AppLogic for Hello {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        // Describe the UI as plain data; the backend rasterises it natively.
+        let bar = StatusBar {
+            id: WidgetId::new("status:bar"),
+            left_segments: vec![StatusBarSegment {
+                text: format!(" Hello, quadraui! (keys: {}) ", self.keys_pressed),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![],
+        };
+        let vp = backend.viewport();
+        let h = backend.measure().line_height.max(1.0) * 1.4;
+        let _ = backend.draw_status_bar_interactive(
+            Rect::new(0.0, vp.height - h, vp.width, h),
+            &bar,
+            &quadraui::InteractionState::new(),
+        );
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        match event {
+            UiEvent::KeyPressed { key: Key::Char('q'), .. } => Reaction::Exit,
+            UiEvent::KeyPressed { .. } => { self.keys_pressed += 1; Reaction::Redraw }
+            _ => Reaction::Continue,
+        }
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    quadraui::tui::run(Hello { keys_pressed: 0 })
+    // quadraui::gtk::run(...), quadraui::macos::run(...) or
+    // quadraui::win::run(...) for a native window: same `Hello`.
+}
+```
+
+The full version is `quadraui/examples/hello.rs`:
+`cargo run --example hello --features tui`.
+
+## Why it is different
+
+- **Terminal and native from one codebase.** Ratatui and Textual have no
+  native backend; egui, iced and Slint have no terminal backend. quadraui
+  has both, behind one trait.
+- **Paint and click share one layout.** Every primitive exposes a
+  `layout(...)` that the rasteriser paints from and the host hit-tests
+  against. Mouse clicks cannot drift from what is on screen, because both
+  read the same computed rectangles.
+- **Small, and idle when idle.** A macOS release binary measured 0.7–2.0 MB
+  in the 2026-09-26 audit. The runtime is event-driven: an app with
+  nothing to do renders nothing.
+- **Declarative, serialisable widgets.** Primitives are plain data
+  (`Serialize`), events are plain data routed by `WidgetId`, and no
+  closures cross the API. That is what makes scripting practical (vimcode
+  lets Lua extensions declare quadraui views), and later, language
+  bindings.
+- **Honest about capabilities.** `BackendCaps` tells an app what the
+  current backend can do. Where a terminal cannot do something (a tray
+  icon, a native dialog) the backend degrades and says so, rather than
+  silently doing nothing.
+- **Heavily tested.** Around 4,000 tests, including headless
+  paint-then-click round trips on all four backends, an end-to-end
+  `TuiDriver` that drives real example apps through the event loop, and
+  benchmarks for 100k-row tables and trees and a 4k-line editor.
+
+## Who it is for
+
+**A good fit:** keyboard-driven developer, ops and data tools (editors,
+dashboards, log viewers, database and HTTP clients) that should run in a
+terminal over SSH *and* as a native window, written in Rust, by people
+comfortable with a pre-1.0 API.
+
+**Not a fit, today:**
+
+- **Accessibility.** There is no assistive-technology support: no
+  AccessKit, AT-SPI, UI Automation or NSAccessibility. A screen reader sees
+  nothing. That rules quadraui out wherever a Section 508, EN 301 549 or
+  WCAG obligation applies. Tracked in quadraui#1119.
+- **CJK and other IME input.** No backend implements an input-method
+  protocol, so composed input (CJK, and dead-key accents) does not work.
+  The design is `quadraui/docs/IME_INPUT_PROPOSAL.md`; the backend work is
+  quadraui#900.
+- **Right-to-left text.** East-Asian character width is handled; RTL,
+  bidi and complex shaping are not, and are out of scope.
+- **Custom drawing and free-form layout.** Apps compose the shipped
+  primitives and place them with `Rect` arithmetic. There is no public
+  canvas and no flex/grid layout engine yet (quadraui#1102, #1103).
+- **Multiple windows** (quadraui#1120), and **languages other than Rust**
+  (bindings are a later phase, quadraui#1096).
 
 ## Status
 
-`0.0.x` — pre-1.0, breaking changes allowed. The TUI and GTK backends
-are exercised in production by [vimcode](https://github.com/JDonaghy/vimcode).
+`0.0.x` — pre-1.0. The first published release, `0.1.0`, is being
+prepared (quadraui#1111); until then, depend on it by git revision.
+Breaking changes are batched and recorded in `CHANGELOG.md`.
 
-**The Windows backend is further along than "scaffolded, no code" — its
-window/event infrastructure is real and blocking on CI.** `.github/workflows/ci.yml`'s
-`tui` job runs a `[ubuntu-latest, windows-latest]` matrix where *both*
-legs are blocking (#590): on `windows-latest` it builds and clippy-checks
-every `win_*` example against the real `windows` crate, and runs `cargo
-test -p quadraui --features win` for real on that host — including the
-headless `ID2D1DCRenderTarget` surface in `src/win/testing.rs`, which
-needs no `HWND`, GPU, or desktop session. Per-primitive rasterisers are
-no longer stubs: `quadraui/src/win/backend.rs` has zero non-test
-`todo!()` calls left, and `register_zone`/painted-text-run recording
-(what the conformance driver needs to find things on screen) are real,
-not no-ops. What's still incomplete is *conformance*, not *existence*:
-the conformance matrix (`quadraui/tests/conformance.rs`) still registers
-`win` as a **burn-down** column (quadraui#708/#722) rather than
-promoting it to blocking — its cells are reported in the artifact but
-don't gate CI, because some per-primitive cases still fail the same
-paint↔click round-trip checks the TUI/GTK/macOS columns already pass.
-See that file's `c0_paint_smoke` test for the current per-primitive
-checklist.
-
-**The macOS backend implements the whole `Backend` trait, and
-`macos-latest` CI builds and tests it** (`.github/workflows/macos.yml`,
-triggered by any PR touching `quadraui/src/macos/**`). Until quadraui#484
-that claim was untested: the backend is gated on `target_os = "macos"`,
-so `cargo check --features macos` on a Linux host compiled none of it,
-and the first real macOS compile found seven missing trait methods, an
-arity mismatch, and three primitives with no rasteriser at all. Those are
-closed. Two documented divergences from the GTK twin remain, both in
-`src/macos`'s own module docs: `tab_bar` returns bar-relative rather than
-absolute hit x (quadraui#552 follow-up), and `terminal` does not yet do
-wide-char (CJK / emoji) advance handling (quadraui#440).
-
-Every in-window rasteriser shipped — chrome (StatusBar, TabBar,
-ActivityBar, CommandCenter, MenuBar, CommandLine, settings chrome),
-content (Tree, List, Form, Editor, DataTable, Chart, Board, DiffView),
-MSV + Scrollbar, containers + indicators (Panel, Split, SplitTree, Toast,
-Progress, Spinner), overlays (Tooltip, ContextMenu, Dialog, Palette,
-Completions, FindReplace, RichTextPopup, DropOverlay), and
-streaming/cell primitives (Terminal, TextDisplay, MessageList) — plus
-the native-feel integration layer:
-platform services (clipboard via `arboard`, `NSOpenPanel` /
-`NSSavePanel` file dialogs, `osascript` notifications, `open` URL
-handler), native `NSMenu` menu bar with auto-prepended app menu and
-⌘-shortcuts, native right-click context menus via
-`NSMenu.popUpMenuPositioningItem`, form chrome for ToggleGroup /
-SegmentedControl / ButtonRow / PasswordInput, and animated
-`InlineInput` caret blink driven by an `NSTimer` (~530 ms, pauses for
-500 ms after a keystroke). See `SESSION_HISTORY.md` for details.
-
-### What is not supported
-
-Three capabilities are absent. They are stated here because each one is
-load-bearing for somebody's adoption decision, and because
-`quadraui/docs/` contains design documents for two of them that a reader
-can otherwise mistake for shipped work.
-
-**Accessibility — no assistive-technology support at all.** There is zero
-AccessKit, AT-SPI, UI Automation or NSAccessibility code in the crate. A
-screen reader sees nothing. `docs/UI_CRATE_DESIGN.md` decision #6 called
-for `a11y_role` / `a11y_label` data fields on every primitive with
-platform wiring to follow; the data fields are groundwork only and do not
-constitute AT support even once they land (quadraui#835). Full
-integration is a multi-backend programme, not a patch. This rules
-quadraui out where a Section 508 / EN 301 549 / WCAG obligation applies.
-
-**IME / composition — CJK input does not work.** No backend implements an
-IME client protocol. GTK sees already-resolved keysyms, macOS's
-`objc_key_down` bypasses `NSTextInputClient`, and Windows has no
-`WM_IME_*` handling. Dead-key composition for accented Latin does not
-work either. `quadraui/docs/IME_INPUT_PROPOSAL.md` is a design (#502);
-the four backend integrations are tracked in quadraui#900 and are
-unbuilt.
-
-**i18n — East-Asian width only, no RTL or bidi.** Text handling accounts
-for East-Asian character width via `unicode-width`, and that is the
-whole of it. There is no right-to-left layout, no bidirectional
-reordering, and no shaping for scripts that need it, so Arabic, Hebrew,
-and Indic text render incorrectly rather than partially. No work is
-scheduled for it; treat it as a scope boundary rather than a gap awaiting
-a fix.
-
-## Workspace
-
-| Crate | Purpose |
+| Backend | State |
 |---|---|
-| `quadraui` | The core library — primitives, types, theme, backend traits, TUI + GTK rasterisers. |
-| `kubeui-core` | Domain logic for a Kubernetes dashboard demo (no rendering deps). |
-| `kubeui` | TUI-rendered Kubernetes dashboard. Real consumer that exercises `MultiSectionView`, `TreeView`, `Form`, `StatusBar`, `Scrollbar`. |
-| `kubeui-gtk` | GTK-rendered Kubernetes dashboard. Same domain logic as `kubeui`; different backend. |
+| TUI | In production use in vimcode and coord-tui. Every rasteriser shipped. |
+| GTK4 (Linux) | In production use in vimcode. Every rasteriser shipped. |
+| macOS | Implements the whole `Backend` trait, including native menus, file dialogs and a client-side title bar. Built and tested on `macos-latest` CI for every PR that touches `quadraui/src`. |
+| Windows | Every rasteriser shipped, with no `todo!()` left in `src/win/backend.rs`. Builds and tests are blocking on `windows-latest` CI. The cross-backend conformance matrix still reports it as a burn-down column rather than a blocking one: some paint-then-click cases do not pass yet. |
 
-Demo crates are kept inside this repo so primitive changes can be
-validated end-to-end before merge — they're not example code, they're
-real apps under development.
+The real consumers are [vimcode](https://github.com/JDonaghy/vimcode), a
+Vim-compatible editor that runs on all four backends, and
+[coord-tui](https://github.com/JDonaghy/coord-tui), a terminal dashboard.
+Both are by the same author, so quadraui has not yet been tried by an
+outside team. If you build something on it, please open an issue; that
+feedback is the most useful thing the project can get right now.
 
-## Features
+## How it was built
 
-- `terminal` — PTY + vt100 + scrollback engine (`quadraui::terminal_engine`).
-  No rasteriser; pairs with any backend feature below.
-- `tui` — TUI rasteriser (`quadraui::tui::draw_*`), via ratatui.
-- `gtk` — GTK4 rasteriser (`quadraui::gtk::draw_*`), via gtk4-rs + Cairo + Pango.
-- `macos` — macOS rasteriser (`quadraui::macos::draw_*`), via Core Graphics
-  + Core Text. Gated on `target_os = "macos"`.
-- `win` — Windows rasteriser (`quadraui::win::draw_*`), via Direct2D +
-  DirectWrite (`windows-rs`). Compiles on every host — only the real
-  WinAPI calls inside are `cfg(target_os = "windows")`-gated.
-quadraui's paint-time snapshot descriptors that have grown `new()`/
-`with_*()`/`Default` builders (`TextInput`, `Toolbar`, `Editor`) are
-`#[non_exhaustive]` unconditionally as of issue #1251 (the v0.1.0
-breaking batch, phase 2) — the formerly off-by-default
-`strict-descriptors` feature that let a consumer opt into proving its
-own migration early is gone; there's nothing left to opt into.
+quadraui is developed almost entirely by AI coding agents. Of its first
+1,314 commits (April to October 2026), 1,107 are co-authored by Claude.
+The agents are coordinated by
+[code-coordinator](https://github.com/JDonaghy/code-coordinator), which
+dispatches each issue to a worker on one of several machines and gates
+every merge on tests and on an adversarial review by a separate agent
+with no shared context. That pipeline, not a person reading every diff,
+is what holds the agents to the repository's rules.
 
-quadraui is not published to crates.io — a bare `version = "0.0.1"` crates.io
-dependency line will not resolve for anyone. Both of this repo's real
-downstream consumers (`coord-tui`, `vimcode`) pin it to a fixed git
-revision rather than floating on `develop`'s tip (see `CLAUDE.md`'s
-*Downstream consumers* table):
+You do not have to take that on trust. An independent audit of the
+framework, commissioned and published unedited, is at
+[`quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`](quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md).
+It covers code quality, the alternatives, and what has to be true before
+1.0. Its recommendations are tracked as epics on this repository's issue
+tracker.
+
+## Getting started
 
 ```toml
 [dependencies]
-# Pin to a commit — the shape both real downstream consumers use:
 quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = ["tui", "gtk"] }
-
-# Or, for in-tree/sibling-checkout development:
-quadraui = { path = "../quadraui/quadraui", features = ["tui", "gtk"] }
 ```
 
-Backend-specific tests are gated on the corresponding feature. CI builds
-both sets.
+Pin a commit rather than following `develop`; both real consumers do. For
+sibling-checkout development, use
+`quadraui = { path = "../quadraui/quadraui", features = [...] }`.
 
-## Primitives
+Then:
 
-40 primitives (one module each under `quadraui/src/primitives/`),
-declarative descriptions + layout + dual rasterisers. The most-used ones:
+- Run `hello`, then `tui_demo` / `gtk_demo`, which use the same `AppLogic`
+  body under two runners.
+- Read [`quadraui/docs/GUIDE.md`](quadraui/docs/GUIDE.md) for the app
+  model and [`quadraui/docs/APP_ARCHITECTURE.md`](quadraui/docs/APP_ARCHITECTURE.md)
+  for how a larger app is put together.
+- Browse `quadraui/examples/`. Most examples come in `tui_*` / `gtk_*`
+  pairs (some also `macos_*` / `win_*`), so you can compare backends.
 
-- `TreeView` — flat-rendered, scroll-aware, hit-testable.
-- `ListView` — single-column scrollable list.
-- `Form` — field/value rows with caret-aware text input.
-- `Tabs` (`TabBar`) — horizontal tab strip with active scroll.
-- `StatusBar` — left/right segment list with action dispatch.
-- `Scrollbar` — vertical scrollbar primitive.
-- `MultiSectionView` — vertically stacked, individually sized,
-  collapsible sections — each containing its own scrollable body.
-  Composes other primitives as section bodies.
-- `MessageList` — chat-style message history.
-- `Editor` — code-editor primitive (gutter, virtual text, syntax spans).
-- `MenuBar` — horizontal menu strip with dropdown menus via `ContextMenu`
-  composition, hover-to-switch, Alt-key activation.
-- `Split` — two-pane container with draggable divider, horizontal +
-  vertical, min-size constraints.
-- `SplitTree` — N-way recursive split tree (arbitrary nesting of
-  horizontal/vertical `Split` nodes, addressed by pre-order index) for
-  hosts like editor-group layouts or vim-style window splits that
-  `Split`'s fixed two-pane shape can't express.
-- `Panel` — container chrome with title bar, action buttons, content region.
-- `Toast` (`ToastStack`) — corner-stacked notification boxes with
-  severity tint, dismiss, action buttons.
-- `ProgressBar` — determinate/indeterminate bar with optional cancel.
-- `Spinner` — indeterminate braille animation glyph + label.
-- `CommandCenter` — back/forward nav arrows + search box for menu bar row.
-- `Minimap` — code-overview minimap: GTK paints real glyphs via font
-  scaling, TUI packs `U+2800`-block braille dots — same `sample_lines` /
-  `aggregate_spans` data on both (#382).
-- Plus: `Tooltip`, `ContextMenu`, `Dialog`, `Palette`, `Terminal`,
-  `RichTextPopup`, `TextDisplay` (with optional scrollbar), etc.
+## Features
 
-## Design
+Pick the backends you ship; `terminal` is independent of them.
 
-- [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md) — primitive
-  distinctness principles and architectural decision log.
-- [`quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md`](quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md) §9 —
-  resolved decisions log.
-- [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) —
-  pitfalls discovered while building the Win-GUI backend; apply when
-  building macOS or any future native backend.
-- [`quadraui/docs/CLIPBOARD.md`](quadraui/docs/CLIPBOARD.md) — how TUI
-  copy reaches the system clipboard (arboard / OSC 52 / native tool),
-  the tmux `set-clipboard on` + `allow-passthrough on` requirement, and
-  a troubleshooting order for "Ctrl-C showed `Copied:` but nothing was
-  copied" (#331).
-- [`quadraui/docs/IME_INPUT_PROPOSAL.md`](quadraui/docs/IME_INPUT_PROPOSAL.md) —
-  IME/composition input model proposal (issue #502): `UiEvent` preedit
-  contract, GTK `IMContext` / macOS `NSTextInputClient` / Windows TSF
-  mapping, caret-rect feedback channel. **Unimplemented design** — no
-  backend emits a composition event; the four backend integrations are
-  tracked in quadraui#900.
-- [`quadraui/docs/ROWS_PROVIDER_PROPOSAL.md`](quadraui/docs/ROWS_PROVIDER_PROPOSAL.md) —
-  `Rows<T>` virtualised row storage for the five collection descriptors
-  (issue #837). **Design sketch, deliberately deferred**: records why a
-  `Provider` arm is a breaking change to the descriptor `PartialEq` /
-  `Serialize` derives rather than an additive one, that hit-testing is
-  already index-based and unaffected, and what would make it worth
-  building. Slice in the host until then.
+- `terminal` — PTY + vt100 + scrollback engine (`quadraui::terminal_engine`)
+  for embedding a terminal. No rasteriser; pairs with any backend below.
+- `tui` — terminal backend (`quadraui::tui`), via ratatui.
+- `gtk` — GTK4 backend (`quadraui::gtk`), via gtk4-rs + Cairo + Pango.
+- `macos` — macOS backend (`quadraui::macos`), via Core Graphics + Core
+  Text. Compiles only on `target_os = "macos"`.
+- `win` — Windows backend (`quadraui::win`), via Direct2D + DirectWrite
+  (`windows-rs`). Compiles on every host; only the WinAPI calls are
+  `cfg(target_os = "windows")`.
 
-## Examples
+## What's in the box
 
-Runnable from the workspace root with `cargo run --example <name> --features <backend>`:
+**40 primitives**, one module each under `quadraui/src/primitives/`: a
+declarative description, a shared layout, and a rasteriser per backend.
+Among them:
 
-| Example | Backend | What it shows |
-|---|---|---|
-| `tui_app` / `gtk_app` | `tui` / `gtk` | Minimal `AppLogic` with a single `StatusBar`. The smallest possible runner-driven app. |
-| `tui_demo` / `gtk_demo` | `tui` / `gtk` | `TabBar` + `StatusBar` with focus cycling. Same `AppLogic` body across backends — only the runner call differs. |
-| `msv_multi_tree` / `gtk_multi_tree` | `tui` / `gtk` | Debug-sidebar using `SidebarSystem` compose helper: 4 `EqualShare` `TreeView` sections with per-section scroll/selection, keyboard nav, scrollbar drag — all handled by `SidebarSystem`. See *Compose helpers* below. |
-| `msv_sc_panel` | `tui` | Source-Control consumer pattern: `SectionAux::Input` commit message editor + N collapsible `TreeView` sections (Changes / Staged / Worktrees). Adds input-mode keystroke routing + chevron-click collapse toggle on top of the multi-tree shape. |
-| `tui_menu_bar` / `gtk_menu_bar` | `tui` / `gtk` | Complete menu bar using `MenuSystem` compose helper: dropdown menus, hover-to-switch, keyboard navigation (Alt+key, arrows, Enter, Esc). See *Compose helpers* below. |
-| `tui_split` / `gtk_split` | `tui` / `gtk` | Draggable `Split` with two labelled panes. Toggle horizontal/vertical, reset ratio. |
-| `tui_split_tree` / `gtk_split_tree` | `tui` / `gtk` | `SplitTree` 3-way nested split (`Split(H, Split(V, A, B), C)`); every divider draggable via `DragTarget::SplitDivider`. |
-| `tui_panel` / `gtk_panel` | `tui` / `gtk` | `Panel` with title bar, close/maximize actions, content area, collapse toggle. |
-| `tui_toast` / `gtk_toast` | `tui` / `gtk` | `ToastStack` with severity tints, dismiss, action buttons. |
-| `tui_tooltip` / `gtk_tooltip` | `tui` / `gtk` | `Tooltip` border vocabulary (#541): cycle `Sides` / `Full` / `None` chrome and toggle a title embedded in `Full`'s top border row. |
-| `tui_indicators` / `gtk_indicators` | `tui` / `gtk` | `ProgressBar` + `Spinner` demo — determinate/indeterminate, cancel. |
-| `tui_search_panel` / `gtk_search_panel` | `tui` / `gtk` | Search panel spike: `MultiSectionView` + `TreeView` composition for file-search results. |
-| `tui_form_groups` / `gtk_form_groups` | `tui` / `gtk` | `Form` with `ToggleGroup` + `ButtonRow` horizontal field kinds, plus `FocusRing` for Tab/Shift+Tab cycling. Mini search/replace panel shape. |
+- Content: `TreeView`, `ListView`, `DataTable`, `Form`, `Editor`,
+  `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
+  `Minimap`.
+- Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
+  `CommandCenter`, `Scrollbar`.
+- Containers: `Split`, `SplitTree`, `Panel`, `MultiSectionView`.
+- Overlays: `Dialog`, `Palette`, `ContextMenu`, `Tooltip`, `Completions`,
+  `FindReplace`, `Toast`, plus `ProgressBar` and `Spinner`.
 
-## Compose Helpers
+**Compose controllers** in `quadraui::compose` own the interaction state
+machines, so an app matches on semantic events (`MenuEvent::Activated`,
+`SidebarEvent::RowSelected`) instead of raw mouse coordinates:
 
-High-level controllers in `quadraui::compose` that combine multiple
-primitives into reusable interaction patterns. Apps define structure,
-the helper owns the state machine, and the app matches on semantic
-events.
+| Controller | What it handles |
+|---|---|
+| `AppShell` | Activity bar + sidebar + editor area: the VS Code-style application frame. |
+| `BottomPanel` | A tabbed, dockable panel along the bottom of an `AppShell`. |
+| `WorkspaceController` | Many open documents, one visible: open, switch, close. |
+| `TabGroup` | Tabbed split panes. |
+| `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
+| `ContextMenuController` | One call for a context menu, native or painted per platform. |
+| `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
+| `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
+| `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
+| `FormController` | A form's focus, editing and validation. |
+| `DualModePaletteController` | A command palette that switches between modes. |
+| `ChatController` | A chat overlay: transcript plus input. |
+| `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
+| `MessageDialogController` | Message and confirmation boxes. |
+| `ToastStackController` | Keyboard focus for actionable notifications. |
+| `FocusRing` / `FocusGroup` | Tab / Shift+Tab focus cycling. |
+| `HelpOverlayController` | A context-sensitive key-binding help overlay. |
+| `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
 
-| Helper | Primitives | What it handles |
-|---|---|---|
-| `FocusRing` | Any focusable widgets | Tab/Shift+Tab cycling through a list of `WidgetId`s. `advance()`, `retreat()`, `set()`, `current()`. Eliminates repeated modulo arithmetic. |
-| `MenuSystem` | `MenuBar` + `ContextMenu` | Open/close, Alt+key activation, arrow navigation, hover-to-switch, modal stack, dropdown anchoring. App matches on `MenuEvent::Activated(WidgetId)`. |
-| `SidebarSystem` | `MultiSectionView` + `TreeView` | Per-section scroll/selection, Tab cycling, scrollbar drag, two-layer click dispatch (MSV → TreeView with coordinate translation). App matches on `SidebarEvent::RowSelected { section, path }`. |
+Also in `compose`: a Markdown-to-`StyledText` adapter, and
+`notify_or_toast`, which sends a system notification where the platform
+has one and shows a toast where it does not.
+
+**Platform services:** clipboard, file open/save and folder dialogs,
+message dialogs, notifications, `open_url`, reveal-in-file-manager, move
+to trash, secret storage, OS file drop, window control and a tray icon.
+Each is reported through `BackendCaps`, and degrades honestly on the
+terminal.
 
 ## Testing
 
-Each backend has paint↔click round-trip tests in `quadraui/src/tui/*::tests`
-that paint into a virtual buffer, find painted glyphs, hit-test those
-exact coordinates, and assert paint and click identify the same widget
-region. These catch "paint and click coordinate-system drift" bugs that
-unit tests of either path alone would miss. The pattern is being rolled
-out across primitives — see PR history for `cell_quantum` (#297), MSV
-harness (#298), TreeView harness (#299).
+- **Paint-then-click round trips.** Paint a primitive into a headless
+  surface, find the painted glyphs, click those exact coordinates, and
+  assert paint and click identify the same widget.
+- **Conformance matrix.** `quadraui/tests/conformance.rs` runs the same
+  scenarios against every backend and reports a per-primitive matrix.
+- **End-to-end drivers.** `quadraui::tui::testing::TuiDriver` runs a real
+  `AppLogic` through the event → `handle` → `render` path against an
+  in-memory terminal, with scripted keys, clicks and drags. See
+  [`quadraui/docs/TESTING.md`](quadraui/docs/TESTING.md).
+- **Real terminals.** A pty tier spawns example binaries in a real
+  pseudo-terminal and checks the bytes they emit. Its results generate the
+  table below.
 
-Consumer-pattern integrations get an additional **consumer-state**
-round-trip layer alongside the primitive harness: paint, simulate the
-host's click-routing + state mutations, assert the host's state
-changes match the painted UI. See `quadraui/src/tui/multi_section_view.rs`
-"Consumer-state round-trip harness" for the canonical block.
+### Terminal compatibility
 
-Whole examples get an **end-to-end driver** layer: `quadraui::tui::testing::TuiDriver`
-runs a shipping `AppLogic` (the same type the `tui_*` examples instantiate)
-through the real event → `handle` → `render` path against ratatui's
-in-memory `TestBackend` — no TTY, no pty, deterministic. Script
-keystrokes/clicks/drags (`press`, `click`, `drag`, `ctrl_char`) and
-assert on the rendered screen. Because `AppLogic` is backend-neutral the
-same event script is the basis for a future cross-backend `GtkDriver`.
-See `quadraui/tests/tui_example_driver.rs` and `docs/TESTING.md`.
-
-## Terminal compatibility
-
-quadraui's TUI backend runs over real terminal protocols — colour-depth
-negotiation, SGR mouse decoding, the kitty keyboard protocol — that vary by
-terminal, multiplexer, and session. The table below is **generated from
-`quadraui/tests/tui_pty_smoke.rs`'s pty tier**, which spawns a real example
-binary inside a real pseudo-terminal and reads the literal bytes it emits —
-not hand-written, and not something a doc edit alone can change. Every row
-is one of ✅ verified by a pty fixture named in the last column,
-🚫 known-unsupported (a definite fact, cited, but not from a pty fixture —
-usually because no such host exists in this repo's CI), or ❔ untested (no
-row is ever left blank). See `quadraui/tests/terminal_matrix.rs` for how
-this is enforced and how to regenerate it.
+Generated from `quadraui/tests/tui_pty_smoke.rs`'s pty tier, not
+hand-written. ✅ is verified by the named pty fixture, 🚫 is a cited
+known limitation, ❔ is untested. See `quadraui/tests/terminal_matrix.rs`
+for how to regenerate it.
 
 <!-- TERMINAL_MATRIX:START — generated by quadraui/tests/terminal_matrix.rs (quadraui#829); do not hand-edit, see that file's module doc for how to regenerate -->
 | Axis | Condition | Status | Verified by |
@@ -305,6 +275,22 @@ this is enforced and how to regenerate it.
 | Key protocol (kitty) | Terminal.app (macOS) | ❔ untested | no macOS runner exercises the TUI backend under Terminal.app — docs/KITTY_KEYBOARD_PROTOCOL.md |
 | Key protocol (kitty) | Serial console | ❔ untested | no serial hardware/emulation in CI — docs/KITTY_KEYBOARD_PROTOCOL.md |
 <!-- TERMINAL_MATRIX:END -->
+
+## Workspace
+
+| Crate | Purpose |
+|---|---|
+| `quadraui` | The library. |
+| `kubeui-core`, `kubeui`, `kubeui-gtk` | A small Kubernetes dashboard demo: TUI and GTK front ends over shared domain logic. A demo, not a production consumer. |
+| `tools/lint` | Repository lints run in CI. |
+
+## Design documents
+
+- [`quadraui/docs/UI_CRATE_DESIGN.md`](quadraui/docs/UI_CRATE_DESIGN.md) — goals, non-goals and the core invariants.
+- [`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md) — the rules every primitive follows, including the public-API lifecycle.
+- [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md) — architectural decision log.
+- [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) — pitfalls found building the native backends.
+- [`quadraui/docs/CLIPBOARD.md`](quadraui/docs/CLIPBOARD.md) — how terminal copy reaches the system clipboard, including tmux setup.
 
 ## License
 
