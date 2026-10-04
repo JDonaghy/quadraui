@@ -160,6 +160,14 @@ fn tui_services_rs() -> String {
     read(crate_root().join("src/tui/services.rs"))
 }
 
+fn compose_mod_rs() -> String {
+    read(crate_root().join("src/compose/mod.rs"))
+}
+
+fn compose_md() -> String {
+    read(crate_root().join("docs/COMPOSE.md"))
+}
+
 /// Number of primitive modules declared in `src/primitives/mod.rs`. This is
 /// the crate's own definition of "how many primitives exist" — the same
 /// thing a `pub mod` grep would show a human, just automated so the docs
@@ -664,6 +672,147 @@ fn clipboard_doc_lists_every_native_clipboard_tool_the_code_tries() {
              troubleshooting steps name these binaries so a user can check \
              `which {tool}` — they have to be the same set the code \
              actually spawns."
+        );
+    }
+}
+
+// ── Compose controllers (#1128) ──────────────────────────────────────────
+//
+// #1128's audit of `develop @ ed402b4` found the root README's "Compose
+// Helpers" section naming three of fourteen-plus `src/compose/` modules —
+// the controllers own real state machines and emit semantic events, and
+// the audit rated them the best-and-least-documented part of the crate.
+// The fix is `docs/COMPOSE.md` (one section per module) plus the tests
+// below, which derive "every compose module" from `src/compose/mod.rs`'s
+// own `pub mod` list — the same mechanical strategy
+// [`primitive_module_count`] already uses for primitives — so adding
+// module #24 without documenting it fails CI instead of waiting for the
+// next manual audit.
+
+/// Every `pub mod <name>;` declared in `src/compose/mod.rs`, in file
+/// order. This is the crate's own definition of "what compose modules
+/// exist" — a human doing `ls src/compose/*.rs` would see the same set.
+fn compose_module_names() -> Vec<String> {
+    let src = compose_mod_rs();
+    let names: Vec<String> = src
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_prefix("pub mod ")?;
+            let name = rest.trim_end_matches(';').trim();
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "src/compose/mod.rs has no `pub mod` declarations — either the \
+         module emptied out or this test's parsing broke. Investigate \
+         before trusting the list below."
+    );
+    names
+}
+
+/// The root README's "Compose controllers" table body, from the
+/// `**Compose controllers**` paragraph up to (not including) the
+/// `**Platform services:**` paragraph that follows it — so a controller
+/// name mentioned elsewhere in the README doesn't count as "listed here".
+fn readme_compose_section() -> String {
+    let readme = root_readme();
+    let start = readme
+        .find("**Compose controllers**")
+        .expect("root README.md has a `**Compose controllers**` paragraph");
+    let after = &readme[start..];
+    let end = after.find("**Platform services:**").expect(
+        "root README.md has a `**Platform services:**` paragraph after Compose controllers",
+    );
+    after[..end].to_string()
+}
+
+/// For a `src/compose/<stem>.rs` module, the public type name(s) it is
+/// expected to expose, by the convention nearly every compose module
+/// follows: `PascalCase(stem)` directly (`app_shell` -> `AppShell`) or
+/// `PascalCase(stem) + "Controller"` (`workspace` -> `WorkspaceController`,
+/// `tab_group` -> `TabGroupController`). A handful of modules don't fit
+/// either shape — because they expose more than one primary type
+/// (`help_layer` -> `HelpRegistry` + `HelpOverlayController`) or because
+/// they're a utility rather than a stateful controller (`markdown`,
+/// `notification`) — and are listed here explicitly instead of guessed at.
+/// Adding a *conventionally-named* module needs no change here: the
+/// fallback derives its expected name automatically.
+fn expected_compose_type_names(stem: &str) -> Vec<String> {
+    fn pascal_case(stem: &str) -> String {
+        stem.split('_')
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect()
+    }
+
+    match stem {
+        "help_layer" => vec![
+            "HelpRegistry".to_string(),
+            "HelpOverlayController".to_string(),
+        ],
+        // Utility modules, not stateful controllers — the README's prose
+        // after the table names them without wrapping a type name in
+        // backticks, so these two are matched as plain substrings by
+        // `readme_compose_table_names_every_compose_controller` below
+        // rather than `` `Name` ``.
+        "markdown" => vec!["Markdown".to_string()],
+        "notification" => vec!["notify_or_toast".to_string()],
+        _ => {
+            let base = pascal_case(stem);
+            let mut names = vec![base.clone()];
+            if !base.ends_with("Controller") {
+                names.push(format!("{base}Controller"));
+            }
+            names
+        }
+    }
+}
+
+#[test]
+fn docs_compose_md_covers_every_compose_module() {
+    let doc = compose_md();
+    for stem in compose_module_names() {
+        let needle = format!("src/compose/{stem}.rs");
+        assert!(
+            doc.contains(&needle),
+            "quadraui/docs/COMPOSE.md has no section referencing `{needle}`. \
+             #1128 asks for one section per compose controller — add one \
+             (what it owns, the events it emits, the smallest wiring \
+             example, and which example file shows it) naming its source \
+             file so this check can find it again."
+        );
+    }
+}
+
+#[test]
+fn readme_compose_table_names_every_compose_controller() {
+    let section = readme_compose_section();
+    let plain_substring_match = ["markdown", "notification"];
+    for stem in compose_module_names() {
+        let candidates = expected_compose_type_names(&stem);
+        let found = if plain_substring_match.contains(&stem.as_str()) {
+            candidates.iter().any(|name| section.contains(name))
+        } else {
+            candidates
+                .iter()
+                .any(|name| section.contains(&format!("`{name}`")))
+        };
+        assert!(
+            found,
+            "root README.md's Compose controllers table doesn't mention \
+             any of {candidates:?} (derived from `src/compose/{stem}.rs`). \
+             This is the exact drift #1128 fixed (README named 3 of 14+ \
+             compose controllers) — add a row for it, or if it's a \
+             non-conventionally-named module, update \
+             `expected_compose_type_names` in this test alongside \
+             `docs/COMPOSE.md`."
         );
     }
 }
