@@ -251,7 +251,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 #[cfg(target_os = "windows")]
-use super::text::DWrite;
+use super::text::{clear_brush_cache, DWrite};
 
 /// Default editor font family for the Win-GUI backend — the historical
 /// default monospace face shipped with every Windows version since Vista,
@@ -958,6 +958,12 @@ impl WinBackend {
             factory: Some(factory),
             target: RenderTarget::Hwnd(target),
         });
+        // This is a brand-new `ID2D1Factory` + `ID2D1HwndRenderTarget` —
+        // any brush `super::text`'s cache is still holding was created
+        // against whatever device the previous surface attached to, which
+        // this one has nothing to do with, so drop them all rather than
+        // let a later paint call reuse (and fail against) a stale one.
+        clear_brush_cache();
         self.hwnd = Some(hwnd);
         // Keep the waker's live mirror in sync (issue #831 review fix) —
         // see `Self::hwnd_raw`'s doc for why this can't just be read off
@@ -1040,6 +1046,10 @@ impl WinBackend {
             factory: None,
             target: RenderTarget::Dc(target),
         });
+        // Same rationale as `attach_surface`'s call above — `target` here
+        // may be an entirely different device from whatever
+        // `super::text`'s brush cache last held.
+        clear_brush_cache();
 
         // Same DirectWrite bootstrap as `attach_surface` — text formats
         // aren't tied to which kind of render target they paint onto.
@@ -1119,6 +1129,11 @@ impl WinBackend {
                 factory: None,
                 target: RenderTarget::Dc(target),
             });
+            // Keeps "every surface (re)attach clears the brush cache" an
+            // exception-free rule, even though this particular branch
+            // reuses the same underlying `ID2D1DCRenderTarget` rather
+            // than creating a new one — see `clear_brush_cache`'s doc.
+            clear_brush_cache();
             return Ok(());
         }
         match self.hwnd {
@@ -5886,6 +5901,77 @@ mod tests {
             chrome_w > editor_w * 2.0,
             "a 40pt chrome font should measure \"quadraui\" much wider than a \
              10pt editor font: chrome_w={chrome_w}, editor_w={editor_w}"
+        );
+    }
+
+    /// Repainting the same frame twice must
+    /// not create any new `ID2D1SolidColorBrush`es, and painting the
+    /// first frame must create no more brushes than the number of
+    /// distinct colors it actually drew. Before `super::text`'s brush
+    /// cache, every `surface_fill_rect` call below (a stand-in for a
+    /// chrome rasteriser's per-primitive fill/stroke/text calls, all of
+    /// which go through the same `get_or_create_brush` choke point) would
+    /// have created and dropped its own brush, so this would have failed
+    /// with `created_frame_1 == 12` (one per fill call) and
+    /// `created_frame_2 == 12` again — the exact "brushes scale with
+    /// primitive count, not color count" problem this issue measured at
+    /// 647 brushes/frame on a real 1639x1079 window.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn repaint_reuses_cached_brushes_creating_no_new_ones() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+
+        // Three distinct colors, each painted four times — more
+        // primitives than colors, mirroring a real chrome rasteriser
+        // painting many same-colored fills/strokes/text runs per frame.
+        let colors = [
+            crate::Color::rgb(10, 20, 30),
+            crate::Color::rgb(200, 50, 50),
+            crate::Color::rgb(0, 128, 255),
+        ];
+        const FILLS_PER_COLOR: usize = 4;
+
+        let paint_frame = |backend: &mut WinBackend| {
+            backend.surface_begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            for (i, &color) in colors.iter().enumerate() {
+                for j in 0..FILLS_PER_COLOR {
+                    let x = (i * FILLS_PER_COLOR + j) as f32 * 2.0;
+                    backend.surface_fill_rect(Rect::new(x, 0.0, 2.0, 2.0), color);
+                }
+            }
+            backend.surface_end_frame();
+        };
+
+        crate::win::text::reset_brush_creation_count();
+
+        paint_frame(&mut backend);
+        let created_frame_1 = crate::win::text::brush_creation_count();
+        assert!(
+            created_frame_1 > 0 && created_frame_1 as usize <= colors.len(),
+            "painting {} distinct colors ({} fills total) should create at most \
+             {} brushes (one per distinct color), got {created_frame_1}",
+            colors.len(),
+            colors.len() * FILLS_PER_COLOR,
+            colors.len()
+        );
+
+        paint_frame(&mut backend);
+        let created_frame_2 = crate::win::text::brush_creation_count() - created_frame_1;
+        assert_eq!(
+            created_frame_2,
+            0,
+            "repainting the exact same colors in frame 2 must create zero new brushes \
+             (cache miss count went from {created_frame_1} to \
+             {})",
+            crate::win::text::brush_creation_count()
         );
     }
 
