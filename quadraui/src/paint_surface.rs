@@ -71,19 +71,15 @@
 //! already avoids by keeping TUI a first-class separate implementation
 //! (see `Backend`'s own module doc, and this issue's description).
 //!
-//! # Public since issue #1101 — the unsealed paint seam
+//! # Public — the unsealed paint seam
 //!
-//! Phase 1 (above) shipped this trait `pub(crate)`: an internal
-//! decomposition of `Backend`'s existing (sealed, in-tree-only)
-//! implementors, not new public API. By the time #1101 was filed, Phase 2/3
-//! had already wired the bulk of `Backend`'s `draw_*` methods through
+//! The bulk of `Backend`'s `draw_*` methods route through
 //! `primitives::<name>::native_surface_paint` helpers that take `&mut dyn
 //! PaintSurface` (see each primitive module's own doc for which ones;
-//! `tab_bar` is the one documented holdout, issue #1081) — so this trait had
-//! already become the real paint seam in practice, just not a nameable one
-//! outside this crate.
+//! `tab_bar` is the one documented holdout), so this trait is the real
+//! paint seam.
 //!
-//! #1101 makes that seam `pub`: the ~15 verbs below are now this crate's
+//! That seam is `pub`: the ~15 verbs below are this crate's
 //! public paint-primitive surface, exposed off [`crate::Backend`] via
 //! [`crate::Backend::paint_surface`] — mirroring how [`crate::Backend::window`]
 //! exposes [`crate::WindowControl`] and [`crate::Backend::services`] exposes
@@ -95,20 +91,17 @@
 //! the shared `native_surface_paint::paint` helpers do that work once,
 //! generically, against `&mut dyn PaintSurface`.
 //!
-//! This is additive, not breaking: the trait was never visible outside this
-//! crate, so no downstream consumer (`coord-tui`, `vimcode`) could ever have
-//! implemented or named it — `CLAUDE.md`'s *Downstream consumers* blast-radius
-//! rule has nothing to grep for. `Backend` itself stays sealed
+//! `Backend` itself stays sealed
 //! (`sealed::Sealed`, still `pub(crate)`) — only this one piece of it is
 //! unsealed.
 //!
-//! What #1101 does **not** do: it does not migrate the remaining
+//! Not yet covered: the remaining
 //! `draw_*` methods whose primitives haven't grown a `native_surface_paint`
 //! module yet (`command_center`, `completions`, `editor`, `minimap`,
-//! `spinner`, plus the documented `tab_bar` holdout, #1081), and it does not
-//! split the *rest* of `Backend` (frame lifecycle, per-primitive `draw_*`/
-//! `*_layout`, focus ring, modal stack) into further public pieces — only
-//! the paint-verb layer. Those remain tracked separately.
+//! `spinner`, plus the documented `tab_bar` holdout) still paint directly,
+//! and the *rest* of `Backend` (frame lifecycle, per-primitive `draw_*`/
+//! `*_layout`, focus ring, modal stack) is not split into further public
+//! pieces — only the paint-verb layer is.
 
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
@@ -119,9 +112,8 @@ use crate::{Color, Image, Point, Rect, Viewport};
 /// [`crate::win::backend::WinBackend`] already had privately. See the
 /// module doc for scope, naming, and why TUI does not implement this.
 ///
-/// `pub` since issue #1101 (previously `pub(crate)` — see the module doc's
-/// *Public since issue #1101* section): this is the public backend-paint
-/// seam. A caller outside this crate can now write a function generic over
+/// This is the public backend-paint seam (see the module doc's *Public*
+/// section). A caller outside this crate can write a function generic over
 /// `&mut dyn PaintSurface` the same way every `primitives::*::native_surface_paint`
 /// helper in this crate already does.
 pub trait PaintSurface {
