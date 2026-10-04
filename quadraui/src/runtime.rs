@@ -661,8 +661,7 @@ where
 pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
 /// Fallback idle-poll bound for backends that keep a coarse "call `tick`
-/// even with nothing scheduled" cadence (quadraui#832) — TUI, GTK, and
-/// (since quadraui#940) macOS.
+/// even with nothing scheduled" cadence — TUI, GTK, macOS, and Windows.
 ///
 /// Before #832 TUI and GTK both polled unconditionally, TUI every 16ms
 /// (`tui::run::POLL_TIMEOUT`) and GTK every 33ms (`gtk::run::run_with`'s
@@ -683,20 +682,19 @@ pub(crate) const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 /// native way to interrupt a blocked `crossterm::event::poll` early, see
 /// that method's doc — bounded to a quarter second instead of unbounded.
 ///
-/// **macOS (#940):** unlike TUI/GTK, macOS never had *any* cadence at
-/// all before #940 — `AppLogic::tick` only ever ran off a
+/// **macOS and Windows** have no other cadence of their own: on both,
+/// `AppLogic::tick` otherwise only ever runs off a
 /// [`crate::backend::Backend::request_frame_in`] deadline or a native
-/// event, so a host that queued deferred work (a file dialog request, a
-/// dirty-frame flag) with no further input got it stranded forever (see
-/// `macos::run::run_with`'s repeating `idlePollTick:` timer, installed
-/// at this same ceiling, and the `TickFn`/`dispatch_tick` doc comments
-/// there for the history). Windows remains deliberately wake-only with
-/// no fallback of its own — see `win::run::tick`'s doc — this issue's
-/// scope is macOS specifically.
+/// event, so a host that queues deferred work (a file dialog request, a
+/// dirty-frame flag) with no further input would have it stranded
+/// forever without this fallback. See `macos::run::run_with`'s repeating
+/// `idlePollTick:` timer and `win::run::run_inner`'s repeating
+/// `IDLE_POLL_TIMER_ID` `SetTimer`, both installed at this same ceiling.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
-    all(feature = "macos", target_os = "macos")
+    all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows")
 ))]
 pub(crate) const IDLE_POLL_CEILING: Duration = Duration::from_millis(250);
 

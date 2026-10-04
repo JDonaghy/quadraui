@@ -854,6 +854,19 @@ mod win32 {
     /// are scoped per-`hwnd`, and both can legitimately be armed on the
     /// same window (a headless smoke run that also resizes).
     const RESIZE_TIMER_ID: usize = 2;
+    /// `SetTimer`'s `nIDEvent` for the coarse idle-poll safety net — see
+    /// [`crate::runtime::IDLE_POLL_CEILING`]'s doc and
+    /// [`AppLogic::tick`][crate::runner::AppLogic::tick]'s per-backend
+    /// table. Distinct from [`SMOKE_TIMER_ID`]/[`RESIZE_TIMER_ID`]/
+    /// [`crate::win::backend::FRAME_TIMER_ID`] — all four can legitimately
+    /// be live on the same `hwnd` at once (Win32 scopes timer ids
+    /// per-window). Unlike the other three, this one is armed once with
+    /// `SetTimer`'s native repeat behaviour and never killed — Win32
+    /// keeps re-posting `WM_TIMER` for it every `IDLE_POLL_CEILING` until
+    /// the window itself is destroyed, which is exactly the "fires
+    /// whether or not anything explicitly asked to be woken" contract
+    /// this safety net exists for.
+    const IDLE_POLL_TIMER_ID: usize = 4;
 
     /// Everything a live window needs, reachable from `wndproc::<A>` via
     /// `GWLP_USERDATA` (see module docs).
@@ -1494,6 +1507,28 @@ mod win32 {
         // SAFETY: same as `ShowWindow` immediately above.
         let _ = unsafe { UpdateWindow(hwnd) };
 
+        // Arm the coarse idle-poll safety net, unconditionally and
+        // independent of `RunConfig`/smoke mode — see `IDLE_POLL_TIMER_ID`'s
+        // doc above and `AppLogic::tick`'s per-backend table. `SetTimer`
+        // itself re-posts `WM_TIMER` for this id every `IDLE_POLL_CEILING`
+        // until the window is destroyed, so this is armed exactly once,
+        // unlike `FRAME_TIMER_ID`'s re-arm-on-every-fire one-shot pattern.
+        //
+        // SAFETY: `hwnd` is the live window just shown above; `SetTimer`
+        // with `lpTimerFunc: None` posts `WM_TIMER` through the normal
+        // message queue to `wndproc` rather than calling a raw function
+        // pointer, so there is no callback-signature precondition here.
+        unsafe {
+            SetTimer(
+                Some(hwnd),
+                IDLE_POLL_TIMER_ID,
+                crate::runtime::IDLE_POLL_CEILING
+                    .as_millis()
+                    .min(u32::MAX as u128) as u32,
+                None,
+            );
+        }
+
         // #702: arm the one-shot smoke-check timer, if enabled. See the
         // module doc's "Headless smoke mode" section and
         // `run_smoke_check`'s `WM_TIMER` handler in `wndproc` below.
@@ -1663,17 +1698,15 @@ mod win32 {
         reaction
     }
 
-    /// Fire [`AppLogic::tick`] — the [`crate::win::backend::FRAME_TIMER_ID`]
-    /// `WM_TIMER` arm's target once the timer
+    /// Fire [`AppLogic::tick`] — the target of both the
+    /// [`crate::win::backend::FRAME_TIMER_ID`] `WM_TIMER` arm (once the timer
     /// [`crate::win::backend::WinBackend::request_frame_in`] armed has
-    /// elapsed (quadraui#832). Before #832, Windows never called `tick`
-    /// at all — it had no idle timer of its own to call it from (see
-    /// [`crate::backend::Backend::waker`]'s doc for that history). This
-    /// is the first and only entry point that does now, and only when
-    /// something explicitly asked to be woken via
-    /// `Reaction::RedrawAfter`/`request_frame_in` — there is still no
-    /// unconditional idle poll on this backend, unlike TUI/GTK's coarse
-    /// `IDLE_POLL_CEILING` fallback.
+    /// elapsed) and the [`IDLE_POLL_TIMER_ID`] arm (the unconditional
+    /// `IDLE_POLL_CEILING` safety net). Deferred work that only marks
+    /// state dirty with no explicit `Reaction::RedrawAfter`/
+    /// `request_frame_in` of its own still gets picked up within
+    /// `IDLE_POLL_CEILING`, same as on every other backend — see
+    /// [`AppLogic::tick`]'s per-backend table.
     fn tick<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND) -> Reaction {
         let reaction = super::guarded_call(&ws.state, &ws.pump_depth, |run_state| {
             let RunState { app, backend } = run_state;
@@ -2372,6 +2405,9 @@ mod win32 {
                 // #832: `FRAME_TIMER_ID` — the scheduled-wake timer armed
                 // by `WinBackend::request_frame_in`, itself reached via
                 // `Reaction::RedrawAfter`/`EventOutcome::RedrawAfter`.
+                // `IDLE_POLL_TIMER_ID` — the coarse idle-poll safety net
+                // armed once by `run_inner`, mirroring the
+                // `IDLE_POLL_CEILING` fallback TUI/GTK/macOS also keep.
                 // Any other timer id is none of this runner's business
                 // and falls through to `DefWindowProcW` untouched.
                 //
@@ -2419,6 +2455,20 @@ mod win32 {
                     // re-arms a fresh timer via `request_frame_in` if it
                     // wants to be woken again (the chained-rearm pattern
                     // `Reaction::RedrawAfter`'s doc describes).
+                    if tick(ws, hwnd) == Reaction::Exit {
+                        // SAFETY: see this arm's opening comment above.
+                        unsafe {
+                            let _ = DestroyWindow(hwnd);
+                        }
+                    }
+                    LRESULT(0)
+                } else if wparam.0 == IDLE_POLL_TIMER_ID {
+                    // The coarse safety-net fire. Deliberately never
+                    // `KillTimer`'d — `SetTimer`'s own repeat keeps
+                    // re-posting this every `IDLE_POLL_CEILING`
+                    // regardless of whether `tick`/anything else asked to
+                    // be woken, exactly like TUI/GTK's unconditional idle
+                    // poll and macOS's repeating `idlePollTick:` `NSTimer`.
                     if tick(ws, hwnd) == Reaction::Exit {
                         // SAFETY: see this arm's opening comment above.
                         unsafe {
@@ -2922,6 +2972,127 @@ mod win32 {
                 SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
             }
             let _ = runner.join();
+        }
+    }
+
+    /// Proves the `IDLE_POLL_CEILING` safety net on a real `WM_TIMER`
+    /// round-trip through a real message loop: an app whose `tick` only
+    /// marks state dirty with no `Reaction::RedrawAfter`/
+    /// `request_frame_in` of its own still gets picked up. `WinDriver::tick`
+    /// alone can't cover this — it calls `AppLogic::tick` directly and
+    /// proves nothing about whether a live `SetTimer` would ever have
+    /// fired it; see that method's doc.
+    #[cfg(test)]
+    mod idle_poll_fallback_tests {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        /// Counts `tick` calls and deliberately never returns
+        /// `Reaction::RedrawAfter` and never calls `request_frame_in` —
+        /// the "deferred work with no explicit re-arm" shape that is
+        /// otherwise stranded forever with no idle-poll fallback.
+        struct IdlePollApp {
+            tick_count: Arc<AtomicUsize>,
+        }
+
+        impl AppLogic for IdlePollApp {
+            type AreaId = ();
+
+            fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
+
+            fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                match event {
+                    UiEvent::WindowClose => Reaction::Exit,
+                    _ => Reaction::Continue,
+                }
+            }
+
+            fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+                self.tick_count.fetch_add(1, Ordering::SeqCst);
+                Reaction::Continue
+            }
+        }
+
+        /// Self-guarding (stderr diagnostic + early return, same posture
+        /// as `real_wm_nchittest_excludes_band_widgets_and_caps_the_empty_strip`
+        /// above) if the window never becomes findable within the
+        /// timeout — this test's contract is "a live interactive window
+        /// station", not every CI sandbox.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn idle_poll_ceiling_fires_tick_with_no_explicit_rearm() {
+            let tick_count = Arc::new(AtomicUsize::new(0));
+            let app = IdlePollApp {
+                tick_count: tick_count.clone(),
+            };
+            let title = format!(
+                "quadraui-idle-poll-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::win::run::RunConfig::new(title.clone());
+
+            let runner = std::thread::spawn(move || run(app, config));
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping \
+                     idle_poll_ceiling_fires_tick_with_no_explicit_rearm — \
+                     the test window never became findable within 10s (no \
+                     interactive window station on this host?)"
+                );
+                return;
+            };
+
+            // Bounded well above `IDLE_POLL_CEILING` (250ms) so this isn't
+            // a hair-trigger race against scheduler jitter, but still far
+            // short of the 10s self-guard above — a regression back to
+            // "no fallback at all" would never satisfy this within the
+            // deadline, not merely arrive a little late.
+            let tick_deadline = Instant::now() + Duration::from_secs(5);
+            let fired = loop {
+                if tick_count.load(Ordering::SeqCst) > 0 {
+                    break true;
+                }
+                if Instant::now() >= tick_deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // the normal user-close path this window's `wndproc` already
+            // handles (the `WM_CLOSE` arm above) — `IdlePollApp::handle`
+            // always resolves it to `Reaction::Exit`, so this ends the
+            // message loop `runner`'s thread is pumping.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner.join();
+
+            assert!(
+                fired,
+                "AppLogic::tick was never called within 5s of the window \
+                 appearing, with no explicit RedrawAfter/request_frame_in — \
+                 the IDLE_POLL_TIMER_ID safety net (quadraui#1265) isn't \
+                 firing"
+            );
         }
     }
 

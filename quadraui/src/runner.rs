@@ -241,18 +241,18 @@ pub trait AppLogic {
     /// | TUI | `crate::runtime::IDLE_POLL_CEILING` (250ms) | yes | yes |
     /// | GTK | `crate::runtime::IDLE_POLL_CEILING` (250ms) | yes | yes |
     /// | macOS | `crate::runtime::IDLE_POLL_CEILING` (250ms), since quadraui#940 (`macos::run`'s repeating `idlePollTick:` timer) | yes | yes |
-    /// | Windows | **none** — see [`crate::backend::Backend::request_frame_in`]'s doc | yes | yes |
+    /// | Windows | `crate::runtime::IDLE_POLL_CEILING` (250ms), since quadraui#1265 (`win::run`'s repeating `IDLE_POLL_TIMER_ID` `SetTimer`) | yes | yes |
     ///
-    /// An app with time-driven state (spinner frame, caret blink,
-    /// countdown) should return [`Reaction::RedrawAfter`] with the exact
-    /// interval it needs instead of assuming `tick` will be called again
-    /// soon on its own — that assumption doesn't hold on any of GTK/
-    /// macOS/Windows once nothing else is scheduled, and even where a
-    /// fallback ceiling exists (TUI/GTK/macOS) it's deliberately coarser
-    /// than before #832. On Windows specifically, deferred work that
-    /// only marks state dirty with no `RedrawAfter`/`request_frame_in`
-    /// of its own is never picked up until the next native event —
-    /// there is no fallback at all to eventually notice it.
+    /// All four backends now carry the same coarse safety net (quadraui#1265
+    /// closed the Windows gap this table used to document — see that
+    /// issue for the history of Windows being the one backend with no
+    /// fallback at all). An app with time-driven state (spinner frame,
+    /// caret blink, countdown) should still return [`Reaction::RedrawAfter`]
+    /// with the exact interval it needs instead of assuming `tick` will be
+    /// called again "soon" on its own — the fallback ceiling is
+    /// deliberately coarser than before #832, so relying on it for
+    /// anything tighter than a quarter second is still wrong even though
+    /// every backend now has one.
     ///
     /// Default impl is a no-op so apps that don't need periodic
     /// callbacks don't have to write boilerplate.
