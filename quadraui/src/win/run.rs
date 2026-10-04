@@ -3817,9 +3817,9 @@ mod tests {
 
         // Mirrors `wndproc`'s shape end to end: cede-and-remember while a
         // guard is held (the top-of-function `is_pumping()` check,
+        // extended to remember size notifications); otherwise replay any
         // pending resync first (`resync_pending_resize`), then handle `msg`
         // itself.
-        // (`resync_pending_resize`), then handle `msg` itself.
         let fake_wndproc = |is_size: bool, current_size: (i32, i32)| {
             if depth.is_pumping() {
                 if is_size {
