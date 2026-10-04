@@ -260,13 +260,16 @@ fn paint(cr: &Cairo, w: f64, h: f64, state: &AppState, da: &DrawingArea) {
 
     // ── Status bar ─────────────────────────────────────────────
     // `quadraui::gtk::draw_status_bar` is `#[deprecated]` since quadraui#860
-    // (paint moved to the shared `NativeSurface`-generic implementation) —
+    // (paint moved to the shared `PaintSurface`-generic implementation) —
     // this `paint` fn draws straight onto a bare `cr`/`layout` with no
     // `GtkBackend` in scope, exactly the "external caller holding a direct
-    // free-function reference" the shim exists for (`NativeSurface` is
-    // sealed to the quadraui crate, so this demo app can't call the shared
-    // paint any other way). `#[allow(deprecated)]` rather than migrating
-    // off it, since there's nothing to migrate *to* here.
+    // free-function reference" the shim exists for. `PaintSurface` was
+    // `pub(crate)` (sealed to the quadraui crate) when this shim was
+    // written; quadraui#1101 made it `pub`, so a future pass here could
+    // migrate this call site onto `quadraui::primitives::status_bar::native_surface_paint::paint`
+    // against a small adapter instead of the deprecated free function —
+    // left as-is for now since that migration is out of #1101's scope.
+    // `#[allow(deprecated)]` rather than migrating off it today.
     let bar = build_status_bar(state);
     #[allow(deprecated)]
     quadraui::gtk::draw_status_bar(
