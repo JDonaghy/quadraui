@@ -621,8 +621,69 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 mod tests {
     use super::*;
 
+    /// First `version = "…"` value inside the manifest's `[package]` table.
+    ///
+    /// Deliberately stops at the next table header, so a `[dependencies.*]`
+    /// entry's own `version` key can never be mistaken for the package's.
+    /// `rust-version` is not a false positive either — it does not *start*
+    /// with `version`.
+    fn package_version(manifest: &str) -> Option<&str> {
+        manifest
+            .lines()
+            .map(str::trim)
+            .skip_while(|line| *line != "[package]")
+            .skip(1)
+            .take_while(|line| !line.starts_with('['))
+            .find_map(|line| {
+                let value = line
+                    .strip_prefix("version")?
+                    .trim_start()
+                    .strip_prefix('=')?;
+                value.trim().strip_prefix('"')?.split('"').next()
+            })
+    }
+
+    /// [`VERSION`] must be exactly the `[package] version` in `Cargo.toml`.
+    ///
+    /// The expectation is *derived from the manifest text*, never a
+    /// hardcoded literal: a literal makes every release bump two edits
+    /// instead of one, and forgetting the second is precisely how the
+    /// `v0.1.0` bump (quadraui#1111) turned this test red. `include_str!`
+    /// resolves relative to this source file and cargo always ships a
+    /// normalised `Cargo.toml` at the package root, so this works inside
+    /// the published `.crate` as well as in-tree — on every platform, since
+    /// rustc accepts `/` in `include_str!` paths everywhere.
     #[test]
     fn version_matches_cargo_toml() {
-        assert_eq!(VERSION, "0.0.1");
+        let manifest = include_str!("../Cargo.toml");
+        let declared = package_version(manifest).expect(
+            "quadraui/Cargo.toml should have a `version = \"...\"` key in its \
+             `[package]` table",
+        );
+        assert_eq!(
+            VERSION, declared,
+            "CARGO_PKG_VERSION ({VERSION}) disagrees with quadraui/Cargo.toml's \
+             [package] version ({declared}) — either the build is reading a stale \
+             manifest, or this test's parser no longer matches the manifest layout."
+        );
+    }
+
+    #[test]
+    fn package_version_parser_ignores_other_tables() {
+        let manifest = "\
+[package]\n\
+name = \"quadraui\"\n\
+version = \"1.2.3\"\n\
+rust-version = \"1.97.1\"\n\
+\n\
+[dependencies.serde]\n\
+version = \"9.9.9\"\n";
+        assert_eq!(package_version(manifest), Some("1.2.3"));
+    }
+
+    #[test]
+    fn package_version_parser_reports_a_missing_key() {
+        assert_eq!(package_version("[package]\nname = \"quadraui\"\n"), None);
+        assert_eq!(package_version("[dependencies]\nversion = \"1.0\"\n"), None);
     }
 }
