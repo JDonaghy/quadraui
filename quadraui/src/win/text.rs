@@ -716,7 +716,10 @@ pub(crate) fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
 
 /// Per-render-target brush memo, owned by the backend's `Surface`. See the
 /// `Brush cache` section comment above.
-pub(crate) type BrushCache = Rc<RefCell<HashMap<Color, ID2D1SolidColorBrush>>>;
+pub(crate) type BrushCache = Rc<BrushMap>;
+
+/// The map behind a [`BrushCache`].
+type BrushMap = RefCell<HashMap<Color, ID2D1SolidColorBrush>>;
 
 /// A fresh, empty [`BrushCache`] for a newly (re)created surface.
 pub(crate) fn new_brush_cache() -> BrushCache {
@@ -727,8 +730,7 @@ thread_local! {
     /// The cache [`get_or_create_brush`] consults, plus the raw pointer
     /// of the render target it belongs to. Set by
     /// [`activate_brush_cache`] for the duration of a backend frame.
-    static ACTIVE_BRUSH_CACHE: RefCell<Option<(usize, Weak<RefCell<HashMap<Color, ID2D1SolidColorBrush>>>)>> =
-        const { RefCell::new(None) };
+    static ACTIVE_BRUSH_CACHE: RefCell<Option<(usize, Weak<BrushMap>)>> = const { RefCell::new(None) };
     /// Count of brushes actually created via `CreateSolidColorBrush`
     /// inside [`get_or_create_brush`] — written unconditionally, only read
     /// through the `#[cfg(test)]` accessors below (this issue's
