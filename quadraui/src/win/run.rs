@@ -1911,7 +1911,7 @@ mod win32 {
     /// `WM_DPICHANGED` notification needs replaying after the fact. See
     /// `WindowState::pending_resize_resync`'s doc for why that replay is
     /// necessary at all.
-    fn apply_resize<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND, width: i32, height: i32) {
+    fn apply_resize<A: AppLogic>(ws: &WindowState<A>, hwnd: HWND, width: u32, height: u32) {
         let viewport = {
             let mut s = ws.state.borrow_mut();
             // Recreate the render target first if a prior `EndDraw`
@@ -1974,7 +1974,14 @@ mod win32 {
         // caller-supplied and still live.
         let (width, height) = unsafe {
             let _ = GetClientRect(hwnd, &mut rect);
-            (rect.right - rect.left, rect.bottom - rect.top)
+            // `GetClientRect` always yields `left`/`top` of `0`, so
+            // `right`/`bottom` are the client size and never negative —
+            // the cast to `u32` is a plain narrow, not a truncation of a
+            // meaningfully negative value.
+            (
+                (rect.right - rect.left) as u32,
+                (rect.bottom - rect.top) as u32,
+            )
         };
         apply_resize(ws, hwnd, width, height);
     }
