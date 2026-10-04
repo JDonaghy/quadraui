@@ -1561,11 +1561,10 @@ mod win32 {
             if !args.is_empty() {
                 // SAFETY: same as the smoke-timer borrow just above.
                 let ws: &WindowState<A> = unsafe { &*state_ptr };
-                // #1278: `dispatch` (via `dispatch_with`) already acts on
-                // `Reaction::Exit` itself — `DestroyWindow` posts
-                // `WM_QUIT` via `WM_DESTROY`, so the message loop below
-                // still runs, sees it immediately, and exits cleanly. No
-                // need to repeat the check here.
+                // `dispatch` (via `dispatch_with`) acts on `Reaction::Exit`
+                // itself — `DestroyWindow` posts `WM_QUIT` via
+                // `WM_DESTROY`, so the message loop below still runs,
+                // sees it immediately, and exits cleanly.
                 dispatch(ws, hwnd, classify_open_args(args));
             }
         }
@@ -1612,19 +1611,18 @@ mod win32 {
     /// pre-processing funnel — ActivityBar keyboard-focus redirect,
     /// Tab/Shift+Tab focus cycling (#830),
     /// global accelerator matching, then `app.handle`, quadraui#707),
-    /// then honour the returned outcome: a redraw invalidates the whole
-    /// client area so the next message-loop iteration repaints via
-    /// `WM_PAINT`. Exit is the caller's responsibility (each call site
-    /// below decides what "exit" means for its own message: `WM_CLOSE`
-    /// destroys the window, letting `WM_DESTROY` post the quit message
-    /// that actually ends `run_inner`'s loop).
+    /// then honour the returned outcome via [`dispatch_with`]: a redraw
+    /// invalidates the whole client area so the next message-loop
+    /// iteration repaints via `WM_PAINT`, and an exit destroys the
+    /// window there — `dispatch_with` is the single place any caller's
+    /// `Reaction` gets acted on; nothing below this function decides
+    /// anything about exit on its own.
     ///
     /// Routes the `state.borrow_mut()` that spans `super::dispatch_event`
     /// (the shared pre-processing funnel, #707) through
-    /// `super::guarded_call(&ws.state, &ws.pump_depth, ...)` (#702,
-    /// following up on #498, closing the hazard this comment used to
-    /// only document): no bootstrap-era `AppLogic` (#19) pumps messages
-    /// synchronously, but a future impl that shows a native modal or
+    /// `super::guarded_call(&ws.state, &ws.pump_depth, ...)`: no
+    /// bootstrap-era `AppLogic` (#19) pumps messages synchronously, but a
+    /// future impl that shows a native modal or
     /// `SendMessage`s its own `hwnd` from inside `handle` would
     /// synchronously re-enter `wndproc` on this same thread while this
     /// borrow is still live. `guarded_call` makes that reentrant call
@@ -1685,16 +1683,12 @@ mod win32 {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
         }
-        // #1278: this is the *only* place a `Reaction::Exit` gets acted
-        // on. Every call site below used to repeat its own
-        // `== Reaction::Exit { DestroyWindow(hwnd) }` check; several
-        // event arms (mouse buttons/move/wheel, key down/up, focus,
-        // resize-settle, drop-files, `WM_COPYDATA`'s open-args) forgot
-        // to, so an app returning `Exit` from those paths (e.g. a
-        // drawn-menu "Quit" click delivered as `WM_LBUTTONUP`, or `:q`
-        // via `WM_KEYDOWN`) never got torn down — the window just sat
-        // there, looking frozen (#1278). Centralizing here means no
-        // future arm can repeat that mistake.
+        // This is the only place a `Reaction::Exit` gets acted on: every
+        // `wndproc` arm that routes through `dispatch`/`dispatch_with`
+        // gets the exit handled here, so an app returning `Exit` from
+        // any of them — a drawn-menu "Quit" click delivered as
+        // `WM_LBUTTONUP`, or `:q` via `WM_KEYDOWN`, just as much as
+        // `WM_CLOSE` — tears the window down the same way.
         if reaction == Reaction::Exit {
             // SAFETY: `hwnd` is a caller-supplied still-live window (see
             // above); `DestroyWindow` re-enters `wndproc` synchronously
@@ -1736,11 +1730,10 @@ mod win32 {
             Reaction::RedrawAfter(delay) => {
                 ws.state.borrow().backend.request_frame_in(delay);
             }
-            // #1278: mirrors `dispatch_with`'s identical handling — see
-            // its doc for why this is the only place `Exit` gets acted
-            // on. `tick` is reached from both the scheduled-wake timer
-            // and the unconditional idle-poll safety net (this
-            // function's own doc), so it needs the same treatment.
+            // Mirrors `dispatch_with`'s `DestroyWindow` handling: `tick`
+            // is reached from both the scheduled-wake timer and the
+            // unconditional idle-poll safety net (this function's own
+            // doc), and both need an app's `Exit` to tear the window down.
             Reaction::Exit => {
                 // SAFETY: same as `dispatch_with`'s identical call above
                 // — `hwnd` is caller-supplied and still live.
@@ -2441,10 +2434,10 @@ mod win32 {
                 // no-op, not an error, if that id isn't currently armed
                 // (e.g. two timers racing to fire the same tick), so
                 // there's no "must be armed" precondition to uphold.
-                // #1278: `tick`/`dispatch` below already act on
-                // `Reaction::Exit` themselves (see `dispatch_with`'s
-                // doc), so this arm doesn't need its own
-                // `== Reaction::Exit { DestroyWindow(hwnd) }` check.
+                // `tick`/`dispatch` below act on `Reaction::Exit`
+                // themselves (see `dispatch_with`'s doc), so this arm
+                // needs no `Reaction::Exit`/`DestroyWindow` check of its
+                // own.
                 if wparam.0 == SMOKE_TIMER_ID {
                     // SAFETY: see this arm's opening comment above.
                     unsafe {
@@ -2477,7 +2470,7 @@ mod win32 {
                     // re-arms a fresh timer via `request_frame_in` if it
                     // wants to be woken again (the chained-rearm pattern
                     // `Reaction::RedrawAfter`'s doc describes), and acts
-                    // on `Reaction::Exit` itself (#1278).
+                    // on `Reaction::Exit` itself.
                     tick(ws, hwnd);
                     LRESULT(0)
                 } else if wparam.0 == IDLE_POLL_TIMER_ID {
@@ -2507,10 +2500,10 @@ mod win32 {
                 // `dispatch` helper every other message in this match uses.
                 let events = ws.state.borrow_mut().backend.drain_user_events();
                 for event in events {
-                    // #1278: `dispatch` already acts on `Reaction::Exit`
-                    // itself (see `dispatch_with`'s doc) — this just
-                    // stops feeding the app further queued events once
-                    // it has asked to exit.
+                    // `dispatch` acts on `Reaction::Exit` itself (see
+                    // `dispatch_with`'s doc); this `break` just stops
+                    // feeding the app further queued events once it has
+                    // asked to exit.
                     if dispatch(ws, hwnd, event) == Reaction::Exit {
                         break;
                     }
@@ -2538,11 +2531,10 @@ mod win32 {
                     // synchronously on `TrackPopupMenuEx`, the same
                     // modal-pop-up posture
                     // `macos::menu_bar_install::show_context_menu` has.
-                    // #1278: `dispatch` already acts on `Reaction::Exit`
-                    // itself (see `dispatch_with`'s doc) — the early
-                    // `return` below just skips the `ContextMenuDismissed`
-                    // dispatch once the app has already asked to exit,
-                    // same as before.
+                    // `dispatch` acts on `Reaction::Exit` itself (see
+                    // `dispatch_with`'s doc); the early `return` below
+                    // just skips the `ContextMenuDismissed` dispatch once
+                    // the app has asked to exit.
                     if let Some(id) = crate::win::tray::track_menu(hwnd, &menu) {
                         if dispatch(ws, hwnd, UiEvent::ContextMenuItemActivated(id))
                             == Reaction::Exit
@@ -2640,10 +2632,10 @@ mod win32 {
                 // decision below is Alt+F4's veto decision too, with no
                 // separate Alt+F4 code path to keep in sync.
                 //
-                // #1278: `dispatch` already acts on `Reaction::Exit`
-                // itself (see `dispatch_with`'s doc) by destroying the
-                // window. An app returning `Reaction::Continue`/`Redraw`
-                // here vetoes the close, matching the GTK runner's
+                // `dispatch` acts on `Reaction::Exit` itself (see
+                // `dispatch_with`'s doc) by destroying the window. An app
+                // returning `Reaction::Continue`/`Redraw` here vetoes the
+                // close, matching the GTK runner's
                 // `Reaction::Exit => window.close()` — every other
                 // reaction leaves the window open.
                 dispatch(ws, hwnd, UiEvent::WindowClose);
@@ -3089,17 +3081,16 @@ mod win32 {
         }
     }
 
-    /// Issue #1278: proves `dispatch_with`'s `Reaction::Exit` handling is
-    /// reached from a real mouse-up and a real key-down, not just
-    /// `WM_CLOSE`/the exit-timer arms this file already checked. Before
-    /// the fix, `WM_LBUTTONUP`/`WM_KEYDOWN` discarded `dispatch`'s return
-    /// value entirely, so an app returning `Exit` from either path (e.g.
-    /// a drawn-menu "Quit" click, or `:q`) left the window alive forever —
-    /// the "frozen window" symptom the issue describes. `WinDriver` can't
-    /// cover this: it calls `dispatch_event`/`route_mouse_*` directly and
-    /// latches `exited` itself, never going through `wndproc`'s own
-    /// `dispatch`/`dispatch_with` call sites — so this needs a real
-    /// message loop, same posture as `live_window_nchittest_tests` and
+    /// Proves `dispatch_with`'s `Reaction::Exit` handling is reached from
+    /// a real mouse-up and a real key-down, not just `WM_CLOSE`/the
+    /// exit-timer arms this file already checks: an app returning `Exit`
+    /// from either path (e.g. a drawn-menu "Quit" click, or `:q`) must
+    /// tear the window down, not leave it alive with a "frozen window"
+    /// symptom. `WinDriver` can't cover this: it calls
+    /// `dispatch_event`/`route_mouse_*` directly and latches `exited`
+    /// itself, never going through `wndproc`'s own `dispatch`/
+    /// `dispatch_with` call sites — so this needs a real message loop,
+    /// same posture as `live_window_nchittest_tests` and
     /// `idle_poll_fallback_tests` above.
     #[cfg(test)]
     mod mouse_and_key_exit_tests {
@@ -3107,8 +3098,8 @@ mod win32 {
         use std::time::{Duration, Instant};
 
         /// Exits on `MouseUp`/`KeyPressed`, continues on everything else —
-        /// the exact two event families #1278 names as silently dropping
-        /// `Reaction::Exit`.
+        /// the two event families whose `Reaction::Exit` `wndproc` must
+        /// not silently drop.
         struct ExitOnInputApp;
 
         impl AppLogic for ExitOnInputApp {
@@ -3122,7 +3113,8 @@ mod win32 {
                     // own `WM_CLOSE` cleanup (see
                     // `assert_exit_reaction_destroys_window`'s `else`
                     // branch) can still tear the window down — it isn't
-                    // part of what #1278 is testing.
+                    // part of the `MouseUp`/`KeyPressed` behaviour under
+                    // test here.
                     UiEvent::MouseUp { .. } | UiEvent::KeyPressed { .. } | UiEvent::WindowClose => {
                         Reaction::Exit
                     }
@@ -3137,9 +3129,10 @@ mod win32 {
         /// there's no interactive window station on this host), calls
         /// `trigger` with the live `HWND`, then asserts the window is
         /// actually torn down within a bound well above any plausible
-        /// dispatch latency: a regression back to "Exit is dropped" would
-        /// leave the window sitting there indefinitely (the live #1278
-        /// symptom), not merely destroy it a little late.
+        /// dispatch latency: a regression back to "Exit is dropped"
+        /// leaves the window sitting there indefinitely, not merely
+        /// destroys it a little late.
+        #[allow(clippy::print_stderr)]
         fn assert_exit_reaction_destroys_window(test_name: &str, trigger: impl FnOnce(HWND)) {
             let title = format!(
                 "quadraui-exit-reaction-probe-{test_name}-{}-{:?}",
