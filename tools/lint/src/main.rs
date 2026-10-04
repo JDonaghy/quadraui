@@ -50,6 +50,7 @@
 //! maintainer-workflow guard, so it doesn't need to move anywhere.
 
 mod common;
+mod cross_target_toolchain;
 mod downstream_gate_docs;
 mod example_manifest;
 #[cfg(unix)]
@@ -89,6 +90,9 @@ fn checks() -> Vec<Check> {
         check!(downstream_gate_docs::downstream_job_keeps_its_three_load_bearing_properties),
         check!(example_manifest::every_example_file_has_a_manifest_entry),
         check!(example_manifest::every_example_entry_requires_its_backend_feature),
+        check!(cross_target_toolchain::rust_toolchain_pin_still_exists),
+        check!(cross_target_toolchain::no_workflow_installs_cross_targets_via_the_action_input),
+        check!(cross_target_toolchain::every_cross_target_build_installs_its_target_with_rustup),
     ];
 
     #[cfg(unix)]
