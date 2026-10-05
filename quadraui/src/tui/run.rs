@@ -557,15 +557,17 @@ impl<A: AppLogic> TuiRunner<A> {
         }
 
         // The input fd (stdin — a real terminal or pty slave) is
-        // permanently gone, detected by `Backend::poll_events`/
-        // `wait_events`'s own `stdin_hung_up` guard before either ever
-        // delegates into crossterm (see that function's doc for why —
-        // crossterm 0.29's unix event source busy-spins forever once
-        // entered against a hung-up fd, with no way for this loop to
-        // interrupt it). There is no native event left to dispatch and
-        // never will be again, so exit the same clean way
-        // `Reaction::Exit` does, rather than looping back into another
-        // `wait_events`/`poll_events` call forever.
+        // permanently gone, detected by `Backend::poll_events`'s
+        // `stdin_hung_up` guard / `Backend::wait_events`'s
+        // `wait_for_stdin_ready` guard (quadraui#1295, tightened by
+        // quadraui#1301) before either ever delegates a blocking call
+        // into crossterm (see those functions' docs for why — crossterm
+        // 0.29's unix event source busy-spins forever once entered
+        // against a hung-up fd, with no way for this loop to interrupt
+        // it). There is no native event left to dispatch and never will
+        // be again, so exit the same clean way `Reaction::Exit` does,
+        // rather than looping back into another `wait_events`/
+        // `poll_events` call forever.
         if self.backend.input_gone() {
             return Ok(self.finish());
         }
