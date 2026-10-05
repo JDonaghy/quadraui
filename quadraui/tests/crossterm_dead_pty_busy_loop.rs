@@ -34,15 +34,23 @@
 //!
 //! `quadraui::tui::backend::TuiBackend::{poll_events,wait_events}` never
 //! calls into `ratatui::crossterm::event::poll`/`read` at all once its
-//! own `stdin_hung_up` guard (a non-blocking `poll(2)` on the fd,
-//! checking for `POLLHUP`/`POLLERR`/`POLLNVAL`) reports the fd as hung
-//! up with nothing left to read — see that function's doc in
+//! own hangup guard (a `poll(2)` on the fd, checking for
+//! `POLLHUP`/`POLLERR`/`POLLNVAL`) reports the fd as hung up with
+//! nothing left to read — see `stdin_hung_up`'s doc in
 //! `src/tui/backend.rs` for the full rationale, including why this is a
 //! guard (the vulnerable crossterm call is never reached) rather than a
-//! mitigation of its behaviour once entered, and the real, narrower
-//! window that remains when a hangup lands *while* a call is already in
-//! flight (`STDIN_HANGUP_POLL_SLICE`'s doc). The first two tests below
-//! exercise `TuiBackend` directly; the third exercises
+//! mitigation of its behaviour once entered. `poll_events`'s guard
+//! (`stdin_hung_up`) is non-blocking, checked once per call, since
+//! `poll_events` itself never blocks. `wait_events`'s guard
+//! (`wait_for_stdin_ready`, quadraui#1301) blocks — on this crate's own
+//! `poll(2)` call, never crossterm's — for the caller's real timeout,
+//! so a hangup landing while that call is in flight is the very thing
+//! that wakes it, closing the narrower window that remained here before
+//! #1301 (when `wait_events` only re-checked `stdin_hung_up` between
+//! `STDIN_HANGUP_POLL_SLICE`-sized delegated crossterm calls — see
+//! `tests/pty_master_closed_during_wait.rs` for a test that reproduces
+//! that exact in-flight race and asserts it's now closed). The first
+//! two tests below exercise `TuiBackend` directly; the third exercises
 //! [`quadraui::tui::TuiRunner`] — the layer above it that turns
 //! `input_gone()` into a clean [`quadraui::tui::StepOutcome::Exited`].
 //!
@@ -344,11 +352,15 @@ fn repeated_wait_events_calls_stay_bounded_after_stdin_hangs_up() {
 /// constructs, both fds of it redirected into this very process) and
 /// only closes it *after* that call returns successfully, with nothing
 /// else running concurrently in this single-threaded test body to race
-/// it. That ordering is what makes this deterministic rather than a
-/// coin flip: `STDIN_HANGUP_POLL_SLICE`'s doc (`src/tui/backend.rs`)
-/// explains why a hangup landing *while* a `wait_events`/`poll_events`
-/// call is already in flight can still race this guard — closing the
-/// master only after `new` has fully returned, before this function's
+/// it. Single-threaded and sequential like this, the master closing
+/// strictly before the next `pump` call even begins is the simplest
+/// possible repro — this test is about `TuiRunner` turning a hangup
+/// into `StepOutcome::Exited`, not about the in-flight-hangup race
+/// itself (quadraui#1295's `wait_events`-slicing window, closed by
+/// quadraui#1301's `wait_for_stdin_ready` — see
+/// `tests/pty_master_closed_during_wait.rs` for a test that races that
+/// window directly, concurrently, against a real blocked call). Closing
+/// the master only after `new` has fully returned, before this function's
 /// own first `pump` call even begins, puts the hangup unambiguously
 /// *before* that first call rather than during one.
 #[test]

@@ -1039,6 +1039,71 @@ impl TuiBackend {
     ) -> Option<AcceleratorId> {
         self.core.match_keypress(key, modifiers)
     }
+
+    /// Delegates exactly one `ratatui::crossterm::event::poll(poll_timeout)`
+    /// call, then — only if it reports readiness — drains and processes
+    /// the resulting batch of native events. Shared by both
+    /// [`Backend::wait_events`] outcomes that already know, by the time
+    /// they call this, what to hand crossterm: `Duration::ZERO` when
+    /// [`wait_for_stdin_ready`] already confirmed real data is queued
+    /// with no hangup bit set (quadraui#1301's `StdinReadiness::Ready`),
+    /// or the caller's own full `timeout` for the deliberate `Unguarded`
+    /// fallback (a non-tty stdin, or a non-unix target) that still needs
+    /// crossterm's own blocking wait. Mirrors the inner body of the
+    /// pre-#1301 sliced loop exactly, just extracted so both call sites
+    /// share one implementation.
+    fn drain_native_batch(&mut self, poll_timeout: Duration) -> Vec<UiEvent> {
+        match ratatui::crossterm::event::poll(poll_timeout) {
+            Ok(true) => {}
+            Ok(false) => {
+                let mut out = Vec::new();
+                self.user_events.drain_into(&mut out);
+                return out;
+            }
+            // An error here isn't a confirmed hangup
+            // (`wait_for_stdin_ready`'s own guard already catches that
+            // case when it's active) — surface anything already queued
+            // rather than retrying.
+            Err(_) => {
+                let mut out = Vec::new();
+                self.user_events.drain_into(&mut out);
+                return out;
+            }
+        }
+        let mut raw = Vec::new();
+        match ratatui::crossterm::event::read() {
+            Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
+                ev,
+                self.cell_pixel_size,
+            )),
+            Err(_) => {
+                // Issue #831: even a crossterm read error shouldn't
+                // drop a background wake that arrived in the same
+                // window — still surface anything already queued.
+                let mut out = Vec::new();
+                self.user_events.drain_into(&mut out);
+                return out;
+            }
+        }
+        // Drain the rest of the queue without blocking.
+        while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
+            match ratatui::crossterm::event::read() {
+                Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
+                    ev,
+                    self.cell_pixel_size,
+                )),
+                Err(_) => break,
+            }
+        }
+        // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
+        let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
+        let coalesced = coalesce_mouse_moved(raw);
+        let mut out = self.apply_dispatch(coalesced);
+        self.apply_accelerators(&mut out);
+        self.double_click.process(&mut out);
+        self.user_events.drain_into(&mut out);
+        out
+    }
 }
 
 impl Default for TuiBackend {
@@ -1380,25 +1445,29 @@ fn coalesce_mouse_moved(raw: Vec<UiEvent>) -> Vec<UiEvent> {
     out
 }
 
-/// Longest single `ratatui::crossterm::event::poll` call
-/// [`TuiBackend::wait_events`] below ever delegates to crossterm,
-/// regardless of its own caller's requested `timeout` (up to
-/// `IDLE_POLL_CEILING`, 250ms, for the live `tui::run::run_with` loop).
-///
-/// This is the whole reason `wait_events` loops internally in slices
-/// instead of handing crossterm one `timeout`-long call: `stdin_hung_up`
-/// is only checked *between* delegated calls, never during one, and
-/// crossterm's own dead-pty busy-loop (once entered) never returns — so
-/// a hangup that lands *while* a delegated call is already blocked is
-/// invisible to this guard until that call returns, which, if the
-/// hangup is what woke it, it structurally cannot. A single
-/// `timeout`-long call would leave the vulnerable window open for
-/// nearly the entire idle-wait duration. Slicing bounds that window to
-/// one slice's duration instead, each one re-checked — not
-/// eliminated, since any finite slice still leaves a window, just a
-/// much smaller one relative to how long this backend spends idling
-/// between real events.
-const STDIN_HANGUP_POLL_SLICE: Duration = Duration::from_millis(20);
+// quadraui#1301 follow-up to quadraui#1295 — this crate no longer
+// slices `TuiBackend::wait_events`'s idle wait into fixed-size chunks
+// and re-checks `stdin_hung_up` *between* them. That approach (the
+// `STDIN_HANGUP_POLL_SLICE` constant this comment used to document)
+// only narrowed the race: `stdin_hung_up` was checked between
+// delegated `ratatui::crossterm::event::poll` calls, never *during*
+// one, and crossterm's own dead-pty busy-loop (once entered) never
+// returns — so a hangup landing while a delegated call was already
+// blocked stayed invisible until that call returned, which, if the
+// hangup was what woke it, it structurally could not.
+//
+// `wait_for_stdin_ready` (below in this file) closes that window
+// instead of merely bounding it: `wait_events` no longer hands
+// crossterm a blocking call at all. It blocks on this crate's *own*
+// `poll(2)` call against the exact same fd, for the caller's real
+// remaining timeout, and only ever delegates to crossterm with
+// `Duration::ZERO` (guaranteed non-blocking) once that call has
+// already confirmed `POLLIN` with no hangup bit set. A hangup that
+// lands while `wait_for_stdin_ready`'s own `poll(2)` call is blocked
+// is exactly the event that wakes it — the kernel reports `POLLHUP`
+// on a hung-up fd the instant it happens, not on some later sampling
+// interval — so there is no slice-sized window for a hangup to land
+// "during" any more.
 
 /// Poll `fd` for up to `timeout_ms` milliseconds (`0` is a non-blocking
 /// readiness check, never a wait) and return the `revents` bitmask
@@ -1475,17 +1544,17 @@ pub(crate) fn poll_fd_revents(
 /// never produce another real event" — crossterm is never entered at
 /// all once this check has run and seen the hangup, which is what makes
 /// this a guard rather than a mitigation for every check that observes
-/// it. That still leaves one real window open, not a theoretical one:
-/// a hangup that lands *while* a crossterm call this function already
-/// delegated to is in flight is invisible until that call returns,
-/// which (per the root cause above) it structurally cannot if the
-/// hangup is what woke it. [`TuiBackend::wait_events`] bounds that
-/// window by capping each delegated call to
-/// [`STDIN_HANGUP_POLL_SLICE`] and re-checking this function between
-/// slices, rather than handing crossterm its caller's full `timeout` in
-/// one call — see that constant's doc. [`TuiBackend::poll_events`]
-/// never blocks at all (it only drains what crossterm already has
-/// queued), so it has no equivalent window to bound.
+/// it. [`TuiBackend::poll_events`] calls this directly, non-blocking,
+/// because it never blocks at all (it only drains what crossterm
+/// already has queued) — there is no window to close there in the
+/// first place. [`TuiBackend::wait_events`], which *does* need to
+/// block, never calls this function's non-blocking form in a loop
+/// around a delegated crossterm call — see [`wait_for_stdin_ready`]
+/// below, which performs the same `isatty`/`EIO`/`poll(2)` judgement
+/// but blocks *itself*, on this crate's own `poll(2)` syscall, for the
+/// caller's real remaining timeout, so a hangup that lands while idle
+/// is the very thing that wakes it rather than something it has to
+/// race a delegated crossterm call to notice (quadraui#1301).
 ///
 /// Only guards when stdin is itself the terminal (`isatty(0)`), with one
 /// deliberate exception: on Linux, closing a pty's master side runs
@@ -1539,13 +1608,7 @@ pub(crate) fn poll_fd_revents(
 pub(crate) fn stdin_hung_up() -> bool {
     use std::os::unix::io::AsRawFd;
 
-    // SAFETY: `isatty` only reads the fd-number argument; no pointer
-    // involved. A vhangup'd pty slave fails this with `EIO` rather than
-    // reporting "not a tty" the ordinary way — that specific failure is
-    // kept in (not treated as "back off"), everything else matches
-    // crossterm's own `tty_fd()` fd choice — see this function's doc.
-    let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
-    if !is_tty && std::io::Error::last_os_error().raw_os_error() != Some(libc::EIO) {
+    if !stdin_guard_active() {
         return false;
     }
 
@@ -1564,6 +1627,126 @@ pub(crate) fn stdin_hung_up() -> bool {
 #[cfg(not(unix))]
 pub(crate) fn stdin_hung_up() -> bool {
     false
+}
+
+/// Whether this crate can make a reliable hang-up judgement about
+/// `STDIN_FILENO` at all — the `isatty(0)` check plus the one
+/// deliberate `EIO` exception, shared by [`stdin_hung_up`] (non-blocking
+/// form, above) and [`wait_for_stdin_ready`] (blocking form, below) so
+/// the two can never drift apart on which fds they're willing to guard.
+/// See `stdin_hung_up`'s doc for the full rationale — in short: only
+/// when stdin is itself a tty, *except* that a vhangup'd pty slave fails
+/// `isatty`'s underlying `TCGETS` ioctl with `EIO` rather than reporting
+/// "not a tty" the ordinary way, so that specific failure is kept in
+/// rather than treated as "back off."
+#[cfg(unix)]
+fn stdin_guard_active() -> bool {
+    // SAFETY: `isatty` only reads the fd-number argument; no pointer
+    // involved.
+    let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+    is_tty || std::io::Error::last_os_error().raw_os_error() == Some(libc::EIO)
+}
+
+/// Outcome of [`wait_for_stdin_ready`] — what [`TuiBackend::wait_events`]
+/// does next, instead of ever handing crossterm a blocking call itself
+/// (quadraui#1301).
+enum StdinReadiness {
+    /// Real bytes are already queued and no hangup bit is set. Safe to
+    /// delegate exactly one `Duration::ZERO` (non-blocking, by
+    /// construction — the data is already known to be there)
+    /// `ratatui::crossterm::event::poll`/`read` pair.
+    Ready,
+    /// stdin's far end is permanently gone — see [`stdin_hung_up`]'s doc.
+    HungUp,
+    /// Neither of the above happened before the requested deadline.
+    TimedOut,
+    /// This crate has no reliable hang-up signal for the current fd
+    /// (non-tty stdin that isn't the `tty_vhangup` `EIO` case, or a
+    /// non-unix target). The caller should fall back to delegating the
+    /// *entire* wait straight to crossterm, exactly as it would without
+    /// this guard existing at all — see [`stdin_guard_active`]'s doc for
+    /// why this is deliberately scoped to ttys, and the
+    /// `#[cfg(not(unix))]` arm below for why non-unix targets are
+    /// unconditionally unguarded.
+    Unguarded,
+}
+
+/// Blocks — via this crate's own `poll(2)` on `STDIN_FILENO`, never by
+/// delegating to crossterm — until stdin becomes ready, hangs up, or
+/// `deadline` passes, whichever comes first (quadraui#1301). This is
+/// what lets [`TuiBackend::wait_events`] stop slicing its idle wait into
+/// fixed chunks and re-checking [`stdin_hung_up`] between them: a
+/// hang-up is visible to `poll(2)` **the instant it happens**, even
+/// while a call is already parked in the kernel waiting on it, so the
+/// hang-up itself is the wakeup rather than something a later poll has
+/// to happen to re-discover. Contrast crossterm's own reactor, which
+/// (per [`stdin_hung_up`]'s doc) can enter a state it never returns from
+/// once it starts reading a hung-up fd — this function never calls into
+/// that code path at all when it detects the hangup itself.
+///
+/// `deadline`: `None` blocks indefinitely — still immediately
+/// interruptible by a hangup, since `-1` is `poll(2)`'s ordinary "no
+/// timeout" request, not a special case this function has to retry
+/// around. `Some` blocks until that `Instant`, retrying around `EINTR`
+/// (a signal is not a confirmed hangup, nor a confirmed timeout)
+/// without ever blocking past it.
+#[cfg(unix)]
+fn wait_for_stdin_ready(deadline: Option<Instant>) -> StdinReadiness {
+    use std::os::unix::io::AsRawFd;
+
+    if !stdin_guard_active() {
+        return StdinReadiness::Unguarded;
+    }
+
+    let fd = std::io::stdin().as_raw_fd();
+    loop {
+        let (timeout_ms, at_or_past_deadline) = match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let ms = remaining.as_millis();
+                let clamped_ms = if ms > i32::MAX as u128 {
+                    i32::MAX
+                } else {
+                    ms as i32
+                };
+                (clamped_ms, remaining.is_zero())
+            }
+            // `-1` to `poll(2)` blocks indefinitely — still woken
+            // instantly by a hangup, so there is nothing to retry or
+            // bound here.
+            None => (-1, false),
+        };
+        match poll_fd_revents(fd, timeout_ms) {
+            Some(revents) => {
+                return if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    StdinReadiness::HungUp
+                } else {
+                    StdinReadiness::Ready
+                };
+            }
+            None => {
+                // `poll(2)` either genuinely timed out or was
+                // interrupted by a signal (`EINTR`) — neither confirms
+                // a hangup. If `deadline` (when given) has now passed,
+                // that's a real timeout; otherwise retry for whatever
+                // time is left (or keep blocking indefinitely when
+                // `deadline` is `None`).
+                if at_or_past_deadline {
+                    return StdinReadiness::TimedOut;
+                }
+                continue;
+            }
+        }
+    }
+}
+
+/// Non-unix hosts never guard — see [`stdin_hung_up`]'s `#[cfg(not(unix))]`
+/// doc. `wait_events` falls back to delegating the whole wait straight
+/// to crossterm there, unchanged from this crate's pre-#1295/#1301
+/// behaviour.
+#[cfg(not(unix))]
+fn wait_for_stdin_ready(_deadline: Option<Instant>) -> StdinReadiness {
+    StdinReadiness::Unguarded
 }
 
 impl crate::backend::sealed::Sealed for TuiBackend {}
@@ -1716,92 +1899,56 @@ impl Backend for TuiBackend {
         // N redundant selection updates or SGR-cursor writes to embedded
         // PTYs.  Returns an empty `Vec` on timeout.
         //
-        // Delegated to crossterm in [`STDIN_HANGUP_POLL_SLICE`]-sized
-        // slices, re-checking `stdin_hung_up()` between each one, rather
-        // than one `ratatui::crossterm::event::poll(timeout)` call for
-        // the full `timeout` — see that constant's doc for why a single
-        // long call would leave this guard's own "never entered" promise
-        // false for most of `timeout`'s duration.
+        // quadraui#1301: never hands crossterm a blocking call. Instead
+        // blocks on this crate's own [`wait_for_stdin_ready`] — a direct
+        // `poll(2)` on the exact same fd — for the real remaining
+        // timeout, and only ever delegates to crossterm with
+        // `Duration::ZERO` once that call has already confirmed data is
+        // queued with no hangup bit set. See that function's doc for why
+        // this makes the hangup itself the wakeup instead of racing a
+        // periodic re-check against an in-flight crossterm call.
+        //
         // `checked_add` rather than a bare `Instant + Duration`: this is
         // a public trait method a consumer can call with any `Duration`
         // up to `Duration::MAX`, and that addition panics on overflow.
-        // `None` (overflowed) is treated as "no deadline" below — still
-        // sliced for the hangup re-check, just never cut short by
-        // `remaining` reaching zero.
+        // `None` (overflowed) is treated as "no deadline" below —
+        // [`wait_for_stdin_ready`] blocks indefinitely in that case,
+        // still immediately interruptible by a hangup.
         let deadline = Instant::now().checked_add(timeout);
-        // Sliced from the very first iteration too — even a `timeout` of
-        // `Duration::ZERO` still gets one non-blocking
-        // `poll(Duration::ZERO)` delegation below, matching what a
-        // direct crossterm call would have drained, rather than
-        // returning before crossterm is ever consulted.
-        let mut first_slice = true;
-        loop {
-            if stdin_hung_up() {
+        // No slicing loop needed any more (quadraui#1301):
+        // `wait_for_stdin_ready` itself blocks for the *entire* deadline
+        // (retrying only around `EINTR`), so one call already covers
+        // what used to take a `STDIN_HANGUP_POLL_SLICE`-sized loop.
+        match wait_for_stdin_ready(deadline) {
+            StdinReadiness::HungUp => {
                 self.input_gone = true;
                 let mut out = Vec::new();
                 self.user_events.drain_into(&mut out);
-                return out;
+                out
             }
-            let remaining = match deadline {
-                Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-                None => STDIN_HANGUP_POLL_SLICE,
-            };
-            if remaining.is_zero() && !first_slice {
-                break;
+            StdinReadiness::TimedOut => {
+                // Issue #831: crossterm timed out with no native input,
+                // but a background thread may have called `waker()`
+                // during the wait — this is the primary path a pure
+                // background-thread wake takes, since it has no
+                // crossterm event of its own to ride in on.
+                let mut out = Vec::new();
+                self.user_events.drain_into(&mut out);
+                out
             }
-            let slice = remaining.min(STDIN_HANGUP_POLL_SLICE);
-            first_slice = false;
-            match ratatui::crossterm::event::poll(slice) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                // An error here isn't a confirmed hangup (`stdin_hung_up`
-                // above already catches that case), but retrying it for
-                // the remainder of `timeout` would add a tight-retry
-                // shape of its own — return now, same as the read-error
-                // arm below.
-                Err(_) => break,
-            }
-            let mut raw = Vec::new();
-            match ratatui::crossterm::event::read() {
-                Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
-                    ev,
-                    self.cell_pixel_size,
-                )),
-                Err(_) => {
-                    // Issue #831: even a crossterm read error shouldn't
-                    // drop a background wake that arrived in the same
-                    // window — still surface anything already queued.
-                    let mut out = Vec::new();
-                    self.user_events.drain_into(&mut out);
-                    return out;
-                }
-            }
-            // Drain the rest of the queue without blocking.
-            while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
-                match ratatui::crossterm::event::read() {
-                    Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
-                        ev,
-                        self.cell_pixel_size,
-                    )),
-                    Err(_) => break,
-                }
-            }
-            // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
-            let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
-            let coalesced = coalesce_mouse_moved(raw);
-            let mut out = self.apply_dispatch(coalesced);
-            self.apply_accelerators(&mut out);
-            self.double_click.process(&mut out);
-            self.user_events.drain_into(&mut out);
-            return out;
+            // Already confirmed queued and hangup-free —
+            // `Duration::ZERO` here is guaranteed non-blocking.
+            StdinReadiness::Ready => self.drain_native_batch(Duration::ZERO),
+            // No reliable hangup signal for this fd (non-tty stdin
+            // outside the `tty_vhangup` `EIO` case, or a non-unix
+            // target) — fall back to delegating the whole wait straight
+            // to crossterm, exactly as this crate did before
+            // #1295/#1301. `wait_for_stdin_ready` returns this
+            // immediately (it never blocks on the `Unguarded` path), so
+            // `timeout` itself — not a recomputed remainder — is still
+            // the right duration to hand crossterm here.
+            StdinReadiness::Unguarded => self.drain_native_batch(timeout),
         }
-        // Issue #831: crossterm timed out with no native input, but a
-        // background thread may have called `waker()` during the wait —
-        // this is the primary path a pure background-thread wake takes,
-        // since it has no crossterm event of its own to ride in on.
-        let mut out = Vec::new();
-        self.user_events.drain_into(&mut out);
-        out
     }
 
     /// See [`crate::Backend::waker`]'s doc for the full cross-backend
