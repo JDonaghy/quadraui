@@ -1393,13 +1393,11 @@ fn coalesce_mouse_moved(raw: Vec<UiEvent>) -> Vec<UiEvent> {
 /// invisible to this guard until that call returns, which, if the
 /// hangup is what woke it, it structurally cannot. A single
 /// `timeout`-long call would leave the vulnerable window open for
-/// nearly the entire idle-wait duration — confirmed empirically
-/// (`tests/tui_pty_smoke.rs`'s `dead_pty_hangup` module, which fails
-/// intermittently without this slicing, in exactly this way, before it
-/// was added). Slicing bounds that window to one slice's duration
-/// instead, each one re-checked — not eliminated, since any finite
-/// slice still leaves a window, just a much smaller one relative to how
-/// long this backend spends idling between real events.
+/// nearly the entire idle-wait duration. Slicing bounds that window to
+/// one slice's duration instead, each one re-checked — not
+/// eliminated, since any finite slice still leaves a window, just a
+/// much smaller one relative to how long this backend spends idling
+/// between real events.
 const STDIN_HANGUP_POLL_SLICE: Duration = Duration::from_millis(20);
 
 /// Poll `fd` for up to `timeout_ms` milliseconds (`0` is a non-blocking
@@ -1489,16 +1487,26 @@ pub(crate) fn poll_fd_revents(
 /// never blocks at all (it only drains what crossterm already has
 /// queued), so it has no equivalent window to bound.
 ///
-/// Only guards when stdin is itself the terminal (`isatty(0)`):
-/// crossterm's own `tty_fd()` (`src/terminal/sys/file_descriptor.rs`)
-/// borrows fd 0 when it's a tty and opens `/dev/tty` directly otherwise,
-/// so polling fd 0 unconditionally would make a hangup decision about a
-/// fd crossterm may not even be reading from — e.g. stdin redirected
-/// from a pipe whose writer already exited, with a perfectly live
-/// controlling terminal still open on `/dev/tty`. Mirroring crossterm's
-/// own fd choice keeps this guard exactly as accurate as the thing it's
-/// guarding; it does not extend to covering a dead `/dev/tty` when
-/// stdin isn't a tty, which is out of scope here.
+/// Only guards when stdin is itself the terminal (`isatty(0)`), with one
+/// deliberate exception: on Linux, closing a pty's master side runs
+/// `tty_vhangup()` on the slave, which swaps in `hung_up_tty_fops` —
+/// every ioctl on that fd, including the `TCGETS` that `isatty` performs
+/// under the hood, then fails with `EIO`, so `isatty` itself reports
+/// "not a tty" at exactly the moment this guard most needs it to say the
+/// opposite. Treating a bare `isatty` failure as "stdin isn't a tty" is
+/// therefore wrong for that one case; this function keeps checking when
+/// `isatty` failed with `EIO` specifically, and only backs off for every
+/// other failure (`ENOTTY`, `EINVAL`, `EBADF` — a pipe, a regular file, a
+/// closed fd — none of which `tty_vhangup` ever produces). Those other
+/// failures are the case crossterm's own `tty_fd()`
+/// (`src/terminal/sys/file_descriptor.rs`) also treats as "not a tty": it
+/// borrows fd 0 when `isatty` succeeds and opens `/dev/tty` directly
+/// otherwise, so polling fd 0 unconditionally there would make a hangup
+/// decision about a fd crossterm may not even be reading from — e.g.
+/// stdin redirected from a pipe whose writer already exited, with a
+/// perfectly live controlling terminal still open on `/dev/tty`. This
+/// does not extend to covering a dead `/dev/tty` when stdin isn't a tty
+/// at all, which stays out of scope here.
 ///
 /// `POLLIN` is not a useful signal to subtract from the hangup check
 /// above. A real macOS repro (`posix_openpt`/`grantpt`/`unlockpt`,
@@ -1532,9 +1540,12 @@ pub(crate) fn stdin_hung_up() -> bool {
     use std::os::unix::io::AsRawFd;
 
     // SAFETY: `isatty` only reads the fd-number argument; no pointer
-    // involved. Matches crossterm's own `tty_fd()` fd choice exactly —
-    // see this function's doc.
-    if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
+    // involved. A vhangup'd pty slave fails this with `EIO` rather than
+    // reporting "not a tty" the ordinary way — that specific failure is
+    // kept in (not treated as "back off"), everything else matches
+    // crossterm's own `tty_fd()` fd choice — see this function's doc.
+    let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+    if !is_tty && std::io::Error::last_os_error().raw_os_error() != Some(libc::EIO) {
         return false;
     }
 
@@ -1711,7 +1722,19 @@ impl Backend for TuiBackend {
         // the full `timeout` — see that constant's doc for why a single
         // long call would leave this guard's own "never entered" promise
         // false for most of `timeout`'s duration.
-        let deadline = Instant::now() + timeout;
+        // `checked_add` rather than a bare `Instant + Duration`: this is
+        // a public trait method a consumer can call with any `Duration`
+        // up to `Duration::MAX`, and that addition panics on overflow.
+        // `None` (overflowed) is treated as "no deadline" below — still
+        // sliced for the hangup re-check, just never cut short by
+        // `remaining` reaching zero.
+        let deadline = Instant::now().checked_add(timeout);
+        // Sliced from the very first iteration too — even a `timeout` of
+        // `Duration::ZERO` still gets one non-blocking
+        // `poll(Duration::ZERO)` delegation below, matching what a
+        // direct crossterm call would have drained, rather than
+        // returning before crossterm is ever consulted.
+        let mut first_slice = true;
         loop {
             if stdin_hung_up() {
                 self.input_gone = true;
@@ -1719,48 +1742,58 @@ impl Backend for TuiBackend {
                 self.user_events.drain_into(&mut out);
                 return out;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let remaining = match deadline {
+                Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+                None => STDIN_HANGUP_POLL_SLICE,
+            };
+            if remaining.is_zero() && !first_slice {
                 break;
             }
             let slice = remaining.min(STDIN_HANGUP_POLL_SLICE);
-            if let Ok(true) = ratatui::crossterm::event::poll(slice) {
-                let mut raw = Vec::new();
+            first_slice = false;
+            match ratatui::crossterm::event::poll(slice) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                // An error here isn't a confirmed hangup (`stdin_hung_up`
+                // above already catches that case), but retrying it for
+                // the remainder of `timeout` would add a tight-retry
+                // shape of its own — return now, same as the read-error
+                // arm below.
+                Err(_) => break,
+            }
+            let mut raw = Vec::new();
+            match ratatui::crossterm::event::read() {
+                Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
+                    ev,
+                    self.cell_pixel_size,
+                )),
+                Err(_) => {
+                    // Issue #831: even a crossterm read error shouldn't
+                    // drop a background wake that arrived in the same
+                    // window — still surface anything already queued.
+                    let mut out = Vec::new();
+                    self.user_events.drain_into(&mut out);
+                    return out;
+                }
+            }
+            // Drain the rest of the queue without blocking.
+            while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
                 match ratatui::crossterm::event::read() {
                     Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
                         ev,
                         self.cell_pixel_size,
                     )),
-                    Err(_) => {
-                        // Issue #831: even a crossterm read error shouldn't
-                        // drop a background wake that arrived in the same
-                        // window — still surface anything already queued.
-                        let mut out = Vec::new();
-                        self.user_events.drain_into(&mut out);
-                        return out;
-                    }
+                    Err(_) => break,
                 }
-                // Drain the rest of the queue without blocking.
-                while ratatui::crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
-                    match ratatui::crossterm::event::read() {
-                        Ok(ev) => raw.extend(super::events::crossterm_to_uievents_scaled(
-                            ev,
-                            self.cell_pixel_size,
-                        )),
-                        Err(_) => break,
-                    }
-                }
-                // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
-                let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
-                let coalesced = coalesce_mouse_moved(raw);
-                let mut out = self.apply_dispatch(coalesced);
-                self.apply_accelerators(&mut out);
-                self.double_click.process(&mut out);
-                self.user_events.drain_into(&mut out);
-                return out;
             }
-            // This slice produced no event — loop back around to
-            // re-check `stdin_hung_up()` before trying another one.
+            // See `recover_leaked_sgr_mouse_fragments`'s doc (#293).
+            let raw = recover_leaked_sgr_mouse_fragments(raw, self.cell_pixel_size);
+            let coalesced = coalesce_mouse_moved(raw);
+            let mut out = self.apply_dispatch(coalesced);
+            self.apply_accelerators(&mut out);
+            self.double_click.process(&mut out);
+            self.user_events.drain_into(&mut out);
+            return out;
         }
         // Issue #831: crossterm timed out with no native input, but a
         // background thread may have called `waker()` during the wait —
