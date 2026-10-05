@@ -556,8 +556,8 @@ impl<A: AppLogic> TuiRunner<A> {
             }
         }
 
-        // quadraui#1295: the input fd (stdin — a real terminal or pty
-        // slave) is permanently gone, detected by `Backend::poll_events`/
+        // The input fd (stdin — a real terminal or pty slave) is
+        // permanently gone, detected by `Backend::poll_events`/
         // `wait_events`'s own `stdin_hung_up` guard before either ever
         // delegates into crossterm (see that function's doc for why —
         // crossterm 0.29's unix event source busy-spins forever once

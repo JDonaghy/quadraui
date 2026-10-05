@@ -263,7 +263,24 @@ pub(crate) fn detect_kitty_keyboard_from(getenv: impl Fn(&str) -> Option<String>
 /// doc's "Kitty keyboard protocol" section. Real terminal I/O (writes the
 /// query, blocks up to 2s for a reply): call this once at startup, not
 /// from a hot path or a test that doesn't want that latency.
+///
+/// Checks [`super::backend::stdin_hung_up`] first, on unix, and skips the
+/// live query entirely if it's already true: `supports_keyboard_enhancement`
+/// reaches crossterm's own `poll_internal`/`read_internal` internally
+/// (`terminal::sys::unix::query_keyboard_enhancement_flags_raw`) — the
+/// identical vulnerable `UnixInternalEventSource::try_read` loop
+/// [`super::backend::TuiBackend::wait_events`]'s own guard exists for, just
+/// reached through a different crossterm entry point that this backend
+/// never otherwise touches. A pty that's already hung up before this
+/// crate's startup capability probes even run (plausible for a headless
+/// session wired up over an already-dead pty) would otherwise hang here
+/// before a single frame ever renders, with no `TuiBackend` guard able to
+/// see it. Falling back to [`detect_kitty_keyboard`] here is exactly what
+/// an inconclusive live probe already does on any other failure.
 pub(crate) fn probe_kitty_keyboard() -> bool {
+    if super::backend::stdin_hung_up() {
+        return detect_kitty_keyboard();
+    }
     ratatui::crossterm::terminal::supports_keyboard_enhancement()
         .unwrap_or_else(|_| detect_kitty_keyboard())
 }
@@ -427,21 +444,10 @@ fn query_sgr_pixel_decrqm() -> Option<u8> {
             // answers, e.g. tmux — reaches the real event loop untouched.
             return None;
         }
-        let mut pollfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        // 0 = timed out; negative = an error (e.g. `EINTR`). Neither is
+        // worth a retry loop for a one-shot startup probe on stdin.
         let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
-        // SAFETY: `pollfd` is a single valid `libc::pollfd` on the stack;
-        // `poll(2)` only reads/writes through the pointer+length (1) it's
-        // given, for the duration of this call.
-        let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-        if ready <= 0 {
-            // 0 = timed out; negative = an error (e.g. `EINTR`). Neither is
-            // worth a retry loop for a one-shot startup probe on stdin.
-            return None;
-        }
+        super::backend::poll_fd_revents(fd, timeout_ms)?;
         let mut byte = [0u8; 1];
         match handle.read(&mut byte) {
             Ok(0) | Err(_) => return None,

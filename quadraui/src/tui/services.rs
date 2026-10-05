@@ -1577,6 +1577,20 @@ impl TuiPlatformServices {
             }
         }
         loop {
+            // Same guard as `TuiBackend::wait_events`/`poll_events`
+            // (`super::backend::stdin_hung_up`'s doc) — this loop reaches
+            // the identical vulnerable crossterm call, just from a nested
+            // modal-dialog event loop instead of the main one. Sleeping
+            // the same 250ms a real timed-out `poll` call below would
+            // have taken, rather than returning immediately, matters
+            // here specifically: `run_nested_dialog_loop`'s caller has no
+            // backoff of its own around this call (it redraws and calls
+            // right back in), so an instant empty return would just
+            // relocate the busy-spin one level up instead of removing it.
+            if super::backend::stdin_hung_up() {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                return Vec::new();
+            }
             match ratatui::crossterm::event::poll(std::time::Duration::from_millis(250)) {
                 Ok(true) => {
                     return match ratatui::crossterm::event::read() {
