@@ -387,21 +387,37 @@ release time.
 - `Surface::Board`/`CommandCenter`/`DiffView`/`DropOverlay`/`Image`/
   `MessageList`/`Minimap`/`PipelineView`/`Progress`/`SidebarPanel`/
   `Spinner`/`SplitTree`/`TextInput`/`Toolbar` and the matching
-  `FrameZone` variants (issue #1099) — the 14 primitives that had a
-  `Backend::draw_*` method but no `Surface`/`FrameZone` twin (tracked
-  since the #456 audit, `docs/decisions/DECISIONS.md` D-006) now have
-  one, closing that gap. `DropOverlay::bounds()` — new, additive — gives
-  its `Surface`/`FrameZone` pair a zone rect to use, since (unlike the
-  other transient-overlay variants) it has no `rect` field or sibling
+  `FrameZone` variants (issue #1099, partial — see below) — the 14
+  primitives that had a `Backend::draw_*` method but no
+  `Surface`/`FrameZone` twin (tracked since the #456 audit,
+  `docs/decisions/DECISIONS.md` D-006) now have one, closing that gap.
+  `DropOverlay::bounds()` — new, additive — gives its `Surface`/
+  `FrameZone` pair a zone rect to use, since (unlike the other
+  transient-overlay variants) it has no `rect` field or sibling
   `*Layout.bounds` to borrow. `FrameHitMap::zones`/`FrameHitMap::from_zones`
   and a `Serialize`/`Deserialize` derive on `FrameZone` and
-  `FrameHitMap` — `FrameHitMap` is quadraui's owned, lifetime-free
-  counterpart to the borrowing `Surface<'a>`, so it can now be read,
-  persisted, or sent across a process boundary (AccessKit, a future web
-  backend, record/replay) rather than only probed via `hit_test`. See
-  `quadraui/src/frame.rs`'s module doc for the full rationale. Purely
-  additive: no existing `Surface`/`FrameZone` variant, field, or method
-  changed shape.
+  `FrameHitMap` make the existing, already-owned `FrameHitMap` readable
+  and wire-transportable — a step toward #1099's "owned `Frame`" half,
+  not that half itself: a `FrameHitMap` zone is still only a
+  `(Rect, FrameZone)` pair (a rect plus a bare tag and a frame-local
+  index), with no primitive content, role, label or value, so it
+  cannot yet feed an AccessKit `TreeUpdate`, be re-painted by a web
+  backend, or replay a frame on its own. `Surface<'a>`/`ScreenLayout<'a>`
+  still borrow. Building an owned `Frame` tree with that content is
+  tracked as a follow-up to #1099 and is not part of this change. See
+  `quadraui/src/frame.rs`'s module doc for the full rationale, and
+  `docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`'s "Owned `Frame`/`Surface`
+  for bindings" row, which stays **Open** on this same evidence.
+  Purely additive to the type signatures (no existing `Surface`/
+  `FrameZone` variant, field, or method changed shape). Both enums
+  also gain `#[non_exhaustive]` here: adding 14 variants to a
+  non-`#[non_exhaustive]` enum is a potential `E0004` (non-exhaustive
+  match) break downstream, so this closes that risk for *future*
+  variant additions too, per `CLAUDE.md` rule 2. Verified non-breaking
+  for both downstream consumers today: `~/src/coord-tui` has zero
+  `FrameZone`/`Surface::` hits, and vimcode's only `FrameZone` match
+  (`~/src/vimcode/src/click.rs:331-355`) ends in a wildcard `_ => {}`
+  arm (grep in the PR body).
 
 ### Changed
 

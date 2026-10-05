@@ -18,9 +18,11 @@
 //! cannot silently paint the same primitive two different ways (the
 //! drift #456 documents). `ScreenLayout::draw` calls these `draw_*`
 //! methods internally — see `frame.rs`'s module doc and
-//! `quadraui/docs/decisions/DECISIONS.md` D-006 for the full picture, including
-//! the primitives that have no `Surface` variant yet and must still be
-//! painted via `draw_*` directly.
+//! `quadraui/docs/decisions/DECISIONS.md` D-006 for the full picture.
+//! As of #1099 every primitive with a `draw_*` method here has a
+//! matching `Surface` variant, so `draw_*` is reachable directly by
+//! design (rasteriser tests, compose helpers) rather than because some
+//! primitive has no declarative-frame path at all.
 //!
 //! ## Coordinate frames for `*_layout` methods (issue #505)
 //!
