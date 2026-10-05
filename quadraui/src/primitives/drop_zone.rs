@@ -213,12 +213,11 @@ impl DropOverlay {
     /// [`Rect::default`] (an overlay with neither carries no visible
     /// geometry, same as `drop_zone_overlay` never constructing one).
     ///
-    /// Added for [`crate::frame::Surface::DropOverlay`] (issue #1099):
-    /// unlike every other transient-overlay `Surface` variant (`Tooltip`,
-    /// `ContextMenu`, `Dialog`, `Completions`, `RichTextPopup`), this
-    /// primitive has no sibling `*Layout` type carrying a single
-    /// `bounds` field to borrow — this method is that single source of
-    /// truth instead.
+    /// Backs [`crate::frame::Surface::DropOverlay`]: unlike every other
+    /// transient-overlay `Surface` variant (`Tooltip`, `ContextMenu`,
+    /// `Dialog`, `Completions`, `RichTextPopup`), this primitive has no
+    /// sibling `*Layout` type carrying a single `bounds` field to
+    /// borrow — this method is that single source of truth instead.
     pub fn bounds(&self) -> Rect {
         self.highlight.or(self.insertion_bar).unwrap_or_default()
     }
@@ -693,10 +692,10 @@ mod tests {
         assert_eq!(bar.height, 20.0);
     }
 
-    /// Added for [`crate::frame::Surface::DropOverlay`] (issue #1099):
-    /// `bounds()` is this primitive's only source of a zone rect, so
-    /// it needs its own direct coverage independent of the
-    /// `Surface`/`FrameHitMap` round-trip test in `frame.rs`.
+    /// Backs [`crate::frame::Surface::DropOverlay`]: `bounds()` is
+    /// this primitive's only source of a zone rect, so it needs its
+    /// own direct coverage independent of the `Surface`/`FrameHitMap`
+    /// round-trip test in `frame.rs`.
     #[test]
     fn bounds_prefers_highlight_then_insertion_bar_then_default() {
         let highlight = Rect::new(1.0, 2.0, 3.0, 4.0);
