@@ -1109,14 +1109,16 @@ impl AppShell {
                 AppShellEvent::Ignored
             }
 
-            // A fast double-click landing on the activity bar (#1305) must
-            // behave exactly like the second of two single clicks there —
+            // A fast double-click landing on the activity bar behaves
+            // exactly like the second of two single clicks there —
             // `DoubleClickDetector` runs ahead of this `handle` call on
             // every backend and folds a `MouseDown` into a `DoubleClick`
             // whenever it lands within its radius of the previous
-            // `MouseDown` within the double-click window. Without this
-            // arm, that fold has no match here and silently falls through
-            // to `_ => AppShellEvent::Ignored`, dropping the click.
+            // `MouseDown` within the double-click window. `DoubleClick`
+            // carries no button, so (unlike the `MouseDown` arm above) this
+            // arm cannot gate on `MouseButton::Left`: a fast double-click
+            // with any button that folds here is treated as an activity
+            // click.
             UiEvent::DoubleClick { position, .. } => {
                 let p = *position;
 
@@ -2606,15 +2608,10 @@ mod tests {
         assert_eq!(ev, AppShellEvent::SidebarHidden);
     }
 
-    // ── Double-click on the activity bar (#1305) ─────────────────────
+    // ── Double-click on the activity bar ──────────────────────────────
     //
-    // `DoubleClickDetector` runs ahead of `AppShell::handle` on every
-    // backend and folds a `MouseDown` into a `UiEvent::DoubleClick`
-    // whenever it lands within the detector's radius of the previous
-    // `MouseDown`, inside the double-click time window. Before this fix,
-    // `handle` had no arm for `DoubleClick` at all, so the fold always
-    // fell through to `_ => AppShellEvent::Ignored` — silently dropping
-    // the click regardless of where it landed.
+    // See the `UiEvent::DoubleClick` arm's comment on `handle` above for
+    // why the fold reaches this arm and what it must do.
 
     /// Real paint → real hit zones → real click, via a `TuiBackend` frame
     /// scope — not a synthetic `Rect`/`Point` — so this exercises the same
@@ -2693,8 +2690,9 @@ mod tests {
 
     /// Adjacent-icon case: a `DoubleClick` whose position lands on a
     /// *different* icon than the previous click (the TUI adjacent-row
-    /// fold described in #1305) must switch to that icon's panel, exactly
-    /// like a fresh single click there — not get dropped.
+    /// fold, where icon rows sit closer together than the detector's
+    /// click radius) must switch to that icon's panel, exactly like a
+    /// fresh single click there — not get dropped.
     #[test]
     #[cfg(feature = "tui")]
     fn double_click_on_activity_bar_different_icon_switches_panel() {
