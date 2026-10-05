@@ -1,4 +1,4 @@
-//! `Canvas` primitive: app-defined drawing (issue #1102).
+//! `Canvas` primitive: app-defined drawing.
 //!
 //! Every other primitive in this crate is a closed shape — an app that
 //! wants a diagram, a custom gauge, a sparkline with bespoke decoration,
@@ -6,9 +6,8 @@
 //! to put it on screen. `Canvas` is the escape hatch: a declarative list
 //! of [`DrawOp`]s (rect, rounded rect, line, path, text run, image,
 //! push/pop clip) that every backend paints through the same seam —
-//! [`crate::paint_surface::PaintSurface`] (#807/#1101) for the three
-//! pixel backends, and a dedicated degrade rasteriser
-//! (`crate::tui::canvas`) for TUI.
+//! [`crate::paint_surface::PaintSurface`] for the three pixel backends,
+//! and a dedicated degrade rasteriser (`crate::tui::canvas`) for TUI.
 //!
 //! # Coordinate frame
 //!
@@ -23,7 +22,7 @@
 //! rect is already expressed in, exactly as it would size a `Terminal`
 //! or `Editor` rect.
 //!
-//! # TUI story: degrade (issue #1097/D-014)
+//! # TUI story: degrade (design decision D-014)
 //!
 //! `Canvas` is not GUI-only — `docs/decisions/DECISIONS.md` D-014 records
 //! the decision explicitly: TUI rasterises the same ops into cells
@@ -36,7 +35,7 @@
 //! | Op | TUI degrade |
 //! |---|---|
 //! | [`DrawOp::Rect`] / [`DrawOp::RoundedRect`] / [`DrawOp::Line`] / [`DrawOp::Path`] | **braille** — sub-cell dots, same packing as `Chart`'s line charts. `RoundedRect`'s `radius` is dropped (no sub-cell arc); the fill itself still renders. |
-//! | [`DrawOp::TextRun`] / [`DrawOp::Image`] | **cell-quantised** — text can't live inside a dot cell, so position snaps to the nearest whole cell. `Image` paints [`crate::Image::fallback_text`] the same way [`crate::Backend::draw_image`] already does for TUI (#507), since there is still no pixel grid to decode bytes onto. |
+//! | [`DrawOp::TextRun`] / [`DrawOp::Image`] | **cell-quantised** — text can't live inside a dot cell, so position snaps to the nearest whole cell. `Image` paints [`crate::Image::fallback_text`] the same way [`crate::Backend::draw_image`] already does for TUI, since there is still no pixel grid to decode bytes onto. |
 //! | [`DrawOp::PushClip`] / [`DrawOp::PopClip`] | **cell-quantised** — the clip rect's edges round outward to whole cells; shape ops inside it still paint at full braille resolution, just bounded to those cells. |
 //!
 //! No op is **N/A** — every one produces a real, typed answer the app
@@ -163,7 +162,7 @@ impl CanvasLayout {
     ///
     /// Coordinate frame: **ABSOLUTE** — same frame as [`Self::bounds`],
     /// which already carries the `bounds` rect passed to
-    /// [`Canvas::layout`] (issue #505/#818).
+    /// [`Canvas::layout`].
     pub fn hit_test(&self, x: f32, y: f32) -> CanvasHit {
         let b = self.bounds;
         if x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height {
@@ -174,7 +173,7 @@ impl CanvasLayout {
     }
 }
 
-// ── PaintSurface paint (#1102) ──────────────────────────────────────────
+// ── PaintSurface paint ──────────────────────────────────────────────────
 //
 // Every pixel backend (GTK/macOS/Win) paints a `Canvas` identically: walk
 // `ops` in order, translate each op's LOCAL coordinates by the layout's
@@ -183,13 +182,13 @@ impl CanvasLayout {
 // resolve theme colours and chrome metrics, `Canvas`'s ops already carry
 // every colour/geometry value the app wants, so this is a pure
 // passthrough rather than a shared *policy*. `Path` has no dedicated
-// `PaintSurface` verb (the trait's ~15 verbs don't include one, #807
-// Phase 1 scope), so it lowers to one `surface_draw_line` call per
-// segment — indistinguishable on screen from a real path stroke for the
-// polylines this primitive targets, and avoids growing `PaintSurface`
-// for a shape `surface_draw_line` already composes.
+// `PaintSurface` verb (the trait's verbs don't include one, by design),
+// so it lowers to one `surface_draw_line` call per segment —
+// indistinguishable on screen from a real path stroke for the
+// polylines `Canvas` targets, and avoids growing `PaintSurface` for a
+// shape `surface_draw_line` already composes.
 //
-// `#[allow(dead_code)]`: see `primitives::panel`'s identical note (#808)
+// `#[allow(dead_code)]`: see `primitives::panel`'s identical note
 // — only *called* once a real pixel backend is compiled in, exercised by
 // each backend's own `Backend::draw_canvas` call site plus this module's
 // own `RecordingSurface` tests on every leg that enables one of the
@@ -571,7 +570,7 @@ mod tests {
 
     #[test]
     fn hit_test_respects_a_non_zero_origin() {
-        // Issue #505/LESSONS.md regression shape: (0, 0) is exactly the
+        // LESSONS.md regression shape: (0, 0) is exactly the
         // case where a frame mixup is invisible.
         let c = Canvas {
             id: WidgetId::new("c"),
