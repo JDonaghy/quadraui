@@ -46,6 +46,23 @@
 //! `fit_right_start` drops from the front, so the rightmost (highest-
 //! priority) segments stay visible at the right edge of the bar.
 //!
+//! **Common mistake (quadraui#1303): priority order is the `right_segments`
+//! *index* order, not the visual left-to-right order a human would pick by
+//! eye.** A "Ln N, Col N" cursor-position segment that VS Code always
+//! shows unconditionally must be placed *last* in the vector to be
+//! protected — if it's placed first (e.g. because that's where it reads
+//! naturally next to the language/encoding segments), the algorithm
+//! correctly — and silently — treats it as the *lowest*-priority segment
+//! and drops it first, even while plenty of width remains for everything
+//! else. That is not a bug in `fit_right_start`/`layout`: both drop
+//! strictly front-to-back and always keep the last element (see
+//! [`Self::fit_right_start`]'s tests and
+//! [`tui::status_bar`](crate::tui::status_bar)'s
+//! `priority_drop_keeps_painting_the_last_segment_once_a_left_segment_grows`
+//! / `ordering_the_cursor_segment_first_instead_of_last_makes_it_the_one_dropped`
+//! pair) — it is a call-site bug: the segment that must survive has to be
+//! moved to the end of `right_segments`, not given a flag or an exemption.
+//!
 //! Skipping step 1 + 2 makes narrow bars look like `BARMODE filenameSpaces:`
 //! (touching, no gap) or worse (right segments overdrawing left in TUI).
 //!

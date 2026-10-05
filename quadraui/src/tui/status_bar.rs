@@ -474,4 +474,140 @@ mod tests {
             "non-clickable segment bg should be unchanged"
         );
     }
+
+    fn plain_right_seg(text: &str) -> StatusBarSegment {
+        StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(220, 220, 220),
+            bg: Color::rgb(40, 80, 120),
+            bold: false,
+            action_id: None,
+        }
+    }
+
+    fn row_text(buf: &Buffer, width: u16) -> String {
+        (0..width).map(|x| cell_char(buf, x, 0)).collect()
+    }
+
+    fn paint_at_width(bar: &StatusBar, width: u16) -> (Buffer, crate::StatusBarLayout) {
+        let layout = bar.layout(width as f32, 1.0, 2.0, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        });
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, width, 1),
+            bar,
+            &layout,
+            &Theme::default(),
+            None,
+            None,
+        );
+        (buf, layout)
+    }
+
+    /// Regression for quadraui#1303: reproduces the bugbash shape exactly
+    /// — a left segment growing by 4 characters (the "[+]" dirty badge)
+    /// tips a 37-column bar from "everything fits" to "one right segment
+    /// must drop" — and proves that when `right_segments` follows the
+    /// documented convention (cursor-position segment *last*), only the
+    /// lowest-priority segment ("Spaces: 4") is dropped. "Ln 1, Col 1"
+    /// keeps painting through the dirty transition, which is exactly the
+    /// guarantee the issue's "Expected behaviour" section asks for.
+    #[test]
+    fn priority_drop_keeps_painting_the_last_segment_once_a_left_segment_grows() {
+        let mut bar = StatusBar {
+            id: WidgetId::new("editor-status"),
+            left_segments: vec![StatusBarSegment {
+                text: "NORMAL".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                plain_right_seg("Spaces: 4"),
+                plain_right_seg("UTF-8"),
+                plain_right_seg("LF"),
+                plain_right_seg("Ln 1, Col 1"), // cursor position: last = highest priority
+            ],
+        };
+
+        // Clean: "NORMAL" (6) + gap(2) + right total(27) = 35 <= 37. Nothing dropped.
+        let (clean_buf, clean_layout) = paint_at_width(&bar, 37);
+        assert_eq!(clean_layout.resolved_right_start, 0);
+        let clean_row = row_text(&clean_buf, 37);
+        assert!(clean_row.contains("Ln 1, Col 1"));
+        assert!(clean_row.contains("Spaces: 4"));
+
+        // Dirty: "[+]" badge grows the left segment by exactly 4 chars,
+        // same as the bugbash repro ("i X Esc"). 10 + gap(2) = 12,
+        // max_right = 25 < 27, so the front (lowest-priority) segment —
+        // "Spaces: 4" — must drop. The cursor segment must NOT.
+        bar.left_segments[0].text = "NORMAL [+]".into();
+        let (dirty_buf, dirty_layout) = paint_at_width(&bar, 37);
+        assert_eq!(
+            dirty_layout.resolved_right_start, 1,
+            "only the lowest-priority segment should be dropped for a 4-char deficit"
+        );
+        let dirty_row = row_text(&dirty_buf, 37);
+        assert!(
+            dirty_row.contains("Ln 1, Col 1"),
+            "cursor-position segment must keep painting once dirtied: {dirty_row:?}"
+        );
+        assert!(
+            !dirty_row.contains("Spaces: 4"),
+            "the dropped segment must not still be painted: {dirty_row:?}"
+        );
+        assert!(dirty_row.contains("UTF-8"));
+        assert!(dirty_row.contains("LF"));
+    }
+
+    /// Companion to the test above: documents the root cause behind
+    /// quadraui#1303. If the call site puts the cursor-position segment
+    /// *first* in `right_segments` instead of last — e.g. because that
+    /// reads naturally next to "Spaces"/"UTF-8"/"LF" — the shared
+    /// drop algorithm (correctly, per its documented contract) treats it
+    /// as the lowest-priority segment and drops it first, even under the
+    /// exact same 4-character deficit that the test above shows is
+    /// recoverable by dropping a *different* segment. This is a call-site
+    /// ordering bug, not a `fit_right_start`/`layout` defect — swapping
+    /// this segment to the end of the vector (as above) fixes it with no
+    /// primitive change.
+    #[test]
+    fn ordering_the_cursor_segment_first_instead_of_last_makes_it_the_one_dropped() {
+        let mut bar = StatusBar {
+            id: WidgetId::new("editor-status"),
+            left_segments: vec![StatusBarSegment {
+                text: "NORMAL".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                plain_right_seg("Ln 1, Col 1"), // cursor position placed first — the anti-pattern
+                plain_right_seg("Spaces: 4"),
+                plain_right_seg("UTF-8"),
+                plain_right_seg("LF"),
+            ],
+        };
+
+        let (clean_buf, clean_layout) = paint_at_width(&bar, 37);
+        assert_eq!(clean_layout.resolved_right_start, 0);
+        assert!(row_text(&clean_buf, 37).contains("Ln 1, Col 1"));
+
+        bar.left_segments[0].text = "NORMAL [+]".into();
+        let (dirty_buf, dirty_layout) = paint_at_width(&bar, 37);
+        assert_eq!(
+            dirty_layout.resolved_right_start, 1,
+            "the front segment (cursor position, in this mis-ordered bar) is dropped"
+        );
+        let dirty_row = row_text(&dirty_buf, 37);
+        assert!(
+            !dirty_row.contains("Ln 1, Col 1"),
+            "mis-ordering makes the cursor segment the one that vanishes: {dirty_row:?}"
+        );
+        assert!(dirty_row.contains("Spaces: 4"));
+    }
 }
