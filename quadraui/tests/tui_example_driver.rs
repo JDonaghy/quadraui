@@ -984,6 +984,88 @@ fn file_dialog_demo_save_confirms_the_seeded_filename_on_tui() {
     );
 }
 
+/// Regression test for the smoke failure on issue #1099's branch: both
+/// tests above confirm a path rooted at `std::env::current_dir()`, i.e.
+/// **the checkout's own absolute path**, and `FileDialogDemo` used to
+/// paint that whole path as a right-hand `StatusBarSegment`. The right
+/// group is right-aligned and painted after the left segments, so once
+/// the path grew past the 100-column test terminal its *tail* — the
+/// `build.rs` / `untitled.txt` those tests assert on — was clipped off
+/// the screen, and a wider-still path blanked the message entirely at
+/// column 0. The two tests therefore passed in a short checkout and
+/// failed in a deep one (a worktree directory named after a long branch
+/// is enough), for a reason with nothing to do with the behaviour under
+/// test.
+///
+/// `FolderPickerApp` had the identical bug and
+/// `folder_picker_confirmed_status_survives_a_path_longer_than_the_screen`
+/// below pins the identical fix: the long message lives in a left
+/// segment (clipping harmlessly from its tail) and only the path's leaf
+/// goes in the short right segment. This test pins it for
+/// `FileDialogDemo` against a root it controls, so the regression can't
+/// hide again on a short path.
+#[test]
+fn file_dialog_demo_confirmed_status_survives_a_path_longer_than_the_screen() {
+    // 140-char directory name ⇒ an absolute path comfortably wider than
+    // the 100-column screen below, whatever tempdir's base is.
+    let long_name = "q".repeat(140);
+    let tmp = tempfile::Builder::new()
+        .prefix(&long_name)
+        .tempdir()
+        .expect("create temp dir");
+    std::fs::write(tmp.path().join("deepfile.rs"), b"").expect("write file");
+    assert!(
+        tmp.path().join("deepfile.rs").display().to_string().len() > 100,
+        "the temp root must be wider than the screen for this test to mean anything"
+    );
+
+    // ── Open leg ──────────────────────────────────────────────────────
+    let mut open_driver = TuiDriver::new(FileDialogDemo::with_initial_dir(tmp.path()), 100, 20);
+    let mut script: Vec<UiEvent> = "deepfile"
+        .chars()
+        .map(|c| UiEvent::KeyPressed {
+            key: Key::Char(c),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+        .collect();
+    script.push(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    });
+    open_driver.queue_dialog_events(script);
+    open_driver.type_char('o');
+    let screen = open_driver.screen();
+    assert!(
+        screen.contains("Opened:"),
+        "the confirmed-path message must stay visible even when the path \
+         is longer than the bar is wide:\n{screen}"
+    );
+    assert!(
+        screen.contains("✓ deepfile.rs"),
+        "the right segment should show the confirmed file's leaf name:\n{screen}"
+    );
+
+    // ── Save leg ──────────────────────────────────────────────────────
+    let mut save_driver = TuiDriver::new(FileDialogDemo::with_initial_dir(tmp.path()), 100, 20);
+    save_driver.queue_dialog_events(vec![UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    }]);
+    save_driver.type_char('s');
+    let screen = save_driver.screen();
+    assert!(
+        screen.contains("Save as:"),
+        "the save message must stay visible on an over-long path:\n{screen}"
+    );
+    assert!(
+        screen.contains("✓ untitled.txt"),
+        "the right segment should show the seeded filename:\n{screen}"
+    );
+}
+
 // quadraui#935 / #965: `show_folder_open_dialog` is deliberately outside
 // #965's scope (see that issue's own scope note and `tui::services`'s
 // module doc) and keeps the original unconditional-`None` TUI contract —
