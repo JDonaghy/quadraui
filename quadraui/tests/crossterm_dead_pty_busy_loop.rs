@@ -45,12 +45,11 @@
 //! (`wait_for_stdin_ready`, quadraui#1301) blocks — on this crate's own
 //! `poll(2)` call, never crossterm's — for the caller's real timeout,
 //! so a hangup landing while that call is in flight is the very thing
-//! that wakes it, closing the narrower window that remained here before
-//! #1301 (when `wait_events` only re-checked `stdin_hung_up` between
-//! `STDIN_HANGUP_POLL_SLICE`-sized delegated crossterm calls — see
+//! that wakes it, rather than something a periodic re-check has to race
+//! an already in-flight delegated crossterm call to notice — see
 //! `tests/pty_master_closed_during_wait.rs` for a test that reproduces
-//! that exact in-flight race and asserts it's now closed). The first
-//! two tests below exercise `TuiBackend` directly; the third exercises
+//! that exact in-flight race. The first two tests below exercise
+//! `TuiBackend` directly; the third exercises
 //! [`quadraui::tui::TuiRunner`] — the layer above it that turns
 //! `input_gone()` into a clean [`quadraui::tui::StepOutcome::Exited`].
 //!
@@ -73,163 +72,17 @@
 //! ```
 #![cfg(all(feature = "tui", unix))]
 
-use std::ffi::CStr;
-use std::os::fd::RawFd;
+#[path = "pty_support/mod.rs"]
+mod pty_support;
+
 use std::time::{Duration, Instant};
 
 use quadraui::tui::{StepOutcome, TuiBackend, TuiRunner};
-use quadraui::{AppLogic, Backend, Reaction, UiEvent};
+use quadraui::Backend;
 
-/// Opens a fresh pty pair via the raw POSIX `posix_openpt`/`grantpt`/
-/// `unlockpt`/`ptsname` dance (mirroring the issue's own minimal C
-/// probe). Both ends are left open and owned by the caller — most
-/// callers in this file want the master closed immediately (see
-/// [`open_pty_with_master_already_closed`]), but
-/// [`tui_runner_exits_once_its_pty_master_closes_under_it`] needs the
-/// master kept alive long enough for `TuiRunner::new`'s real terminal
-/// negotiation to succeed first.
-fn open_pty_pair() -> (RawFd, RawFd) {
-    // SAFETY: standard POSIX pty-allocation sequence. `posix_openpt`
-    // returns an owned fd on success (checked below); `grantpt`/
-    // `unlockpt` only operate on that fd; `ptsname` returns a pointer
-    // into thread-local/static storage that's immediately copied into
-    // an owned `CStr`-backed `Vec<u8>` before any further libc call can
-    // invalidate it.
-    unsafe {
-        let master_fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
-        assert!(
-            master_fd >= 0,
-            "posix_openpt failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(libc::grantpt(master_fd), 0, "grantpt failed");
-        assert_eq!(libc::unlockpt(master_fd), 0, "unlockpt failed");
-
-        let name_ptr = libc::ptsname(master_fd);
-        assert!(!name_ptr.is_null(), "ptsname returned null");
-        let slave_path = CStr::from_ptr(name_ptr).to_owned();
-
-        let slave_fd = libc::open(slave_path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
-        assert!(
-            slave_fd >= 0,
-            "open(slave) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-
-        (master_fd, slave_fd)
-    }
-}
-
-/// [`open_pty_pair`], then **closes the master immediately** — the slave
-/// fd returned is the only thing left alive, exactly the "pty master
-/// closed" condition quadraui#1295 is about. Zero bytes are ever
-/// written to either side, so there is nothing queued for the slave to
-/// drain before it reports pure EOF.
-fn open_pty_with_master_already_closed() -> RawFd {
-    let (master_fd, slave_fd) = open_pty_pair();
-    // SAFETY: `master_fd` is a plain, this-process-owned fd from
-    // `open_pty_pair` above, never dup'd — closing it here is exactly
-    // the "master side is now fully closed" condition this function
-    // promises its caller. No other fd in this process (or any other)
-    // points at it, so the slave's read end sees a permanent,
-    // unambiguous hangup with nothing buffered.
-    assert_eq!(unsafe { libc::close(master_fd) }, 0, "close(master) failed");
-    slave_fd
-}
-
-/// RAII guard that dup's `fd` onto `STDIN_FILENO` for its lifetime, and
-/// restores the test process's original stdin on drop — the save/
-/// restore half of the process-global-state caveat in this file's
-/// module doc.
-struct StdinOverride {
-    saved: RawFd,
-}
-
-impl StdinOverride {
-    fn install(fd: RawFd) -> Self {
-        // SAFETY: `dup`/`dup2` on process-owned fds; `STDIN_FILENO` (0)
-        // is always a valid fd number to target.
-        let saved = unsafe { libc::dup(libc::STDIN_FILENO) };
-        assert!(
-            saved >= 0,
-            "dup(stdin) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        let result = unsafe { libc::dup2(fd, libc::STDIN_FILENO) };
-        assert!(
-            result >= 0,
-            "dup2(fd, stdin) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        Self { saved }
-    }
-}
-
-impl Drop for StdinOverride {
-    fn drop(&mut self) {
-        // SAFETY: restoring the exact fd this process started with.
-        unsafe {
-            libc::dup2(self.saved, libc::STDIN_FILENO);
-            libc::close(self.saved);
-        }
-    }
-}
-
-/// Same as [`StdinOverride`], for `STDOUT_FILENO` — needed by
-/// [`tui_runner_exits_once_its_pty_master_closes_under_it`] because
-/// `TuiRunner::new` writes real terminal-setup escape sequences
-/// (alternate screen, raw mode, kitty-keyboard push) to stdout, not just
-/// stdin; without redirecting it too, that setup would land on this
-/// test binary's *real* stdout instead of the pty this test constructs.
-struct StdoutOverride {
-    saved: RawFd,
-}
-
-impl StdoutOverride {
-    fn install(fd: RawFd) -> Self {
-        // SAFETY: `dup`/`dup2` on process-owned fds; `STDOUT_FILENO` (1)
-        // is always a valid fd number to target.
-        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
-        assert!(
-            saved >= 0,
-            "dup(stdout) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        let result = unsafe { libc::dup2(fd, libc::STDOUT_FILENO) };
-        assert!(
-            result >= 0,
-            "dup2(fd, stdout) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        Self { saved }
-    }
-}
-
-impl Drop for StdoutOverride {
-    fn drop(&mut self) {
-        // SAFETY: restoring the exact fd this process started with.
-        unsafe {
-            libc::dup2(self.saved, libc::STDOUT_FILENO);
-            libc::close(self.saved);
-        }
-    }
-}
-
-/// The smallest possible [`AppLogic`] — this test only needs *something*
-/// for `TuiRunner::new` to call `setup`/`render` on; it never exercises
-/// any app-specific behaviour, so there's nothing to gain from reusing
-/// one of `examples/common`'s real demo apps here.
-struct MinimalApp;
-
-impl AppLogic for MinimalApp {
-    type AreaId = ();
-
-    fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
-
-    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        Reaction::Continue
-    }
-}
+use pty_support::{
+    open_pty_pair, open_pty_with_master_already_closed, MinimalApp, StdinOverride, StdoutOverride,
+};
 
 /// How long [`TuiBackend::wait_events`]/[`TuiBackend::poll_events`] are
 /// allowed to take once stdin has hung up. Generous relative to the
