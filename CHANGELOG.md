@@ -447,6 +447,26 @@ release time.
 
 ### Fixed
 
+- Example (`file_dialog`, both backends): the `FileDialogDemo` status bar
+  no longer loses the confirmed path's filename — or the whole outcome
+  message — when the picked path is longer than the bar is wide. The demo
+  painted the full absolute path as a *right* `StatusBarSegment`;
+  `StatusBar::layout` right-aligns the right group and paints it after
+  the left segments, so an over-long right segment is clipped from its
+  *tail* (dropping the filename) and, once wider than the bar itself,
+  lands at column 0 and blanks the message. Since the path is rooted at
+  the backend's `current_dir()` by default, whether that happened
+  depended purely on how deep the checkout sat — the demo's own driver
+  tests passed in a short checkout and failed in a deep one. The full
+  message now lives in a left segment (clipping harmlessly from its
+  tail) and only the path's final component goes in the short right
+  segment, matching the identical fix already carried by
+  `FolderPickerApp::status_bar`. `FileDialogDemo::with_initial_dir` is
+  new (mirroring `FolderPickerApp::with_root`) so the regression test can
+  root the dialogs in a directory it controls rather than inheriting the
+  checkout's location. Examples only — no library behaviour changes, and
+  no public quadraui item added, removed or changed, so there is no
+  downstream impact.
 - TUI: a process whose pty is closed out from under it no longer busy-spins
   forever at ~100% CPU (issue #1295) — crossterm 0.29's unix event source has
   a TTY read loop with no break arm for a bare `Ok(0)` (EOF) read, so once a
