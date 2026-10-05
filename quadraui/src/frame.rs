@@ -30,18 +30,17 @@
 //! one canonical paint path" for the authoring rule this implies for
 //! new primitives.
 //!
-//! ## Closing the `Surface` coverage gap (issue #1099)
+//! ## `Surface` coverage
 //!
-//! As of #1099, every primitive that has a `Backend::draw_*` method has
-//! a matching [`Surface`] variant — the 14 that didn't (`Board`,
-//! `CommandCenter`, `DiffView`, `DropOverlay`, `Image`, `MessageList`,
-//! `Minimap`, `PipelineView`, `Progress`, `SidebarPanel`, `Spinner`,
-//! `SplitTree`, `TextInput`, `Toolbar`) now do. `Backend::draw_<name>`
-//! stays reachable directly for the reasons above; what's gone is the
-//! asymmetry where some primitives categorically *couldn't* go through
-//! the declarative path at all.
+//! Every primitive that has a `Backend::draw_*` method has a matching
+//! [`Surface`] variant (`Board`, `CommandCenter`, `DiffView`,
+//! `DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
+//! `Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextInput`,
+//! `Toolbar` included). `Backend::draw_<name>` stays reachable directly
+//! for the reasons above; there is no primitive that is categorically
+//! unreachable through the declarative path.
 //!
-//! ## `FrameHitMap` gains serde — a step toward #1099's owned frame, not the owned frame
+//! ## `FrameHitMap` is serializable, but is not yet an owned `Frame`
 //!
 //! [`Surface<'a>`] borrows every primitive it paints — correct for a
 //! same-frame paint/hit-test pass, useless for anything that needs to
@@ -49,28 +48,27 @@
 //! web backend serializing a frame description across a WASM/JS
 //! boundary, or a record/replay harness persisting what was on screen
 //! at a given tick. [`FrameHitMap`] — already returned by
-//! [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`] — was already that
-//! shape's owned, lifetime-free counterpart for hit-testing purposes:
-//! it stores `(Rect, FrameZone)` pairs by value. As of #1099 both
-//! halves of that pair — [`Rect`] already did, [`FrameZone`] now does
-//! too — implement `serde::{Serialize, Deserialize}`, so
-//! [`FrameHitMap`] itself does, and [`FrameHitMap::zones`] /
-//! [`FrameHitMap::from_zones`] make the owned data readable and
-//! round-trippable instead of only probeable via [`FrameHitMap::hit_test`].
+//! [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`] — is that shape's
+//! owned, lifetime-free counterpart for hit-testing purposes: it stores
+//! `(Rect, FrameZone)` pairs by value. Both halves of that pair —
+//! [`Rect`] and [`FrameZone`] — implement `serde::{Serialize,
+//! Deserialize}`, so [`FrameHitMap`] itself does, and
+//! [`FrameHitMap::zones`] / [`FrameHitMap::from_zones`] make the owned
+//! data readable and round-trippable instead of only probeable via
+//! [`FrameHitMap::hit_test`].
 //!
-//! **This is not yet the owned `Frame` that #1099 asks for, and this
-//! PR does not claim to deliver it.** A `FrameZone` is a bare tag
-//! (e.g. `FrameZone::Tree { idx: 3 }`) plus a frame-local surface
-//! index whose meaning depends entirely on the `ScreenLayout` push
-//! order that produced it — it carries no primitive content, no
-//! accessibility role, no label, no value. It cannot by itself feed an
-//! AccessKit `TreeUpdate` node, cannot be re-painted by a web backend,
-//! and cannot replay a frame; a receiver on the other end of a wire
-//! has no way to recover what `idx: 3` even referred to unless it
-//! reproduces the exact same push order independently.
-//! `Surface<'a>`/`ScreenLayout<'a>` still borrow. Building an owned
-//! `Frame` tree that carries real content and roles is tracked as a
-//! follow-up to #1099 and is out of scope here; see
+//! **This is a step toward an owned `Frame`, not the owned `Frame`
+//! itself.** A `FrameZone` is a bare tag (e.g. `FrameZone::Tree { idx:
+//! 3 }`) plus a frame-local surface index whose meaning depends
+//! entirely on the `ScreenLayout` push order that produced it — it
+//! carries no primitive content, no accessibility role, no label, no
+//! value. It cannot by itself feed an AccessKit `TreeUpdate` node,
+//! cannot be re-painted by a web backend, and cannot replay a frame; a
+//! receiver on the other end of a wire has no way to recover what
+//! `idx: 3` even referred to unless it reproduces the exact same push
+//! order independently. `Surface<'a>`/`ScreenLayout<'a>` still borrow.
+//! Building an owned `Frame` tree that carries real content and roles
+//! remains tracked work, out of scope here; see
 //! `quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`'s "Owned
 //! `Frame`/`Surface` for bindings" row, which stays **Open** on exactly
 //! this evidence.
@@ -328,7 +326,7 @@ pub enum Surface<'a> {
         rect: Rect,
         view: &'a DiffView,
     },
-    /// Tab-drag highlight overlay (issue #1099). Unlike every other
+    /// Tab-drag highlight overlay. Unlike every other
     /// transient-overlay variant above (`Tooltip`, `ContextMenu`,
     /// `Dialog`, `Completions`, `RichTextPopup`), there is no `rect`
     /// or `*Layout.bounds` to carry — [`DropOverlay::bounds`] derives
@@ -393,10 +391,10 @@ pub enum Surface<'a> {
 
 /// Identifies which surface zone a point landed in.
 ///
-/// `Serialize`/`Deserialize` (issue #1099) so this type — and, with
+/// Implements `Serialize`/`Deserialize` so this type — and, with
 /// [`Rect`] (already serializable), [`FrameHitMap`] as a whole — can
 /// be persisted or sent across a process/wire boundary. See the module
-/// doc's "`FrameHitMap` gains serde" section.
+/// doc's "`FrameHitMap` is serializable" section.
 ///
 /// Every variant's `idx` is a **frame-local surface index**: its
 /// meaning depends entirely on the push order of the
@@ -465,15 +463,15 @@ pub enum FrameZone {
 ///
 /// Every `(Rect, FrameZone)` pair is stored by value, so unlike
 /// [`Surface<'a>`] a `FrameHitMap` carries no lifetime and can outlive
-/// the frame it was built from. As of #1099, `Rect` and `FrameZone`
-/// both implement `serde::{Serialize, Deserialize}`, so this struct
-/// derives them too — it can now be persisted or sent across a
-/// process/wire boundary. **This is a step toward #1099's owned
-/// `Frame`, not the owned frame itself**: a `FrameZone` carries no
-/// primitive content, role, label or value, only a bare tag and a
-/// frame-local index — see the module doc's "`FrameHitMap` gains
-/// serde" section for what that means for a receiver on the other end
-/// of a wire, and for what is still missing.
+/// the frame it was built from. `Rect` and `FrameZone` both implement
+/// `serde::{Serialize, Deserialize}`, so this struct derives them too
+/// — it can be persisted or sent across a process/wire boundary.
+/// **This is a step toward an owned `Frame`, not the owned frame
+/// itself**: a `FrameZone` carries no primitive content, role, label
+/// or value, only a bare tag and a frame-local index — see the module
+/// doc's "`FrameHitMap` is serializable" section for what that means
+/// for a receiver on the other end of a wire, and for what is still
+/// missing.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameHitMap {
     zones: Vec<(Rect, FrameZone)>,
@@ -489,7 +487,7 @@ impl FrameHitMap {
     }
 
     /// Build a [`FrameHitMap`] directly from owned `(Rect, FrameZone)`
-    /// pairs — the inverse of [`Self::zones`] (issue #1099). Lets a
+    /// pairs — the inverse of [`Self::zones`]. Lets a
     /// consumer that deserialized a frame shape (or otherwise built one
     /// independently of [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`])
     /// hand it back in for [`Self::hit_test`] to resolve clicks against,
@@ -506,7 +504,7 @@ impl FrameHitMap {
     /// The owned `(Rect, FrameZone)` pairs this hit map was built from,
     /// in the same back-to-front order they were pushed — the read
     /// half of the owned/serializable contract described in the module
-    /// doc (issue #1099). A consumer that wants more than point
+    /// doc. A consumer that wants more than point
     /// containment (enumerate every zone to build an accessibility
     /// tree, serialize the whole frame, diff two frames for
     /// record/replay) reads this directly instead of probing
@@ -1224,9 +1222,9 @@ mod tests {
         );
     }
 
-    /// Issue #1099: every primitive with a `Backend::draw_*` method now
-    /// has a matching `Surface` variant. Builds one of each of the 14
-    /// that didn't before #1099, pushes them all, and checks
+    /// Every primitive with a `Backend::draw_*` method has a matching
+    /// `Surface` variant. Builds one of each of the 14 that previously
+    /// lacked one, pushes them all, and checks
     /// `hit_map()` (no `&mut dyn Backend` needed — see
     /// `hit_map_registers_zones_without_a_backend` above for why that's
     /// safe) registers every one under the right `FrameZone` tag.
@@ -1440,9 +1438,9 @@ mod tests {
         assert_eq!(stops[0].0.as_str(), "pb");
     }
 
-    /// Issue #1099: `FrameHitMap` is the owned, serializable frame —
-    /// round-trips through JSON (exercising the new `FrameZone`
-    /// variants too) and reconstructs via `from_zones`/`zones`.
+    /// `FrameHitMap` is serializable: round-trips through JSON
+    /// (exercising the new `FrameZone` variants too) and reconstructs
+    /// via `from_zones`/`zones`.
     #[test]
     fn frame_hit_map_serde_round_trip() {
         let mut map = FrameHitMap::new();
