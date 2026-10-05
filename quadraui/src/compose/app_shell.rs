@@ -2754,7 +2754,10 @@ mod tests {
         let mut s = shell();
         let a = area();
         let l = s.layout(a, 1.0);
-        let outside = Point::new(l.activity_bar_bounds.x + l.activity_bar_bounds.width + 5.0, 1.0);
+        let outside = Point::new(
+            l.activity_bar_bounds.x + l.activity_bar_bounds.width + 5.0,
+            1.0,
+        );
 
         let ev = s.handle(
             &UiEvent::DoubleClick {
