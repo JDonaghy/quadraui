@@ -2,7 +2,7 @@
 //!
 //! Every other primitive in this crate is a closed shape — an app that
 //! wants a diagram, a custom gauge, a sparkline with bespoke decoration,
-//! or any pixel the 39 shipped primitives don't already draw has no way
+//! or any pixel the 40 other shipped primitives don't already draw has no way
 //! to put it on screen. `Canvas` is the escape hatch: a declarative list
 //! of [`DrawOp`]s (rect, rounded rect, line, path, text run, image,
 //! push/pop clip) that every backend paints through the same seam —
@@ -34,9 +34,9 @@
 //!
 //! | Op | TUI degrade |
 //! |---|---|
-//! | [`DrawOp::Rect`] / [`DrawOp::RoundedRect`] / [`DrawOp::Line`] / [`DrawOp::Path`] | **braille** — sub-cell dots, same packing as `Chart`'s line charts. `RoundedRect`'s `radius` is dropped (no sub-cell arc); the fill itself still renders. |
-//! | [`DrawOp::TextRun`] / [`DrawOp::Image`] | **cell-quantised** — text can't live inside a dot cell, so position snaps to the nearest whole cell. `Image` paints [`crate::Image::fallback_text`] the same way [`crate::Backend::draw_image`] already does for TUI, since there is still no pixel grid to decode bytes onto. |
-//! | [`DrawOp::PushClip`] / [`DrawOp::PopClip`] | **cell-quantised** — the clip rect's edges round outward to whole cells; shape ops inside it still paint at full braille resolution, just bounded to those cells. |
+//! | [`DrawOp::Rect`] / [`DrawOp::RoundedRect`] / [`DrawOp::Line`] / [`DrawOp::Path`] | **braille** — sub-cell dots, same packing as `Chart`'s line charts. `RoundedRect`'s `radius` is dropped (no sub-cell arc); `Line`/`Path`'s `stroke_width` is ignored entirely (a braille dot has no width to vary); the fill itself still renders. |
+//! | [`DrawOp::TextRun`] / [`DrawOp::Image`] | **cell-quantised** — text can't live inside a dot cell, so position snaps to the nearest whole cell. `Image` paints [`crate::Image::fallback_text`] the same way [`crate::Backend::draw_image`] already does for TUI, since there is still no pixel grid to decode bytes onto. A `TextRun`'s cell background always paints `theme.background`, never the colour of a shape underneath it — unlike a pixel backend, where `TextRun` paints transparently over whatever was already there. |
+//! | [`DrawOp::PushClip`] / [`DrawOp::PopClip`] | **cell-quantised** — the clip rect's edges round outward to whole cells; shape ops inside it still paint at full braille resolution, just bounded to those cells. A clipped `TextRun` is shifted to start at the clip edge rather than trimmed, so the characters that would have fallen outside the clip are not dropped — they are shown at the clip edge instead of hidden. |
 //!
 //! No op is **N/A** — every one produces a real, typed answer the app
 //! can see without branching on which backend is live, which is the
@@ -116,12 +116,17 @@ pub enum DrawOp {
     /// [`crate::Image`] for the decode contract; TUI paints
     /// `image.fallback_text` instead (module doc's degrade table).
     Image { rect: Rect, image: Image },
-    /// Push an axis-aligned clip rect. Must be balanced by a matching
-    /// [`DrawOp::PopClip`] later in `ops` — an unbalanced push/pop list
-    /// leaves every subsequent op in this `Canvas` clipped (pixel
-    /// backends) or clipped to whatever cell rect was last pushed (TUI),
-    /// which is very likely not what the author intended, but is not a
-    /// panic on any backend.
+    /// Push an axis-aligned clip rect. Should be balanced by a matching
+    /// [`DrawOp::PopClip`] later in `ops`; every rasteriser degrades a
+    /// malformed (unbalanced) push/pop list the same way, by construction
+    /// rather than passing it through to the backend: an extra `PopClip`
+    /// with no open `PushClip` is dropped instead of forwarded, and any
+    /// `PushClip` still open once `ops` runs out is closed automatically
+    /// before painting anything else. Either way the imbalance is
+    /// contained to this `Canvas` and never reaches a pixel backend's own
+    /// save/restore stack, where an unmatched pop (e.g. GTK's bare
+    /// `cr.restore()`) would otherwise corrupt every draw painted after it
+    /// for the rest of the frame.
     PushClip { rect: Rect },
     /// Pop the clip most recently pushed by [`DrawOp::PushClip`].
     PopClip,
@@ -218,6 +223,20 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(canvas: &Canvas, layout: &CanvasLayout, surface: &mut dyn PaintSurface) {
         let dx = layout.bounds.x;
         let dy = layout.bounds.y;
+        // Tracks how many `PushClip`s are currently open so a malformed
+        // `ops` list (app data is `Deserialize`, so this is one bad field
+        // away) can never hand `surface` an unbalanced push/pop pair. Every
+        // pixel backend's `surface_pop_clip` assumes a matching prior
+        // `surface_push_clip` ([`crate::paint_surface::PaintSurface`]'s own
+        // doc) — GTK's is a bare `cr.restore()` with no matching `save()`,
+        // which leaves the whole `cairo::Context` in a permanent error
+        // state for the rest of the frame, not just this canvas. A stray
+        // `PopClip` with no open push is dropped instead of forwarded, and
+        // any push still open when `ops` runs out is popped here before
+        // returning, matching `tui::canvas`'s own `clip_per_op` guard
+        // (`stack.len() > 1`) so both rasterisers degrade a malformed op
+        // list the same way.
+        let mut clip_depth: u32 = 0;
         for op in &canvas.ops {
             match op {
                 DrawOp::Rect { rect, color } => {
@@ -280,11 +299,20 @@ pub(crate) mod native_surface_paint {
                 }
                 DrawOp::PushClip { rect } => {
                     surface.surface_push_clip(translate_rect(*rect, dx, dy));
+                    clip_depth += 1;
                 }
                 DrawOp::PopClip => {
-                    surface.surface_pop_clip();
+                    if clip_depth > 0 {
+                        surface.surface_pop_clip();
+                        clip_depth -= 1;
+                    }
                 }
             }
+        }
+        // Close out any push left open by a malformed `ops` list so the
+        // imbalance can't leak past this canvas into the rest of the frame.
+        for _ in 0..clip_depth {
+            surface.surface_pop_clip();
         }
     }
 
@@ -506,6 +534,50 @@ pub(crate) mod native_surface_paint {
             paint(&c, &layout, &mut surface);
             assert_eq!(surface.clip_pushes.len(), 1);
             assert_eq!(surface.clip_pops, 1);
+        }
+
+        #[test]
+        fn extra_pop_clip_with_no_open_push_is_dropped_not_forwarded() {
+            // A `PopClip` with nothing open on the stack must never reach
+            // the surface: on GTK that would be a bare `cr.restore()` with
+            // no matching `cr.save()`, which corrupts the whole Cairo
+            // context for the rest of the frame.
+            let c = canvas(vec![
+                DrawOp::PopClip,
+                DrawOp::Rect {
+                    rect: Rect::new(0.0, 0.0, 5.0, 5.0),
+                    color: Color::rgb(9, 9, 9),
+                },
+            ]);
+            let layout = c.layout(Rect::new(0.0, 0.0, 50.0, 50.0));
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface);
+            assert_eq!(surface.clip_pops, 0);
+            // The rest of the op list still paints normally.
+            assert_eq!(surface.fills.len(), 1);
+        }
+
+        #[test]
+        fn unclosed_push_clip_is_popped_once_ops_run_out() {
+            // Two opens, one explicit close: the still-open push must be
+            // closed automatically rather than left on the surface's clip
+            // stack for whatever paints after this canvas.
+            let c = canvas(vec![
+                DrawOp::PushClip {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                },
+                DrawOp::PushClip {
+                    rect: Rect::new(1.0, 1.0, 5.0, 5.0),
+                },
+                DrawOp::PopClip,
+            ]);
+            let layout = c.layout(Rect::new(0.0, 0.0, 50.0, 50.0));
+            let mut surface = RecordingSurface::default();
+            paint(&c, &layout, &mut surface);
+            assert_eq!(surface.clip_pushes.len(), 2);
+            // One explicit pop plus one synthesised to close the leftover
+            // push: every push this canvas made is balanced by a pop.
+            assert_eq!(surface.clip_pops, 2);
         }
 
         #[test]

@@ -1,7 +1,7 @@
 //! `Canvas` primitive `AppLogic` ([`tui_canvas`] / [`gtk_canvas`], issue
 //! #1102).
 //!
-//! A custom gauge the 39 shipped primitives don't cover — exactly the
+//! A custom gauge the 40 other shipped primitives don't cover — exactly the
 //! scenario `Canvas`'s own module doc names as the escape hatch's
 //! reason to exist: a track ([`DrawOp::Rect`]), a proportional fill
 //! ([`DrawOp::Rect`]), a 50% tick mark ([`DrawOp::Line`]), and a

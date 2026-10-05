@@ -31,8 +31,7 @@
 //! cover it — does not cover it on TUI the way it would on a pixel
 //! backend. This is a real, documented divergence from "same ops, same
 //! backend-relative result" (D-014's bar is "same information", not
-//! "identical z-order on a backend with no sub-cell text at all") —
-//! named here rather than discovered by a future bug report.
+//! "identical z-order on a backend with no sub-cell text at all").
 //!
 //! Off-canvas line/path endpoints clamp to the dot grid's edge rather
 //! than draw into negative space — there is nothing past the grid to

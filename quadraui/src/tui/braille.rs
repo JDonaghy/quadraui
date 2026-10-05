@@ -41,39 +41,44 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
 /// indexed by the dot's own `(row, col)` position within the whole
 /// rendered grid (not just within its cell) so that the dither pattern
 /// tiles consistently across the entire minimap strip rather than
-/// repeating identically inside every cell (issue #1007).
+/// repeating identically inside every cell.
 ///
-/// [`super::minimap`]'s density view used to decide "is this dot set?" with
-/// a boolean OR over the dot's source-column bucket (`any(|c|
+/// [`super::minimap`]'s density view decides "is this dot set?" with a
+/// boolean OR over the dot's source-column bucket (`any(|c|
 /// !c.is_whitespace())`), which saturates every dot from the end of a
-/// line's indent onward as soon as the bucket widens past one column
-/// (#1000 widened it from one column to several, which made the
-/// saturation worse, not better — every row of real code ran to the
-/// strip's right edge with no line-length signal at all). An ordered
-/// dither spreads that "is there *any* code here" boolean across many
-/// dots' worth of threshold instead: a sparsely-covered bucket only lights
-/// up the small subset of dot positions whose threshold value happens to
-/// be low, while a fully-covered bucket lights up every position — which
-/// is what produces a raggedy, VS-Code-like right edge instead of a solid
-/// wall.
+/// line's indent onward as soon as the bucket widens past one column —
+/// every row of real code runs to the strip's right edge with no
+/// line-length signal at all. An ordered dither spreads that "is there
+/// *any* code here" boolean across many dots' worth of threshold instead:
+/// a sparsely-covered bucket only lights up the small subset of dot
+/// positions whose threshold value happens to be low, while a
+/// fully-covered bucket lights up every position — which is what produces
+/// a raggedy, VS-Code-like right edge instead of a solid wall.
 ///
 /// Pure integer arithmetic — one multiply and one compare, no floating
-/// point, no lookahead, no per-call allocation (issue #1007 acceptance
-/// criterion 4). A fully-covered bucket (`covered == bucket_width`)
-/// always returns `true` and an all-whitespace bucket (`covered == 0`)
-/// always returns `false` — dithering only has any effect strictly
-/// *between* those two extremes.
+/// point, no lookahead, no per-call allocation. A fully-covered bucket
+/// (`covered == bucket_width`) always returns `true` and an
+/// all-whitespace bucket (`covered == 0`) always returns `false` —
+/// dithering only has any effect strictly *between* those two extremes.
 ///
+/// Re-exported from [`crate::primitives::minimap`] rather than defined
+/// here: that module's `sample_blocks` uses the exact same matrix and
+/// threshold formula to make an analogous decision one granularity
+/// coarser — whether a *block*'s per-column coverage (several real
+/// buffer lines folded into one output row) reads back non-blank. A
+/// single shared definition makes both compositions provably the same
+/// dither policy applied twice, not two that happen to agree today.
+pub(crate) use crate::primitives::minimap::dither_threshold_met;
+
 /// Set every dot on the straight line between `(x0, y0)` and `(x1, y1)`
 /// in `grid` (indexed `grid[row][col]`, i.e. `grid[y][x]`), including
-/// both endpoints. Lifted out of `tui/chart.rs`'s line-chart painter
-/// into this shared module for the same reason every other dot-grid
-/// helper here lives in one place: [`super::chart`]'s line charts and
-/// [`super::canvas`]'s `DrawOp::Line`/`DrawOp::Path` degrade (design
-/// decision D-014) both need to connect two dot-grid coordinates with a
-/// solid stroke, and a second, independently-tuned copy of a
-/// line-rasterisation loop is exactly the kind of drift this module's
-/// own doc comment already warns about for the bit-packing table above.
+/// both endpoints. Shared by every rasteriser in this crate that needs to
+/// connect two dot-grid coordinates with a solid stroke — [`super::chart`]'s
+/// line charts and [`super::canvas`]'s `DrawOp::Line`/`DrawOp::Path`
+/// degrade both call this rather than keeping their own,
+/// independently-tuned copy of a line-rasterisation loop, which is
+/// exactly the kind of drift this module's own doc comment already warns
+/// about for the bit-packing table above.
 ///
 /// Out-of-bounds coordinates (`iy >= grid.len()` or `ix >= grid[0].len()`)
 /// are silently skipped rather than panicking — a caller that clamps its
@@ -82,15 +87,11 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
 /// step is a convex combination of two in-bounds points), so this guard
 /// is defensive rather than load-bearing.
 ///
-/// **`(x0, y0) == (x1, y1)` is a no-op**, matching the `tui/chart.rs`
-/// behaviour this was lifted from exactly (no silent behaviour change
-/// on the migration, per `PRIMITIVE_RULES.md`'s "don't batch a lift
-/// with a behaviour fix" rule) — every existing caller
-/// already sets a coincident single point's own dot itself before
-/// calling this for the *connecting* segment, so a caller that wants a
-/// lone point rendered when both endpoints coincide must set it
-/// separately; see [`super::canvas`]'s `DrawOp::Line` handling for an
-/// example.
+/// **`(x0, y0) == (x1, y1)` is a no-op** — every caller already sets a
+/// coincident single point's own dot itself before calling this for the
+/// *connecting* segment, so a caller that wants a lone point rendered
+/// when both endpoints coincide must set it separately; see
+/// [`super::canvas`]'s `DrawOp::Line` handling for an example.
 pub(crate) fn interpolate_dots(grid: &mut [Vec<bool>], x0: usize, y0: usize, x1: usize, y1: usize) {
     let dx = (x1 as isize - x0 as isize).abs();
     let dy = (y1 as isize - y0 as isize).abs();
@@ -107,18 +108,6 @@ pub(crate) fn interpolate_dots(grid: &mut [Vec<bool>], x0: usize, y0: usize, x1:
         }
     }
 }
-
-/// Re-exported from [`crate::primitives::minimap`] rather than defined
-/// here (issue #1012 pt. 2): that module's `sample_blocks` uses the exact
-/// same matrix and threshold formula to make an analogous decision one
-/// granularity coarser — whether a *block*'s per-column coverage (several
-/// real buffer lines folded into one output row) reads back non-blank.
-/// Before #1012 those were two independently-tuned copies — this one
-/// here, another grown separately in vimcode's own tree (vimcode#1085) —
-/// that nobody had reasoned about composing; a single shared definition
-/// makes both compositions provably the same dither policy applied
-/// twice, not two that happen to agree today.
-pub(crate) use crate::primitives::minimap::dither_threshold_met;
 
 #[cfg(test)]
 mod tests {
