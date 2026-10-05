@@ -46,10 +46,11 @@ rust-version = "1.97.1"
 # included in the published package") and skips them, it does not error.
 exclude = ["tests/", "benches/"]
 
-# docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`)
-# so a published crate actually renders all backends' public API instead of
-# just the always-on core (none of them are default features — see the
-# `[features]` table below). `rustdoc-args` sets `--cfg docsrs`, which is what
+# docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
+# `layout`) so a published crate actually renders all backends' public API
+# instead of just the always-on core (none of them are default features —
+# see the `[features]` table below). `rustdoc-args` sets `--cfg docsrs`, which
+# is what
 # `src/lib.rs`'s `#![cfg_attr(docsrs, feature(doc_cfg))]` and each
 # feature-gated `pub mod`'s `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]`
 # key off of, so the rendered docs show each backend module's feature
@@ -74,7 +75,7 @@ exclude = ["tests/", "benches/"]
 # step, which runs `cargo doc --features macos` for real on a `macos-latest`
 # runner.
 [package.metadata.docs.rs]
-features = ["tui", "gtk", "win", "terminal", "macos"]
+features = ["tui", "gtk", "win", "terminal", "macos", "layout"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
@@ -184,6 +185,11 @@ macos = [
     "dep:trash",
     "dep:keyring",
 ]
+# Optional flex/grid layout module, `quadraui::flex` (quadraui#1103). Pulls
+# in `taffy` — unit-agnostic (plain `f32` in, plain `f32` out, same as
+# `event::Rect`), so it pairs with any backend feature or none at all;
+# see `src/flex.rs`'s module doc for the design.
+layout = ["dep:taffy"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -258,6 +264,16 @@ trash = { version = "5", optional = true }
 # session, not a live desktop" reasoning as `trash`'s own comment above,
 # which is why this pulls in on TUI too instead of degrading.
 keyring = { version = "4", optional = true }
+# Optional — pulled in by the `layout` feature (quadraui#1103):
+# `quadraui::flex`'s flex/grid layout engine. `default-features = false`
+# drops taffy's own `serde`/`parse`/`profile`/`debug` extras this crate
+# never uses; `taffy_tree` is the owned-tree API `FlexLayout` wraps,
+# `flexbox`/`grid` are the two layout algorithms this module exposes,
+# `content_size` is needed for `Layout::scrollable_overflow_rect` to
+# exist at all (read internally by `taffy`'s own grid/flex code even
+# though `FlexLayout::compute` doesn't surface it), and `std` is this
+# crate's existing baseline (no `no_std` target in this workspace).
+taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree", "flexbox", "grid", "std", "content_size"], optional = true }
 
 [build-dependencies]
 # `build.rs`'s `pangoft2` probe (issue #1013, `gtk` feature only) — same

@@ -206,6 +206,15 @@ pub mod undo;
 #[cfg_attr(docsrs, doc(cfg(feature = "terminal")))]
 pub mod terminal_engine;
 
+// ── Optional flex/grid layout module (quadraui#1103) ─────────────────────────
+// Gated behind the `layout` feature so apps that hand-compute every `Rect`
+// today don't pull in `taffy`. Unit-agnostic (plain `f32` in, plain `f32`
+// out) and pairs with any backend feature, or none — see `flex`'s module
+// doc.
+#[cfg(feature = "layout")]
+#[cfg_attr(docsrs, doc(cfg(feature = "layout")))]
+pub mod flex;
+
 // Small LRU cache for decoded image rasterisations, shared by every pixel
 // backend's `Backend::draw_image` that actually uses it (#1014).
 // Crate-internal — only backend modules need it. `gtk` needs no
