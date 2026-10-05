@@ -620,6 +620,21 @@ which is `SMELL_AUDIT_2026-07.md` §7 Epic D's `D4` ("trait symmetry"),
 scoped separately because it touches 11 primitives' worth of
 `Surface`/`FrameZone` plumbing rather than a single decision.
 
+**Resolved by quadraui#1099.** By the time #1099 picked this up the gap
+had grown from 11 to 14 (Image, Minimap, and SplitTree had each grown a
+`Backend::draw_*` method with no `Surface` twin in the interim) — exact
+evidence of "this rule stops new drift; it does not retroactively
+backfill" above being true in practice, not just in theory. #1099
+closed all 14 in one pass: `Board`, `CommandCenter`, `DiffView`,
+`DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
+`Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextInput`, and
+`Toolbar` all now have a `Surface`/`FrameZone` variant and a
+`ScreenLayout::zone_for` arm. The "What this does NOT mean" bullets
+below described the pre-#1099 state (`Backend::draw_*` as the *only*
+path for an uncovered primitive) — that specific gap no longer exists,
+though the general point (`Backend::draw_*` stays public/non-deprecated
+regardless of `Surface` coverage) still holds.
+
 ### What this does NOT mean
 
 - It does not mean `Backend::draw_*` should get `#[doc(hidden)]` or

@@ -373,6 +373,24 @@ release time.
   live such call site. See `## Downstream impact` in the PR body for the
   grep, and the new `quadraui/tests/downstream_struct_literals.rs`, which
   fails this repo's own CI if a future change re-breaks that literal.
+- `Surface::Board`/`CommandCenter`/`DiffView`/`DropOverlay`/`Image`/
+  `MessageList`/`Minimap`/`PipelineView`/`Progress`/`SidebarPanel`/
+  `Spinner`/`SplitTree`/`TextInput`/`Toolbar` and the matching
+  `FrameZone` variants (issue #1099) — the 14 primitives that had a
+  `Backend::draw_*` method but no `Surface`/`FrameZone` twin (tracked
+  since the #456 audit, `docs/decisions/DECISIONS.md` D-006) now have
+  one, closing that gap. `DropOverlay::bounds()` — new, additive — gives
+  its `Surface`/`FrameZone` pair a zone rect to use, since (unlike the
+  other transient-overlay variants) it has no `rect` field or sibling
+  `*Layout.bounds` to borrow. `FrameHitMap::zones`/`FrameHitMap::from_zones`
+  and a `Serialize`/`Deserialize` derive on `FrameZone` and
+  `FrameHitMap` — `FrameHitMap` is quadraui's owned, lifetime-free
+  counterpart to the borrowing `Surface<'a>`, so it can now be read,
+  persisted, or sent across a process boundary (AccessKit, a future web
+  backend, record/replay) rather than only probed via `hit_test`. See
+  `quadraui/src/frame.rs`'s module doc for the full rationale. Purely
+  additive: no existing `Surface`/`FrameZone` variant, field, or method
+  changed shape.
 
 ### Changed
 

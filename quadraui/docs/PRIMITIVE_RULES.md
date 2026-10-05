@@ -398,13 +398,15 @@ consumer will paint it as one layer of a multi-primitive frame, not
 just as the sole content of its own pane), add its `Surface::<Name>` /
 `FrameZone::<Name>` variant and `ScreenLayout::zone_for` arm in the
 **same PR**. Skipping this is how the trait and `Surface` started drifting apart in
-the first place (11 primitives have a trait
-method but no `Surface` variant as of the #456 audit — Board,
-DiffView, PipelineView, Toolbar, SidebarPanel, TextInput, Spinner,
-Progress, CommandCenter, DropOverlay, MessageList). Backfilling that
-existing gap is tracked separately (`SMELL_AUDIT_2026-07.md` §7 Epic D,
-`D4`) — this rule stops it from growing, it doesn't retroactively close
-it.
+the first place — 11 primitives had a trait method but no `Surface`
+variant as of the #456 audit (Board, DiffView, PipelineView, Toolbar,
+SidebarPanel, TextInput, Spinner, Progress, CommandCenter, DropOverlay,
+MessageList), grown to 14 by the #1099 audit (the same 11, plus Image,
+Minimap, SplitTree). **Issue #1099 closed that backlog**: every one of
+those 14 now has a `Surface`/`FrameZone` variant — see `frame.rs`'s
+module doc, "Closing the `Surface` coverage gap." This rule's job now
+really is just to stop the gap from reopening, not to describe a
+standing backlog.
 
 **When `Backend::draw_*` direct calls are still the right choice**, even
 for a primitive that does have a `Surface` variant: a rasteriser's own
