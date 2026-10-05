@@ -55,6 +55,11 @@ release time.
 
 ### Added
 
+- `TuiBackend::input_gone()` (issue #1295) — `pub`, read by a host embedding
+  `TuiRunner` directly via `step`/`pump` to tell "the app chose to exit"
+  apart from "its pty's input fd disappeared out from under it." Latched by
+  the new dead-pty busy-loop guard described under `### Fixed` below; see
+  that entry for the behavior it exposes.
 - `TextInput::new`/`with_*`, `Toolbar::new`/`with_*`, `Editor::new`/`with_*`,
   and a `Default` impl for all three (issue #1108, phase 1 of #1251) — every
   field a consumer previously had to set via an exhaustive struct literal
@@ -408,6 +413,23 @@ release time.
 
 ### Fixed
 
+- TUI: a process whose pty is closed out from under it no longer busy-spins
+  forever at ~100% CPU (issue #1295) — crossterm 0.29's unix event source has
+  a TTY read loop with no break arm for a bare `Ok(0)` (EOF) read, so once a
+  pty's master side closes, every `read()` on the slave returns `Ok(0)`
+  forever with no way for the caller to interrupt it once that call is
+  entered. `TuiBackend::{poll_events,wait_events}` now run their own
+  non-blocking `poll(2)` on stdin first and refuse to delegate into
+  crossterm at all once `POLLHUP`/`POLLERR`/`POLLNVAL` is observed;
+  `TuiRunner::run_one` turns that into a clean exit via the new
+  `input_gone()` (`### Added` above) the same way `Reaction::Exit` already
+  does. The same guard also covers `caps::probe_kitty_keyboard`'s own,
+  separate crossterm entry point and the nested dialog event loop behind
+  `show_file_open_dialog`/`show_file_save_dialog`/`show_message_dialog`.
+  This narrows, rather than eliminates, a real race for a hangup that lands
+  while a wait is already in flight — see `STDIN_HANGUP_POLL_SLICE`'s doc
+  (`src/tui/backend.rs`) for what remains open and why closing it fully
+  would mean reimplementing crossterm's own reader.
 - Win-GUI (`WinBackend`) now paints 11 more `ChromePrimitive` rasterisers
   — `Tree`, `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
   `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
