@@ -3054,6 +3054,195 @@ mod win32 {
             }
             let _ = runner.join();
         }
+
+        /// A real click at the File menu's position inside a combined
+        /// title/menu band must reach the app as an ordinary `MouseDown`,
+        /// not get swallowed as a title-bar drag. The test above proves
+        /// `nc_hit_test`'s classification is right when the band and its
+        /// widgets are hand-registered (`LiveWindowApp::render` calls
+        /// `Backend::register_zone`/`draw_menu_bar` directly) — this one
+        /// proves the same real `WM_NCHITTEST` round trip when the band
+        /// comes from the actual consumer-shaped composition instead:
+        /// `AppShell`'s title-bar band (`ShellConfig::with_title_bar`)
+        /// hosting a `MenuSystem` menu bar, run through the real
+        /// `win::shell_runner::run_with_shell` — the same path
+        /// `examples/win_shell_menu.rs` exercises. A gap in how
+        /// `AppShell::render`/`MenuSystem::render` register their own
+        /// band-content zones (as opposed to a gap in `nc_hit_test`
+        /// itself, which the test above already covers) would show up
+        /// here even if that one still passed.
+        struct ShellProbeTargets {
+            file_item: Option<(f32, f32)>,
+            scale: f32,
+        }
+
+        struct LiveShellMenuApp {
+            menu_system: crate::MenuSystem,
+            targets: Arc<Mutex<ShellProbeTargets>>,
+        }
+
+        impl crate::ShellApp for LiveShellMenuApp {
+            fn render_content(&self, backend: &mut dyn Backend, layout: &crate::AppShellLayout) {
+                let Some(bar_rect) = layout.title_bar_bounds else {
+                    return;
+                };
+                self.menu_system.render(backend, bar_rect);
+
+                let bar = self.menu_system.menu_bar();
+                let menu_layout = backend.menu_bar_layout(bar_rect, &bar);
+                let file_item = menu_layout
+                    .visible_items
+                    .iter()
+                    .find(|v| v.clickable)
+                    .map(|v| {
+                        (
+                            v.bounds.x + v.bounds.width / 2.0,
+                            v.bounds.y + v.bounds.height / 2.0,
+                        )
+                    });
+
+                let mut targets = self.targets.lock().unwrap();
+                targets.file_item = file_item;
+                targets.scale = backend.viewport().scale;
+            }
+
+            fn handle(
+                &mut self,
+                event: UiEvent,
+                backend: &mut dyn Backend,
+                ctx: &crate::ShellContext,
+            ) -> Reaction {
+                if let UiEvent::WindowClose = event {
+                    return Reaction::Exit;
+                }
+                let Some(bar_rect) = ctx.title_bar_bounds() else {
+                    return Reaction::Continue;
+                };
+                match self.menu_system.handle(&event, backend, bar_rect) {
+                    crate::MenuEvent::Ignored => Reaction::Continue,
+                    _ => Reaction::Redraw,
+                }
+            }
+        }
+
+        /// Self-guarding, same posture as
+        /// `real_wm_nchittest_excludes_band_widgets_and_caps_the_empty_strip`
+        /// above.
+        #[test]
+        #[allow(clippy::print_stderr)]
+        fn real_wm_nchittest_reaches_the_file_menu_through_a_composed_shell() {
+            let targets = Arc::new(Mutex::new(ShellProbeTargets {
+                file_item: None,
+                scale: 1.0,
+            }));
+            let app = LiveShellMenuApp {
+                menu_system: crate::MenuSystem::new(vec![crate::MenuDef {
+                    id: crate::types::WidgetId::new("probe:file"),
+                    label: "&File".into(),
+                    disabled: false,
+                    items: vec![crate::ContextMenuItem {
+                        id: Some(crate::types::WidgetId::new("probe:new")),
+                        label: crate::StyledText::plain("New File"),
+                        ..Default::default()
+                    }],
+                }]),
+                targets: targets.clone(),
+            };
+            let title = format!(
+                "quadraui-shell-nchittest-probe-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let config = crate::ShellConfig::new(
+                title.clone(),
+                vec![crate::PanelDefinition {
+                    id: crate::types::WidgetId::new("probe:panel"),
+                    icon: "E".into(),
+                    tooltip: "Explorer".into(),
+                    title: "EXPLORER".into(),
+                }],
+            )
+            .with_title_bar(1.0);
+
+            let runner =
+                std::thread::spawn(move || crate::win::shell_runner::run_with_shell(app, config));
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let class_name = window_class_name(&title);
+            let hwnd = loop {
+                // SAFETY: `class_name` is a live `Vec<u16>` for the
+                // duration of this call.
+                let found = unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) };
+                if let Ok(hwnd) = found {
+                    break Some(hwnd);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(hwnd) = hwnd else {
+                eprintln!(
+                    "quadraui: skipping \
+                     real_wm_nchittest_reaches_the_file_menu_through_a_composed_shell — \
+                     the test window never became findable within 10s (no interactive \
+                     window station on this host?)"
+                );
+                return;
+            };
+
+            let ready = loop {
+                let snapshot_file = targets.lock().unwrap().file_item;
+                if let Some(file_item) = snapshot_file {
+                    break Some(file_item);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let Some(file_item) = ready else {
+                eprintln!(
+                    "quadraui: skipping \
+                     real_wm_nchittest_reaches_the_file_menu_through_a_composed_shell — \
+                     the window never painted a full frame within 10s"
+                );
+                // SAFETY: `hwnd` is still the live test window; `WM_CLOSE`
+                // is this window's normal user-close path.
+                unsafe {
+                    SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+                }
+                let _ = runner.join();
+                return;
+            };
+            let scale = targets.lock().unwrap().scale;
+
+            let lparam = dip_to_screen_lparam(hwnd, file_item, scale);
+            let result = {
+                // SAFETY: `hwnd` is still the live test window;
+                // `WM_NCHITTEST` is a pure query with no side effects to
+                // uphold beyond a live window.
+                unsafe { SendMessageW(hwnd, WM_NCHITTEST, Some(WPARAM(0)), Some(lparam)) }
+            };
+            let is_caption = result.0 as u32 == HTCAPTION;
+
+            // SAFETY: `hwnd` is still the live test window; `WM_CLOSE` is
+            // the normal user-close path `LiveShellMenuApp::handle` always
+            // resolves to `Reaction::Exit`.
+            unsafe {
+                SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+            }
+            let _ = runner.join();
+
+            assert!(
+                !is_caption,
+                "File menu item (through AppShell + MenuSystem): expected \
+                 not HTCAPTION (HTCLIENT) but WM_NCHITTEST returned {:#x} — \
+                 a real click here would be swallowed as a title-bar drag \
+                 instead of opening the dropdown (quadraui#1307)",
+                result.0
+            );
+        }
     }
 
     /// Proves the `IDLE_POLL_CEILING` safety net on a real `WM_TIMER`
