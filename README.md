@@ -103,9 +103,11 @@ comfortable with a pre-1.0 API.
   quadraui#900.
 - **Right-to-left text.** East-Asian character width is handled; RTL,
   bidi and complex shaping are not, and are out of scope.
-- **Custom drawing and free-form layout.** Apps compose the shipped
-  primitives and place them with `Rect` arithmetic. There is no public
-  canvas and no flex/grid layout engine yet (quadraui#1102, #1103).
+- **Custom drawing.** Apps compose the shipped primitives; there is no
+  public canvas yet (quadraui#1102). An optional flex/grid layout engine
+  exists (the `layout` feature, `quadraui::flex`, quadraui#1103) for apps
+  that would otherwise place those primitives with hand-computed `Rect`
+  arithmetic.
 - **Multiple windows** (quadraui#1120), and **languages other than Rust**
   (bindings are a later phase, quadraui#1096).
 
@@ -182,6 +184,9 @@ Pick the backends you ship; `terminal` is independent of them.
 - `win` — Windows backend (`quadraui::win`), via Direct2D + DirectWrite
   (`windows-rs`). Compiles on every host; only the WinAPI calls are
   `cfg(target_os = "windows")`.
+- `layout` — optional flex/grid layout module (`quadraui::flex`), via
+  [Taffy](https://github.com/DioxusLabs/taffy). Unit-agnostic (plain
+  `f32` in, plain `f32` out); pairs with any backend above, or none.
 
 ## What's in the box
 

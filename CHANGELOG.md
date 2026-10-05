@@ -55,6 +55,17 @@ release time.
 
 ### Added
 
+- New optional `layout` feature and `quadraui::flex` module (issue #1103)
+  — a flex/grid layout engine over [Taffy](https://github.com/DioxusLabs/taffy),
+  for the app-level `Rect` arithmetic (`AppLogic::render` stacking/tiling
+  panels by hand) every consumer previously wrote itself. Unit-agnostic —
+  plain `f32` in, plain `f32` out, same as `event::Rect` — so it pairs with
+  any backend feature, or none. `FlexLayout::add_leaf`/`add_container`
+  build a tree of re-exported `taffy::Style`s; `FlexLayout::compute`
+  returns a `NodeId` → `Rect` map in the same ABSOLUTE coordinate
+  convention `crate::layout` already documents. No existing primitive's
+  own `layout()` changes — see `src/flex.rs`'s module doc for the "what
+  this is not" scope note.
 - `TuiBackend::input_gone()` (issue #1295) — `pub`, read by a host embedding
   `TuiRunner` directly via `step`/`pump` to tell "the app chose to exit"
   apart from "its pty's input fd disappeared out from under it." Latched by
