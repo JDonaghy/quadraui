@@ -1109,6 +1109,27 @@ impl AppShell {
                 AppShellEvent::Ignored
             }
 
+            // A fast double-click landing on the activity bar (#1305) must
+            // behave exactly like the second of two single clicks there —
+            // `DoubleClickDetector` runs ahead of this `handle` call on
+            // every backend and folds a `MouseDown` into a `DoubleClick`
+            // whenever it lands within its radius of the previous
+            // `MouseDown` within the double-click window. Without this
+            // arm, that fold has no match here and silently falls through
+            // to `_ => AppShellEvent::Ignored`, dropping the click.
+            UiEvent::DoubleClick { position, .. } => {
+                let p = *position;
+
+                if contains(layout.activity_bar_bounds, p) {
+                    if let Some(hit) = self.cached_activity_hit(p) {
+                        return self.handle_activity_click(&hit);
+                    }
+                    return AppShellEvent::Consumed;
+                }
+
+                AppShellEvent::Ignored
+            }
+
             UiEvent::MouseMoved {
                 position,
                 buttons:
@@ -2583,6 +2604,167 @@ mod tests {
         // Toggle off.
         let ev = s.handle_activity_click(&WidgetId::new("panel:ext"));
         assert_eq!(ev, AppShellEvent::SidebarHidden);
+    }
+
+    // ── Double-click on the activity bar (#1305) ─────────────────────
+    //
+    // `DoubleClickDetector` runs ahead of `AppShell::handle` on every
+    // backend and folds a `MouseDown` into a `UiEvent::DoubleClick`
+    // whenever it lands within the detector's radius of the previous
+    // `MouseDown`, inside the double-click time window. Before this fix,
+    // `handle` had no arm for `DoubleClick` at all, so the fold always
+    // fell through to `_ => AppShellEvent::Ignored` — silently dropping
+    // the click regardless of where it landed.
+
+    /// Real paint → real hit zones → real click, via a `TuiBackend` frame
+    /// scope — not a synthetic `Rect`/`Point` — so this exercises the same
+    /// cached-hit path a live click goes through.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn double_click_on_activity_bar_same_icon_toggles_like_second_single_click() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut s = shell();
+        let a = area();
+        let mut backend = crate::tui::TuiBackend::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(a.width as u16, a.height as u16)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    s.render(b, a);
+                });
+            })
+            .expect("draw");
+
+        let ab = s
+            .cached_activity_bar_bounds
+            .borrow()
+            .expect("render populates the cached activity-bar bounds");
+        let explorer_hit = s
+            .cached_activity_hits
+            .borrow()
+            .iter()
+            .find(|h| h.id == WidgetId::new("panel:explorer"))
+            .cloned()
+            .expect("explorer icon hit");
+        let p = Point::new(ab.x, ab.y + explorer_hit.y_start);
+
+        // Explorer is already the active panel (default), so a plain
+        // MouseDown on its icon toggles the sidebar closed per
+        // `handle_activity_click`'s own toggle branch.
+        let ev = s.handle(
+            &UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: p,
+                modifiers: crate::types::Modifiers::default(),
+            },
+            &backend,
+            a,
+        );
+        assert_eq!(ev, AppShellEvent::SidebarHidden);
+
+        // Re-show it so the next click (the one under test) starts from
+        // the same "already active" state a real fast double-click would
+        // land in.
+        s.show_panel(&WidgetId::new("panel:explorer"));
+        assert!(s.sidebar_visible());
+
+        // A DoubleClick landing on the same icon must behave exactly like
+        // that second single click — toggle the sidebar closed again —
+        // not fall through to `AppShellEvent::Ignored`.
+        let ev = s.handle(
+            &UiEvent::DoubleClick {
+                widget: None,
+                position: p,
+            },
+            &backend,
+            a,
+        );
+        assert_eq!(
+            ev,
+            AppShellEvent::SidebarHidden,
+            "DoubleClick on an already-active activity-bar icon must toggle \
+             the sidebar closed, same as a second single click"
+        );
+    }
+
+    /// Adjacent-icon case: a `DoubleClick` whose position lands on a
+    /// *different* icon than the previous click (the TUI adjacent-row
+    /// fold described in #1305) must switch to that icon's panel, exactly
+    /// like a fresh single click there — not get dropped.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn double_click_on_activity_bar_different_icon_switches_panel() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut s = shell();
+        let a = area();
+        let mut backend = crate::tui::TuiBackend::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(a.width as u16, a.height as u16)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                backend.enter_frame_scope(frame, |b| {
+                    s.render(b, a);
+                });
+            })
+            .expect("draw");
+
+        let ab = s
+            .cached_activity_bar_bounds
+            .borrow()
+            .expect("render populates the cached activity-bar bounds");
+        let git_hit = s
+            .cached_activity_hits
+            .borrow()
+            .iter()
+            .find(|h| h.id == WidgetId::new("panel:git"))
+            .cloned()
+            .expect("git icon hit");
+        let p = Point::new(ab.x, ab.y + git_hit.y_start);
+
+        let ev = s.handle(
+            &UiEvent::DoubleClick {
+                widget: None,
+                position: p,
+            },
+            &backend,
+            a,
+        );
+        assert_eq!(
+            ev,
+            AppShellEvent::PanelChanged {
+                panel_id: WidgetId::new("panel:git")
+            },
+            "DoubleClick on a non-active activity-bar icon must switch to \
+             its panel, same as a plain MouseDown there"
+        );
+        assert_eq!(s.active_panel_id(), Some(&WidgetId::new("panel:git")));
+    }
+
+    /// A `DoubleClick` outside the activity-bar band must stay `Ignored`
+    /// — this arm must not swallow double-clicks everywhere, only hit-test
+    /// the same band the `MouseDown` arm does.
+    #[test]
+    fn double_click_outside_activity_bar_is_ignored() {
+        let mut s = shell();
+        let a = area();
+        let l = s.layout(a, 1.0);
+        let outside = Point::new(l.activity_bar_bounds.x + l.activity_bar_bounds.width + 5.0, 1.0);
+
+        let ev = s.handle(
+            &UiEvent::DoubleClick {
+                widget: None,
+                position: outside,
+            },
+            &RecordingBackend::new(),
+            a,
+        );
+        assert_eq!(ev, AppShellEvent::Ignored);
     }
 
     // ── Ignored events ──────────────────────────────────────────────
