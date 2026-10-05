@@ -4320,7 +4320,7 @@ impl Backend for WinBackend {
     /// absent (see e.g. [`Self::surface_fill_rect`]'s own doc), so
     /// calling it unconditionally is correct on every target: a real
     /// paint once attached, and the same graceful "nothing happened yet"
-    /// this file's other rasterisers reach for explicitly (issue #924).
+    /// this file's other rasterisers reach for explicitly.
     fn draw_canvas(
         &mut self,
         rect: Rect,

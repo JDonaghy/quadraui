@@ -1,7 +1,7 @@
-//! TUI rasteriser for [`crate::Canvas`] (issue #1102).
+//! TUI rasteriser for [`crate::Canvas`].
 //!
 //! See `crate::primitives::canvas`'s module doc for the full per-`DrawOp`
-//! degrade table (issue #1097/D-014). This file implements it:
+//! degrade table (design decision D-014). This file implements it:
 //!
 //! - [`crate::DrawOp::Rect`] / [`crate::DrawOp::RoundedRect`] /
 //!   [`crate::DrawOp::Line`] / [`crate::DrawOp::Path`] rasterise into the
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(layout.hit_test(0.0, 0.0), CanvasHit::Outside);
     }
 
-    /// Non-zero-origin regression guard (issue #505/LESSONS.md).
+    /// Non-zero-origin regression guard (see `LESSONS.md`).
     #[test]
     fn rect_op_paints_at_the_right_cell_with_a_nonzero_area_origin() {
         let area = RRect::new(7, 3, 10, 10);

@@ -3848,9 +3848,9 @@ pub trait Backend: sealed::Sealed {
     /// now (`PRIMITIVE_RULES.md` rule 7).
     fn draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
 
-    /// Paint a [`Canvas`]'s `ops` into `rect` (issue #1102). Every
-    /// `DrawOp` coordinate is LOCAL to `rect` — see [`Canvas`]'s own
-    /// module doc for the full coordinate-frame contract.
+    /// Paint a [`Canvas`]'s `ops` into `rect`. Every `DrawOp` coordinate
+    /// is LOCAL to `rect` — see [`Canvas`]'s own module doc for the full
+    /// coordinate-frame contract.
     ///
     /// The three pixel backends (GTK/macOS/Win) share one
     /// implementation, [`crate::primitives::canvas::native_surface_paint::paint`],
@@ -3860,7 +3860,7 @@ pub trait Backend: sealed::Sealed {
     /// theme colours and chrome metrics. TUI has no pixel grid, so it
     /// rasterises the same ops into cells instead of reporting
     /// `Unsupported` — see [`Canvas`]'s module doc's degrade table
-    /// (issue #1097/D-014: `Canvas` is a **degrade** capability, not
+    /// (design decision D-014: `Canvas` is a **degrade** capability, not
     /// N/A).
     ///
     /// No default impl — every backend implementer sees this as a
@@ -3870,9 +3870,9 @@ pub trait Backend: sealed::Sealed {
 
     /// Compute the canvas layout without painting.
     ///
-    /// Coordinate frame: **ABSOLUTE** — `bounds` is exactly `rect`
-    /// (issue #505) — see [`CanvasLayout`]'s own doc for why no backend
-    /// has any further metric to add.
+    /// Coordinate frame: **ABSOLUTE** — `bounds` is exactly `rect` —
+    /// see [`CanvasLayout`]'s own doc for why no backend has any
+    /// further metric to add.
     ///
     /// Defaulted: a pure function of `rect` alone (`CanvasLayout {
     /// bounds: rect }`), with no backend-specific input at all — a

@@ -67,14 +67,13 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
 /// Set every dot on the straight line between `(x0, y0)` and `(x1, y1)`
 /// in `grid` (indexed `grid[row][col]`, i.e. `grid[y][x]`), including
 /// both endpoints. Lifted out of `tui/chart.rs`'s line-chart painter
-/// (issue #1102) into this shared module for the same reason every
-/// other dot-grid helper here lives in one place: [`super::chart`]'s
-/// line charts and [`super::canvas`]'s `DrawOp::Line`/`DrawOp::Path`
-/// degrade (issue #1102/D-014) both need to connect two dot-grid
-/// coordinates with a solid stroke, and a second, independently-tuned
-/// copy of a line-rasterisation loop is exactly the kind of drift this
-/// module's own doc comment already warns about for the bit-packing
-/// table above.
+/// into this shared module for the same reason every other dot-grid
+/// helper here lives in one place: [`super::chart`]'s line charts and
+/// [`super::canvas`]'s `DrawOp::Line`/`DrawOp::Path` degrade (design
+/// decision D-014) both need to connect two dot-grid coordinates with a
+/// solid stroke, and a second, independently-tuned copy of a
+/// line-rasterisation loop is exactly the kind of drift this module's
+/// own doc comment already warns about for the bit-packing table above.
 ///
 /// Out-of-bounds coordinates (`iy >= grid.len()` or `ix >= grid[0].len()`)
 /// are silently skipped rather than panicking — a caller that clamps its
@@ -83,10 +82,10 @@ pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) ->
 /// step is a convex combination of two in-bounds points), so this guard
 /// is defensive rather than load-bearing.
 ///
-/// **`(x0, y0) == (x1, y1)` is a no-op**, matching the pre-#1102
-/// `tui/chart.rs` behaviour this was lifted from exactly (no silent
-/// behaviour change on the migration, per `PRIMITIVE_RULES.md`'s "don't
-/// batch a lift with a behaviour fix" rule) — every existing caller
+/// **`(x0, y0) == (x1, y1)` is a no-op**, matching the `tui/chart.rs`
+/// behaviour this was lifted from exactly (no silent behaviour change
+/// on the migration, per `PRIMITIVE_RULES.md`'s "don't batch a lift
+/// with a behaviour fix" rule) — every existing caller
 /// already sets a coincident single point's own dot itself before
 /// calling this for the *connecting* segment, so a caller that wants a
 /// lone point rendered when both endpoints coincide must set it
