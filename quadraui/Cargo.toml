@@ -1469,6 +1469,13 @@ name = "win_appshell_demo"
 path = "examples/win_appshell_demo.rs"
 required-features = ["win"]
 
+# Shell + `MenuSystem` regression demo, Win-GUI leg — same `ShellMenuDemo`
+# `tui_shell_menu`/`gtk_shell_menu` already run.
+[[example]]
+name = "win_shell_menu"
+path = "examples/win_shell_menu.rs"
+required-features = ["win"]
+
 # #662 — `Image` primitive + `MenuBar` leading-icon slot. Both entries are
 # mandatory (see #595's note above this same manifest for why): without an
 # explicit `[[example]]`, `gtk_image.rs` gets picked up by autodiscovery

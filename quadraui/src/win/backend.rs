@@ -763,8 +763,10 @@ pub struct WinBackend {
     /// the start of every frame by [`Self::begin_frame`], same lifecycle
     /// as `GtkBackend::zones`. Not `target_os`-gated: the zone list itself
     /// is a plain `Vec` with no WinAPI dependency, same rationale as
-    /// `events`/`user_events` above.
-    zones: Vec<crate::testing::ZoneRec>,
+    /// `events`/`user_events` above. `pub(crate)` so
+    /// [`super::testing::WinDriver::inventory`] can read it back, the
+    /// same way `GtkBackend::zones` already does for `GtkDriver::inventory`.
+    pub(crate) zones: Vec<crate::testing::ZoneRec>,
     /// Test-facing [`Backend::request_frame_in`] call-count/deadline
     /// bookkeeping (quadraui#1264), mirroring
     /// [`crate::tui::TuiBackend`]'s own `frame_scheduler` field — see

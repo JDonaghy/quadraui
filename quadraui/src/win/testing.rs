@@ -959,11 +959,14 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
     fn inventory(&self) -> FrameInventory {
         FrameInventory {
             text_runs: self.core.backend().text_runs().to_vec(),
-            // `WinBackend` doesn't yet call `Backend::register_zone`
-            // anywhere (no rasteriser wires it up) — no zone, rather than
-            // a wrong one, same posture `gtk`/`macos` take for any
-            // primitive that hasn't been wired to `register_zone` either.
-            zones: Vec::new(),
+            // Zones registered this frame via `Backend::register_zone` —
+            // `AppShell::render`'s shell-chrome zones (activity-bar items,
+            // sidebar header/content, status bar, title bar, ...) plus
+            // `WinBackend::draw_menu_bar`/`draw_status_bar_interactive`/
+            // `draw_command_center`'s own band-content zones. Primitives
+            // that don't yet call `register_zone` contribute no zone,
+            // mirroring `GtkDriver::inventory`/`MacDriver::inventory`.
+            zones: self.core.backend().zones.clone(),
         }
     }
 

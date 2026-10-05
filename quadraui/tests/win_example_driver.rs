@@ -31,6 +31,7 @@
 //!   equivalent internals.
 #![cfg(all(feature = "win", target_os = "windows"))]
 
+use quadraui::testing::ConformanceDriver;
 use quadraui::win::testing::{driver_with_shell, WinDriver};
 use quadraui::{
     Backend, Key, Modifiers, NamedKey, Reaction, Rect, Split, SplitDirection, UiEvent, WidgetId,
@@ -61,6 +62,10 @@ use panel_app::PanelApp;
 #[path = "../examples/common/menu_bar_app.rs"]
 mod menu_bar_app;
 use menu_bar_app::MenuBarApp;
+
+#[path = "../examples/common/shell_menu_demo.rs"]
+mod shell_menu_demo;
+use shell_menu_demo::ShellMenuDemo;
 
 #[path = "../examples/common/split_app.rs"]
 mod split_app;
@@ -415,6 +420,144 @@ fn menu_bar_clicking_view_item_opens_its_dropdown() {
     assert!(
         driver.screen_contains("menu open"),
         "clicking the View item should open its dropdown: {:?}",
+        driver.painted_texts()
+    );
+}
+
+// ─── ShellMenuDemo: menu bar inside AppShell's title-bar band ──────────────
+//
+// `ShellMenuDemo::config()` puts the `MenuSystem` inside `AppShell`'s
+// title-bar band (`ShellConfig::with_title_bar`) — on a live Win32 window
+// that band is exactly `WinBackend::nc_hit_test`'s `TITLE_BAR_DRAG_ZONE`.
+// A click at the File menu's position in that band must reach the app as
+// an ordinary `MouseDown`, not get swallowed as a title-bar drag.
+// `driver_with_shell`/`WinDriver` dispatch straight to `UiEvent`s and
+// never send a real `WM_NCHITTEST`, so this test can't reproduce an
+// OS-level swallow itself — it proves the composed `AppShell` +
+// `MenuSystem` *logic* opens the dropdown on a title-band click (the half
+// `win::run`'s `live_window_nchittest_tests` module doesn't cover, since
+// that module's probe app registers the band and widgets by hand rather
+// than composing them through `AppShell`/`MenuSystem`).
+// `real_wm_nchittest_reaches_the_file_menu_through_a_composed_shell` in
+// that same module is the live-window half that *does* send a real
+// `WM_NCHITTEST` at this exact composition.
+const SHELL_MENU_W: u32 = 800;
+const SHELL_MENU_H: u32 = 480;
+
+/// Clicking "File" in the shell's title-bar band must open its dropdown —
+/// `AppShell::handle` doesn't intercept title-bar clicks, so this reaches
+/// `MenuSystem` as an ordinary `MouseDown`.
+#[test]
+fn shell_menu_file_click_in_title_bar_band_opens_dropdown() {
+    let config = ShellMenuDemo::config();
+    let mut driver = driver_with_shell(ShellMenuDemo::new(), config, SHELL_MENU_W, SHELL_MENU_H);
+
+    // "File"'s painted *center* must fall inside the registered
+    // `app-shell:title-bar` zone (quadraui#490's "no hardcoded
+    // coordinates" vocabulary) — not full-bounds containment
+    // (`FrameInventory::inside`), since DirectWrite's glyph box for a
+    // single text run can extend a point or two past a tightly-fit
+    // one-line-height row without the click point itself ever landing
+    // outside the band.
+    let inventory = ConformanceDriver::inventory(&driver);
+    let title_bar = inventory
+        .zones()
+        .iter()
+        .find(|z| z.id.as_str() == "app-shell:title-bar")
+        .unwrap_or_else(|| {
+            panic!(
+                "app-shell:title-bar zone should be registered: {:?}",
+                inventory.zones()
+            )
+        })
+        .bounds;
+    let (file_x, file_y) = driver.find("File").unwrap_or_else(|| {
+        panic!(
+            "File menu label should be painted: {:?}",
+            driver.painted_texts()
+        )
+    });
+    assert!(
+        file_x >= title_bar.x
+            && file_x <= title_bar.x + title_bar.width
+            && file_y >= title_bar.y
+            && file_y <= title_bar.y + title_bar.height,
+        "test setup bug: \"File\"'s painted center ({file_x}, {file_y}) must \
+         fall inside app-shell:title-bar's band ({title_bar:?}) to \
+         reproduce this issue, but it doesn't: {:?}",
+        driver.painted_texts()
+    );
+    assert!(
+        !driver.screen_contains("New File"),
+        "dropdown starts closed: {:?}",
+        driver.painted_texts()
+    );
+    // `mouse_down`, not `click`: see `menu_bar_clicking_view_item_opens_its_dropdown`'s
+    // doc above for why `WinDriver::click`'s extra release would close the
+    // dropdown straight back up within the same call.
+    let reaction = driver.mouse_down(file_x, file_y);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "clicking File in the title-bar band should open its dropdown and redraw"
+    );
+    assert!(
+        driver.screen_contains("New File") && driver.screen_contains("Open File"),
+        "clicking File should open a dropdown listing File's commands: {:?}",
+        driver.painted_texts()
+    );
+
+    // `MenuSystem::handle_mouse_down` activates on press (same comment
+    // above), so a single further `mouse_down` on the item is enough.
+    let (item_x, item_y) = driver
+        .find("New File")
+        .expect("New File item should be painted after opening the dropdown");
+    let reaction = driver.mouse_down(item_x, item_y);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "activating a dropdown item should redraw"
+    );
+    assert!(
+        driver.screen_contains("activated: new"),
+        "clicking a dropdown item should activate it: {:?}",
+        driver.painted_texts()
+    );
+}
+
+/// Sanity check for the shell's chrome hit-testing: with no dropdown open,
+/// a click inside the activity bar strip must still behave as a normal
+/// chrome click (toggle/switch panels). The activity bar paints before the
+/// sidebar header (`AppShell::render`), so `find("E")` resolves to the
+/// Explorer row's own icon glyph, not the sidebar header's "EXPLORER"
+/// title painted afterwards.
+#[test]
+fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
+    let mut driver = driver_with_shell(
+        ShellMenuDemo::new(),
+        ShellMenuDemo::config(),
+        SHELL_MENU_W,
+        SHELL_MENU_H,
+    );
+
+    let (x, y) = driver.find("E").unwrap_or_else(|| {
+        panic!(
+            "Explorer's activity-bar icon should be painted: {:?}",
+            driver.painted_texts()
+        )
+    });
+    let reaction = driver.mouse_down(x, y);
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "clicking the active panel's own activity-bar row should redraw"
+    );
+
+    assert!(
+        driver.screen_contains("Sidebar hidden"),
+        "clicking the active panel's activity-bar row with no modal open \
+         should still be handled by shell chrome \
+         (AppShellEvent::SidebarHidden): {:?}",
         driver.painted_texts()
     );
 }
