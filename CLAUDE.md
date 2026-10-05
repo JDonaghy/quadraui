@@ -266,6 +266,14 @@ turns a serialized lane into a rebase conflict.
 - `PascalCase` types, `snake_case` functions/vars.
 - Tests in `#[cfg(test)] mod tests` at file bottom.
 - Doc comments on public types/functions; `//!` module headers describe intent + invariants.
+- **Comments describe the code as it is, never its history.** No issue numbers (`#123`) and no
+  history phrases ("used to", "no longer", "before #", "this PR", "the reviewer", "adversarial
+  review") in `//`/`#` comments. That history goes in the commit message. CI's
+  **Comment-history lint (ratchet)** (`tools/comment_history_lint.py`) counts both per module
+  and fails a PR that raises any module's count, so a stray `// see #1234` is a red PR and a
+  wasted fix round. Run `python3 tools/comment_history_lint.py` before pushing. The only
+  exception is a load-bearing workaround reference whose removal is gated on that issue
+  closing (policy: `CONTRIBUTING.md` "Comment policy").
 
 ## Commit conventions
 
