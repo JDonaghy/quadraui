@@ -206,6 +206,22 @@ impl DropOverlay {
     /// width/height would otherwise be thinner (e.g. a zero-width bar
     /// from [`drop_zone_overlay`]).
     pub const MIN_BAR_THICKNESS: f32 = 2.0;
+
+    /// The rect a hit-test / accessibility consumer should treat as
+    /// this overlay's bounds — [`Self::highlight`] if present,
+    /// otherwise [`Self::insertion_bar`], otherwise a zero-sized
+    /// [`Rect::default`] (an overlay with neither carries no visible
+    /// geometry, same as `drop_zone_overlay` never constructing one).
+    ///
+    /// Added for [`crate::frame::Surface::DropOverlay`] (issue #1099):
+    /// unlike every other transient-overlay `Surface` variant (`Tooltip`,
+    /// `ContextMenu`, `Dialog`, `Completions`, `RichTextPopup`), this
+    /// primitive has no sibling `*Layout` type carrying a single
+    /// `bounds` field to borrow — this method is that single source of
+    /// truth instead.
+    pub fn bounds(&self) -> Rect {
+        self.highlight.or(self.insertion_bar).unwrap_or_default()
+    }
 }
 
 /// Compute overlay geometry for a drop zone.
@@ -675,5 +691,36 @@ mod tests {
         assert_eq!(bar.x, 39.0); // midpoint of prev_end(40) and next_start(40) = 40, minus half thickness
         assert_eq!(bar.width, 2.0);
         assert_eq!(bar.height, 20.0);
+    }
+
+    /// Added for [`crate::frame::Surface::DropOverlay`] (issue #1099):
+    /// `bounds()` is this primitive's only source of a zone rect, so
+    /// it needs its own direct coverage independent of the
+    /// `Surface`/`FrameHitMap` round-trip test in `frame.rs`.
+    #[test]
+    fn bounds_prefers_highlight_then_insertion_bar_then_default() {
+        let highlight = Rect::new(1.0, 2.0, 3.0, 4.0);
+        let bar = Rect::new(5.0, 6.0, 7.0, 8.0);
+
+        let both = DropOverlay {
+            highlight: Some(highlight),
+            insertion_bar: Some(bar),
+            ghost_position: None,
+        };
+        assert_eq!(both.bounds(), highlight);
+
+        let bar_only = DropOverlay {
+            highlight: None,
+            insertion_bar: Some(bar),
+            ghost_position: None,
+        };
+        assert_eq!(bar_only.bounds(), bar);
+
+        let neither = DropOverlay {
+            highlight: None,
+            insertion_bar: None,
+            ghost_position: None,
+        };
+        assert_eq!(neither.bounds(), Rect::default());
     }
 }

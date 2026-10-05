@@ -24,11 +24,44 @@
 //! and GTK's identical call site instead pushed a `Surface::Palette`,
 //! for no reason but that both APIs existed. `Backend::draw_<name>`
 //! remains public, low-level API — `ScreenLayout::draw` calls it
-//! internally, some primitives have no `Surface` variant yet, and
-//! rasteriser tests / compose helpers call it directly by design. See
-//! `quadraui/docs/decisions/DECISIONS.md` D-006 for the full decision and
-//! `quadraui/docs/PRIMITIVE_RULES.md` "One primitive, one canonical
-//! paint path" for the authoring rule this implies for new primitives.
+//! internally, and rasteriser tests / compose helpers call it directly
+//! by design. See `quadraui/docs/decisions/DECISIONS.md` D-006 for the
+//! full decision and `quadraui/docs/PRIMITIVE_RULES.md` "One primitive,
+//! one canonical paint path" for the authoring rule this implies for
+//! new primitives.
+//!
+//! ## Closing the `Surface` coverage gap (issue #1099)
+//!
+//! As of #1099, every primitive that has a `Backend::draw_*` method has
+//! a matching [`Surface`] variant — the 14 that didn't (`Board`,
+//! `CommandCenter`, `DiffView`, `DropOverlay`, `Image`, `MessageList`,
+//! `Minimap`, `PipelineView`, `Progress`, `SidebarPanel`, `Spinner`,
+//! `SplitTree`, `TextInput`, `Toolbar`) now do. `Backend::draw_<name>`
+//! stays reachable directly for the reasons above; what's gone is the
+//! asymmetry where some primitives categorically *couldn't* go through
+//! the declarative path at all.
+//!
+//! ## `FrameHitMap` as the owned, serializable frame (issue #1099)
+//!
+//! [`Surface<'a>`] borrows every primitive it paints — correct for a
+//! same-frame paint/hit-test pass, useless for anything that needs to
+//! outlive the frame: an accessibility tree snapshot (AccessKit), a
+//! web backend serializing a frame description across a
+//! WASM/JS boundary, or a record/replay harness persisting what was on
+//! screen at a given tick. [`FrameHitMap`] — already returned by
+//! [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`] — is that owned
+//! counterpart: it stores `(Rect, FrameZone)` pairs by value, carries
+//! no lifetime, and (as of #1099) both halves of that pair —
+//! [`Rect`] already did, [`FrameZone`] now does too — implement
+//! `serde::{Serialize, Deserialize}`, so [`FrameHitMap`] itself does.
+//! [`FrameHitMap::zones`] exposes the owned data for a consumer that
+//! wants to read it directly (build an AccessKit tree node per zone,
+//! ship it over a wire, replay it later) rather than only hit-testing
+//! against it, and [`FrameHitMap::from_zones`] is the inverse — a
+//! deserialized or otherwise independently-constructed frame shape can
+//! be handed back in for [`FrameHitMap::hit_test`] to resolve clicks
+//! against, exactly as if [`ScreenLayout::draw`] had produced it this
+//! frame.
 
 //! ## Presence gating + the paint/hit-test order invariant (issue #774)
 //!
@@ -109,28 +142,42 @@
 
 use crate::event::Rect;
 use crate::primitives::activity_bar::ActivityBar;
+use crate::primitives::board::BoardModel;
 use crate::primitives::chart::Chart;
+use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::DataTable;
 use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::diff_view::DiffView;
+use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::Form;
+use crate::primitives::image::Image;
 use crate::primitives::list::ListView;
 use crate::primitives::menu_bar::MenuBar;
+use crate::primitives::message_list::MessageList;
+use crate::primitives::minimap::Minimap;
 use crate::primitives::multi_section_view::MultiSectionView;
 use crate::primitives::palette::Palette;
 use crate::primitives::panel::Panel;
+use crate::primitives::pipeline_view::PipelineView;
+use crate::primitives::progress::ProgressBar;
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
+use crate::primitives::sidebar_panel::SidebarPanel;
+use crate::primitives::spinner::Spinner;
 use crate::primitives::split::Split;
+use crate::primitives::split_tree::SplitTree;
 use crate::primitives::status_bar::StatusBar;
 use crate::primitives::tab_bar::TabBar;
 use crate::primitives::terminal::Terminal;
 use crate::primitives::text_display::TextDisplay;
+use crate::primitives::text_input::TextInput;
 use crate::primitives::toast::ToastOverlay;
+use crate::primitives::toolbar::Toolbar;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeView;
 use crate::types::WidgetId;
@@ -249,10 +296,88 @@ pub enum Surface<'a> {
         hovered_point: Option<(usize, usize)>,
         crosshair_x: Option<f64>,
     },
+    Board {
+        rect: Rect,
+        model: &'a BoardModel,
+    },
+    CommandCenter {
+        rect: Rect,
+        cc: &'a CommandCenter,
+    },
+    DiffView {
+        rect: Rect,
+        view: &'a DiffView,
+    },
+    /// Tab-drag highlight overlay (issue #1099). Unlike every other
+    /// transient-overlay variant above (`Tooltip`, `ContextMenu`,
+    /// `Dialog`, `Completions`, `RichTextPopup`), there is no `rect`
+    /// or `*Layout.bounds` to carry — [`DropOverlay::bounds`] derives
+    /// the zone rect from `overlay` itself.
+    DropOverlay {
+        overlay: &'a DropOverlay,
+    },
+    Image {
+        rect: Rect,
+        image: &'a Image,
+    },
+    MessageList {
+        rect: Rect,
+        list: &'a MessageList,
+    },
+    Minimap {
+        rect: Rect,
+        minimap: &'a Minimap,
+    },
+    PipelineView {
+        rect: Rect,
+        view: &'a PipelineView,
+    },
+    Progress {
+        rect: Rect,
+        bar: &'a ProgressBar,
+    },
+    /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
+    /// `Surface` is a per-frame description, not owned
+    /// [`crate::interaction::InteractionState`], so [`ScreenLayout::draw`]
+    /// rebuilds one from these two borrowed ids at the call boundary.
+    SidebarPanel {
+        rect: Rect,
+        panel: &'a SidebarPanel,
+        hovered: Option<&'a WidgetId>,
+        pressed: Option<&'a WidgetId>,
+    },
+    Spinner {
+        rect: Rect,
+        spinner: &'a Spinner,
+    },
+    /// Structural chrome, like [`Surface::Split`] — a divider set with
+    /// no independent focusable identity, so excluded from
+    /// [`ScreenLayout::tab_stops`].
+    SplitTree {
+        rect: Rect,
+        tree: &'a SplitTree,
+    },
+    TextInput {
+        rect: Rect,
+        ti: &'a TextInput,
+    },
+    /// See [`Surface::SidebarPanel`]'s doc for why `hovered`/`pressed`
+    /// are borrowed ids rather than an owned `InteractionState`.
+    Toolbar {
+        rect: Rect,
+        bar: &'a Toolbar,
+        hovered: Option<&'a WidgetId>,
+        pressed: Option<&'a WidgetId>,
+    },
 }
 
 /// Identifies which surface zone a point landed in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` (issue #1099) so this type — and, with
+/// [`Rect`] (already serializable), [`FrameHitMap`] as a whole — can
+/// be persisted or sent across a process/wire boundary. See the module
+/// doc's "`FrameHitMap` as the owned, serializable frame" section.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FrameZone {
     Editor { idx: usize },
     TabBar { idx: usize },
@@ -279,12 +404,36 @@ pub enum FrameZone {
     Toast { idx: usize },
     DataTable { idx: usize },
     Chart { idx: usize },
+    Board { idx: usize },
+    CommandCenter { idx: usize },
+    DiffView { idx: usize },
+    DropOverlay { idx: usize },
+    Image { idx: usize },
+    MessageList { idx: usize },
+    Minimap { idx: usize },
+    PipelineView { idx: usize },
+    Progress { idx: usize },
+    SidebarPanel { idx: usize },
+    Spinner { idx: usize },
+    SplitTree { idx: usize },
+    TextInput { idx: usize },
+    Toolbar { idx: usize },
     Empty,
 }
 
 /// Hit regions collected during [`ScreenLayout::draw`]. Resolves
 /// absolute coordinates to the highest-z surface that contains them.
-#[derive(Default)]
+///
+/// This is quadraui's **owned, serializable frame** (issue #1099):
+/// every `(Rect, FrameZone)` pair is stored by value, so unlike
+/// [`Surface<'a>`] a `FrameHitMap` carries no lifetime and can outlive
+/// the frame it was built from — handed to an accessibility bridge,
+/// serialized across a web backend's WASM/JS boundary, or persisted by
+/// a record/replay harness. `Rect` and `FrameZone` both implement
+/// `serde::{Serialize, Deserialize}`, so this struct derives them too.
+/// See the module doc's "`FrameHitMap` as the owned, serializable
+/// frame" section for the full rationale.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameHitMap {
     zones: Vec<(Rect, FrameZone)>,
 }
@@ -296,6 +445,30 @@ impl FrameHitMap {
 
     fn push(&mut self, rect: Rect, zone: FrameZone) {
         self.zones.push((rect, zone));
+    }
+
+    /// Build a [`FrameHitMap`] directly from owned `(Rect, FrameZone)`
+    /// pairs — the inverse of [`Self::zones`] (issue #1099). Lets a
+    /// consumer that deserialized a frame shape (or otherwise built one
+    /// independently of [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`])
+    /// hand it back in for [`Self::hit_test`] to resolve clicks against,
+    /// in the same back-to-front z-order `ScreenLayout` would have
+    /// produced (last entry wins ties, matching [`Self::hit_test`]'s
+    /// "highest-z match" contract).
+    pub fn from_zones(zones: Vec<(Rect, FrameZone)>) -> Self {
+        Self { zones }
+    }
+
+    /// The owned `(Rect, FrameZone)` pairs this hit map was built from,
+    /// in the same back-to-front order they were pushed — the read
+    /// half of the owned/serializable contract described in the module
+    /// doc (issue #1099). A consumer that wants more than point
+    /// containment (enumerate every zone to build an accessibility
+    /// tree, serialize the whole frame, diff two frames for
+    /// record/replay) reads this directly instead of probing
+    /// [`Self::hit_test`] pixel by pixel.
+    pub fn zones(&self) -> &[(Rect, FrameZone)] {
+        &self.zones
     }
 
     /// Find which zone contains `(x, y)`. Returns the highest-z match
@@ -457,6 +630,66 @@ impl<'a> ScreenLayout<'a> {
                 } => {
                     backend.draw_chart(*rect, chart, *hovered_point, *crosshair_x);
                 }
+                Surface::Board { rect, model } => {
+                    backend.draw_board(*rect, model);
+                }
+                Surface::CommandCenter { rect, cc } => {
+                    backend.draw_command_center(*rect, cc);
+                }
+                Surface::DiffView { rect, view } => {
+                    backend.draw_diff_view(*rect, view);
+                }
+                Surface::DropOverlay { overlay } => {
+                    backend.draw_drop_overlay(overlay);
+                }
+                Surface::Image { rect, image } => {
+                    backend.draw_image(*rect, image);
+                }
+                Surface::MessageList { rect, list } => {
+                    backend.draw_message_list(*rect, list);
+                }
+                Surface::Minimap { rect, minimap } => {
+                    backend.draw_minimap(*rect, minimap);
+                }
+                Surface::PipelineView { rect, view } => {
+                    backend.draw_pipeline_view(*rect, view);
+                }
+                Surface::Progress { rect, bar } => {
+                    backend.draw_progress(*rect, bar);
+                }
+                Surface::SidebarPanel {
+                    rect,
+                    panel,
+                    hovered,
+                    pressed,
+                } => {
+                    let interaction = crate::interaction::InteractionState::from_parts(
+                        hovered.cloned(),
+                        pressed.cloned(),
+                    );
+                    backend.draw_sidebar_panel_interactive(*rect, panel, &interaction);
+                }
+                Surface::Spinner { rect, spinner } => {
+                    backend.draw_spinner(*rect, spinner);
+                }
+                Surface::SplitTree { rect, tree } => {
+                    backend.draw_split_tree(*rect, tree);
+                }
+                Surface::TextInput { rect, ti } => {
+                    backend.draw_text_input(*rect, ti);
+                }
+                Surface::Toolbar {
+                    rect,
+                    bar,
+                    hovered,
+                    pressed,
+                } => {
+                    let interaction = crate::interaction::InteractionState::from_parts(
+                        hovered.cloned(),
+                        pressed.cloned(),
+                    );
+                    backend.draw_toolbar_interactive(*rect, bar, &interaction);
+                }
             }
 
             let (rect, zone) = Self::zone_for(idx, surface);
@@ -494,12 +727,13 @@ impl<'a> ScreenLayout<'a> {
     /// Only surfaces that carry both a plain `rect` and an owning
     /// [`WidgetId`] participate. Excluded, deliberately:
     /// - Transient overlays (`Tooltip`, `ContextMenu`, `Dialog`,
-    ///   `Completions`, `RichTextPopup`, `FindReplace`, `Toast`) —
-    ///   these already own their own internal focus/dismiss handling
-    ///   while open, and being modal, nothing behind them should be
-    ///   Tab-reachable anyway.
-    /// - Structural chrome (`Split`, `Scrollbar`) — containers/controls
-    ///   with no independent focusable identity of their own.
+    ///   `Completions`, `RichTextPopup`, `FindReplace`, `Toast`,
+    ///   `DropOverlay`) — these already own their own internal
+    ///   focus/dismiss handling while open, and being modal, nothing
+    ///   behind them should be Tab-reachable anyway.
+    /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
+    ///   containers/controls with no independent focusable identity of
+    ///   their own.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         let mut stops: Vec<(WidgetId, Rect)> = self
             .surfaces
@@ -521,6 +755,18 @@ impl<'a> ScreenLayout<'a> {
                 Surface::Palette { rect, palette } => Some((palette.id.clone(), *rect)),
                 Surface::DataTable { rect, table, .. } => Some((table.id.clone(), *rect)),
                 Surface::Chart { rect, chart, .. } => Some((chart.id.clone(), *rect)),
+                Surface::Board { rect, model } => Some((model.id.clone(), *rect)),
+                Surface::CommandCenter { rect, cc } => Some((cc.id.clone(), *rect)),
+                Surface::DiffView { rect, view } => Some((view.id.clone(), *rect)),
+                Surface::Image { rect, image } => Some((image.id.clone(), *rect)),
+                Surface::MessageList { rect, list } => Some((list.id.clone(), *rect)),
+                Surface::Minimap { rect, minimap } => Some((minimap.id.clone(), *rect)),
+                Surface::PipelineView { rect, view } => Some((view.id.clone(), *rect)),
+                Surface::Progress { rect, bar } => Some((bar.id.clone(), *rect)),
+                Surface::SidebarPanel { rect, panel, .. } => Some((panel.id.clone(), *rect)),
+                Surface::Spinner { rect, spinner } => Some((spinner.id.clone(), *rect)),
+                Surface::TextInput { rect, ti } => Some((ti.id.clone(), *rect)),
+                Surface::Toolbar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
                 Surface::Split { .. }
                 | Surface::Scrollbar { .. }
                 | Surface::Tooltip { .. }
@@ -529,6 +775,8 @@ impl<'a> ScreenLayout<'a> {
                 | Surface::Completions { .. }
                 | Surface::FindReplace { .. }
                 | Surface::RichTextPopup { .. }
+                | Surface::DropOverlay { .. }
+                | Surface::SplitTree { .. }
                 | Surface::Toast { .. } => None,
             })
             .collect();
@@ -572,6 +820,20 @@ impl<'a> ScreenLayout<'a> {
             Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
+            Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
+            Surface::CommandCenter { rect, .. } => (*rect, FrameZone::CommandCenter { idx }),
+            Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
+            Surface::DropOverlay { overlay } => (overlay.bounds(), FrameZone::DropOverlay { idx }),
+            Surface::Image { rect, .. } => (*rect, FrameZone::Image { idx }),
+            Surface::MessageList { rect, .. } => (*rect, FrameZone::MessageList { idx }),
+            Surface::Minimap { rect, .. } => (*rect, FrameZone::Minimap { idx }),
+            Surface::PipelineView { rect, .. } => (*rect, FrameZone::PipelineView { idx }),
+            Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
+            Surface::SidebarPanel { rect, .. } => (*rect, FrameZone::SidebarPanel { idx }),
+            Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
+            Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
+            Surface::TextInput { rect, .. } => (*rect, FrameZone::TextInput { idx }),
+            Surface::Toolbar { rect, .. } => (*rect, FrameZone::Toolbar { idx }),
         }
     }
 }
@@ -905,6 +1167,220 @@ mod tests {
             !stops.iter().any(|(id, _)| id.as_str() == "split"),
             "Split is structural chrome, not a tab stop"
         );
+    }
+
+    /// Issue #1099: every primitive with a `Backend::draw_*` method now
+    /// has a matching `Surface` variant. Builds one of each of the 14
+    /// that didn't before #1099, pushes them all, and checks
+    /// `hit_map()` (no `&mut dyn Backend` needed — see
+    /// `hit_map_registers_zones_without_a_backend` above for why that's
+    /// safe) registers every one under the right `FrameZone` tag.
+    #[test]
+    fn surface_gap_closed_for_all_fourteen_primitives() {
+        let board = crate::primitives::board::BoardModel {
+            id: "board".into(),
+            columns: Vec::new(),
+            selected_card_id: None,
+            col_scroll_offset: 0,
+        };
+        let cc = CommandCenter {
+            id: "cc".into(),
+            back_enabled: false,
+            forward_enabled: false,
+            search_label: String::new(),
+        };
+        let diff = DiffView {
+            id: "diff".into(),
+            left: String::new(),
+            right: String::new(),
+            left_label: None,
+            right_label: None,
+            hunks: Vec::new(),
+            mode: Default::default(),
+            editability: Default::default(),
+            scroll_offset: 0,
+            focused_pane: Default::default(),
+            has_focus: false,
+        };
+        let overlay = DropOverlay {
+            highlight: Some(Rect::new(1.0, 1.0, 2.0, 2.0)),
+            insertion_bar: None,
+            ghost_position: None,
+        };
+        let image = Image {
+            id: "img".into(),
+            source: crate::primitives::image::ImageSource::Path(std::path::PathBuf::new()),
+            intrinsic_size: None,
+            fit: Default::default(),
+            fallback_text: String::new(),
+        };
+        let message_list = MessageList {
+            id: "ml".into(),
+            rows: Vec::new(),
+            scroll_top: 0,
+        };
+        let minimap = Minimap {
+            id: "mm".into(),
+            lines: Vec::new(),
+            syntax_spans: Vec::new(),
+            visible_row_start: 0,
+            visible_row_count: 0,
+            total_buffer_lines: 0,
+        };
+        let pipeline = PipelineView {
+            id: "pv".into(),
+            stages: Vec::new(),
+            focused_stage: None,
+        };
+        let progress = ProgressBar {
+            id: "pb".into(),
+            label: String::new(),
+            value: None,
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        };
+        let sidebar = SidebarPanel {
+            id: "sp".into(),
+            toolbar: None,
+            toolbar_height: None,
+        };
+        let spinner = Spinner {
+            id: "sn".into(),
+            label: String::new(),
+            frame_idx: 0,
+            accent: None,
+        };
+        let split_tree = SplitTree::Leaf("leaf".into());
+        let text_input = TextInput {
+            id: "ti".into(),
+            lines: vec![String::new()],
+            cursor_line: 0,
+            cursor_col: 0,
+            placeholder: None,
+            scroll_offset: 0,
+            scroll_col: 0,
+            has_focus: false,
+        };
+        let toolbar = Toolbar {
+            id: "tb".into(),
+            buttons: Vec::new(),
+            bg: None,
+            focused_index: None,
+        };
+
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Board {
+            rect,
+            model: &board,
+        });
+        layout.push(Surface::CommandCenter { rect, cc: &cc });
+        layout.push(Surface::DiffView { rect, view: &diff });
+        layout.push(Surface::DropOverlay { overlay: &overlay });
+        layout.push(Surface::Image {
+            rect,
+            image: &image,
+        });
+        layout.push(Surface::MessageList {
+            rect,
+            list: &message_list,
+        });
+        layout.push(Surface::Minimap {
+            rect,
+            minimap: &minimap,
+        });
+        layout.push(Surface::PipelineView {
+            rect,
+            view: &pipeline,
+        });
+        layout.push(Surface::Progress {
+            rect,
+            bar: &progress,
+        });
+        layout.push(Surface::SidebarPanel {
+            rect,
+            panel: &sidebar,
+            hovered: None,
+            pressed: None,
+        });
+        layout.push(Surface::Spinner {
+            rect,
+            spinner: &spinner,
+        });
+        layout.push(Surface::SplitTree {
+            rect,
+            tree: &split_tree,
+        });
+        layout.push(Surface::TextInput {
+            rect,
+            ti: &text_input,
+        });
+        layout.push(Surface::Toolbar {
+            rect,
+            bar: &toolbar,
+            hovered: None,
+            pressed: None,
+        });
+
+        let hit_map = layout.hit_map();
+        assert_eq!(hit_map.len(), 14);
+
+        let zones: Vec<&FrameZone> = hit_map.zones().iter().map(|(_, z)| z).collect();
+        assert_eq!(zones[0], &FrameZone::Board { idx: 0 });
+        assert_eq!(zones[1], &FrameZone::CommandCenter { idx: 1 });
+        assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
+        assert_eq!(zones[3], &FrameZone::DropOverlay { idx: 3 });
+        assert_eq!(zones[4], &FrameZone::Image { idx: 4 });
+        assert_eq!(zones[5], &FrameZone::MessageList { idx: 5 });
+        assert_eq!(zones[6], &FrameZone::Minimap { idx: 6 });
+        assert_eq!(zones[7], &FrameZone::PipelineView { idx: 7 });
+        assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
+        assert_eq!(zones[9], &FrameZone::SidebarPanel { idx: 9 });
+        assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
+        assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
+        assert_eq!(zones[12], &FrameZone::TextInput { idx: 12 });
+        assert_eq!(zones[13], &FrameZone::Toolbar { idx: 13 });
+
+        // `DropOverlay`'s zone rect comes from `DropOverlay::bounds()`,
+        // not a `rect` field it doesn't have.
+        assert_eq!(hit_map.zones()[3].0, overlay.bounds());
+
+        // Tab order: the 12 with an owning `WidgetId` participate;
+        // `DropOverlay` (transient overlay) and `SplitTree` (structural
+        // chrome, like `Split`) don't.
+        let stops = layout.tab_stops();
+        let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
+        for id in [
+            "board", "cc", "diff", "img", "ml", "mm", "pv", "pb", "sp", "sn", "ti", "tb",
+        ] {
+            assert!(stop_ids.contains(&id), "{id} should be a tab stop");
+        }
+        assert!(
+            !stop_ids.contains(&"leaf"),
+            "SplitTree is structural chrome"
+        );
+        assert_eq!(stop_ids.len(), 12);
+    }
+
+    /// Issue #1099: `FrameHitMap` is the owned, serializable frame —
+    /// round-trips through JSON (exercising the new `FrameZone`
+    /// variants too) and reconstructs via `from_zones`/`zones`.
+    #[test]
+    fn frame_hit_map_serde_round_trip() {
+        let mut map = FrameHitMap::new();
+        map.push(Rect::new(0.0, 0.0, 10.0, 10.0), FrameZone::Board { idx: 0 });
+        map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::Toolbar { idx: 1 });
+
+        let json = serde_json::to_string(&map).expect("FrameHitMap serializes");
+        let restored: FrameHitMap = serde_json::from_str(&json).expect("FrameHitMap deserializes");
+        assert_eq!(restored, map);
+        assert_eq!(restored.hit_test(1.0, 1.0), FrameZone::Toolbar { idx: 1 });
+
+        // `from_zones` is the inverse of `zones()` — a map rebuilt from
+        // its own owned data behaves identically.
+        let rebuilt = FrameHitMap::from_zones(map.zones().to_vec());
+        assert_eq!(rebuilt, map);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
