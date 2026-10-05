@@ -41,27 +41,39 @@
 //! asymmetry where some primitives categorically *couldn't* go through
 //! the declarative path at all.
 //!
-//! ## `FrameHitMap` as the owned, serializable frame (issue #1099)
+//! ## `FrameHitMap` gains serde — a step toward #1099's owned frame, not the owned frame
 //!
 //! [`Surface<'a>`] borrows every primitive it paints — correct for a
 //! same-frame paint/hit-test pass, useless for anything that needs to
 //! outlive the frame: an accessibility tree snapshot (AccessKit), a
-//! web backend serializing a frame description across a
-//! WASM/JS boundary, or a record/replay harness persisting what was on
-//! screen at a given tick. [`FrameHitMap`] — already returned by
-//! [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`] — is that owned
-//! counterpart: it stores `(Rect, FrameZone)` pairs by value, carries
-//! no lifetime, and (as of #1099) both halves of that pair —
-//! [`Rect`] already did, [`FrameZone`] now does too — implement
-//! `serde::{Serialize, Deserialize}`, so [`FrameHitMap`] itself does.
-//! [`FrameHitMap::zones`] exposes the owned data for a consumer that
-//! wants to read it directly (build an AccessKit tree node per zone,
-//! ship it over a wire, replay it later) rather than only hit-testing
-//! against it, and [`FrameHitMap::from_zones`] is the inverse — a
-//! deserialized or otherwise independently-constructed frame shape can
-//! be handed back in for [`FrameHitMap::hit_test`] to resolve clicks
-//! against, exactly as if [`ScreenLayout::draw`] had produced it this
-//! frame.
+//! web backend serializing a frame description across a WASM/JS
+//! boundary, or a record/replay harness persisting what was on screen
+//! at a given tick. [`FrameHitMap`] — already returned by
+//! [`ScreenLayout::draw`]/[`ScreenLayout::hit_map`] — was already that
+//! shape's owned, lifetime-free counterpart for hit-testing purposes:
+//! it stores `(Rect, FrameZone)` pairs by value. As of #1099 both
+//! halves of that pair — [`Rect`] already did, [`FrameZone`] now does
+//! too — implement `serde::{Serialize, Deserialize}`, so
+//! [`FrameHitMap`] itself does, and [`FrameHitMap::zones`] /
+//! [`FrameHitMap::from_zones`] make the owned data readable and
+//! round-trippable instead of only probeable via [`FrameHitMap::hit_test`].
+//!
+//! **This is not yet the owned `Frame` that #1099 asks for, and this
+//! PR does not claim to deliver it.** A `FrameZone` is a bare tag
+//! (e.g. `FrameZone::Tree { idx: 3 }`) plus a frame-local surface
+//! index whose meaning depends entirely on the `ScreenLayout` push
+//! order that produced it — it carries no primitive content, no
+//! accessibility role, no label, no value. It cannot by itself feed an
+//! AccessKit `TreeUpdate` node, cannot be re-painted by a web backend,
+//! and cannot replay a frame; a receiver on the other end of a wire
+//! has no way to recover what `idx: 3` even referred to unless it
+//! reproduces the exact same push order independently.
+//! `Surface<'a>`/`ScreenLayout<'a>` still borrow. Building an owned
+//! `Frame` tree that carries real content and roles is tracked as a
+//! follow-up to #1099 and is out of scope here; see
+//! `quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`'s "Owned
+//! `Frame`/`Surface` for bindings" row, which stays **Open** on exactly
+//! this evidence.
 
 //! ## Presence gating + the paint/hit-test order invariant (issue #774)
 //!
@@ -187,7 +199,15 @@ use crate::Backend;
 /// back-to-front z-order; [`ScreenLayout::draw`] renders them
 /// sequentially and the resulting [`FrameHitMap`] checks the
 /// highest-z surface first.
+///
+/// `#[non_exhaustive]`: a new primitive adds a new variant here, and
+/// per CLAUDE.md's *Downstream consumers* rule 2, a variant addition
+/// should be additive rather than a potential downstream `E0004`.
+/// Verified safe to add today: neither `coord-tui` nor `vimcode`
+/// exhaustively matches `Surface` without a wildcard arm (grep in the
+/// PR body).
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum Surface<'a> {
     Editor {
         rect: Rect,
@@ -376,8 +396,27 @@ pub enum Surface<'a> {
 /// `Serialize`/`Deserialize` (issue #1099) so this type — and, with
 /// [`Rect`] (already serializable), [`FrameHitMap`] as a whole — can
 /// be persisted or sent across a process/wire boundary. See the module
-/// doc's "`FrameHitMap` as the owned, serializable frame" section.
+/// doc's "`FrameHitMap` gains serde" section.
+///
+/// Every variant's `idx` is a **frame-local surface index**: its
+/// meaning depends entirely on the push order of the
+/// [`ScreenLayout`] that produced it, not on any stable identity (see
+/// vimcode's `click.rs:323-327`, which documents the same sharp edge —
+/// "global surface index, NOT a per-tab-bar position"). Serializing a
+/// `FrameZone` and handing it to a different process is only
+/// meaningful if that process reproduces the exact same push order;
+/// [`FrameHitMap::from_zones`] does not and cannot validate that an
+/// `idx` it is handed actually corresponds to anything on the
+/// receiving end.
+///
+/// `#[non_exhaustive]` for the same reason as [`Surface`]: a new
+/// `Surface` variant implies a new `FrameZone` twin, and that pairing
+/// should stay additive downstream. Verified safe today: neither
+/// `coord-tui` nor `vimcode` exhaustively matches `FrameZone` without
+/// a wildcard arm (vimcode's one match, `click.rs:331-355`, ends in
+/// `_ => {}`; grep in the PR body).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum FrameZone {
     Editor { idx: usize },
     TabBar { idx: usize },
@@ -424,15 +463,17 @@ pub enum FrameZone {
 /// Hit regions collected during [`ScreenLayout::draw`]. Resolves
 /// absolute coordinates to the highest-z surface that contains them.
 ///
-/// This is quadraui's **owned, serializable frame** (issue #1099):
-/// every `(Rect, FrameZone)` pair is stored by value, so unlike
+/// Every `(Rect, FrameZone)` pair is stored by value, so unlike
 /// [`Surface<'a>`] a `FrameHitMap` carries no lifetime and can outlive
-/// the frame it was built from — handed to an accessibility bridge,
-/// serialized across a web backend's WASM/JS boundary, or persisted by
-/// a record/replay harness. `Rect` and `FrameZone` both implement
-/// `serde::{Serialize, Deserialize}`, so this struct derives them too.
-/// See the module doc's "`FrameHitMap` as the owned, serializable
-/// frame" section for the full rationale.
+/// the frame it was built from. As of #1099, `Rect` and `FrameZone`
+/// both implement `serde::{Serialize, Deserialize}`, so this struct
+/// derives them too — it can now be persisted or sent across a
+/// process/wire boundary. **This is a step toward #1099's owned
+/// `Frame`, not the owned frame itself**: a `FrameZone` carries no
+/// primitive content, role, label or value, only a bare tag and a
+/// frame-local index — see the module doc's "`FrameHitMap` gains
+/// serde" section for what that means for a receiver on the other end
+/// of a wire, and for what is still missing.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameHitMap {
     zones: Vec<(Rect, FrameZone)>,
@@ -454,7 +495,10 @@ impl FrameHitMap {
     /// hand it back in for [`Self::hit_test`] to resolve clicks against,
     /// in the same back-to-front z-order `ScreenLayout` would have
     /// produced (last entry wins ties, matching [`Self::hit_test`]'s
-    /// "highest-z match" contract).
+    /// "highest-z match" contract). Does **not** validate that each
+    /// `FrameZone`'s `idx` corresponds to anything meaningful — see
+    /// [`FrameZone`]'s doc for why that index is push-order-dependent
+    /// and cannot be checked for provenance here.
     pub fn from_zones(zones: Vec<(Rect, FrameZone)>) -> Self {
         Self { zones }
     }
@@ -734,6 +778,16 @@ impl<'a> ScreenLayout<'a> {
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
+    /// - `Image` and `Spinner` — purely decorative, never focusable,
+    ///   regardless of the "carries a `rect` plus an owning `WidgetId`"
+    ///   rule: a consumer that adopts them would otherwise get dead
+    ///   stops in its Tab order.
+    /// - `Progress` **unless** `ProgressBar::cancellable` is set — a
+    ///   bare progress readout has nothing to activate, but a
+    ///   cancellable one has a real affordance ([`ProgressBarHit::Cancel`])
+    ///   worth reaching by keyboard. `Minimap` stays included even
+    ///   though it is also mostly visual, because it is click-to-scroll
+    ///   and so has a real interaction to land on.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         let mut stops: Vec<(WidgetId, Rect)> = self
             .surfaces
@@ -758,16 +812,17 @@ impl<'a> ScreenLayout<'a> {
                 Surface::Board { rect, model } => Some((model.id.clone(), *rect)),
                 Surface::CommandCenter { rect, cc } => Some((cc.id.clone(), *rect)),
                 Surface::DiffView { rect, view } => Some((view.id.clone(), *rect)),
-                Surface::Image { rect, image } => Some((image.id.clone(), *rect)),
                 Surface::MessageList { rect, list } => Some((list.id.clone(), *rect)),
                 Surface::Minimap { rect, minimap } => Some((minimap.id.clone(), *rect)),
                 Surface::PipelineView { rect, view } => Some((view.id.clone(), *rect)),
-                Surface::Progress { rect, bar } => Some((bar.id.clone(), *rect)),
+                Surface::Progress { rect, bar } if bar.cancellable => Some((bar.id.clone(), *rect)),
                 Surface::SidebarPanel { rect, panel, .. } => Some((panel.id.clone(), *rect)),
-                Surface::Spinner { rect, spinner } => Some((spinner.id.clone(), *rect)),
                 Surface::TextInput { rect, ti } => Some((ti.id.clone(), *rect)),
                 Surface::Toolbar { rect, bar, .. } => Some((bar.id.clone(), *rect)),
-                Surface::Split { .. }
+                Surface::Image { .. }
+                | Surface::Spinner { .. }
+                | Surface::Progress { .. }
+                | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
                 | Surface::Tooltip { .. }
                 | Surface::ContextMenu { .. }
@@ -1346,21 +1401,43 @@ mod tests {
         // not a `rect` field it doesn't have.
         assert_eq!(hit_map.zones()[3].0, overlay.bounds());
 
-        // Tab order: the 12 with an owning `WidgetId` participate;
-        // `DropOverlay` (transient overlay) and `SplitTree` (structural
-        // chrome, like `Split`) don't.
+        // Tab order: `DropOverlay` (transient overlay) and `SplitTree`
+        // (structural chrome, like `Split`) don't participate, and
+        // neither do the purely-decorative `Image`/`Spinner` or this
+        // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in [
-            "board", "cc", "diff", "img", "ml", "mm", "pv", "pb", "sp", "sn", "ti", "tb",
-        ] {
+        for id in ["board", "cc", "diff", "ml", "mm", "pv", "sp", "ti", "tb"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        assert!(
-            !stop_ids.contains(&"leaf"),
-            "SplitTree is structural chrome"
-        );
-        assert_eq!(stop_ids.len(), 12);
+        for id in ["img", "sn", "pb", "leaf"] {
+            assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
+        }
+        assert_eq!(stop_ids.len(), 9);
+    }
+
+    /// A cancellable `Progress` bar *does* get a tab stop — the cancel
+    /// affordance (`ProgressBarHit::Cancel`) is a real interaction, unlike
+    /// a bare progress readout.
+    #[test]
+    fn cancellable_progress_is_a_tab_stop() {
+        let progress = ProgressBar {
+            id: "pb".into(),
+            label: String::new(),
+            value: None,
+            frame_idx: 0,
+            cancellable: true,
+            accent: None,
+        };
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Progress {
+            rect,
+            bar: &progress,
+        });
+        let stops = layout.tab_stops();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].0.as_str(), "pb");
     }
 
     /// Issue #1099: `FrameHitMap` is the owned, serializable frame —

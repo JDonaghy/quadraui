@@ -387,10 +387,12 @@ both backends through the same call site and its `zone_for` helper
 keeps the hit-map in lock-step with what was painted by construction
 (see `quadraui/src/frame.rs`'s module doc). `Backend::draw_<name>`
 stays public, non-deprecated, low-level API — `ScreenLayout::draw`
-calls it internally, and it's the *only* path for any primitive that
-has no `Surface` variant yet. See `docs/decisions/DECISIONS.md` D-006 for the full
-audit and why `Backend::draw_*` isn't hidden or deprecated over that
-gap.
+calls it internally. As of #1099 every primitive with a `draw_*`
+method has a matching `Surface` variant, so this is no longer the
+*only* path for any primitive; `draw_*` stays directly reachable by
+design, for rasteriser tests and compose helpers that paint a single
+primitive outside a full-screen `ScreenLayout`. See
+`docs/decisions/DECISIONS.md` D-006 for the full audit.
 
 **Going forward:** when rule 7 above has you adding a `Backend::draw_<name>`
 method for a primitive that's composed into top-level screens (i.e. a
