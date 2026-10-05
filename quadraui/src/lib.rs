@@ -206,7 +206,7 @@ pub mod undo;
 #[cfg_attr(docsrs, doc(cfg(feature = "terminal")))]
 pub mod terminal_engine;
 
-// ── Optional flex/grid layout module (quadraui#1103) ─────────────────────────
+// ── Optional flex/grid layout module ──────────────────────────────────────
 // Gated behind the `layout` feature so apps that hand-compute every `Rect`
 // today don't pull in `taffy`. Unit-agnostic (plain `f32` in, plain `f32`
 // out) and pairs with any backend feature, or none — see `flex`'s module

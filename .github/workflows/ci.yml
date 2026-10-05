@@ -154,8 +154,8 @@ jobs:
         run: cargo publish --dry-run -p quadraui --locked
 
   doc:
-    # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal` only if they build
-    # clean under `cargo doc` — this is the local proxy for that, run with
+    # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal`/`layout` only if they
+    # build clean under `cargo doc` — this is the local proxy for that, run with
     # the same `-D warnings` bar as every other CI step (via `RUSTDOCFLAGS`,
     # since `RUSTFLAGS` doesn't reach rustdoc). `macos` is excluded here:
     # `lib.rs` gates `mod macos` on `target_os = "macos"` (see that arm's
@@ -173,7 +173,7 @@ jobs:
     # so this fails at gtk4's build-script pkg-config step without them.
     name: cargo doc (docs.rs proxy, all Linux-buildable backend features)
     runs-on: ubuntu-latest
-    # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,
+    # #1292: apt-get install + `cargo doc` across tui,gtk,win,terminal,layout,
     # normally under 10 minutes with a warm cache.
     timeout-minutes: 25
     steps:
@@ -184,10 +184,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal)
+      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal
+        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout
 
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the

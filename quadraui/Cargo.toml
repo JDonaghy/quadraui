@@ -50,8 +50,7 @@ exclude = ["tests/", "benches/"]
 # `layout`) so a published crate actually renders all backends' public API
 # instead of just the always-on core (none of them are default features —
 # see the `[features]` table below). `rustdoc-args` sets `--cfg docsrs`, which
-# is what
-# `src/lib.rs`'s `#![cfg_attr(docsrs, feature(doc_cfg))]` and each
+# is what `src/lib.rs`'s `#![cfg_attr(docsrs, feature(doc_cfg))]` and each
 # feature-gated `pub mod`'s `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]`
 # key off of, so the rendered docs show each backend module's feature
 # requirement instead of silently omitting it.
@@ -185,10 +184,10 @@ macos = [
     "dep:trash",
     "dep:keyring",
 ]
-# Optional flex/grid layout module, `quadraui::flex` (quadraui#1103). Pulls
-# in `taffy` — unit-agnostic (plain `f32` in, plain `f32` out, same as
-# `event::Rect`), so it pairs with any backend feature or none at all;
-# see `src/flex.rs`'s module doc for the design.
+# Optional flex/grid layout module, `quadraui::flex`. Pulls in `taffy` —
+# unit-agnostic (plain `f32` in, plain `f32` out, same as `event::Rect`),
+# so it pairs with any backend feature or none at all; see
+# `src/flex.rs`'s module doc for the design.
 layout = ["dep:taffy"]
 
 [dependencies]
@@ -264,7 +263,7 @@ trash = { version = "5", optional = true }
 # session, not a live desktop" reasoning as `trash`'s own comment above,
 # which is why this pulls in on TUI too instead of degrading.
 keyring = { version = "4", optional = true }
-# Optional — pulled in by the `layout` feature (quadraui#1103):
+# Optional — pulled in by the `layout` feature:
 # `quadraui::flex`'s flex/grid layout engine. `default-features = false`
 # drops taffy's own `serde`/`parse`/`profile`/`debug` extras this crate
 # never uses; `taffy_tree` is the owned-tree API `FlexLayout` wraps,
