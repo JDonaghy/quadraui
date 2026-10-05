@@ -1554,9 +1554,14 @@ impl TuiPlatformServices {
 
     /// Get the next batch of `UiEvent`s for a nested dialog loop —
     /// draining [`Self::scripted_dialog_events`] in test mode, or
-    /// blocking (in short, re-checked slices — never truly forever) on
-    /// real crossterm input in production, the same poll/read shape
-    /// [`crate::tui::backend::TuiBackend::wait_events`] uses.
+    /// blocking on real crossterm input in production via
+    /// [`super::backend::wait_for_stdin_ready`], the same guard
+    /// [`crate::tui::backend::TuiBackend::wait_events`] uses: this
+    /// crate's own `poll(2)` call blocks for up to 250ms at a time
+    /// against `STDIN_FILENO`, waking immediately on a hangup rather
+    /// than only noticing one between delegated crossterm calls, and
+    /// only ever delegates to crossterm with `Duration::ZERO` once
+    /// readiness is confirmed.
     fn next_dialog_events(&self) -> Vec<UiEvent> {
         {
             let mut scripted = self.scripted_dialog_events.borrow_mut();
@@ -1577,31 +1582,51 @@ impl TuiPlatformServices {
             }
         }
         loop {
-            // Same guard as `TuiBackend::wait_events`/`poll_events`
-            // (`super::backend::stdin_hung_up`'s doc) — this loop reaches
-            // the identical vulnerable crossterm call, just from a nested
-            // modal-dialog event loop instead of the main one. Sleeping
-            // the same 250ms a real timed-out `poll` call below would
-            // have taken, rather than returning immediately, matters
-            // here specifically: `run_nested_dialog_loop`'s caller has no
-            // backoff of its own around this call (it redraws and calls
-            // right back in), so an instant empty return would just
-            // relocate the busy-spin one level up instead of removing it.
-            if super::backend::stdin_hung_up() {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                return Vec::new();
-            }
-            match ratatui::crossterm::event::poll(std::time::Duration::from_millis(250)) {
-                Ok(true) => {
-                    return match ratatui::crossterm::event::read() {
-                        Ok(ev) => super::events::crossterm_to_uievents(ev),
+            let deadline =
+                std::time::Instant::now().checked_add(std::time::Duration::from_millis(250));
+            match super::backend::wait_for_stdin_ready(deadline) {
+                // `wait_for_stdin_ready` returns the instant it detects a
+                // hangup, not after a full 250ms slice — but this
+                // function's caller (`run_nested_dialog_loop`) has no
+                // backoff of its own around this call, redrawing and
+                // calling right back in. Sleeping out the slice here,
+                // same as a real timeout would have taken, keeps that
+                // outer loop from spinning instead of just relocating
+                // the busy-spin one level up.
+                super::backend::StdinReadiness::HungUp => {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    return Vec::new();
+                }
+                // No input within this slice — loop back and wait again
+                // rather than blocking indefinitely in one call.
+                super::backend::StdinReadiness::TimedOut => continue,
+                super::backend::StdinReadiness::Ready => {
+                    return match ratatui::crossterm::event::poll(std::time::Duration::ZERO) {
+                        Ok(true) => match ratatui::crossterm::event::read() {
+                            Ok(ev) => super::events::crossterm_to_uievents(ev),
+                            Err(_) => Vec::new(),
+                        },
+                        // Readiness without a complete event yet (e.g. a
+                        // split escape sequence) — loop back for another
+                        // slice instead of returning nothing.
+                        Ok(false) => continue,
                         Err(_) => Vec::new(),
                     };
                 }
-                // No input within this slice — loop back and poll again
-                // rather than blocking indefinitely in one call.
-                Ok(false) => continue,
-                Err(_) => return Vec::new(),
+                // No reliable hangup signal for this fd — fall back to
+                // delegating the whole slice straight to crossterm.
+                super::backend::StdinReadiness::Unguarded => {
+                    match ratatui::crossterm::event::poll(std::time::Duration::from_millis(250)) {
+                        Ok(true) => {
+                            return match ratatui::crossterm::event::read() {
+                                Ok(ev) => super::events::crossterm_to_uievents(ev),
+                                Err(_) => Vec::new(),
+                            };
+                        }
+                        Ok(false) => continue,
+                        Err(_) => return Vec::new(),
+                    }
+                }
             }
         }
     }

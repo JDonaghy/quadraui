@@ -447,7 +447,7 @@ fn query_sgr_pixel_decrqm() -> Option<u8> {
         // 0 = timed out; negative = an error (e.g. `EINTR`). Neither is
         // worth a retry loop for a one-shot startup probe on stdin.
         let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
-        super::backend::poll_fd_revents(fd, timeout_ms)?;
+        super::backend::poll_fd_revents(fd, timeout_ms).revents()?;
         let mut byte = [0u8; 1];
         match handle.read(&mut byte) {
             Ok(0) | Err(_) => return None,

@@ -7,9 +7,9 @@
 //! ## Why #1295 alone doesn't close this
 //!
 //! Before #1301, `TuiBackend::wait_events` delegated its idle wait to
-//! `ratatui::crossterm::event::poll` in `STDIN_HANGUP_POLL_SLICE`
-//! (20ms) chunks, re-checking its own `stdin_hung_up` guard *between*
-//! chunks. crossterm 0.29's unix event source
+//! `ratatui::crossterm::event::poll` in fixed-size (20ms) chunks,
+//! re-checking its own `stdin_hung_up` guard *between* chunks.
+//! crossterm 0.29's unix event source
 //! (`UnixInternalEventSource::try_read`) has a TTY-readiness read loop
 //! with no break arm for `Ok(0)` (EOF): once mio reports a hung-up fd
 //! "ready" (which it always does — a hangup condition is always ready
@@ -58,149 +58,30 @@
 //! ```
 #![cfg(all(feature = "tui", unix))]
 
-use std::ffi::CStr;
-use std::os::fd::RawFd;
+#[path = "pty_support/mod.rs"]
+mod pty_support;
+
 use std::time::{Duration, Instant};
 
 use quadraui::tui::{StepOutcome, TuiBackend, TuiRunner};
-use quadraui::{AppLogic, Backend, Reaction, UiEvent};
+use quadraui::Backend;
 
-/// Opens a fresh pty pair via the raw POSIX `posix_openpt`/`grantpt`/
-/// `unlockpt` dance, `O_NOCTTY` throughout — this is never the test
-/// process's controlling terminal, so there is no implicit `SIGHUP`
-/// backstop on hangup (the shape a headless `vcd` session produces, and
-/// the shape this issue is specifically about: a controlling-terminal
-/// hangup kills the process outright before this guard would ever run).
-/// Both ends are left open and owned by the caller.
-fn open_pty_pair() -> (RawFd, RawFd) {
-    // SAFETY: standard POSIX pty-allocation sequence. `posix_openpt`
-    // returns an owned fd on success (checked below); `grantpt`/
-    // `unlockpt` only operate on that fd; `ptsname` returns a pointer
-    // into thread-local/static storage that's immediately copied into
-    // an owned `CStr`-backed `Vec<u8>` before any further libc call can
-    // invalidate it.
-    unsafe {
-        let master_fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
-        assert!(
-            master_fd >= 0,
-            "posix_openpt failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        assert_eq!(libc::grantpt(master_fd), 0, "grantpt failed");
-        assert_eq!(libc::unlockpt(master_fd), 0, "unlockpt failed");
-
-        let name_ptr = libc::ptsname(master_fd);
-        assert!(!name_ptr.is_null(), "ptsname returned null");
-        let slave_path = CStr::from_ptr(name_ptr).to_owned();
-
-        let slave_fd = libc::open(slave_path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
-        assert!(
-            slave_fd >= 0,
-            "open(slave) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-
-        (master_fd, slave_fd)
-    }
-}
-
-/// RAII guard that dup's `fd` onto `STDIN_FILENO` for its lifetime, and
-/// restores the test process's original stdin on drop.
-struct StdinOverride {
-    saved: RawFd,
-}
-
-impl StdinOverride {
-    fn install(fd: RawFd) -> Self {
-        // SAFETY: `dup`/`dup2` on process-owned fds; `STDIN_FILENO` (0)
-        // is always a valid fd number to target.
-        let saved = unsafe { libc::dup(libc::STDIN_FILENO) };
-        assert!(
-            saved >= 0,
-            "dup(stdin) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        let result = unsafe { libc::dup2(fd, libc::STDIN_FILENO) };
-        assert!(
-            result >= 0,
-            "dup2(fd, stdin) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        Self { saved }
-    }
-}
-
-impl Drop for StdinOverride {
-    fn drop(&mut self) {
-        // SAFETY: restoring the exact fd this process started with.
-        unsafe {
-            libc::dup2(self.saved, libc::STDIN_FILENO);
-            libc::close(self.saved);
-        }
-    }
-}
-
-/// Same as [`StdinOverride`], for `STDOUT_FILENO` — needed by the
-/// `TuiRunner` test because `TuiRunner::new` writes real terminal-setup
-/// escape sequences (alternate screen, raw mode, kitty-keyboard push) to
-/// stdout, not just stdin.
-struct StdoutOverride {
-    saved: RawFd,
-}
-
-impl StdoutOverride {
-    fn install(fd: RawFd) -> Self {
-        // SAFETY: `dup`/`dup2` on process-owned fds; `STDOUT_FILENO` (1)
-        // is always a valid fd number to target.
-        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
-        assert!(
-            saved >= 0,
-            "dup(stdout) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        let result = unsafe { libc::dup2(fd, libc::STDOUT_FILENO) };
-        assert!(
-            result >= 0,
-            "dup2(fd, stdout) failed: {:?}",
-            std::io::Error::last_os_error()
-        );
-        Self { saved }
-    }
-}
-
-impl Drop for StdoutOverride {
-    fn drop(&mut self) {
-        // SAFETY: restoring the exact fd this process started with.
-        unsafe {
-            libc::dup2(self.saved, libc::STDOUT_FILENO);
-            libc::close(self.saved);
-        }
-    }
-}
-
-/// The smallest possible [`AppLogic`] — the `TuiRunner` test below only
-/// needs *something* for `TuiRunner::new` to call `setup`/`render` on.
-struct MinimalApp;
-
-impl AppLogic for MinimalApp {
-    type AreaId = ();
-
-    fn render(&self, _backend: &mut dyn Backend, _area: ()) {}
-
-    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        Reaction::Continue
-    }
-}
+use pty_support::{open_pty_pair, MinimalApp, StdinOverride, StdoutOverride};
 
 /// How long the blocked call under test is allowed to take once its
 /// background thread closes the master mid-wait. Generous relative to
 /// the few hundred milliseconds [`CLOSE_AFTER`] + a `poll(2)` wakeup
-/// actually costs, but — as in `tests/crossterm_dead_pty_busy_loop.rs`
-/// — nowhere close to long enough to hide an infinite loop: before the
-/// fix, these calls never return at all once the race lands, so any
-/// finite bound here eventually catches it (CI's own job timeout is the
-/// real backstop for that case).
-const CALL_BUDGET: Duration = Duration::from_secs(5);
+/// actually costs, but deliberately kept *below* [`WAIT_TIMEOUT`]: a
+/// call that merely waited out its own full timeout (rather than being
+/// woken by the hangup) would still return within a budget larger than
+/// `WAIT_TIMEOUT`, silently passing for the wrong reason. Below
+/// `WAIT_TIMEOUT`, the elapsed-time assertion is itself load-bearing —
+/// as in `tests/crossterm_dead_pty_busy_loop.rs`, nowhere close to long
+/// enough to hide an infinite loop: before the fix, these calls never
+/// return at all once the race lands, so any finite bound here
+/// eventually catches it (CI's own job timeout is the real backstop for
+/// that case).
+const CALL_BUDGET: Duration = Duration::from_millis(1500);
 
 /// How long the background thread waits before closing the master — well
 /// inside the much longer `wait_events`/`pump` timeout each test below
@@ -209,10 +90,10 @@ const CALL_BUDGET: Duration = Duration::from_secs(5);
 /// timed out on its own.
 const CLOSE_AFTER: Duration = Duration::from_millis(300);
 
-/// How long `wait_events`/`pump` is asked to block for, per call — long
-/// enough that [`CLOSE_AFTER`] always lands mid-wait, short enough that
-/// a pre-#1301 regression (treated as "never returns") is still caught
-/// well within [`CALL_BUDGET`].
+/// How long `wait_events`/`pump` is asked to block for, per call —
+/// comfortably longer than [`CALL_BUDGET`] so an un-fixed regression
+/// (which wouldn't return until this full timeout, if ever) can't be
+/// mistaken for the in-flight wakeup this test is asserting.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Core regression test: [`TuiBackend::wait_events`] must return
@@ -226,6 +107,11 @@ fn wait_events_returns_once_master_closes_mid_wait() {
     let (master_fd, slave_fd) = open_pty_pair();
     let _stdin_override = StdinOverride::install(slave_fd);
 
+    // Constructed before the closer thread is spawned below, so the
+    // close can only ever land during the `wait_events` call itself,
+    // never during construction.
+    let mut backend = TuiBackend::new();
+
     let closer = std::thread::spawn(move || {
         std::thread::sleep(CLOSE_AFTER);
         // SAFETY: `master_fd` is a plain, this-process-owned fd from
@@ -237,8 +123,6 @@ fn wait_events_returns_once_master_closes_mid_wait() {
             libc::close(master_fd);
         }
     });
-
-    let mut backend = TuiBackend::new();
 
     let start = Instant::now();
     let events = backend.wait_events(WAIT_TIMEOUT);
@@ -367,8 +251,7 @@ fn tui_runner_exits_once_its_pty_master_closes_mid_wait() {
 
     // Close the master from a background thread partway through the
     // *next* `pump` call below, landing the hangup while that call is
-    // already blocked inside it — the scenario quadraui#1295 alone left
-    // open and quadraui#1301 closes. See this file's module doc.
+    // already blocked inside it. See this file's module doc.
     let closer = std::thread::spawn(move || {
         std::thread::sleep(CLOSE_AFTER);
         // SAFETY: `master_fd` is a plain, this-process-owned fd from
@@ -379,13 +262,15 @@ fn tui_runner_exits_once_its_pty_master_closes_mid_wait() {
         }
     });
 
+    // A single `pump` call: `run_one` makes exactly one `wait_events`
+    // call per `pump`, so one call is both necessary and sufficient to
+    // exercise the in-flight race — tolerating a second call here would
+    // weaken that claim by letting an un-fixed first call's eventual
+    // `TimedOut` return (rather than the in-flight hangup) go unnoticed.
     let start = Instant::now();
-    let mut outcome = StepOutcome::Continue;
-    while start.elapsed() < CALL_BUDGET && outcome != StepOutcome::Exited {
-        outcome = runner
-            .pump(WAIT_TIMEOUT)
-            .expect("pump should not itself error on a hung-up pty");
-    }
+    let outcome = runner
+        .pump(WAIT_TIMEOUT)
+        .expect("pump should not itself error on a hung-up pty");
     let elapsed = start.elapsed();
 
     closer.join().expect("closer thread panicked");

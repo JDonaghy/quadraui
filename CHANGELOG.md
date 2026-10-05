@@ -491,10 +491,24 @@ release time.
   does. The same guard also covers `caps::probe_kitty_keyboard`'s own,
   separate crossterm entry point and the nested dialog event loop behind
   `show_file_open_dialog`/`show_file_save_dialog`/`show_message_dialog`.
-  This narrows, rather than eliminates, a real race for a hangup that lands
-  while a wait is already in flight — see `STDIN_HANGUP_POLL_SLICE`'s doc
-  (`src/tui/backend.rs`) for what remains open and why closing it fully
-  would mean reimplementing crossterm's own reader.
+  This narrowed, rather than eliminated, a real race for a hangup that lands
+  while a wait is already in flight — closed by issue #1301 below.
+- TUI: the narrower race issue #1295 left open — a pty master closing
+  *while* `TuiBackend::wait_events` is already blocked inside a delegated
+  crossterm call, rather than strictly before one begins — no longer hangs
+  forever either (issue #1301). `wait_events` no longer delegates any
+  blocking call to crossterm at all: it blocks on this crate's own
+  `poll(2)` call against stdin for the caller's real timeout via the new
+  `wait_for_stdin_ready`, and only ever hands crossterm a guaranteed
+  non-blocking `Duration::ZERO` call once that call has already confirmed
+  readiness with no hangup bit set. `poll(2)` reports `POLLHUP` on a
+  hung-up fd the instant it happens, even while already parked waiting on
+  it, so the hangup itself is now the wakeup rather than something a
+  periodic re-check has to race an already in-flight crossterm call to
+  notice. The `STDIN_HANGUP_POLL_SLICE`-sized (20ms) slicing loop this
+  replaces is gone entirely. `TuiPlatformServices::next_dialog_events`'s
+  nested dialog loop was converted to the same `wait_for_stdin_ready`
+  guard for the same reason. No public API change.
 - Win-GUI (`WinBackend`) now paints 11 more `ChromePrimitive` rasterisers
   — `Tree`, `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
   `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
