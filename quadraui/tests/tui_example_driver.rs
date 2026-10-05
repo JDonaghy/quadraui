@@ -136,6 +136,8 @@ mod sidebar_reveal_demo;
 mod split_app;
 #[path = "../examples/common/split_tree_app.rs"]
 mod split_tree_app;
+#[path = "../examples/common/status_bar_priority_demo.rs"]
+mod status_bar_priority_demo;
 #[path = "../examples/common/tab_chrome_demo.rs"]
 mod tab_chrome_demo;
 #[path = "../examples/common/tab_group_demo.rs"]
@@ -213,6 +215,7 @@ use sidebar_panel_body_demo::SidebarPanelBodyDemo;
 use sidebar_reveal_demo::SidebarRevealDemo;
 use split_app::SplitApp;
 use split_tree_app::SplitTreeApp;
+use status_bar_priority_demo::StatusBarPriorityDemo;
 use tab_chrome_demo::TabChromeDemo;
 use tab_group_demo::TabGroupDemo;
 use tab_icons_demo::TabIconsDemo;
@@ -8013,4 +8016,40 @@ fn context_menu_style_demo_m_cycles_requested_style() {
         "'m' should cycle Custom -> Auto:\n{}",
         driver.screen()
     );
+}
+
+// ─── StatusBarPriorityDemo: cursor segment survives a dirty width squeeze
+// (issue #1303) ──────────────────────────────────────────────────────────
+
+#[test]
+fn status_bar_priority_demo_initial_screen_shows_every_segment() {
+    let driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    let screen = driver.screen();
+    assert!(driver.screen_contains("Ln 1, Col 1"), "{screen}");
+    assert!(driver.screen_contains("Spaces: 4"), "{screen}");
+}
+
+#[test]
+fn status_bar_priority_demo_dirty_drops_low_priority_not_cursor() {
+    let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    driver.type_char('d');
+    let screen = driver.screen();
+    assert!(
+        driver.screen_contains("Ln 1, Col 1"),
+        "cursor-position segment (right_segments' last, highest-priority \
+         entry) must keep painting once the left segment grows:\n{screen}"
+    );
+    assert!(
+        !driver.screen_contains("Spaces: 4"),
+        "the lowest-priority right segment should be the one dropped to \
+         make room:\n{screen}"
+    );
+}
+
+#[test]
+fn status_bar_priority_demo_pressing_q_exits() {
+    let mut driver = TuiDriver::new(StatusBarPriorityDemo::new(), 90, 5);
+    assert!(!driver.exited());
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should make the app exit");
 }

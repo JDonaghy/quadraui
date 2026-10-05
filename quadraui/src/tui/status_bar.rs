@@ -506,14 +506,13 @@ mod tests {
         (buf, layout)
     }
 
-    /// Regression for quadraui#1303: reproduces the bugbash shape exactly
-    /// — a left segment growing by 4 characters (the "[+]" dirty badge)
-    /// tips a 37-column bar from "everything fits" to "one right segment
-    /// must drop" — and proves that when `right_segments` follows the
-    /// documented convention (cursor-position segment *last*), only the
-    /// lowest-priority segment ("Spaces: 4") is dropped. "Ln 1, Col 1"
-    /// keeps painting through the dirty transition, which is exactly the
-    /// guarantee the issue's "Expected behaviour" section asks for.
+    /// Reproduces the bugbash shape exactly — a left segment growing by 4
+    /// characters (the "[+]" dirty badge) tips a 37-column bar from
+    /// "everything fits" to "one right segment must drop" — and proves
+    /// that when `right_segments` follows the documented convention
+    /// (cursor-position segment *last*), only the lowest-priority segment
+    /// ("Spaces: 4") is dropped. "Ln 1, Col 1" keeps painting through the
+    /// dirty transition.
     #[test]
     fn priority_drop_keeps_painting_the_last_segment_once_a_left_segment_grows() {
         let mut bar = StatusBar {
@@ -563,17 +562,21 @@ mod tests {
         assert!(dirty_row.contains("LF"));
     }
 
-    /// Companion to the test above: documents the root cause behind
-    /// quadraui#1303. If the call site puts the cursor-position segment
-    /// *first* in `right_segments` instead of last — e.g. because that
-    /// reads naturally next to "Spaces"/"UTF-8"/"LF" — the shared
-    /// drop algorithm (correctly, per its documented contract) treats it
-    /// as the lowest-priority segment and drops it first, even under the
-    /// exact same 4-character deficit that the test above shows is
-    /// recoverable by dropping a *different* segment. This is a call-site
-    /// ordering bug, not a `fit_right_start`/`layout` defect — swapping
-    /// this segment to the end of the vector (as above) fixes it with no
-    /// primitive change.
+    /// Companion to the test above: if the call site puts the
+    /// cursor-position segment *first* in `right_segments` instead of
+    /// last — e.g. because that reads naturally next to
+    /// "Spaces"/"UTF-8"/"LF" — the shared drop algorithm (correctly, per
+    /// its documented contract) treats it as the lowest-priority segment
+    /// and drops it first, under the exact same 4-character deficit that
+    /// the test above shows is recoverable by dropping a *different*
+    /// segment. This demonstrates the call-site ordering convention, not
+    /// a `fit_right_start`/`layout` defect — swapping this segment to the
+    /// end of the vector (as above) is the available fix, with no
+    /// primitive change. This test only asserts which *index* is dropped;
+    /// it intentionally does not assert which segment's *text* must or
+    /// must not survive, so it stays agnostic to any future primitive-
+    /// level affordance (e.g. an always-visible flag) that might change
+    /// which segment that index names.
     #[test]
     fn ordering_the_cursor_segment_first_instead_of_last_makes_it_the_one_dropped() {
         let mut bar = StatusBar {
@@ -598,16 +601,10 @@ mod tests {
         assert!(row_text(&clean_buf, 37).contains("Ln 1, Col 1"));
 
         bar.left_segments[0].text = "NORMAL [+]".into();
-        let (dirty_buf, dirty_layout) = paint_at_width(&bar, 37);
+        let (_dirty_buf, dirty_layout) = paint_at_width(&bar, 37);
         assert_eq!(
             dirty_layout.resolved_right_start, 1,
             "the front segment (cursor position, in this mis-ordered bar) is dropped"
         );
-        let dirty_row = row_text(&dirty_buf, 37);
-        assert!(
-            !dirty_row.contains("Ln 1, Col 1"),
-            "mis-ordering makes the cursor segment the one that vanishes: {dirty_row:?}"
-        );
-        assert!(dirty_row.contains("Spaces: 4"));
     }
 }

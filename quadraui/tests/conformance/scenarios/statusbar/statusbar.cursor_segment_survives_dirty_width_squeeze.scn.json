@@ -1,0 +1,14 @@
+{
+  "id": "statusbar.cursor_segment_survives_dirty_width_squeeze",
+  "fixture": "status_bar_priority_demo",
+  "tier": 1,
+  "viewport": { "cols": 90, "rows": 5 },
+  "steps": [
+    { "note": "quadraui#1303 bugbash shape, as a shared conformance scenario: a StatusBar whose right_segments follow the documented least-important-first / cursor-last convention must keep its cursor-position segment ('Ln 1, Col 1') visible once a left segment grows (the 'd' key here simulates an editor's unsaved-changes '[+]' badge), even when that growth forces priority-drop to shed a lower-priority right segment ('Spaces: 4'). This is a regression guard on the existing, correct contract (StatusBar::fit_right_start / layout_padded already drop strictly front-to-back and always preserve the last element) proven across every registered backend, not a reproduction of a quadraui-side defect — the bugbash's actual root cause is a vimcode call-site that orders its cursor segment first instead of last, which this fixture deliberately does NOT do." },
+    { "assert_screen_has": "Ln 1, Col 1" },
+    { "assert_screen_has": "Spaces: 4" },
+    { "type_char": "d" },
+    { "assert_screen_has": "Ln 1, Col 1" },
+    { "assert_absent": "Spaces: 4" }
+  ]
+}

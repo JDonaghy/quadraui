@@ -36,6 +36,7 @@ pub const FIXTURES: &[&str] = &[
     "pipeline_app",
     "shell_app",
     "split_app",
+    "status_bar_priority_demo",
     "tab_group_demo",
     "text_display_wrap_demo",
     "toast_app",
@@ -70,6 +71,10 @@ pub fn build<F: DriverFactory>(
         "pipeline_app" => F::make(common::pipeline_app::PipelineApp::new(), viewport),
         "shell_app" => F::make(common::shell_app::ShellApp::new(), viewport),
         "split_app" => F::make(common::split_app::SplitApp::new(), viewport),
+        "status_bar_priority_demo" => F::make(
+            common::status_bar_priority_demo::StatusBarPriorityDemo::new(),
+            viewport,
+        ),
         "tab_group_demo" => F::make(common::tab_group_demo::TabGroupDemo::new(), viewport),
         "text_display_wrap_demo" => F::make(
             common::text_display_wrap_demo::TextDisplayWrapDemo::new(),

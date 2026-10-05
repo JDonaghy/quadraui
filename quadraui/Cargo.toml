@@ -1540,3 +1540,19 @@ required-features = ["tui"]
 name = "gtk_caret_shape"
 path = "examples/gtk_caret_shape.rs"
 required-features = ["gtk"]
+
+# StatusBar priority-drop demo — a `right_segments` built
+# least-important-first / cursor-last keeps its cursor-position segment
+# visible once the left segment grows. Both entries are mandatory: without
+# an explicit `[[example]]`, `gtk_status_bar_priority_demo.rs` gets
+# autodiscovered with no `required-features` and fails
+# `cargo test --features tui` on `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_status_bar_priority_demo"
+path = "examples/tui_status_bar_priority_demo.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_status_bar_priority_demo"
+path = "examples/gtk_status_bar_priority_demo.rs"
+required-features = ["gtk"]
