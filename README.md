@@ -186,7 +186,7 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**41 primitives**, one module each under `quadraui/src/primitives/`: a
+**42 primitives**, one module each under `quadraui/src/primitives/`: a
 declarative description, a shared layout, and a rasteriser per backend.
 Among them:
 
@@ -197,8 +197,10 @@ Among them:
 - Chrome: `TabBar`, `StatusBar`, `MenuBar`, `ActivityBar`, `Toolbar`,
   `CommandCenter`, `Scrollbar`.
 - Containers: `Split`, `SplitTree`, `Panel`, `MultiSectionView`.
-- Overlays: `Dialog`, `Palette`, `ContextMenu`, `Tooltip`, `Completions`,
-  `FindReplace`, `Toast`, plus `ProgressBar` and `Spinner`.
+- Overlays: `Dialog`, `Palette`, `ContextMenu`, `Tooltip`, `Float`
+  (anchored overlay above the main layout, stacked via `ModalStack`
+  with focus vs. non-focus floats), `Completions`, `FindReplace`,
+  `Toast`, plus `ProgressBar` and `Spinner`.
 
 **Compose controllers** in `quadraui::compose` own the interaction state
 machines, so an app matches on semantic events (`MenuEvent::Activated`,

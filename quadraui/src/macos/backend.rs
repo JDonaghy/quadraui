@@ -2853,6 +2853,16 @@ impl Backend for MacBackend {
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::dialog::draw_dialog(ctx, font, dialog, layout, line_height, &theme) }
     }
+    fn draw_float(
+        &mut self,
+        float: &crate::primitives::float::Float,
+        layout: &crate::primitives::float::FloatLayout,
+    ) {
+        // #455: see draw_palette for why this happens before the CG borrow.
+        self.modal_stack.borrow_mut().mark_painted(&float.id);
+        let theme = self.current_theme;
+        crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
+    }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
         debug_assert!(

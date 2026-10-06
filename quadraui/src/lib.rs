@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 41 primitives (one module each under `src/primitives/`), each
+//! 42 primitives (one module each under `src/primitives/`), each
 //! declarative + serde-friendly so apps and Lua plugins can describe UI
 //! as data. A representative sample:
 //!
@@ -439,6 +439,7 @@ pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
     FindReplaceHit, FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
 };
+pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
     ButtonRowItem, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
     FormItemMeasure, FormLayout, ToggleGroupItem, ValidationState, VisibleFormField,

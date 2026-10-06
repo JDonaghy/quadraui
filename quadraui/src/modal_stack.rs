@@ -24,8 +24,12 @@
 //!
 //! # What this does **not** do
 //!
-//! - **Focus**: focus tracking lives in [`crate::Backend`] (v1.x) — the
-//!   modal stack is about hit-test precedence, not keyboard focus.
+//! - **Focus**: focus tracking for the general case lives in
+//!   [`crate::Backend`] (v1.x) — the modal stack is about hit-test
+//!   precedence, not keyboard focus, for most of its entries. The one
+//!   exception is [`ModalEntry::focusable`] (issue #1321, added for
+//!   [`crate::Float`]): a *hint*, not an owner — see "Focus vs.
+//!   non-focus floats" below.
 //! - **Painting**: the stack has no opinions on draw order. Apps still
 //!   paint modals last (highest z); the stack is queried only when
 //!   *events* arrive.
@@ -33,6 +37,29 @@
 //!   arbitration only. Once a hit lands inside a modal, the app still
 //!   asks the primitive itself (e.g. [`crate::PaletteLayout::hit_test`])
 //!   for the semantic hit inside it.
+//!
+//! # Focus vs. non-focus floats (issue #1321)
+//!
+//! [`crate::Float`] is the first entry kind pushed onto this stack that
+//! can legitimately *not* want keyboard focus while still wanting
+//! z-order and hit-test precedence — a which-key-style hint popup must
+//! intercept nothing but a dismiss click, and must never steal keys
+//! from whatever else is focused (an already-open interactive float, or
+//! the base layer). [`Self::push_focusable`] carries that bit per entry;
+//! [`Self::top_focusable`] is the read side — the topmost entry whose
+//! `focusable` is `true`, skipping any non-focusable entries stacked
+//! above it. [`Self::push`] is unchanged and keeps calling
+//! `push_focusable(id, bounds, true)`, so every existing modal
+//! (`Dialog`, `Palette`, `ContextMenu`, …) is focusable by default,
+//! matching their pre-#1321 behaviour exactly.
+//!
+//! A host routes keyboard input by asking `top_focusable()` who should
+//! receive it, falling through to the base layer when it returns
+//! `None` — see `examples/common/float_app.rs`'s `handle` for the
+//! worked pattern. Mouse hit-testing is unaffected: [`Self::hit_test`]
+//! still walks every entry top-down regardless of `focusable`, because
+//! a non-focusable float still needs to swallow a click landing on it
+//! (e.g. to dismiss itself) even though it never owns the keyboard.
 //!
 //! # Paint-consistency detection (#455)
 //!
@@ -75,12 +102,20 @@ use crate::types::WidgetId;
 pub struct ModalEntry {
     pub id: WidgetId,
     pub bounds: Rect,
+    /// Whether this entry should receive keyboard focus while it's the
+    /// topmost *focusable* entry (issue #1321) — see the module doc's
+    /// "Focus vs. non-focus floats" section. `true` for every entry
+    /// pushed via [`ModalStack::push`] (dialogs, palettes, context
+    /// menus — unchanged pre-#1321 behaviour); set explicitly via
+    /// [`ModalStack::push_focusable`] for a [`crate::Float`] that
+    /// shouldn't steal keys (a hint popup).
+    pub focusable: bool,
     /// #455: set by [`ModalStack::mark_painted`] when a backend's
     /// `draw_*` call for this modal actually runs during the current
     /// frame. Reset to `false` by [`ModalStack::reset_frame_paint`] at
     /// the start of every frame. Not `pub` — entries are only ever
-    /// constructed by [`ModalStack::push`], which always starts this
-    /// `false` for a freshly (re-)opened modal.
+    /// constructed by [`ModalStack::push`]/[`ModalStack::push_focusable`],
+    /// which always start this `false` for a freshly (re-)opened modal.
     painted_this_frame: bool,
 }
 
@@ -103,17 +138,34 @@ impl ModalStack {
         Self::default()
     }
 
-    /// Push a modal onto the stack. The new entry becomes the topmost
-    /// (most-recently-opened) modal.
+    /// Push a modal onto the stack, focusable. The new entry becomes
+    /// the topmost (most-recently-opened) modal. Equivalent to
+    /// `push_focusable(id, bounds, true)` — see that method for the
+    /// non-focusable case (issue #1321's hint-popup floats).
     ///
     /// If `id` is already present (misuse — apps should pop first),
     /// the existing entry is removed before the new one is pushed so
     /// the stack never contains duplicates.
     pub fn push(&mut self, id: WidgetId, bounds: Rect) {
+        self.push_focusable(id, bounds, true);
+    }
+
+    /// Push a modal (or [`crate::Float`]) onto the stack with an
+    /// explicit [`ModalEntry::focusable`] bit (issue #1321). The new
+    /// entry becomes the topmost (most-recently-opened) one, same
+    /// duplicate-replacement behaviour as [`Self::push`].
+    ///
+    /// Pass `focusable: false` for a transient hint-style float that
+    /// must intercept clicks (so it can dismiss itself, and so a click
+    /// on it doesn't fall through to whatever's behind it) but must
+    /// never steal keyboard focus from whatever else is focused — see
+    /// [`Self::top_focusable`] for the read side.
+    pub fn push_focusable(&mut self, id: WidgetId, bounds: Rect, focusable: bool) {
         self.entries.retain(|e| e.id != id);
         self.entries.push(ModalEntry {
             id,
             bounds,
+            focusable,
             painted_this_frame: false,
         });
     }
@@ -135,6 +187,16 @@ impl ModalStack {
     /// Peek at the topmost modal without mutating.
     pub fn top(&self) -> Option<&ModalEntry> {
         self.entries.last()
+    }
+
+    /// The topmost entry whose [`ModalEntry::focusable`] is `true`,
+    /// skipping any non-focusable entries stacked above it (issue
+    /// #1321) — see the module doc's "Focus vs. non-focus floats"
+    /// section. `None` when the stack is empty, or every open entry is
+    /// non-focusable, meaning keyboard input should fall through to the
+    /// base layer.
+    pub fn top_focusable(&self) -> Option<&ModalEntry> {
+        self.iter_top_down().find(|e| e.focusable)
     }
 
     /// `true` when no modals are open.
@@ -407,6 +469,58 @@ mod tests {
         // painted — exactly the bug this exists to surface.
         assert_eq!(s.unpainted_ids(), vec![id("dialog")]);
         assert_eq!(s.hit_test(pt(5.0, 5.0)), Some(&id("dialog")));
+    }
+
+    // ─── Focus vs. non-focus floats (#1321) ──────────────────────────
+
+    #[test]
+    fn push_defaults_to_focusable() {
+        let mut s = ModalStack::new();
+        s.push(id("dialog"), rect(0.0, 0.0, 10.0, 10.0));
+        assert!(s.top().unwrap().focusable);
+        assert_eq!(s.top_focusable().unwrap().id, id("dialog"));
+    }
+
+    #[test]
+    fn top_focusable_skips_a_non_focusable_entry_on_top() {
+        // A which-key hint popup (non-focusable) opens on top of an
+        // already-open interactive float (focusable). Mouse hit-testing
+        // still sees the hint first (it's visually topmost and must be
+        // able to swallow a dismiss click), but keyboard focus must stay
+        // with the interactive float underneath it.
+        let mut s = ModalStack::new();
+        s.push_focusable(id("menu-float"), rect(0.0, 0.0, 10.0, 10.0), true);
+        s.push_focusable(id("hint-float"), rect(0.0, 0.0, 10.0, 10.0), false);
+
+        assert_eq!(s.top().unwrap().id, id("hint-float"));
+        assert_eq!(
+            s.hit_test(pt(5.0, 5.0)),
+            Some(&id("hint-float")),
+            "hit-test still sees the topmost entry regardless of focusable"
+        );
+        assert_eq!(
+            s.top_focusable().unwrap().id,
+            id("menu-float"),
+            "keyboard focus skips the non-focusable hint and lands on the \
+             focusable float beneath it"
+        );
+    }
+
+    #[test]
+    fn top_focusable_is_none_when_every_open_entry_is_non_focusable() {
+        let mut s = ModalStack::new();
+        s.push_focusable(id("hint"), rect(0.0, 0.0, 10.0, 10.0), false);
+        assert!(
+            s.top_focusable().is_none(),
+            "no focusable entry open — keyboard input should fall through \
+             to the base layer"
+        );
+    }
+
+    #[test]
+    fn top_focusable_is_none_on_an_empty_stack() {
+        let s = ModalStack::new();
+        assert!(s.top_focusable().is_none());
     }
 
     #[test]

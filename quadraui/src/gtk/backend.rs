@@ -3722,6 +3722,21 @@ impl Backend for GtkBackend {
             .collect()
     }
 
+    fn draw_float(
+        &mut self,
+        float: &crate::primitives::float::Float,
+        layout: &crate::primitives::float::FloatLayout,
+    ) {
+        // #455: see draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&float.id);
+        let theme = self.current_theme;
+        crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
+        // Same convention `draw_scrollbar` uses for a chrome-only
+        // primitive with no painted text of its own: register the
+        // float's own bounds under its id so it's inventory-observable.
+        self.register_zone(float.id.clone(), layout.bounds);
+    }
+
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
     fn draw_multi_section_view(

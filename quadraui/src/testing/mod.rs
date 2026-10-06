@@ -1091,6 +1091,9 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_dialog");
         Vec::new()
     }
+    fn draw_float(&mut self, _f: &crate::Float, _l: &crate::FloatLayout) {
+        self.record("draw_float");
+    }
     fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {
         self.record("draw_multi_section_view");
     }

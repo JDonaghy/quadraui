@@ -72,6 +72,8 @@ mod file_dialog_demo;
 mod file_picker_app;
 #[path = "../examples/common/find_replace_app.rs"]
 mod find_replace_app;
+#[path = "../examples/common/float_app.rs"]
+mod float_app;
 // `LEFT_ID`/`RIGHT_ID`/`STATUS_ID` are consumed below, but the demo's own
 // `focus_label`/`Default` impl aren't — `examples/common/mod.rs`'s blanket
 // `#![allow(dead_code)]` doesn't reach this file's `#[path]` include.
@@ -187,6 +189,7 @@ use diff_view_demo::DiffViewApp;
 use file_dialog_demo::FileDialogDemo;
 use file_picker_app::FilePickerApp;
 use find_replace_app::FindReplaceApp;
+use float_app::FloatApp;
 use focus_demo::{FocusDemo, LEFT_ID, RIGHT_ID, STATUS_ID};
 use folder_picker_app::FolderPickerApp;
 use form_all_fields::FormAllFieldsApp;
@@ -7342,6 +7345,204 @@ fn canvas_demo_q_exits() {
     let mut driver = TuiDriver::new(CanvasApp::new(), 100, 10);
     driver.type_char('q');
     assert!(driver.exited(), "'q' should exit the canvas demo");
+}
+
+// ─── FloatApp (#1321): placement, edge clamping, z-order, focus ───────────
+//
+// `examples/common/float_app.rs`'s module doc names exactly what each
+// assertion below proves end to end through `Backend::draw_float` +
+// `ModalStack::push_focusable`/`top_focusable` — not just that the
+// `Float` primitive's own `layout()` resolves correctly in isolation
+// (covered by `primitives::float::tests`), but that a real app wired
+// through the TUI runner gets the same behaviour.
+//
+// 40x9 viewport: six command rows (y = 0..5), two spare rows, and the
+// status bar on the last row (y = 8) — short enough that the actions
+// menu (height 4) opening below the last command row overflows and
+// must flip above it.
+
+#[test]
+fn float_demo_hint_shows_help_and_never_steals_focus_from_the_base_list() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('?');
+    assert!(
+        driver.screen_contains("Up/Down move"),
+        "'?' should open the which-key hint:\n{}",
+        driver.screen()
+    );
+    // The hint is non-focusable — Down must still move the base list's
+    // own cursor, landing on "Save" (index 1), not get swallowed by the
+    // hint.
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("last: Save"),
+        "Down+Enter should have run \"Save\" — the hint must not have \
+         stolen keyboard focus:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_menu_opens_below_the_first_row() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("Run now"),
+        "'m' should open the actions menu:\n{}",
+        driver.screen()
+    );
+    let (_, row_y) = driver
+        .find("Open File")
+        .expect("the selected row must still be painted");
+    let (_, menu_y) = driver
+        .find("Run now")
+        .expect("the menu's first item must be painted");
+    assert!(
+        menu_y > row_y,
+        "the menu should open below the first row (row_y={row_y}, menu_y={menu_y}):\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_menu_flips_above_the_row_near_the_bottom_of_the_list() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    for _ in 0..5 {
+        driver.press_named(NamedKey::Down);
+    }
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("Run now"),
+        "'m' should open the actions menu on the last row:\n{}",
+        driver.screen()
+    );
+    let (_, row_y) = driver
+        .find("Quit")
+        .expect("the selected (last) row must still be painted");
+    let (_, menu_y) = driver
+        .find("Run now")
+        .expect("the menu's first item must be painted");
+    assert!(
+        menu_y < row_y,
+        "near the bottom of the list the menu should flip to open above \
+         the row (row_y={row_y}, menu_y={menu_y}) — `Anchor::resolve`'s \
+         overflow fallback:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_menu_keys_move_the_menus_own_cursor_while_open() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 70, 9);
+    driver.type_char('m');
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("last: Open File / Run later"),
+        "Down should have moved the menu's own cursor to \"Run later\", \
+         not the base list:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_hint_opened_on_top_of_the_menu_does_not_steal_its_focus() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 70, 9);
+    driver.type_char('m');
+    driver.type_char('?');
+    // Both floats visible at once — the z-order half of this test:
+    // opening the hint didn't close or replace the menu.
+    assert!(
+        driver.screen_contains("Run now") && driver.screen_contains("Up/Down move"),
+        "both floats should be open simultaneously:\n{}",
+        driver.screen()
+    );
+    // The hint is now the topmost entry in `ModalStack` (pushed last),
+    // but it's non-focusable — keyboard input must still reach the menu
+    // underneath it, not fall through to the base list.
+    driver.press_named(NamedKey::Down);
+    driver.press_named(NamedKey::Enter);
+    assert!(
+        driver.screen_contains("last: Open File / Run later"),
+        "the menu should still own the keyboard with the non-focusable \
+         hint stacked on top of it:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_escape_closes_the_menu_then_the_hint_then_exits() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('m');
+    driver.type_char('?');
+    assert!(driver.screen_contains("Run now") && driver.screen_contains("Up/Down move"));
+
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        !driver.screen_contains("Run now") && driver.screen_contains("Up/Down move"),
+        "first Escape should close only the menu:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        !driver.screen_contains("Up/Down move"),
+        "second Escape should close the hint too:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.exited(),
+        "no float was left open — should not have exited yet"
+    );
+
+    driver.press_named(NamedKey::Escape);
+    assert!(
+        driver.exited(),
+        "third Escape, with nothing open, should exit"
+    );
+}
+
+#[test]
+fn float_demo_clicking_a_menu_item_selects_it_and_closes_the_menu() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 70, 9);
+    driver.type_char('m');
+    let (x, y) = driver
+        .find("Run later")
+        .expect("the menu's second item must be painted");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("last: Open File / Run later"),
+        "clicking \"Run later\" should run it and close the menu:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains("Run now"),
+        "the menu should be closed after the click:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_clicking_the_hint_dismisses_it() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('?');
+    let (x, y) = driver
+        .find("m = menu")
+        .expect("a hint line must be painted");
+    driver.click(x, y);
+    assert!(
+        !driver.screen_contains("Up/Down move"),
+        "clicking the hint should dismiss it:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn float_demo_q_exits() {
+    let mut driver = TuiDriver::new(FloatApp::new(), 40, 9);
+    driver.type_char('q');
+    assert!(driver.exited(), "'q' should exit the float demo");
 }
 
 // ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel (#596) ───

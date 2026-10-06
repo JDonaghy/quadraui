@@ -90,6 +90,7 @@ use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
+use crate::primitives::float::{Float, FloatLayout};
 use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::ListViewLayout;
@@ -3188,6 +3189,31 @@ pub trait Backend: sealed::Sealed {
     /// handler can resolve a click to a button without re-running
     /// layout. Mirrors [`draw_context_menu`](Self::draw_context_menu).
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect>;
+
+    /// Draw a [`Float`]'s chrome — background fill + optional border
+    /// stroke — at its caller-resolved layout (issue #1321). Like
+    /// [`Self::draw_tooltip`]/[`Self::draw_context_menu`]/
+    /// [`Self::draw_dialog`] above, the caller computes the layout
+    /// itself (`float.layout(viewport, measure)`, see [`Float`]'s own
+    /// module doc) rather than this trait exposing a separate
+    /// `float_layout` method — there is nothing backend-specific left
+    /// to compute once the caller has resolved the anchor.
+    ///
+    /// **Content is NOT painted here.** A `Float` is pure chrome, same
+    /// contract as [`Self::draw_panel`] — the host paints its own
+    /// content (a tree, a list, a form, plain text — whatever the
+    /// which-key hint / jump label / sticky header / floating terminal
+    /// actually needs) into `layout.content_bounds` after this call
+    /// returns.
+    ///
+    /// No default impl — every backend implementer sees this as a
+    /// compile error, same as [`Self::draw_image`] (`PRIMITIVE_RULES.md`
+    /// rule 7). Shared across GTK/macOS/Win via
+    /// [`crate::primitives::float::native_surface_paint::paint`], the
+    /// same zero-backend-specific-policy pattern as `Canvas`/`Panel`;
+    /// TUI has its own cell-based rasteriser in
+    /// [`crate::tui::draw_float`].
+    fn draw_float(&mut self, float: &Float, layout: &FloatLayout);
 
     /// Draw a [`MultiSectionView`]. The backend computes the layout
     /// internally with native metrics (cells for TUI, pixels +
