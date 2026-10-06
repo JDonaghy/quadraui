@@ -620,7 +620,7 @@ jobs:
       - name: Build (layout feature)
         run: cargo build -p quadraui --features layout
       - name: Test (layout feature)
-        run: cargo test -p quadraui --features layout --lib flex::
+        run: 'cargo test -p quadraui --features layout --lib flex::'
       - name: Doctest (layout feature)
         run: cargo test -p quadraui --features layout --doc flex
       - name: Clippy (layout feature)
