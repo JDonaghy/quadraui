@@ -1003,6 +1003,7 @@ pub const CASES: &[Case] = &[
                 padding: 1.0,
                 fg: None,
                 bg: None,
+                font_role: Default::default(),
             };
             let measure = RichTextPopupMeasure::new(cw * 20.0, lh);
             let layout = popup.layout(0.0, 0.0, area, measure, |_, start, end| {

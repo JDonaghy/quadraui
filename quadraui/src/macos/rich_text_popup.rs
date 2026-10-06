@@ -96,6 +96,7 @@ mod tests {
             padding: 1.0,
             fg: None,
             bg: None,
+            font_role: Default::default(),
         }
     }
 
@@ -201,6 +202,76 @@ mod tests {
         assert!(
             found,
             "selected row should paint at least one pixel in the selection-bg colour"
+        );
+    }
+
+    /// `RichTextPopup::font_role` must select a genuinely different live
+    /// `CTFont`, not a documented no-op: with the chrome font set far
+    /// larger than the editor font, a popup with the default
+    /// (field-omitted) role paints a visibly wider glyph than one with
+    /// `FontRole::Editor`, and both must paint real ink.
+    #[test]
+    fn font_role_editor_paints_with_the_editor_fonts_metrics() {
+        fn ink_right_edge(surface: &BitmapSurface, bounds: crate::event::Rect) -> i32 {
+            let mut last = 0i32;
+            for y in bounds.y as u32..(bounds.y + bounds.height) as u32 {
+                for x in bounds.x as u32..(bounds.x + bounds.width) as u32 {
+                    let (r, g, b, _) = surface.pixel(x, y);
+                    if (r, g, b) != (0, 0, 0) {
+                        last = last.max(x as i32 - bounds.x as i32);
+                    }
+                }
+            }
+            last
+        }
+
+        fn popup_with_role(role: crate::FontRole) -> RichTextPopup {
+            let mut p = sample_popup();
+            p.lines = vec![StyledText::plain("M")];
+            p.line_text = vec!["M".to_string()];
+            p.fg = Some(crate::types::Color::rgb(255, 255, 255));
+            p.bg = Some(crate::types::Color::rgb(0, 0, 0));
+            p.font_role = role;
+            p
+        }
+
+        fn paint_with_role(role: crate::FontRole) -> (BitmapSurface, RichTextPopupLayout) {
+            let popup = popup_with_role(role);
+            let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+            let measure =
+                crate::primitives::rich_text_popup::RichTextPopupMeasure::new(200.0, 80.0);
+            let layout = popup.layout(10.0, 10.0, viewport, measure, |_, _, _| 0.0);
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = MacBackend::new();
+            // Chrome font far larger than the editor font — if `role`
+            // really selects a different live `CTFont`, the two runs
+            // paint visibly different glyph widths.
+            backend.set_ui_font("Menlo 60");
+            backend.set_current_font(font());
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_rich_text_popup(&popup, &layout);
+            });
+            backend.end_frame();
+            (surface, layout)
+        }
+
+        let (chrome_surface, chrome_layout) = paint_with_role(crate::FontRole::default());
+        let (editor_surface, editor_layout) = paint_with_role(crate::FontRole::Editor);
+
+        let chrome_right = ink_right_edge(&chrome_surface, chrome_layout.content_bounds);
+        let editor_right = ink_right_edge(&editor_surface, editor_layout.content_bounds);
+
+        assert!(
+            editor_right > 0,
+            "FontRole::Editor must still paint real ink, got {editor_right}"
+        );
+        assert!(
+            chrome_right > editor_right * 2,
+            "with the default (field-omitted) role painting the 60pt chrome font, its \
+             glyph should be far wider than FontRole::Editor's 14pt glyph: \
+             chrome_right={chrome_right}, editor_right={editor_right}"
         );
     }
 }
