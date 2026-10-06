@@ -98,5 +98,6 @@ variant yet. See `docs/decisions/DECISIONS.md` D-006 and
 **Audits.** `docs/audits/FRAMEWORK_AUDIT_2026-09-26.md` is the most recent
 independent review of quadraui as an app framework: its verdict, the
 measured numbers, and the severity-ranked roadmap behind epics #1095
-(widget model) and #1096 (language bindings). `docs/SMELL_AUDIT_2026-07.md`
+(widget model) and #1096 (language bindings). The living, release-ordered
+version of that roadmap is [`ROADMAP.md`](../../ROADMAP.md) at the repo root. `docs/SMELL_AUDIT_2026-07.md`
 is the earlier code-smell audit.

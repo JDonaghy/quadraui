@@ -3,7 +3,8 @@
 > **The source of truth for *intent*.** Design rationale lives in
 > `quadraui/docs/`; this file says what we are ultimately trying to be, and is
 > meant to bias planning, triage and issue-filing above any single primitive or
-> backend. Keep it short and current.
+> backend. Keep it short and current. The *order* the remaining work lands in —
+> releases, cross-epic gates, the 1.0 bar — is [`ROADMAP.md`](ROADMAP.md).
 >
 > _Last updated: 2026-09-13._
 

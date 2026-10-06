@@ -96,18 +96,13 @@ comfortable with a pre-1.0 API.
 - **Accessibility.** There is no assistive-technology support: no
   AccessKit, AT-SPI, UI Automation or NSAccessibility. A screen reader sees
   nothing. That rules quadraui out wherever a Section 508, EN 301 549 or
-  WCAG obligation applies. Tracked in quadraui#1119.
+  WCAG obligation applies. Tracked in quadraui#1309.
 - **CJK and other IME input.** No backend implements an input-method
   protocol, so composed input (CJK, and dead-key accents) does not work.
   The design is `quadraui/docs/IME_INPUT_PROPOSAL.md`; the backend work is
   quadraui#900.
 - **Right-to-left text.** East-Asian character width is handled; RTL,
   bidi and complex shaping are not, and are out of scope.
-- **Custom drawing.** Apps compose the shipped primitives; there is no
-  public canvas yet (quadraui#1102). An optional flex/grid layout engine
-  exists (the `layout` feature, `quadraui::flex`, quadraui#1103) for apps
-  that would otherwise place those primitives with hand-computed `Rect`
-  arithmetic.
 - **Multiple windows** (quadraui#1120), and **languages other than Rust**
   (bindings are a later phase, quadraui#1096).
 
@@ -116,14 +111,15 @@ comfortable with a pre-1.0 API.
 `0.1.x` — pre-1.0. The crate is prepared for its first publish to
 crates.io (quadraui#1111); until an operator actually runs `cargo
 publish` and tags `v0.1.0`, depend on it by git revision as shown
-above. Breaking changes are batched and recorded in `CHANGELOG.md`.
+above. Breaking changes are batched and recorded in `CHANGELOG.md`; the
+release order and the 1.0 bar are in [`ROADMAP.md`](ROADMAP.md).
 
 | Backend | State |
 |---|---|
 | TUI | In production use in vimcode and coord-tui. Every rasteriser shipped. |
 | GTK4 (Linux) | In production use in vimcode. Every rasteriser shipped. |
 | macOS | Implements the whole `Backend` trait, including native menus, file dialogs and a client-side title bar. Built and tested on `macos-latest` CI for every PR that touches `quadraui/src`. |
-| Windows | Every rasteriser shipped, with no `todo!()` left in `src/win/backend.rs`. Builds and tests are blocking on `windows-latest` CI. The cross-backend conformance matrix still reports it as a burn-down column rather than a blocking one: some paint-then-click cases do not pass yet. |
+| Windows | Every rasteriser shipped, with no `todo!()` left in `src/win/backend.rs`. Builds, tests and the cross-backend conformance matrix are all blocking on `windows-latest` CI. |
 
 The real consumers are [vimcode](https://github.com/JDonaghy/vimcode), a
 Vim-compatible editor that runs on all four backends, and
