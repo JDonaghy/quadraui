@@ -2862,6 +2862,10 @@ impl Backend for MacBackend {
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
+        // Same convention `draw_minimap`/`draw_image` use for a
+        // chrome-only primitive: register the float's own bounds under
+        // its id so it's inventory-observable.
+        self.register_zone(float.id.clone(), layout.bounds);
     }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();

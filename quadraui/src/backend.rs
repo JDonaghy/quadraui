@@ -3191,7 +3191,7 @@ pub trait Backend: sealed::Sealed {
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect>;
 
     /// Draw a [`Float`]'s chrome — background fill + optional border
-    /// stroke — at its caller-resolved layout (issue #1321). Like
+    /// stroke — at its caller-resolved layout. Like
     /// [`Self::draw_tooltip`]/[`Self::draw_context_menu`]/
     /// [`Self::draw_dialog`] above, the caller computes the layout
     /// itself (`float.layout(viewport, measure)`, see [`Float`]'s own

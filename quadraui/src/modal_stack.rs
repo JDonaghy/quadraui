@@ -27,9 +27,8 @@
 //! - **Focus**: focus tracking for the general case lives in
 //!   [`crate::Backend`] (v1.x) — the modal stack is about hit-test
 //!   precedence, not keyboard focus, for most of its entries. The one
-//!   exception is [`ModalEntry::focusable`] (issue #1321, added for
-//!   [`crate::Float`]): a *hint*, not an owner — see "Focus vs.
-//!   non-focus floats" below.
+//!   exception is [`ModalEntry::focusable`], added for [`crate::Float`]:
+//!   a *hint*, not an owner — see "Focus vs. non-focus floats" below.
 //! - **Painting**: the stack has no opinions on draw order. Apps still
 //!   paint modals last (highest z); the stack is queried only when
 //!   *events* arrive.
@@ -38,7 +37,7 @@
 //!   asks the primitive itself (e.g. [`crate::PaletteLayout::hit_test`])
 //!   for the semantic hit inside it.
 //!
-//! # Focus vs. non-focus floats (issue #1321)
+//! # Focus vs. non-focus floats
 //!
 //! [`crate::Float`] is the first entry kind pushed onto this stack that
 //! can legitimately *not* want keyboard focus while still wanting
@@ -48,10 +47,9 @@
 //! the base layer). [`Self::push_focusable`] carries that bit per entry;
 //! [`Self::top_focusable`] is the read side — the topmost entry whose
 //! `focusable` is `true`, skipping any non-focusable entries stacked
-//! above it. [`Self::push`] is unchanged and keeps calling
-//! `push_focusable(id, bounds, true)`, so every existing modal
-//! (`Dialog`, `Palette`, `ContextMenu`, …) is focusable by default,
-//! matching their pre-#1321 behaviour exactly.
+//! above it. [`Self::push`] calls `push_focusable(id, bounds, true)`, so
+//! every modal pushed through it (`Dialog`, `Palette`, `ContextMenu`,
+//! …) is focusable by default.
 //!
 //! A host routes keyboard input by asking `top_focusable()` who should
 //! receive it, falling through to the base layer when it returns
@@ -103,12 +101,11 @@ pub struct ModalEntry {
     pub id: WidgetId,
     pub bounds: Rect,
     /// Whether this entry should receive keyboard focus while it's the
-    /// topmost *focusable* entry (issue #1321) — see the module doc's
-    /// "Focus vs. non-focus floats" section. `true` for every entry
-    /// pushed via [`ModalStack::push`] (dialogs, palettes, context
-    /// menus — unchanged pre-#1321 behaviour); set explicitly via
-    /// [`ModalStack::push_focusable`] for a [`crate::Float`] that
-    /// shouldn't steal keys (a hint popup).
+    /// topmost *focusable* entry — see the module doc's "Focus vs.
+    /// non-focus floats" section. `true` for every entry pushed via
+    /// [`ModalStack::push`] (dialogs, palettes, context menus); set
+    /// explicitly via [`ModalStack::push_focusable`] for a
+    /// [`crate::Float`] that shouldn't steal keys (a hint popup).
     pub focusable: bool,
     /// #455: set by [`ModalStack::mark_painted`] when a backend's
     /// `draw_*` call for this modal actually runs during the current
@@ -141,7 +138,7 @@ impl ModalStack {
     /// Push a modal onto the stack, focusable. The new entry becomes
     /// the topmost (most-recently-opened) modal. Equivalent to
     /// `push_focusable(id, bounds, true)` — see that method for the
-    /// non-focusable case (issue #1321's hint-popup floats).
+    /// non-focusable case (hint-popup floats).
     ///
     /// If `id` is already present (misuse — apps should pop first),
     /// the existing entry is removed before the new one is pushed so
@@ -151,9 +148,9 @@ impl ModalStack {
     }
 
     /// Push a modal (or [`crate::Float`]) onto the stack with an
-    /// explicit [`ModalEntry::focusable`] bit (issue #1321). The new
-    /// entry becomes the topmost (most-recently-opened) one, same
-    /// duplicate-replacement behaviour as [`Self::push`].
+    /// explicit [`ModalEntry::focusable`] bit. The new entry becomes
+    /// the topmost (most-recently-opened) one, same duplicate-replacement
+    /// behaviour as [`Self::push`].
     ///
     /// Pass `focusable: false` for a transient hint-style float that
     /// must intercept clicks (so it can dismiss itself, and so a click
@@ -168,6 +165,17 @@ impl ModalStack {
             focusable,
             painted_this_frame: false,
         });
+    }
+
+    /// Push a [`crate::Float`] onto the stack at `bounds`, carrying over
+    /// its own [`crate::Float::focusable`] bit — equivalent to
+    /// `push_focusable(float.id.clone(), bounds, float.focusable)`. Use
+    /// this instead of calling [`Self::push`]/[`Self::push_focusable`]
+    /// directly with a hand-written literal, so a float's serde-described
+    /// `focusable` field is the single source of truth for whether it
+    /// takes keyboard focus.
+    pub fn push_float(&mut self, float: &crate::Float, bounds: Rect) {
+        self.push_focusable(float.id.clone(), bounds, float.focusable);
     }
 
     /// Remove the modal with this id, if present. Returns true on
@@ -190,9 +198,9 @@ impl ModalStack {
     }
 
     /// The topmost entry whose [`ModalEntry::focusable`] is `true`,
-    /// skipping any non-focusable entries stacked above it (issue
-    /// #1321) — see the module doc's "Focus vs. non-focus floats"
-    /// section. `None` when the stack is empty, or every open entry is
+    /// skipping any non-focusable entries stacked above it — see the
+    /// module doc's "Focus vs. non-focus floats" section. `None` when
+    /// the stack is empty, or every open entry is
     /// non-focusable, meaning keyboard input should fall through to the
     /// base layer.
     pub fn top_focusable(&self) -> Option<&ModalEntry> {
@@ -471,7 +479,7 @@ mod tests {
         assert_eq!(s.hit_test(pt(5.0, 5.0)), Some(&id("dialog")));
     }
 
-    // ─── Focus vs. non-focus floats (#1321) ──────────────────────────
+    // ─── Focus vs. non-focus floats ──────────────────────────────────
 
     #[test]
     fn push_defaults_to_focusable() {
@@ -514,6 +522,34 @@ mod tests {
             s.top_focusable().is_none(),
             "no focusable entry open — keyboard input should fall through \
              to the base layer"
+        );
+    }
+
+    #[test]
+    fn push_float_carries_over_the_floats_own_focusable_bit() {
+        use crate::layout::{Anchor, Side};
+        use crate::Float;
+
+        let focusable = Float::new(
+            id("menu-float"),
+            Anchor::new(rect(0.0, 0.0, 5.0, 1.0), Side::Bottom),
+        );
+        let mut hint = Float::new(
+            id("hint-float"),
+            Anchor::new(rect(0.0, 0.0, 5.0, 1.0), Side::Bottom),
+        );
+        hint.focusable = false;
+
+        let mut s = ModalStack::new();
+        s.push_float(&focusable, rect(0.0, 0.0, 10.0, 10.0));
+        s.push_float(&hint, rect(0.0, 0.0, 10.0, 10.0));
+
+        assert_eq!(s.top().unwrap().id, id("hint-float"));
+        assert_eq!(
+            s.top_focusable().unwrap().id,
+            id("menu-float"),
+            "push_float must read focusable off the Float itself, not \
+             default to true like push()"
         );
     }
 

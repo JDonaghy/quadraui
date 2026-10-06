@@ -288,8 +288,8 @@ pub enum Surface<'a> {
         dialog: &'a Dialog,
         layout: &'a DialogLayout,
     },
-    /// Issue #1321. Like `Tooltip`/`ContextMenu`/`Dialog` above, carries
-    /// its own resolved `layout` rather than a plain `rect` — `Float`
+    /// Like `Tooltip`/`ContextMenu`/`Dialog` above, carries its own
+    /// resolved `layout` rather than a plain `rect` — `Float`
     /// is an overlay-with-caller-anchor primitive, so there's no bare
     /// `rect` the host would otherwise have on hand.
     Float {
@@ -787,8 +787,8 @@ impl<'a> ScreenLayout<'a> {
     ///   focus/dismiss handling while open, and being modal, nothing
     ///   behind them should be Tab-reachable anyway. `Float` in
     ///   particular already has its own, finer-grained focus story —
-    ///   [`crate::ModalStack::top_focusable`] (issue #1321) — rather
-    ///   than participating in `Tab`/`Shift+Tab` cycling.
+    ///   [`crate::ModalStack::top_focusable`] — rather than
+    ///   participating in `Tab`/`Shift+Tab` cycling.
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
@@ -1454,6 +1454,75 @@ mod tests {
         let stops = layout.tab_stops();
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].0.as_str(), "pb");
+    }
+
+    /// `Surface::Float` dispatches to `Backend::draw_float` and is
+    /// excluded from Tab order — same transient-overlay treatment as
+    /// `Tooltip`/`ContextMenu`/`Dialog` (see this module's
+    /// `tab_stops` doc).
+    #[test]
+    fn surface_float_dispatches_to_draw_float_and_is_excluded_from_tab_stops() {
+        use crate::layout::{Anchor, Side};
+        use crate::testing::RecordingBackend;
+        use crate::{Float, FloatMeasure};
+
+        let editor = Editor {
+            id: "ed".into(),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            lines: Vec::new(),
+            cursor: None,
+            extra_cursors: Vec::new(),
+            selection: None,
+            extra_selections: Vec::new(),
+            yank_highlight: None,
+            scroll_top: 0,
+            scroll_left: 0,
+            total_lines: 0,
+            max_col: 0,
+            gutter_char_width: 0,
+            is_active: true,
+            show_active_bg: false,
+            has_git_diff: false,
+            has_breakpoints: false,
+            diagnostic_gutter: std::collections::HashMap::new(),
+            code_action_lines: std::collections::HashSet::new(),
+            bracket_match_positions: Vec::new(),
+            active_indent_col: None,
+            tabstop: 4,
+            cursorline: false,
+            lightbulb_glyph: '\0',
+        };
+        let float = Float::new(
+            WidgetId::new("f"),
+            Anchor::new(Rect::new(0.0, 0.0, 5.0, 1.0), Side::Bottom),
+        );
+        let float_layout = float.layout(
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            FloatMeasure::new(10.0, 4.0),
+        );
+
+        let mut layout = ScreenLayout::new();
+        layout.push(Surface::Editor {
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            editor: &editor,
+        });
+        layout.push(Surface::Float {
+            float: &float,
+            layout: &float_layout,
+        });
+
+        let mut backend = RecordingBackend::new();
+        layout.draw(&mut backend);
+        assert!(backend.calls.contains(&"draw_float"));
+
+        let stops = layout.tab_stops();
+        assert_eq!(
+            stops.len(),
+            1,
+            "the Float surface must not become a Tab stop — it owns its \
+             own focus story via ModalStack::top_focusable"
+        );
+        assert_eq!(stops[0].0.as_str(), "ed");
     }
 
     /// `FrameHitMap` is serializable: round-trips through JSON

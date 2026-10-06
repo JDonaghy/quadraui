@@ -12,7 +12,7 @@ instead — this file is about *contributing changes*, not *using the crate*.
 A Cargo workspace with four members:
 
 - **`quadraui`** — the library. Declarative UI primitives (`TreeView`,
-  `StatusBar`, `Split`, 41 in total) plus rasterisers for four backends
+  `StatusBar`, `Split`, 42 in total) plus rasterisers for four backends
   (TUI/ratatui, GTK4, macOS, Windows). This is almost certainly the
   crate you're changing.
 - **`kubeui-core`**, **`kubeui`**, **`kubeui-gtk`** — a small demo app

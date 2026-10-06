@@ -3757,6 +3757,10 @@ impl Backend for WinBackend {
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
+        // Same convention `draw_image`/`draw_solid_fill` use for a
+        // chrome-only primitive: register the float's own bounds under
+        // its id so it's inventory-observable.
+        self.register_zone(float.id.clone(), layout.bounds);
     }
 
     /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
