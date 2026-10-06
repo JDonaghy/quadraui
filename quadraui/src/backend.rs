@@ -3401,14 +3401,54 @@ pub trait Backend: sealed::Sealed {
     /// directly via the backend crate's free function.
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList);
 
-    /// Draw a [`RichTextPopup`] at its caller-resolved layout.
-    /// Mirrors [`draw_tooltip`](Self::draw_tooltip): host computes
-    /// anchor + viewport + measure and asks `popup.layout(...)` for
-    /// the bounds. Link hit regions are tracked on the backend's
-    /// internal state; hosts that need them query via the
-    /// backend-specific accessor today (link-hit-test trait method
-    /// is a follow-up).
+    /// Draw a [`RichTextPopup`] at its caller-resolved layout, in the
+    /// chrome (UI) font — [`crate::ChromePrimitive::RichTextPopup`]'s
+    /// classification. Mirrors [`draw_tooltip`](Self::draw_tooltip):
+    /// host computes anchor + viewport + measure and asks
+    /// `popup.layout(...)` for the bounds. Link hit regions are
+    /// tracked on the backend's internal state; hosts that need them
+    /// query via the backend-specific accessor today (link-hit-test
+    /// trait method is a follow-up).
+    ///
+    /// To render editor content (hover docs, signatures, diagnostics)
+    /// in the editor's own font instead, call
+    /// [`Backend::draw_rich_text_popup_with_font_role`] with
+    /// [`crate::FontRole::Editor`].
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout);
+
+    /// Draw a [`RichTextPopup`] with an explicit [`crate::FontRole`]
+    /// request: paint its content in the chrome (UI) font or the
+    /// editor's own monospace font, instead of always the chrome font
+    /// [`Self::draw_rich_text_popup`] uses. Lets a consumer render
+    /// editor content (hover docs, signatures, diagnostics) with the
+    /// editor's metrics so link hit-testing stays in sync with the
+    /// glyphs actually painted, while another popup instance (e.g.
+    /// settings help text) keeps the chrome font.
+    ///
+    /// Added rather than folded into [`Self::draw_rich_text_popup`]'s
+    /// signature, and given a default body, so that this capability
+    /// breaks no existing `Backend` implementor and no existing call
+    /// site — a new required field on [`RichTextPopup`] itself would
+    /// break every downstream consumer constructing one with an
+    /// exhaustive literal (see `CLAUDE.md`'s *Downstream consumers*
+    /// section). Mirrors [`Self::draw_tooltip_with_chrome`]'s
+    /// [`crate::TooltipChrome`] precedent for the same reason.
+    ///
+    /// The default body **ignores `role`** and delegates to
+    /// `draw_rich_text_popup`, i.e. always paints the chrome font. That
+    /// is the correct fallback for a backend with no font-role
+    /// vocabulary of its own. GTK, macOS and Win-GUI all override it and
+    /// honour [`crate::FontRole::Editor`]; TUI has one font per cell and
+    /// keeps the default.
+    fn draw_rich_text_popup_with_font_role(
+        &mut self,
+        popup: &RichTextPopup,
+        layout: &RichTextPopupLayout,
+        role: crate::FontRole,
+    ) {
+        let _ = role;
+        self.draw_rich_text_popup(popup, layout);
+    }
 
     /// Draw a [`FindReplacePanel`] (find/replace overlay sitting
     /// above the editor). The backend pulls the editor-relative

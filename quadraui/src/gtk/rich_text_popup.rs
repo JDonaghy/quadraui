@@ -32,10 +32,15 @@ pub const RICH_TEXT_POPUP_SB_INSET: f64 = 1.0;
 /// hit regions in `(x, y, w, h, url)` form.
 ///
 /// `pango_layout` is the editor's monospace Pango layout — the
-/// rasteriser temporarily swaps in `ui_font_desc` for popup body
+/// rasteriser temporarily swaps in `body_font_desc` for popup body
 /// rendering, then restores the layout's original font description
 /// before returning so subsequent paints in the same frame keep
-/// rendering in the editor font (#247).
+/// rendering in the editor font (#247). `body_font_desc` is caller-
+/// resolved: `Backend::draw_rich_text_popup` passes the chrome (UI)
+/// description, `Backend::draw_rich_text_popup_with_font_role` passes
+/// the editor one when asked for `FontRole::Editor` — this function
+/// itself has no font-role opinion, it just paints with whichever
+/// description it's handed.
 ///
 /// The frame border uses [`Theme::link_fg`] when `popup.has_focus`,
 /// otherwise [`Theme::hover_border`]. Per-popup `popup.bg` / `popup.fg`
@@ -44,7 +49,7 @@ pub const RICH_TEXT_POPUP_SB_INSET: f64 = 1.0;
 pub fn draw_rich_text_popup(
     cr: &Context,
     pango_layout: &pango::Layout,
-    ui_font_desc: &pango::FontDescription,
+    body_font_desc: &pango::FontDescription,
     popup: &RichTextPopup,
     layout: &RichTextPopupLayout,
     theme: &Theme,
@@ -82,7 +87,7 @@ pub fn draw_rich_text_popup(
     cr.stroke().ok();
 
     // Save the layout's current font_description before our per-line
-    // `set_font_description(ui_font_desc)` calls inside the loop
+    // `set_font_description(body_font_desc)` calls inside the loop
     // below. Without this, the UI font leaks into subsequent draw
     // calls in the same frame — most visibly: the palette / dialog
     // / context-menu rendering immediately after the hover popup
@@ -116,7 +121,7 @@ pub fn draw_rich_text_popup(
         // Single-Pango-call render with per-span AttrList.
         if let Some(styled) = popup.lines.get(line_idx) {
             pango_layout.set_text(raw_text);
-            pango_layout.set_font_description(Some(ui_font_desc));
+            pango_layout.set_font_description(Some(body_font_desc));
             let attrs = pango::AttrList::new();
             // Per-line font scale (markdown headings render larger).
             let line_scale = popup.line_scales.get(line_idx).copied().unwrap_or(1.0);
@@ -304,7 +309,7 @@ pub fn draw_rich_text_popup(
 
         // Re-set the line text + attrs so index_to_pos is accurate.
         pango_layout.set_text(raw_text);
-        pango_layout.set_font_description(Some(ui_font_desc));
+        pango_layout.set_font_description(Some(body_font_desc));
         let attrs = pango::AttrList::new();
         let line_scale = popup.line_scales.get(line_idx).copied().unwrap_or(1.0);
         if (line_scale - 1.0).abs() > 0.01 {

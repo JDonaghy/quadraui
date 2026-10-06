@@ -55,6 +55,23 @@ release time.
 
 ### Added
 
+- `Backend::draw_rich_text_popup_with_font_role` (issue #1322) — lets a
+  consumer paint one `RichTextPopup` instance in
+  `FontRole::Editor` (the editor's own monospace font/metrics) instead
+  of the chrome (UI) font `Backend::draw_rich_text_popup` always uses,
+  for editor-content hovers (code, signatures, diagnostics) where link
+  hit-testing needs to match the glyphs actually painted
+  (`vimcode#220`/`vimcode#504`'s supply side). Added as a new trait
+  method with a default body delegating to `draw_rich_text_popup`
+  (i.e. `FontRole::Chrome`, today's behaviour unchanged) rather than a
+  new field on `RichTextPopup` itself — mirrors
+  `Backend::draw_tooltip_with_chrome`'s `TooltipChrome` precedent, so
+  no downstream consumer's exhaustive `RichTextPopup { .. }` literal
+  breaks. GTK, macOS and Win-GUI all override it and honour
+  `FontRole::Editor` with real per-backend ink/metrics tests; TUI keeps
+  the default (one font per cell). `examples/common/markdown_demo.rs`
+  gains an `f` key toggling between both roles, covered by a
+  `TuiDriver` round-trip test.
 - `Float { id, anchor, focusable, border, bg }` (issue #1321) — an
   anchored overlay surface above the main layout, the supply-side
   primitive `vimcode#1804` ("Extension UI Phase 3: overlays/floats for

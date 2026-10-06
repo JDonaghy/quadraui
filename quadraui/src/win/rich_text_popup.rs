@@ -72,7 +72,6 @@ mod tests {
             padding: 2.0,
             fg: None,
             bg: None,
-            font_role: Default::default(),
         }
     }
 
@@ -130,7 +129,6 @@ mod tests {
             padding: 2.0,
             fg: None,
             bg: None,
-            font_role: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 300.0, 300.0);
         let measure = RichTextPopupMeasure::new(100.0, 16.0);

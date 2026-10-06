@@ -10,10 +10,18 @@
 //! whitespace-flanked `*` so the flanking guard is exercised visually:
 //! `foo_bar` and `a * b` must render upright, while `*italic*`, `_also_`,
 //! `**bold**`, and `` `code` `` get their styling.
+//!
+//! `f` toggles the popup's [`FontRole`] between `Chrome` (the UI font —
+//! today's unchanged default, painted through plain
+//! [`Backend::draw_rich_text_popup`]) and `Editor` (the editor's own
+//! monospace font, painted through
+//! [`Backend::draw_rich_text_popup_with_font_role`]) — visual
+//! confirmation of GTK's editor-role paint arm; TUI has one font per
+//! cell and ignores the role.
 
 use quadraui::{
-    render_markdown_to_styled, AppLogic, Backend, Key, NamedKey, PopupPlacement, Reaction, Rect,
-    RichTextPopup, RichTextPopupMeasure, Theme, UiEvent, WidgetId,
+    render_markdown_to_styled, AppLogic, Backend, FontRole, Key, NamedKey, PopupPlacement,
+    Reaction, Rect, RichTextPopup, RichTextPopupMeasure, Theme, UiEvent, WidgetId,
 };
 
 /// The markdown source rendered by the demo.
@@ -36,11 +44,15 @@ fn main() {
 
 pub struct MarkdownDemo {
     scroll_top: usize,
+    font_role: FontRole,
 }
 
 impl MarkdownDemo {
     pub fn new() -> Self {
-        Self { scroll_top: 0 }
+        Self {
+            scroll_top: 0,
+            font_role: FontRole::Chrome,
+        }
     }
 }
 
@@ -85,7 +97,6 @@ impl AppLogic for MarkdownDemo {
             padding: 1.0,
             fg: None,
             bg: None,
-            font_role: Default::default(),
         };
 
         // Anchor near the top-left so "Below" placement keeps it on-screen.
@@ -102,7 +113,16 @@ impl AppLogic for MarkdownDemo {
         let layout = popup.layout(anchor_x, anchor_y, vp, measure, |_, start, end| {
             (end - start) as f32 * col_w
         });
-        backend.draw_rich_text_popup(&popup, &layout);
+        // `f` toggles `self.font_role` — `Chrome` goes through plain
+        // `draw_rich_text_popup` (today's call, unchanged); `Editor`
+        // goes through `draw_rich_text_popup_with_font_role` so this
+        // demo visually exercises both paint paths.
+        match self.font_role {
+            FontRole::Chrome => backend.draw_rich_text_popup(&popup, &layout),
+            FontRole::Editor => {
+                backend.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor)
+            }
+        }
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -115,6 +135,13 @@ impl AppLogic for MarkdownDemo {
                 }
                 Key::Named(NamedKey::Up) => {
                     self.scroll_top = self.scroll_top.saturating_sub(1);
+                    Reaction::Redraw
+                }
+                Key::Char('f') => {
+                    self.font_role = match self.font_role {
+                        FontRole::Chrome => FontRole::Editor,
+                        FontRole::Editor => FontRole::Chrome,
+                    };
                     Reaction::Redraw
                 }
                 _ => Reaction::Continue,

@@ -6,6 +6,7 @@
 //! `a * b * c` stay upright).
 //!
 //! - ↑/↓ scroll the popup
+//! - f toggles between the chrome (UI) font and the editor font
 //! - q / Esc quits
 //!
 //! ```sh

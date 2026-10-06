@@ -41,7 +41,7 @@ use quadraui::{
     ContextMenuPlacement, DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure,
     DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor,
     EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
-    FindReplacePanel, Float, FloatMeasure, Form, FormField, Image, ImageFit, ImageSource,
+    FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
     InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
     MinimapLine, MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel,
     PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
@@ -1003,13 +1003,46 @@ pub const CASES: &[Case] = &[
                 padding: 1.0,
                 fg: None,
                 bg: None,
-                font_role: Default::default(),
             };
             let measure = RichTextPopupMeasure::new(cw * 20.0, lh);
             let layout = popup.layout(0.0, 0.0, area, measure, |_, start, end| {
                 (end - start) as f32 * cw
             });
             b.draw_rich_text_popup(&popup, &layout);
+        },
+    },
+    Case {
+        // The role-carrying entry point. Same content as
+        // `draw_rich_text_popup` above (whose default delegates to
+        // `FontRole::Chrome`), but asking explicitly for `Editor` so C0
+        // exercises a non-default request reaching the backend rather
+        // than only the delegating path.
+        method: "draw_rich_text_popup_with_font_role",
+        needle: Some("c0rtpf"),
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let popup = RichTextPopup {
+                id: id("rich-text-popup-font-role"),
+                lines: vec![StyledText::plain("c0rtpf")],
+                line_text: vec!["c0rtpf".to_string()],
+                line_scales: vec![],
+                scroll_top: 0,
+                max_visible_rows: 10,
+                has_focus: true,
+                selection: None,
+                links: vec![],
+                focused_link: None,
+                placement: PopupPlacement::Below,
+                padding: 1.0,
+                fg: None,
+                bg: None,
+            };
+            let measure = RichTextPopupMeasure::new(cw * 20.0, lh);
+            let layout = popup.layout(0.0, 0.0, area, measure, |_, start, end| {
+                (end - start) as f32 * cw
+            });
+            b.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor);
         },
     },
     Case {
