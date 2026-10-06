@@ -26,7 +26,7 @@ before queuing anything from milestones #19 or #20.**
 | Release | Contents | Breaking? | Status |
 |---|---|---|---|
 | **v0.1.0** | First crates.io publish (#783). Release prep, `#[non_exhaustive]` descriptors, deprecation removal, docs truth pass. | — | Prepared on `develop`; tag + `cargo publish` pending (operator step, #1111). |
-| **v0.2** | The widget-model breaking batch (#1095): owned `Frame` (#1099), interned `WidgetId` (#1105), retained descriptor store (#1104). | **Yes** | Not started; waits for v0.1.0 so consumers can pin `release/0.1.x`. |
+| **v0.2** | The widget-model breaking batch (#1095): the owned `Frame` tree (the remaining half of #1099), interned `WidgetId` (#1105), retained descriptor store (#1104). | **Yes** | Not started; waits for v0.1.0 so consumers can pin `release/0.1.x`. The owned-`Frame` follow-up issue is not yet filed — #1099 stays open until it is. |
 | **v0.3** | Accessibility (#1309) and the remaining app capabilities (#788). Descriptor changes are additive only. | No (target) | Filed; gated on v0.2. |
 | **v0.4+** | Language bindings (#1096). | No | Gated on the stability rule below. |
 | **1.0** | The 1.0 bar is met (below), then a stability pledge. | — | — |
@@ -34,7 +34,9 @@ before queuing anything from milestones #19 or #20.**
 Already landed on `develop` ahead of the train: `step()`/`pump()` non-blocking
 runner (#1100), one unit contract for `Rect` (#1098), split `Backend` with a
 public paint seam (#1101), optional flex/grid layout (#1103), proportional-font
-metrics (#1132), styling beyond colours (#1133), `Canvas` (#1102).
+metrics (#1132), styling beyond colours (#1133), `Canvas` (#1102), and the
+first half of #1099 — every primitive now has a `Surface`/`FrameZone`
+variant and `FrameHitMap` is serializable (#1298, additive).
 
 ## Cross-epic gates
 
