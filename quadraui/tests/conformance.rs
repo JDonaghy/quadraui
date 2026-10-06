@@ -276,13 +276,13 @@ fn backends() -> Vec<BackendReg> {
     #[cfg(all(feature = "macos", target_os = "macos"))]
     regs.push(BackendReg::register::<MacFactory>("macos"));
     #[cfg(all(feature = "win", target_os = "windows"))]
-    regs.push(BackendReg::register_burn_down::<WinFactory>("win"));
+    regs.push(BackendReg::register::<WinFactory>("win"));
     regs
 }
 
 /// The names of every [`Gating::BurnDown`] column in this build — what
-/// [`verdict`] and [`burn_down_legend`] key off. Empty on every leg but
-/// Windows today.
+/// [`verdict`] and [`burn_down_legend`] key off. Empty on every leg
+/// today; a newly added backend starts here until its column passes.
 fn burn_down_backends(backends: &[BackendReg]) -> std::collections::BTreeSet<&'static str> {
     backends
         .iter()

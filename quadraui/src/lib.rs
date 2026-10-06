@@ -10,9 +10,9 @@
 //!   *Status* section for the two documented divergences from GTK.
 //! - **Windows** (Direct2D + DirectWrite) — `windows-rs`. Window creation,
 //!   event translation, and platform services are real and exercised by
-//!   blocking CI on `windows-latest`; most per-primitive rasterisers are
-//!   still `todo!()` stubs, tracked as a non-gating "burn-down" column in
-//!   the conformance matrix (see `tests/conformance.rs` and issue #708).
+//!   blocking CI on `windows-latest`, and every per-primitive rasteriser
+//!   is shipped; its conformance-matrix column gates like every other
+//!   backend's (see `tests/conformance.rs`).
 //!
 //! ## What's in the box
 //!
