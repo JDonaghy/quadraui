@@ -96,18 +96,13 @@ comfortable with a pre-1.0 API.
 - **Accessibility.** There is no assistive-technology support: no
   AccessKit, AT-SPI, UI Automation or NSAccessibility. A screen reader sees
   nothing. That rules quadraui out wherever a Section 508, EN 301 549 or
-  WCAG obligation applies. Tracked in quadraui#1119.
+  WCAG obligation applies. Tracked in quadraui#1309.
 - **CJK and other IME input.** No backend implements an input-method
   protocol, so composed input (CJK, and dead-key accents) does not work.
   The design is `quadraui/docs/IME_INPUT_PROPOSAL.md`; the backend work is
   quadraui#900.
 - **Right-to-left text.** East-Asian character width is handled; RTL,
   bidi and complex shaping are not, and are out of scope.
-- **Custom drawing.** Apps compose the shipped primitives; there is no
-  public canvas yet (quadraui#1102). An optional flex/grid layout engine
-  exists (the `layout` feature, `quadraui::flex`, quadraui#1103) for apps
-  that would otherwise place those primitives with hand-computed `Rect`
-  arithmetic.
 - **Multiple windows** (quadraui#1120), and **languages other than Rust**
   (bindings are a later phase, quadraui#1096).
 
@@ -116,7 +111,8 @@ comfortable with a pre-1.0 API.
 `0.1.x` — pre-1.0. The crate is prepared for its first publish to
 crates.io (quadraui#1111); until an operator actually runs `cargo
 publish` and tags `v0.1.0`, depend on it by git revision as shown
-above. Breaking changes are batched and recorded in `CHANGELOG.md`.
+above. Breaking changes are batched and recorded in `CHANGELOG.md`; the
+release order and the 1.0 bar are in [`ROADMAP.md`](ROADMAP.md).
 
 | Backend | State |
 |---|---|
