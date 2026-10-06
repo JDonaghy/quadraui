@@ -34,6 +34,25 @@
 //! contiguous run sharing colour + bold/italic). Code-block tokens
 //! become spans with `fg = Some(syntax_color)`. The primitive just
 //! paints what it's given.
+//!
+//! # Font role (editor vs chrome)
+//!
+//! This primitive is classified [`crate::ChromePrimitive::RichTextPopup`]
+//! — by default every backend paints its content in the chrome (UI)
+//! font via [`crate::Backend::draw_rich_text_popup`], same as before a
+//! choice existed. A consumer rendering editor content (hover docs,
+//! signatures, diagnostics) that wants the popup measured and painted
+//! with the editor's monospace metrics instead — keeping link
+//! hit-testing in sync with the glyphs actually painted — calls
+//! [`crate::Backend::draw_rich_text_popup_with_font_role`] with
+//! [`crate::FontRole::Editor`] instead. The role is requested per call,
+//! not stored on this struct: adding a required field here would break
+//! every downstream consumer that constructs `RichTextPopup` with an
+//! exhaustive literal (see `CLAUDE.md`'s *Downstream consumers*
+//! section), so the extra method — alongside the old one, not replacing
+//! it — is the non-breaking shape, mirroring
+//! [`crate::Backend::draw_tooltip_with_chrome`]'s [`crate::TooltipChrome`]
+//! precedent.
 
 use crate::event::Rect;
 use crate::types::{Color, StyledText, WidgetId};
@@ -95,18 +114,6 @@ pub struct RichTextPopup {
     /// Override background colour. `None` = theme `hover_bg`.
     #[serde(default)]
     pub bg: Option<Color>,
-    /// Which font this popup's content paints in. Defaults to
-    /// [`crate::FontRole::Chrome`] (the UI font), matching this
-    /// primitive's classification as [`crate::ChromePrimitive::RichTextPopup`]
-    /// — unchanged from before this field existed. A consumer rendering
-    /// editor content (hover docs, signatures, diagnostics) sets
-    /// [`crate::FontRole::Editor`] so the popup measures and paints
-    /// with the editor's monospace metrics instead, keeping link
-    /// hit-testing in sync with the glyphs actually painted. Every
-    /// pixel backend (GTK, macOS, Win-GUI) honours this per popup
-    /// instance; TUI has one font per cell and ignores it.
-    #[serde(default)]
-    pub font_role: crate::FontRole,
 }
 
 /// Preferred placement of the popup relative to its anchor.
@@ -804,7 +811,6 @@ mod tests {
             padding: 0.0,
             fg: None,
             bg: None,
-            font_role: crate::FontRole::default(),
         }
     }
 
@@ -940,7 +946,6 @@ mod tests {
             padding: 1.0,
             fg: None,
             bg: None,
-            font_role: crate::FontRole::default(),
         }
     }
 
@@ -1066,37 +1071,5 @@ mod tests {
         assert!(multi.contains(5, 2));
         assert!(!multi.contains(5, 3));
         assert!(!multi.contains(6, 0));
-    }
-
-    // ── `font_role` (editor-vs-chrome popup font) ────────────────────────
-
-    #[test]
-    fn font_role_defaults_to_chrome_so_existing_literals_keep_todays_behaviour() {
-        let popup = make_rich_popup(1, 10, 0);
-        assert_eq!(popup.font_role, crate::FontRole::Chrome);
-    }
-
-    #[test]
-    fn font_role_omitted_from_json_deserializes_to_chrome() {
-        // A consumer's stored/serialized popup predating this field must
-        // still deserialize to today's default rather than failing.
-        let json = serde_json::json!({
-            "id": "rtp:json",
-            "lines": [],
-            "line_text": [],
-            "max_visible_rows": 10,
-        });
-        let popup: RichTextPopup =
-            serde_json::from_value(json).expect("popup without font_role deserializes");
-        assert_eq!(popup.font_role, crate::FontRole::Chrome);
-    }
-
-    #[test]
-    fn font_role_editor_round_trips_through_json() {
-        let mut popup = make_rich_popup(1, 10, 0);
-        popup.font_role = crate::FontRole::Editor;
-        let json = serde_json::to_value(&popup).expect("serialize");
-        let back: RichTextPopup = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(back.font_role, crate::FontRole::Editor);
     }
 }

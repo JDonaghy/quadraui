@@ -5463,6 +5463,47 @@ fn markdown_demo_renders_headings_and_fenced_code_block() {
     );
 }
 
+// `f` toggles `MarkdownDemo::font_role` between the chrome
+// font (plain `draw_rich_text_popup`) and the editor font
+// (`draw_rich_text_popup_with_font_role`). TUI has one font per cell and
+// ignores the role (see `Backend::draw_rich_text_popup_with_font_role`'s
+// default body), so this only proves the key is wired and the popup still
+// renders its content after toggling — it is not a visual font assertion,
+// which belongs to the per-backend pixel tests in `gtk`/`macos`/`win`.
+#[test]
+fn markdown_demo_f_toggles_font_role_without_losing_content() {
+    let mut driver = TuiDriver::new(MarkdownDemo::new(), 100, 30);
+
+    let reaction = driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('f'),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    });
+    assert_eq!(
+        reaction,
+        Reaction::Redraw,
+        "toggling the font role should request a redraw"
+    );
+
+    let after = driver.screen();
+    assert!(
+        after.contains("Markdown adapter demo"),
+        "content should still render after toggling to the editor font role:\n{after}"
+    );
+
+    // Toggle back — must still render (round-trips cleanly).
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char('f'),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    });
+    let back = driver.screen();
+    assert!(
+        back.contains("Markdown adapter demo"),
+        "content should still render after toggling back to the chrome font role:\n{back}"
+    );
+}
+
 // ─── ToastApp (issue #308): triggering + dismissing a toast ────────────────
 //
 // The issue's suggested scenario is "trigger a toast, assert it appears;

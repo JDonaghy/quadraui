@@ -39,19 +39,9 @@
 //! widget. Keep new cross-cutting policy modules at the crate root.
 
 /// Which font a primitive paints in.
-///
-/// Most primitives have exactly one answer for their whole lifetime —
-/// [`ChromePrimitive`] fixes it per primitive *type*. A few primitives
-/// (e.g. [`crate::RichTextPopup`]) instead carry this as a per-instance
-/// field so one consumer can paint an editor-content hover (code,
-/// signatures) in the editor font while another paints a chrome hover
-/// (settings help text) in the UI font, from the same primitive type.
-/// [`Default`] resolves to [`Self::Chrome`] so an existing literal or a
-/// deserialized value with the field omitted keeps today's behaviour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontRole {
     /// The host chrome / UI font — [`crate::Backend::set_ui_font`].
-    #[default]
     Chrome,
     /// The user's configured editor font — [`crate::Backend::set_editor_font`].
     Editor,
@@ -80,6 +70,14 @@ pub enum ChromePrimitive {
     MenuBar,
     ContextMenu,
     Dialog,
+    /// Chrome by default, via plain [`crate::Backend::draw_rich_text_popup`].
+    /// The one primitive in this list with a per-call escape hatch:
+    /// [`crate::Backend::draw_rich_text_popup_with_font_role`] lets a
+    /// caller paint an individual popup instance in
+    /// [`FontRole::Editor`] instead (editor-content hovers), without
+    /// changing this primitive's default classification or breaking
+    /// [`Self::font_role`]'s "every `ChromePrimitive` is `Chrome`"
+    /// invariant for the plain entry point.
     RichTextPopup,
     CommandCenter,
     MultiSectionView,
@@ -158,11 +156,6 @@ impl std::fmt::Display for ChromePrimitive {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn font_role_default_is_chrome() {
-        assert_eq!(FontRole::default(), FontRole::Chrome);
-    }
 
     #[test]
     fn every_chrome_primitive_is_chrome() {

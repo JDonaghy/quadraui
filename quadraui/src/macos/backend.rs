@@ -2969,21 +2969,41 @@ impl Backend for MacBackend {
         }
     }
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
+        // Issue #1003: the rich-text popup is chrome
+        // (`ChromePrimitive::RichTextPopup`) — see `draw_tree`'s comment.
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
             "MacBackend::draw_rich_text_popup called outside enter_frame_scope",
         );
-        // `popup.font_role` (quadraui#1322) picks which live `CTFont`
-        // this popup instance paints in — `FontRole::Chrome` (the
-        // default, matching this primitive's `ChromePrimitive`
-        // classification) keeps `chrome_font`; `FontRole::Editor` swaps
-        // in `current_font`, the same resolution `Self::measure_text`
-        // already uses per role.
-        let font = match popup.font_role {
-            crate::FontRole::Chrome => &self.chrome_font,
-            crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
-        };
+        let font = &self.chrome_font;
+        let theme = self.current_theme;
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }
+    }
+
+    fn draw_rich_text_popup_with_font_role(
+        &mut self,
+        popup: &RichTextPopup,
+        layout: &RichTextPopupLayout,
+        role: crate::FontRole,
+    ) {
+        // `role` picks which live `CTFont` this call
+        // paints the popup in — `FontRole::Chrome` keeps `chrome_font`
+        // (same as plain `draw_rich_text_popup`); `FontRole::Editor`
+        // swaps in `current_font`, the same resolution
+        // `Self::measure_text`/`Self::surface_draw_text_run_with_role`
+        // already use per role.
+        if role == crate::FontRole::Chrome {
+            self.draw_rich_text_popup(popup, layout);
+            return;
+        }
+        let ctx = self.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "MacBackend::draw_rich_text_popup_with_font_role called outside enter_frame_scope",
+        );
+        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }

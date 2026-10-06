@@ -3924,25 +3924,44 @@ impl Backend for GtkBackend {
         layout_arg: &crate::primitives::rich_text_popup::RichTextPopupLayout,
     ) {
         let theme = self.current_theme;
-        // `popup.font_role` (quadraui#1322) picks which live font this
-        // popup instance paints in — `FontRole::Chrome` (the default,
-        // matching this primitive's pre-existing `ChromePrimitive`
-        // classification) keeps `ui_font`; `FontRole::Editor` swaps in
-        // the editor's own Pango description, the same resolution
-        // `Self::measure_text`/`Self::surface_draw_text_run_with_role`
-        // already use per role.
-        let font_desc = match popup.font_role {
-            crate::FontRole::Chrome => crate::gtk::chrome_font_description(&self.ui_font),
-            crate::FontRole::Editor => {
-                pango::FontDescription::from_string(&self.editor_font_pango_string())
-            }
-        };
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_rich_text_popup called outside enter_frame_scope");
         // GTK rasteriser returns link bounds; for trait parity we
         // discard them. Hosts that need link hit-testing query the
         // primitive's own `popup.layout(...).hit_test(...)` API.
+        let _ = crate::gtk::draw_rich_text_popup(
+            cr,
+            pango_layout,
+            &ui_font_desc,
+            popup,
+            layout_arg,
+            &theme,
+        );
+    }
+
+    fn draw_rich_text_popup_with_font_role(
+        &mut self,
+        popup: &crate::primitives::rich_text_popup::RichTextPopup,
+        layout_arg: &crate::primitives::rich_text_popup::RichTextPopupLayout,
+        role: crate::FontRole,
+    ) {
+        // `role` picks which live font this call paints
+        // the popup's content in — `FontRole::Chrome` keeps `ui_font`
+        // (same as plain `draw_rich_text_popup`); `FontRole::Editor`
+        // swaps in the editor's own Pango description, the same
+        // resolution `Self::measure_text`/
+        // `Self::surface_draw_text_run_with_role` already use per role.
+        if role == crate::FontRole::Chrome {
+            self.draw_rich_text_popup(popup, layout_arg);
+            return;
+        }
+        let theme = self.current_theme;
+        let font_desc = pango::FontDescription::from_string(&self.editor_font_pango_string());
+        let (cr, pango_layout) = self.current_frame_refs().expect(
+            "GtkBackend::draw_rich_text_popup_with_font_role called outside enter_frame_scope",
+        );
         let _ = crate::gtk::draw_rich_text_popup(
             cr,
             pango_layout,
@@ -9787,14 +9806,15 @@ mod tests {
         });
     }
 
-    /// `RichTextPopup::font_role` (quadraui#1322) must select a
-    /// genuinely different live font, not a documented no-op — proven
-    /// the same way as `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`:
+    /// [`Backend::draw_rich_text_popup_with_font_role`]
+    /// must select a genuinely different live font, not a documented
+    /// no-op — proven the same way as
+    /// `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`:
     /// a huge chrome font versus a tiny editor font paints visibly
-    /// different amounts of ink for the same popup content. The default
-    /// (field omitted / `FontRole::Chrome`) must still paint with the
-    /// chrome font — proving the new field didn't change today's
-    /// behaviour for existing consumers.
+    /// different amounts of ink for the same popup content. Plain
+    /// `draw_rich_text_popup` (no role argument) must still paint with
+    /// the chrome font — proving the new method didn't change today's
+    /// behaviour for existing call sites.
     #[test]
     fn gtk_rich_text_popup_font_role_selects_the_requested_fonts_size() {
         use crate::primitives::rich_text_popup::{
@@ -9823,7 +9843,7 @@ mod tests {
             count
         }
 
-        fn popup(font_role: FontRole) -> RichTextPopup {
+        fn popup() -> RichTextPopup {
             RichTextPopup {
                 id: WidgetId::new("rtp:font-role"),
                 lines: vec![StyledText::plain("M")],
@@ -9839,14 +9859,13 @@ mod tests {
                 padding: 0.0,
                 fg: Some(Color::rgb(255, 255, 255)),
                 bg: Some(Color::rgb(0, 0, 0)),
-                font_role,
             }
         }
 
-        fn paint(backend: &mut GtkBackend, font_role: FontRole) -> usize {
+        fn paint(backend: &mut GtkBackend, role: Option<FontRole>) -> usize {
             let mut surface =
                 ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-            let p = popup(font_role);
+            let p = popup();
             let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
             let measure = RichTextPopupMeasure::new(80.0, 80.0);
             let layout = p.layout(2.0, 2.0, viewport, measure, |_, s, e| (e - s) as f32);
@@ -9854,8 +9873,9 @@ mod tests {
                 let cr = Context::new(&surface).expect("Context::new");
                 let pango_ctx = pangocairo::functions::create_context(&cr);
                 let pango_layout = pango::Layout::new(&pango_ctx);
-                backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                    b.draw_rich_text_popup(&p, &layout);
+                backend.enter_frame_scope(&cr, &pango_layout, |b| match role {
+                    Some(role) => b.draw_rich_text_popup_with_font_role(&p, &layout, role),
+                    None => b.draw_rich_text_popup(&p, &layout),
                 });
             }
             ink_pixel_count(&mut surface)
@@ -9865,8 +9885,10 @@ mod tests {
         backend.set_ui_font("Sans 48");
         backend.set_editor_font("Monospace", 6.0);
 
-        let chrome_ink = paint(&mut backend, FontRole::default());
-        let editor_ink = paint(&mut backend, FontRole::Editor);
+        // `None` = plain `draw_rich_text_popup` (today's call site, no
+        // role argument at all) — must still paint the chrome font.
+        let chrome_ink = paint(&mut backend, None);
+        let editor_ink = paint(&mut backend, Some(FontRole::Editor));
 
         assert!(
             chrome_ink > 0 && editor_ink > 0,
@@ -9875,8 +9897,8 @@ mod tests {
         assert!(
             chrome_ink > editor_ink * 3,
             "a 48pt chrome font must paint far more ink than a 6pt editor font for the \
-             same glyph if the default `font_role` (field omitted) really selects the \
-             chrome font: chrome={chrome_ink}, editor={editor_ink}"
+             same glyph if plain draw_rich_text_popup (no role argument) really selects \
+             the chrome font: chrome={chrome_ink}, editor={editor_ink}"
         );
     }
 

@@ -603,14 +603,19 @@ pub struct WinBackend {
     /// (UI) font (`ui_font_family`/`ui_font_size_pt`) — the chrome twin
     /// of `dwrite` above. `None` until [`Self::attach_surface`] creates
     /// it; recreated alongside it the same way (#724). Read via
-    /// [`Self::chrome_dwrite`]; `Dialog`/`RichTextPopup` and
-    /// every other `ChromePrimitive` rasteriser (`Tree`,
-    /// `List`, `MenuBar`, `ContextMenu`, `CommandCenter`,
-    /// `MultiSectionView`, `SidebarPanel`, `StatusBar`, `ActivityBar`,
-    /// `Toolbar`, `TabBar`) paint chrome text through this handle,
-    /// falling back to the editor `dwrite` handle if no live chrome one
-    /// exists yet — matching GTK's `ui_font` swap and macOS's
-    /// `chrome_font`.
+    /// [`Self::chrome_dwrite`]; `Dialog` and every other
+    /// `ChromePrimitive` rasteriser (`Tree`, `List`, `MenuBar`,
+    /// `ContextMenu`, `CommandCenter`, `MultiSectionView`,
+    /// `SidebarPanel`, `StatusBar`, `ActivityBar`, `Toolbar`, `TabBar`)
+    /// paint chrome text through this handle, falling back to the
+    /// editor `dwrite` handle if no live chrome one exists yet —
+    /// matching GTK's `ui_font` swap and macOS's `chrome_font`.
+    /// `RichTextPopup` paints through this handle too, but only for
+    /// [`crate::FontRole::Chrome`] (the default, via plain
+    /// `draw_rich_text_popup`) — a caller that asks for
+    /// [`crate::FontRole::Editor`] via
+    /// `Backend::draw_rich_text_popup_with_font_role` is routed to the
+    /// editor `dwrite` handle instead.
     #[cfg(target_os = "windows")]
     chrome_dwrite: Option<DWrite>,
     /// Chrome font family, parsed from the Pango-style description
@@ -3947,16 +3952,10 @@ impl Backend for WinBackend {
     fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &self.surface {
-            // `popup.font_role` picks which live `IDWriteTextFormat`
-            // this popup instance paints in, the same resolution
-            // `Self::measure_text` uses per role: `Chrome` falls back to
-            // the editor handle if no live chrome one exists yet (same
-            // "degrade, don't panic" convention as every other fallback
-            // on this backend); `Editor` always uses the editor handle.
-            let dwrite = match popup.font_role {
-                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
-                crate::FontRole::Editor => self.dwrite.as_ref(),
-            };
+            // Falls back to the editor `dwrite` handle if no live chrome
+            // one exists yet, same "degrade, don't panic" convention as
+            // `surface_draw_text_run_with_role`'s Windows override.
+            let dwrite = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref());
             if let Some(dwrite) = dwrite {
                 let _ = super::rich_text_popup::draw_rich_text_popup(
                     &surface.target,
@@ -3969,6 +3968,37 @@ impl Backend for WinBackend {
         }
         // See `draw_tree`'s doc for why this degrades to a no-op instead
         // of panicking (issue #924).
+        let _ = (popup, layout);
+    }
+
+    /// Draw a [`RichTextPopup`] with an explicit [`crate::FontRole`]:
+    /// `FontRole::Chrome` behaves exactly like plain
+    /// `draw_rich_text_popup` above; `FontRole::Editor` always uses the
+    /// editor `dwrite` handle instead of falling back to it only when no
+    /// chrome handle exists, the same resolution `Self::measure_text`
+    /// uses per role.
+    fn draw_rich_text_popup_with_font_role(
+        &mut self,
+        popup: &RichTextPopup,
+        layout: &RichTextPopupLayout,
+        role: crate::FontRole,
+    ) {
+        if role == crate::FontRole::Chrome {
+            self.draw_rich_text_popup(popup, layout);
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &self.surface {
+            if let Some(dwrite) = self.dwrite.as_ref() {
+                let _ = super::rich_text_popup::draw_rich_text_popup(
+                    &surface.target,
+                    dwrite,
+                    popup,
+                    layout,
+                );
+                return;
+            }
+        }
         let _ = (popup, layout);
     }
 
@@ -8581,14 +8611,16 @@ mod tests {
         );
     }
 
-    /// `RichTextPopup::font_role` must select a genuinely different live
-    /// `IDWriteTextFormat`, not a documented no-op — same shape as
+    /// [`Backend::draw_rich_text_popup_with_font_role`] must select a
+    /// genuinely different live `IDWriteTextFormat`, not a documented
+    /// no-op — same shape as
     /// `win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size`:
     /// the editor font size is held fixed across both runs; only which
-    /// popup instance's `font_role` is painted varies. A popup with the
-    /// default (field-omitted) role must still paint through the chrome
-    /// handle (today's behaviour, unchanged), and a popup with
-    /// `FontRole::Editor` must paint through the editor handle instead.
+    /// method/role is used to paint the same popup varies. Plain
+    /// `draw_rich_text_popup` (no role argument) must still paint
+    /// through the chrome handle (today's behaviour, unchanged), and
+    /// `draw_rich_text_popup_with_font_role(.., FontRole::Editor)` must
+    /// paint through the editor handle instead.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_rich_text_popup_honours_font_role() {
@@ -8605,7 +8637,7 @@ mod tests {
         let bg = Color::rgb(0, 0, 0);
         let fg = Color::rgb(255, 255, 255);
 
-        fn popup(role: crate::FontRole, bg: Color, fg: Color) -> RichTextPopup {
+        fn popup(bg: Color, fg: Color) -> RichTextPopup {
             RichTextPopup {
                 id: WidgetId::new("rtp:font-role"),
                 lines: vec![StyledText::plain("M")],
@@ -8621,7 +8653,6 @@ mod tests {
                 padding: 0.0,
                 fg: Some(fg),
                 bg: Some(bg),
-                font_role: role,
             }
         }
 
@@ -8638,7 +8669,7 @@ mod tests {
             last
         }
 
-        fn paint_with_role(role: crate::FontRole, bg: Color, fg: Color) -> (i32, Rect) {
+        fn paint_with_role(role: Option<crate::FontRole>, bg: Color, fg: Color) -> (i32, Rect) {
             let surface = HeadlessSurface::new(W, H).expect("create headless surface");
             let mut backend = WinBackend::new();
             backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, EDITOR_SIZE_PT);
@@ -8647,7 +8678,7 @@ mod tests {
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let p = popup(role, bg, fg);
+            let p = popup(bg, fg);
             let measure = RichTextPopupMeasure::new(100.0, 90.0);
             let layout = p.layout(
                 2.0,
@@ -8657,7 +8688,12 @@ mod tests {
                 |_, s, e| (e - s) as f32,
             );
             let content = layout.content_bounds;
-            Backend::draw_rich_text_popup(&mut backend, &p, &layout);
+            match role {
+                Some(role) => {
+                    Backend::draw_rich_text_popup_with_font_role(&mut backend, &p, &layout, role)
+                }
+                None => Backend::draw_rich_text_popup(&mut backend, &p, &layout),
+            }
             backend.end_frame();
             (
                 ink_right_edge(&surface, content, (bg.r, bg.g, bg.b)),
@@ -8665,8 +8701,10 @@ mod tests {
             )
         }
 
-        let (chrome_right, _) = paint_with_role(crate::FontRole::default(), bg, fg);
-        let (editor_right, _) = paint_with_role(crate::FontRole::Editor, bg, fg);
+        // `None` = plain `draw_rich_text_popup` (today's call site, no
+        // role argument at all) — must still paint the chrome font.
+        let (chrome_right, _) = paint_with_role(None, bg, fg);
+        let (editor_right, _) = paint_with_role(Some(crate::FontRole::Editor), bg, fg);
 
         assert!(
             editor_right > 0,
@@ -8674,9 +8712,9 @@ mod tests {
         );
         assert!(
             chrome_right > editor_right * 2,
-            "with the editor font size held fixed at {EDITOR_SIZE_PT}pt, the default \
-             (field-omitted) role painting the {CHROME_SIZE_PT}pt chrome font should \
-             paint a far wider glyph than FontRole::Editor: \
+            "with the editor font size held fixed at {EDITOR_SIZE_PT}pt, plain \
+             draw_rich_text_popup (no role argument) painting the {CHROME_SIZE_PT}pt \
+             chrome font should paint a far wider glyph than FontRole::Editor: \
              chrome_right={chrome_right}, editor_right={editor_right}"
         );
     }
