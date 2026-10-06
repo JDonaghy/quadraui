@@ -55,6 +55,24 @@ release time.
 
 ### Added
 
+- `Float { id, anchor, focusable, border, bg }` (issue #1321) — an
+  anchored overlay surface above the main layout, the supply-side
+  primitive `vimcode#1804` ("Extension UI Phase 3: overlays/floats for
+  Lua extensions") needs so vimcode never builds floats itself.
+  Positioned with the existing `Anchor` (`crate::layout`, now
+  `Serialize`/`Deserialize` itself so a plugin-declared float survives
+  a JSON round-trip), stacked via the existing `ModalStack` — which
+  gains `push_focusable`/`top_focusable` (issue #1321) to carry and
+  read back the "a hint popup must not steal keys; an interactive float
+  must" distinction per entry, while `push` keeps its old
+  focusable-by-default behaviour unchanged. `Float` is pure chrome
+  (background fill + optional border), same contract as `Panel` — the
+  host paints its own content into `FloatLayout::content_bounds`.
+  Ships on TUI, GTK, macOS, and Win (`Backend::draw_float`, no default
+  per rule 7; GTK/macOS/Win share one `PaintSurface`-routed
+  implementation with zero backend-specific policy, same pattern as
+  `Canvas`/`Panel`), with a `tui_float`/`gtk_float` demo and the
+  `tui_float` demo's `TuiDriver` black-box tests.
 - New optional `layout` feature and `quadraui::flex` module (issue #1103)
   — a flex/grid layout engine over [Taffy](https://github.com/DioxusLabs/taffy),
   for the app-level `Rect` arithmetic (`AppLogic::render` stacking/tiling

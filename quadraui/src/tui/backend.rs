@@ -3356,6 +3356,29 @@ impl Backend for TuiBackend {
             .collect()
     }
 
+    fn draw_float(
+        &mut self,
+        float: &crate::primitives::float::Float,
+        layout: &crate::primitives::float::FloatLayout,
+    ) {
+        // #455: see draw_palette for why this happens before the frame borrow.
+        self.modal_stack.borrow_mut().mark_painted(&float.id);
+        let theme = self.current_theme;
+        // Same convention `draw_scrollbar` uses for a chrome-only
+        // primitive: register the float's own bounds under its id so
+        // it's inventory-observable even when `border: false` leaves no
+        // painted glyph behind.
+        self.register_zone(float.id.clone(), layout.bounds);
+        let Some(frame) = self.current_frame_mut() else {
+            debug_assert!(
+                false,
+                "TuiBackend::draw_float called outside enter_frame_scope"
+            );
+            return;
+        };
+        crate::tui::draw_float(frame.buffer_mut(), float, layout, &theme);
+    }
+
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
     fn draw_multi_section_view(
@@ -4498,6 +4521,12 @@ mod tests {
             _l: &crate::primitives::dialog::DialogLayout,
         ) -> Vec<QRect> {
             Vec::new()
+        }
+        fn draw_float(
+            &mut self,
+            _f: &crate::primitives::float::Float,
+            _l: &crate::primitives::float::FloatLayout,
+        ) {
         }
 
         fn char_width(&self) -> f32 {

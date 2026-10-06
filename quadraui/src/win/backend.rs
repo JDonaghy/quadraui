@@ -3741,6 +3741,24 @@ impl Backend for WinBackend {
             .collect()
     }
 
+    /// Unlike [`Self::draw_dialog`] above, this needs no
+    /// `#[cfg(target_os = "windows")]`/"no surface yet" branch at all:
+    /// every [`PaintSurface`] verb
+    /// [`crate::primitives::float::native_surface_paint::paint`] calls
+    /// already degrades to a no-op when `self.surface`/`self.dwrite` are
+    /// absent (see e.g. [`Self::surface_fill_rect`]'s own doc), so
+    /// calling it unconditionally is correct on every target — same
+    /// reasoning as [`Self::draw_canvas`]'s own doc.
+    fn draw_float(
+        &mut self,
+        float: &crate::primitives::float::Float,
+        layout: &crate::primitives::float::FloatLayout,
+    ) {
+        self.modal_stack.borrow_mut().mark_painted(&float.id);
+        let theme = self.current_theme;
+        crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
+    }
+
     /// #27: real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
     /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
     /// the "surface not attached yet" fallback posture.

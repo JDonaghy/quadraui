@@ -1182,6 +1182,9 @@ mod tests {
         fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
             unimplemented!()
         }
+        fn draw_float(&mut self, _f: &crate::Float, _l: &crate::FloatLayout) {
+            unimplemented!()
+        }
         fn draw_toast_overlay(
             &mut self,
             _r: Rect,

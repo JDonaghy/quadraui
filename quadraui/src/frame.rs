@@ -164,6 +164,7 @@ use crate::primitives::diff_view::DiffView;
 use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
+use crate::primitives::float::{Float, FloatLayout};
 use crate::primitives::form::Form;
 use crate::primitives::image::Image;
 use crate::primitives::list::ListView;
@@ -286,6 +287,14 @@ pub enum Surface<'a> {
     Dialog {
         dialog: &'a Dialog,
         layout: &'a DialogLayout,
+    },
+    /// Issue #1321. Like `Tooltip`/`ContextMenu`/`Dialog` above, carries
+    /// its own resolved `layout` rather than a plain `rect` — `Float`
+    /// is an overlay-with-caller-anchor primitive, so there's no bare
+    /// `rect` the host would otherwise have on hand.
+    Float {
+        float: &'a Float,
+        layout: &'a FloatLayout,
     },
     Completions {
         completions: &'a Completions,
@@ -435,6 +444,7 @@ pub enum FrameZone {
     Tooltip { idx: usize },
     ContextMenu { idx: usize },
     Dialog { idx: usize },
+    Float { idx: usize },
     Completions { idx: usize },
     FindReplace { idx: usize },
     RichTextPopup { idx: usize },
@@ -642,6 +652,9 @@ impl<'a> ScreenLayout<'a> {
                 Surface::Dialog { dialog, layout } => {
                     backend.draw_dialog(dialog, layout);
                 }
+                Surface::Float { float, layout } => {
+                    backend.draw_float(float, layout);
+                }
                 Surface::Completions {
                     completions,
                     layout,
@@ -769,10 +782,13 @@ impl<'a> ScreenLayout<'a> {
     /// Only surfaces that carry both a plain `rect` and an owning
     /// [`WidgetId`] participate. Excluded, deliberately:
     /// - Transient overlays (`Tooltip`, `ContextMenu`, `Dialog`,
-    ///   `Completions`, `RichTextPopup`, `FindReplace`, `Toast`,
-    ///   `DropOverlay`) — these already own their own internal
+    ///   `Float`, `Completions`, `RichTextPopup`, `FindReplace`,
+    ///   `Toast`, `DropOverlay`) — these already own their own internal
     ///   focus/dismiss handling while open, and being modal, nothing
-    ///   behind them should be Tab-reachable anyway.
+    ///   behind them should be Tab-reachable anyway. `Float` in
+    ///   particular already has its own, finer-grained focus story —
+    ///   [`crate::ModalStack::top_focusable`] (issue #1321) — rather
+    ///   than participating in `Tab`/`Shift+Tab` cycling.
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
@@ -825,6 +841,7 @@ impl<'a> ScreenLayout<'a> {
                 | Surface::Tooltip { .. }
                 | Surface::ContextMenu { .. }
                 | Surface::Dialog { .. }
+                | Surface::Float { .. }
                 | Surface::Completions { .. }
                 | Surface::FindReplace { .. }
                 | Surface::RichTextPopup { .. }
@@ -865,6 +882,7 @@ impl<'a> ScreenLayout<'a> {
             Surface::Tooltip { layout, .. } => (layout.bounds, FrameZone::Tooltip { idx }),
             Surface::ContextMenu { layout, .. } => (layout.bounds, FrameZone::ContextMenu { idx }),
             Surface::Dialog { layout, .. } => (layout.bounds, FrameZone::Dialog { idx }),
+            Surface::Float { layout, .. } => (layout.bounds, FrameZone::Float { idx }),
             Surface::Completions { layout, .. } => (layout.bounds, FrameZone::Completions { idx }),
             Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
             Surface::RichTextPopup { layout, .. } => {

@@ -44,6 +44,7 @@
 //! this module provides.
 
 use crate::event::{Point, Rect};
+use serde::{Deserialize, Serialize};
 
 // ── Anchor: shared overlay positioning ──────────────────────────────────
 
@@ -54,7 +55,14 @@ use crate::event::{Point, Rect};
 /// `TooltipPlacement` (`Top`/`Bottom`/`Left`/`Right`), `PopupPlacement`
 /// (`Above`/`Below`), `CompletionsPlacement` (`Below`/`Above`), and
 /// `ContextMenuPlacement` (`AnchorPoint`/`Below`/`Above`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// `Serialize`/`Deserialize` (quadraui#1321): [`Float`](crate::Float) is
+/// the first primitive to store an [`Anchor`] directly on a
+/// serde-describable descriptor (rather than taking one as a transient
+/// `layout()` argument the way `Tooltip`/`ContextMenu` do), so this and
+/// [`ResolvedSide`]/[`Anchor`] itself need to round-trip through JSON
+/// for a Lua-extension-declared float to deserialise cleanly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Side {
     Top,
     #[default]
@@ -71,7 +79,7 @@ pub enum Side {
 /// [`Anchor::resolve`] applied the overflow-flip fallback. Same
 /// variants as [`Side`] minus the "preference" framing — this is the
 /// resolved fact, not the request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolvedSide {
     Top,
     Bottom,
@@ -93,7 +101,7 @@ pub enum ResolvedSide {
 /// Converting an existing primitive onto `Anchor` is a rule-8 breaking
 /// change (its own PR, `#[deprecated]` shim on the old placement enum) —
 /// see issue #816.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Anchor {
     /// Bounds of the element the overlay is positioned against, in
     /// ABSOLUTE (target-surface) coordinates. A cursor-position anchor
@@ -339,6 +347,17 @@ mod tests {
         assert_eq!(side, ResolvedSide::Bottom);
         assert!(p.y >= short_viewport.y);
         assert!(p.y + 10.0 <= short_viewport.y + short_viewport.height);
+    }
+
+    #[test]
+    fn anchor_serde_round_trips() {
+        // #1321: `Float` stores an `Anchor` directly on a
+        // serde-describable descriptor, so a Lua-extension-declared
+        // float must be able to round-trip one through JSON.
+        let anchor = Anchor::new(Rect::new(1.0, 2.0, 3.0, 4.0), Side::Right).with_margin(5.0);
+        let json = serde_json::to_string(&anchor).unwrap();
+        let back: Anchor = serde_json::from_str(&json).unwrap();
+        assert_eq!(anchor, back);
     }
 
     #[test]

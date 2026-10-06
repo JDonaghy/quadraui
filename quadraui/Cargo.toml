@@ -1578,3 +1578,18 @@ required-features = ["tui"]
 name = "gtk_status_bar_priority_demo"
 path = "examples/gtk_status_bar_priority_demo.rs"
 required-features = ["gtk"]
+
+# `Float` primitive (issue #1321) — anchored overlay above the main
+# layout. Both entries are mandatory (see the note above): without an
+# explicit `[[example]]`, `gtk_float.rs` gets autodiscovered with no
+# `required-features` and fails `cargo test --features tui` on
+# `quadraui::gtk` being configured out.
+[[example]]
+name = "tui_float"
+path = "examples/tui_float.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "gtk_float"
+path = "examples/gtk_float.rs"
+required-features = ["gtk"]

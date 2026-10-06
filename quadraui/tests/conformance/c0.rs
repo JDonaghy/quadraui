@@ -34,24 +34,24 @@
 //! entry here, or a stale entry naming a method that no longer exists.
 
 use quadraui::{
-    compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, BadgeStatus,
-    BoardCard, BoardColumn, BoardModel, Canvas, CardBadge, Chart, ChartKind, Color, Column,
-    ColumnAlign, ColumnWidth, CommandCenter, CommandLine, CompletionItem, CompletionItemMeasure,
-    Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
-    DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode,
-    DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor, EditorCursorPos,
-    EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind, FindReplacePanel,
-    Form, FormField, Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar,
-    MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, Palette,
-    PaletteItem, PaletteMode, Panel, PipelineStage, PipelineView, PopupPlacement, ProgressBar,
-    Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar,
-    Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel, Spinner,
-    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, TabBar, TabChrome, TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay,
-    TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar,
-    ToolbarButton, ToolbarItemMeasure, ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder,
-    TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent,
-    WidgetId,
+    compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
+    BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas, CardBadge, Chart, ChartKind, Color,
+    Column, ColumnAlign, ColumnWidth, CommandCenter, CommandLine, CompletionItem,
+    CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
+    ContextMenuPlacement, DataRow, DataTable, Decoration, Dialog, DialogButton, DialogMeasure,
+    DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor, EditorCursor,
+    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
+    FindReplacePanel, Float, FloatMeasure, Form, FormField, Image, ImageFit, ImageSource,
+    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
+    MinimapLine, MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode, Panel,
+    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
+    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner, Split, SplitDirection,
+    SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TabBar, TabChrome,
+    TabFrame, TabIcon, TabItem, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextInput,
+    Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
+    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
+    TooltipPlacement, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -874,6 +874,24 @@ pub const CASES: &[Case] = &[
             };
             let layout = dialog.layout(area, measure, |_| ToolbarItemMeasure::new(0.0));
             let _ = b.draw_dialog(&dialog, &layout);
+        },
+    },
+    Case {
+        // #1321: `Float` is pure chrome — a background fill and
+        // (border-on, the default) a stroke, no text of its own, by
+        // design (see `Float`'s module doc). No needle to search for on
+        // any backend; observability comes from `draw_float`'s
+        // `register_zone` call, same convention `draw_scrollbar` uses.
+        method: "draw_float",
+        needle: None,
+        paint: |b, area| {
+            let cw = b.char_width();
+            let lh = b.line_height();
+            let anchor = Anchor::new(Rect::new(0.0, 0.0, area.width, lh), Side::Bottom);
+            let float = Float::new(id("float"), anchor);
+            let measure = FloatMeasure::new(cw * 10.0, lh * 3.0);
+            let layout = float.layout(area, measure);
+            b.draw_float(&float, &layout);
         },
     },
     Case {
