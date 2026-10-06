@@ -85,6 +85,7 @@ impl AppLogic for MarkdownDemo {
             padding: 1.0,
             fg: None,
             bg: None,
+            font_role: Default::default(),
         };
 
         // Anchor near the top-left so "Below" placement keeps it on-screen.

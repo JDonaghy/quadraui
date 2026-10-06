@@ -3924,7 +3924,19 @@ impl Backend for GtkBackend {
         layout_arg: &crate::primitives::rich_text_popup::RichTextPopupLayout,
     ) {
         let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
+        // `popup.font_role` (quadraui#1322) picks which live font this
+        // popup instance paints in — `FontRole::Chrome` (the default,
+        // matching this primitive's pre-existing `ChromePrimitive`
+        // classification) keeps `ui_font`; `FontRole::Editor` swaps in
+        // the editor's own Pango description, the same resolution
+        // `Self::measure_text`/`Self::surface_draw_text_run_with_role`
+        // already use per role.
+        let font_desc = match popup.font_role {
+            crate::FontRole::Chrome => crate::gtk::chrome_font_description(&self.ui_font),
+            crate::FontRole::Editor => {
+                pango::FontDescription::from_string(&self.editor_font_pango_string())
+            }
+        };
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_rich_text_popup called outside enter_frame_scope");
@@ -3934,7 +3946,7 @@ impl Backend for GtkBackend {
         let _ = crate::gtk::draw_rich_text_popup(
             cr,
             pango_layout,
-            &ui_font_desc,
+            &font_desc,
             popup,
             layout_arg,
             &theme,
@@ -9773,6 +9785,99 @@ mod tests {
                 true,
             );
         });
+    }
+
+    /// `RichTextPopup::font_role` (quadraui#1322) must select a
+    /// genuinely different live font, not a documented no-op — proven
+    /// the same way as `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`:
+    /// a huge chrome font versus a tiny editor font paints visibly
+    /// different amounts of ink for the same popup content. The default
+    /// (field omitted / `FontRole::Chrome`) must still paint with the
+    /// chrome font — proving the new field didn't change today's
+    /// behaviour for existing consumers.
+    #[test]
+    fn gtk_rich_text_popup_font_role_selects_the_requested_fonts_size() {
+        use crate::primitives::rich_text_popup::{
+            PopupPlacement, RichTextPopup, RichTextPopupMeasure,
+        };
+        use crate::types::{StyledText, WidgetId};
+        use crate::FontRole;
+        use pangocairo::cairo::{Context, Format, ImageSurface};
+
+        const W: i32 = 100;
+        const H: i32 = 100;
+
+        fn ink_pixel_count(surface: &mut ImageSurface) -> usize {
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let mut count = 0;
+            for y in 0..H {
+                for x in 0..W {
+                    let (r, g, b) = probe_pixel_417(&data, stride, x, y);
+                    if r as u32 + g as u32 + b as u32 > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        }
+
+        fn popup(font_role: FontRole) -> RichTextPopup {
+            RichTextPopup {
+                id: WidgetId::new("rtp:font-role"),
+                lines: vec![StyledText::plain("M")],
+                line_text: vec!["M".to_string()],
+                line_scales: vec![],
+                scroll_top: 0,
+                max_visible_rows: 4,
+                has_focus: false,
+                selection: None,
+                links: vec![],
+                focused_link: None,
+                placement: PopupPlacement::Below,
+                padding: 0.0,
+                fg: Some(Color::rgb(255, 255, 255)),
+                bg: Some(Color::rgb(0, 0, 0)),
+                font_role,
+            }
+        }
+
+        fn paint(backend: &mut GtkBackend, font_role: FontRole) -> usize {
+            let mut surface =
+                ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+            let p = popup(font_role);
+            let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+            let measure = RichTextPopupMeasure::new(80.0, 80.0);
+            let layout = p.layout(2.0, 2.0, viewport, measure, |_, s, e| (e - s) as f32);
+            {
+                let cr = Context::new(&surface).expect("Context::new");
+                let pango_ctx = pangocairo::functions::create_context(&cr);
+                let pango_layout = pango::Layout::new(&pango_ctx);
+                backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                    b.draw_rich_text_popup(&p, &layout);
+                });
+            }
+            ink_pixel_count(&mut surface)
+        }
+
+        let mut backend = GtkBackend::new();
+        backend.set_ui_font("Sans 48");
+        backend.set_editor_font("Monospace", 6.0);
+
+        let chrome_ink = paint(&mut backend, FontRole::default());
+        let editor_ink = paint(&mut backend, FontRole::Editor);
+
+        assert!(
+            chrome_ink > 0 && editor_ink > 0,
+            "both roles must paint real ink: chrome={chrome_ink}, editor={editor_ink}"
+        );
+        assert!(
+            chrome_ink > editor_ink * 3,
+            "a 48pt chrome font must paint far more ink than a 6pt editor font for the \
+             same glyph if the default `font_role` (field omitted) really selects the \
+             chrome font: chrome={chrome_ink}, editor={editor_ink}"
+        );
     }
 
     /// `surface_draw_icon_glyph` must reach real Cairo painting (through
