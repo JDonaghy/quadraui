@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 /// (`Above`/`Below`), `CompletionsPlacement` (`Below`/`Above`), and
 /// `ContextMenuPlacement` (`AnchorPoint`/`Below`/`Above`).
 ///
-/// `Serialize`/`Deserialize` (quadraui#1321): [`Float`](crate::Float) is
+/// `Serialize`/`Deserialize`: [`Float`](crate::Float) is
 /// the first primitive to store an [`Anchor`] directly on a
 /// serde-describable descriptor (rather than taking one as a transient
 /// `layout()` argument the way `Tooltip`/`ContextMenu` do), so this and
@@ -351,9 +351,9 @@ mod tests {
 
     #[test]
     fn anchor_serde_round_trips() {
-        // #1321: `Float` stores an `Anchor` directly on a
-        // serde-describable descriptor, so a Lua-extension-declared
-        // float must be able to round-trip one through JSON.
+        // `Float` stores an `Anchor` directly on a serde-describable
+        // descriptor, so a Lua-extension-declared float must be able to
+        // round-trip one through JSON.
         let anchor = Anchor::new(Rect::new(1.0, 2.0, 3.0, 4.0), Side::Right).with_margin(5.0);
         let json = serde_json::to_string(&anchor).unwrap();
         let back: Anchor = serde_json::from_str(&json).unwrap();

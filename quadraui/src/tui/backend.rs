@@ -3364,11 +3364,6 @@ impl Backend for TuiBackend {
         // #455: see draw_palette for why this happens before the frame borrow.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
-        // Same convention `draw_scrollbar` uses for a chrome-only
-        // primitive: register the float's own bounds under its id so
-        // it's inventory-observable even when `border: false` leaves no
-        // painted glyph behind.
-        self.register_zone(float.id.clone(), layout.bounds);
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -3377,6 +3372,11 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_float(frame.buffer_mut(), float, layout, &theme);
+        // Same convention `draw_scrollbar` uses for a chrome-only
+        // primitive: register the float's own bounds under its id so
+        // it's inventory-observable even when `border: false` leaves no
+        // painted glyph behind.
+        self.register_zone(float.id.clone(), layout.bounds);
     }
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──

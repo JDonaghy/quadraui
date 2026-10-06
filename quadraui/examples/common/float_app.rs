@@ -1,7 +1,8 @@
 //! Backend-agnostic app code for the `Float` primitive demo
-//! ([`tui_float`] / [`gtk_float`], issue #1321).
+//! ([`tui_float`] / [`gtk_float`]).
 //!
-//! Two floats, exercising every corner of #1321's acceptance list:
+//! Two floats, exercising placement, edge clamping, z-order and focus
+//! vs. non-focus key routing:
 //!
 //! - **Placement + edge clamping**: the actions menu anchors to the
 //!   currently selected command row and prefers to open below it
@@ -84,7 +85,8 @@ impl FloatApp {
         let cw = backend.char_width();
         let lh = backend.line_height();
         let float = self.menu_float(backend);
-        let measure = FloatMeasure::new(cw * 16.0, lh * (MENU_ITEMS.len() as f32 + 1.0));
+        // N content lines + 2 border rows.
+        let measure = FloatMeasure::new(cw * 16.0, lh * (MENU_ITEMS.len() as f32 + 2.0));
         float.layout(
             Rect::new(
                 0.0,
@@ -105,7 +107,7 @@ impl FloatApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let cw = backend.char_width();
-        let w = cw * 9.0; // "? = help "
+        let w = cw * 7.0; // "?=help "
         Anchor::new(
             Rect::new(viewport.width - w, viewport.height - lh, w, lh),
             Side::Top,
@@ -151,7 +153,7 @@ impl FloatApp {
                 action_id: None,
             }],
             right_segments: vec![StatusBarSegment {
-                text: " m=menu ? =help q=quit ".into(),
+                text: " m=menu ?=help q=quit ".into(),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -241,11 +243,11 @@ impl FloatApp {
         self.menu_open = true;
         self.menu_selected = 0;
         let bounds = self.menu_layout(backend).bounds;
-        backend.modal_stack_handle().borrow_mut().push_focusable(
-            WidgetId::new(MENU_ID),
-            bounds,
-            true,
-        );
+        let float = self.menu_float(backend);
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .push_float(&float, bounds);
     }
 
     fn close_menu(&mut self, backend: &mut dyn Backend) {
@@ -266,14 +268,14 @@ impl FloatApp {
         } else {
             self.hint_open = true;
             let bounds = self.hint_layout(backend).bounds;
-            // Non-focusable: #1321's "a hint popup must not steal keys"
-            // — pushed via `push_focusable(.., false)` rather than the
-            // focusable-by-default `push`.
-            backend.modal_stack_handle().borrow_mut().push_focusable(
-                WidgetId::new(HINT_ID),
-                bounds,
-                false,
-            );
+            let float = self.hint_float(backend);
+            // `push_float` forwards `float.focusable` (`false` here), so
+            // the hint popup never steals keys — see `Float`'s module
+            // doc's "Focus vs. non-focus floats" section.
+            backend
+                .modal_stack_handle()
+                .borrow_mut()
+                .push_float(&float, bounds);
         }
     }
 }
@@ -367,7 +369,7 @@ impl AppLogic for FloatApp {
                 Reaction::Redraw
             }
 
-            // #1321: route by asking who currently owns the keyboard —
+            // Route by asking who currently owns the keyboard —
             // never a hand-rolled "is a float open" bool chain. A
             // non-focusable hint on top of the stack is skipped
             // automatically; `top_focusable()` only ever names the menu
@@ -472,7 +474,29 @@ impl AppLogic for FloatApp {
                 Reaction::Redraw
             }
 
-            UiEvent::WindowResized { .. } => Reaction::Redraw,
+            UiEvent::WindowResized { .. } => {
+                // Both anchors are viewport-derived, so a resize moves
+                // the resolved bounds; re-push onto `ModalStack` so its
+                // hit-test rects stay in sync with what `render` repaints
+                // next frame.
+                if self.menu_open {
+                    let bounds = self.menu_layout(backend).bounds;
+                    let float = self.menu_float(backend);
+                    backend
+                        .modal_stack_handle()
+                        .borrow_mut()
+                        .push_float(&float, bounds);
+                }
+                if self.hint_open {
+                    let bounds = self.hint_layout(backend).bounds;
+                    let float = self.hint_float(backend);
+                    backend
+                        .modal_stack_handle()
+                        .borrow_mut()
+                        .push_float(&float, bounds);
+                }
+                Reaction::Redraw
+            }
             _ => Reaction::Continue,
         }
     }

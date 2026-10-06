@@ -1,4 +1,4 @@
-//! TUI rasteriser for [`crate::Float`] (issue #1321).
+//! TUI rasteriser for [`crate::Float`].
 //!
 //! Paints the float's chrome only: a filled background box, and —
 //! when `float.border` is set — a square-corner border
@@ -8,7 +8,6 @@
 //! contract as [`crate::tui::draw_panel`].
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect as RRect;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::float::{Float, FloatLayout};
@@ -76,22 +75,6 @@ pub fn draw_float(buf: &mut Buffer, float: &Float, layout: &FloatLayout, theme: 
     }
 }
 
-/// Satisfies `fn(RRect)`-shaped call sites that want a cell-unit
-/// conversion of `area` — unused today (`Float` has no
-/// `Backend::float_layout`, see that method's own doc for why), kept
-/// so a future TUI-specific default measurer has somewhere to live
-/// without re-deriving the conversion. `#[allow(dead_code)]` mirrors
-/// `tui::canvas`'s own unused-helper convention.
-#[allow(dead_code)]
-fn rrect_to_rect(area: RRect) -> crate::event::Rect {
-    crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +82,7 @@ mod tests {
     use crate::layout::{Anchor, Side};
     use crate::primitives::float::FloatMeasure;
     use crate::types::WidgetId;
+    use ratatui::layout::Rect as RRect;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf.cell((x, y)).unwrap().symbol().chars().next().unwrap()

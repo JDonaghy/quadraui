@@ -1,8 +1,7 @@
 //! `Float` primitive: an anchored overlay surface above the main layout
-//! (issue #1321) — the supply-side primitive `vimcode#1804` ("Extension
-//! UI Phase 3: overlays/floats for Lua extensions") needs so vimcode
-//! never has to build floats itself (the Platform-Neutrality Rule;
-//! vimcode's own #319 mistake, named in #1321's description).
+//! — the supply-side primitive vimcode's "Extension UI Phase 3:
+//! overlays/floats for Lua extensions" work needs so vimcode never has
+//! to build floats itself (the Platform-Neutrality Rule).
 //!
 //! A `Float` is pure chrome, the same contract as [`crate::Panel`]:
 //! this primitive paints a background fill and an optional border, and
@@ -36,11 +35,11 @@
 //! `examples/common/modal_occlusion_demo.rs` for the established
 //! pattern, which `examples/common/float_app.rs` follows for floats).
 //!
-//! ## Focus vs. non-focus floats (#1321's z-order requirement)
+//! ## Focus vs. non-focus floats
 //!
 //! [`Float::focusable`] is the "a hint popup must not steal keys; an
-//! interactive float must" distinction #1321 asks for. It is **not**
-//! enforced by this primitive — a `Float` is plain data, same as every
+//! interactive float must" distinction this primitive exists to carry.
+//! It is **not** enforced by this primitive — a `Float` is plain data, same as every
 //! other primitive here — it is carried through to
 //! [`crate::ModalStack`] via [`crate::ModalStack::push_focusable`] (push
 //! a non-focusable float with `push_focusable(id, bounds, false)`
@@ -54,16 +53,19 @@
 //! `None` — see `examples/common/float_app.rs`'s `handle` for the
 //! worked pattern.
 //!
-//! # Serde-describable (issue #1321, `docs/UI_CRATE_DESIGN.md` §10)
+//! # Serde-describable (`docs/UI_CRATE_DESIGN.md` §10)
 //!
 //! `Float` derives `Serialize`/`Deserialize` like every other
 //! primitive, so vimcode can map an extension-declared float
-//! (`anchor`, `width`/`height`, `focusable`, optional `bg`/`border`)
-//! straight onto this struct and route its events by [`WidgetId`] —
-//! exactly the shape #1321 asks for. This is why `Float` stores its
-//! `anchor` as a field (unlike `Tooltip`/`ContextMenu`, which take an
-//! anchor rect as a `layout()` argument the caller already has handy in
-//! Rust): a plugin-declared float has no Rust call site computing that
+//! (`anchor`, `focusable`, optional `bg`/`border`) straight onto this
+//! struct and route its events by [`WidgetId`]. [`FloatMeasure`] also
+//! derives `Serialize`/`Deserialize` so the float's `width`/`height`
+//! travel the same way, even though it is a `layout()` argument rather
+//! than a `Float` field — see [`FloatMeasure`]'s own doc for why. This
+//! is why `Float` stores its `anchor` as a field (unlike
+//! `Tooltip`/`ContextMenu`, which take an anchor rect as a `layout()`
+//! argument the caller already has handy in Rust): a plugin-declared
+//! float has no Rust call site computing that
 //! argument each frame, so the anchor has to survive a JSON round-trip
 //! on the struct itself. [`crate::layout::Anchor`]/[`crate::layout::Side`]/
 //! [`crate::layout::ResolvedSide`] gained their own `Serialize`/
@@ -90,11 +92,12 @@ pub struct Float {
     /// another widget's rect. See [`Anchor`]'s own doc for the
     /// flip/clamp resolution [`Float::layout`] applies.
     pub anchor: Anchor,
-    /// Whether this float takes keyboard focus while open. `false` (the
-    /// default) is the safer choice for a transient hint popup — see
-    /// this module's "Focus vs. non-focus floats" doc section for how a
-    /// host reads this back off [`crate::ModalStack`].
-    #[serde(default)]
+    /// Whether this float takes keyboard focus while open. Defaults to
+    /// `true` (matching [`Float::new`]) when omitted from a serialised
+    /// descriptor — a transient hint popup must set this to `false`
+    /// explicitly. See this module's "Focus vs. non-focus floats" doc
+    /// section for how a host reads this back off [`crate::ModalStack`].
+    #[serde(default = "default_focusable")]
     pub focusable: bool,
     /// Whether to paint a 1-unit border stroke around the float. `true`
     /// by default — most floats (menus, popups, panels) read as a
@@ -109,6 +112,10 @@ pub struct Float {
 }
 
 fn default_border() -> bool {
+    true
+}
+
+fn default_focusable() -> bool {
     true
 }
 
@@ -135,8 +142,11 @@ impl Float {
 /// on screen, border included (same "whole box, not just content"
 /// contract as [`crate::TooltipMeasure`] — see that type's doc for why
 /// a caller sizing for *N* content lines on TUI needs the border rows
-/// budgeted in).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// budgeted in). Derives `Serialize`/`Deserialize` alongside [`Float`]
+/// itself so an extension-declared float's size can travel the same
+/// JSON round-trip as its other fields, even though it is a `layout()`
+/// argument rather than a `Float` field.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FloatMeasure {
     pub width: f32,
     pub height: f32,
@@ -159,8 +169,7 @@ const BORDER_INSET: f32 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloatLayout {
     /// Full float box bounds, in ABSOLUTE (target-surface) coordinates
-    /// (issue #505) — the same frame [`Anchor::resolve`] already
-    /// returns.
+    /// — the same frame [`Anchor::resolve`] already returns.
     pub bounds: Rect,
     /// `bounds` inset by [`BORDER_INSET`] on every edge when
     /// `float.border` is set (0 inset otherwise). The host paints its
@@ -189,8 +198,7 @@ pub enum FloatHit {
 
 impl Float {
     /// Resolve the float's bounds against `viewport`, applying
-    /// [`Anchor::resolve`]'s flip/clamp fallback (issue #1321's "flipping
-    /// or clamping at the viewport edge" requirement).
+    /// [`Anchor::resolve`]'s flip/clamp fallback at the viewport edge.
     pub fn layout(&self, viewport: Rect, measure: FloatMeasure) -> FloatLayout {
         let (origin, resolved_side) = self
             .anchor
@@ -457,14 +465,24 @@ mod tests {
     }
 
     #[test]
-    fn serde_defaults_focusable_false_and_border_true_when_omitted() {
+    fn serde_defaults_focusable_true_and_border_true_when_omitted() {
         // Backward/forward-compat: a serialised float that predates a
         // field addition (or a hand-written JSON descriptor from a Lua
-        // extension that only sets `id`/`anchor`) must still deserialise.
+        // extension that only sets `id`/`anchor`) must still deserialise,
+        // and must agree with `Float::new`'s own defaults so a
+        // JSON-described float and a Rust-constructed one behave alike.
         let json = r#"{"id":"f","anchor":{"rect":{"x":0.0,"y":0.0,"width":1.0,"height":1.0},"preferred":"Bottom","margin":0.0}}"#;
         let f: Float = serde_json::from_str(json).unwrap();
-        assert!(!f.focusable);
+        assert!(f.focusable);
         assert!(f.border);
         assert!(f.bg.is_none());
+    }
+
+    #[test]
+    fn float_measure_serde_round_trip() {
+        let m = FloatMeasure::new(20.0, 5.0);
+        let json = serde_json::to_string(&m).unwrap();
+        let back: FloatMeasure = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
     }
 }
