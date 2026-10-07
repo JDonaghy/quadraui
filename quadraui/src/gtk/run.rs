@@ -697,8 +697,8 @@ impl GtkRunner {
 /// GTK window that just appeared, painted, and took a mouse click.
 ///
 /// Two calls, in this order, matching `macos::run`'s own AppKit-bootstrap
-/// sequence (`setActivationPolicy` near its top, `activateIgnoringOtherApps`
-/// right before `ns_app.run()`) — see that function for the native-AppKit-
+/// sequence (`setActivationPolicy` near its top, an activation call right
+/// before `ns_app.run()`) — see that function for the native-AppKit-
 /// backend equivalent of this GTK-quartz one:
 ///
 /// - `setActivationPolicy(.regular)` first — the `TransformProcessType`-
@@ -715,12 +715,14 @@ impl GtkRunner {
 ///   changes — rather than relying on an undocumented GDK behaviour.
 /// - `activateIgnoringOtherApps(true)` second. Deprecated in objc2-app-kit
 ///   in favor of `NSApp.activate` (`NSApplication::activate`/
-///   `NSRunningApplication::activateWithOptions`); kept here (same as in
-///   `macos::run`) for its simplicity. Unlike a purely cosmetic rename,
-///   macOS 14 changed activation to be cooperative between apps, so the
-///   replacement is not guaranteed to behave identically in every case —
-///   this call may need revisiting if that distinction turns out to
-///   matter in practice.
+///   `NSRunningApplication::activateWithOptions`); kept here
+///   unconditionally for its simplicity, unlike `macos::run`, which
+///   prefers `activate()` and only falls back to this call on macOS
+///   versions where `activate()` isn't available. Unlike a purely
+///   cosmetic rename, macOS 14 changed activation to be cooperative
+///   between apps, so the replacement is not guaranteed to behave
+///   identically in every case — this call may need revisiting if that
+///   distinction turns out to matter in practice.
 ///
 /// **What hardware testing on macmini could and couldn't confirm:** the
 /// two calls above execute for real against a live `NSApplication` and a
