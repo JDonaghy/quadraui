@@ -159,26 +159,34 @@ mod tests {
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
 
-        // `bg_x`: well past the (short) label text but short of the
-        // right-edge affordance column — true item background on both
-        // rows. `arrow_x`: the far-right column where the ▶ affordance
-        // (submenu-parent) or nothing (plain leaf) is painted.
+        // `bg_x`: well past the (short) label text — true item
+        // background on both rows. The ▶ affordance is laid out in
+        // `[right - advance - 8, right - 8]`, but where its *ink* lands
+        // inside that box is font-dependent (DejaVu on Linux spills ink
+        // into the right padding; macOS's fallback glyph does not), so
+        // rather than probing one hardcoded pixel, scan the whole
+        // right-hand band (stopping short of the 1px border stroke) a
+        // few rows either side of the row's vertical centre.
         let bg_x = (parent_row.x + parent_row.width * 0.4) as i32;
-        let arrow_x = (parent_row.x + parent_row.width - 6.0) as i32;
+        let band_x0 = (parent_row.x + parent_row.width * 0.6) as i32;
+        let band_x1 = (parent_row.x + parent_row.width - 3.0) as i32;
         let parent_y = (parent_row.y + parent_row.height / 2.0) as i32;
         let leaf_y = (leaf_row.y + leaf_row.height / 2.0) as i32;
 
         let parent_bg = probe_pixel(&data, stride, bg_x, parent_y);
-        let parent_arrow = probe_pixel(&data, stride, arrow_x, parent_y);
         let leaf_bg = probe_pixel(&data, stride, bg_x, leaf_y);
-        let leaf_arrow = probe_pixel(&data, stride, arrow_x, leaf_y);
 
-        assert_ne!(
-            parent_arrow, parent_bg,
+        let band_differs = |cy: i32, bg: (u8, u8, u8)| {
+            (cy - 4..=cy + 4)
+                .any(|y| (band_x0..band_x1).any(|x| probe_pixel(&data, stride, x, y) != bg))
+        };
+
+        assert!(
+            band_differs(parent_y, parent_bg),
             "submenu-parent item should paint a ▶ affordance near the right edge"
         );
-        assert_eq!(
-            leaf_arrow, leaf_bg,
+        assert!(
+            !band_differs(leaf_y, leaf_bg),
             "plain leaf item (no submenu, no shortcut) must not paint anything there"
         );
     }
