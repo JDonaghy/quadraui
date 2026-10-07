@@ -186,7 +186,13 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Every `.rs` file under `src/macos/`, recursively.
+/// Every `.rs` file under `src/macos/`, recursively, plus `src/gtk/run.rs`
+/// — the only file outside `src/macos/` that also names an
+/// `objc2_app_kit::` symbol directly (`activate_macos_process`'s
+/// `NSApplication`/`NSApplicationActivationPolicy` use). Without this,
+/// trimming an `objc2-app-kit` feature on the grounds that "no `src/macos/`
+/// import names it" would silently break the `gtk`-only macOS build this
+/// test's net doesn't otherwise cover.
 fn macos_sources() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"));
@@ -201,6 +207,7 @@ fn macos_sources() -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     walk(&manifest_dir().join("src/macos"), &mut out);
+    out.push(manifest_dir().join("src/gtk/run.rs"));
     out.sort();
     assert!(
         !out.is_empty(),

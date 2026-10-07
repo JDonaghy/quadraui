@@ -439,8 +439,13 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
             // Bring the (new-or-existing) window forward — the point of
             // single-instance forwarding is that the user *sees* their
             // request land, not just that the event reaches `AppLogic`.
+            // On macOS this needs the same frontmost hand-off `activate`
+            // does on first launch: a second launch can arrive while the
+            // process has since lost focus, so re-activate every time,
+            // not just when a window had to be built.
             if let Some(window) = gapp.windows().first() {
                 window.present();
+                activate_macos_process();
             }
         });
     }
@@ -676,8 +681,8 @@ impl GtkRunner {
     }
 }
 
-/// #1325: hand the process frontmost/active-application status on macOS,
-/// right after the first window is presented.
+/// Hands the process frontmost/active-application status on macOS, right
+/// after the first window is presented.
 ///
 /// GTK's quartz backend creates and shows a real `NSWindow`, but
 /// `window.present()` is only a GDK-level "raise and request focus"
@@ -691,13 +696,49 @@ impl GtkRunner {
 /// keystroke keeps landing in the launching terminal instead of the
 /// GTK window that just appeared, painted, and took a mouse click.
 ///
-/// Mirrors `macos::run`'s own `ns_app.activateIgnoringOtherApps(true)`
-/// call — see that function for the native-AppKit-backend equivalent of
-/// this GTK-quartz one. `activateIgnoringOtherApps` is deprecated in
-/// favor of `NSRunningApplication::activateWithOptions`, but kept here
-/// (same as there) for its simplicity and because the deprecation is
-/// cosmetic — the replacement does the same thing with a slightly
-/// different call shape.
+/// Two calls, in this order, matching `macos::run`'s own AppKit-bootstrap
+/// sequence (`setActivationPolicy` near its top, `activateIgnoringOtherApps`
+/// right before `ns_app.run()`) — see that function for the native-AppKit-
+/// backend equivalent of this GTK-quartz one:
+///
+/// - `setActivationPolicy(.regular)` first — the `TransformProcessType`-
+///   to-foreground step a bare, unbundled binary normally needs, and the
+///   same call `macos::run` makes for the identical reason. Measured on
+///   real macOS hardware (macmini, direct `cargo run --example gtk_demo
+///   --features gtk`, instrumented with an AppKit-state printout at
+///   function entry): GDK's quartz backend has *already* set the policy
+///   to `.regular` by the time this runs, before this call ever executes,
+///   so on this GTK/macOS combination the call observably returns `NO`
+///   (already-set, nothing left to do) rather than performing the
+///   transform itself. It's kept anyway — cheap, correct, and this repo
+///   has exactly one data point, not a guarantee GDK's default never
+///   changes — rather than relying on an undocumented GDK behaviour.
+/// - `activateIgnoringOtherApps(true)` second. Deprecated in objc2-app-kit
+///   in favor of `NSApp.activate` (`NSApplication::activate`/
+///   `NSRunningApplication::activateWithOptions`); kept here (same as in
+///   `macos::run`) for its simplicity. Unlike a purely cosmetic rename,
+///   macOS 14 changed activation to be cooperative between apps, so the
+///   replacement is not guaranteed to behave identically in every case —
+///   this call may need revisiting if that distinction turns out to
+///   matter in practice.
+///
+/// **What hardware testing on macmini could and couldn't confirm:** the
+/// two calls above execute for real against a live `NSApplication` and a
+/// real, visible `NSWindow` (`lsappinfo list` shows the process as
+/// `type="Foreground"`, `(in front)`), and a synthetic `osascript ...
+/// System Events keystroke "q"` reached the running example's quit
+/// handler and ended the process. What that same hardware session could
+/// *not* produce is a trustworthy automated activation-state reading:
+/// `NSApplication.isActive` and `NSWorkspace`'s notion of the frontmost
+/// process disagreed with `lsappinfo`'s "(in front)" marker in ways that
+/// didn't change between a build with this function's body intact and
+/// one with the `activateIgnoringOtherApps` call commented out — i.e.
+/// this automated session could not establish a clean fixed-vs-unfixed
+/// signal either way for the keyboard-routing symptom itself. That is
+/// consistent with the issue's own acceptance text: it asks for a person
+/// at the physical keyboard of a Terminal.app-launched binary, which is
+/// exactly the step an unattended agent session run through automation
+/// (rather than a human pressing real keys) cannot substitute for.
 ///
 /// A no-op on every other target: `objc2`/`objc2-app-kit` are declared
 /// under `[target.'cfg(target_os = "macos")'.dependencies]` in
@@ -714,6 +755,7 @@ fn activate_macos_process() {
         return;
     };
     let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    let _ = ns_app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
     #[allow(deprecated)]
     ns_app.activateIgnoringOtherApps(true);
 }
@@ -858,18 +900,9 @@ fn activate<A: AppLogic + 'static>(
     setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
 
     window.present();
-    // #1325: on macOS, `present()` only raises/shows the `NSWindow` GDK's
-    // quartz backend created underneath — it does not hand the *process*
-    // frontmost/active-application status, which is what the window
-    // server actually routes keyboard events by. A bare, non-`.app`
-    // binary launched straight from Terminal.app is never handed that
-    // status by LaunchServices (that dance only happens for a
-    // Finder-double-clicked or `open`ed `.app` bundle), so without this
-    // call the window paints and takes mouse clicks but every keystroke
-    // keeps landing in the launching terminal. See `activate_macos_process`
-    // below for the mechanism, and `macos::run`'s own
-    // `ns_app.activateIgnoringOtherApps(true)` call for the native-AppKit-
-    // backend equivalent of this GTK-quartz one.
+    // On macOS, hand the process frontmost status too — see
+    // `activate_macos_process`'s doc for why `present()` alone isn't
+    // enough and what the two AppKit calls do.
     activate_macos_process();
     // #235: grab focus only after `present()` realizes/maps the window —
     // calling this any earlier is a well-documented GTK4 foot-gun (the
@@ -2194,6 +2227,32 @@ mod run_config_tests {
             config.icon_name,
             Some("io.github.jdonaghy.vimcode".to_string())
         );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[cfg(test)]
+mod activate_macos_process_tests {
+    //! The activation calls themselves need a real `NSApplication` on a
+    //! live window server and can't run headlessly (same constraint
+    //! `window_close_tests` documents for `close-request`) — what *is*
+    //! headlessly testable is the main-thread guard, same shape as
+    //! `require_gtk_does_not_panic_off_main_thread_on_macos` in
+    //! `gtk/services.rs`: `cargo test` never runs a `#[test]` fn on the
+    //! process's real OS main thread, so `MainThreadMarker::new()`
+    //! deterministically returns `None` here, and this pins that the
+    //! function returns instead of reaching for a marker it doesn't have.
+    use super::*;
+
+    #[test]
+    fn activate_macos_process_is_a_no_op_off_the_main_thread() {
+        // No assertion beyond "doesn't panic" is possible here — the
+        // function has no return value and touches no state this test
+        // can observe. The guard this covers is the early `return` on
+        // `MainThreadMarker::new()` returning `None`; reaching the
+        // `NSApplication::sharedApplication` call below it from a
+        // `cargo test` thread is what would panic.
+        activate_macos_process();
     }
 }
 

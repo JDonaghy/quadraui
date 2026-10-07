@@ -91,6 +91,7 @@ on:
     branches: [main, develop]
     paths:
       - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
       - ".github/workflows/macos.yml"
   schedule:
     # Mondays 06:00 UTC. Arbitrary but deliberate: frequent enough that a
@@ -205,23 +206,29 @@ jobs:
       # normally a fast, no-compile install).
       - name: Install GTK4 (Homebrew)
         run: brew install gtk4
-      # #1325: every step above builds `--features macos` (the native
-      # AppKit backend) — none of them builds the `gtk`-only, macOS-target
+      # Every step above builds `--features macos` (the native AppKit
+      # backend) — none of them builds the `gtk`-only, macOS-target
       # configuration vimcode's shipped release artifact actually uses
       # (`release.yml`'s `build-macos` job runs a plain `cargo build
       # --release --bin vimcode`, i.e. vimcode's default `gui` feature →
-      # `quadraui/gtk`, never `quadraui/macos`). That gap is exactly how
-      # `gtk::run` shipping with no process-activation call on macOS went
-      # unnoticed through every prior release. Compile-truth only: proves
+      # `quadraui/gtk`, never `quadraui/macos`). Compile-truth only: proves
       # `gtk::run` (including `activate_macos_process`) type-checks and
       # links against real AppKit types (`objc2`/`objc2-app-kit`, pulled
       # in by the `gtk` feature's own `dep:` list now, not just `macos`'s)
-      # on this target. It does not prove a live `GtkApplication` actually
-      # becomes the frontmost process — that needs a real WindowServer
-      # session and is the macmini hardware smoke this issue's own
-      # acceptance text requires a person run; see that issue for why a
-      # headless CI assertion isn't substituted here.
-      - name: Build (gtk feature only, no macos)
-        run: cargo build -p quadraui --features gtk --example gtk_demo
+      # on this target. `--all-targets` (not a bare `cargo build`/one
+      # example) so `#[cfg(test)]` bodies compile too — a bare per-example
+      # build never touches them, and that is where `-D warnings`
+      # `dead_code` failures surface (same trap this file's header already
+      # documents for the `macos` feature). `cargo test`, not `cargo
+      # build`, so `activate_macos_process_is_a_no_op_off_the_main_thread`
+      # (`src/gtk/run.rs`) and `require_gtk_does_not_panic_off_main_thread_on_macos`
+      # (`src/gtk/services.rs`) actually run — the only CI job that ever
+      # exercises `src/gtk/`'s macOS-only unit tests. It does not prove a
+      # live `GtkApplication` actually becomes the frontmost process —
+      # that needs a real WindowServer session and is the macmini hardware
+      # smoke this issue's own acceptance text requires a person run; see
+      # that issue for why a headless CI assertion isn't substituted here.
+      - name: Test (gtk feature only, no macos)
+        run: cargo test -p quadraui --features gtk --all-targets
       - name: Cross-backend parity (macos, tui, gtk)
         run: cargo test -p quadraui --features macos,tui,gtk --test cross_backend_parity
