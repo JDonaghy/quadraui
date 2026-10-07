@@ -196,50 +196,63 @@ pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont
     unsafe { CTFont::wrap_under_create_rule(font_ref) }
 }
 
-/// Test/diagnostic hook (issue #1329): reports which font **family**
-/// Core Text's live glyph substitution actually resolved `ch` to when
-/// painted through `font`, and whether that resolution found a real
-/// glyph in that family (`true`) rather than Apple's system-wide
-/// `LastResort` font (`false`) — the generic bordered-box placeholder
-/// macOS paints when *no* font anywhere in the cascade (not even the
-/// final system default) covers a character, visually distinct from a
-/// Nerd-Font-specific tofu box.
+/// Apple's system "no font anywhere covers this" placeholder carries only
+/// a handful of generic category-box glyphs — one shared glyph per
+/// Unicode block, rather than per character. Measured directly on a real
+/// macOS host via `CTFont::glyph_count()`: the resolved placeholder font
+/// (`.LastResort`, backed by `/System/Library/Fonts/LastResort.otf`) has
+/// exactly 7 glyphs in total, while an installed Nerd Font covering actual
+/// PUA icon ranges has over 12,000. [`resolved_fallback_for_char`] uses a
+/// threshold far above the placeholder's count and far below any real
+/// font's, so it needs no assumption about what name any macOS version
+/// gives that placeholder (which varies: `CTFontGetGlyphsForCharacters`
+/// called on the placeholder font directly still reports a nonzero glyph
+/// for a covered block — it has a real cmap entry for its own box glyphs
+/// — so a glyph-id lookup alone can't tell "real outline" apart from
+/// "generic box" either; only the font's total repertoire size can).
+#[cfg(test)]
+const REAL_FONT_GLYPH_COUNT_FLOOR: core_foundation::base::CFIndex = 64;
+
+/// Test/diagnostic hook: reports which font **family** Core Text's live
+/// glyph substitution actually resolved `ch` to when painted through
+/// `font`, and whether that resolved font is a real font covering `ch`
+/// (`true`) rather than Apple's system-wide placeholder font (`false`) —
+/// see [`REAL_FONT_GLYPH_COUNT_FLOOR`] for how that's told apart without
+/// comparing any family-name string.
 ///
-/// #937's own test already documented that `FrameInventory::text_runs`
-/// (fed by [`draw_text`]'s recording hook above) can only ever answer
-/// "this text was requested at this position" — it has no way to say
-/// *which* font in the cascade actually painted a given glyph. #1329's
-/// real-hardware investigation ran into exactly that wall: three of six
-/// Nerd-Font glyphs from the same registered font, in the same paint
-/// pass, painted as the OS-level "no glyph anywhere" placeholder, with
-/// no way to script a reproduction without attaching a debugger to a
-/// live `NSApplication`.
-///
-/// This closes that gap without one: it builds the identical `CTLine`
+/// `FrameInventory::text_runs` (fed by [`draw_text`]'s recording hook
+/// above) can only ever answer "this text was requested at this
+/// position" — it has no way to say *which* font in the cascade
+/// actually painted a given glyph. This answers that question for unit
+/// tests inside this module: it builds the identical `CTLine`
 /// [`draw_text`] would for a single character, then reads back the
-/// resulting glyph run's resolved `NSFont` attribute via
-/// `CTRunGetAttributes` — the actual substitution Core Text performed,
-/// not a guess from the font's declared cascade-list descriptor (which
-/// only says what Core Text *will consult*, not what it *found*).
+/// resulting glyph run's resolved font via `CTRunGetAttributes` — the
+/// actual substitution Core Text performed, not a guess from the font's
+/// declared cascade-list descriptor (which only says what Core Text
+/// *will consult*, not what it *found*).
+///
+/// `#[cfg(test)]`-gated rather than exposed via the unconditionally
+/// compiled `pub mod testing` — reachable only from this file's own
+/// unit tests, not from an integration test or a `MacDriver`-based
+/// regression test.
 #[cfg(test)]
 pub(crate) fn resolved_fallback_for_char(font: &CTFont, ch: char) -> (String, bool) {
     let line = build_ctline(font, &ch.to_string());
     let runs = line.glyph_runs();
-    assert_eq!(
-        runs.len(),
-        1,
-        "a single non-empty character always lays out as exactly one glyph run"
-    );
-    let run = runs.get(0).unwrap();
+    let run = runs
+        .get(0)
+        .filter(|_| runs.len() == 1)
+        .expect("a single non-empty character always lays out as exactly one glyph run");
     let attrs = run
         .attributes()
         .expect("a laid-out glyph run always carries attributes");
-    let family = attrs
-        .find(CFString::new("NSFont"))
-        .and_then(|f| f.downcast::<CTFont>())
-        .map(|f| f.family_name())
-        .unwrap_or_default();
-    let resolved_real_glyph = family != "LastResort";
+    let resolved_font = attrs
+        .find(unsafe { CFString::wrap_under_get_rule(kCTFontAttributeName) })
+        .expect("a laid-out glyph run always carries a resolved NSFont attribute")
+        .downcast::<CTFont>()
+        .expect("the NSFont attribute on a CTRun is always a CTFont");
+    let family = resolved_font.family_name();
+    let resolved_real_glyph = resolved_font.glyph_count() > REAL_FONT_GLYPH_COUNT_FLOOR;
     (family, resolved_real_glyph)
 }
 
@@ -844,31 +857,27 @@ mod tests {
         );
     }
 
-    /// Issue #1329 investigation: does `font_with_fallback` +
-    /// `clone_with_font_size` — the exact mechanism
-    /// `MacBackend::set_current_font`/`set_chrome_font` install the
-    /// fallback through, and `activity_bar::draw_activity_bar_with_style`
-    /// then resizes for the icon glyph — correctly resolve real
-    /// Nerd-Font Private-Use-Area codepoints, both before *and* after
-    /// that resize clone?
+    /// Does `font_with_fallback` + `clone_with_font_size` — the
+    /// mechanism `MacBackend::set_current_font`/`set_chrome_font`
+    /// install the fallback through, and the activity-bar icon-resize
+    /// path then applies on top — correctly resolve real Nerd-Font
+    /// Private-Use-Area codepoints *through the installed fallback
+    /// family specifically*, both before and after that resize clone?
     ///
-    /// #1329 reports three of six activity-bar icons (U+EAF0, U+EA68,
-    /// U+EB91) painting as the OS `LastResort` placeholder while the
-    /// other three (U+F002, U+EAE6, U+F0E5) paint correctly, from the
-    /// *same* registered font, in the *same* paint pass — with the
-    /// font's own cmap/glyf bytes hand-verified correct for all six.
-    /// This test drives the identical cascade + resize path, at those
-    /// same six codepoints, against a real, fully-fledged installed
-    /// Nerd Font (vimcode's own bespoke subset font lives in a sibling
-    /// repo's checkout and can't be read from here — see
-    /// [`resolved_fallback_for_char`]'s doc for what a from-the-real-font
-    /// version of this test would need).
+    /// Each codepoint carries a negative control: the bare base font,
+    /// with no cascade attached, must fail to resolve it directly (if
+    /// it didn't, the codepoint tells us nothing about the cascade).
+    /// The cascade-equipped font must then resolve it *through
+    /// `nerd_family` by name*, not merely through some family or
+    /// other — PUA ranges are exactly where unrelated installed icon
+    /// fonts can squat on the same codepoints, so "resolved to a real
+    /// glyph" alone doesn't prove this cascade contributed anything.
     ///
     /// Skips (rather than failing) when no Nerd Font is installed on the
     /// host — there is nothing wrong to report, just nothing to test;
     /// CI hosts have none installed. Run on a dev machine with one
-    /// installed (common for anyone working on this exact feature) for
-    /// real coverage.
+    /// installed for real coverage. [`resolved_fallback_for_char_reports_no_real_glyph_for_bare_menlo_on_pua`]
+    /// below covers the same hook on every host, Nerd Font or not.
     #[test]
     fn nerd_font_fallback_resolves_pua_codepoints_before_and_after_icon_resize() {
         let families = core_text::font_manager::copy_available_font_family_names();
@@ -888,11 +897,11 @@ mod tests {
         let with_fallback = font_with_fallback(&base, &nerd_family);
         // Mirrors `activity_bar::draw_activity_bar_with_style`'s
         // `font.clone_with_font_size(style.resolved_icon_size_px())`.
-        let icon_sized = with_fallback.clone_with_font_size(20.0);
+        let icon_size_px = crate::ActivityBarStyle::default().resolved_icon_size_px() as f64;
+        let icon_sized = with_fallback.clone_with_font_size(icon_size_px);
 
-        // The six codepoints from #1329's report: three reported broken
-        // (Explorer/SourceControl/RunDebug) and three reported working
-        // (Search/Extensions/AiChat) against vimcode's bespoke icon font.
+        // Three codepoints reported broken, and three reported working,
+        // against the same registered font in the same paint pass.
         let codepoints = [
             ('\u{EAF0}', "Explorer"),
             ('\u{EA68}', "SourceControl"),
@@ -903,25 +912,70 @@ mod tests {
         ];
 
         for (ch, label) in codepoints {
+            let (base_family, base_ok) = resolved_fallback_for_char(&base, ch);
+            assert!(
+                !base_ok,
+                "{label} (U+{:04X}) unexpectedly resolved a real glyph through bare \
+                 {base_family:?} with no cascade attached — this negative control \
+                 must fail, otherwise a pass below can't tell us the cascade did \
+                 anything",
+                ch as u32,
+            );
+
             let (family_before, ok_before) = resolved_fallback_for_char(&with_fallback, ch);
             assert!(
                 ok_before,
-                "{label} (U+{:04X}) resolved to LastResort *before* \
+                "{label} (U+{:04X}) failed to resolve a real glyph *before* \
                  clone_with_font_size, through family {family_before:?} \
                  — the installed Nerd Font {nerd_family:?} should have \
                  covered it",
                 ch as u32,
             );
+            assert_eq!(
+                family_before, nerd_family,
+                "{label} (U+{:04X}) resolved through {family_before:?} instead of \
+                 the cascade's own {nerd_family:?} — some other installed font is \
+                 squatting on this PUA codepoint, so this pass doesn't show \
+                 font_with_fallback's cascade contributed anything",
+                ch as u32,
+            );
+
             let (family_after, ok_after) = resolved_fallback_for_char(&icon_sized, ch);
             assert!(
                 ok_after,
-                "{label} (U+{:04X}) resolved to LastResort *after* \
+                "{label} (U+{:04X}) failed to resolve a real glyph *after* \
                  clone_with_font_size, through family {family_after:?} \
                  — the activity-bar icon resize must not drop fallback \
                  coverage that worked before the resize",
                 ch as u32,
             );
+            assert_eq!(
+                family_after, nerd_family,
+                "{label} (U+{:04X}) resolved through {family_after:?} instead of \
+                 the cascade's own {nerd_family:?} after clone_with_font_size — the \
+                 resize must preserve which family in the cascade covers this \
+                 codepoint",
+                ch as u32,
+            );
         }
+    }
+
+    /// Host-independent counterpart to the Nerd-Font test above: bare
+    /// Menlo, with no cascade attached, must not report a real glyph
+    /// for a Private-Use-Area codepoint it was never built to cover.
+    /// Needs no installed Nerd Font, so it runs on every CI host and
+    /// proves [`resolved_fallback_for_char`] is wired up correctly
+    /// even when the Nerd-Font-specific test above has nothing to do.
+    #[test]
+    fn resolved_fallback_for_char_reports_no_real_glyph_for_bare_menlo_on_pua() {
+        let base = font();
+        let (family, resolved_real_glyph) = resolved_fallback_for_char(&base, '\u{EAF0}');
+        assert!(
+            !resolved_real_glyph,
+            "bare Menlo (no fallback cascade attached) unexpectedly resolved a \
+             real glyph for U+EAF0 through family {family:?} — this codepoint is \
+             outside Menlo's own coverage, so this must report no real glyph"
+        );
     }
 
     /// Garbage bytes aren't a font Core Graphics can parse —
