@@ -127,6 +127,21 @@ tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring", "dep:libc"]
 # would work by luck on a host where fontconfig lives in a default
 # linker search path and silently fail to link everywhere else (e.g. a
 # Homebrew-on-macOS `libdir` that isn't one).
+# `dep:objc2` / `dep:objc2-app-kit`: GTK's quartz backend on macOS only
+# raises/shows the `NSWindow` — it does not hand the *process*
+# frontmost/active-application status, which is what macOS actually
+# routes keyboard events by. `gtk::run`'s `activate` needs
+# `NSApplication::sharedApplication` + `activateIgnoringOtherApps` to fix
+# that — see `activate_macos_process` in `src/gtk/run.rs`. Both deps are
+# declared `optional = true` under
+# `[target.'cfg(target_os = "macos")'.dependencies]` below (shared with
+# the `macos` feature's own objc2 family, same versions, same feature
+# flags — `NSApplication`/`NSRunningApplication` are already enabled
+# there for the native backend), so naming them here unifies rather than
+# duplicates that dependency graph on macOS and is a straight no-op
+# everywhere else — same "`dep:X` on a target-gated optional dep is a
+# no-op off that target" pattern `win`'s own `dep:windows` entry below
+# already relies on.
 gtk = [
     "dep:gtk4",
     "dep:pangocairo",
@@ -135,6 +150,8 @@ gtk = [
     "arboard/image-data",
     "dep:trash",
     "dep:keyring",
+    "dep:objc2",
+    "dep:objc2-app-kit",
 ]
 
 # Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
