@@ -2168,21 +2168,41 @@ impl Default for TerminalManager {
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
-/// Return the user's preferred shell.
+/// Return the user's preferred interactive shell, for spawning an
+/// interactive [`TerminalSession`].
 ///
-/// Reads `$SHELL`; falls back to `/bin/bash` on Unix and
-/// `powershell.exe` on Windows.
+/// Reads `$SHELL` on Unix, falling back to `/bin/bash` when unset.
+/// **Never reads `$SHELL` on Windows.** An interop tab (Git Bash, WSL)
+/// can export a Unix-style `$SHELL` into a native Windows process's
+/// environment even though the host itself has no such variable set —
+/// handing that path straight to a native ConPTY spawn would be wrong
+/// regardless of what else is going on in the spawn/poll path. The
+/// Windows branch always returns `powershell.exe`, unconditionally.
 pub fn default_shell() -> String {
-    if let Ok(shell) = std::env::var("SHELL") {
-        return shell;
-    }
     #[cfg(target_os = "windows")]
     {
-        "powershell.exe".to_string()
+        default_shell_for(ShellPlatform::Windows, None)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        "/bin/bash".to_string()
+        default_shell_for(ShellPlatform::Unix, std::env::var("SHELL").ok())
+    }
+}
+
+/// Pure decision logic behind [`default_shell`]: given the platform and
+/// whatever `$SHELL` read produced (always `None` on the Windows branch —
+/// see [`default_shell`]'s doc for why that read must never happen at
+/// all), returns the interactive shell binary to spawn.
+///
+/// Factored out exactly like [`shell_command_for`] below, and for the
+/// same reason: tests can cover both platform branches, and both
+/// "env var set" / "env var unset" cases, from a single build without
+/// mutating the process-global `$SHELL` state every other test in this
+/// binary shares (see `shell_command_for`'s doc).
+fn default_shell_for(platform: ShellPlatform, env_shell: Option<String>) -> String {
+    match platform {
+        ShellPlatform::Windows => "powershell.exe".to_string(),
+        ShellPlatform::Unix => env_shell.unwrap_or_else(|| "/bin/bash".to_string()),
     }
 }
 
@@ -3216,6 +3236,39 @@ mod tests {
         assert!(!shell.is_empty());
     }
 
+    // ── default_shell_for ───────────────────────────────────────────────────
+
+    #[test]
+    fn default_shell_for_unix_honours_shell_env_var() {
+        let shell = default_shell_for(ShellPlatform::Unix, Some("/bin/zsh".to_string()));
+        assert_eq!(shell, "/bin/zsh");
+    }
+
+    #[test]
+    fn default_shell_for_unix_falls_back_when_shell_env_var_unset() {
+        let shell = default_shell_for(ShellPlatform::Unix, None);
+        assert_eq!(shell, "/bin/bash");
+    }
+
+    /// A Unix-style `$SHELL` reaching the Windows branch (a Git Bash / WSL
+    /// interop tab exporting one into a native Windows process's
+    /// environment) must be ignored outright, not merely overridden by a
+    /// later check. `default_shell()` itself enforces this by never calling
+    /// `std::env::var("SHELL")` under `cfg(target_os = "windows")` at all;
+    /// this test pins the pure decision function's behaviour even if a
+    /// caller somehow passed one through.
+    #[test]
+    fn default_shell_for_windows_ignores_a_unix_style_shell_value() {
+        let shell = default_shell_for(ShellPlatform::Windows, Some("/bin/bash".to_string()));
+        assert_eq!(shell, "powershell.exe");
+    }
+
+    #[test]
+    fn default_shell_for_windows_is_powershell_with_no_env_shell() {
+        let shell = default_shell_for(ShellPlatform::Windows, None);
+        assert_eq!(shell, "powershell.exe");
+    }
+
     // ── shell_command / shell_command_for (quadraui#970) ──────────────────────
 
     #[test]
@@ -3442,8 +3495,16 @@ mod tests {
     // ── Integration tests (require a real PTY / Unix shell) ───────────────────
 
     /// Helper: poll `session` until `predicate(&session)` is true or
-    /// `max_ms` milliseconds elapse. Returns whether the predicate was satisfied.
-    #[cfg(unix)]
+    /// `max_ms` milliseconds elapse. Returns whether the predicate was
+    /// satisfied.
+    ///
+    /// Shared by both the `#[cfg(unix)]` PTY tests above/below and the
+    /// `#[cfg(target_os = "windows")]` ConPTY tests further down —
+    /// `TerminalSession::spawn`/`poll` are themselves platform-neutral
+    /// (`portable_pty::native_pty_system()` already picks the Unix-PTY
+    /// vs ConPTY backend), so only the *shell binary* each test spawns
+    /// differs per platform, not this driver loop.
+    #[cfg(any(unix, target_os = "windows"))]
     fn poll_until(
         sess: &mut TerminalSession,
         max_ms: u64,
@@ -3493,6 +3554,55 @@ mod tests {
         assert_eq!(sess.exit_code(), Some(0), "expected exit code 0");
 
         // Verify the screen or scrollback text contained the marker.
+        let text = sess.full_text();
+        assert!(
+            text.contains("__marker__"),
+            "full_text() does not contain '__marker__'; got: {text:?}"
+        );
+    }
+
+    /// Windows sibling of [`session_send_str_screen_text_and_exit_code`]
+    /// above, against a real ConPTY. `TerminalSession::spawn` and `poll`
+    /// have no Windows-specific code of their own — both go through
+    /// `portable_pty::native_pty_system()`, which itself dispatches to the
+    /// ConPTY backend on this target — so a Windows-gated test is the only
+    /// way to exercise that dispatch against a live Windows host rather
+    /// than merely type-check it. This spawns `cmd.exe` (always present on
+    /// a Windows runner — no reliance on `$SHELL`/`default_shell()`, which
+    /// is covered separately above) as an interactive shell and verifies:
+    ///   1. Bytes from the child actually arrive — `full_text()` eventually
+    ///      contains a marker written by `echo`.
+    ///   2. The process exits, and `is_exited()` observes it.
+    ///   3. `exit_code()` resolves to `Some(0)`.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_session_send_str_screen_text_and_exit_code() {
+        let cwd = std::env::temp_dir();
+        let mut sess =
+            TerminalSession::spawn(80, 24, "cmd.exe", &cwd, 1000).expect("failed to spawn cmd.exe");
+
+        // `cmd.exe`'s line editor wants a carriage return to submit a line,
+        // same as a real Enter keypress — a bare `\n` alone is not
+        // guaranteed to flush the console's input buffer.
+        sess.send_str("echo __marker__\r\n");
+
+        // Poll until the marker appears in the visible screen or history,
+        // or the process exits — whichever comes first (max 5 s).
+        let found = poll_until(&mut sess, 5000, |s| {
+            s.full_text().contains("__marker__") || s.exited
+        });
+        assert!(
+            found,
+            "marker '__marker__' never appeared in cmd.exe's terminal output"
+        );
+
+        // Ask cmd.exe to exit with a known code, then confirm `poll()`
+        // observes the exit and resolves it correctly.
+        sess.send_str("exit 0\r\n");
+        let exited = poll_until(&mut sess, 5000, |s| s.is_exited());
+        assert!(exited, "cmd.exe did not exit within timeout");
+        assert_eq!(sess.exit_code(), Some(0), "expected exit code 0");
+
         let text = sess.full_text();
         assert!(
             text.contains("__marker__"),
