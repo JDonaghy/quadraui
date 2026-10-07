@@ -152,12 +152,16 @@
 //! remaining numbers as unrelated SGR parameters (`5` → blink, `2` →
 //! faint, …), so any cell this crate paints with `underline_color` set
 //! blinks or fades on Windows instead of showing an underline in that
-//! colour. [`detect_underline_color_support`] is a structural fact about
-//! the Win32 console subsystem, not a per-terminal environment heuristic
-//! like the sections above — every Windows build sits behind ConPTY, and
-//! there is no terminal on that platform this crate can identify as
-//! parsing the semicolon form correctly, so this is a hardcoded
-//! `cfg!(windows)` check rather than a `detect_*_from(getenv)` split.
+//! colour. Every Windows build sits behind ConPTY, so
+//! [`detect_underline_color_support`] answers `false` there
+//! unconditionally. A *non-Windows* build can sit behind ConPTY too: a
+//! Linux binary in WSL whose output is drawn by Windows Terminal hits the
+//! exact same misparse (vimcode's Linux `vcd` showed runs of faded text
+//! after every LSP-hint underline). Windows Terminal exports `WT_SESSION`,
+//! and WSL forwards it into the Linux environment, so
+//! [`detect_underline_color_support_from`] also answers `false` whenever
+//! that variable is set. The one case no signal covers is an SSH session
+//! out of Windows Terminal (`WT_SESSION` is not forwarded over SSH).
 //! [`crate::tui::backend::TuiBackend::new`] seeds
 //! [`crate::tui::backend::TuiBackend::underline_color_supported`] with
 //! this; [`crate::tui::backend::TuiBackend::set_underline_color_supported`]
@@ -480,21 +484,29 @@ fn query_sgr_pixel_decrqm() -> Option<u8> {
 /// "Underline-colour (SGR 58) support" section for the full ConPTY
 /// misparse this guards against.
 ///
-/// Unconditionally `false` on every Windows build and `true` everywhere
-/// else: unlike [`detect_color_depth`]/[`detect_kitty_keyboard`]/
-/// [`detect_sgr_pixel_mouse`], there is no terminal-identity signal to
-/// read here — every Windows process sits behind ConPTY regardless of
-/// which terminal emulator (Windows Terminal, the legacy console host,
-/// an IDE's integrated terminal) is hosting it, and none of them parse
-/// the semicolon form correctly. A Windows build genuinely running
-/// outside ConPTY does not exist today, so the cheaper failure mode
-/// mirrors [`detect_kitty_keyboard_from`]'s reasoning, not
-/// [`detect_color_depth_from`]'s: a wrongly-`true` answer reproduces the
-/// exact blink/fade bug this function exists to prevent, while a
-/// wrongly-`false` answer only costs a plain (uncoloured) underline on a
-/// terminal that could have shown an accent colour.
+/// `false` on every Windows build, and on any other build whose output is
+/// drawn by Windows Terminal (`WT_SESSION` set, e.g. a Linux binary in
+/// WSL). The cheaper failure mode mirrors [`detect_kitty_keyboard_from`]'s
+/// reasoning: a wrongly-`true` answer reproduces the blink/fade bug this
+/// function exists to prevent, while a wrongly-`false` answer only costs a
+/// plain (uncoloured) underline on a terminal that could have shown an
+/// accent colour.
 pub fn detect_underline_color_support() -> bool {
-    !cfg!(windows)
+    detect_underline_color_support_from(cfg!(windows), |key| std::env::var(key).ok())
+}
+
+/// Testable core of [`detect_underline_color_support`]: `is_windows` is
+/// the build target, `getenv` the environment lookup.
+pub(crate) fn detect_underline_color_support_from(
+    is_windows: bool,
+    getenv: impl Fn(&str) -> Option<String>,
+) -> bool {
+    if is_windows {
+        return false;
+    }
+    // Windows Terminal (via WSL) sits behind ConPTY even for a Linux
+    // binary. An empty value is treated as unset.
+    !getenv("WT_SESSION").is_some_and(|v| !v.is_empty())
 }
 
 /// System dark/light detection (quadraui#952) — the TUI half of
@@ -849,14 +861,35 @@ mod tests {
 
     // ── Underline-colour (SGR 58) support ───────────────
 
-    /// This test runs on whichever host CI happens to build for, so it
-    /// can only assert the one invariant that holds regardless of
-    /// platform: the answer tracks `cfg!(windows)` exactly, with no
-    /// environment signal able to override it (unlike every other
-    /// detector in this module).
+    /// Windows builds always strip: no environment can turn it back on.
     #[test]
-    fn underline_color_support_matches_windows_cfg() {
-        assert_eq!(detect_underline_color_support(), !cfg!(windows));
+    fn underline_color_unsupported_on_windows_regardless_of_env() {
+        assert!(!detect_underline_color_support_from(true, env(&[])));
+        assert!(!detect_underline_color_support_from(
+            true,
+            env(&[("TERM", "xterm-kitty")])
+        ));
+    }
+
+    /// A plain non-Windows terminal keeps the coloured underline.
+    #[test]
+    fn underline_color_supported_off_windows_without_wt_session() {
+        assert!(detect_underline_color_support_from(false, env(&[])));
+        assert!(detect_underline_color_support_from(
+            false,
+            env(&[("WT_SESSION", "")])
+        ));
+    }
+
+    /// A Linux binary in WSL under Windows Terminal (`WT_SESSION` set)
+    /// sits behind ConPTY and must strip, or every underline-coloured
+    /// cell leaks SGR 2 (faint) into the text that follows it.
+    #[test]
+    fn underline_color_unsupported_under_windows_terminal_wsl() {
+        assert!(!detect_underline_color_support_from(
+            false,
+            env(&[("WT_SESSION", "4c6d2a0e-1b2f-4a7e-9d3c-5f8e7a6b1c20")])
+        ));
     }
 
     /// A timeout (no reply parsed at all — represented as `None`, the same
