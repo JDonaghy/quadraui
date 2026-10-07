@@ -874,6 +874,68 @@ fn decscusr_shape(ps: u16) -> Option<(TerminalCursorShape, bool)> {
     }
 }
 
+/// Pure decision logic behind
+/// [`TerminalSession::respond_to_terminal_queries`](TerminalSession::respond_to_terminal_queries):
+/// scans a raw, not-yet-parsed PTY byte stream for VT query sequences a
+/// real terminal emulator is expected to answer, and returns the bytes
+/// that should be written back to the PTY (empty if none were found).
+///
+/// Factored out so the escape-sequence scanning itself is directly
+/// testable without a real PTY — the Windows-gated integration tests in
+/// `TerminalSession`'s own test module cover the end-to-end "a real ConPTY
+/// session unblocks" behaviour this exists to fix; the tests below cover
+/// the scanning logic itself, on every platform.
+///
+/// `cursor` is `(row, col)`, 0-based, matching
+/// [`vt100::Screen::cursor_position`]'s own convention — converted to the
+/// 1-based form the Cursor Position Report wire format uses.
+///
+/// Recognises:
+/// - `ESC[6n` (Device Status Report: cursor position query) →
+///   `ESC[{row};{col}R`.
+/// - `ESC[c` / `ESC[0c` (Primary Device Attributes query) → `ESC[?1;0c`
+///   ("VT101, no extensions" — matching the floor of what `vt100::Parser`
+///   itself understands).
+///
+/// Any other CSI sequence — including the `>` / `?` private-marker forms —
+/// is left unanswered.
+fn terminal_query_replies(data: &[u8], cursor: (u16, u16)) -> Vec<u8> {
+    let (row, col) = cursor;
+    let mut reply = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        // Look for the start of a CSI sequence: ESC '['.
+        if data[i] != 0x1b || i + 1 >= data.len() || data[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        // Scan past the parameter bytes (digits, ';', and the private
+        // markers '?' / '>') up to the single final byte that ends a CSI
+        // sequence.
+        let mut j = i + 2;
+        while j < data.len() && matches!(data[j], b'0'..=b'9' | b';' | b'?' | b'>') {
+            j += 1;
+        }
+        let Some(&final_byte) = data.get(j) else {
+            // Incomplete sequence split across reads — nothing more to
+            // scan in this chunk.
+            break;
+        };
+        let params = &data[i + 2..j];
+        match (final_byte, params) {
+            (b'n', b"6") => {
+                reply.extend(format!("\x1b[{};{}R", row + 1, col + 1).into_bytes());
+            }
+            (b'c', b"" | b"0") => {
+                reply.extend_from_slice(b"\x1b[?1;0c");
+            }
+            _ => {}
+        }
+        i = j + 1;
+    }
+    reply
+}
+
 /// A single PTY-backed terminal session: PTY process, reader thread,
 /// vt100 parser, and scrollback ring buffer.
 ///
@@ -946,7 +1008,8 @@ impl TerminalSession {
     ///
     /// - `cols`, `rows` — initial PTY dimensions.
     /// - `shell` — shell binary path (e.g. `"/bin/bash"`). Use
-    ///   [`default_shell`] to read `$SHELL`.
+    ///   [`default_shell`] to pick a sensible default — it reads `$SHELL`
+    ///   on Unix, and always returns `"powershell.exe"` on Windows.
     /// - `cwd` — working directory for the shell process.
     /// - `history_capacity` — maximum scrollback lines to retain.
     ///   `0` means unlimited (use a large finite value for production).
@@ -1041,6 +1104,7 @@ impl TerminalSession {
         let mut changed = false;
         while let Ok(data) = self.rx.try_recv() {
             changed = true;
+            self.respond_to_terminal_queries(&data);
             self.process_with_capture(&data);
         }
         if !self.exited {
@@ -1051,6 +1115,37 @@ impl TerminalSession {
             }
         }
         changed
+    }
+
+    /// Answer VT query sequences the child sends *to the terminal*, the way
+    /// any real terminal emulator (xterm, Windows Terminal, iTerm) does.
+    ///
+    /// `vt100::Parser` is a pure renderer/state-tracker: it never writes
+    /// back to the PTY on its own. That is invisible on Unix, where an
+    /// interactive shell at a bare prompt doesn't query the terminal. It is
+    /// fatal on Windows: the ConPTY console host performs a VT-identity
+    /// handshake on startup — a cursor-position query and/or a Device
+    /// Attributes query, see [`terminal_query_replies`] for exactly which
+    /// sequences — and blocks all further output on this session until
+    /// something answers. Confirmed on real ConPTY hardware: a freshly
+    /// spawned `cmd.exe` session sends exactly `ESC[6n` and then produces
+    /// nothing else — `full_text()` stays empty — until this function
+    /// replies.
+    ///
+    /// The actual scanning/matching is [`terminal_query_replies`], a pure
+    /// function of the raw byte stream and the current cursor position —
+    /// this method only supplies that cursor position and performs the
+    /// write. Operating on the raw, not-yet-parsed byte stream means this
+    /// has no effect on parsing/painting: it only ever *writes*, never
+    /// consumes, the data handed to
+    /// [`process_with_capture`](Self::process_with_capture).
+    fn respond_to_terminal_queries(&mut self, data: &[u8]) {
+        let cursor = self.parser.screen().cursor_position();
+        let reply = terminal_query_replies(data, cursor);
+        if !reply.is_empty() {
+            let _ = self.writer.write_all(&reply);
+            let _ = self.writer.flush();
+        }
     }
 
     /// Send raw bytes as keyboard input to the shell.
@@ -2194,7 +2289,7 @@ pub fn default_shell() -> String {
 /// see [`default_shell`]'s doc for why that read must never happen at
 /// all), returns the interactive shell binary to spawn.
 ///
-/// Factored out exactly like [`shell_command_for`] below, and for the
+/// Factored out exactly like [`shell_command_for`], and for the
 /// same reason: tests can cover both platform branches, and both
 /// "env var set" / "env var unset" cases, from a single build without
 /// mutating the process-global `$SHELL` state every other test in this
@@ -3504,7 +3599,7 @@ mod tests {
     /// (`portable_pty::native_pty_system()` already picks the Unix-PTY
     /// vs ConPTY backend), so only the *shell binary* each test spawns
     /// differs per platform, not this driver loop.
-    #[cfg(any(unix, target_os = "windows"))]
+    #[cfg(any(unix, windows))]
     fn poll_until(
         sess: &mut TerminalSession,
         max_ms: u64,
@@ -3522,10 +3617,18 @@ mod tests {
         false
     }
 
-    /// Spawn a session that runs `echo hello` and verify:
-    ///   1. `screen_text()` eventually contains "hello"
+    /// Spawn a session that runs an arithmetic-expansion `echo` and verify:
+    ///   1. `screen_text()` eventually contains the *expanded* marker
     ///   2. The process exits with code 0
     ///   3. `exit_code()` returns `Some(0)` after exit
+    ///
+    /// The marker is `$((1+1))`, not a literal string: a raw literal would
+    /// also appear in the console's echo of the *typed* input, so a test
+    /// built that way can pass even if the command is never actually
+    /// executed by the shell. `$((1+1))` only ever resolves to `2` after
+    /// real shell arithmetic, so seeing `MARK_2_END` in `full_text()`
+    /// proves the shell ran the command, not merely that input bytes were
+    /// echoed back.
     #[test]
     #[cfg(unix)]
     fn session_send_str_screen_text_and_exit_code() {
@@ -3535,17 +3638,17 @@ mod tests {
             TerminalSession::spawn(80, 24, "/bin/sh", &cwd, 1000).expect("failed to spawn /bin/sh");
 
         // Before process exits, exit_code is None.
-        // Send a command that outputs a known string then exits.
-        sess.send_str("echo __marker__\nexit 0\n");
+        // Send a command whose output can only exist post-expansion, then exit.
+        sess.send_str("echo MARK_$((1+1))_END\nexit 0\n");
 
         // Poll until the marker appears in the visible screen or history,
         // or the process exits — whichever comes first (max 5 s).
         let found = poll_until(&mut sess, 5000, |s| {
-            s.full_text().contains("__marker__") || s.exited
+            s.full_text().contains("MARK_2_END") || s.exited
         });
         assert!(
             found,
-            "marker '__marker__' never appeared in terminal output"
+            "marker 'MARK_2_END' never appeared in terminal output"
         );
 
         // Process should have exited with code 0.
@@ -3553,11 +3656,11 @@ mod tests {
         assert!(exited, "process did not exit within timeout");
         assert_eq!(sess.exit_code(), Some(0), "expected exit code 0");
 
-        // Verify the screen or scrollback text contained the marker.
+        // Verify the screen or scrollback text contained the expanded marker.
         let text = sess.full_text();
         assert!(
-            text.contains("__marker__"),
-            "full_text() does not contain '__marker__'; got: {text:?}"
+            text.contains("MARK_2_END"),
+            "full_text() does not contain 'MARK_2_END'; got: {text:?}"
         );
     }
 
@@ -3567,46 +3670,101 @@ mod tests {
     /// `portable_pty::native_pty_system()`, which itself dispatches to the
     /// ConPTY backend on this target — so a Windows-gated test is the only
     /// way to exercise that dispatch against a live Windows host rather
-    /// than merely type-check it. This spawns `cmd.exe` (always present on
-    /// a Windows runner — no reliance on `$SHELL`/`default_shell()`, which
-    /// is covered separately above) as an interactive shell and verifies:
+    /// than merely type-check it.
+    ///
+    /// `send_line` must expand a marker that cannot exist in the console's
+    /// raw-input echo of what was typed — only in the shell's own output
+    /// once it has actually run the command — so a passing test proves
+    /// execution, not merely that bytes were echoed back. Verifies:
     ///   1. Bytes from the child actually arrive — `full_text()` eventually
-    ///      contains a marker written by `echo`.
+    ///      contains `expected_marker`.
     ///   2. The process exits, and `is_exited()` observes it.
     ///   3. `exit_code()` resolves to `Some(0)`.
-    #[test]
     #[cfg(target_os = "windows")]
-    fn windows_session_send_str_screen_text_and_exit_code() {
+    fn windows_conpty_spawn_echo_exit(
+        shell: &str,
+        send_line: &str,
+        expected_marker: &str,
+        timeout_ms: u64,
+    ) {
         let cwd = std::env::temp_dir();
-        let mut sess =
-            TerminalSession::spawn(80, 24, "cmd.exe", &cwd, 1000).expect("failed to spawn cmd.exe");
+        let mut sess = TerminalSession::spawn(80, 24, shell, &cwd, 1000)
+            .unwrap_or_else(|e| panic!("failed to spawn {shell}: {e}"));
 
-        // `cmd.exe`'s line editor wants a carriage return to submit a line,
-        // same as a real Enter keypress — a bare `\n` alone is not
-        // guaranteed to flush the console's input buffer.
-        sess.send_str("echo __marker__\r\n");
+        // Every Windows console line editor (cmd.exe and powershell.exe
+        // alike) wants a carriage return to submit a line, same as a real
+        // Enter keypress — a bare `\n` alone is not guaranteed to flush the
+        // console's input buffer.
+        sess.send_str(send_line);
 
         // Poll until the marker appears in the visible screen or history,
-        // or the process exits — whichever comes first (max 5 s).
-        let found = poll_until(&mut sess, 5000, |s| {
-            s.full_text().contains("__marker__") || s.exited
+        // or the process exits — whichever comes first.
+        let found = poll_until(&mut sess, timeout_ms, |s| {
+            s.full_text().contains(expected_marker) || s.exited
         });
         assert!(
             found,
-            "marker '__marker__' never appeared in cmd.exe's terminal output"
+            "marker {expected_marker:?} never appeared in {shell}'s terminal output within {timeout_ms}ms"
         );
 
-        // Ask cmd.exe to exit with a known code, then confirm `poll()`
+        // Ask the shell to exit with a known code, then confirm `poll()`
         // observes the exit and resolves it correctly.
         sess.send_str("exit 0\r\n");
-        let exited = poll_until(&mut sess, 5000, |s| s.is_exited());
-        assert!(exited, "cmd.exe did not exit within timeout");
-        assert_eq!(sess.exit_code(), Some(0), "expected exit code 0");
+        let exited = poll_until(&mut sess, timeout_ms, |s| s.is_exited());
+        assert!(exited, "{shell} did not exit within {timeout_ms}ms");
+        assert_eq!(
+            sess.exit_code(),
+            Some(0),
+            "expected exit code 0 from {shell}"
+        );
 
         let text = sess.full_text();
         assert!(
-            text.contains("__marker__"),
-            "full_text() does not contain '__marker__'; got: {text:?}"
+            text.contains(expected_marker),
+            "full_text() does not contain {expected_marker:?}; got: {text:?}"
+        );
+    }
+
+    /// `cmd.exe` is always present on a Windows runner — no reliance on
+    /// `$SHELL`/`default_shell()`, which is covered separately above. The
+    /// marker expands via `%PROCESSOR_ARCHITECTURE%`, a cmd.exe builtin
+    /// environment variable also visible to this test process itself (both
+    /// run natively on the same Windows host), so the expected value is
+    /// computed the same way on both sides rather than hardcoded.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_cmd_session_send_str_screen_text_and_exit_code() {
+        let arch = std::env::var("PROCESSOR_ARCHITECTURE").unwrap_or_else(|_| "AMD64".to_string());
+        let marker = format!("MARK_{arch}_END");
+        windows_conpty_spawn_echo_exit(
+            "cmd.exe",
+            "echo MARK_%PROCESSOR_ARCHITECTURE%_END\r\n",
+            &marker,
+            5_000,
+        );
+    }
+
+    /// `default_shell()`'s own Windows branch — this is the shell
+    /// `TerminalSession::spawn` actually receives in production, and the
+    /// one `cmd.exe` coverage above cannot stand in for: console-host
+    /// banner text, VT mode initialisation and process start-up are all
+    /// slower and shaped differently than `cmd.exe`'s. PowerShell's variable
+    /// syntax (`$env:NAME`) differs from cmd.exe's (`%NAME%`), so the send
+    /// line is PowerShell-specific; the subexpression form
+    /// `$($env:PROCESSOR_ARCHITECTURE)` avoids the string-interpolation
+    /// variable-name ambiguity a bare `$env:PROCESSOR_ARCHITECTURE_END`
+    /// would hit. A longer timeout than the `cmd.exe` case reflects
+    /// PowerShell's slower start-up on a loaded runner.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_powershell_session_send_str_screen_text_and_exit_code() {
+        let arch = std::env::var("PROCESSOR_ARCHITECTURE").unwrap_or_else(|_| "AMD64".to_string());
+        let marker = format!("MARK_{arch}_END");
+        windows_conpty_spawn_echo_exit(
+            "powershell.exe",
+            "echo \"MARK_$($env:PROCESSOR_ARCHITECTURE)_END\"\r\n",
+            &marker,
+            15_000,
         );
     }
 
@@ -4527,6 +4685,95 @@ mod tests {
     fn decscusr_shape_ignores_out_of_range_ps() {
         assert_eq!(decscusr_shape(7), None);
         assert_eq!(decscusr_shape(999), None);
+    }
+
+    // ── terminal_query_replies (ConPTY handshake fix) ─────────────────────────
+
+    #[test]
+    fn terminal_query_replies_answers_cursor_position_query() {
+        let reply = terminal_query_replies(b"\x1b[6n", (0, 0));
+        assert_eq!(reply, b"\x1b[1;1R");
+    }
+
+    /// The reply reports the *current* cursor position, not always `1;1` —
+    /// 0-based `cursor_position()` converted to the 1-based wire format.
+    #[test]
+    fn terminal_query_replies_cursor_position_uses_the_given_cursor() {
+        let reply = terminal_query_replies(b"\x1b[6n", (4, 9));
+        assert_eq!(reply, b"\x1b[5;10R");
+    }
+
+    #[test]
+    fn terminal_query_replies_answers_primary_device_attributes_query() {
+        assert_eq!(terminal_query_replies(b"\x1b[c", (0, 0)), b"\x1b[?1;0c");
+        assert_eq!(terminal_query_replies(b"\x1b[0c", (0, 0)), b"\x1b[?1;0c");
+    }
+
+    /// An unrelated CSI sequence (here, "clear screen") must not be
+    /// mistaken for a query — no reply at all.
+    #[test]
+    fn terminal_query_replies_ignores_unrelated_csi_sequences() {
+        assert!(terminal_query_replies(b"\x1b[2J", (0, 0)).is_empty());
+    }
+
+    /// Secondary Device Attributes (`ESC[>c`) is a real, distinct query
+    /// real terminals do answer, but this engine doesn't recognise it yet —
+    /// pinned here so a future addition is a deliberate change, not a
+    /// silent behaviour drift.
+    #[test]
+    fn terminal_query_replies_does_not_answer_secondary_device_attributes() {
+        assert!(terminal_query_replies(b"\x1b[>c", (0, 0)).is_empty());
+    }
+
+    #[test]
+    fn terminal_query_replies_ignores_plain_text_with_no_escape_sequences() {
+        assert!(terminal_query_replies(b"hello, world\r\n", (0, 0)).is_empty());
+    }
+
+    /// A chunk can contain ordinary output *and* a query mixed together —
+    /// the scan must find the query wherever it falls, not only at the
+    /// start of the buffer, and answer only once.
+    #[test]
+    fn terminal_query_replies_finds_a_query_mixed_with_other_output() {
+        let mut data = b"some prompt text ".to_vec();
+        data.extend_from_slice(b"\x1b[6n");
+        data.extend_from_slice(b" more text");
+        assert_eq!(terminal_query_replies(&data, (0, 0)), b"\x1b[1;1R");
+    }
+
+    /// Two distinct queries in the same chunk both get answered, in order.
+    #[test]
+    fn terminal_query_replies_answers_multiple_queries_in_one_chunk() {
+        let mut data = b"\x1b[6n".to_vec();
+        data.extend_from_slice(b"\x1b[c");
+        let mut expected = b"\x1b[1;1R".to_vec();
+        expected.extend_from_slice(b"\x1b[?1;0c");
+        assert_eq!(terminal_query_replies(&data, (0, 0)), expected);
+    }
+
+    /// A CSI sequence truncated mid-parameter (split across two PTY reads)
+    /// must not panic or spin — it's simply left unanswered in this chunk.
+    #[test]
+    fn terminal_query_replies_handles_a_truncated_sequence_without_panicking() {
+        assert!(terminal_query_replies(b"\x1b[6", (0, 0)).is_empty());
+        assert!(terminal_query_replies(b"\x1b[", (0, 0)).is_empty());
+        assert!(terminal_query_replies(b"\x1b", (0, 0)).is_empty());
+    }
+
+    /// A single-byte stream of unrelated bytes shorter than any CSI prefix
+    /// must not panic on the `i + 1 >= data.len()` boundary check.
+    #[test]
+    fn terminal_query_replies_handles_a_lone_escape_byte_without_panicking() {
+        assert!(terminal_query_replies(&[0x1b], (0, 0)).is_empty());
+        assert!(terminal_query_replies(&[], (0, 0)).is_empty());
+    }
+
+    /// A `ESC[6n` sent with an unexpected private marker (e.g. the `?`
+    /// form some terminals use for a different report) is not the plain
+    /// `6` this engine answers — left unanswered rather than guessed at.
+    #[test]
+    fn terminal_query_replies_does_not_answer_a_6n_with_a_private_marker() {
+        assert!(terminal_query_replies(b"\x1b[?6n", (0, 0)).is_empty());
     }
 
     /// A session that never receives any DECSCUSR sequence reports the
