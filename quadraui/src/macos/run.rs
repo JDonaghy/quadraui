@@ -2078,15 +2078,18 @@ pub fn run_with<A: AppLogic + 'static>(app: A, config: RunConfig) -> std::proces
     let (_blink_target, _blink_timer) =
         super::caret_blink::install_blink_timer(mtm, caret_visible, caret_pause);
 
-    // #1328: `activateIgnoringOtherApps(true)` is deprecated by Apple's
-    // own SDK ("This method will be deprecated in a future release. Use
-    // NSApp.activate instead.") and, on real macOS 26.6.2 hardware,
-    // reliably failed to bring a Terminal-launched window in front of
-    // the Terminal.app window that launched it (vimcode#1824) even
-    // though window-server bookkeeping (`lsappinfo`) reported the
-    // process as foreground. `activate()` is the non-deprecated
-    // replacement Apple's deprecation note names.
-    ns_app.activate();
+    // `activate()` is the non-deprecated replacement for
+    // `activateIgnoringOtherApps:`, but it's a macOS 14+ selector — on
+    // older systems sending it aborts with `doesNotRecognizeSelector:`.
+    // Activation on 14+ is cooperative (a request, not a guarantee);
+    // `activateIgnoringOtherApps:` is the unconditionally-available
+    // fallback for everything older.
+    if ns_app.respondsToSelector(sel!(activate)) {
+        ns_app.activate();
+    } else {
+        #[allow(deprecated)]
+        ns_app.activateIgnoringOtherApps(true);
+    }
 
     // SAFETY: blocks on AppKit run loop; returns when the last
     // window closes or `[NSApp terminate:]` is invoked.
