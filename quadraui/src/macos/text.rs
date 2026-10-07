@@ -196,6 +196,53 @@ pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont
     unsafe { CTFont::wrap_under_create_rule(font_ref) }
 }
 
+/// Test/diagnostic hook (issue #1329): reports which font **family**
+/// Core Text's live glyph substitution actually resolved `ch` to when
+/// painted through `font`, and whether that resolution found a real
+/// glyph in that family (`true`) rather than Apple's system-wide
+/// `LastResort` font (`false`) — the generic bordered-box placeholder
+/// macOS paints when *no* font anywhere in the cascade (not even the
+/// final system default) covers a character, visually distinct from a
+/// Nerd-Font-specific tofu box.
+///
+/// #937's own test already documented that `FrameInventory::text_runs`
+/// (fed by [`draw_text`]'s recording hook above) can only ever answer
+/// "this text was requested at this position" — it has no way to say
+/// *which* font in the cascade actually painted a given glyph. #1329's
+/// real-hardware investigation ran into exactly that wall: three of six
+/// Nerd-Font glyphs from the same registered font, in the same paint
+/// pass, painted as the OS-level "no glyph anywhere" placeholder, with
+/// no way to script a reproduction without attaching a debugger to a
+/// live `NSApplication`.
+///
+/// This closes that gap without one: it builds the identical `CTLine`
+/// [`draw_text`] would for a single character, then reads back the
+/// resulting glyph run's resolved `NSFont` attribute via
+/// `CTRunGetAttributes` — the actual substitution Core Text performed,
+/// not a guess from the font's declared cascade-list descriptor (which
+/// only says what Core Text *will consult*, not what it *found*).
+#[cfg(test)]
+pub(crate) fn resolved_fallback_for_char(font: &CTFont, ch: char) -> (String, bool) {
+    let line = build_ctline(font, &ch.to_string());
+    let runs = line.glyph_runs();
+    assert_eq!(
+        runs.len(),
+        1,
+        "a single non-empty character always lays out as exactly one glyph run"
+    );
+    let run = runs.get(0).unwrap();
+    let attrs = run
+        .attributes()
+        .expect("a laid-out glyph run always carries attributes");
+    let family = attrs
+        .find(CFString::new("NSFont"))
+        .and_then(|f| f.downcast::<CTFont>())
+        .map(|f| f.family_name())
+        .unwrap_or_default();
+    let resolved_real_glyph = family != "LastResort";
+    (family, resolved_real_glyph)
+}
+
 /// A bare [`core_text::font_descriptor::CTFontDescriptor`] carrying only
 /// `family`'s [`kCTFontFamilyNameAttribute`] — the shape
 /// [`font_with_fallback`]'s cascade-list entry needs; Core Text resolves
@@ -795,6 +842,86 @@ mod tests {
             "measuring plain text through a font with a fallback attached must still work \
              (w={w}, h={h})"
         );
+    }
+
+    /// Issue #1329 investigation: does `font_with_fallback` +
+    /// `clone_with_font_size` — the exact mechanism
+    /// `MacBackend::set_current_font`/`set_chrome_font` install the
+    /// fallback through, and `activity_bar::draw_activity_bar_with_style`
+    /// then resizes for the icon glyph — correctly resolve real
+    /// Nerd-Font Private-Use-Area codepoints, both before *and* after
+    /// that resize clone?
+    ///
+    /// #1329 reports three of six activity-bar icons (U+EAF0, U+EA68,
+    /// U+EB91) painting as the OS `LastResort` placeholder while the
+    /// other three (U+F002, U+EAE6, U+F0E5) paint correctly, from the
+    /// *same* registered font, in the *same* paint pass — with the
+    /// font's own cmap/glyf bytes hand-verified correct for all six.
+    /// This test drives the identical cascade + resize path, at those
+    /// same six codepoints, against a real, fully-fledged installed
+    /// Nerd Font (vimcode's own bespoke subset font lives in a sibling
+    /// repo's checkout and can't be read from here — see
+    /// [`resolved_fallback_for_char`]'s doc for what a from-the-real-font
+    /// version of this test would need).
+    ///
+    /// Skips (rather than failing) when no Nerd Font is installed on the
+    /// host — there is nothing wrong to report, just nothing to test;
+    /// CI hosts have none installed. Run on a dev machine with one
+    /// installed (common for anyone working on this exact feature) for
+    /// real coverage.
+    #[test]
+    fn nerd_font_fallback_resolves_pua_codepoints_before_and_after_icon_resize() {
+        let families = core_text::font_manager::copy_available_font_family_names();
+        let nerd_family = families
+            .iter()
+            .map(|f| f.to_string())
+            .find(|name| name.to_ascii_lowercase().contains("nerd font"));
+        let Some(nerd_family) = nerd_family else {
+            eprintln!(
+                "no installed font family contains \"Nerd Font\" — skipping \
+                 (see this test's doc for why that's not a failure)"
+            );
+            return;
+        };
+
+        let base = font(); // Menlo — doesn't cover PUA itself
+        let with_fallback = font_with_fallback(&base, &nerd_family);
+        // Mirrors `activity_bar::draw_activity_bar_with_style`'s
+        // `font.clone_with_font_size(style.resolved_icon_size_px())`.
+        let icon_sized = with_fallback.clone_with_font_size(20.0);
+
+        // The six codepoints from #1329's report: three reported broken
+        // (Explorer/SourceControl/RunDebug) and three reported working
+        // (Search/Extensions/AiChat) against vimcode's bespoke icon font.
+        let codepoints = [
+            ('\u{EAF0}', "Explorer"),
+            ('\u{EA68}', "SourceControl"),
+            ('\u{EB91}', "RunDebug"),
+            ('\u{F002}', "Search"),
+            ('\u{EAE6}', "Extensions"),
+            ('\u{F0E5}', "AiChat"),
+        ];
+
+        for (ch, label) in codepoints {
+            let (family_before, ok_before) = resolved_fallback_for_char(&with_fallback, ch);
+            assert!(
+                ok_before,
+                "{label} (U+{:04X}) resolved to LastResort *before* \
+                 clone_with_font_size, through family {family_before:?} \
+                 — the installed Nerd Font {nerd_family:?} should have \
+                 covered it",
+                ch as u32,
+            );
+            let (family_after, ok_after) = resolved_fallback_for_char(&icon_sized, ch);
+            assert!(
+                ok_after,
+                "{label} (U+{:04X}) resolved to LastResort *after* \
+                 clone_with_font_size, through family {family_after:?} \
+                 — the activity-bar icon resize must not drop fallback \
+                 coverage that worked before the resize",
+                ch as u32,
+            );
+        }
     }
 
     /// Garbage bytes aren't a font Core Graphics can parse —
