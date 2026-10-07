@@ -676,6 +676,53 @@ impl GtkRunner {
     }
 }
 
+/// #1325: hand the process frontmost/active-application status on macOS,
+/// right after the first window is presented.
+///
+/// GTK's quartz backend creates and shows a real `NSWindow`, but
+/// `window.present()` is only a GDK-level "raise and request focus"
+/// request to the window server — it does not make the owning
+/// *process* the frontmost application, and macOS routes keyboard
+/// events by frontmost application, not merely by which window is
+/// raised. Normally a double-clicked (or `open`ed) `.app` bundle gets
+/// handed that status by LaunchServices as part of launching it; a
+/// bare, non-bundled binary run directly from a terminal never goes
+/// through LaunchServices at all, so it's never activated and every
+/// keystroke keeps landing in the launching terminal instead of the
+/// GTK window that just appeared, painted, and took a mouse click.
+///
+/// Mirrors `macos::run`'s own `ns_app.activateIgnoringOtherApps(true)`
+/// call — see that function for the native-AppKit-backend equivalent of
+/// this GTK-quartz one. `activateIgnoringOtherApps` is deprecated in
+/// favor of `NSRunningApplication::activateWithOptions`, but kept here
+/// (same as there) for its simplicity and because the deprecation is
+/// cosmetic — the replacement does the same thing with a slightly
+/// different call shape.
+///
+/// A no-op on every other target: `objc2`/`objc2-app-kit` are declared
+/// under `[target.'cfg(target_os = "macos")'.dependencies]` in
+/// `Cargo.toml`, so on non-macOS targets those crates don't exist in the
+/// dependency graph at all regardless of which feature's `dep:` list
+/// names them — this function's `cfg`-gated body is what keeps the
+/// `gtk` feature building everywhere else.
+#[cfg(target_os = "macos")]
+fn activate_macos_process() {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        // `activate` only ever runs on GTK's main thread in practice —
+        // this is cheap insurance against ever being wrong about that,
+        // rather than a reachable case.
+        return;
+    };
+    let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    ns_app.activateIgnoringOtherApps(true);
+}
+
+/// Non-macOS targets: no AppKit, nothing to activate. See the `#[cfg(target_os
+/// = "macos")]` sibling above for the real implementation and its rationale.
+#[cfg(not(target_os = "macos"))]
+fn activate_macos_process() {}
+
 fn activate<A: AppLogic + 'static>(
     gapp: &Application,
     app: Rc<RefCell<A>>,
@@ -811,6 +858,19 @@ fn activate<A: AppLogic + 'static>(
     setup_event_drain(&da, &window, &app, &backend, &pump_depth, &events_handle);
 
     window.present();
+    // #1325: on macOS, `present()` only raises/shows the `NSWindow` GDK's
+    // quartz backend created underneath — it does not hand the *process*
+    // frontmost/active-application status, which is what the window
+    // server actually routes keyboard events by. A bare, non-`.app`
+    // binary launched straight from Terminal.app is never handed that
+    // status by LaunchServices (that dance only happens for a
+    // Finder-double-clicked or `open`ed `.app` bundle), so without this
+    // call the window paints and takes mouse clicks but every keystroke
+    // keeps landing in the launching terminal. See `activate_macos_process`
+    // below for the mechanism, and `macos::run`'s own
+    // `ns_app.activateIgnoringOtherApps(true)` call for the native-AppKit-
+    // backend equivalent of this GTK-quartz one.
+    activate_macos_process();
     // #235: grab focus only after `present()` realizes/maps the window —
     // calling this any earlier is a well-documented GTK4 foot-gun (the
     // widget isn't part of a mapped surface yet, so the focus request can
