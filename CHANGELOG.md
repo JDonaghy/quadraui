@@ -57,6 +57,15 @@ environment, then creates the GitHub release from the `[X.Y.Z]` section.
 
 ## [Unreleased]
 
+### Fixed
+
+- `src/lib.rs`'s `## Status` section (docs.rs's front page) still said
+  "prepared for its first publish to crates.io but not yet published"
+  and claimed most Windows rasterisers were `todo!()` stubs, both wrong
+  since v0.1.0 shipped (issue #1355). Note this only reaches docs.rs on
+  the *next* published release, 0.1.1 — docs.rs renders whatever
+  `src/lib.rs` looked like at the version it built, not `develop`'s tip.
+
 ## [0.1.0] - 2026-10-07
 
 First tagged release, and the first published to crates.io.

@@ -227,23 +227,61 @@ fn readme_and_lib_doc_state_the_real_version() {
 }
 
 #[test]
-fn readme_does_not_claim_a_resolvable_published_version() {
-    // quadraui is not published to crates.io (see CLAUDE.md's *Downstream
-    // consumers*): both real consumers pin a git rev or a relative path.
-    // A `quadraui = { version = "..." }` dependency snippet in the README
-    // would tell a reader to write a Cargo.toml line that cannot resolve.
-    let readme = root_readme();
+fn lib_doc_does_not_claim_still_unpublished() {
+    // #1355: v0.1.0 shipped to crates.io on 2026-10-07. `src/lib.rs`'s
+    // crate doc is what docs.rs actually renders as the package's front
+    // page, and it kept saying "prepared for its first publish ... but
+    // not yet published" well after the publish happened. This fix only
+    // reaches docs.rs on the *next* published release (0.1.1), since
+    // docs.rs renders whatever `src/lib.rs` looked like at the version
+    // it built — see the CHANGELOG `[Unreleased]` entry.
+    let lib = lib_rs();
     assert!(
-        !readme.contains("quadraui = { version ="),
-        "root README.md shows a `quadraui = {{ version = \"...\" }}` \
-         dependency snippet. quadraui is not published to crates.io, so \
-         this cannot resolve for any consumer. Show a `git` (pinned rev) \
-         or `path` dependency instead — see CLAUDE.md's *Downstream \
-         consumers* table for the two real shapes."
+        !lib.contains("not yet published"),
+        "quadraui/src/lib.rs's crate doc still says \"not yet published\", \
+         but CARGO_PKG_VERSION = {} has already been released to \
+         crates.io (see CHANGELOG.md). Update the `## Status` section to \
+         describe the published state instead.",
+        env!("CARGO_PKG_VERSION")
     );
 }
 
-// ── Consumer pin shape (#1107) ───────────────────────────────────────────
+/// The crates.io version requirement every published-dependency snippet
+/// must show, e.g. `0.1.0` -> `0.1`. Derived from `CARGO_PKG_VERSION` the
+/// same mechanical way [`major_minor_x`] derives the pre-1.0 status
+/// string, so a release bump that moves the minor version doesn't leave a
+/// stale snippet a reader copies and cannot resolve.
+fn major_minor() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut parts = version.split('.');
+    let major = parts.next().expect("CARGO_PKG_VERSION has a major segment");
+    let minor = parts.next().expect("CARGO_PKG_VERSION has a minor segment");
+    format!("{major}.{minor}")
+}
+
+#[test]
+fn readme_leads_with_a_resolvable_published_version() {
+    // #1355: v0.1.0 published to crates.io on 2026-10-07. The root
+    // README's Getting started section is the first thing a prospective
+    // consumer reads, and it must lead with a `quadraui = { version =
+    // "..." }` dependency a plain `cargo add`/`cargo build` can actually
+    // resolve, not just the git-rev pin the in-house consumers use to
+    // track unreleased work.
+    let want = major_minor();
+    let readme = root_readme();
+    let needle = format!("quadraui = {{ version = \"{want}\"");
+    assert!(
+        readme.contains(&needle),
+        "root README.md's Getting started section doesn't contain \
+         \"{needle}\" (derived from CARGO_PKG_VERSION = {}). quadraui has \
+         been published to crates.io since v0.1.0 (#1355) — the README \
+         should lead with a resolvable `quadraui = {{ version = \"{want}\", \
+         features = [...] }}` dependency snippet, not a git-rev pin.",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+// ── Consumer pin shape (#1107, inverted by #1355) ────────────────────────
 
 #[test]
 fn readme_does_not_attribute_the_path_dependency_shape_to_vimcode() {
@@ -267,19 +305,22 @@ fn readme_does_not_attribute_the_path_dependency_shape_to_vimcode() {
 }
 
 #[test]
-fn readme_shows_git_rev_as_the_real_consumer_pin_shape() {
-    // The positive half of the check above: the README's dependency
-    // snippets should show a `git` + `rev` pin — the shape both real
-    // downstream consumers (coord-tui, vimcode) actually use today — not
-    // just avoid mis-attributing the path shape.
+fn readme_still_mentions_git_rev_pin_for_unreleased_work() {
+    // #1355: now that v0.1.0 is on crates.io, the git+rev pin is no
+    // longer the *lead* Getting started snippet (see
+    // `readme_leads_with_a_resolvable_published_version` above) — but it
+    // is still real: both coord-tui and vimcode can use it to track
+    // unreleased work ahead of the next crates.io release, and the
+    // README should keep saying so, just not first.
     let readme = root_readme();
     assert!(
         readme.contains("rev = \"<commit-sha>\"") || readme.contains("rev = \"<pinned sha>\""),
-        "root README.md's dependency snippet no longer shows a `git` + \
-         `rev` pin. Both coord-tui and vimcode pin quadraui to a fixed \
-         git revision rather than floating on `develop`'s tip or using a \
-         path dependency — the README's consumer-facing example should \
-         lead with that shape."
+        "root README.md no longer mentions a `git` + `rev` pin anywhere. \
+         That shape is still how a consumer tracks unreleased work ahead \
+         of the next crates.io release (both coord-tui and vimcode use \
+         it) — keep it mentioned in the README, just not as the lead \
+         Getting started snippet now that a resolvable published version \
+         exists."
     );
 }
 
@@ -422,30 +463,38 @@ fn win_backend_todo_claim_tracks_source_reality() {
     // Same shape as `backend_error_doc_claim_tracks_source_reality` below:
     // check both directions so neither "claims a stub gap that's gone" nor
     // "silently overclaims completeness" can land unnoticed.
+    //
+    // #1355: `src/lib.rs`'s `## Status` (docs.rs's front page) made the
+    // exact same claim independently of README.md, and rotted the same
+    // way — so it's checked here too, not just the README.
     let real_todo_calls = win_backend_real_todo_call_count();
-    let readme = root_readme().to_lowercase();
-    let claims_todo_stubs = readme.contains("todo!()` stubs") || readme.contains("todo!() stubs");
 
-    if real_todo_calls == 0 {
-        assert!(
-            !claims_todo_stubs,
-            "README.md still claims WinBackend draw_*/*_layout methods \
-             are `todo!()` stubs, but src/win/backend.rs has zero \
-             non-comment `todo!()` macro calls left. Update the Windows \
-             status paragraph to describe the real remaining gap (its \
-             conformance-matrix burn-down status in \
-             tests/conformance.rs) instead of a stub count that no \
-             longer exists — this is the exact drift #1107 fixed."
-        );
-    } else {
-        assert!(
-            claims_todo_stubs,
-            "src/win/backend.rs has {real_todo_calls} real `todo!()` \
-             macro call(s) left, but README.md no longer mentions \
-             `todo!()` stubs for the Windows backend — restore an \
-             accurate claim instead of silently overclaiming \
-             completeness."
-        );
+    for (doc_name, doc) in [("README.md", root_readme()), ("src/lib.rs", lib_rs())] {
+        let lower = doc.to_lowercase();
+        let claims_todo_stubs = lower.contains("todo!()` stubs") || lower.contains("todo!() stubs");
+
+        if real_todo_calls == 0 {
+            assert!(
+                !claims_todo_stubs,
+                "{doc_name} still claims WinBackend draw_*/*_layout \
+                 methods are `todo!()` stubs, but src/win/backend.rs has \
+                 zero non-comment `todo!()` macro calls left. Update the \
+                 Windows status paragraph to describe the real remaining \
+                 gap (its conformance-matrix burn-down status in \
+                 tests/conformance.rs) instead of a stub count that no \
+                 longer exists — this is the exact drift #1107 fixed \
+                 (and #1355 found it had crept back into lib.rs too)."
+            );
+        } else {
+            assert!(
+                claims_todo_stubs,
+                "src/win/backend.rs has {real_todo_calls} real `todo!()` \
+                 macro call(s) left, but {doc_name} no longer mentions \
+                 `todo!()` stubs for the Windows backend — restore an \
+                 accurate claim instead of silently overclaiming \
+                 completeness."
+            );
+        }
     }
 }
 
