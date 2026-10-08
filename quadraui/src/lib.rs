@@ -68,13 +68,24 @@
 //! whenever a new primitive ships — sealing is what makes that safe
 //! rather than a silent trap for a downstream implementor. Want to
 //! render onto a target none of the four cover? Contribute a fifth
-//! in-tree backend — see `BACKEND.md` and `docs/BACKEND.md`.
+//! in-tree backend — see `BACKEND.md`.
 //!
 //! ## Documentation
+//!
+//! Every file named below ships in the published `.crate` (see
+//! `Cargo.toml`'s `exclude` list for what doesn't, and why) — this list
+//! deliberately names only files a consumer of the published crate can
+//! actually open.
 //!
 //! - **`README.md`** (repository root — this crate is a workspace member,
 //!   not a standalone `cargo package` with its own README) — quick start,
 //!   full primitive list, per-backend status.
+//! - **`docs/GUIDE.md`** — build a small two-pane app end to end, from
+//!   `cargo new` to something you can run and click on.
+//! - **`docs/APP_ARCHITECTURE.md`** — where app state lives vs. what
+//!   quadraui owns; read before architecting a consumer app on top of it.
+//! - **`docs/CONSUMER_PATTERNS.md`** — recipes for common app shapes
+//!   (debug sidebars, source-control panels) built from these primitives.
 //! - **`BACKEND.md`** — contributing a new in-tree render backend: mental
 //!   model, the three contracts (owned data, measurer-parameterised
 //!   algorithms, per-primitive contracts), two-pass paint pattern,
@@ -85,12 +96,9 @@
 //! - **`examples/gtk_demo.rs`** — same demo rendered with GTK4 +
 //!   Cairo + Pango (pixel units, two-pass paint). Requires the
 //!   `gtk` feature: `cargo run --example gtk_demo --features gtk`.
-//! - **`docs/UI_CRATE_DESIGN.md`** — original design sketch and the §10
-//!   plugin invariants every primitive must honour. Predates
-//!   implementation (see its own status banner) — treat it as a decision
-//!   record, not a live status page.
 //! - **`docs/decisions/DECISIONS.md`** — running log of API decisions
-//!   (which primitives, why this shape, what was deferred).
+//!   (which primitives, why this shape, what was deferred), including
+//!   D-019, the stability policy for what a `0.x` release may change.
 //!
 //! ## Status
 //!
@@ -110,7 +118,8 @@
 //!
 //! ## Plugin invariants (briefly)
 //!
-//! From `docs/UI_CRATE_DESIGN.md` §10 — applies to every primitive:
+//! Originally specified in this repo's internal pre-implementation design
+//! record (§10) — applies to every primitive:
 //! 1. [`WidgetId`] is owned (`String`) — not `&'static str`.
 //! 2. Events are plain data — no Rust closures.
 //! 3. Primitives implement `Serialize + Deserialize` — Lua tables map via JSON.
