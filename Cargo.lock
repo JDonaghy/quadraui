@@ -3028,6 +3028,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quadraui-gallery"
+version = "0.0.1"
+dependencies = [
+ "quadraui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quadraui-repo-lint"
 version = "0.0.0"
 dependencies = [
