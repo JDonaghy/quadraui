@@ -53,7 +53,7 @@ its entry under `[Unreleased]`, and the coordinator retitles that section to
 release time.
 Pushing the tag queues `.github/workflows/release.yml`, which publishes to
 crates.io via Trusted Publishing once a reviewer approves the `release`
-environment.
+environment, then creates the GitHub release from the `[X.Y.Z]` section.
 
 ## [Unreleased]
 

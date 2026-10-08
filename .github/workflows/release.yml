@@ -1,9 +1,11 @@
 name: Release
 
-# Publishes `quadraui` to crates.io when a `vX.Y.Z` tag is pushed, via
-# crates.io Trusted Publishing: `crates-io-auth-action` exchanges this job's
-# GitHub OIDC identity for a ~30-minute token scoped to the crates configured
-# on crates.io, so no long-lived API token is stored anywhere. crates.io's
+# Publishes `quadraui` to crates.io when a `vX.Y.Z` tag is pushed, then
+# creates the matching GitHub release from CHANGELOG.md's `## [X.Y.Z]`
+# section. Publishing uses crates.io Trusted Publishing:
+# `crates-io-auth-action` exchanges this job's GitHub OIDC identity for a
+# ~30-minute token scoped to the crates configured on crates.io, so no
+# long-lived API token is stored anywhere. crates.io's
 # trusted-publisher entry for `quadraui` names this file (`release.yml`) and
 # the `release` environment — renaming either breaks publishing until the
 # crates.io side is updated to match.
@@ -30,7 +32,7 @@ jobs:
     environment: release
     permissions:
       id-token: write # lets crates-io-auth-action request the OIDC token
-      contents: read
+      contents: write # lets `gh release create` publish the GitHub release
     steps:
       - uses: actions/checkout@v4
       # Toolchain is pinned in rust-toolchain.toml; rustup's override
@@ -50,6 +52,21 @@ jobs:
             exit 1
           fi
 
+      # The GitHub release's notes are CHANGELOG.md's `## [X.Y.Z]` section.
+      # Extracted (and required non-empty) before publishing, so a tag cut
+      # without its changelog section fails here instead of leaving a
+      # published crate with no release beside it.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v hdr="## [${version}]" \
+            'index($0, hdr) == 1 { f = 1; next } f && /^## \[/ { exit } f' \
+            CHANGELOG.md > "${RUNNER_TEMP}/notes.md"
+          if ! grep -q '[^[:space:]]' "${RUNNER_TEMP}/notes.md"; then
+            echo "::error::CHANGELOG.md has no non-empty '## [${version}]' section"
+            exit 1
+          fi
+
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
@@ -60,3 +77,18 @@ jobs:
         run: cargo publish -p quadraui --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      # After the publish, so a GitHub release only ever exists for a version
+      # that is actually on crates.io. Skipped if one was already created by
+      # hand for this tag.
+      - name: Create GitHub release
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists; leaving it as is"
+          else
+            gh release create "${GITHUB_REF_NAME}" --verify-tag \
+              --title "quadraui ${GITHUB_REF_NAME}" \
+              --notes-file "${RUNNER_TEMP}/notes.md"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
