@@ -126,6 +126,46 @@ impl DialogTable {
 }
 
 /// Declarative description of a dialog.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Dialog, DialogButton, DialogHit, DialogMeasure, Rect, StyledText, WidgetId};
+///
+/// let dialog = Dialog {
+///     id: WidgetId::new("dialog:confirm_close"),
+///     title: StyledText::plain("Unsaved changes"),
+///     body: vec![StyledText::plain("Close without saving?")],
+///     buttons: vec![DialogButton {
+///         id: WidgetId::new("dialog:ok"),
+///         label: "OK".to_string(),
+///         is_default: true,
+///         is_cancel: false,
+///         tint: None,
+///     }],
+///     severity: None,
+///     vertical_buttons: false,
+///     table: None,
+///     input: None,
+/// };
+///
+/// let measure = DialogMeasure {
+///     width: 40.0,
+///     title_height: 1.0,
+///     body_height: 1.0,
+///     table_height: 0.0,
+///     input_height: 0.0,
+///     button_row_height: 1.0,
+///     button_width: 10.0,
+///     button_gap: 1.0,
+///     padding: 1.0,
+/// };
+///
+/// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = dialog.layout(viewport, measure, |_| unreachable!("no body toolbar"));
+/// let ok = layout.visible_buttons[0].bounds;
+/// assert_eq!(layout.hit_test(ok.x, ok.y), DialogHit::Button(dialog.buttons[0].id.clone()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dialog {
     pub id: WidgetId,

@@ -65,6 +65,40 @@ use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a status bar.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{
+///     Color, StatusBar, StatusBarHit, StatusBarSegment, StatusSegmentMeasure, WidgetId,
+/// };
+///
+/// let bar = StatusBar {
+///     id: WidgetId::new("status:editor"),
+///     left_segments: vec![StatusBarSegment {
+///         text: "NORMAL".to_string(),
+///         fg: Color::rgb(0, 0, 0),
+///         bg: Color::rgb(100, 200, 100),
+///         bold: true,
+///         action_id: Some(WidgetId::new("status:mode")),
+///     }],
+///     right_segments: vec![StatusBarSegment {
+///         text: "Ln 1, Col 1".to_string(),
+///         fg: Color::rgb(200, 200, 200),
+///         bg: Color::rgb(30, 30, 30),
+///         bold: false,
+///         action_id: None,
+///     }],
+/// };
+///
+/// let measure = |seg: &StatusBarSegment| StatusSegmentMeasure::new(seg.text.chars().count() as f32);
+/// let layout = bar.layout(80.0, 1.0, 1.0, measure);
+///
+/// assert_eq!(
+///     layout.hit_test(0.0, 0.0),
+///     StatusBarHit::Segment(WidgetId::new("status:mode"))
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusBar {
     pub id: WidgetId,

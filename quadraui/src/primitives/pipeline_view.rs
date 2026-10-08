@@ -102,6 +102,33 @@ pub struct PipelineStage {
 }
 
 /// Declarative description of a horizontal pipeline widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{PipelineHit, PipelineStage, PipelineView, PipelineViewMeasure, StageStatus};
+///
+/// let pipeline = PipelineView {
+///     id: quadraui::WidgetId::new("pipeline:deploy"),
+///     stages: vec![
+///         PipelineStage {
+///             label: "Build".to_string(),
+///             status: StageStatus::Done,
+///             action: None,
+///         },
+///         PipelineStage {
+///             label: "Deploy".to_string(),
+///             status: StageStatus::Pending,
+///             action: Some("Go".to_string()),
+///         },
+///     ],
+///     focused_stage: None,
+/// };
+///
+/// let measure = PipelineViewMeasure::new(80.0, 6.0, 4.0, 2.0);
+/// let layout = pipeline.layout(0.0, 0.0, measure);
+/// assert_eq!(layout.hit_test(1.0, 1.0), PipelineHit::Body(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PipelineView {
     pub id: WidgetId,

@@ -411,6 +411,48 @@ pub struct EditorLine {
 /// off exhaustive literals onto [`Editor::new`] plus the `with_*`
 /// builder per field below (besides `id`/`rect`, which `new` already
 /// requires), and a `Default` impl.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Editor, EditorHit, EditorLine, Rect, WidgetId};
+///
+/// let line = EditorLine {
+///     raw_text: "fn main() {}\n".to_string(),
+///     gutter_text: "  1".to_string(),
+///     spans: vec![],
+///     line_idx: 0,
+///     is_current_line: true,
+///     is_fold_header: false,
+///     folded_line_count: 0,
+///     git_diff: None,
+///     diff_status: None,
+///     diagnostics: vec![],
+///     spell_errors: vec![],
+///     is_breakpoint: false,
+///     is_conditional_bp: false,
+///     is_dap_current: false,
+///     is_wrap_continuation: false,
+///     segment_col_offset: 0,
+///     annotation: None,
+///     ghost_suffix: None,
+///     is_ghost_continuation: false,
+///     indent_guides: vec![],
+///     colorcolumns: vec![],
+/// };
+///
+/// let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let editor = Editor::new(WidgetId::new("editor:main"), rect)
+///     .with_lines(vec![line])
+///     .with_total_lines(1)
+///     .with_gutter_char_width(3);
+///
+/// let layout = editor.layout(rect, 1.0, 1.0);
+/// match layout.hit_test(5.0, 0.0) {
+///     EditorHit::BufferPos { line, .. } => assert_eq!(line, 0),
+///     other => panic!("expected a buffer-position hit, got {other:?}"),
+/// }
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Editor {

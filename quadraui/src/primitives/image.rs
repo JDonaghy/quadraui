@@ -87,6 +87,26 @@ pub enum ImageFit {
 }
 
 /// Declarative description of an `Image` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Image, ImageFit, ImageSource, Rect, WidgetId};
+///
+/// let logo = Image {
+///     id: WidgetId::new("image:app_logo"),
+///     source: ImageSource::Path("assets/logo.png".into()),
+///     intrinsic_size: Some((64, 64)),
+///     fit: ImageFit::Contain,
+///     fallback_text: "[LOGO]".to_string(),
+/// };
+///
+/// // A wide target rect with `Contain`: the square logo stays square
+/// // (letterboxed) rather than stretching to fill the wide rect.
+/// let layout = logo.layout(Rect::new(0.0, 0.0, 200.0, 64.0));
+/// assert_eq!(layout.bounds.width, 64.0);
+/// assert_eq!(layout.bounds.height, 64.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Image {
     pub id: WidgetId,

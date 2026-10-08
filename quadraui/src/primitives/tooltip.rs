@@ -108,6 +108,21 @@ use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a tooltip.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Rect, ResolvedPlacement, Tooltip, TooltipMeasure, TooltipPlacement, WidgetId};
+///
+/// let mut tip = Tooltip::new(WidgetId::new("tooltip:hover"), "Hover hint");
+/// tip.placement = TooltipPlacement::Top;
+///
+/// let anchor = Rect::new(0.0, 0.0, 10.0, 1.0);
+/// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = tip.layout(anchor, viewport, TooltipMeasure::new(20.0, 3.0), 0.0);
+///
+/// assert_eq!(layout.resolved_placement, ResolvedPlacement::Top);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tooltip {
     pub id: WidgetId,

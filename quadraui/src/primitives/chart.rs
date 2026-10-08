@@ -31,6 +31,40 @@ use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a chart widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Chart, ChartKind, ChartMeasure, Series, WidgetId};
+///
+/// let chart = Chart {
+///     id: WidgetId::new("chart:cpu"),
+///     kind: ChartKind::Sparkline,
+///     series: vec![Series {
+///         label: "cpu %".to_string(),
+///         data: vec![10.0, 40.0, 25.0, 60.0],
+///         color: None,
+///         fill: false,
+///     }],
+///     x_label: None,
+///     y_label: None,
+///     y_range: None,
+///     x_range: None,
+///     show_legend: false,
+///     y_ticks: None,
+///     x_ticks: None,
+///     show_grid: false,
+/// };
+///
+/// let measure = ChartMeasure {
+///     width: 40.0,
+///     height: 4.0,
+///     char_width: 1.0,
+///     line_height: 1.0,
+/// };
+/// let layout = chart.layout(0.0, 0.0, measure);
+/// assert!(!layout.data_point_positions.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Chart {
     pub id: WidgetId,

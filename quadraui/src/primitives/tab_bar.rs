@@ -125,6 +125,35 @@ use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a tab bar.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{SegmentMeasure, TabBar, TabBarHit, TabItem, TabMeasure, WidgetId};
+///
+/// let bar = TabBar {
+///     id: WidgetId::new("tabbar:editor"),
+///     tabs: vec![TabItem {
+///         label: "main.rs".to_string(),
+///         is_active: true,
+///         ..Default::default()
+///     }],
+///     scroll_offset: 0,
+///     right_segments: vec![],
+///     active_accent: None,
+///     show_tab_close: true,
+///     compact: false,
+/// };
+///
+/// let layout = bar.layout(
+///     80.0,
+///     1.0,
+///     2.0,
+///     |_| TabMeasure::new(20.0, 2.0),
+///     |_| SegmentMeasure::new(0.0),
+/// );
+/// assert_eq!(layout.hit_test(1.0, 0.0), TabBarHit::Tab(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabBar {
     pub id: WidgetId,

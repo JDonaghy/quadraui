@@ -72,6 +72,28 @@ pub const MAX_RATIO: f32 = 0.9;
 /// `direction` at `ratio` (fraction of the container's cross-axis
 /// length given to `first`, `0.0..=1.0`), same convention as
 /// [`crate::Split::ratio`].
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Point, Rect, SplitDirection, SplitTree, SplitTreeMeasure, WidgetId};
+///
+/// let tree = SplitTree::split(
+///     SplitDirection::Horizontal,
+///     0.5,
+///     SplitTree::leaf(WidgetId::new("group:left")),
+///     SplitTree::leaf(WidgetId::new("group:right")),
+/// );
+///
+/// let bounds = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = tree.layout(bounds, SplitTreeMeasure::new(1.0));
+///
+/// assert_eq!(layout.leaves.len(), 2);
+/// assert_eq!(
+///     layout.hit_test_leaf(Point::new(1.0, 1.0)),
+///     Some(&WidgetId::new("group:left"))
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SplitTree {
     /// A single leaf — no further nesting at this position.

@@ -57,6 +57,41 @@ pub enum PaletteMode {
 }
 
 /// Declarative description of a `Palette` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Palette, PaletteHit, PaletteItem, PaletteItemMeasure, StyledText, WidgetId};
+///
+/// let palette = Palette {
+///     id: WidgetId::new("palette:commands"),
+///     title: "Commands".to_string(),
+///     query: "sav".to_string(),
+///     query_cursor: 3,
+///     items: vec![PaletteItem {
+///         text: StyledText::plain("Save File"),
+///         detail: None,
+///         icon: None,
+///         match_positions: vec![0, 1, 2],
+///         depth: 0,
+///         expandable: false,
+///         expanded: false,
+///     }],
+///     selected_idx: 0,
+///     scroll_offset: 0,
+///     total_count: 1,
+///     has_focus: true,
+///     show_query: true,
+///     create_label: None,
+///     preview: None,
+///     mode: Default::default(),
+/// };
+///
+/// let layout = palette.layout(60.0, 20.0, 1.0, 1.0, 0.0, 1.0, |_| {
+///     PaletteItemMeasure::new(1.0)
+/// });
+/// assert_eq!(layout.hit_test(0.0, 2.0), PaletteHit::Item(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Palette {
     pub id: WidgetId,

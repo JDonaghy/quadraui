@@ -22,6 +22,29 @@ use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a panel's chrome.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Panel, PanelHit, PanelMeasure, Rect, StyledText, WidgetId};
+///
+/// let panel = Panel {
+///     id: WidgetId::new("panel:terminal"),
+///     title: Some(StyledText::plain("Terminal")),
+///     actions: vec![],
+///     accent: None,
+///     collapsed: false,
+/// };
+///
+/// let bounds = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = panel.layout(bounds, PanelMeasure::new(1.0));
+///
+/// assert_eq!(
+///     layout.hit_test(0.0, 0.0),
+///     PanelHit::TitleBar(panel.id.clone())
+/// );
+/// assert_eq!(layout.hit_test(0.0, 2.0), PanelHit::Content(panel.id));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Panel {
     pub id: WidgetId,

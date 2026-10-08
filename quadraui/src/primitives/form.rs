@@ -47,6 +47,33 @@ use serde::{Deserialize, Serialize};
 /// `f32` values. Apps should not put `Form` into hash maps or use
 /// struct equality for state diffing — compare field IDs and
 /// individual values instead.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{FieldKind, Form, FormField, FormFieldMeasure, FormHit, StyledText, WidgetId};
+///
+/// let form = Form {
+///     id: WidgetId::new("form:settings"),
+///     fields: vec![FormField {
+///         id: WidgetId::new("form:word_wrap"),
+///         label: StyledText::plain("Word wrap"),
+///         kind: FieldKind::Toggle { value: true },
+///         hint: StyledText::plain(""),
+///         disabled: false,
+///         validation: None,
+///     }],
+///     focused_field: None,
+///     scroll_offset: 0,
+///     has_focus: true,
+/// };
+///
+/// let layout = form.layout(40.0, 10.0, |_| FormFieldMeasure::new(1.0));
+/// assert_eq!(
+///     layout.hit_test(0.0, 0.0),
+///     FormHit::Field(WidgetId::new("form:word_wrap"))
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Form {
     pub id: WidgetId,

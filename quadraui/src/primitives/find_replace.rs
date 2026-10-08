@@ -205,6 +205,43 @@ pub fn compute_hit_regions(
 /// Glyph fields (`replace_one_glyph` / `replace_all_glyph`) are
 /// app-supplied strings — apps with Nerd Font glyphs pass single-char
 /// strings, ASCII apps pass multi-char fallbacks like `"R1"` / `"R*"`.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{
+///     compute_find_replace_hit_regions, FindReplaceClickTarget, FindReplaceHit, FindReplacePanel,
+///     Rect,
+/// };
+///
+/// let panel_width = 50;
+/// let (hit_regions, _input_width) =
+///     compute_find_replace_hit_regions(panel_width, false, "1 of 3", 1, 1);
+///
+/// let panel = FindReplacePanel {
+///     query: "foo".to_string(),
+///     replacement: String::new(),
+///     show_replace: false,
+///     focus: 0,
+///     cursor: 3,
+///     sel_anchor: None,
+///     match_info: "1 of 3".to_string(),
+///     case_sensitive: false,
+///     whole_word: false,
+///     use_regex: false,
+///     preserve_case: false,
+///     in_selection: false,
+///     group_bounds: Rect::new(0.0, 0.0, 80.0, 24.0),
+///     panel_width,
+///     replace_one_glyph: "R1".to_string(),
+///     replace_all_glyph: "R*".to_string(),
+///     hit_regions,
+/// };
+///
+/// // Column 0, row 0 is the chevron that toggles the replace row.
+/// let hit = panel.hit_test(0.0, 0.0, (0.0, 0.0), 1.0, 1.0);
+/// assert_eq!(hit, FindReplaceHit::Target(FindReplaceClickTarget::Chevron));
+/// ```
 #[derive(Debug, Clone)]
 pub struct FindReplacePanel {
     /// Current query text in the find field.

@@ -22,6 +22,33 @@ use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `ListView` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{ListItem, ListItemMeasure, ListView, ListViewHit, StyledText, WidgetId};
+///
+/// let list = ListView {
+///     id: WidgetId::new("list:quickfix"),
+///     title: None,
+///     items: vec![ListItem {
+///         text: StyledText::plain("src/main.rs:10: unused import"),
+///         icon: None,
+///         detail: None,
+///         decoration: Default::default(),
+///     }],
+///     selected_idx: 0,
+///     scroll_offset: 0,
+///     has_focus: true,
+///     bordered: false,
+///     h_scroll: 0,
+///     max_content_width: None,
+///     show_v_scrollbar: false,
+/// };
+///
+/// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
+/// assert_eq!(layout.hit_test(0.0, 0.0), ListViewHit::Item(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListView {
     pub id: WidgetId,

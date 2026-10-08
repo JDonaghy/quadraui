@@ -74,6 +74,34 @@ pub enum ToastCorner {
 }
 
 /// One toast notification.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Toast, ToastHit, ToastMeasure, ToastOverlay, ToastSeverity, WidgetId};
+///
+/// let toast = Toast {
+///     id: WidgetId::new("toast:saved"),
+///     title: "File saved".to_string(),
+///     body: String::new(),
+///     severity: ToastSeverity::Success,
+///     actions: vec![],
+///     accent: None,
+/// };
+/// let overlay = ToastOverlay {
+///     id: WidgetId::new("toasts:bottom_right"),
+///     corner: Default::default(),
+///     toasts: vec![toast.clone()],
+///     focus: None,
+/// };
+///
+/// let layout = overlay.layout(0.0, 0.0, 80.0, 24.0, 1.0, 1.0, |_| {
+///     ToastMeasure::new(30.0, 3.0)
+/// });
+///
+/// assert_eq!(layout.visible_toasts.len(), 1);
+/// assert_eq!(layout.hit_test(60.0, 21.0), ToastHit::Body(toast.id));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toast {
     pub id: WidgetId,

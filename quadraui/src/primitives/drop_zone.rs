@@ -44,6 +44,23 @@ pub enum DropZoneKind {
 }
 
 /// Result of [`compute_drop_zone`].
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{compute_drop_zone, DropGroupRect, DropZoneKind, Rect};
+///
+/// let groups = vec![DropGroupRect {
+///     bounds: Rect::new(0.0, 0.0, 100.0, 50.0),
+///     tab_slots: vec![],
+/// }];
+///
+/// // Cursor over the group's content area, away from any edge, lands
+/// // on `Center` — the tab would join this group.
+/// let zone = compute_drop_zone(50.0, 30.0, &groups, 2.0).expect("cursor is over a group");
+/// assert_eq!(zone.group_idx, 0);
+/// assert_eq!(zone.kind, DropZoneKind::Center);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropZone {
     pub kind: DropZoneKind,

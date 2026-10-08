@@ -36,6 +36,37 @@ use crate::types::{
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `TreeView` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{
+///     SelectionMode, StyledText, TreeRow, TreeRowMeasure, TreeStyle, TreeView, TreeViewHit,
+///     WidgetId,
+/// };
+///
+/// let tree = TreeView {
+///     id: WidgetId::new("tree:explorer"),
+///     rows: vec![TreeRow {
+///         path: vec![0],
+///         indent: 0,
+///         icon: None,
+///         text: StyledText::plain("src/"),
+///         badge: None,
+///         is_expanded: Some(true),
+///         decoration: Default::default(),
+///         edit: None,
+///     }],
+///     selection_mode: SelectionMode::Single,
+///     selected_path: Some(vec![0]),
+///     scroll_offset: 0,
+///     style: TreeStyle::default(),
+///     has_focus: true,
+/// };
+///
+/// let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
+/// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeView {
     pub id: WidgetId,

@@ -61,6 +61,23 @@ use serde::{Deserialize, Serialize};
 /// [`DrawOp`]s, painted in order (later ops paint over earlier ones,
 /// same "last writer wins" rule every backend's own native 2D API
 /// already applies to overlapping draws).
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Canvas, CanvasHit, Color, DrawOp, Rect, WidgetId};
+///
+/// let canvas = Canvas {
+///     id: WidgetId::new("canvas:sparkline"),
+///     ops: vec![DrawOp::Rect {
+///         rect: Rect::new(0.0, 0.0, 10.0, 4.0),
+///         color: Color::rgb(0, 200, 0),
+///     }],
+/// };
+///
+/// let layout = canvas.layout(Rect::new(0.0, 0.0, 10.0, 4.0));
+/// assert_eq!(layout.hit_test(5.0, 2.0), CanvasHit::Inside);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Canvas {
     pub id: WidgetId,

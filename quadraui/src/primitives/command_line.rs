@@ -18,6 +18,25 @@ use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a command line surface.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{CommandLine, CommandLineMeasure, Rect, WidgetId};
+///
+/// let cmd = CommandLine {
+///     id: WidgetId::new("cmdline:editor"),
+///     text: ":wq".to_string(),
+///     cursor_offset: Some(3),
+///     right_align: false,
+/// };
+///
+/// let rect = Rect::new(0.0, 23.0, 80.0, 1.0);
+/// let layout = cmd.layout(rect, CommandLineMeasure::new(1.0));
+///
+/// assert_eq!(layout.hit_test(0.0), 0);
+/// assert_eq!(layout.hit_test(100.0), cmd.text.len());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandLine {
     pub id: WidgetId,

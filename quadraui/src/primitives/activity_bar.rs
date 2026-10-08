@@ -33,6 +33,33 @@ use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of an activity bar.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{ActivityBar, ActivityBarHit, ActivityItem, Icon, WidgetId};
+///
+/// let bar = ActivityBar {
+///     id: WidgetId::new("activity_bar:main"),
+///     top_items: vec![ActivityItem {
+///         id: WidgetId::new("activity:explorer"),
+///         icon: Icon::new("\u{f114}", "E"),
+///         tooltip: "Explorer".to_string(),
+///         is_active: true,
+///         is_keyboard_selected: false,
+///     }],
+///     bottom_items: vec![],
+///     active_accent: None,
+///     selection_bg: None,
+///     is_keyboard_focused: false,
+/// };
+///
+/// let layout = bar.layout(2.0, 10.0, 1.0);
+/// assert_eq!(
+///     layout.hit_test(0.0, 0.0),
+///     ActivityBarHit::Item(WidgetId::new("activity:explorer"))
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityBar {
     pub id: WidgetId,

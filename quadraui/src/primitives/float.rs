@@ -85,6 +85,20 @@ use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a float.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Anchor, Float, FloatHit, FloatMeasure, Point, Rect, Side, WidgetId};
+///
+/// let anchor = Anchor::new(Rect::new(10.0, 10.0, 5.0, 1.0), Side::Bottom);
+/// let float = Float::new(WidgetId::new("float:keyhints"), anchor);
+///
+/// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = float.layout(viewport, FloatMeasure::new(20.0, 4.0));
+///
+/// assert_eq!(layout.hit_test(Point::new(15.0, 12.0)), FloatHit::Body);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Float {
     pub id: WidgetId,
