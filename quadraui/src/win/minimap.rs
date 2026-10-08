@@ -23,18 +23,18 @@
 //! module only converts the shared `f32` geometry to Direct2D paint calls.
 //!
 //! [`MinimapRenderMode::Characters`] — real glyphs at a font size scaled to
-//! the row pitch — paints through [`DWrite::minimap_text_format`]
-//! — a same-family `IDWriteTextFormat` built at
-//! [`minimap_font_px`]'s resolved size and cached by rounded px, not the
-//! backend's single editor-size [`DWrite::draw_text`] format. Painting
+//! the row pitch — paints through [`DWrite::minimap_text_format`], a
+//! same-family `IDWriteTextFormat` built at [`minimap_font_px`]'s resolved
+//! size (rounded to the nearest DIP) and cached by that rounded size, not
+//! the backend's single editor-size [`DWrite::draw_text`] format. Painting
 //! through the editor-size format clipped to a 2-4 DIP row would leave a
 //! column of cropped glyph tops — an illegible dark strip, not the
-//! GTK/macOS twins' recognisable
-//! miniature. `ROW_PITCH_PX` (2 DIP) stays below `LEGIBILITY_FLOOR_PX`
-//! (4 DIP) today, so `Characters` is not reachable through this
-//! rasteriser's own *default* fixed pitch ([`MinimapScale::One`]) — it is
-//! reachable at [`MinimapScale::Two`] (4 DIP) — and is exercised
-//! directly in this module's tests too, mirroring `gtk::minimap`'s own
+//! GTK/macOS twins' recognisable miniature. `ROW_PITCH_PX` (2 DIP) stays
+//! below `LEGIBILITY_FLOOR_PX` (4 DIP) today, so `Characters` is not
+//! reachable through this rasteriser's own *default* fixed pitch
+//! ([`MinimapScale::One`]); it is reachable at [`MinimapScale::Two`]
+//! (4 DIP), and is exercised directly in this module's tests too,
+//! mirroring `gtk::minimap`'s own
 //! `characters_branch_truncates_to_the_column_capacity_before_shaping`
 //! test.
 //!
@@ -208,18 +208,22 @@ pub(crate) fn draw_minimap_scaled(
 /// not this rasteriser's single editor-size `DWrite::draw_text` format
 /// (at the editor size, the 2-4 DIP row would clip a column of
 /// glyph tops into an illegible dark strip). Falls back to
-/// [`paint_row_blocks`] when the resolved size is still below
-/// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`] — not reachable
-/// through [`draw_minimap_scaled`] today (its `render_mode` gate already
-/// keeps this branch below the floor from running at all), but a direct
-/// caller of this function (or a future fixed pitch between the two
-/// thresholds) still gets the same legible-or-blocks guarantee
-/// `render_mode` promises everywhere else, matching the GTK twin's own
-/// threshold behaviour. Still bounds its cost to [`COLUMN_CAPACITY`]
-/// characters, and still colours the row from its own
-/// `row_spans` — the first span's colour wins (DirectWrite needs a
-/// custom text renderer for true per-run colour within one `DrawText`
-/// call, out of scope here).
+/// [`paint_row_blocks`] when the row pitch itself is below
+/// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`] (gated on
+/// `is_legible(vline.bounds.height)`, the same *input* `render_mode`
+/// gates on — not on the resolved `font_px`, which only coincides with
+/// the row pitch while [`minimap_font_px`] is a pure clamp; gating on the
+/// resolved size instead would let the two decisions drift apart the day
+/// that mapping gains a sub-1.0 factor) — not reachable through
+/// [`draw_minimap_scaled`] today (its `render_mode` gate already keeps
+/// this branch below the floor from running at all), but a direct caller
+/// of this function (or a future fixed pitch between the two thresholds)
+/// still gets the same legible-or-blocks guarantee `render_mode` promises
+/// everywhere else, matching the GTK twin's own threshold behaviour.
+/// Still bounds its cost to [`COLUMN_CAPACITY`] characters, and still
+/// colours the row from its own `row_spans` — the first span's colour
+/// wins (DirectWrite needs a custom text renderer for true per-run colour
+/// within one `DrawText` call, out of scope here).
 fn paint_row_glyphs(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -229,12 +233,13 @@ fn paint_row_glyphs(
     theme: &Theme,
     cell_w: f32,
 ) {
-    let font_px = minimap_font_px(vline.bounds.height as f64);
-    if font_px < crate::primitives::minimap::LEGIBILITY_FLOOR_PX {
+    let row_px = vline.bounds.height as f64;
+    if !crate::primitives::minimap::is_legible(row_px) {
         paint_row_blocks(target, vline, text, row_spans, theme, cell_w);
         return;
     }
 
+    let font_px = minimap_font_px(row_px);
     let truncated = truncate_to_columns(text, COLUMN_CAPACITY);
     let fg = row_spans
         .first()
@@ -280,6 +285,7 @@ mod tests {
     use super::*;
     use crate::primitives::minimap::{MinimapHit, MinimapLine, ROW_PITCH_PX};
     use crate::types::{Color, WidgetId};
+    use crate::win::msg::pt_to_dip;
     use crate::win::testing::HeadlessSurface;
 
     const W: f32 = 200.0;
@@ -491,26 +497,30 @@ mod tests {
 
     /// The `Characters` branch must shape the row at
     /// [`minimap_font_px`]'s resolved size, not the editor's own
-    /// (usually much larger) `DWrite::text_format` size — reproduces the
-    /// bug's exact shape with an editor font (24px-ish at 10pt) painted
-    /// at a tiny row height. Checked at the format-cache level (see
+    /// (usually much larger) `DWrite::text_format` size — exercised with
+    /// an editor font constructed at 24pt (~32 DIP via [`pt_to_dip`])
+    /// painted at a tiny row height, so the two sizes are nowhere near
+    /// each other. Checked at the format-cache level (see
     /// [`DWrite::minimap_format_cache_len`]'s doc): a Characters-mode
     /// paint must populate the minimap-format cache for the row's
     /// resolved size, which only happens if `paint_row_glyphs` actually
     /// calls `DWrite::minimap_text_format`/`draw_text_minimap` rather
-    /// than falling through to the backend's single editor-size format
-    /// would. If the Characters branch skipped `minimap_text_format`
-    /// and drew through the editor-size format, the cache would never
-    /// grow and this fails.
+    /// than falling through to the backend's single editor-size format.
+    /// [`DWrite::has_cached_minimap_px`] additionally pins *which* size
+    /// landed in the cache, not just the cache's length — a 1-entry
+    /// cache holding the editor's (rounded) DIP size instead of the
+    /// resolved minimap size would satisfy the length assertion alone.
     #[test]
     fn characters_mode_requests_a_minimap_sized_format_not_the_editor_size() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
         // A large editor font -- if this rasteriser ever falls back to
         // painting through it for the minimap row, this test's cache
-        // assertion below would still pass by accident with a 1-entry
+        // assertions below would still pass-by-count with a 1-entry
         // cache holding the *editor* size instead of the resolved
-        // minimap size, so pin the two apart explicitly too.
+        // minimap size, so `has_cached_minimap_px` pins the two apart
+        // explicitly too.
         let (dwrite, _, _) = DWrite::new("Segoe UI", 24.0, None).expect("create DWrite");
+        let editor_dip = pt_to_dip(24.0) as f64;
         assert_eq!(
             dwrite.minimap_format_cache_len(),
             0,
@@ -545,19 +555,47 @@ mod tests {
              minimap-sized text format via DWrite::minimap_text_format -- not painted \
              through the editor-size format, which never touches this cache at all"
         );
+        assert!(
+            dwrite.has_cached_minimap_px(row_px),
+            "the cached entry must be keyed on the resolved minimap size ({row_px}), not \
+             some other size"
+        );
+        assert!(
+            !dwrite.has_cached_minimap_px(editor_dip),
+            "the cache must not hold an entry at the editor's own DIP size ({editor_dip}) \
+             -- that would mean the minimap painted through the editor-size format"
+        );
     }
 
-    /// A `Characters`-branch call whose resolved font
-    /// size still lands below `LEGIBILITY_FLOOR_PX` must fall back to
-    /// [`paint_row_blocks`]'s column-block silhouette rather than ask
-    /// DirectWrite to shape an illegibly small format — matching the GTK
-    /// twin's own `render_mode` threshold everywhere else in this crate.
-    /// Not reachable through `draw_minimap_scaled` today (`render_mode`'s
-    /// own gate already keeps this branch from running below the floor),
-    /// so exercised directly, same as the two tests above.
+    /// A `Characters`-branch call whose row pitch lands below
+    /// `LEGIBILITY_FLOOR_PX` must fall back to [`paint_row_blocks`]'s
+    /// column-block silhouette rather than ask DirectWrite to shape an
+    /// illegibly small format — matching the GTK twin's own `render_mode`
+    /// threshold everywhere else in this crate. Not reachable through
+    /// `draw_minimap_scaled` today (`render_mode`'s own gate already
+    /// keeps this branch from running below the floor), so exercised
+    /// directly, same as the two tests above.
+    ///
+    /// The surface is pre-filled white (unlike the other paint tests,
+    /// which rely on `HeadlessSurface::new`'s zero-filled -- i.e. already
+    /// black -- buffer to detect "something painted") so this test can
+    /// actually fail: a below-floor branch that painted nothing at all
+    /// would still read as "non-white" on an unfilled buffer. Asserts
+    /// black at the specific `cell_w`-wide columns `paint_row_blocks`
+    /// should fill for "fn main() {}"'s non-blank characters, and white
+    /// at a blank column -- not just "something changed somewhere" --
+    /// so this distinguishes real column blocks from a stray glyph run.
     #[test]
     fn characters_branch_falls_back_to_blocks_below_the_legibility_floor() {
+        const WHITE: (u8, u8, u8) = (255, 255, 255);
+        const BLACK: (u8, u8, u8) = (0, 0, 0);
+        const CELL_W: u32 = 1;
+
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        surface
+            .fill_rect(Rect::new(0.0, 0.0, W, H), Color::rgb(255, 255, 255))
+            .expect("fill background white");
+
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
         let theme = Theme {
             background: Color::rgb(255, 255, 255),
@@ -569,14 +607,22 @@ mod tests {
             bounds: Rect::new(0.0, 0.0, W, 2.0),
         };
         assert!(
-            minimap_font_px(vline.bounds.height as f64)
-                < crate::primitives::minimap::LEGIBILITY_FLOOR_PX,
+            !crate::primitives::minimap::is_legible(vline.bounds.height as f64),
             "this test's row height must resolve below the legibility floor"
         );
 
+        // "fn main() {}": column 0 ('f') is a non-blank char that
+        // `paint_row_blocks` must fill; column 2 (the space between
+        // "fn" and "main") must stay untouched.
+        let text = "fn main() {}";
+        let non_blank_col = 0u32;
+        let blank_col = 2u32;
+        assert_eq!(text.chars().nth(non_blank_col as usize), Some('f'));
+        assert_eq!(text.chars().nth(blank_col as usize), Some(' '));
+
         surface
             .paint(|target| {
-                paint_row_glyphs(target, &dwrite, &vline, "fn main() {}", &[], &theme, 1.0);
+                paint_row_glyphs(target, &dwrite, &vline, text, &[], &theme, CELL_W as f32);
             })
             .expect("paint glyphs");
 
@@ -587,18 +633,19 @@ mod tests {
              asking DirectWrite for a minimap text format"
         );
 
-        let mut painted_any = false;
-        for x in 0..W as u32 {
-            for y in 0..2u32 {
-                let px = surface.pixel_at(x, y);
-                if (px.r, px.g, px.b) != (255, 255, 255) {
-                    painted_any = true;
-                }
-            }
+        for y in 0..2u32 {
+            let painted = surface.pixel_at(non_blank_col * CELL_W, y);
+            assert_eq!(
+                (painted.r, painted.g, painted.b),
+                BLACK,
+                "expected a column block at the non-blank character's column ({non_blank_col}, {y})"
+            );
+            let blank = surface.pixel_at(blank_col * CELL_W, y);
+            assert_eq!(
+                (blank.r, blank.g, blank.b),
+                WHITE,
+                "a blank-character column ({blank_col}, {y}) must stay unpainted"
+            );
         }
-        assert!(
-            painted_any,
-            "expected the below-floor fallback to still paint column blocks"
-        );
     }
 }

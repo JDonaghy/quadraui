@@ -347,10 +347,23 @@ impl DWrite {
     /// format (and, together with a same-size/different-size pair of
     /// calls, that the cache hits rather than reallocating per paint)
     /// rather than silently falling back to the editor-size
-    /// [`Self::text_format`] the way pre-fix `paint_row_glyphs` did.
+    /// [`Self::text_format`].
     #[cfg(test)]
     pub(crate) fn minimap_format_cache_len(&self) -> usize {
         self.minimap_formats.borrow().len()
+    }
+
+    /// Is `size_px` (rounded the same way [`Self::minimap_text_format`]
+    /// rounds its cache key) present in the minimap-format cache?
+    /// `#[cfg(test)]` hook that lets a caller pin *which* size got
+    /// cached, not just how many — [`Self::minimap_format_cache_len`]
+    /// alone can't distinguish a paint that cached the resolved minimap
+    /// size from one that accidentally cached the (much larger)
+    /// editor-format size.
+    #[cfg(test)]
+    pub(crate) fn has_cached_minimap_px(&self, size_px: f64) -> bool {
+        let key = (size_px.round() as i32).max(1);
+        self.minimap_formats.borrow().contains_key(&key)
     }
 }
 
