@@ -18,6 +18,7 @@ impl Hello {
     fn config() -> ShellConfig {
         ShellConfig::new("Hello", Vec::new())
             .with_status_bar()
+            // No panels, so no activity-bar column to pick one with.
             .with_activity_bar_width(0.0)
     }
 }

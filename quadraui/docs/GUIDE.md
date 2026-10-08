@@ -9,11 +9,18 @@ first, run the one-file example before reading further:
 cargo run --example hello --features tui
 ```
 
-That's `quadraui/examples/hello.rs` — under 60 lines, no shared helper
-module. It's a `ShellApp` (see Step 0 below) rather than the `AppLogic`
-this guide's Step 1–3 walks through, but both traits share the same
-primitive/paint API, so nothing in it is a surprise once you've read
-those steps.
+That's `quadraui/examples/hello.rs` — under 100 lines including its doc
+comments, no shared helper module. It's a `ShellApp` (see Step 0 below)
+rather than the `AppLogic` this guide's Step 1–3 walks through, and it
+paints with `ScreenLayout`/`Surface` — pushing declarative `Surface`
+entries and calling `ScreenLayout::draw` — rather than the hand-computed
+`Rect` + `Backend::draw_split`/`draw_tree` calls Step 3 below uses.
+Both are valid: Step 3's raw `Backend::draw_*` calls are the low-level
+path every primitive supports, while `ScreenLayout`/`Surface` is the
+canonical way to assemble a multi-primitive screen from one call site
+and get a click hit-map back for free — see "Frame composition" in
+`docs/ARCHITECTURE.md` and `docs/decisions/DECISIONS.md` D-006 for why
+both exist and when to reach for each.
 
 Every code sample here opens with `use quadraui::prelude::*;`. The
 prelude is a deliberately small subset of quadraui's ~500 crate-root
@@ -33,7 +40,7 @@ you write any code:
 | You want | Implement | Call | Feels like |
 |---|---|---|---|
 | Full control over every pixel/cell — you lay out everything yourself | [`AppLogic`] | `quadraui::tui::run(app)` / `quadraui::gtk::run(app)` | A blank canvas: one `render`, one `handle`, you own all of it. |
-| VS-Code-style chrome for free — activity bar, sidebar, title bar, status bar, bottom panel — and you fill in the *content* of each panel | [`ShellApp`] | `quadraui::tui::run_with_shell(app, config)` / the GTK equivalent | A window manager you configure, not one you build. |
+| VS-Code-style chrome for free — activity bar, sidebar, title bar, status bar, bottom panel — and you fill in the *content* of each panel | [`ShellApp`] | `quadraui::tui::shell_runner::run_with_shell(app, config)` / the GTK equivalent | A window manager you configure, not one you build. |
 
 **This guide uses `AppLogic`.** Our two-pane app is simple enough that
 building the split ourselves is less code than configuring an
