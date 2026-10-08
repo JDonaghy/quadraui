@@ -46,9 +46,8 @@ use core_text::string_attributes::{
     kCTFontAttributeName, kCTForegroundColorFromContextAttributeName,
 };
 use foreign_types::ForeignType;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::testing::TextRun;
 use crate::Rect;
@@ -271,7 +270,7 @@ pub(crate) fn resolved_fallback_for_char(font: &CTFont, ch: char) -> (String, bo
 /// over whichever font a caller actually meant. Only used as the fallback
 /// path in [`cascade_descriptor_for`] when no exact registered descriptor
 /// is on file for `family`.
-fn descriptor_for_family(family: &str) -> font_descriptor::CTFontDescriptor {
+fn descriptor_for_family(family: &str) -> CTFontDescriptor {
     let key = unsafe { CFString::wrap_under_get_rule(kCTFontFamilyNameAttribute) };
     let attrs = CFDictionary::from_CFType_pairs(&[(key, CFString::new(family).as_CFType())]);
     font_descriptor::new_from_attributes(&attrs)
@@ -290,14 +289,18 @@ fn descriptor_for_family(family: &str) -> font_descriptor::CTFontDescriptor {
 // names a specific font resource rather than re-asking Core Text's name
 // matcher to guess.
 //
-// `RefCell` rather than a `Mutex`: Core Text/AppKit calls are single-
-// threaded in practice (matching the thread-local text-run sink this
-// module's recording section already uses), and each `cargo test` thread
-// gets its own table, which is the right lifetime for a registration that
-// (like the underlying Core Text registration itself) is never undone.
-thread_local! {
-    static REGISTERED_ICON_DESCRIPTORS: RefCell<HashMap<String, CTFontDescriptor>> =
-        RefCell::new(HashMap::new());
+// A process-wide `Mutex`, not a thread-local: `CTFontManagerRegisterGraphicsFont`
+// itself registers for the lifetime of the *process*, not the calling
+// thread, so a table meant to mirror that registration's lifetime has to
+// be visible to every thread, not just the one that happened to populate
+// it. `CTFontDescriptor` is `Send` (core-text documents Core Text's font
+// objects as safe to use from multiple threads), so a `Mutex`-guarded
+// table is sufficient — no `unsafe impl Sync` needed on our side.
+static REGISTERED_FONT_DESCRIPTORS: OnceLock<Mutex<HashMap<String, CTFontDescriptor>>> =
+    OnceLock::new();
+
+fn registered_font_descriptors() -> &'static Mutex<HashMap<String, CTFontDescriptor>> {
+    REGISTERED_FONT_DESCRIPTORS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Remember `descriptor` as the exact cascade entry to use for `family`,
@@ -306,12 +309,16 @@ thread_local! {
 /// finds first. Called by [`register_font_from_memory`] once per
 /// successful registration.
 fn remember_registered_descriptor(family: String, descriptor: &CTFontDescriptor) {
-    // Retain our own reference rather than borrowing the caller's: the
-    // table outlives the registration call that populates it.
+    // SAFETY: `descriptor.as_concrete_TypeRef()` is a valid, live
+    // `CTFontDescriptorRef` for the duration of this call. We retain our
+    // own reference (`wrap_under_get_rule`, not `wrap_under_create_rule`)
+    // rather than borrowing the caller's: the table outlives the
+    // registration call that populates it.
     let owned = unsafe { CTFontDescriptor::wrap_under_get_rule(descriptor.as_concrete_TypeRef()) };
-    REGISTERED_ICON_DESCRIPTORS.with(|table| {
-        table.borrow_mut().insert(family, owned);
-    });
+    registered_font_descriptors()
+        .lock()
+        .expect("REGISTERED_FONT_DESCRIPTORS mutex should never be poisoned")
+        .insert(family, owned);
 }
 
 /// The descriptor [`font_with_fallback`] should put in its cascade list
@@ -319,12 +326,27 @@ fn remember_registered_descriptor(family: String, descriptor: &CTFontDescriptor)
 /// stashed for it, if `family` was registered via a prior
 /// [`register_font_from_memory`] call; otherwise [`descriptor_for_family`]'s
 /// ordinary name lookup, for a caller naming a system font directly.
-fn cascade_descriptor_for(family: &str) -> font_descriptor::CTFontDescriptor {
-    let exact = REGISTERED_ICON_DESCRIPTORS.with(|table| {
-        table.borrow().get(family).map(|descriptor| unsafe {
-            CTFontDescriptor::wrap_under_get_rule(descriptor.as_concrete_TypeRef())
-        })
+///
+/// This keys purely on family name, so a caller that registers a blob
+/// whose family string happens to collide with an installed *system*
+/// family (e.g. a font claiming to be "Menlo") silently redirects every
+/// later [`font_with_fallback`] call naming that family to the registered
+/// blob instead of the system font. That is a new behaviour introduced by
+/// this pin relative to the plain name lookup it replaces, not something
+/// [`register_font_from_memory`]'s callers currently guard against.
+fn cascade_descriptor_for(family: &str) -> CTFontDescriptor {
+    let table = registered_font_descriptors()
+        .lock()
+        .expect("REGISTERED_FONT_DESCRIPTORS mutex should never be poisoned");
+    // SAFETY: `descriptor` is a live `&CTFontDescriptor` borrowed from the
+    // locked table for the duration of this closure; `wrap_under_get_rule`
+    // retains its own reference, so the value returned from this function
+    // stays valid once the lock (and the table's own reference) is
+    // dropped at the end of this statement.
+    let exact = table.get(family).map(|descriptor| unsafe {
+        CTFontDescriptor::wrap_under_get_rule(descriptor.as_concrete_TypeRef())
     });
+    drop(table);
     exact.unwrap_or_else(|| descriptor_for_family(family))
 }
 
@@ -373,7 +395,10 @@ pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
     // array (bytes Core Graphics parsed but Core Text's font manager
     // can't describe) just means no exact descriptor is on file — the
     // family-name path remains available as a fallback, so registration
-    // itself still succeeds.
+    // itself still succeeds. `cf_data` is dropped at the end of this
+    // function, but Core Text retains the bytes it needs internally when
+    // creating the descriptor array, so the descriptors — and the one we
+    // stash — outlive `cf_data` safely.
     let cf_data = CFData::from_buffer(bytes);
     let descriptors_ref =
         unsafe { CTFontManagerCreateFontDescriptorsFromData(cf_data.as_concrete_TypeRef()) };
@@ -383,8 +408,21 @@ pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
         // takes ownership of.
         let descriptors: CFArray<CTFontDescriptor> =
             unsafe { TCFType::wrap_under_create_rule(descriptors_ref) };
+        // Only pin a descriptor whose own family matches the family we're
+        // keying it under. A blob describing more than one face/family
+        // (a `.ttc`, or a mismatch between `CGFont::from_data_provider`'s
+        // face and this array's first entry) would otherwise silently
+        // pin `family`'s cascade slot to a *different* family's font —
+        // strictly worse than the name lookup it replaces, since the
+        // cascade would then deliberately name the wrong resource rather
+        // than ambiguously name the right one. Skipping the pin here
+        // just leaves `cascade_descriptor_for` falling back to the name
+        // path for `family`, matching this function's pre-existing
+        // behaviour before the exact-descriptor pin existed.
         if let Some(descriptor) = descriptors.get(0) {
-            remember_registered_descriptor(family.clone(), &descriptor);
+            if descriptor.family_name() == family {
+                remember_registered_descriptor(family.clone(), &descriptor);
+            }
         }
     }
 
@@ -1092,21 +1130,89 @@ mod tests {
     /// directory at test time, so this reproduces the exact bytes
     /// [`register_font_from_memory`] is handed in production regardless
     /// of what else happens to be installed on the host.
+    ///
+    /// Provenance: a subset of the upstream "Symbols Nerd Font" release
+    /// (Nerd Fonts 3.5.1, OFL-licensed — see the sibling `LICENSE-NerdFonts`
+    /// file), re-subset down to ~29 KB covering only the glyphs this
+    /// module's tests reference. The `name` table entries still read
+    /// "Symbols Nerd Font" / "Nerd Fonts 3.5.1" from the upstream release
+    /// despite the file being named `vimcode-icons.ttf` here, matching
+    /// what vimcode itself ships.
     const ICON_FONT_BYTES: &[u8] = include_bytes!("../../tests/fixtures/vimcode-icons.ttf");
 
+    /// Register [`ICON_FONT_BYTES`] via [`register_font_from_memory`]
+    /// exactly once for the whole test binary, and cache the family name
+    /// Core Text resolved it to. `CTFontManagerRegisterGraphicsFont`
+    /// registers for the lifetime of the *process*: a second call from a
+    /// different test (cargo runs each `#[test]` across a thread pool, so
+    /// "a different test" can mean "a different thread") would hand the
+    /// same bytes to Core Text again and get back a duplicate-PostScript-name
+    /// failure — seen here as [`register_font_from_memory`] returning
+    /// `None` — rather than redoing a harmless no-op registration. Caching
+    /// behind a single [`OnceLock`] sidesteps that: every test shares one
+    /// real registration and one resolved family name.
+    fn registered_icon_font_family() -> String {
+        static FAMILY: OnceLock<String> = OnceLock::new();
+        FAMILY
+            .get_or_init(|| {
+                register_font_from_memory(ICON_FONT_BYTES).expect(
+                    "vimcode-icons.ttf is a well-formed font Core Graphics can parse — a \
+                     `None` here would also fire if some other code path in this process \
+                     already registered these same bytes under a duplicate PostScript name, \
+                     but `registered_icon_font_family`'s whole point is to register them \
+                     exactly once, so that isn't expected",
+                )
+            })
+            .clone()
+    }
+
     /// Builds the font the way [`super::super::backend::MacBackend`]
-    /// does: register the icon font bytes, then layer its family onto
-    /// a base font's cascade via [`font_with_fallback`], exactly what
+    /// does: register the icon font bytes (once, via
+    /// [`registered_icon_font_family`]), then layer its family onto a
+    /// base font's cascade via [`font_with_fallback`], exactly what
     /// `MacBackend::set_current_font`/`set_nerd_font_fallback` do to
-    /// `current_font`. Returns the cascade-equipped font plus the
-    /// family name Core Text resolved the registration to, so a test
-    /// can assert against the *actual* registered family rather than
-    /// assuming it matches the bytes' nominal name.
+    /// `current_font`. Returns the cascade-equipped font plus the family
+    /// name Core Text resolved the registration to, so a test can assert
+    /// against the *actual* registered family rather than assuming it
+    /// matches the bytes' nominal name.
     fn icon_font_with_fallback() -> (CTFont, String) {
-        let family = register_font_from_memory(ICON_FONT_BYTES)
-            .expect("vimcode-icons.ttf is a well-formed font Core Graphics can parse");
+        let family = registered_icon_font_family();
         let base = font();
         (font_with_fallback(&base, &family), family)
+    }
+
+    /// Host-independent guard for the cascade-pinning fix itself: proves
+    /// [`cascade_descriptor_for`] actually consults the exact descriptor
+    /// [`register_font_from_memory`] stashed, rather than falling straight
+    /// through to [`descriptor_for_family`]'s bare name lookup — the
+    /// regression the two tests below can only catch on a host that
+    /// happens to have a second font sharing the icon font's family name.
+    ///
+    /// Without the fix, `cascade_descriptor_for` always returns
+    /// `descriptor_for_family(family)`. Two independently-built
+    /// family-name-only descriptors for the same family string are
+    /// `CFEqual` — confirmed directly against this crate's real Core
+    /// Text on real hardware, not assumed — so the assertion below fails
+    /// deterministically on *every* host without the fix, not just one
+    /// with a colliding font installed. With the fix, `cascade_descriptor_for`
+    /// returns the descriptor pinned from `CTFontManagerCreateFontDescriptorsFromData`'s
+    /// exact-bytes description, keyed by the font's own PostScript name
+    /// rather than the family string, so `CFEqual` against the bare
+    /// name-only descriptor is false everywhere.
+    #[test]
+    fn cascade_descriptor_for_pins_the_exact_registered_descriptor_not_a_name_lookup() {
+        let family = registered_icon_font_family();
+
+        let pinned = cascade_descriptor_for(&family);
+        let name_only = descriptor_for_family(&family);
+        assert_ne!(
+            pinned.as_CFType(),
+            name_only.as_CFType(),
+            "cascade_descriptor_for({family:?}) returned a descriptor identical to a bare \
+             family-name lookup — the exact descriptor register_font_from_memory stashed was \
+             never consulted, so a test that only checks resolved glyphs would pass even \
+             without the fix on a host with no competing font sharing this family name"
+        );
     }
 
     /// Reproduces the exact split a real-screen capture of the native
@@ -1120,6 +1226,7 @@ mod tests {
     #[test]
     fn icon_font_cascade_resolves_every_registered_pua_codepoint() {
         let (with_fallback, family) = icon_font_with_fallback();
+        let bare = font();
 
         let codepoints = [
             ('\u{EAF0}', "Explorer"),
@@ -1131,6 +1238,16 @@ mod tests {
         ];
 
         for (ch, label) in codepoints {
+            let (bare_family, bare_ok) = resolved_fallback_for_char(&bare, ch);
+            assert!(
+                !bare_ok,
+                "{label} (U+{:04X}) unexpectedly resolved a real glyph through bare \
+                 {bare_family:?} with no cascade attached, even after the icon font was \
+                 registered process-wide — this negative control must fail, otherwise a \
+                 pass below can't tell us the cascade did anything",
+                ch as u32,
+            );
+
             let (resolved_family, resolved_real_glyph) =
                 resolved_fallback_for_char(&with_fallback, ch);
             assert!(
@@ -1160,6 +1277,16 @@ mod tests {
         let (with_fallback, family) = icon_font_with_fallback();
         let icon_size_px = crate::ActivityBarStyle::default().resolved_icon_size_px() as f64;
         let icon_sized = with_fallback.clone_with_font_size(icon_size_px);
+
+        let bare = font();
+        let (bare_family, bare_ok) = resolved_fallback_for_char(&bare, '\u{EAF0}');
+        assert!(
+            !bare_ok,
+            "Explorer (U+EAF0) unexpectedly resolved a real glyph through bare \
+             {bare_family:?} with no cascade attached, even after the icon font was \
+             registered process-wide — this negative control must fail, otherwise a pass \
+             below can't tell us the cascade did anything",
+        );
 
         let (resolved_family, resolved_real_glyph) =
             resolved_fallback_for_char(&icon_sized, '\u{EAF0}');
