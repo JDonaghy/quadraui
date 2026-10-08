@@ -4,21 +4,30 @@
 
 quadraui is a widget toolkit with four rendering backends: **TUI** (via
 ratatui), **GTK4** (Cairo + Pango), **macOS** (Core Graphics + Core Text)
-and **Windows** (Direct2D + DirectWrite). You write your app once, as a
-single `AppLogic` implementation. The same code runs over SSH in a
-terminal or as a native window, and only the one-line runner call in
-`main` changes.
+and **Windows** (Direct2D + DirectWrite). You write your app once, and the
+same code runs over SSH in a terminal or as a native window, with only
+the one-line runner call in `main` changing.
 
 ```rust
 use quadraui::prelude::*;
+use quadraui::{AppShellLayout, ScreenLayout, Surface};
 
 struct Hello { keys_pressed: u32 }
 
-impl AppLogic for Hello {
-    type AreaId = ();
+impl Hello {
+    fn config() -> ShellConfig {
+        ShellConfig::new("Hello", Vec::new())
+            .with_status_bar()
+            .with_activity_bar_width(0.0)
+    }
+}
 
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        // Describe the UI as plain data; the backend rasterises it natively.
+impl ShellApp for Hello {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+        // The shell already computed where the status bar goes —
+        // no viewport arithmetic here. Describe the UI as plain data;
+        // the backend rasterises it natively.
+        let Some(rect) = layout.status_bar_bounds else { return };
         let bar = StatusBar {
             id: WidgetId::new("status:bar"),
             left_segments: vec![StatusBarSegment {
@@ -30,16 +39,12 @@ impl AppLogic for Hello {
             }],
             right_segments: vec![],
         };
-        let vp = backend.viewport();
-        let h = backend.measure().line_height.max(1.0) * 1.4;
-        let _ = backend.draw_status_bar_interactive(
-            Rect::new(0.0, vp.height - h, vp.width, h),
-            &bar,
-            &quadraui::InteractionState::new(),
-        );
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::StatusBar { rect, bar: &bar, hovered: None, pressed: None });
+        frame.draw(backend);
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend, _ctx: &ShellContext) -> Reaction {
         match event {
             UiEvent::KeyPressed { key: Key::Char('q'), .. } => Reaction::Exit,
             UiEvent::KeyPressed { .. } => { self.keys_pressed += 1; Reaction::Redraw }
@@ -48,10 +53,10 @@ impl AppLogic for Hello {
     }
 }
 
-fn main() -> std::io::Result<()> {
-    quadraui::tui::run(Hello { keys_pressed: 0 })
-    // quadraui::gtk::run(...), quadraui::macos::run(...) or
-    // quadraui::win::run(...) for a native window: same `Hello`.
+fn main() {
+    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config());
+    // quadraui::gtk::shell_runner::run_with_shell(...), quadraui::macos::... or
+    // quadraui::win::... for a native window: same `Hello`.
 }
 ```
 
@@ -165,8 +170,8 @@ For sibling-checkout development, use
 
 Then:
 
-- Run `hello`, then `tui_demo` / `gtk_demo`, which use the same `AppLogic`
-  body under two runners.
+- Run `hello` (the `ShellApp` path above), then `tui_demo` / `gtk_demo`,
+  which use the same `AppLogic` body under two runners.
 - Read [`quadraui/docs/GUIDE.md`](quadraui/docs/GUIDE.md) for the app
   model and [`quadraui/docs/APP_ARCHITECTURE.md`](quadraui/docs/APP_ARCHITECTURE.md)
   for how a larger app is put together.
