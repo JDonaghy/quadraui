@@ -130,7 +130,10 @@ impl DialogTable {
 /// # Examples
 ///
 /// ```
-/// use quadraui::{Dialog, DialogButton, DialogHit, DialogMeasure, Rect, StyledText, WidgetId};
+/// use quadraui::{
+///     Dialog, DialogButton, DialogHit, DialogMeasure, Rect, StyledText, ToolbarItemMeasure,
+///     WidgetId,
+/// };
 ///
 /// let dialog = Dialog {
 ///     id: WidgetId::new("dialog:confirm_close"),
@@ -162,7 +165,9 @@ impl DialogTable {
 /// };
 ///
 /// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
-/// let layout = dialog.layout(viewport, measure, |_| unreachable!("no body toolbar"));
+/// // `input` is `None` above, so `layout` never calls this closure — it's
+/// // only reached by the `DialogInput::Toolbar` body variant.
+/// let layout = dialog.layout(viewport, measure, |_| ToolbarItemMeasure::new(10.0));
 /// let ok = layout.visible_buttons[0].bounds;
 /// assert_eq!(layout.hit_test(ok.x, ok.y), DialogHit::Button(dialog.buttons[0].id.clone()));
 /// ```

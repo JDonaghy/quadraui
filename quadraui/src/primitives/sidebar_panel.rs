@@ -60,7 +60,9 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use quadraui::{SidebarPanel, SidebarPanelHit, SidebarPanelMeasure, Rect, WidgetId};
+/// use quadraui::{
+///     Rect, SidebarPanel, SidebarPanelHit, SidebarPanelMeasure, ToolbarItemMeasure, WidgetId,
+/// };
 ///
 /// let panel = SidebarPanel {
 ///     id: WidgetId::new("sidebar:explorer"),
@@ -70,7 +72,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// let bounds = Rect::new(0.0, 0.0, 40.0, 20.0);
 /// let measure = SidebarPanelMeasure::new(1.0, 3.0);
-/// let layout = panel.layout(bounds, measure, |_| unreachable!("no toolbar"));
+/// // `toolbar` is `None` above, so `layout` never calls this closure — it's
+/// // only reached when a toolbar slot is reserved.
+/// let layout = panel.layout(bounds, measure, |_| ToolbarItemMeasure::new(10.0));
 ///
 /// // No toolbar means no slot reserved — content gets the full rect.
 /// assert_eq!(layout.content_bounds, bounds);
