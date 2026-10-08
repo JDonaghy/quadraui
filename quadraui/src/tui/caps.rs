@@ -160,7 +160,8 @@
 //! after every LSP-hint underline). Windows Terminal exports `WT_SESSION`,
 //! and WSL forwards it into the Linux environment, so
 //! [`detect_underline_color_support_from`] also answers `false` whenever
-//! that variable is set. The one case no signal covers is an SSH session
+//! that variable is set. macOS Terminal.app (`TERM_PROGRAM=Apple_Terminal`)
+//! misparses the semicolon form the same way, so it strips too. The one case no signal covers is an SSH session
 //! out of Windows Terminal (`WT_SESSION` is not forwarded over SSH).
 //! [`crate::tui::backend::TuiBackend::new`] seeds
 //! [`crate::tui::backend::TuiBackend::underline_color_supported`] with
@@ -486,7 +487,7 @@ fn query_sgr_pixel_decrqm() -> Option<u8> {
 ///
 /// `false` on every Windows build, and on any other build whose output is
 /// drawn by Windows Terminal (`WT_SESSION` set, e.g. a Linux binary in
-/// WSL). The cheaper failure mode mirrors [`detect_kitty_keyboard_from`]'s
+/// WSL), and in macOS Terminal.app (`TERM_PROGRAM=Apple_Terminal`). The cheaper failure mode mirrors [`detect_kitty_keyboard_from`]'s
 /// reasoning: a wrongly-`true` answer reproduces the blink/fade bug this
 /// function exists to prevent, while a wrongly-`false` answer only costs a
 /// plain (uncoloured) underline on a terminal that could have shown an
@@ -506,7 +507,13 @@ pub(crate) fn detect_underline_color_support_from(
     }
     // Windows Terminal (via WSL) sits behind ConPTY even for a Linux
     // binary. An empty value is treated as unset.
-    !getenv("WT_SESSION").is_some_and(|v| !v.is_empty())
+    if getenv("WT_SESSION").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    // macOS Terminal.app has no underline-colour support and applies the
+    // trailing parameters of the semicolon form as plain SGR codes
+    // (`2` -> faint), the same leak ConPTY produces.
+    getenv("TERM_PROGRAM").as_deref() != Some("Apple_Terminal")
 }
 
 /// System dark/light detection (quadraui#952) — the TUI half of
@@ -889,6 +896,20 @@ mod tests {
         assert!(!detect_underline_color_support_from(
             false,
             env(&[("WT_SESSION", "4c6d2a0e-1b2f-4a7e-9d3c-5f8e7a6b1c20")])
+        ));
+    }
+
+    /// macOS Terminal.app renders the semicolon form's trailing `2` as
+    /// faint, so it must strip; iTerm2 and other terminals keep the colour.
+    #[test]
+    fn underline_color_unsupported_in_apple_terminal() {
+        assert!(!detect_underline_color_support_from(
+            false,
+            env(&[("TERM_PROGRAM", "Apple_Terminal")])
+        ));
+        assert!(detect_underline_color_support_from(
+            false,
+            env(&[("TERM_PROGRAM", "iTerm.app")])
         ));
     }
 
