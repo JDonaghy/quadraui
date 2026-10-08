@@ -76,8 +76,8 @@ pub struct DWrite {
     /// Nerd-Font fallback this handle was constructed with, if any —
     /// same reuse rationale as `family`.
     fallback: Option<IDWriteFontFallback>,
-    /// Same-family [`IDWriteTextFormat`]s at minimap row-pitch sizes
-    /// (issue #1354), keyed by the rounded DIP size
+    /// Same-family [`IDWriteTextFormat`]s at minimap row-pitch sizes,
+    /// keyed by the rounded DIP size
     /// [`crate::primitives::minimap::minimap_font_px`] resolved — not by
     /// the raw `f64` it returns, since that's a continuous function of
     /// row pitch and a bare-`f64` `HashMap` key would almost never hit on
@@ -274,7 +274,7 @@ impl DWrite {
     }
 
     /// Same-family `IDWriteTextFormat` at `size_px` DIPs, cached by
-    /// rounded size (issue #1354) — what
+    /// rounded size — what
     /// [`crate::win::minimap::paint_row_glyphs`]'s `Characters` branch
     /// shapes through, so a minimap row paints at
     /// [`crate::primitives::minimap::minimap_font_px`]'s resolved size
@@ -309,7 +309,7 @@ impl DWrite {
         unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         if let Some(fallback) = &self.fallback {
             // Same "degrade, don't fail the paint" posture `DWrite::new`
-            // takes for the editor-size formats (issue #929 review) —
+            // takes for the editor-size formats —
             // see that call's doc comment.
             if let Err(err) = apply_fallback_to_format(&format, fallback) {
                 crate::diagnostics::emit(format!(
@@ -326,8 +326,8 @@ impl DWrite {
     }
 
     /// Paint `text` inside `rect` (DIPs, target-relative) in `color` at
-    /// `size_px` DIPs — [`Self::draw_text`]'s minimap-sized twin (issue
-    /// #1354), via [`Self::minimap_text_format`] rather than this
+    /// `size_px` DIPs — [`Self::draw_text`]'s minimap-sized twin,
+    /// via [`Self::minimap_text_format`] rather than this
     /// handle's editor-size format.
     pub(crate) fn draw_text_minimap(
         &self,
@@ -342,7 +342,7 @@ impl DWrite {
     }
 
     /// Number of distinct sizes cached by [`Self::minimap_text_format`] so
-    /// far — `#[cfg(test)]` acceptance hook (issue #1354) proving a
+    /// far — `#[cfg(test)]` acceptance hook proving a
     /// `Characters`-mode minimap paint actually requests a minimap-sized
     /// format (and, together with a same-size/different-size pair of
     /// calls, that the cache hits rather than reallocating per paint)
@@ -1391,7 +1391,7 @@ mod tests {
         );
     }
 
-    /// Issue #1354: [`DWrite::minimap_text_format`] must cache by rounded
+    /// [`DWrite::minimap_text_format`] must cache by rounded
     /// px — a second call at the exact same size reuses the cached
     /// `IDWriteTextFormat` (same underlying COM object, proven via
     /// `Interface::as_raw` identity) rather than allocating a fresh one
