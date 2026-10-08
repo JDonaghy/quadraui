@@ -1,0 +1,62 @@
+name: Release
+
+# Publishes `quadraui` to crates.io when a `vX.Y.Z` tag is pushed, via
+# crates.io Trusted Publishing: `crates-io-auth-action` exchanges this job's
+# GitHub OIDC identity for a ~30-minute token scoped to the crates configured
+# on crates.io, so no long-lived API token is stored anywhere. crates.io's
+# trusted-publisher entry for `quadraui` names this file (`release.yml`) and
+# the `release` environment — renaming either breaks publishing until the
+# crates.io side is updated to match.
+#
+# The `release` environment requires a reviewer's approval and only admits
+# `v*` tags, so pushing a tag queues the publish but does not run it
+# unattended. Tagging itself stays a coordinator action (CHANGELOG.md's
+# *Versioning* section); this workflow only turns an approved tag into a
+# published crate.
+on:
+  push:
+    tags: ["v*"]
+
+# Two pushes of the same tag must not race each other to `cargo publish`.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      id-token: write # lets crates-io-auth-action request the OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # Toolchain is pinned in rust-toolchain.toml; rustup's override
+      # resolution honors that file regardless of what this action installs
+      # as its default, so the publish builds with the same 1.97.1 as CI.
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A tag that disagrees with `quadraui/Cargo.toml`'s version would
+      # publish a crate whose version no tag points at. Fail before
+      # requesting a token rather than after.
+      - name: Tag matches the crate version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "quadraui") | .version')
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match quadraui/Cargo.toml version ${version}"
+            exit 1
+          fi
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # `cargo publish` verifies by building the packaged crate with default
+      # features — `quadraui` has none, so no system libraries (gtk4 etc.)
+      # are needed on this runner.
+      - name: cargo publish
+        run: cargo publish -p quadraui --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

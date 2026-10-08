@@ -51,6 +51,9 @@ is unmaintained). Tagging is a coordinator release action (see
 its entry under `[Unreleased]`, and the coordinator retitles that section to
 `[X.Y.Z] - YYYY-MM-DD` (adding a fresh empty `[Unreleased]` above it) at
 release time.
+Pushing the tag queues `.github/workflows/release.yml`, which publishes to
+crates.io via Trusted Publishing once a reviewer approves the `release`
+environment.
 
 ## [Unreleased]
 
