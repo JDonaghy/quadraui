@@ -247,6 +247,21 @@ tui = ["dep:ratatui", "dep:arboard", "dep:trash", "dep:keyring", "dep:libc"]
 # everywhere else — same "`dep:X` on a target-gated optional dep is a
 # no-op off that target" pattern `win`'s own `dep:windows` entry below
 # already relies on.
+# `dep:core-text` / `dep:core-foundation` (issue #1367): GTK4 on macOS
+# runs Pango's `PangoCoreTextFontMap`, which never consults Fontconfig —
+# registering the bundled icon font with `FcConfigAppFontAddFile` alone
+# (as this feature already did) leaves every PUA glyph rendering as tofu
+# there. `crate::gtk::app_font` additionally registers with Core Text
+# directly via `CTFontManagerRegisterFontsForURL` — but it can't call
+# `crate::macos::text` for this (gated on the separate `macos` feature,
+# which a `gtk`-only build must not require), so it needs its own copy
+# of these two deps. Same "target-gated optional dep, no-op off macOS"
+# pattern as the objc2 pair just above; shared with the `macos`
+# feature's own identical entries below, so this unifies rather than
+# duplicates the dependency graph on macOS. Unlike the `macos` feature,
+# `gtk` does not need `dep:core-graphics`/`dep:foreign-types` here: this
+# module's Core Text call works from a filesystem path (`CFURL`), never
+# a `CGFont`.
 gtk = [
     "dep:gtk4",
     "dep:pangocairo",
@@ -257,6 +272,8 @@ gtk = [
     "dep:keyring",
     "dep:objc2",
     "dep:objc2-app-kit",
+    "dep:core-text",
+    "dep:core-foundation",
 ]
 
 # Public Win-GUI rasterisers in `quadraui::win`. `windows` is a
@@ -397,14 +414,6 @@ keyring = { version = "4", optional = true }
 taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree", "flexbox", "grid", "std", "content_size"], optional = true }
 
 [build-dependencies]
-# `build.rs`'s `pangoft2` probe (issue #1013, `gtk` feature only) — same
-# crate `yeslogic-fontconfig-sys`'s own build script uses to find
-# `fontconfig`. Unconditional dependency (build scripts can't be
-# optional/feature-gated themselves); `build.rs` only invokes it when
-# `CARGO_FEATURE_GTK` is set, so a non-`gtk` build never shells out to
-# `pkg-config` at all.
-pkg-config = "0.3"
-
 # Unix-only optional dep (quadraui#1048): `tui::caps::probe_sgr_pixel_mouse`'s
 # DECRQM reply read needs a raw, cancellable `poll(2)` on stdin — crossterm's
 # own `event::poll`/`read` don't recognise the `CSI ? 1016 ; Ps $ y` reply as

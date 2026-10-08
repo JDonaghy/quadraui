@@ -70,38 +70,15 @@ fn main() {
         );
     }
 
-    // `gtk` feature — link `pangoft2` explicitly (issue #1013).
-    //
-    // `crate::gtk::app_font::register_font_from_memory` calls
-    // `pango_fc_font_map_config_changed` to make Pango notice a font it
-    // just registered via `FcConfigAppFontAddFile`. That symbol lives in
-    // `libpangoft2-1.0` (Pango's FreeType/Fontconfig integration module),
-    // *not* `libpango-1.0` or `libpangocairo-1.0` — confirmed by `nm -gU`
-    // against a real Homebrew build, where neither of the latter two
-    // export any `pango_fc_*` symbol at all. Neither `pango-sys` (probes
-    // the `pango` pkg-config module) nor `pangocairo-sys` (probes
-    // `pangocairo`) pulls `pangoft2` in on their own, since `PangoFcFontMap`
-    // isn't part of either module's GIR-introspected surface — see
-    // `crate::gtk::app_font`'s module doc for the full story. `probe`
-    // itself is what emits the `cargo:rustc-link-lib`/
-    // `cargo:rustc-link-search` directives; nothing else here does.
-    //
-    // A hard `expect` rather than a soft warning: without this, the `gtk`
-    // feature compiles fine (the missing symbol is only a link-time
-    // failure) but fails to *link* any binary/test/example that actually
-    // calls `register_font_from_memory` — silently limping past a broken
-    // probe here would just move that failure somewhere far more
-    // confusing to debug.
-    if std::env::var_os("CARGO_FEATURE_GTK").is_some() {
-        pkg_config::Config::new()
-            .atleast_version("1.0")
-            .probe("pangoft2")
-            .expect(
-                "quadraui: pkg-config probe for `pangoft2` failed — required by the `gtk` \
-                 feature for `pango_fc_font_map_config_changed` (issue #1013); install your \
-                 platform's Pango FreeType/Fontconfig development package (e.g. \
-                 `libpangoft2-1.0-dev` on Debian/Ubuntu, `pango`'s own Homebrew formula on \
-                 macOS, which already bundles it)",
-            );
-    }
+    // Issue #1013 used to link `libpangoft2-1.0` here for
+    // `pango_fc_font_map_config_changed`, a `PangoFcFontMap`-only symbol
+    // `crate::gtk::app_font::register_font_from_memory` called to make
+    // Pango notice a freshly-registered application font. Issue #1367
+    // replaced that call with the generic, GIR-introspected
+    // `pango_font_map_changed` (bound by the `pango` crate itself as
+    // `FontMapExt::changed`) — it works against *any* concrete
+    // `PangoFontMap` subclass, including the `PangoCoreTextFontMap`
+    // GTK4-on-macOS actually uses, so this extra link requirement (and
+    // the `libpangoft2-1.0-dev`/equivalent system package it demanded) is
+    // no longer needed.
 }

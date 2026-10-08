@@ -3008,7 +3008,6 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "pangocairo",
- "pkg-config",
  "portable-pty",
  "proc-macro2",
  "proptest",
