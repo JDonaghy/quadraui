@@ -45,13 +45,18 @@ Pre-1.0, per Cargo's own semver convention: a `0.MINOR.PATCH` bump treats
 treats `MINOR`/`PATCH` combined (additive or fix). A rule-8 breaking change
 bumps `MINOR`; everything else bumps `PATCH`.
 
-Releases are tagged `vX.Y.Z` against `main`. Tagging is a coordinator release
-action (see `quadraui#797`), not something an individual PR does — a PR adds
+Releases are tagged `vX.Y.Z` against `develop`, the default branch (`main`
+is unmaintained). Tagging is a coordinator release action (see
+`quadraui#797`), not something an individual PR does — a PR adds
 its entry under `[Unreleased]`, and the coordinator retitles that section to
 `[X.Y.Z] - YYYY-MM-DD` (adding a fresh empty `[Unreleased]` above it) at
 release time.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-10-07
+
+First tagged release, and the first published to crates.io.
 
 ### Added
 
