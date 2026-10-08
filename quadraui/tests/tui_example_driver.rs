@@ -350,16 +350,13 @@ fn mini_renders_cleanly_and_ctrl_q_exits() {
 
 // ─── Hello: the standalone `examples/hello.rs` onboarding app ──────────────
 //
-// quadraui#799: unlike every other app in this file, `Hello` has no
-// `examples/common/` module — see the `#[path = "../examples/hello.rs"]`
-// include above. Observed RED before `RecordingBackend`/`prelude`/`Hello`
-// existed (there was no `hello_ex` module to include and no `Hello` type
-// to drive); GREEN once `examples/hello.rs` landed.
+// Unlike every other app in this file, `Hello` has no `examples/common/`
+// module — see the `#[path = "../examples/hello.rs"]` include above.
 //
-// quadraui#1342: `Hello` is a `ShellApp` now (the canonical path — see the
-// module doc on `examples/hello.rs`), so these drive it through
-// `driver_with_shell` — the same stack `quadraui::tui::shell_runner::run_with_shell`
-// uses at runtime — instead of `TuiDriver::new`, which only accepts `AppLogic`.
+// `Hello` is a `ShellApp` (the canonical path — see the module doc on
+// `examples/hello.rs`), so these drive it through `driver_with_shell` — the
+// same stack `quadraui::tui::shell_runner::run_with_shell` uses at runtime —
+// instead of `TuiDriver::new`, which only accepts `AppLogic`.
 
 fn hello_driver(width: u16, height: u16) -> TuiDriver<impl quadraui::AppLogic> {
     driver_with_shell(Hello { keys_pressed: 0 }, Hello::config(), width, height)
@@ -383,11 +380,10 @@ fn hello_renders_the_greeting_and_quit_hint_on_the_first_frame() {
     );
 }
 
-/// quadraui#1342: the status bar's rect comes from
-/// `AppShellLayout::status_bar_bounds` — computed by the shell, not by any
-/// viewport arithmetic in `examples/hello.rs` itself — and still anchors to
-/// the bottom row of the viewport the way the primitive's own doc says a
-/// status bar should.
+/// The status bar's rect comes from `AppShellLayout::status_bar_bounds` —
+/// computed by the shell, not by any viewport arithmetic in
+/// `examples/hello.rs` itself — and still anchors to the bottom row of the
+/// viewport the way the primitive's own doc says a status bar should.
 #[test]
 fn hello_status_bar_anchors_to_the_last_row_via_shell_layout() {
     let driver = hello_driver(100, 10);
@@ -421,6 +417,29 @@ fn hello_q_exits() {
     let reaction = driver.type_char('q');
     assert_eq!(reaction, Reaction::Exit, "'q' should exit");
     assert!(driver.exited());
+}
+
+/// Pins the property this file's behavioural assertions above can't: that
+/// `examples/hello.rs` teaches the canonical path by never containing
+/// hand-computed geometry or a raw `Backend::draw_*` rasteriser call. A
+/// future edit could restore `backend.viewport()`/`backend.measure()` and
+/// still satisfy every assertion above (the status bar would still land on
+/// the last row either way) — this is the only guard that would catch that.
+#[test]
+fn hello_example_has_no_manual_geometry_or_raw_draw_calls() {
+    let src = include_str!("../examples/hello.rs");
+    for needle in ["backend.viewport()", "backend.measure("] {
+        assert!(
+            !src.contains(needle),
+            "examples/hello.rs should compute no geometry by hand (found `{needle}`) — \
+             use AppShellLayout's precomputed fields instead"
+        );
+    }
+    assert!(
+        !src.contains("backend.draw_"),
+        "examples/hello.rs should paint through ScreenLayout/Surface, not a raw \
+         Backend::draw_* call"
+    );
 }
 
 // ─── TextInputDemo: character typing + editing ──────────────────────────────

@@ -1,16 +1,15 @@
-//! The smallest quadraui app on the canonical `ShellApp` path (quadraui#1342:
-//! the old version computed a `Rect` by hand from `backend.viewport()` and
-//! `backend.measure()` and called `Backend::draw_status_bar_interactive`
-//! directly — `Backend::draw_*` is the *low-level* entry point
-//! (`docs/decisions/DECISIONS.md` D-006). `ShellApp` is canonical instead:
+//! The smallest quadraui app, on the canonical `ShellApp` path.
+//!
 //! [`AppShellLayout::status_bar_bounds`] below is computed for us, so there
 //! is no viewport arithmetic anywhere in this file, and painting goes
 //! through [`ScreenLayout`]/[`Surface`] — the same declarative frame-list
-//! path a multi-primitive screen uses — rather than a raw `draw_*` call.
+//! path a multi-primitive screen uses — rather than a raw `Backend::draw_*`
+//! call (`Backend::draw_*` is the *low-level* entry point; see
+//! `docs/decisions/DECISIONS.md` D-006).
 //!
-//! No shared `examples/common/` module (quadraui#799: that module pulls in
-//! every other example, so this "hello world" would secretly compile
-//! thousands of lines nothing here needs).
+//! Deliberately has no shared `examples/common/` module: that module pulls
+//! in every other example, so this "hello world" would secretly compile
+//! thousands of lines nothing here needs.
 //!
 //! `cargo run --example hello --features tui`
 //!
