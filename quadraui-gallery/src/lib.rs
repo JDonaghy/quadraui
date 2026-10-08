@@ -1,5 +1,4 @@
-//! `quadraui-gallery` — an interactive catalogue of quadraui primitives
-//! (issue #1341, part of the consumability epic #1340).
+//! `quadraui-gallery` — an interactive catalogue of quadraui primitives.
 //!
 //! One [`app::GalleryApp`] (a [`quadraui::ShellApp`]) drives an activity
 //! bar of primitive groups, a sidebar tree of the demos in the active

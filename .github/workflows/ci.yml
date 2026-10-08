@@ -409,6 +409,18 @@ jobs:
       - name: Test (win feature)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p quadraui --features win
+      # `quadraui-gallery`'s `win` arm (`src/main.rs`) is never reached by
+      # any step above: those are all `-p quadraui`, not the gallery
+      # crate, and the only place the gallery itself builds is the
+      # `tui`-feature steps near the top of this job (`--workspace
+      # --exclude kubeui-gtk`), which always co-enable `tui` and so never
+      # exercise `main.rs`'s `win` arm (see that file's `#[cfg]` priority
+      # order). Same gap, same fix shape as the `win`/`macos` compile
+      # gates above: a typo'd `run_with_shell` call in the gallery's `win`
+      # arm would otherwise ship green.
+      - name: Compile check (gallery, win feature)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p quadraui-gallery --features win
       # macOS compile gate, cross-target — the same trick the win compile
       # gate above plays, for the one backend that had no Linux-side gate
       # at all. `lib.rs` cfg's `mod macos` on `target_os = "macos"`, so a
@@ -730,6 +742,16 @@ jobs:
       # aren't workspace-wide.
       - name: Build (gtk_terminal example, gtk + terminal features)
         run: cargo build -p quadraui --example gtk_terminal --features gtk,terminal
+      # `quadraui-gallery`'s `gtk` arm (`src/main.rs`) is `cfg`-gated
+      # `all(feature = "gtk", not(feature = "tui"))`, so the plain `--features
+      # gtk,tui` build/test/clippy steps above — `tui` always co-enabled on
+      # this job, for the cross-backend parity suite — never compile it. A
+      # typo'd `run_with_shell` call in that arm would otherwise ship
+      # green despite the issue's headline deliverable being exactly
+      # `cargo run -p quadraui-gallery --features gtk`. `--features gtk`
+      # alone (no `tui`) is what actually reaches the arm.
+      - name: Compile check (gallery, gtk feature only)
+        run: cargo check -p quadraui-gallery --features gtk
       # Both backends registered at once, so the artifact from this job is
       # the full cross-backend matrix rather than a single column.
       - name: Conformance matrix (gtk + tui)

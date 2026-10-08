@@ -4,7 +4,7 @@
 //! shell (`crate::app::GalleryApp`) only ever iterates this list; it has
 //! no per-demo knowledge beyond what `Demo` exposes, so adding a demo is
 //! exactly one line here plus the demo's own module — no shell code
-//! changes (issue #1341's "registry" requirement).
+//! changes.
 
 use crate::demos::toast::ToastDemo;
 use crate::Demo;

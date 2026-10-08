@@ -33,6 +33,12 @@ pub trait Demo {
     /// method below takes the variant index so callers always know which
     /// configuration they're addressing; `render`/`handle`/`data` are
     /// free to ignore it when there is only one.
+    ///
+    /// The shell shows a clickable picker row above the Demo tab's own
+    /// content whenever this returns more than one name, and the clicked
+    /// name's index becomes the `variant` every other method is then
+    /// called with — no shell code change needed to reach a demo's
+    /// additional variants beyond listing them here.
     fn variants(&self) -> &'static [&'static str] {
         &["default"]
     }
@@ -74,6 +80,17 @@ pub trait Demo {
         let _ = (variant, caps);
         None
     }
+
+    /// Periodic callback, mirroring [`quadraui::ShellApp::tick`] — called
+    /// every frame while this demo is selected and its Demo tab is active,
+    /// whether or not an event arrived. Use for time-driven work a demo
+    /// can't express as a reaction to a `UiEvent`: a spinner frame, a
+    /// caret blink, a toast auto-dismiss countdown. Default: nothing to
+    /// do, returns `quadraui::Reaction::Continue`.
+    fn tick(&mut self, variant: usize, backend: &mut dyn Backend) -> quadraui::Reaction {
+        let _ = (variant, backend);
+        quadraui::Reaction::Continue
+    }
 }
 
 /// Trim `source` to the text between a `// gallery:begin` line and the
@@ -85,10 +102,10 @@ pub trait Demo {
 /// shows *something* on the Code tab rather than silently nothing, but
 /// fails that test's "has real markers" expectation loudly instead.
 pub fn extract_region(source: &str) -> &str {
-    let Some(begin_at) = source.find("gallery:begin") else {
+    let Some(begin_at) = source.find("// gallery:begin") else {
         return source.trim();
     };
-    let Some(end_at) = source.find("gallery:end") else {
+    let Some(end_at) = source.find("// gallery:end") else {
         return source.trim();
     };
     if end_at <= begin_at {

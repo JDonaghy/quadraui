@@ -151,6 +151,16 @@ jobs:
       # demo crates have no `macos` feature to lint here.
       - name: Clippy (macos feature)
         run: cargo clippy -p quadraui --features macos -- -D warnings
+      # `quadraui-gallery`'s `macos` arm (`src/main.rs`) only ever gets
+      # reached when `target_os = "macos"` *and* `--features macos` are
+      # both true (see that file's `#[cfg]` priority order) — no step in
+      # ci.yml builds the gallery crate under either condition (its win/
+      # macos compile gates there are `-p quadraui`, not the gallery; its
+      # gtk/tui legs build the gallery but never with `macos`). This is
+      # the one real `macos-latest` host, so it's the only place a typo'd
+      # `run_with_shell` call in that arm would be caught before merge.
+      - name: Build (gallery, macos feature)
+        run: cargo check -p quadraui-gallery --features macos
       # #797: the one place `cargo doc --features macos` compiles anything —
       # `lib.rs` gates `mod macos` on `target_os = "macos"`, so `ci.yml`'s
       # `doc` job (ubuntu-only) documents zero lines of `src/macos/`, same
