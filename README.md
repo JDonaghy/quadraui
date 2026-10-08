@@ -150,13 +150,17 @@ tracker.
 
 ```toml
 [dependencies]
-quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = ["tui", "gtk"] }
+quadraui = { version = "0.1", features = ["tui", "gtk"] }
 ```
 
-Feature flags and the system packages each backend needs are in
-[`quadraui/docs/INSTALL.md`](quadraui/docs/INSTALL.md). Pin a commit
-rather than following `develop`; both real consumers do. For
-sibling-checkout development, use
+Feature flags, the system packages each backend needs, and every
+platform combination CI verifies are in
+[`quadraui/docs/INSTALL.md`](quadraui/docs/INSTALL.md). To track
+unreleased work instead of the last crates.io release, pin a git
+revision rather than following `develop`'s tip — both real consumers do
+this today:
+`quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = [...] }`.
+For sibling-checkout development, use
 `quadraui = { path = "../quadraui/quadraui", features = [...] }`.
 
 Then:
