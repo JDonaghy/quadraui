@@ -1886,7 +1886,9 @@ impl Backend for GtkBackend {
         crate::gtk::set_current_nerd_font_fallback_family(family);
     }
 
-    /// Registers `bytes` as a Fontconfig application font — see
+    /// Registers `bytes` as a Fontconfig application font, and on macOS
+    /// also with Core Text directly (issue #1367 — GTK4-on-macOS's
+    /// default Pango font map never consults Fontconfig) — see
     /// `crate::gtk::app_font::register_font_from_memory`'s module doc for
     /// why this needs a process-private temp file (Fontconfig has no
     /// in-memory registration entry point) and why that is still nothing
@@ -1898,9 +1900,11 @@ impl Backend for GtkBackend {
         super::app_font::register_font_from_memory(bytes)
     }
 
-    /// Answers via Fontconfig's own match/substitution algorithm — see
-    /// `crate::gtk::app_font::has_font_family`'s doc for why a plain
-    /// `FcFontMatch` can't be used directly (issue #1024).
+    /// Answers via Fontconfig's own match/substitution algorithm, and on
+    /// macOS also via Core Text directly (issue #1367) — see
+    /// `crate::gtk::app_font::has_font_family`'s doc for why neither
+    /// backend's plain match/create call can be used directly (issue
+    /// #1024) and why macOS needs both consulted.
     fn has_font_family(&self, family: &str) -> Option<bool> {
         Some(super::app_font::has_font_family(family))
     }
