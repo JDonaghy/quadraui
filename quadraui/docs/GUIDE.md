@@ -55,12 +55,14 @@ cargo new two-pane && cd two-pane
 ```toml
 # Cargo.toml
 [dependencies]
-quadraui = { path = "/path/to/quadraui/quadraui", features = ["tui"] }
+quadraui = { version = "0.1", features = ["tui"] }
 ```
 
-(Once quadraui is on crates.io this becomes a version requirement
-instead of a path — see the crate root `README.md` for the current
-publish status.)
+[`INSTALL.md`](INSTALL.md) lists every backend feature and the system
+packages each one needs (GTK4 development libraries for `gtk`, for
+example). For a sibling checkout use
+`quadraui = { path = "/path/to/quadraui/quadraui", features = ["tui"] }`
+instead.
 
 ## Step 2: app state
 
