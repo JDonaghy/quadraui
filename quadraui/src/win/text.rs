@@ -76,6 +76,17 @@ pub struct DWrite {
     /// Nerd-Font fallback this handle was constructed with, if any —
     /// same reuse rationale as `family`.
     fallback: Option<IDWriteFontFallback>,
+    /// Same-family [`IDWriteTextFormat`]s at minimap row-pitch sizes
+    /// (issue #1354), keyed by the rounded DIP size
+    /// [`crate::primitives::minimap::minimap_font_px`] resolved — not by
+    /// the raw `f64` it returns, since that's a continuous function of
+    /// row pitch and a bare-`f64` `HashMap` key would almost never hit on
+    /// a second lookup even when two rows share a pitch (float equality).
+    /// `win::minimap::paint_row_glyphs` is the only reader
+    /// ([`Self::minimap_text_format`]); in practice a surface's rows all
+    /// share one pitch, so this holds at most a couple of entries per
+    /// `DWrite`, not one per row.
+    minimap_formats: RefCell<HashMap<i32, IDWriteTextFormat>>,
 }
 
 impl DWrite {
@@ -192,6 +203,7 @@ impl DWrite {
                 bold_text_format,
                 family: family.to_string(),
                 fallback: fallback.cloned(),
+                minimap_formats: RefCell::new(HashMap::new()),
             },
             line_height,
             char_width,
@@ -259,6 +271,86 @@ impl DWrite {
         } else {
             &self.text_format
         }
+    }
+
+    /// Same-family `IDWriteTextFormat` at `size_px` DIPs, cached by
+    /// rounded size (issue #1354) — what
+    /// [`crate::win::minimap::paint_row_glyphs`]'s `Characters` branch
+    /// shapes through, so a minimap row paints at
+    /// [`crate::primitives::minimap::minimap_font_px`]'s resolved size
+    /// rather than this handle's own editor-size [`Self::text_format`].
+    /// `size_px` is rounded to the nearest DIP before the cache lookup —
+    /// row pitch is already a small, mostly-fixed set of values in
+    /// practice (one per `MinimapScale`), so this keeps the cache at a
+    /// couple of entries rather than growing one per float-distinct
+    /// `vline.bounds.height`, and side-steps `f64`-as-a-map-key float
+    /// equality entirely.
+    ///
+    /// No word-wrapping/fallback divergence from [`Self::text_format`]:
+    /// built the same way (`DWRITE_WORD_WRAPPING_NO_WRAP`, this handle's
+    /// own Nerd-Font fallback if any) via [`create_text_format`], just at
+    /// a different size.
+    pub(crate) fn minimap_text_format(&self, size_px: f64) -> WinResult<IDWriteTextFormat> {
+        let key = (size_px.round() as i32).max(1);
+        if let Some(format) = self.minimap_formats.borrow().get(&key) {
+            return Ok(format.clone());
+        }
+
+        let format = create_text_format(
+            &self.factory,
+            &self.family,
+            key as f32,
+            DWRITE_FONT_WEIGHT_NORMAL,
+        )?;
+        // SAFETY: `format` is the live interface just created above;
+        // `SetWordWrapping` takes a plain enum value, no pointers — same
+        // call `DWrite::new` makes on `text_format`/`bold_text_format`,
+        // for the same reason (see that call's own doc comment).
+        unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
+        if let Some(fallback) = &self.fallback {
+            // Same "degrade, don't fail the paint" posture `DWrite::new`
+            // takes for the editor-size formats (issue #929 review) —
+            // see that call's doc comment.
+            if let Err(err) = apply_fallback_to_format(&format, fallback) {
+                crate::diagnostics::emit(format!(
+                    "quadraui: IDWriteTextFormat1::SetFontFallback failed for a minimap text \
+                     format at {key}px ({err:?}); continuing without a Nerd-Font fallback"
+                ));
+            }
+        }
+
+        self.minimap_formats
+            .borrow_mut()
+            .insert(key, format.clone());
+        Ok(format)
+    }
+
+    /// Paint `text` inside `rect` (DIPs, target-relative) in `color` at
+    /// `size_px` DIPs — [`Self::draw_text`]'s minimap-sized twin (issue
+    /// #1354), via [`Self::minimap_text_format`] rather than this
+    /// handle's editor-size format.
+    pub(crate) fn draw_text_minimap(
+        &self,
+        target: &ID2D1RenderTarget,
+        text: &str,
+        rect: Rect,
+        color: Color,
+        size_px: f64,
+    ) -> WinResult<()> {
+        let format = self.minimap_text_format(size_px)?;
+        draw_text(target, &format, text, rect, color)
+    }
+
+    /// Number of distinct sizes cached by [`Self::minimap_text_format`] so
+    /// far — `#[cfg(test)]` acceptance hook (issue #1354) proving a
+    /// `Characters`-mode minimap paint actually requests a minimap-sized
+    /// format (and, together with a same-size/different-size pair of
+    /// calls, that the cache hits rather than reallocating per paint)
+    /// rather than silently falling back to the editor-size
+    /// [`Self::text_format`] the way pre-fix `paint_row_glyphs` did.
+    #[cfg(test)]
+    pub(crate) fn minimap_format_cache_len(&self) -> usize {
+        self.minimap_formats.borrow().len()
     }
 }
 
@@ -1297,5 +1389,35 @@ mod tests {
              prefix that fits (clipped at the right edge), not vanish entirely because \
              the first word reflowed onto a line this single-line-tall box can't show"
         );
+    }
+
+    /// Issue #1354: [`DWrite::minimap_text_format`] must cache by rounded
+    /// px — a second call at the exact same size reuses the cached
+    /// `IDWriteTextFormat` (same underlying COM object, proven via
+    /// `Interface::as_raw` identity) rather than allocating a fresh one
+    /// every row/frame, and a different size still gets its own, distinct
+    /// format.
+    #[test]
+    fn minimap_text_format_caches_by_rounded_px() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+
+        let a = dwrite.minimap_text_format(6.0).expect("format at 6px");
+        let b = dwrite
+            .minimap_text_format(6.0)
+            .expect("format at 6px again");
+        assert_eq!(
+            a.as_raw(),
+            b.as_raw(),
+            "the same rounded px must reuse the cached format"
+        );
+        assert_eq!(dwrite.minimap_format_cache_len(), 1);
+
+        let c = dwrite.minimap_text_format(12.0).expect("format at 12px");
+        assert_ne!(
+            a.as_raw(),
+            c.as_raw(),
+            "a different rounded px must create a new format"
+        );
+        assert_eq!(dwrite.minimap_format_cache_len(), 2);
     }
 }
