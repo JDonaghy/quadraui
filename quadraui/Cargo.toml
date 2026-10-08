@@ -49,18 +49,76 @@ categories = ["gui", "command-line-interface"]
 rust-version = "1.92.0"
 # Package hygiene: the published `.crate` ships `src/`,
 # `examples/` (the README points readers at them directly, and they are
-# useful on crates.io's own source viewer) and `docs/`, but not the
-# in-repo-only test/bench machinery — `tests/` carries this crate's own
-# conformance-scenario fixtures and driver harnesses, `benches/` carries
-# criterion benches — nothing a consumer depending on this crate needs at
-# build or run time, and both are excluded here purely to keep the tarball
-# smaller (verified with `cargo package --list -p quadraui`: dropping them
-# took the package from 629 files / 3.3MiB compressed to 580 files /
-# 3.0MiB compressed). `cargo package`/`cargo publish` happily verify-build
-# a manifest whose `[[bench]]`/non-lib `[[test]]`-implied paths point at
-# now-excluded files — it only warns ("ignoring benchmark ... as ... is not
-# included in the published package") and skips them, it does not error.
-exclude = ["tests/", "benches/"]
+# useful on crates.io's own source viewer) and the *consumer-facing* half
+# of `docs/`, but not the in-repo-only test/bench machinery — `tests/`
+# carries this crate's own conformance-scenario fixtures and driver
+# harnesses, `benches/` carries criterion benches — nothing a consumer
+# depending on this crate needs at build or run time, and both are
+# excluded here purely to keep the tarball smaller. `cargo package`/
+# `cargo publish` happily verify-build a manifest whose `[[bench]]`/
+# non-lib `[[test]]`-implied paths point at now-excluded files — it only
+# warns ("ignoring benchmark ... as ... is not included in the published
+# package") and skips them, it does not error.
+#
+# `docs/` carries both consumer-facing guides and internal-only material
+# — audits, decision logs, draft proposals, session notes — that is pure
+# noise on crates.io's source viewer and docs.rs's packaged-source tab:
+# nothing a consumer depending on the published crate needs. The files
+# listed below stay out of the tarball because they are written for
+# *this repo's own contributors* (session-start reading, primitive-
+# authoring rules, backend-implementation guides, design-sketch/decision
+# records, audits), not for someone depending on the published crate:
+#
+# - `docs/ARCHITECTURE.md` — internal `src/` module-layout rules.
+# - `docs/BACKEND.md` — guide for contributing a *fifth in-tree* backend;
+#   `Backend` is sealed, so this is moot for anyone outside this repo.
+#   Mirrors the crate-root `BACKEND.md`, which stays shipping since it's
+#   reachable from `lib.rs`'s own rustdoc (`See [`Backend`]'s own
+#   rustdoc ... see BACKEND.md`).
+# - `docs/IME_INPUT_PROPOSAL.md`, `docs/ROWS_PROVIDER_PROPOSAL.md`,
+#   `docs/WEB_BACKEND_PROPOSAL.md` — unimplemented design proposals.
+# - `docs/LESSONS.md`, `docs/NATIVE_GUI_LESSONS.md` — contributor-facing
+#   "what not to do" postmortems from building the in-tree backends.
+# - `docs/PRIMITIVE_RULES.md` — rules for authoring a new primitive
+#   *inside this crate*.
+# - `docs/SESSION_HISTORY.md`, `docs/SMELL_AUDIT_2026-07.md`,
+#   `docs/audits/` — session notes and independent framework audits.
+# - `docs/TESTING.md` — this repo's own quality-gate commands.
+# - `docs/UI_CRATE_DESIGN.md` — pre-implementation design sketch, kept as
+#   a decision record.
+# - `docs/decisions/` — the primitive-distinctness/API decision log
+#   (`DECISIONS.md`) and the `Backend` trait design proposal
+#   (`BACKEND_TRAIT_PROPOSAL.md`); both are "why we built it this way"
+#   records for maintainers, read at agent session start, not consumer
+#   how-to-use-it docs.
+#
+# Everything else under `docs/` (`GUIDE.md`, `APP_ARCHITECTURE.md`,
+# `CONSUMER_PATTERNS.md`, `TUI_CONSUMER_TOUR.md`, `CLIPBOARD.md`,
+# `COMPOSE.md`, `EVENT_ROUTING_TOUR.md`, `INSTALL.md`,
+# `KITTY_KEYBOARD_PROTOCOL.md`) is written for app authors consuming this
+# crate and keeps shipping. None of the excluded files above are reached
+# by a rustdoc `#[doc = include_str!(...)]` — confirmed by grepping
+# `src/` for `include_str!` — so excluding them cannot break the
+# docs.rs build; `tests/package_hygiene.rs` asserts both halves of this
+# split via `cargo package --list -p quadraui`.
+exclude = [
+    "tests/",
+    "benches/",
+    "docs/ARCHITECTURE.md",
+    "docs/BACKEND.md",
+    "docs/IME_INPUT_PROPOSAL.md",
+    "docs/LESSONS.md",
+    "docs/NATIVE_GUI_LESSONS.md",
+    "docs/PRIMITIVE_RULES.md",
+    "docs/ROWS_PROVIDER_PROPOSAL.md",
+    "docs/SESSION_HISTORY.md",
+    "docs/SMELL_AUDIT_2026-07.md",
+    "docs/TESTING.md",
+    "docs/UI_CRATE_DESIGN.md",
+    "docs/WEB_BACKEND_PROPOSAL.md",
+    "docs/audits/",
+    "docs/decisions/",
+]
 
 # docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
 # `layout`) so a published crate actually renders all backends' public API
