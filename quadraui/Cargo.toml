@@ -66,15 +66,15 @@ rust-version = "1.92.0"
 # nothing a consumer depending on the published crate needs. The files
 # listed below stay out of the tarball because they are written for
 # *this repo's own contributors* (session-start reading, primitive-
-# authoring rules, backend-implementation guides, design-sketch/decision
+# authoring rules, backend-implementation guides, design-sketch
 # records, audits), not for someone depending on the published crate:
 #
 # - `docs/ARCHITECTURE.md` — internal `src/` module-layout rules.
 # - `docs/BACKEND.md` — guide for contributing a *fifth in-tree* backend;
 #   `Backend` is sealed, so this is moot for anyone outside this repo.
-#   Mirrors the crate-root `BACKEND.md`, which stays shipping since it's
-#   reachable from `lib.rs`'s own rustdoc (`See [`Backend`]'s own
-#   rustdoc ... see BACKEND.md`).
+#   Overlaps with (does not mirror) the crate-root `BACKEND.md`, which
+#   stays shipping since it's reachable from `lib.rs`'s own rustdoc
+#   (`See [`Backend`]'s own rustdoc ... see BACKEND.md`).
 # - `docs/IME_INPUT_PROPOSAL.md`, `docs/ROWS_PROVIDER_PROPOSAL.md`,
 #   `docs/WEB_BACKEND_PROPOSAL.md` — unimplemented design proposals.
 # - `docs/LESSONS.md`, `docs/NATIVE_GUI_LESSONS.md` — contributor-facing
@@ -86,21 +86,53 @@ rust-version = "1.92.0"
 # - `docs/TESTING.md` — this repo's own quality-gate commands.
 # - `docs/UI_CRATE_DESIGN.md` — pre-implementation design sketch, kept as
 #   a decision record.
-# - `docs/decisions/` — the primitive-distinctness/API decision log
-#   (`DECISIONS.md`) and the `Backend` trait design proposal
-#   (`BACKEND_TRAIT_PROPOSAL.md`); both are "why we built it this way"
-#   records for maintainers, read at agent session start, not consumer
-#   how-to-use-it docs.
+#
+# `docs/decisions/` (`DECISIONS.md`, `BACKEND_TRAIT_PROPOSAL.md`) is
+# *not* in the list above and keeps shipping. Both files are also read at
+# agent session start, but that doesn't make them maintainer-only:
+# `DECISIONS.md`'s own D-019 entry ("Stability policy before 1.0: what a
+# `0.x` release may change") says explicitly that it is written for "an
+# outside developer deciding whether to depend on the crate" — the most
+# consumer-facing paragraph in the repo, and the one `docs/INSTALL.md`
+# (also shipping) links to as exactly that.
 #
 # Everything else under `docs/` (`GUIDE.md`, `APP_ARCHITECTURE.md`,
 # `CONSUMER_PATTERNS.md`, `TUI_CONSUMER_TOUR.md`, `CLIPBOARD.md`,
 # `COMPOSE.md`, `EVENT_ROUTING_TOUR.md`, `INSTALL.md`,
-# `KITTY_KEYBOARD_PROTOCOL.md`) is written for app authors consuming this
-# crate and keeps shipping. None of the excluded files above are reached
-# by a rustdoc `#[doc = include_str!(...)]` — confirmed by grepping
-# `src/` for `include_str!` — so excluding them cannot break the
-# docs.rs build; `tests/package_hygiene.rs` asserts both halves of this
-# split via `cargo package --list -p quadraui`.
+# `KITTY_KEYBOARD_PROTOCOL.md`, `decisions/`) is written for app authors
+# consuming this crate and keeps shipping — confirmed with
+# `cargo package --list -p quadraui`: 584 files packaged with this
+# exclude list, vs. 582 with `docs/decisions/` also excluded. The
+# tests/benches-only baseline, with `docs/` untouched by `exclude`
+# entirely, is 629 files / 3.3MiB compressed, down to 580 files / 3.0MiB
+# compressed with just `tests/`/`benches/` excluded. None of the
+# excluded files above are reached by a rustdoc
+# `#[doc = include_str!(...)]` — confirmed by grepping `src/` for
+# `include_str!` — so excluding them cannot break the docs.rs build.
+# `src/lib.rs`'s own crate rustdoc (the docs.rs front page) names only
+# files that ship with this exclude list in place.
+#
+# Known, accepted dead relative-markdown-links in the packaged tarball:
+# shipping `docs/decisions/` resolves most markdown links from shipping
+# docs into other `docs/` files, but three links remain into files that
+# really are internal-only and are not worth shipping just to keep a
+# link alive. These only affect someone browsing the packaged source on
+# crates.io/docs.rs's source tab — nothing executable, and nothing a
+# rustdoc `#[doc = include_str!(...)]` reaches (see above), so none of
+# these can break the docs.rs build:
+# - `docs/GUIDE.md` → `docs/TESTING.md` (excluded above).
+# - `docs/CONSUMER_PATTERNS.md` → `docs/ROWS_PROVIDER_PROPOSAL.md`
+#   (excluded above).
+# - the crate-root `BACKEND.md` (which ships) → `docs/UI_CRATE_DESIGN.md`
+#   (excluded above), twice.
+#
+# `tests/package_hygiene.rs` asserts this split two ways: a
+# `#[ignore]`d pair of tests runs the real `cargo package --list
+# -p quadraui` and checks both halves; a plain (always-run)
+# test parses this very `exclude` array and checks the same two lists
+# against it directly, so a doc added to one list without a matching
+# `exclude`/non-`exclude` entry here fails `cargo test` with no
+# `--ignored` flag needed.
 exclude = [
     "tests/",
     "benches/",
@@ -117,7 +149,6 @@ exclude = [
     "docs/UI_CRATE_DESIGN.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/",
-    "docs/decisions/",
 ]
 
 # docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
