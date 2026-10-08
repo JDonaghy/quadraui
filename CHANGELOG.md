@@ -45,17 +45,27 @@ Pre-1.0, per Cargo's own semver convention: a `0.MINOR.PATCH` bump treats
 treats `MINOR`/`PATCH` combined (additive or fix). A rule-8 breaking change
 bumps `MINOR`; everything else bumps `PATCH`.
 
-Releases are tagged `vX.Y.Z` against `develop`, the default branch (`main`
-is unmaintained). Tagging is a coordinator release action (see
-`quadraui#797`), not something an individual PR does — a PR adds
-its entry under `[Unreleased]`, and the coordinator retitles that section to
-`[X.Y.Z] - YYYY-MM-DD` (adding a fresh empty `[Unreleased]` above it) at
-release time.
-Pushing the tag queues `.github/workflows/release.yml`, which publishes to
+Day-to-day work merges to `develop`; `main` is the release branch and only
+moves when a release is promoted. Cutting a release is a coordinator action
+(see `quadraui#797`), not something an individual PR does — a PR adds
+its entry under `[Unreleased]`, and at release time the coordinator:
+
+1. On `develop`, bumps `quadraui/Cargo.toml`'s version (plus `Cargo.lock`)
+   and retitles `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, adding a fresh
+   empty `[Unreleased]` above it.
+2. Promotes `develop` to `main` through a PR, so the release commit has CI on it.
+
+Every push to `main` runs `.github/workflows/release.yml` (quadraui#1368).
+If `vX.Y.Z` is already tagged it does nothing. Otherwise it publishes to
 crates.io via Trusted Publishing once a reviewer approves the `release`
-environment, then creates the GitHub release from the `[X.Y.Z]` section.
+environment, then pushes the `vX.Y.Z` tag and creates the GitHub release
+from the `[X.Y.Z]` section. Nobody tags by hand.
+<!-- TODO at cut: reconcile with #1368's final implementation -->
+
 
 ## [Unreleased]
+
+## [0.1.2] - YYYY-MM-DD
 
 ### Changed
 
@@ -65,6 +75,27 @@ environment, then creates the GitHub release from the `[X.Y.Z]` section.
   gtk4 0.11 dependency family. `ci.yml`'s new `msrv` job builds every
   backend feature, plus a zero-feature leg, at exactly that version on
   every PR.
+- The published crate no longer ships contributor-only docs (audits,
+  session notes, draft proposals); consumer docs, including
+  `docs/decisions/`, still ship (issue #1351).
+- `examples/hello.rs` is rewritten on the canonical `ShellApp` path
+  (`AppShellLayout` + `ScreenLayout`) instead of calling
+  `Backend::draw_status_bar_interactive` with a hand-computed rect.
+
+### Fixed
+
+- **TUI in macOS Terminal.app: text after an underline-coloured span
+  rendered faint.** Terminal.app has no SGR 58 underline-colour support
+  and applied crossterm's trailing parameters as plain SGR codes (`2` =
+  faint). The underline colour is now stripped when
+  `TERM_PROGRAM=Apple_Terminal`, as it already was for ConPTY (#1366).
+  Confirmed on real hardware.
+<!-- TODO at cut: add #1367 (GTK on macOS icon font) if merged -->
+
+### Documentation
+
+- Every public primitive now has a compiling rustdoc `# Examples`
+  section, so docs.rs shows working code for each of them (issue #1352).
 
 ## [0.1.1] - 2026-10-08
 
