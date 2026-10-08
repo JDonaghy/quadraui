@@ -23,14 +23,35 @@ keywords = ["gui", "tui", "cross-platform", "widgets", "framework"]
 # rejects an unrecognised one at upload time, not at `cargo package` time,
 # so there is no local dry-run check for a typo here beyond this comment.
 categories = ["gui", "command-line-interface"]
-# Matches `rust-toolchain.toml`'s pin exactly (see that file's header for why
-# the pin exists at all — every stable release can ship new clippy lints and
-# this repo runs `-D warnings`). Keeping the two in lockstep means an older
-# rustc gets cargo's own "package `quadraui` requires rustc 1.97.1 or newer"
-# error instead of an opaque parse/feature failure deep in compilation.
-# Bumping the toolchain pin and this field is one commit, not two — do them
-# together.
-rust-version = "1.97.1"
+# Deliberately NOT matched to `rust-toolchain.toml`'s pin (issue #1350).
+# The two answer different questions: `rust-toolchain.toml` pins the
+# compiler *this repo's own CI and devs* use, so that a new stable release's
+# clippy lints under `-D warnings` can't turn CI red with zero code changes
+# (see that file's header). `rust-version` is the oldest compiler a
+# *consumer* can build this crate with — pinning it to the newest toolchain
+# would reject anyone a release behind for no technical reason.
+#
+# 1.92.0 is the real floor, not a round-number guess: it is the declared
+# `rust-version` of `gtk4` 0.11.4 and `pangocairo` 0.22.9 (the `gtk` feature's
+# glib-rs 0.22 dependency family, both `edition = "2024"`), which is the
+# highest floor of any dependency this crate pulls in on a Linux-checkable
+# feature. Verified both ways with a locally-installed `1.92.0` toolchain:
+# `cargo +1.92.0 check -p quadraui --features tui,gtk,win,terminal,layout`
+# succeeds, and dropping one more point release
+# (`cargo +1.91.0 check -p quadraui --features gtk`) fails with
+# "gtk4-sys@0.11.4 requires rustc 1.92" straight out of dependency
+# resolution — so 1.92.0 isn't conservative, it's load-bearing. The
+# `.github/workflows/ci.yml` `msrv` job re-runs that same check on every PR
+# so this floor is tested, not just hoped for. `win`/`macos` carry no
+# equivalent Linux-side proof: their real WinAPI/AppKit calls are
+# `cfg(target_os = "windows"/"macos")`-gated out entirely on the ubuntu
+# runner this is verified on (see each feature's own comment below), so
+# those backends' true floor on their native OS is unverified by this field.
+#
+# Bumping the toolchain pin in `rust-toolchain.toml` is independent of this
+# field now — do NOT bump this to match it. Only bump `rust-version` when a
+# dependency update actually raises the real floor found above.
+rust-version = "1.92.0"
 # Package hygiene: the published `.crate` ships `src/`,
 # `examples/` (the README points readers at them directly, and they are
 # useful on crates.io's own source viewer) and `docs/`, but not the
