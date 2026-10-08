@@ -3032,7 +3032,6 @@ name = "quadraui-gallery"
 version = "0.0.1"
 dependencies = [
  "quadraui",
- "serde",
  "serde_json",
 ]
 

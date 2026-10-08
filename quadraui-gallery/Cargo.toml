@@ -7,14 +7,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[[bin]]
-name = "quadraui-gallery"
-path = "src/main.rs"
-
-[lib]
-name = "quadraui_gallery"
-path = "src/lib.rs"
-
 [features]
 # No `default` key — same reasoning as `quadraui/Cargo.toml`'s own
 # `[features]` header: a bare `cargo build -p quadraui-gallery` must not
@@ -39,5 +31,4 @@ win = ["quadraui/win"]
 
 [dependencies]
 quadraui = { path = "../quadraui" }
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

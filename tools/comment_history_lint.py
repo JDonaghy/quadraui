@@ -67,6 +67,7 @@ SCAN_ROOTS = [
     "kubeui-core",
     "kubeui",
     "kubeui-gtk",
+    "quadraui-gallery",
 ]
 
 COMMENT_MARKER_BY_SUFFIX = {

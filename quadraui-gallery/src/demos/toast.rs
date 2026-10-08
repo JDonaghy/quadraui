@@ -1,4 +1,4 @@
-//! `Toast` demo — the gallery's seed exhibit (issue #1341), adapted from
+//! `Toast` demo — the gallery's seed exhibit, adapted from
 //! `quadraui/examples/common/toast_app.rs`.
 //!
 //! Exercises [`ToastOverlay`] with varying severities, dismiss, and an

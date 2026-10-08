@@ -1,5 +1,5 @@
-//! End-to-end `TuiDriver` tests for the gallery shell (issue #1341's
-//! acceptance bar). Drives the real [`GalleryApp`] — the same
+//! End-to-end `TuiDriver` tests for the gallery shell. Drives the real
+//! [`GalleryApp`] — the same
 //! [`quadraui::ShellApp`] `src/main.rs`'s `tui` arm runs — through the
 //! `event → handle → render` path against a headless `TestBackend`, via
 //! [`quadraui::tui::testing::driver_with_shell`] (the `ShellApp`
@@ -8,10 +8,12 @@
 //! Assertions use `find()` / `screen_contains()` only — no hardcoded
 //! coordinates, per `CLAUDE.md`'s "Every TUI example also ships an
 //! automated black-box test" rule.
+#![cfg(feature = "tui")]
 
-use quadraui::tui::testing::driver_with_shell;
+use quadraui::tui::testing::{driver_with_shell, TuiDriver};
+use quadraui::{testing::ConformanceDriver, AppLogic};
 
-use quadraui_gallery::app::{group_icon, GROUPS};
+use quadraui_gallery::app::{group_icon, group_panel_id, GROUPS};
 use quadraui_gallery::registry::registry;
 use quadraui_gallery::GalleryApp;
 
@@ -24,6 +26,26 @@ fn overlays_group_index() -> usize {
         .iter()
         .position(|g| *g == "Overlays")
         .expect("GROUPS must include \"Overlays\" while ToastDemo is registered there")
+}
+
+/// Click `GROUPS[index]`'s activity-bar item at its real painted bounds,
+/// resolved from `ConformanceDriver::inventory()`'s registered zone for
+/// [`group_panel_id`] — not a scraped icon glyph. Used by the
+/// registry-driven test below, which (unlike the other tests in this
+/// file) must visit every group, including ones no demo renders into
+/// today, so it can't rely on `driver.find(group_icon(i))` the way those
+/// other tests do (a demo registered into `GROUPS[0]` could paint a `"1"`
+/// of its own and make that scrape ambiguous).
+fn click_group_zone<A: AppLogic>(driver: &mut TuiDriver<A>, index: usize) {
+    let id = group_panel_id(index);
+    let zone = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == id)
+        .unwrap_or_else(|| panic!("no registered zone for group {index}'s activity-bar item"))
+        .bounds;
+    driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
 }
 
 /// Click the Overlays activity-bar icon, click the Toast sidebar row,
@@ -191,8 +213,8 @@ fn keying_a_demo_widget_appends_to_the_event_log() {
     );
 }
 
-/// Table-driven acceptance test over the whole registry (issue #1341):
-/// every registered demo renders without panicking, and its Code region
+/// Table-driven acceptance test over the whole registry: every registered
+/// demo renders without panicking, and its Code region
 /// (the text between its `// gallery:begin` / `// gallery:end` markers)
 /// is non-empty. Port issues get this coverage for free by appending to
 /// `registry::registry`.
@@ -208,7 +230,14 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
 
         // Driving each demo through the real gallery shell (rather than
         // calling `Demo::render` directly) exercises the exact code path
-        // a user reaches: group switch → sidebar select → render.
+        // a user reaches: group switch → sidebar select → render. Group
+        // navigation clicks the activity-bar item's real zone bounds
+        // (via `ConformanceDriver::inventory()`), not a scraped icon
+        // glyph — `group_icon`'s plain digits are only collision-free
+        // with a group's own rendered content by accident of timing (see
+        // that constant's doc), and this test is exactly the one that
+        // will one day register a demo into `GROUPS[0]` and make a
+        // digit-scraping click land on the wrong element.
         let config = GalleryApp::config();
         let mut driver = driver_with_shell(GalleryApp::new(), config, 100, 32);
         let group_idx = GROUPS
@@ -221,10 +250,7 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
                     demo.group()
                 )
             });
-        let icon = group_icon(group_idx);
-        if let Some((x, y)) = driver.find(icon) {
-            driver.click(x, y);
-        }
+        click_group_zone(&mut driver, group_idx);
         if let Some((x, y)) = driver.find(demo.name()) {
             driver.click(x, y);
         }
