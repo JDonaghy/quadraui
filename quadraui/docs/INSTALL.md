@@ -36,8 +36,13 @@ To follow unreleased work, pin a git revision rather than tracking `develop`:
 `quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = [...] }`.
 That is what the in-house consumers (vimcode, coord-tui) do.
 
-**Rust version.** The crate currently declares `rust-version = "1.97.1"`, the same toolchain
-its CI pins. Lowering that to the real minimum is tracked in quadraui#1350.
+**Rust version.** The crate declares `rust-version = "1.92.0"` — the real floor, held up
+by the `gtk` feature's glib-rs 0.22 / gtk4 0.11 dependency family. That is older than
+`rust-toolchain.toml`'s pin (which this repo's own CI and devs build with, so a new stable
+release's clippy lints can't turn CI red with zero code changes); the two are deliberately
+not kept in lockstep, since they answer different questions. `ci.yml`'s `msrv` job builds
+every backend feature at exactly 1.92.0 on every PR, so this floor is tested, not just
+declared.
 
 ## Features
 

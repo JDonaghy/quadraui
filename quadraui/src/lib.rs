@@ -699,4 +699,78 @@ version = \"9.9.9\"\n";
         assert_eq!(package_version("[package]\nname = \"quadraui\"\n"), None);
         assert_eq!(package_version("[dependencies]\nversion = \"1.0\"\n"), None);
     }
+
+    /// The manifest's declared `rust-version`, in the exact
+    /// `rust-version = "X.Y"` / `rust-version = "X.Y.Z"` shape
+    /// `.github/workflows/ci.yml`'s `msrv` job parses with a `sed`
+    /// one-liner — that job's own source of truth for the consumer MSRV
+    /// floor it builds against. Returns `None` for anything that shape
+    /// doesn't cover (missing key, non-numeric component, a fourth
+    /// component, trailing text after the closing quote), mirroring what
+    /// that job's parser treats as a parse failure.
+    fn declared_rust_version(manifest: &str) -> Option<&str> {
+        manifest.lines().map(str::trim).find_map(|line| {
+            let value = line
+                .strip_prefix("rust-version")?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim();
+            let inner = value.strip_prefix('"')?.strip_suffix('"')?;
+            let mut parts = inner.split('.');
+            let major = parts.next()?;
+            let minor = parts.next()?;
+            let patch = parts.next();
+            if parts.next().is_some() {
+                return None;
+            }
+            let is_digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+            if !is_digits(major) || !is_digits(minor) {
+                return None;
+            }
+            if let Some(p) = patch {
+                if !is_digits(p) {
+                    return None;
+                }
+            }
+            Some(inner)
+        })
+    }
+
+    /// `rust-version` must parse in the exact shape
+    /// `.github/workflows/ci.yml`'s `msrv` job expects, or that job's own
+    /// `::error::` guard fires on every PR instead of testing the declared
+    /// floor. Catches a shape drift here, in-tree, instead of in a red CI
+    /// run.
+    #[test]
+    fn rust_version_parses_in_the_shape_the_msrv_job_expects() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            declared_rust_version(manifest).is_some(),
+            "quadraui/Cargo.toml's rust-version line is missing, or not in \
+             the exact `rust-version = \"X.Y\"` / `rust-version = \"X.Y.Z\"` \
+             shape `.github/workflows/ci.yml`'s `msrv` job parses with `sed`. \
+             Fix the field's shape, and update that job's parser to match if \
+             the shape itself is deliberately changing.",
+        );
+    }
+
+    #[test]
+    fn declared_rust_version_rejects_malformed_shapes() {
+        assert_eq!(declared_rust_version("rust-version = \"1\"\n"), None);
+        assert_eq!(declared_rust_version("rust-version = \"1.92.0.1\"\n"), None);
+        assert_eq!(declared_rust_version("rust-version = \"x.y\"\n"), None);
+        assert_eq!(
+            declared_rust_version("rust-version = \"1.92.0\"  # trailing\n"),
+            None
+        );
+        assert_eq!(declared_rust_version("name = \"quadraui\"\n"), None);
+        assert_eq!(
+            declared_rust_version("rust-version = \"1.92\"\n"),
+            Some("1.92")
+        );
+        assert_eq!(
+            declared_rust_version("rust-version = \"1.92.0\"\n"),
+            Some("1.92.0")
+        );
+    }
 }

@@ -765,7 +765,7 @@ jobs:
           if-no-files-found: warn
 
   msrv:
-    # #1350: `quadraui/Cargo.toml`'s `rust-version` is the oldest compiler a
+    # `quadraui/Cargo.toml`'s `rust-version` is the oldest compiler a
     # *consumer* can build this crate with — a different question from
     # `rust-toolchain.toml`'s pin (see that file's header, and `Cargo.toml`'s
     # own `rust-version` comment). Declaring a floor and never testing it is
@@ -786,35 +786,53 @@ jobs:
     # Installs that toolchain explicitly via `dtolnay/rust-toolchain@master`
     # with an explicit `toolchain:` input (not the auto-detecting `@stable`
     # used elsewhere in this file, which would just reinstall
-    # `rust-toolchain.toml`'s 1.97.1 pin) and invokes it with
-    # `cargo +<version>` rather than `rustup default`/`rustup override`:
-    # this checkout's `rust-toolchain.toml` is a directory-level override
-    # that beats a plain `rustup default` regardless of what this job just
-    # installed (see that file's own header) — only the `+toolchain`
-    # command-line form outranks it.
+    # `rust-toolchain.toml`'s pin) and invokes it with `cargo +<version>`
+    # rather than `rustup default`/`rustup override`: this checkout's
+    # `rust-toolchain.toml` is a directory-level override that beats a plain
+    # `rustup default` regardless of what this job just installed (see that
+    # file's own header) — only the `+toolchain` command-line form outranks
+    # it.
     #
     # One matrix entry per Linux-checkable backend feature, mirroring the
-    # `tui`/`gtk` jobs' own feature sets. `macos` is excluded: `lib.rs` gates
-    # `mod macos` on `target_os = "macos"`, so `cargo check --features macos`
-    # on this ubuntu runner compiles none of `src/macos/` and would prove
-    # nothing about the floor there — real macOS MSRV verification would
-    # need a `macos-latest` runner this job doesn't have (see `Cargo.toml`'s
-    # `rust-version` comment for the same gap, called out explicitly rather
-    # than silently assumed). `win` stays in: its real WinAPI calls are
-    # `cfg(target_os = "windows")`-gated with a `todo!()` fallback body (see
-    # that feature's own Cargo.toml comment), so a plain `cargo check` here
-    # still type-checks the whole module on Linux — the same trick the `tui`
-    # job's own win compile gate already relies on.
+    # `tui`/`gtk` jobs' own feature sets, plus a zero-feature leg (`none`)
+    # since `[features]` has no `default` and `quadraui = "0.1"` with no
+    # features on is itself a supported consumer shape. `win` stays in: its
+    # real WinAPI calls are `cfg(target_os = "windows")`-gated with a
+    # `todo!()` fallback body (see that feature's own Cargo.toml comment),
+    # so a plain `cargo check` here still type-checks the whole module on
+    # Linux — the same trick the `tui` job's own win compile gate already
+    # relies on.
+    #
+    # `macos` is excluded, and *not* because this runner lacks macOS
+    # hardware — the `tui` job above already proves cross-target `cargo
+    # check` is sufficient for `src/macos/` compile-truth with no
+    # `macos-latest` runner and no Apple SDK (see its own "macOS compile
+    # gate, cross-target" step), and `cargo check` never links. The actual
+    # blocker is specific to *this* job: that step's `rustup target add
+    # aarch64-apple-darwin` (no `--toolchain` flag) lands the target's
+    # `rust-std` on whichever toolchain `rust-toolchain.toml`'s directory
+    # override currently resolves to, which is exactly what that job wants,
+    # since it checks under the pinned toolchain. This job instead needs
+    # the std on the *MSRV* toolchain specifically (installed alongside, but
+    # not selected by the directory override), which means either threading
+    # a `--toolchain` flag through `rustup target add` or setting
+    # `RUSTUP_TOOLCHAIN` for that one invocation — and
+    # `tools/lint/src/cross_target_toolchain.rs`'s
+    # `every_cross_target_build_installs_its_target_with_rustup` check only
+    # recognises a bare `rustup target add <triple>` with nothing else on
+    # the line as satisfying a `--target` use, so either approach needs that
+    # lint extended first. Tracked as follow-up scope rather than bundled
+    # into this job.
     name: msrv (rust-version floor, ${{ matrix.feature }})
     runs-on: ubuntu-latest
-    # #1292: a single `cargo check -p quadraui --features <one>` per matrix
-    # leg, normally a few minutes with a warm cache.
+    # A single `cargo check -p quadraui --features <one>` per matrix leg,
+    # normally a few minutes with a warm cache.
     timeout-minutes: 20
     strategy:
       # One feature failing its floor must not hide another's result.
       fail-fast: false
       matrix:
-        feature: [tui, gtk, win, terminal, layout]
+        feature: [none, tui, gtk, win, terminal, layout]
     env:
       RUSTFLAGS: ""
     steps:
@@ -822,9 +840,9 @@ jobs:
       - name: Read the declared rust-version floor from Cargo.toml
         id: msrv
         run: |
-          v=$(grep -m1 '^rust-version' quadraui/Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')
+          v=$(sed -nE '/^rust-version/{s/^rust-version[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+(\.[0-9]+)?)"$/\1/p;q}' quadraui/Cargo.toml)
           if [ -z "$v" ]; then
-            echo "::error::Could not parse rust-version out of quadraui/Cargo.toml — this job's one source of truth for the floor it tests. Check the field still exists and matches the expected 'rust-version = \"X.Y.Z\"' shape."
+            echo "::error::quadraui/Cargo.toml's 'rust-version' line is missing, or not in the exact 'rust-version = \"X.Y\"' / 'rust-version = \"X.Y.Z\"' shape this job's parser expects — this job's one source of truth for the floor it tests. Fix the field's shape rather than loosening this check."
             exit 1
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
@@ -839,9 +857,16 @@ jobs:
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-${{ matrix.feature }}
+          key: msrv-${{ matrix.feature }}-${{ steps.msrv.outputs.version }}
       - name: cargo check -p quadraui --features ${{ matrix.feature }} (MSRV floor, no clippy, no -D warnings)
-        run: cargo "+${{ steps.msrv.outputs.version }}" check -p quadraui --features ${{ matrix.feature }}
+        env:
+          MSRV: ${{ steps.msrv.outputs.version }}
+        run: |
+          if [ "${{ matrix.feature }}" = "none" ]; then
+            cargo "+$MSRV" check -p quadraui --locked
+          else
+            cargo "+$MSRV" check -p quadraui --locked --features "${{ matrix.feature }}"
+          fi
 
   musl-static:
     # #1131: the 2026-09-26 framework audit flagged "does a fully static
