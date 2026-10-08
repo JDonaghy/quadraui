@@ -57,8 +57,22 @@ environment, then creates the GitHub release from the `[X.Y.Z]` section.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-08
+
 ### Fixed
 
+- **macOS native: Nerd Font icon glyphs painted as Apple's `?` placeholder**
+  for some codepoints (e.g. Explorer, Source Control, Run & Debug) even
+  though the registered icon font contains them (issue #1337, #1329). The
+  Core Text cascade list now pins the registered font's own descriptor
+  instead of looking the family up by name, which a different installed
+  font could win. Confirmed on a real macOS 26 screen.
+- **Windows native: the editor minimap painted as a dark, illegible strip**
+  (issue #1354). `Characters`-mode rows were shaped with the editor-size
+  DirectWrite format and clipped to a 2–4 DIP row. They now use a
+  same-family format at `minimap_font_px`, cached by rounded size, falling
+  back to column blocks below the legibility pitch. Confirmed on a real
+  Windows desktop.
 - `src/lib.rs`'s `## Status` section (docs.rs's front page) still said
   "prepared for its first publish to crates.io but not yet published"
   and claimed most Windows rasterisers were `todo!()` stubs, both wrong

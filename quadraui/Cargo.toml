@@ -1,6 +1,6 @@
 [package]
 name = "quadraui"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
