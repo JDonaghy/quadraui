@@ -37,6 +37,31 @@ use serde::{Deserialize, Serialize};
 pub type MenuItem = ContextMenuItem;
 
 /// Declarative description of a context menu.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, Rect, StyledText, WidgetId};
+///
+/// let menu = ContextMenu {
+///     id: WidgetId::new("context_menu:editor"),
+///     items: vec![ContextMenuItem {
+///         id: Some(WidgetId::new("menu:copy")),
+///         label: StyledText::plain("Copy"),
+///         ..Default::default()
+///     }],
+///     selected_idx: 0,
+///     bg: None,
+///     placement: Default::default(),
+/// };
+///
+/// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = menu.layout(5.0, 5.0, viewport, 20.0, |_| ContextMenuItemMeasure::new(1.0));
+/// assert_eq!(
+///     layout.hit_test(6.0, 5.0),
+///     ContextMenuHit::Item(WidgetId::new("menu:copy"))
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMenu {
     pub id: WidgetId,

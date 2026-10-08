@@ -59,6 +59,37 @@ use crate::types::{Color, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a rich-text popup.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{RichTextPopup, RichTextPopupHit, RichTextPopupMeasure, Rect, StyledText, WidgetId};
+///
+/// let popup = RichTextPopup {
+///     id: WidgetId::new("popup:hover"),
+///     lines: vec![StyledText::plain("fn main() -> ()")],
+///     line_text: vec!["fn main() -> ()".to_string()],
+///     line_scales: vec![],
+///     scroll_top: 0,
+///     max_visible_rows: 10,
+///     has_focus: true,
+///     selection: None,
+///     links: vec![],
+///     focused_link: None,
+///     placement: Default::default(),
+///     padding: 1.0,
+///     fg: None,
+///     bg: None,
+/// };
+///
+/// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let measure = RichTextPopupMeasure::new(40.0, 1.0);
+/// let layout = popup.layout(5.0, 5.0, viewport, measure, |_, start, end| (end - start) as f32);
+///
+/// let inside = (layout.content_bounds.x + 1.0, layout.content_bounds.y + 0.5);
+/// assert_eq!(layout.hit_test(inside.0, inside.1), RichTextPopupHit::Body);
+/// assert_eq!(layout.char_at(inside.0, inside.1, 1.0), Some((0, 1)));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RichTextPopup {
     pub id: WidgetId,

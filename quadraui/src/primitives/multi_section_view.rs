@@ -232,6 +232,48 @@ pub struct Section {
 // ── Top-level primitive ────────────────────────────────────────────────────
 
 /// Declarative description of a `MultiSectionView` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{
+///     EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit, Rect, Section,
+///     SectionBody, SectionHeader, SectionMeasure, SectionSize, WidgetId,
+/// };
+///
+/// let view = MultiSectionView {
+///     id: WidgetId::new("msv:sidebar"),
+///     sections: vec![Section {
+///         id: "explorer".to_string(),
+///         header: SectionHeader {
+///             title: quadraui::StyledText::plain("Explorer"),
+///             ..Default::default()
+///         },
+///         body: SectionBody::Empty(EmptyBody::default()),
+///         aux: None,
+///         size: SectionSize::EqualShare,
+///         collapsed: false,
+///         min_size: None,
+///         max_size: None,
+///     }],
+///     active_section: None,
+///     axis: Default::default(),
+///     allow_resize: false,
+///     allow_collapse: true,
+///     scroll_mode: Default::default(),
+///     has_focus: false,
+///     panel_scroll: 0.0,
+/// };
+///
+/// let bounds = Rect::new(0.0, 0.0, 40.0, 20.0);
+/// let layout = view.layout(bounds, MsvLayoutMetrics::default(), |_| SectionMeasure::default());
+///
+/// assert_eq!(layout.sections.len(), 1);
+/// match layout.hit_test(1.0, 0.0) {
+///     MultiSectionViewHit::Header { section, .. } => assert_eq!(section, 0),
+///     other => panic!("expected a header hit, got {other:?}"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MultiSectionView {
     pub id: WidgetId,

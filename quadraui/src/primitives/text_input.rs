@@ -94,6 +94,23 @@ use crate::undo::UndoStack;
 /// implements `Default`, so a consumer constructs with
 /// `TextInput::new(id)` / `TextInput::default()` and chains `with_*`
 /// instead of an exhaustive struct literal.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Rect, TextInput, TextInputMeasure, WidgetId};
+///
+/// let input = TextInput::new(WidgetId::new("input:commit_message"))
+///     .with_lines(vec!["fix: typo".to_string()])
+///     .with_cursor_col(9)
+///     .with_has_focus(true);
+///
+/// let rect = Rect::new(0.0, 0.0, 40.0, 3.0);
+/// let layout = input.layout(rect, TextInputMeasure::new(1.0, 1.0));
+///
+/// assert_eq!(layout.visible_lines.len(), 1);
+/// assert!(layout.cursor_bounds.is_some());
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextInput {

@@ -139,6 +139,37 @@ pub enum SortDirection {
 }
 
 /// Declarative description of a `DataTable` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Column, ColumnMeasure, DataRow, DataTable, DataTableHit, StyledText, WidgetId};
+///
+/// let table = DataTable {
+///     id: WidgetId::new("table:results"),
+///     columns: vec![Column {
+///         title: "Name".to_string(),
+///         width: Default::default(),
+///         align: Default::default(),
+///     }],
+///     rows: vec![DataRow {
+///         cells: vec![StyledText::plain("main.rs")],
+///         decoration: Default::default(),
+///     }],
+///     selected_idx: None,
+///     scroll_offset: 0,
+///     sort: None,
+///     has_focus: true,
+///     show_scrollbar: false,
+///     min_total_width: None,
+///     h_scroll: 0.0,
+///     column_overrides: vec![],
+///     footer: None,
+/// };
+///
+/// let layout = table.layout(80.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(20.0));
+/// assert_eq!(layout.hit_test(0.0, 1.0, 0, table.rows.len()), DataTableHit::Row { idx: 0 });
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataTable {
     pub id: WidgetId,

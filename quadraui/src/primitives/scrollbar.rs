@@ -51,6 +51,20 @@ pub enum ScrollAxis {
 /// surface-native (TUI cells, GTK pixels). `thumb_start` is an offset
 /// from the track's leading edge along `axis`; `thumb_len` is the
 /// thumb's length along `axis`.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::primitives::scrollbar::PressZone;
+/// use quadraui::{Rect, Scrollbar};
+///
+/// let track = Rect::new(79.0, 0.0, 1.0, 24.0);
+/// // 100 total lines, 24 visible, scrolled to line 10.
+/// let bar = Scrollbar::vertical("scrollbar:editor", track, 10.0, 100.0, 24.0, 2.0);
+///
+/// assert_eq!(bar.press_zone(0.0), PressZone::Before);
+/// assert!(bar.travel() >= 0.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scrollbar {
     pub id: WidgetId,

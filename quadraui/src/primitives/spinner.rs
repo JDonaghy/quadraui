@@ -47,6 +47,22 @@ use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of an indeterminate spinner.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Spinner, SpinnerHit, SpinnerMeasure, WidgetId};
+///
+/// let spinner = Spinner {
+///     id: WidgetId::new("spinner:lsp_boot"),
+///     label: "Indexing…".to_string(),
+///     frame_idx: 3,
+///     accent: None,
+/// };
+///
+/// let layout = spinner.layout(0.0, 0.0, SpinnerMeasure::new(80.0, 1.0));
+/// assert_eq!(layout.hit_test(5.0, 0.0, &spinner.id), SpinnerHit::Body(spinner.id.clone()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spinner {
     pub id: WidgetId,

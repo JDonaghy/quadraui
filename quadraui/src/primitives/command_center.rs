@@ -8,6 +8,26 @@ use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a command center strip.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{CommandCenter, CommandCenterHit, CommandCenterMeasure, Rect, WidgetId};
+///
+/// let center = CommandCenter {
+///     id: WidgetId::new("command_center:main"),
+///     back_enabled: true,
+///     forward_enabled: false,
+///     search_label: "my-project".to_string(),
+/// };
+///
+/// let bounds = Rect::new(0.0, 0.0, 400.0, 1.0);
+/// let measure = CommandCenterMeasure::from_char_width(&center.search_label, 8.0, 1.0);
+/// let layout = center.layout(bounds, measure);
+///
+/// let back = layout.back_bounds.expect("back arrow is always reserved");
+/// assert_eq!(layout.hit_test(back.x, back.y), CommandCenterHit::Back);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandCenter {
     pub id: WidgetId,

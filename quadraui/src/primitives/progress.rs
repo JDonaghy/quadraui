@@ -32,6 +32,25 @@ use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a progress bar.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{ProgressBar, ProgressBarMeasure, WidgetId};
+///
+/// let bar = ProgressBar {
+///     id: WidgetId::new("progress:download"),
+///     label: "Downloading…".to_string(),
+///     value: Some(0.5),
+///     frame_idx: 0,
+///     cancellable: false,
+///     accent: None,
+/// };
+///
+/// let layout = bar.layout(0.0, 0.0, ProgressBarMeasure::new(100.0, 1.0));
+/// let fill = layout.fill_bounds.expect("determinate bar has a fill rect");
+/// assert_eq!(fill.width, 50.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProgressBar {
     pub id: WidgetId,

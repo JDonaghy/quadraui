@@ -77,6 +77,29 @@ fn default_true() -> bool {
 /// `#[non_exhaustive]` for real once both known consumers had migrated
 /// off exhaustive literals onto [`Toolbar::new`] plus the `with_*`
 /// builder per field below (and a `Default` impl).
+/// # Examples
+///
+/// ```
+/// use quadraui::{Toolbar, ToolbarButton, ToolbarHit, ToolbarItemMeasure, WidgetId};
+///
+/// let bar = Toolbar::new(WidgetId::new("toolbar:explorer")).with_buttons(vec![
+///     ToolbarButton::Action {
+///         id: WidgetId::new("toolbar:new_file"),
+///         label: "New File".to_string(),
+///         icon: None,
+///         key_hint: None,
+///         enabled: true,
+///         is_active: false,
+///         tooltip: String::new(),
+///     },
+/// ]);
+///
+/// let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |_| ToolbarItemMeasure::new(10.0));
+/// assert_eq!(
+///     layout.hit_test(2.0, 0.0),
+///     ToolbarHit::Button(WidgetId::new("toolbar:new_file"))
+/// );
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toolbar {

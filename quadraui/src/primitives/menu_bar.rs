@@ -23,6 +23,27 @@ use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a menu bar.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, Rect, WidgetId};
+///
+/// let bar = MenuBar {
+///     id: WidgetId::new("menubar:main"),
+///     items: vec![MenuBarItem {
+///         id: WidgetId::new("menu:file"),
+///         label: "&File".to_string(),
+///         disabled: false,
+///         submenu: None,
+///     }],
+///     open_item: None,
+///     focused_item: None,
+/// };
+///
+/// let layout = bar.layout(Rect::new(0.0, 0.0, 80.0, 1.0), |_| MenuBarItemMeasure::new(6.0));
+/// assert_eq!(layout.hit_test(2.0, 0.0), MenuBarHit::Item(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MenuBar {
     pub id: WidgetId,

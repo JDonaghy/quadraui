@@ -187,6 +187,35 @@ pub struct BoardColumn {
 ///
 /// The host constructs this from its own state each frame and passes it
 /// to `backend.draw_board(rect, &model)`.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{board_layout, BoardCard, BoardColumn, BoardHit, BoardMeasure, BoardModel, WidgetId};
+///
+/// let model = BoardModel {
+///     id: WidgetId::new("board:issues"),
+///     columns: vec![BoardColumn {
+///         id: WidgetId::new("column:backlog"),
+///         title: "Backlog".to_string(),
+///         cards: vec![BoardCard {
+///             id: WidgetId::new("card:1"),
+///             title: "Fix flaky test".to_string(),
+///             labels: vec![],
+///             badges: vec![],
+///             hint: None,
+///         }],
+///         scroll_offset: 0,
+///     }],
+///     selected_card_id: None,
+///     col_scroll_offset: 0,
+/// };
+///
+/// let measure = BoardMeasure::new(20.0, 1.0, 1.0, 3.0, 1.0);
+/// let layout = board_layout(&model, 0.0, 0.0, 80.0, 24.0, measure);
+///
+/// assert_eq!(layout.hit_test(1.0, 2.0), BoardHit::Card(WidgetId::new("card:1")));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardModel {
     /// Unique identifier for this board widget.

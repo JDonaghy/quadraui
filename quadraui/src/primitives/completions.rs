@@ -22,6 +22,36 @@ use crate::types::{Icon, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a completion popup.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{
+///     CompletionItem, CompletionItemMeasure, Completions, CompletionsHit, Rect, StyledText,
+///     WidgetId,
+/// };
+///
+/// let popup = Completions {
+///     id: WidgetId::new("completions:editor"),
+///     items: vec![CompletionItem {
+///         label: StyledText::plain("map"),
+///         detail: None,
+///         documentation: None,
+///         kind: Default::default(),
+///         icon: None,
+///     }],
+///     selected_idx: 0,
+///     scroll_offset: 0,
+///     has_focus: true,
+/// };
+///
+/// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
+/// let layout = popup.layout(10.0, 5.0, 1.0, viewport, 20.0, 10.0, |_| {
+///     CompletionItemMeasure::new(1.0)
+/// });
+///
+/// assert_eq!(layout.hit_test(10.0, 6.0), CompletionsHit::Item(0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Completions {
     pub id: WidgetId,

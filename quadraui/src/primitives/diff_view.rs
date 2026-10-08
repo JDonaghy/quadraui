@@ -409,6 +409,40 @@ fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (us
 /// Apps build this from pre-computed [`DiffHunk`]s (via
 /// `quadraui::diff::compute_hunks`) and pass it to `backend.draw_diff_view`.
 /// The backend never recomputes the diff — it only rasterises.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{DiffHunk, DiffMode, DiffRow, DiffRowKind, DiffView, DiffViewHit, Rect, WidgetId};
+///
+/// let view = DiffView {
+///     id: WidgetId::new("diff:review"),
+///     left: "old\n".to_string(),
+///     right: "new\n".to_string(),
+///     left_label: Some("a/file.rs".to_string()),
+///     right_label: Some("b/file.rs".to_string()),
+///     hunks: vec![DiffHunk {
+///         left_start: 1,
+///         right_start: 1,
+///         rows: vec![DiffRow {
+///             left: Some("old".to_string()),
+///             right: Some("new".to_string()),
+///             kind: DiffRowKind::Changed,
+///         }],
+///     }],
+///     mode: DiffMode::SideBySide,
+///     editability: Default::default(),
+///     scroll_offset: 0,
+///     focused_pane: Default::default(),
+///     has_focus: false,
+/// };
+///
+/// let geometry = view.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+/// match geometry.hit_test(1.0, geometry.lines[0].bounds.y) {
+///     DiffViewHit::Row { row_idx, .. } => assert_eq!(row_idx, 0),
+///     other => panic!("expected a row hit, got {other:?}"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffView {
     /// Stable identifier for this widget instance.

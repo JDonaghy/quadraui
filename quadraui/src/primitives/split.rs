@@ -20,6 +20,26 @@ use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a split container.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Rect, Split, SplitDirection, SplitHit, SplitMeasure, WidgetId};
+///
+/// let split = Split {
+///     id: WidgetId::new("split:editor"),
+///     direction: SplitDirection::Horizontal,
+///     ratio: 0.3,
+///     first_min: 0.0,
+///     second_min: 0.0,
+/// };
+///
+/// let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+/// let layout = split.layout(bounds, SplitMeasure::new(1.0));
+///
+/// assert_eq!(layout.hit_test(0.0, 0.0), SplitHit::FirstPane(split.id.clone()));
+/// assert_eq!(layout.hit_test(99.0, 0.0), SplitHit::SecondPane(split.id));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Split {
     pub id: WidgetId,

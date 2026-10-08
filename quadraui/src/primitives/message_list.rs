@@ -92,6 +92,25 @@ impl MessageRow {
 }
 
 /// Declarative description of a scrollable styled-row list.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Color, MessageList, MessageListHit, MessageListMeasure, MessageRow, Rect, WidgetId};
+///
+/// let list = MessageList {
+///     id: WidgetId::new("messages:chat"),
+///     rows: vec![
+///         MessageRow::new("You: hello", Color::rgb(200, 200, 200), 0.0),
+///         MessageRow::new("AI: hi there", Color::rgb(100, 200, 255), 0.0),
+///     ],
+///     scroll_top: 0,
+/// };
+///
+/// let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+/// let hit = list.hit_test(rect, MessageListMeasure::new(1.0), 5.0, 1.0);
+/// assert_eq!(hit, MessageListHit::Row(1));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageList {
     pub id: WidgetId,

@@ -48,6 +48,25 @@ use serde::{Deserialize, Serialize};
 /// is true the backend should clamp `scroll_offset` to keep the most
 /// recent line visible after each `append_line` — paused only when the
 /// user explicitly scrolls upward.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{StyledSpan, TextDisplay, TextDisplayLine, TextDisplayLineMeasure, WidgetId};
+///
+/// let mut display = TextDisplay::new(WidgetId::new("display:logs"));
+/// display.append_line(TextDisplayLine {
+///     spans: vec![StyledSpan::plain("server started")],
+///     decoration: Default::default(),
+///     timestamp: Some("12:00:00".to_string()),
+/// });
+///
+/// let layout = display.layout(80.0, 10.0, |_| TextDisplayLineMeasure::new(1.0));
+/// assert_eq!(layout.visible_lines.len(), 1);
+/// // auto_scroll defaults to true, so the resolved offset keeps the
+/// // newest (only) line visible.
+/// assert_eq!(layout.resolved_scroll_offset, 0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextDisplay {
     pub id: WidgetId,

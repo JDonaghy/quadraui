@@ -40,6 +40,37 @@ use serde::{Deserialize, Serialize};
 /// `cells[row][col]` — outer Vec is rows top-to-bottom, inner Vec is
 /// columns left-to-right. Rows may be ragged (different lengths) but
 /// backends should treat missing trailing cells as blank.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Color, Terminal, TerminalCell, TerminalHit, WidgetId};
+///
+/// let cell = TerminalCell {
+///     text: "$".to_string(),
+///     fg: Color::rgb(200, 200, 200),
+///     bg: Color::rgb(0, 0, 0),
+///     bold: false,
+///     italic: false,
+///     underline: false,
+///     dim: false,
+///     selected: false,
+///     is_cursor: true,
+///     cursor_shape: Default::default(),
+///     cursor_blinking: false,
+///     is_find_match: false,
+///     is_find_active: false,
+/// };
+///
+/// let terminal = Terminal {
+///     id: WidgetId::new("terminal:shell"),
+///     cells: vec![vec![cell]],
+///     scrollbar: None,
+/// };
+///
+/// let layout = terminal.layout(80.0, 24.0, 1.0, 1.0);
+/// assert_eq!(layout.hit_test(0.0, 0.0), TerminalHit::Cell { row: 0, col: 0 });
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Terminal {
     pub id: WidgetId,

@@ -56,6 +56,26 @@ use serde::{Deserialize, Serialize};
 // ── Data model ───────────────────────────────────────────────────────────────
 
 /// Vertical container: optional header toolbar + content region.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{SidebarPanel, SidebarPanelHit, SidebarPanelMeasure, Rect, WidgetId};
+///
+/// let panel = SidebarPanel {
+///     id: WidgetId::new("sidebar:explorer"),
+///     toolbar: None,
+///     toolbar_height: None,
+/// };
+///
+/// let bounds = Rect::new(0.0, 0.0, 40.0, 20.0);
+/// let measure = SidebarPanelMeasure::new(1.0, 3.0);
+/// let layout = panel.layout(bounds, measure, |_| unreachable!("no toolbar"));
+///
+/// // No toolbar means no slot reserved — content gets the full rect.
+/// assert_eq!(layout.content_bounds, bounds);
+/// assert_eq!(layout.hit_test(1.0, 1.0), SidebarPanelHit::Content { x: 1.0, y: 1.0 });
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SidebarPanel {
     pub id: WidgetId,

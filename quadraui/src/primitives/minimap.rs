@@ -108,6 +108,31 @@ use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Declarative description of a `Minimap` widget.
+///
+/// # Examples
+///
+/// ```
+/// use quadraui::{Minimap, MinimapHit, MinimapLine, MinimapSizing, Rect, WidgetId};
+///
+/// let minimap = Minimap {
+///     id: WidgetId::new("minimap:editor"),
+///     lines: (0..100)
+///         .map(|i| MinimapLine {
+///             text: String::new(),
+///             line_idx: i,
+///         })
+///         .collect(),
+///     syntax_spans: vec![],
+///     visible_row_start: 0,
+///     visible_row_count: 20,
+///     total_buffer_lines: 100,
+/// };
+///
+/// let bounds = Rect::new(0.0, 0.0, 10.0, 24.0);
+/// let layout = minimap.layout_with_sizing(bounds, 1, MinimapSizing::Fill);
+///
+/// assert_eq!(layout.hit_test(5.0, 0.0), MinimapHit::Seek { fraction: 0.0 });
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Minimap {
     pub id: WidgetId,
