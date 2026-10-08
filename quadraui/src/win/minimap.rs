@@ -24,17 +24,16 @@
 //!
 //! [`MinimapRenderMode::Characters`] — real glyphs at a font size scaled to
 //! the row pitch — paints through [`DWrite::minimap_text_format`]
-//! (issue #1354): a same-family `IDWriteTextFormat` built at
+//! — a same-family `IDWriteTextFormat` built at
 //! [`minimap_font_px`]'s resolved size and cached by rounded px, not the
-//! backend's single editor-size [`DWrite::draw_text`] format. Before
-//! #1354 this rasteriser computed `minimap_font_px` and discarded it
-//! (`let _ = minimap_font_px(..)`), then painted through the editor-size
-//! format clipped to a 2-4 DIP row — a column of cropped glyph tops read
-//! as an illegible dark strip, not the GTK/macOS twins' recognisable
+//! backend's single editor-size [`DWrite::draw_text`] format. Painting
+//! through the editor-size format clipped to a 2-4 DIP row would leave a
+//! column of cropped glyph tops — an illegible dark strip, not the
+//! GTK/macOS twins' recognisable
 //! miniature. `ROW_PITCH_PX` (2 DIP) stays below `LEGIBILITY_FLOOR_PX`
 //! (4 DIP) today, so `Characters` is not reachable through this
 //! rasteriser's own *default* fixed pitch ([`MinimapScale::One`]) — it is
-//! reachable at [`MinimapScale::Two`] (4 DIP, #1143) — and is exercised
+//! reachable at [`MinimapScale::Two`] (4 DIP) — and is exercised
 //! directly in this module's tests too, mirroring `gtk::minimap`'s own
 //! `characters_branch_truncates_to_the_column_capacity_before_shaping`
 //! test.
@@ -109,7 +108,7 @@ pub fn draw_minimap(
 /// resolves to [`MinimapRenderMode::Characters`] and this rasteriser paints
 /// real `DrawText` glyph runs via [`paint_row_glyphs`], shaped at
 /// [`minimap_font_px`]'s resolved size via [`DWrite::minimap_text_format`]
-/// (issue #1354) — unlike GTK's atlas blit (#1035), this still shapes a
+/// — unlike GTK's atlas blit, this still shapes a
 /// real `IDWriteTextFormat` per paint rather than blitting a downsampled
 /// sample-sheet tile; a DirectWrite sample-sheet atlas mirroring GTK's is
 /// left as follow-up work for a Windows-hosted session (see
@@ -121,7 +120,7 @@ pub fn draw_minimap(
 /// this module's own atlas gap is the same shape, still open, and still
 /// needs a Windows-hosted session to build+verify (`HeadlessSurface` is
 /// real Direct2D/WARP, not a stub, but this repo has no such host in CI
-/// today); #1354 only fixes the font *size* this rasteriser shapes at,
+/// today); only the font *size* this rasteriser shapes at is matched,
 /// not the shaping technique.
 ///
 /// [`WinBackend::draw_minimap`]: crate::win::backend::WinBackend
@@ -204,11 +203,11 @@ pub(crate) fn draw_minimap_scaled(
 }
 
 /// `Characters` branch: paint `text` at [`minimap_font_px`]'s resolved
-/// size via [`DWrite::minimap_text_format`] (issue #1354) — the shared
+/// size via [`DWrite::minimap_text_format`] — the shared
 /// pitch->size mapping every backend's `Characters` branch is keyed on,
 /// not this rasteriser's single editor-size `DWrite::draw_text` format
-/// (the pre-#1354 bug: the row height, 2-4 DIP, clipped a column of
-/// editor-size glyph tops into an illegible dark strip). Falls back to
+/// (at the editor size, the 2-4 DIP row would clip a column of
+/// glyph tops into an illegible dark strip). Falls back to
 /// [`paint_row_blocks`] when the resolved size is still below
 /// [`crate::primitives::minimap::LEGIBILITY_FLOOR_PX`] — not reachable
 /// through [`draw_minimap_scaled`] today (its `render_mode` gate already
@@ -217,7 +216,7 @@ pub(crate) fn draw_minimap_scaled(
 /// thresholds) still gets the same legible-or-blocks guarantee
 /// `render_mode` promises everywhere else, matching the GTK twin's own
 /// threshold behaviour. Still bounds its cost to [`COLUMN_CAPACITY`]
-/// characters (#667 pt. 3), and still colours the row from its own
+/// characters, and still colours the row from its own
 /// `row_spans` — the first span's colour wins (DirectWrite needs a
 /// custom text renderer for true per-run colour within one `DrawText`
 /// call, out of scope here).
@@ -490,7 +489,7 @@ mod tests {
         assert!(painted_any, "expected the Characters branch to paint text");
     }
 
-    /// Issue #1354: the `Characters` branch must shape the row at
+    /// The `Characters` branch must shape the row at
     /// [`minimap_font_px`]'s resolved size, not the editor's own
     /// (usually much larger) `DWrite::text_format` size — reproduces the
     /// bug's exact shape with an editor font (24px-ish at 10pt) painted
@@ -500,10 +499,9 @@ mod tests {
     /// resolved size, which only happens if `paint_row_glyphs` actually
     /// calls `DWrite::minimap_text_format`/`draw_text_minimap` rather
     /// than falling through to the backend's single editor-size format
-    /// the way pre-#1354 code did (`let _ = minimap_font_px(..)`, then
-    /// `dwrite.draw_text(..)`). Fails on that pre-fix code: the cache
-    /// never grows because the Characters branch never reaches
-    /// `minimap_text_format` at all.
+    /// would. If the Characters branch skipped `minimap_text_format`
+    /// and drew through the editor-size format, the cache would never
+    /// grow and this fails.
     #[test]
     fn characters_mode_requests_a_minimap_sized_format_not_the_editor_size() {
         let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
@@ -549,7 +547,7 @@ mod tests {
         );
     }
 
-    /// Issue #1354 pt. 2: a `Characters`-branch call whose resolved font
+    /// A `Characters`-branch call whose resolved font
     /// size still lands below `LEGIBILITY_FLOOR_PX` must fall back to
     /// [`paint_row_blocks`]'s column-block silhouette rather than ask
     /// DirectWrite to shape an illegibly small format — matching the GTK
