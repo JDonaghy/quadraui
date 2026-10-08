@@ -57,6 +57,15 @@ environment, then creates the GitHub release from the `[X.Y.Z]` section.
 
 ## [Unreleased]
 
+### Changed
+
+- `rust-version` in `quadraui/Cargo.toml` lowered from 1.97.1 (which only
+  matched `rust-toolchain.toml`'s CI pin, for no technical reason) to
+  1.92.0 — the real floor, held up by the `gtk` feature's glib-rs 0.22 /
+  gtk4 0.11 dependency family. `ci.yml`'s new `msrv` job builds every
+  backend feature, plus a zero-feature leg, at exactly that version on
+  every PR.
+
 ## [0.1.1] - 2026-10-08
 
 ### Fixed

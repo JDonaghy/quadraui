@@ -343,7 +343,7 @@ All 13 decisions below were resolved in the 2026-04-18 design session (either ex
 9. ✅ **Native menu bars.** v1. macOS uses global menu; Win/Linux uses in-window. Crate owns the platform integration.
 10. ✅ **Packaging.** Single crate `quadraui` with backends behind Cargo features: `gtk`, `tui`, `win-gui`, `cocoa` (v1.1). Apps pick.
 11. ✅ **Naming.** `quadraui` — evokes the four backends, available on crates.io as of 2026-04-18. Working name; will be confirmed at Phase B extraction.
-12. ✅ **Language / toolchain.** Rust 2021, MSRV tracks latest stable −2. No C/C++ except vendored trees like tree-sitter. mlua for plugin support.
+12. ✅ **Language / toolchain.** Rust 2021. MSRV (`rust-version` in `quadraui/Cargo.toml`) is the real dependency floor, not a fixed offset from the latest stable — see that field's own comment and `quadraui/docs/decisions/DECISIONS.md` D-019 rule 7. No C/C++ except vendored trees like tree-sitter. mlua for plugin support.
 13. ✅ **License.** MIT + Apache-2.0, standard Rust dual. vimcode's current license prevails.
 
 **Additional decisions from the same session:**

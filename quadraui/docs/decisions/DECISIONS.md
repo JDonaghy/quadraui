@@ -2641,10 +2641,10 @@ branched as `release/0.N.x`. Crash and security fixes may be backported
 and released as patches. Nothing is promised, and only the most recent
 previous minor is considered.
 
-**7. Raising the minimum Rust version is a `MINOR` change.** This takes
-effect once `rust-version` is decoupled from the CI toolchain pin
-(#1350). Until then the declared minimum tracks `rust-toolchain.toml`, and
-a toolchain bump that raises it is listed in `CHANGELOG.md`.
+**7. Raising the minimum Rust version is a `MINOR` change.** `rust-version`
+is decoupled from the CI toolchain pin (`rust-toolchain.toml`) and tracks
+the real dependency floor instead; a `rust-version` bump that raises it is
+listed in `CHANGELOG.md`.
 
 ### What this does NOT mean
 
