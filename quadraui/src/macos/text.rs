@@ -24,10 +24,11 @@
 //! construction and drop to `extern "C"` for `CTLineDraw` +
 //! `CGContextSetTextPosition` + matrix manipulation.
 
-use core_foundation::array::CFArray;
+use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::attributed_string::{CFAttributedString, CFAttributedStringRef};
 use core_foundation::base::{CFAllocatorRef, TCFType};
 use core_foundation::boolean::CFBoolean;
+use core_foundation::data::{CFData, CFDataRef};
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::error::CFErrorRef;
 use core_foundation::string::{CFString, CFStringRef};
@@ -37,12 +38,16 @@ use core_graphics::font::CGFont;
 use core_graphics::geometry::CGAffineTransform;
 use core_graphics::sys::{CGContextRef, CGFontRef};
 use core_text::font::{self, CTFont, CTFontRef};
-use core_text::font_descriptor::{self, kCTFontCascadeListAttribute, kCTFontFamilyNameAttribute};
+use core_text::font_descriptor::{
+    self, kCTFontCascadeListAttribute, kCTFontFamilyNameAttribute, CTFontDescriptor,
+};
 use core_text::line::CTLine;
 use core_text::string_attributes::{
     kCTFontAttributeName, kCTForegroundColorFromContextAttributeName,
 };
 use foreign_types::ForeignType;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::testing::TextRun;
@@ -172,7 +177,7 @@ pub fn system_monospace_font(size_pt: f64) -> CTFont {
 /// public wrapper to reach for.
 pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont {
     let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
-    let cascade_list = CFArray::from_CFTypes(&[descriptor_for_family(fallback_family)]);
+    let cascade_list = CFArray::from_CFTypes(&[cascade_descriptor_for(fallback_family)]);
     let attrs = CFDictionary::from_CFType_pairs(&[(cascade_key, cascade_list.as_CFType())]);
     let desc = font_descriptor::new_from_attributes(&attrs);
     // SAFETY: `font.as_concrete_TypeRef()` is a valid, live `CTFontRef`;
@@ -257,14 +262,70 @@ pub(crate) fn resolved_fallback_for_char(font: &CTFont, ch: char) -> (String, bo
 }
 
 /// A bare [`core_text::font_descriptor::CTFontDescriptor`] carrying only
-/// `family`'s [`kCTFontFamilyNameAttribute`] — the shape
-/// [`font_with_fallback`]'s cascade-list entry needs; Core Text resolves
-/// the rest (weight, size, …) from context when the descriptor is
-/// consulted as a fallback rather than as the primary font.
+/// `family`'s [`kCTFontFamilyNameAttribute`] — resolved by Core Text's
+/// ordinary name-matching the moment it's consulted. A family name on its
+/// own is not a unique identity: any other font sharing the exact family
+/// string — a stale copy left over in the user's font library, or an
+/// unrelated public font release that happens to use the same name — is
+/// just as valid a match, and Core Text's matcher is free to prefer it
+/// over whichever font a caller actually meant. Only used as the fallback
+/// path in [`cascade_descriptor_for`] when no exact registered descriptor
+/// is on file for `family`.
 fn descriptor_for_family(family: &str) -> font_descriptor::CTFontDescriptor {
     let key = unsafe { CFString::wrap_under_get_rule(kCTFontFamilyNameAttribute) };
     let attrs = CFDictionary::from_CFType_pairs(&[(key, CFString::new(family).as_CFType())]);
     font_descriptor::new_from_attributes(&attrs)
+}
+
+// ── Pinning the cascade to the exact registered font ────────────────────
+//
+// Building `font_with_fallback`'s cascade-list entry purely from
+// `descriptor_for_family`, i.e. by name, is ambiguous the moment more
+// than one font on the host shares the fallback family's name: Core Text
+// picks *a* match, not necessarily the one `register_font_from_memory`
+// just handed back to the caller. A per-process table keyed by family
+// name, populated with the precise descriptor
+// `CTFontManagerCreateFontDescriptorsFromData` hands back for the exact
+// bytes just registered, removes that ambiguity — the cascade entry then
+// names a specific font resource rather than re-asking Core Text's name
+// matcher to guess.
+//
+// `RefCell` rather than a `Mutex`: Core Text/AppKit calls are single-
+// threaded in practice (matching the thread-local text-run sink this
+// module's recording section already uses), and each `cargo test` thread
+// gets its own table, which is the right lifetime for a registration that
+// (like the underlying Core Text registration itself) is never undone.
+thread_local! {
+    static REGISTERED_ICON_DESCRIPTORS: RefCell<HashMap<String, CTFontDescriptor>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Remember `descriptor` as the exact cascade entry to use for `family`,
+/// so a later [`font_with_fallback`] call naming this family resolves to
+/// *this* font resource rather than whatever Core Text's name matcher
+/// finds first. Called by [`register_font_from_memory`] once per
+/// successful registration.
+fn remember_registered_descriptor(family: String, descriptor: &CTFontDescriptor) {
+    // Retain our own reference rather than borrowing the caller's: the
+    // table outlives the registration call that populates it.
+    let owned = unsafe { CTFontDescriptor::wrap_under_get_rule(descriptor.as_concrete_TypeRef()) };
+    REGISTERED_ICON_DESCRIPTORS.with(|table| {
+        table.borrow_mut().insert(family, owned);
+    });
+}
+
+/// The descriptor [`font_with_fallback`] should put in its cascade list
+/// for `family`: the exact descriptor [`remember_registered_descriptor`]
+/// stashed for it, if `family` was registered via a prior
+/// [`register_font_from_memory`] call; otherwise [`descriptor_for_family`]'s
+/// ordinary name lookup, for a caller naming a system font directly.
+fn cascade_descriptor_for(family: &str) -> font_descriptor::CTFontDescriptor {
+    let exact = REGISTERED_ICON_DESCRIPTORS.with(|table| {
+        table.borrow().get(family).map(|descriptor| unsafe {
+            CTFontDescriptor::wrap_under_get_rule(descriptor.as_concrete_TypeRef())
+        })
+    });
+    exact.unwrap_or_else(|| descriptor_for_family(family))
 }
 
 /// Register `bytes` (raw TTF/OTF font data) with Core Text for the
@@ -300,7 +361,34 @@ pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
     // A throwaway size is fine here — only `family_name()` is read, and
     // family membership doesn't depend on point size.
     let ctfont = font::new_from_CGFont(&cgfont, 12.0);
-    Some(ctfont.family_name())
+    let family = ctfont.family_name();
+
+    // Stash the exact descriptor for these bytes, keyed by the family
+    // name just resolved, so `font_with_fallback`'s cascade entry for
+    // this family can bind to this specific font resource instead of
+    // whatever Core Text's name matcher would otherwise pick — see
+    // `cascade_descriptor_for`'s doc for why that distinction matters.
+    // `CTFontManagerCreateFontDescriptorsFromData` describes the bytes
+    // themselves, not a name to re-resolve, so a null result or an empty
+    // array (bytes Core Graphics parsed but Core Text's font manager
+    // can't describe) just means no exact descriptor is on file — the
+    // family-name path remains available as a fallback, so registration
+    // itself still succeeds.
+    let cf_data = CFData::from_buffer(bytes);
+    let descriptors_ref =
+        unsafe { CTFontManagerCreateFontDescriptorsFromData(cf_data.as_concrete_TypeRef()) };
+    if !descriptors_ref.is_null() {
+        // SAFETY: a non-null return is a `+1`-retained `CFArrayRef` per
+        // Core Foundation's create-rule, which `wrap_under_create_rule`
+        // takes ownership of.
+        let descriptors: CFArray<CTFontDescriptor> =
+            unsafe { TCFType::wrap_under_create_rule(descriptors_ref) };
+        if let Some(descriptor) = descriptors.get(0) {
+            remember_registered_descriptor(family.clone(), &descriptor);
+        }
+    }
+
+    Some(family)
 }
 
 /// Sample a font's typographic metrics. The returned `char_width`
@@ -559,6 +647,13 @@ extern "C" {
     // (`font_manager.rs`: "//pub fn CTFontManagerRegisterGraphicsFont") —
     // see `register_font_from_memory`'s doc for why this method needs it.
     fn CTFontManagerRegisterGraphicsFont(font: CGFontRef, error: *mut CFErrorRef) -> bool;
+    // Not bound by `core-text` 20.1 at all. Describes the exact font
+    // resource `data` holds — distinct from `CTFontDescriptorCreateWithAttributes`'s
+    // name-based matching, which only ever asks Core Text to go find
+    // *something* answering to a given attribute dictionary. See
+    // `register_font_from_memory`'s doc for why pinning to the described
+    // resource rather than its name matters here.
+    fn CTFontManagerCreateFontDescriptorsFromData(data: CFDataRef) -> CFArrayRef;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -987,6 +1082,98 @@ mod tests {
         assert!(
             register_font_from_memory(&garbage).is_none(),
             "64 zero bytes are not a parseable font — must report None, not a fabricated family"
+        );
+    }
+
+    // ── Shadowed-cascade regression (icon-font PUA codepoints) ───────
+
+    /// The real icon font vimcode registers at startup — not a CI-only
+    /// stand-in. Embedded rather than read from the user's font
+    /// directory at test time, so this reproduces the exact bytes
+    /// [`register_font_from_memory`] is handed in production regardless
+    /// of what else happens to be installed on the host.
+    const ICON_FONT_BYTES: &[u8] = include_bytes!("../../tests/fixtures/vimcode-icons.ttf");
+
+    /// Builds the font the way [`super::super::backend::MacBackend`]
+    /// does: register the icon font bytes, then layer its family onto
+    /// a base font's cascade via [`font_with_fallback`], exactly what
+    /// `MacBackend::set_current_font`/`set_nerd_font_fallback` do to
+    /// `current_font`. Returns the cascade-equipped font plus the
+    /// family name Core Text resolved the registration to, so a test
+    /// can assert against the *actual* registered family rather than
+    /// assuming it matches the bytes' nominal name.
+    fn icon_font_with_fallback() -> (CTFont, String) {
+        let family = register_font_from_memory(ICON_FONT_BYTES)
+            .expect("vimcode-icons.ttf is a well-formed font Core Graphics can parse");
+        let base = font();
+        (font_with_fallback(&base, &family), family)
+    }
+
+    /// Reproduces the exact split a real-screen capture of the native
+    /// build showed: three codepoints from vimcode's registered icon
+    /// font paint as Apple's placeholder glyph while three others from
+    /// the same font, in the same frame, paint correctly. All six have
+    /// real cmap entries and outlines in [`ICON_FONT_BYTES`] — see this
+    /// module's `cascade_descriptor_for` doc for why a family-name-only
+    /// cascade can still miss them when another font on the host shares
+    /// the icon font's family name.
+    #[test]
+    fn icon_font_cascade_resolves_every_registered_pua_codepoint() {
+        let (with_fallback, family) = icon_font_with_fallback();
+
+        let codepoints = [
+            ('\u{EAF0}', "Explorer"),
+            ('\u{EA68}', "SourceControl"),
+            ('\u{EB91}', "RunDebug"),
+            ('\u{F002}', "Search"),
+            ('\u{EAE6}', "Extensions"),
+            ('\u{F0E5}', "AiChat"),
+        ];
+
+        for (ch, label) in codepoints {
+            let (resolved_family, resolved_real_glyph) =
+                resolved_fallback_for_char(&with_fallback, ch);
+            assert!(
+                resolved_real_glyph,
+                "{label} (U+{:04X}) resolved to {resolved_family:?} with no real glyph — \
+                 Core Text painted Apple's placeholder instead of a glyph from the \
+                 registered icon font",
+                ch as u32,
+            );
+            assert_eq!(
+                resolved_family, family,
+                "{label} (U+{:04X}) resolved through {resolved_family:?} instead of the \
+                 registered icon font family {family:?} — some other font on this host \
+                 shares that family name and is winning the cascade lookup",
+                ch as u32,
+            );
+        }
+    }
+
+    /// Same cascade, after the activity-bar icon-resize clone — mirrors
+    /// [`nerd_font_fallback_resolves_pua_codepoints_before_and_after_icon_resize`]'s
+    /// before/after structure but against the real registered icon font
+    /// rather than requiring a Nerd Font be separately installed, so it
+    /// runs on every host this crate's test suite runs on.
+    #[test]
+    fn icon_font_cascade_survives_icon_resize_clone() {
+        let (with_fallback, family) = icon_font_with_fallback();
+        let icon_size_px = crate::ActivityBarStyle::default().resolved_icon_size_px() as f64;
+        let icon_sized = with_fallback.clone_with_font_size(icon_size_px);
+
+        let (resolved_family, resolved_real_glyph) =
+            resolved_fallback_for_char(&icon_sized, '\u{EAF0}');
+        assert!(
+            resolved_real_glyph,
+            "Explorer (U+EAF0) failed to resolve a real glyph after \
+             clone_with_font_size, through family {resolved_family:?} — the \
+             activity-bar icon resize must not drop cascade coverage that \
+             worked before the resize",
+        );
+        assert_eq!(
+            resolved_family, family,
+            "Explorer (U+EAF0) resolved through {resolved_family:?} instead of the \
+             registered icon font family {family:?} after clone_with_font_size",
         );
     }
 }
