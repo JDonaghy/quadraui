@@ -117,7 +117,10 @@ use serde::{Deserialize, Serialize};
 /// let mut tip = Tooltip::new(WidgetId::new("tooltip:hover"), "Hover hint");
 /// tip.placement = TooltipPlacement::Top;
 ///
-/// let anchor = Rect::new(0.0, 0.0, 10.0, 1.0);
+/// // Anchor sits well inside the viewport so the `Top` candidate has
+/// // room above it and the preferred placement actually fits, rather
+/// // than falling through to the "clamped to viewport" branch.
+/// let anchor = Rect::new(20.0, 10.0, 10.0, 1.0);
 /// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
 /// let layout = tip.layout(anchor, viewport, TooltipMeasure::new(20.0, 3.0), 0.0);
 ///

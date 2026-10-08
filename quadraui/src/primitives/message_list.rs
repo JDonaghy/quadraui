@@ -108,6 +108,8 @@ impl MessageRow {
 /// };
 ///
 /// let rect = Rect::new(0.0, 0.0, 80.0, 10.0);
+/// // x = 5.0 anywhere in the row is uninteresting; y = 1.0 is what
+/// // puts the hit in the second row.
 /// let hit = list.hit_test(rect, MessageListMeasure::new(1.0), 5.0, 1.0);
 /// assert_eq!(hit, MessageListHit::Row(1));
 /// ```

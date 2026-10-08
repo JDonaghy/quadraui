@@ -77,6 +77,7 @@ fn default_true() -> bool {
 /// `#[non_exhaustive]` for real once both known consumers had migrated
 /// off exhaustive literals onto [`Toolbar::new`] plus the `with_*`
 /// builder per field below (and a `Default` impl).
+///
 /// # Examples
 ///
 /// ```

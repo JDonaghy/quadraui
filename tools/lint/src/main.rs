@@ -48,6 +48,8 @@
 //! that one stays a normal `#[cfg(test)] #[test]` fn, run by
 //! `cargo test -p quadraui-repo-lint`. It's a unit test of this tool, not a
 //! maintainer-workflow guard, so it doesn't need to move anywhere.
+//! `primitive_doc_examples`'s `# Examples`-heading parser carries the same
+//! kind of unit tests for the same reason.
 
 mod common;
 mod cross_target_toolchain;
@@ -96,6 +98,7 @@ fn checks() -> Vec<Check> {
         check!(cross_target_toolchain::every_cross_target_build_installs_its_target_with_rustup),
         check!(primitive_doc_examples::every_primitive_struct_has_an_examples_section),
         check!(primitive_doc_examples::allowlist_has_no_stale_entries),
+        check!(primitive_doc_examples::every_primitives_module_is_in_the_table),
     ];
 
     #[cfg(unix)]

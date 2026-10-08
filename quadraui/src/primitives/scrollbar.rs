@@ -55,15 +55,16 @@ pub enum ScrollAxis {
 /// # Examples
 ///
 /// ```
-/// use quadraui::primitives::scrollbar::PressZone;
-/// use quadraui::{Rect, Scrollbar};
+/// use quadraui::{PressZone, Rect, Scrollbar};
 ///
 /// let track = Rect::new(79.0, 0.0, 1.0, 24.0);
 /// // 100 total lines, 24 visible, scrolled to line 10.
 /// let bar = Scrollbar::vertical("scrollbar:editor", track, 10.0, 100.0, 24.0, 2.0);
 ///
 /// assert_eq!(bar.press_zone(0.0), PressZone::Before);
-/// assert!(bar.travel() >= 0.0);
+/// // thumb_len = (24.0 / 100.0) * 24.0 = 5.76, so travel is the track
+/// // length minus that, not a tautological "it's non-negative" check.
+/// assert_eq!(bar.travel(), track.height - bar.thumb_len);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scrollbar {
