@@ -1,0 +1,43 @@
+[package]
+name = "quadraui-gallery"
+version = "0.0.1"
+edition.workspace = true
+description = "Interactive catalogue of quadraui primitives — one Demo trait, one shell, Demo/Code/Data tabs and an event log, running unmodified on every backend"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "quadraui-gallery"
+path = "src/main.rs"
+
+[lib]
+name = "quadraui_gallery"
+path = "src/lib.rs"
+
+[features]
+# No `default` key — same reasoning as `quadraui/Cargo.toml`'s own
+# `[features]` header: a bare `cargo build -p quadraui-gallery` must not
+# silently pull in a rendering backend the caller didn't ask for.
+#
+# Each feature here just forwards to the identically-named feature on
+# `quadraui` itself; this crate has no backend-specific code of its own
+# (CLAUDE.md's portability commitment) — only `src/main.rs`'s per-backend
+# `fn main` bodies branch on these, and each one is ~5 lines.
+tui = ["quadraui/tui"]
+gtk = ["quadraui/gtk"]
+# `quadraui::macos` only exists when `target_os = "macos"` *and* this
+# feature is enabled (see `quadraui/src/lib.rs`'s `pub mod macos` cfg
+# gate) — enabling the Cargo feature alone compiles nothing extra on a
+# non-macOS host. `src/main.rs` mirrors that with
+# `#[cfg(all(feature = "macos", target_os = "macos"))]`.
+macos = ["quadraui/macos"]
+# Unlike `macos`, `quadraui::win` compiles on every host (only the real
+# WinAPI calls inside it are `cfg(target_os = "windows")`), so this
+# feature needs no extra target gate.
+win = ["quadraui/win"]
+
+[dependencies]
+quadraui = { path = "../quadraui" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
