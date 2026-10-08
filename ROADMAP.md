@@ -10,7 +10,7 @@
 > ([`quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md`](quadraui/docs/audits/FRAMEWORK_AUDIT_2026-09-26.md)
 > §7.2–7.3), which is a dated snapshot; this file is the living version.
 >
-> _Last updated: 2026-10-05._
+> _Last updated: 2026-10-07._
 
 ## Why this file exists
 
@@ -25,7 +25,7 @@ before queuing anything from milestones #19 or #20.**
 
 | Release | Contents | Breaking? | Status |
 |---|---|---|---|
-| **v0.1.0** | First crates.io publish (#783). Release prep, `#[non_exhaustive]` descriptors, deprecation removal, docs truth pass. | — | Prepared on `develop`; tag + `cargo publish` pending (operator step, #1111). |
+| **v0.1.0** | First crates.io publish (#783). Release prep, `#[non_exhaustive]` descriptors, deprecation removal, docs truth pass. | — | Published 2026-10-07. What later `0.x` releases may change: D-019. |
 | **v0.2** | The widget-model breaking batch (#1095): the owned `Frame` tree (the remaining half of #1099), interned `WidgetId` (#1105), retained descriptor store (#1104). | **Yes** | Not started; waits for v0.1.0 so consumers can pin `release/0.1.x`. The owned-`Frame` follow-up issue is not yet filed — #1099 stays open until it is. |
 | **v0.3** | Accessibility (#1309) and the remaining app capabilities (#788). Descriptor changes are additive only. | No (target) | Filed; gated on v0.2. |
 | **v0.4+** | Language bindings (#1096). | No | Gated on the stability rule below. |
@@ -57,7 +57,7 @@ What must be true before recommending quadraui to an outside developer
 
 | # | Criterion | Where it stands |
 |---|---|---|
-| 1 | Published on crates.io with hosted docs; one minor release with no breaking change to primitive descriptors | v0.1.0 prepared, unpublished; stability release is v0.3 at the earliest |
+| 1 | Published on crates.io with hosted docs; one minor release with no breaking change to primitive descriptors | Published (v0.1.0, docs.rs); stability release is v0.3 at the earliest |
 | 2 | AccessKit on GTK, macOS and Windows with a screen-reader smoke test in CI | Epic #1309 |
 | 3 | IME composition on all three GUI backends | #900 — design written, backends unbuilt |
 | 4 | A public drawing surface and a layout module | ✅ `Canvas` (#1102), `layout` feature (#1103) |

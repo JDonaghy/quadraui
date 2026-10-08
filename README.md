@@ -108,11 +108,11 @@ comfortable with a pre-1.0 API.
 
 ## Status
 
-`0.1.x` — pre-1.0. The crate is prepared for its first publish to
-crates.io (quadraui#1111); until an operator actually runs `cargo
-publish` and tags `v0.1.0`, depend on it by git revision as shown
-above. Breaking changes are batched and recorded in `CHANGELOG.md`; the
-release order and the 1.0 bar are in [`ROADMAP.md`](ROADMAP.md).
+`0.1.x` — pre-1.0, published on crates.io. Breaking changes are grouped
+into scheduled minor releases and recorded in `CHANGELOG.md`. What a `0.x`
+release may change is D-019 in
+[`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md);
+the release order and the 1.0 bar are in [`ROADMAP.md`](ROADMAP.md).
 
 | Backend | State |
 |---|---|
@@ -153,7 +153,9 @@ tracker.
 quadraui = { git = "https://github.com/JDonaghy/quadraui", rev = "<commit-sha>", features = ["tui", "gtk"] }
 ```
 
-Pin a commit rather than following `develop`; both real consumers do. For
+Feature flags and the system packages each backend needs are in
+[`quadraui/docs/INSTALL.md`](quadraui/docs/INSTALL.md). Pin a commit
+rather than following `develop`; both real consumers do. For
 sibling-checkout development, use
 `quadraui = { path = "../quadraui/quadraui", features = [...] }`.
 

@@ -2586,3 +2586,72 @@ warnings) rather than assumed.
   drawing" critical finding) — that is a new public primitive built atop
   this seam, not a consequence of unsealing it; still open follow-up
   work.
+
+## D-019 — Stability policy before 1.0: what a `0.x` release may change (epic #1340)
+
+### Question
+
+v0.1.0 is on crates.io, so people outside this repo can now depend on
+quadraui by version instead of by git revision. The rules for what may
+change between releases already exist, but in four places: `CHANGELOG.md`'s
+*Versioning* section, `PRIMITIVE_RULES.md` rule 8, D-013 (`Backend` is
+sealed) and `ROADMAP.md`'s release train. None of them is written for an
+outside developer deciding whether to depend on the crate. This entry is
+the single statement.
+
+### Decision
+
+**1. Cargo's `0.x` semver, applied literally.** A `0.MINOR` bump may break
+the public API. A `PATCH` bump is additive or a fix. `quadraui = "0.1"`
+therefore never picks up a breaking change. This restates `CHANGELOG.md`'s
+*Versioning* section; nothing new.
+
+**2. The contract is what consumers write.** Consumers implement
+`ShellApp` and `AppLogic`, construct primitive descriptors, match on
+`UiEvent` and other public enums, and call `Backend` methods. Breaking any
+of those needs a `MINOR`. Rule 8's table defines the cases. `Backend` is
+sealed (D-013), so *adding* a method to it is not breaking. Only a few
+types are `#[non_exhaustive]`. Most primitive descriptors and `UiEvent` are
+not, because consumers build them with struct literals and match them
+exhaustively. Adding a field or variant to one of those **is** breaking and
+waits for a `MINOR`.
+
+**3. The serialised form follows the Rust shape.** A descriptor's
+`Serialize` output changes only when its Rust definition does, and so only
+in the same `MINOR` that changes the Rust shape. Before 1.0 it has no
+stronger guarantee than that. Language bindings wait until descriptors
+have survived one minor release unchanged (`ROADMAP.md`, cross-epic gates).
+
+**4. Breaking changes are batched and announced.** They land in scheduled
+minors named on `ROADMAP.md`'s release train (v0.2 is the widget-model
+batch, #1095), not one at a time. Each one has a `CHANGELOG.md` entry that
+says what to change in consumer code.
+
+**5. Deprecate before removing, where a shim is possible.** Rule 8's
+two-PR protocol applies across releases as well as across PRs. A
+deprecated item ships in at least one published release, with
+`#[deprecated(note = ...)]` naming its replacement, before a later release
+removes it. A structural change with no possible shim (for example the
+owned `Frame` tree in v0.2) is exempt and must say so in its changelog
+entry.
+
+**6. The previous minor gets fixes on a best-effort basis only.** When
+breaking work for the next minor starts on `develop`, the current minor is
+branched as `release/0.N.x`. Crash and security fixes may be backported
+and released as patches. Nothing is promised, and only the most recent
+previous minor is considered.
+
+**7. Raising the minimum Rust version is a `MINOR` change.** This takes
+effect once `rust-version` is decoupled from the CI toolchain pin
+(#1350). Until then the declared minimum tracks `rust-toolchain.toml`, and
+a toolchain bump that raises it is listed in `CHANGELOG.md`.
+
+### What this does NOT mean
+
+- It is not the 1.0 stability pledge. That comes with 1.0, after the bar
+  in `ROADMAP.md` is met.
+- It does not freeze `develop`. Git-revision pins on `develop` (vimcode,
+  coord-tui) get no guarantee beyond rule 8's shim discipline.
+- It does not promise long-term support for any `0.x` line.
+- It does not make `Backend` implementable outside the crate. D-013
+  stands.

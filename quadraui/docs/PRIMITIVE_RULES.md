@@ -104,9 +104,9 @@ Read this when adding or changing a primitive.
 ## Rule 8 — public-API lifecycle
 
 `quadraui` is publishable (`publish = false` was dropped in `quadraui#797`,
-the first tagged release is `v0.1.0`, not yet cut as of this writing — see
-that issue). Nothing pins a published *version* today regardless — both
-consumers pin a git *revision* instead, so neither floats on `develop`'s
+`v0.1.0` was published to crates.io on 2026-10-07; D-019 states what a
+`0.x` release may change). Both in-house consumers still pin a git
+*revision* rather than a published version, so neither floats on `develop`'s
 tip. `coord-tui` — `JDonaghy/coord-tui`, a
 standalone repo since `claude-coordinator#2899` (2026-08-29) — pinned
 first, via `claude-coordinator#1973`. `vimcode` followed via
