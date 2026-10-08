@@ -1,6 +1,15 @@
-//! The smallest quadraui app — one `AppLogic` impl, no shared
-//! `examples/common/` module (quadraui#799: that module pulls in every
-//! other example, so `tui_app.rs`'s "hello world" secretly compiled
+//! The smallest quadraui app on the canonical `ShellApp` path (quadraui#1342:
+//! the old version computed a `Rect` by hand from `backend.viewport()` and
+//! `backend.measure()` and called `Backend::draw_status_bar_interactive`
+//! directly — `Backend::draw_*` is the *low-level* entry point
+//! (`docs/decisions/DECISIONS.md` D-006). `ShellApp` is canonical instead:
+//! [`AppShellLayout::status_bar_bounds`] below is computed for us, so there
+//! is no viewport arithmetic anywhere in this file, and painting goes
+//! through [`ScreenLayout`]/[`Surface`] — the same declarative frame-list
+//! path a multi-primitive screen uses — rather than a raw `draw_*` call.
+//!
+//! No shared `examples/common/` module (quadraui#799: that module pulls in
+//! every other example, so this "hello world" would secretly compile
 //! thousands of lines nothing here needs).
 //!
 //! `cargo run --example hello --features tui`
@@ -8,15 +17,27 @@
 //! Press any key to bump the counter; `q` or Esc to quit.
 
 use quadraui::prelude::*;
+use quadraui::{AppShellLayout, ScreenLayout, Surface};
 
 pub struct Hello {
     pub keys_pressed: u32,
 }
 
-impl AppLogic for Hello {
-    type AreaId = ();
+impl Hello {
+    /// No sidebar panels and no activity bar — this app has nothing to put
+    /// in either — just the one status-bar band it actually uses.
+    pub fn config() -> ShellConfig {
+        ShellConfig::new("Hello", Vec::new())
+            .with_status_bar()
+            .with_activity_bar_width(0.0)
+    }
+}
 
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+impl ShellApp for Hello {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+        let Some(rect) = layout.status_bar_bounds else {
+            return;
+        };
         let bar = StatusBar {
             id: WidgetId::new("status:bar"),
             left_segments: vec![StatusBarSegment {
@@ -34,21 +55,22 @@ impl AppLogic for Hello {
                 action_id: None,
             }],
         };
-        // Backend-native bar height instead of a hand-picked pixel
-        // constant (quadraui#817): `backend.measure()` bundles
-        // `char_width`/`line_height` in one call, so this scales to a
-        // real 1-cell-tall bar on TUI and a proportionally-taller pixel
-        // bar on GTK/macOS/Win — the same portable-sizing pattern
-        // `docs/BACKEND_TRAIT_PROPOSAL.md` documents for `line_height`
-        // alone (`backend.line_height() * 1.5`), just asking for both
-        // metrics through the one bundled call.
-        let vp = backend.viewport();
-        let bar_h = backend.measure().line_height.max(1.0) * 1.4;
-        let rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &quadraui::InteractionState::new());
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::StatusBar {
+            rect,
+            bar: &bar,
+            hovered: None,
+            pressed: None,
+        });
+        frame.draw(backend);
     }
 
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    fn handle(
+        &mut self,
+        event: UiEvent,
+        _backend: &mut dyn Backend,
+        _ctx: &ShellContext,
+    ) -> Reaction {
         match event {
             UiEvent::KeyPressed { key, .. } => {
                 if matches!(key, Key::Char('q') | Key::Named(NamedKey::Escape)) {
@@ -63,6 +85,6 @@ impl AppLogic for Hello {
     }
 }
 
-fn main() -> std::io::Result<()> {
-    quadraui::tui::run(Hello { keys_pressed: 0 })
+fn main() {
+    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config());
 }

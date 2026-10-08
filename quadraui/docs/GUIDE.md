@@ -10,8 +10,10 @@ cargo run --example hello --features tui
 ```
 
 That's `quadraui/examples/hello.rs` — under 60 lines, no shared helper
-module, nothing to understand beyond this guide's Step 1–3. Everything
-below builds on the same shape.
+module. It's a `ShellApp` (see Step 0 below) rather than the `AppLogic`
+this guide's Step 1–3 walks through, but both traits share the same
+primitive/paint API, so nothing in it is a surprise once you've read
+those steps.
 
 Every code sample here opens with `use quadraui::prelude::*;`. The
 prelude is a deliberately small subset of quadraui's ~500 crate-root

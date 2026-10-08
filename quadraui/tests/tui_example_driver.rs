@@ -355,10 +355,19 @@ fn mini_renders_cleanly_and_ctrl_q_exits() {
 // include above. Observed RED before `RecordingBackend`/`prelude`/`Hello`
 // existed (there was no `hello_ex` module to include and no `Hello` type
 // to drive); GREEN once `examples/hello.rs` landed.
+//
+// quadraui#1342: `Hello` is a `ShellApp` now (the canonical path — see the
+// module doc on `examples/hello.rs`), so these drive it through
+// `driver_with_shell` — the same stack `quadraui::tui::shell_runner::run_with_shell`
+// uses at runtime — instead of `TuiDriver::new`, which only accepts `AppLogic`.
+
+fn hello_driver(width: u16, height: u16) -> TuiDriver<impl quadraui::AppLogic> {
+    driver_with_shell(Hello { keys_pressed: 0 }, Hello::config(), width, height)
+}
 
 #[test]
 fn hello_renders_the_greeting_and_quit_hint_on_the_first_frame() {
-    let driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    let driver = hello_driver(100, 10);
     let screen = driver.screen();
     assert!(
         driver.screen_contains("Hello, quadraui!"),
@@ -374,26 +383,21 @@ fn hello_renders_the_greeting_and_quit_hint_on_the_first_frame() {
     );
 }
 
-/// quadraui#817: the status bar's height comes from
-/// `backend.measure().line_height` now, not a hand-picked `28.0` pixel
-/// constant. Empirically verified by mutation: reverting the rect to the
-/// pre-#817 `Rect::new(0.0, vp.height - 28.0, vp.width, 28.0)` turns this
-/// RED — `q_rect_to_ratatui` clamps that rect's negative `y` to `0`, so
-/// the bar (and this greeting) paints on row 0 instead of the last row.
-/// `backend.measure()` gives a real ~1-cell-tall bar on TUI that anchors
-/// to the bottom the way the primitive's own doc says a status bar
-/// should, proving the switch away from the hand-built constant lands
-/// the bar in the *correct* place, not just an unchanged one.
+/// quadraui#1342: the status bar's rect comes from
+/// `AppShellLayout::status_bar_bounds` — computed by the shell, not by any
+/// viewport arithmetic in `examples/hello.rs` itself — and still anchors to
+/// the bottom row of the viewport the way the primitive's own doc says a
+/// status bar should.
 #[test]
-fn hello_status_bar_anchors_to_the_last_row_via_measure() {
-    let driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+fn hello_status_bar_anchors_to_the_last_row_via_shell_layout() {
+    let driver = hello_driver(100, 10);
     let (_, y) = driver
         .find("Hello, quadraui!")
         .expect("greeting should be painted somewhere on screen");
     assert_eq!(
         y.floor() as u16,
         9,
-        "status bar sized from backend.measure() should anchor to the last row \
+        "the shell-computed status bar should anchor to the last row \
          (row 9) of a 10-row viewport:\n{}",
         driver.screen()
     );
@@ -401,7 +405,7 @@ fn hello_status_bar_anchors_to_the_last_row_via_measure() {
 
 #[test]
 fn hello_counts_keystrokes() {
-    let mut driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    let mut driver = hello_driver(100, 10);
     driver.type_char('a');
     driver.type_char('b');
     assert!(
@@ -413,7 +417,7 @@ fn hello_counts_keystrokes() {
 
 #[test]
 fn hello_q_exits() {
-    let mut driver = TuiDriver::new(Hello { keys_pressed: 0 }, 100, 10);
+    let mut driver = hello_driver(100, 10);
     let reaction = driver.type_char('q');
     assert_eq!(reaction, Reaction::Exit, "'q' should exit");
     assert!(driver.exited());
