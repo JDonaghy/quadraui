@@ -55,6 +55,7 @@ mod downstream_gate_docs;
 mod example_manifest;
 #[cfg(unix)]
 mod githooks_worktree;
+mod primitive_doc_examples;
 mod quality_gate_docs;
 
 use std::panic;
@@ -93,6 +94,8 @@ fn checks() -> Vec<Check> {
         check!(cross_target_toolchain::rust_toolchain_pin_still_exists),
         check!(cross_target_toolchain::no_workflow_installs_cross_targets_via_the_action_input),
         check!(cross_target_toolchain::every_cross_target_build_installs_its_target_with_rustup),
+        check!(primitive_doc_examples::every_primitive_struct_has_an_examples_section),
+        check!(primitive_doc_examples::allowlist_has_no_stale_entries),
     ];
 
     #[cfg(unix)]
