@@ -10,6 +10,18 @@
 //! the primitive paints in [`quadraui::FontRole::Chrome`] regardless of
 //! what the editor font is set to.
 //!
+//! It also covers the opposite direction for one `EditorClassPrimitive`:
+//! `TextDisplay` paints through `EditorSurface`, the dedicated adapter
+//! that opts a handful of primitives back into `current_font` — so
+//! `draw_text_display_paints_in_editor_font` runs the same paired-run
+//! probe with the assertion flipped, proving that call site still
+//! tracks the *editor* font's size regardless of what chrome is set to.
+//! `draw_terminal`/`draw_diff_view` share the same `EditorSurface`
+//! wiring and the same risk of a role swap, but are not independently
+//! painted here — one editor-class call site exercising the shared
+//! adapter is the acceptance bar this file adds; the other two are
+//! follow-up coverage, not proof the wiring could regress silently.
+//!
 //! ## Why painted-run *width*, and not an ink-pixel count
 //!
 //! A pixel probe ("count the non-black pixels") is the right oracle for
@@ -50,8 +62,8 @@ use quadraui::macos::testing::MacDriver;
 use quadraui::{
     AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration, FieldKind,
     Form, FormField, Palette, PaletteItem, PaletteMode, Panel, ProgressBar, Reaction, Rect,
-    Spinner, StyledText, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure,
-    TooltipPlacement, UiEvent, WidgetId,
+    Spinner, StyledSpan, StyledText, TextDisplay, TextDisplayLine, Toast, ToastCorner,
+    ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
 const W: u32 = 640;
@@ -170,6 +182,51 @@ where
          {SMALL_PT}pt editor), big_editor={big_editor} ({SMALL_PT}pt chrome / {BIG_PT}pt \
          editor)"
     );
+}
+
+/// Asserts `paint` paints in [`quadraui::FontRole::Editor`]: the painted
+/// run's width tracks `current_font`'s size, not `chrome_font`'s — the
+/// mirror image of [`assert_paints_in_chrome_font`] above.
+fn assert_paints_in_editor_font<F>(name: &str, paint: F)
+where
+    F: Fn(&mut dyn Backend, Rect) + Copy,
+{
+    let big_chrome = painted_label_width(name, BIG_UI_FONT, SMALL_PT, paint);
+    let big_editor = painted_label_width(name, SMALL_UI_FONT, BIG_PT, paint);
+    assert!(
+        big_chrome > 0.0 && big_editor > 0.0,
+        "{name}: both font configurations must paint a measurable run: \
+         big_chrome={big_chrome}, big_editor={big_editor}"
+    );
+    assert!(
+        big_editor > big_chrome * 3.0,
+        "{name} must paint in FontRole::Editor, not FontRole::Chrome — a {BIG_PT}pt editor \
+         font should paint a far wider run than a {SMALL_PT}pt one if `current_font` really \
+         drives this primitive's glyphs: big_editor={big_editor} ({BIG_PT}pt editor / \
+         {SMALL_PT}pt chrome), big_chrome={big_chrome} ({SMALL_PT}pt editor / {BIG_PT}pt \
+         chrome)"
+    );
+}
+
+#[test]
+fn draw_text_display_paints_in_editor_font() {
+    assert_paints_in_editor_font("draw_text_display", |b, area| {
+        let td = TextDisplay {
+            id: id("text-display"),
+            lines: vec![TextDisplayLine {
+                spans: vec![StyledSpan::plain(LABEL)],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }],
+            scroll_offset: 0,
+            auto_scroll: true,
+            max_lines: 0,
+            has_focus: false,
+            title: None,
+            show_scrollbar: false,
+        };
+        b.draw_text_display(area, &td);
+    });
 }
 
 #[test]

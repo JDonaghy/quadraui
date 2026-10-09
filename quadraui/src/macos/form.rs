@@ -861,6 +861,15 @@ mod tests {
     /// [`paint_settings_chrome_at`] installs, to prove it is *not* what
     /// chrome uses) would offset every probe by the difference between
     /// the two fonts' advances.
+    ///
+    /// Measures through a fresh `MacBackend::new()` rather than the
+    /// backend the caller painted with — safe only because neither
+    /// caller in this module ever calls `set_chrome_font`/`set_ui_font`,
+    /// so every `MacBackend` in this file resolves the identical
+    /// deterministic `chrome_font` [`MacBackend::new`] seeds (a pure
+    /// CoreText system-font query, not process state this file mutates).
+    /// A test that *does* install a non-default chrome font must measure
+    /// through the painting backend itself instead of this helper.
     fn chrome_text_width(text: &str) -> f64 {
         MacBackend::new()
             .measure_text(text, crate::FontRole::Chrome)

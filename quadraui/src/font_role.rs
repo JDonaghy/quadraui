@@ -172,14 +172,15 @@ impl std::fmt::Display for ChromePrimitive {
 /// [`crate::Backend::set_editor_font`] rather than
 /// [`crate::Backend::set_ui_font`].
 ///
-/// Deliberately **not** `#[non_exhaustive]`-grown casually the way
-/// [`ChromePrimitive`] is: adding an entry here *removes* chrome
-/// painting from a primitive that previously had it (by the module's new
-/// default), the opposite direction of risk from adding to
-/// [`ChromePrimitive`]. Still `#[non_exhaustive]` for the same downstream
-/// reason as that enum (see its doc) — it just means a new variant here
-/// needs the same scrutiny `ChromePrimitive` additions always needed,
-/// not that the mechanism is any looser.
+/// Carries `#[non_exhaustive]` for the same downstream reason
+/// [`ChromePrimitive`] does (see its doc), but growing this list is not
+/// the same low-risk operation growing that one is: adding an entry here
+/// *removes* chrome painting from a primitive that previously had it (by
+/// the module's default), the opposite direction of risk from adding to
+/// [`ChromePrimitive`]. So a new variant here needs the same scrutiny
+/// `ChromePrimitive` additions always needed — `#[non_exhaustive]` keeps
+/// the mechanism open for downstream, it does not make the addition
+/// itself any less consequential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum EditorClassPrimitive {
