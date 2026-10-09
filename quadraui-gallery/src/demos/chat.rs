@@ -187,6 +187,15 @@ impl TranscriptState {
             .push_turn_markdown(ChatRole::Assistant, reply_md, &theme);
     }
 
+    /// Total turns pushed so far: the one `System` turn from [`Self::new`]
+    /// plus a (user, assistant) pair per completed [`Self::send_next`]
+    /// call. `ChatController` has no public turn-count accessor to read
+    /// this back from directly, so it's derived here instead of (wrongly)
+    /// reporting `transcript_scroll_top()` as if it were one.
+    fn turn_count(&self) -> usize {
+        1 + self.next_exchange * 2
+    }
+
     fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend, area: Rect) -> Reaction {
         match self.controller.handle(event, backend, area) {
             ChatControllerEvent::Submit { .. } => {
@@ -266,7 +275,7 @@ impl Demo for ChatDemo {
     fn data(&self, variant: usize) -> serde_json::Value {
         match variant {
             1 => serde_json::json!({
-                "turns": self.transcript.controller.transcript_scroll_top(),
+                "turns": self.transcript.turn_count(),
                 "next_exchange": self.transcript.next_exchange,
             }),
             _ => serde_json::json!({

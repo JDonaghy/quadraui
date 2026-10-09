@@ -695,6 +695,25 @@ jobs:
       # rather than `--workspace`: examples aren't workspace-wide.
       - name: Build (tui_terminal example, tui + terminal features)
         run: cargo build -p quadraui --example tui_terminal --features tui,terminal
+      # Same gap, same fix, one layer up: `quadraui-gallery`'s own `terminal`
+      # feature (`demos::terminal`, gated in `registry::registry`) is never
+      # turned on by the plain `cargo {build,test} --features tui --workspace`
+      # steps near the top of this job — `--workspace --features tui` only
+      # enables features actually named `tui` on each member, so
+      # `quadraui-gallery`'s `terminal` feature stays off and
+      # `src/demos/terminal.rs` (and its `#[cfg(feature = "terminal")]` driver
+      # test in `tests/gallery_driver.rs`) has never actually been compiled or
+      # run by CI. `-p quadraui-gallery --features tui,terminal` (not
+      # `--workspace`) scopes this to the one crate the feature lives on;
+      # `--all-targets` on the check step so the test binary (which only
+      # exists under `terminal`) is actually type-checked, matching the
+      # gallery `win`/`gtk` compile-check steps elsewhere in this workflow.
+      - name: Compile check (gallery, tui + terminal features)
+        run: cargo check -p quadraui-gallery --features tui,terminal --all-targets
+      - name: Test (gallery, tui + terminal features)
+        run: cargo test -p quadraui-gallery --features tui,terminal
+      - name: Clippy (gallery, tui + terminal features)
+        run: cargo clippy -p quadraui-gallery --features tui,terminal --all-targets -- -D warnings
       # `terminal_engine.rs` (the PTY + vt100 + scrollback engine) is gated
       # on `feature = "terminal"` alone (lib.rs), so its 54 `#[cfg(test)]`
       # unit tests are never compiled by the plain `--features tui` test
