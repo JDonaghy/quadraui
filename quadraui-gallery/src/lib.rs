@@ -14,6 +14,7 @@
 //! `tui`, `gtk`, `macos` and `win`.
 
 pub mod app;
+pub mod capture;
 pub mod demo;
 pub mod demos;
 pub mod registry;

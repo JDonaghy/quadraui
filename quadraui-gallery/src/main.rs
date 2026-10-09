@@ -7,10 +7,44 @@
 //! Exactly one of the `fn main` bodies below survives `cfg` per feature
 //! set — see each arm's `#[cfg(...)]` for the priority order used when
 //! more than one backend feature is enabled at once (e.g. the repo's own
-//! `--features gtk,tui` CI leg).
+//! `--features gtk,tui` CI leg). Every surviving arm calls
+//! [`maybe_run_capture`] first: `--capture <dir>` (#1348) short-circuits
+//! the interactive runner and drives
+//! [`quadraui_gallery::capture::run_capture`] instead — the same
+//! function, not a parallel copy, that `tests/capture_driver.rs` calls
+//! directly.
+
+/// If argv requests `--capture <dir>`, run headless capture mode into
+/// `<dir>` and exit the process (`0` on success, `1` on I/O failure,
+/// `2` on a malformed flag) — never returning. Otherwise returns
+/// normally so the caller's own interactive runner proceeds.
+fn maybe_run_capture() {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(pos) = args.iter().position(|a| a == "--capture") else {
+        return;
+    };
+    let Some(dir) = args.get(pos + 1) else {
+        eprintln!("quadraui-gallery: --capture requires a directory argument");
+        std::process::exit(2);
+    };
+    match quadraui_gallery::capture::run_capture(std::path::Path::new(dir)) {
+        Ok(entries) => {
+            eprintln!(
+                "quadraui-gallery: captured {} manifest entries into {dir}",
+                entries.len()
+            );
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("quadraui-gallery: capture into {dir} failed: {err}");
+            std::process::exit(1);
+        }
+    }
+}
 
 #[cfg(feature = "tui")]
 fn main() {
+    maybe_run_capture();
     quadraui::tui::shell_runner::run_with_shell(
         quadraui_gallery::GalleryApp::new(),
         quadraui_gallery::GalleryApp::config(),
@@ -19,6 +53,7 @@ fn main() {
 
 #[cfg(all(feature = "gtk", not(feature = "tui")))]
 fn main() {
+    maybe_run_capture();
     quadraui::gtk::shell_runner::run_with_shell(
         quadraui_gallery::GalleryApp::new(),
         quadraui_gallery::GalleryApp::config(),
@@ -31,6 +66,7 @@ fn main() {
     not(any(feature = "tui", feature = "gtk"))
 ))]
 fn main() -> std::process::ExitCode {
+    maybe_run_capture();
     quadraui::macos::shell_runner::run_with_shell(
         quadraui_gallery::GalleryApp::new(),
         quadraui_gallery::GalleryApp::config(),
@@ -43,6 +79,7 @@ fn main() -> std::process::ExitCode {
     not(all(feature = "macos", target_os = "macos"))
 ))]
 fn main() -> std::process::ExitCode {
+    maybe_run_capture();
     quadraui::win::shell_runner::run_with_shell(
         quadraui_gallery::GalleryApp::new(),
         quadraui_gallery::GalleryApp::config(),
@@ -70,6 +107,11 @@ compile_error!(
 
 #[cfg(not(any(feature = "tui", feature = "gtk", feature = "macos", feature = "win")))]
 fn main() {
+    // Still honour `--capture` with zero backend features enabled: every
+    // entry comes back `"status": "unsupported"`/`"capture-pending"`
+    // (see `capture::run_capture`'s doc), which is a degenerate but
+    // honest manifest rather than a silent no-op.
+    maybe_run_capture();
     eprintln!("quadraui-gallery: enable one of --features tui|gtk|macos|win");
     std::process::exit(1);
 }

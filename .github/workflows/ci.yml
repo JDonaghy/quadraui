@@ -1545,3 +1545,39 @@ jobs:
       - name: cargo fmt --check (generated output matches rustfmt defaults)
         working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
         run: cargo fmt --check
+
+  gallery-capture-tui:
+    # Headless gallery capture mode (#1348): the TUI leg of the two-runner
+    # split described in `quadraui-gallery/src/capture.rs`'s module doc —
+    # this job is the Linux half, `macos.yml`'s `gallery-capture-macos` job
+    # is the macOS half. Both write images to a directory and upload it as
+    # an artifact for whoever is assembling the published gallery (a human,
+    # or a future publishing job) to download — neither is a correctness
+    # test, so `continue-on-error: true` on the job keeps a capture-mode
+    # bug from ever blocking a PR. The acceptance bar for *correctness* is
+    # `tests/capture_driver.rs` (asserted by the `tui` job above, which
+    # already runs `cargo test --features tui --workspace`); this job only
+    # proves the artifact a human would actually look at gets produced.
+    name: gallery capture (tui)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # #1292: a single `cargo run --features tui -- --capture` over one
+    # registered demo; normally under a minute once the toolchain and
+    # dependencies are cached (shared with the `tui` job's own cache key).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Capture every registered demo (tui backend)
+        run: |
+          mkdir -p target/gallery-capture
+          cargo run -p quadraui-gallery --features tui --bin quadraui-gallery -- \
+            --capture target/gallery-capture
+      - name: Upload gallery capture (tui)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-tui
+          path: target/gallery-capture
+          if-no-files-found: warn

@@ -242,3 +242,42 @@ jobs:
         run: cargo test -p quadraui --features gtk --all-targets
       - name: Cross-backend parity (macos, tui, gtk)
         run: cargo test -p quadraui --features macos,tui,gtk --test cross_backend_parity
+
+  gallery-capture-macos:
+    # Headless gallery capture mode (#1348), macOS leg — the twin of
+    # `ci.yml`'s `gallery-capture-tui` job; see that job's comment and
+    # `quadraui-gallery/src/capture.rs`'s module doc for the full picture.
+    # Drives the same `GalleryApp` through `MacDriver` into a headless
+    # `BitmapSurface` and PNG-encodes it — real AppKit/CoreGraphics types,
+    # same as the `macos` job above, which is why this needs this
+    # workflow's own `macos-latest` runner rather than living in `ci.yml`.
+    #
+    # `continue-on-error: true` and no dependency on the blocking `macos`
+    # job above: a capture-mode bug must never hold up a PR. Correctness
+    # is `tests/capture_macos_driver.rs`'s job — already covered by the
+    # blocking `macos` job's own `cargo test -p quadraui --features macos`
+    # step reaching into `quadraui-gallery`'s workspace member... except it
+    # doesn't (that step is `-p quadraui`, not the gallery crate) — so this
+    # job is also the only place `capture_macos_driver.rs` runs in CI.
+    # Non-blocking regardless: a real failure here should be fixed by
+    # filing/looking at the issue it names, not by retrying the merge.
+    name: gallery capture (macos)
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Capture every registered demo (macos backend)
+        run: |
+          mkdir -p target/gallery-capture
+          cargo run -p quadraui-gallery --features macos --bin quadraui-gallery -- \
+            --capture target/gallery-capture
+      - name: Upload gallery capture (macos)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gallery-capture-macos
+          path: target/gallery-capture
+          if-no-files-found: warn
