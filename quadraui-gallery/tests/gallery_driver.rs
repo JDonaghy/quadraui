@@ -757,6 +757,173 @@ fn form_tab_key_advances_the_focus_ring() {
     );
 }
 
+// ── Text & content demos — targeted interaction tests ──────────────────────
+
+/// Pressing `f` on the `Markdown` demo's default ("Popup") variant
+/// toggles its font role, visible on the Data tab.
+#[test]
+fn markdown_f_key_toggles_the_font_role() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Markdown");
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("\"font_role\": \"Chrome\""),
+        "font_role should start as Chrome:\n{}",
+        driver.screen()
+    );
+
+    let (gx, gy) = driver.find("Demo").expect("Demo tab label should paint");
+    driver.click(gx, gy);
+    driver.type_char('f');
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("\"font_role\": \"Editor\""),
+        "pressing 'f' should toggle font_role to Editor:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing `k` on the `Text Display` demo's log-tail variant scrolls up
+/// and disables auto-scroll — visible in the status line.
+#[test]
+fn text_display_k_key_disables_auto_scroll() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Text Display");
+    assert!(driver.screen_contains("auto_scroll: true"));
+
+    driver.type_char('k');
+
+    assert!(
+        driver.screen_contains("auto_scroll: false"),
+        "pressing 'k' should disable auto_scroll:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing `$` on the `Editor` demo's default ("Horizontal scroll")
+/// variant jumps the cursor to the end of the 500-char line and scrolls
+/// it into view.
+#[test]
+fn editor_hscroll_end_key_jumps_the_cursor() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Editor");
+    assert!(driver.screen_contains("col 1 / 500"));
+
+    driver.type_char('$');
+
+    assert!(
+        driver.screen_contains("col 500 / 500"),
+        "'$' should jump the cursor to the last column:\n{}",
+        driver.screen()
+    );
+}
+
+/// Switching the `Editor` demo to its "Font override" variant calls
+/// `Backend::set_editor_font` exactly once.
+#[test]
+fn editor_font_variant_calls_set_editor_font_once() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Editor");
+
+    let (x, y) = driver
+        .find("Font override")
+        .expect("variant picker should list \"Font override\"");
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("calls: 1"),
+        "selecting the Font override variant should call set_editor_font once:\n{}",
+        driver.screen()
+    );
+}
+
+/// Typing a message and pressing Enter on the `Chat` demo's interactive
+/// variant submits it; ticking the simulated "thinking" countdown
+/// delivers the echoed assistant reply.
+#[test]
+fn chat_interactive_submit_delivers_the_simulated_reply() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 40);
+    select_content_demo(&mut driver, "Chat");
+
+    for c in "hello".chars() {
+        driver.type_char(c);
+    }
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    // `ChatDemo::tick` counts down 5 ticks before delivering the reply.
+    for _ in 0..6 {
+        driver.tick();
+    }
+
+    assert!(
+        driver.screen_contains("Echo: hello"),
+        "submitting \"hello\" should deliver a simulated \"Echo: hello\" reply:\n{}",
+        driver.screen()
+    );
+}
+
+/// Switching the `Chat` demo to its "Markdown transcript" variant, then
+/// typing and submitting (Ctrl+S), pushes the next canned exchange —
+/// reaching `ChatController::push_turn_markdown`.
+#[test]
+fn chat_transcript_ctrl_s_sends_the_next_canned_exchange() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 40);
+    select_content_demo(&mut driver, "Chat");
+
+    let (vx, vy) = driver
+        .find("Markdown transcript")
+        .expect("variant picker should list \"Markdown transcript\"");
+    driver.click(vx, vy);
+    assert!(driver.screen_contains("Connected."));
+
+    driver.type_char('?');
+    driver.ctrl_char('s');
+
+    assert!(
+        driver.screen_contains("How do I convert markdown to styled text?"),
+        "Ctrl+S should send the first canned prompt and its markdown reply:\n{}",
+        driver.screen()
+    );
+}
+
+/// `Terminal` spawns a real PTY — only registered (and only compiled)
+/// under the `terminal` feature, so this test only runs when that
+/// feature is enabled (see `Cargo.toml`'s `terminal` entry).
+#[cfg(feature = "terminal")]
+#[test]
+fn terminal_scripted_variant_shows_its_canned_output_after_ticking() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Terminal");
+
+    let (vx, vy) = driver
+        .find("Scripted output")
+        .expect("variant picker should list \"Scripted output\"");
+    driver.click(vx, vy);
+
+    // No real timer in the driver (see `TuiDriver::tick`'s doc) — poll a
+    // bounded number of frames, pausing briefly between them so the real
+    // child shell has a chance to actually run `printf` and the PTY
+    // reader thread has a chance to deliver its output.
+    let mut found = false;
+    for _ in 0..100 {
+        driver.tick();
+        if driver.screen_contains("GALLERYSCRIPTOK") {
+            found = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        found,
+        "the scripted variant's canned command output should appear after polling:\n{}",
+        driver.screen()
+    );
+}
+
 // ── Data views demos — targeted interaction tests ──────────────────────────
 
 /// Index of `"Data"` in [`GROUPS`] — where every Data views demo lives.

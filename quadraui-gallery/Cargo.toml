@@ -26,6 +26,12 @@ publish = false
 # describes.
 tui = ["quadraui/tui"]
 gtk = ["quadraui/gtk"]
+# PTY + vt100 engine, no rasteriser of its own — pairs with either `tui`
+# or `gtk`. `demos::terminal` (the `Terminal` demo) is only compiled and
+# only registered (see `registry::registry`) when this is enabled, so a
+# plain `tui`/`gtk` gallery build never pulls in portable-pty + vt100
+# just to compile a demo it has no feature support for.
+terminal = ["quadraui/terminal"]
 # `quadraui::macos` only exists when `target_os = "macos"` *and* this
 # feature is enabled (see `quadraui/src/lib.rs`'s `pub mod macos` cfg
 # gate) — enabling the Cargo feature alone compiles nothing extra on a
