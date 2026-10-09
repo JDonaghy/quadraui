@@ -71,15 +71,21 @@
 //! against `FcSetApplication` (an in-memory set scoped to this process's
 //! `FcConfig`), never fontconfig's on-disk cache.
 //!
-//! The temp file is deliberately *not* deleted once registration
-//! returns: Fontconfig/FreeType may re-open it lazily the first time a
-//! glyph from this font is actually shaped, which can be well after this
-//! call returns, and on macOS Core Text holds a registration against the
-//! same path for the rest of the process's life. Deleting it early would
-//! surface as tofu glyphs at paint time instead of a loud error here. It
-//! is cleaned up the same way any other stray temp file is — the OS's
-//! own temp-directory housekeeping, or process exit on platforms that
-//! scope `/tmp` per boot.
+//! The temp file is deliberately *not* deleted once any backend has
+//! actually registered against it: Fontconfig/FreeType may re-open it
+//! lazily the first time a glyph from this font is actually shaped,
+//! which can be well after this call returns, and on macOS Core Text
+//! holds a registration against the same path for the rest of the
+//! process's life once `CTFontManagerRegisterFontsForURL` itself
+//! succeeds — even on the rarer path where reading a family name back
+//! out afterwards fails. Deleting it early in either case would surface
+//! as tofu glyphs at paint time instead of a loud error here.
+//! [`register_font_from_memory`] only removes the file when neither
+//! registration ever actually took — nothing holds a reference to it in
+//! that case, so there's nothing to protect. Anything left in place is
+//! cleaned up the same way any other stray temp file is — the OS's own
+//! temp-directory housekeeping, or process exit on platforms that scope
+//! `/tmp` per boot.
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
@@ -87,18 +93,29 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Register `bytes` (raw TTF/OTF/TTC data) as an application font for the
 /// lifetime of this process — with Fontconfig (`FcConfigAppFontAddFile`)
-/// and, on macOS, also with Core Text directly (issue #1367) — and nudge
-/// Pango's default font map to notice immediately. Matches
+/// and, on macOS, also with Core Text directly — and nudge Pango's
+/// default font map to notice immediately. Matches
 /// [`crate::Backend::register_font_from_memory`]'s contract.
 ///
 /// Returns every family name either registration resolved the font to —
 /// Fontconfig's own FreeType scan can report more than one, e.g. for a
 /// TTC or a variable font exposing named instances; Core Text's own
 /// family-name read is folded in alongside them, deduplicated
-/// case-insensitively. Returns `None` if `bytes` isn't a font either
-/// backend's parser can make sense of, or if every registration attempt
-/// itself fails (e.g. Fontconfig has no current config, which in
-/// practice never happens once GTK has initialised).
+/// case-insensitively (ASCII). On macOS the Core Text name is ordered
+/// *first*: Pango's default font map there is a `PangoCoreTextFontMap`
+/// (see [`notify_fontmap_config_changed`]'s doc), which never consults
+/// Fontconfig, so a caller taking `names.first()` — as
+/// [`crate::Backend::register_font_from_memory`]'s own doc recommends —
+/// must get the name Pango on that platform can actually resolve.
+///
+/// Returns `None` if `bytes` isn't a font either backend's parser can
+/// make sense of, or if every registration attempt itself fails. On
+/// macOS this also means: if Core Text's own registration never
+/// produced a usable family name, the whole call reports failure even
+/// when Fontconfig's half succeeded — a Fontconfig-only family is one
+/// `PangoCoreTextFontMap` will never resolve on that platform, so
+/// reporting success there would reproduce the exact silent-tofu state
+/// this function exists to prevent.
 pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
     let path = unique_temp_font_path();
     if std::fs::write(&path, bytes).is_err() {
@@ -110,16 +127,35 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
     let mut names = register_with_fontconfig(&path);
 
     #[cfg(target_os = "macos")]
-    let core_text_name = macos_core_text::register(&path);
-    #[cfg(not(target_os = "macos"))]
-    let core_text_name: Option<String> = None;
-
-    if let Some(name) = core_text_name {
-        if !names
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(&name))
-        {
-            names.push(name);
+    {
+        let registration = macos_core_text::register(&path);
+        match registration.family {
+            Some(name) => {
+                // Core Text's name goes first — see this function's own
+                // doc for why `names.first()` must resolve through
+                // `PangoCoreTextFontMap` on this platform.
+                if let Some(pos) = names
+                    .iter()
+                    .position(|existing| existing.eq_ignore_ascii_case(&name))
+                {
+                    names.remove(pos);
+                }
+                names.insert(0, name);
+            }
+            None => {
+                // Pango's default font map on macOS never consults
+                // Fontconfig — a Fontconfig-only success here would hand
+                // the caller a family that font map can never resolve.
+                // `registration.registered` tells us whether Core Text
+                // itself still holds a live registration against `path`
+                // even though no family name could be read back; if so,
+                // the file must stay in place for the same reason the
+                // module doc gives for a successful registration.
+                if !registration.registered {
+                    let _ = std::fs::remove_file(&path);
+                }
+                return None;
+            }
         }
     }
 
@@ -127,12 +163,9 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
         // Neither registration produced a family this function could
         // hand back — treat it the same as a parse failure rather than
         // fabricating one the caller could pass straight to
-        // `set_nerd_font_fallback` and never resolve. The temp file is
-        // left in place regardless (see the module doc) — it's never
-        // been registered against this process's `FcConfig` or Core
-        // Text, so there's no lazy re-open to protect, but deleting it
-        // here would gain nothing a failed registration doesn't already
-        // make obvious.
+        // `set_nerd_font_fallback` and never resolve. Nothing registered
+        // against `path`, so removing it is safe.
+        let _ = std::fs::remove_file(&path);
         return None;
     }
 
@@ -385,27 +418,82 @@ fn fontconfig_has_font_family(requested: &str) -> bool {
 /// always FreeType/Fontconfig-backed, so the default font map there
 /// genuinely is a `PangoFcFontMap`.
 ///
-/// This issue #1367 fix calls [`pango::prelude::FontMapExt::changed`]
-/// (`pango_font_map_changed`) — a method on the base `PangoFontMap`
-/// GObject class, not the Fontconfig-specific `PangoFcFontMap` subclass
-/// — rather than the `PangoFcFontMap`-only `pango_fc_font_map_config_changed`
-/// this function used before. `changed` is part of Pango's own
-/// GIR-introspected surface (unlike `pango_fc_font_map_config_changed`,
-/// which isn't), so the `pango` crate already binds it safely with no
-/// GObject instance cast at all — meaning it is sound to call
-/// unconditionally, regardless of which concrete font-map class the
-/// default happens to be on this platform, and correctly notifies a
-/// `PangoCoreTextFontMap` on macOS where the old Fc-only call was both
-/// wrong (a silent no-op, since the `FontTypeFt` guard it carried never
-/// matched there) and, had that guard not been present, unsound (a
-/// mismatched `PANGO_FC_FONT_MAP` cast is UB whenever a release GLib
-/// build — e.g. Homebrew's — disables its own cast-check assertions).
+/// This function always calls `pango_font_map_changed` — a function on
+/// Pango's own GIR-introspected `PangoFontMap` base-class surface that
+/// never downcasts its argument, so it is sound regardless of which
+/// concrete font-map class the default happens to be, and it is the
+/// only one of the two notifiers here that reaches a
+/// `PangoCoreTextFontMap` at all.
+///
+/// When [`pango_cairo_font_map_get_font_type`] additionally confirms the
+/// default font map is genuinely Fc-backed (`CAIRO_FONT_TYPE_FT`), this
+/// function also calls the Fc-specific `pango_fc_font_map_config_changed`
+/// (hand-declared below — see that `extern "C"` block's own doc for why
+/// it isn't part of the `pango`/`pangocairo` crates' generated bindings).
+/// `pango_font_map_changed` only bumps the font map's serial number;
+/// `pango_fc_font_map_config_changed` additionally clears
+/// `PangoFcFontMap`'s own cached family list and pattern caches
+/// (`pango_fc_font_map_cache_clear`), which the generic call does not
+/// reach on that subclass. Calling both is strictly additive — the
+/// `FontTypeFt` check below is what keeps the `PANGO_FC_FONT_MAP` cast
+/// inside the Fc-specific call sound, since it only runs when the
+/// concrete class really is `PangoFcFontMap`.
+///
+/// [`pango_cairo_font_map_get_font_type`]: pangocairo::ffi::pango_cairo_font_map_get_font_type
 fn notify_fontmap_config_changed() {
-    use pangocairo::pango::prelude::FontMapExt as _;
-    pangocairo::FontMap::default().changed();
+    // SAFETY: `pango_cairo_font_map_get_default()` returns a borrowed,
+    // non-owned `PangoFontMap*` that GTK keeps alive for the process —
+    // this function never frees it, only reads through it and passes it
+    // to the two Pango notifier functions below.
+    let fontmap = unsafe { pangocairo::ffi::pango_cairo_font_map_get_default() };
+    if fontmap.is_null() {
+        return;
+    }
+
+    // SAFETY: `pango_font_map_changed` is part of Pango's own
+    // GIR-introspected `PangoFontMap` base-class surface — it never
+    // downcasts its argument, so it is sound against any concrete
+    // subclass, including the `PangoCoreTextFontMap` GTK4-on-macOS
+    // actually returns.
+    unsafe { pangocairo::pango::ffi::pango_font_map_changed(fontmap) };
+
+    // SAFETY: `fontmap` is the same live, non-null pointer validated
+    // above; `pango_cairo_font_map_get_font_type` takes it retyped to
+    // `PangoCairoFontMap*` (the interface every
+    // `pango_cairo_font_map_get_default()` result implements by
+    // construction) — a same-address pointer-marker reinterpret, not a
+    // GObject instance cast, so it is safe regardless of the map's
+    // concrete backend class.
+    let font_type: pangocairo::cairo::FontType =
+        unsafe { pangocairo::ffi::pango_cairo_font_map_get_font_type(fontmap.cast()) }.into();
+    if font_type != pangocairo::cairo::FontType::FontTypeFt {
+        return;
+    }
+    // SAFETY: `font_type == FontTypeFt` just confirmed `fontmap` is
+    // genuinely backed by `CAIRO_FONT_TYPE_FT`, which on every GTK4
+    // build quadraui has observed (Linux X11/Wayland, the real target of
+    // this module's `ci.yml` leg) means the concrete class really is
+    // `PangoFcFontMap` — `pango_fc_font_map_config_changed`'s own
+    // `PANGO_FC_FONT_MAP` cast is therefore sound, not just hoped-for.
+    unsafe { pango_fc_font_map_config_changed(fontmap) };
 }
 
-/// Core Text registration for the GTK path on macOS (issue #1367).
+extern "C" {
+    // No `#[link(name = "...")]` needed here: unlike `libpango-1.0`
+    // itself (already on the link line via `pango-sys`'s own build
+    // script), this specific symbol lives in `libpangoft2-1.0` — a
+    // separate shared library `pango-sys`/`pangocairo-sys` never probe
+    // for, since `PangoFcFontMap` isn't part of either's
+    // GIR-introspected surface. `../../build.rs`'s `pangoft2` probe
+    // (`gtk` feature only) is what actually gets `-lpangoft2-1.0` and
+    // its `-L` search path onto this crate's final link line; confirmed
+    // against a real Homebrew build via `nm -gU` that the symbol is
+    // absent from `libpango-1.0`/`libpangocairo-1.0` and present only in
+    // `libpangoft2-1.0`.
+    fn pango_fc_font_map_config_changed(fcfontmap: *mut pangocairo::pango::ffi::PangoFontMap);
+}
+
+/// Core Text registration for the GTK path on macOS.
 ///
 /// Deliberately *not* a call into `crate::macos::text`: that module only
 /// compiles under the separate `macos` feature (AppKit's own native
@@ -421,7 +509,6 @@ fn notify_fontmap_config_changed() {
 mod macos_core_text {
     use core_foundation::array::CFArray;
     use core_foundation::base::TCFType;
-    use core_foundation::error::CFErrorRef;
     use core_foundation::url::{CFURLRef, CFURL};
     use core_text::font;
     use core_text::font_descriptor::CTFontDescriptor;
@@ -441,17 +528,34 @@ mod macos_core_text {
     /// process-local).
     const K_CT_FONT_MANAGER_SCOPE_PROCESS: u32 = 1;
 
+    /// The outcome of [`register`] — `registered` and `family` are
+    /// tracked separately because they can disagree: Core Text can
+    /// accept the registration itself while the follow-up family-name
+    /// read-back still comes back empty, and a caller deciding whether
+    /// the temp file backing this registration is still safe to delete
+    /// needs to know which one actually happened.
+    pub(super) struct Registration {
+        /// Whether `CTFontManagerRegisterFontsForURL` itself succeeded.
+        /// Once true, Core Text holds a live registration against the
+        /// path passed to [`register`] for the rest of the process's
+        /// life, regardless of whether `family` also came back `Some`.
+        pub(super) registered: bool,
+        /// The family name Core Text resolves the font to, read back
+        /// from the registered URL — `None` if registration failed
+        /// outright, or if it succeeded but no descriptor could be read
+        /// back from it.
+        pub(super) family: Option<String>,
+    }
+
     /// Register the font at `path` with Core Text for the lifetime of
-    /// this process via `CTFontManagerRegisterFontsForURL`, returning
-    /// the family name Core Text resolves the font to — read back from
-    /// the registered URL via `CTFontManagerCreateFontDescriptorsFromURL`,
-    /// never the caller's guess. Returns `None` if `path` isn't a font
-    /// Core Text's parser can make sense of, or registration itself
-    /// fails (e.g. a duplicate PostScript name already registered in
-    /// this process — including, in practice, by
-    /// `crate::macos::text::register_font_from_memory` itself, if a
-    /// consumer somehow has both the `gtk` and `macos` features on and
-    /// registers the same bytes through both paths).
+    /// this process via `CTFontManagerRegisterFontsForURL`, reading back
+    /// the family name Core Text resolves the font to via
+    /// `CTFontManagerCreateFontDescriptorsFromURL` — never the caller's
+    /// guess. Registration itself can fail (e.g. a duplicate PostScript
+    /// name already registered in this process — including, in
+    /// practice, by `crate::macos::text::register_font_from_memory`
+    /// itself, if a consumer somehow has both the `gtk` and `macos`
+    /// features on and registers the same bytes through both paths).
     ///
     /// Takes a filesystem path, not raw bytes — unlike
     /// `crate::macos::text::register_font_from_memory`'s
@@ -462,24 +566,34 @@ mod macos_core_text {
     /// is the same temp file [`super::register_with_fontconfig`] already
     /// wrote — see the module doc for why it's safe to register with two
     /// backends.
-    pub(super) fn register(path: &Path) -> Option<String> {
-        let url = CFURL::from_path(path, false)?;
+    pub(super) fn register(path: &Path) -> Registration {
+        let Some(url) = CFURL::from_path(path, false) else {
+            return Registration {
+                registered: false,
+                family: None,
+            };
+        };
 
-        let mut error: CFErrorRef = std::ptr::null_mut();
         // SAFETY: `url.as_concrete_TypeRef()` is a valid, live `CFURLRef`
-        // for the duration of this call; `error` is a valid out-param
-        // Core Text only ever writes through, and its value is discarded
-        // on failure — this function's `None` already tells the caller
-        // registration failed.
+        // for the duration of this call. Passing `null` for the error
+        // out-param tells Core Text this caller has no use for the
+        // `CFErrorRef` it would otherwise hand back — `registered`
+        // already carries the only thing this function reports on
+        // failure, and a non-null out-param would hand back a
+        // `+1`-retained `CFErrorRef` this function would then have to
+        // release itself.
         let registered = unsafe {
             CTFontManagerRegisterFontsForURL(
                 url.as_concrete_TypeRef(),
                 K_CT_FONT_MANAGER_SCOPE_PROCESS,
-                &mut error,
+                std::ptr::null_mut(),
             )
         };
         if !registered {
-            return None;
+            return Registration {
+                registered: false,
+                family: None,
+            };
         }
 
         // SAFETY: `url.as_concrete_TypeRef()` is the same live `CFURLRef`
@@ -490,16 +604,23 @@ mod macos_core_text {
         let descriptors_ref =
             unsafe { CTFontManagerCreateFontDescriptorsFromURL(url.as_concrete_TypeRef()) };
         if descriptors_ref.is_null() {
-            return None;
+            return Registration {
+                registered: true,
+                family: None,
+            };
         }
         // SAFETY: a non-null return is a `+1`-retained `CFArrayRef` per
         // Core Foundation's create-rule, which `wrap_under_create_rule`
         // takes ownership of.
         let descriptors: CFArray<CTFontDescriptor> =
             unsafe { TCFType::wrap_under_create_rule(descriptors_ref) };
-        descriptors
+        let family = descriptors
             .get(0)
-            .map(|descriptor| descriptor.family_name())
+            .map(|descriptor| descriptor.family_name());
+        Registration {
+            registered: true,
+            family,
+        }
     }
 
     /// Answer whether `family` is genuinely installed, via Core Text's
@@ -528,7 +649,7 @@ mod macos_core_text {
         fn CTFontManagerRegisterFontsForURL(
             font_url: CFURLRef,
             scope: u32,
-            error: *mut CFErrorRef,
+            error: *mut core_foundation::error::CFErrorRef,
         ) -> bool;
     }
 }
@@ -635,42 +756,78 @@ mod tests {
         assert!(!names.is_empty());
     }
 
-    // ── issue #1367: GTK-on-macOS Core Text registration ────────────────
+    // ── GTK-on-macOS Core Text registration ─────────────────────────────
 
     /// The real icon font vimcode registers at startup — same fixture
     /// `crate::macos::text`'s own tests embed, not a CI-only stand-in.
-    /// Provenance details live on that module's `ICON_FONT_BYTES`
-    /// constant.
+    /// Loaded from `tests/fixtures/vimcode-icons.ttf`: vimcode's own
+    /// bundled Nerd Font icon subset, used here purely as a real,
+    /// parseable font with a real PUA codepoint — see that directory for
+    /// licensing.
     const ICON_FONT_BYTES: &[u8] = include_bytes!("../../tests/fixtures/vimcode-icons.ttf");
 
-    /// A real, parseable font must always register on every platform —
-    /// runs everywhere (not `#[ignore]`d, unlike the manual smoke tests
-    /// above which need an externally supplied path) because this fixture
-    /// ships in the repo. On Linux this exercises the Fontconfig half of
+    /// `register_font_from_memory(ICON_FONT_BYTES)`, cached: Core Text
+    /// registration is process-global and rejects a second registration
+    /// of the same PostScript name (see [`macos_core_text::register`]'s
+    /// doc), and the default test runner executes every `#[test]` in
+    /// this file concurrently, in one process. Every test below that
+    /// needs the fixture registered calls this instead of
+    /// `register_font_from_memory` directly, so the fixture is
+    /// registered exactly once no matter how many tests want it, and
+    /// none of them can observe the other's in-flight registration.
+    fn registered_icon_font_names() -> &'static [String] {
+        static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        NAMES.get_or_init(|| {
+            register_font_from_memory(ICON_FONT_BYTES).expect(
+                "vimcode-icons.ttf is a well-formed font every registration backend here \
+                 should parse",
+            )
+        })
+    }
+
+    /// A real, parseable font must always register on every platform.
+    /// On Linux this exercises the Fontconfig half of
     /// [`register_font_from_memory`] alone; on macOS it exercises both
     /// halves, proven separately by the test below.
     #[test]
     fn register_font_from_memory_registers_the_real_icon_font_fixture() {
-        let names = register_font_from_memory(ICON_FONT_BYTES).expect(
-            "vimcode-icons.ttf is a well-formed font every registration backend here should parse",
-        );
+        let names = registered_icon_font_names();
         assert!(
             !names.is_empty(),
             "a real font must resolve at least one family name"
         );
     }
 
-    /// Issue #1367's actual regression: on a Homebrew/macOS GTK4 build,
-    /// Pango's default font map is a `PangoCoreTextFontMap`, which never
-    /// consults Fontconfig — so registering the icon font with
-    /// `FcConfigAppFontAddFile` alone (what this module did before this
-    /// fix) leaves it invisible to Pango, and every PUA glyph from it
-    /// renders as tofu. This fails on that old code: Pango's font map has
-    /// no knowledge of the family at all, so `font_map.load_font` either
-    /// returns `None` or substitutes some unrelated installed family —
-    /// exactly the "doesn't fail, just substitutes" trap
+    /// [`has_font_family`] must recognise a family this process just
+    /// registered via [`register_font_from_memory`] — otherwise it would
+    /// be blind to exactly the app-bundled case that function already
+    /// covers, undermining the "check register_font_from_memory first,
+    /// then has_font_family" ordering `Backend::register_font_from_memory`'s
+    /// own doc recommends. On macOS this exercises
+    /// [`macos_core_text::has_font_family`] specifically, since
+    /// [`registered_icon_font_names`] orders the Core Text name first.
+    #[test]
+    fn has_font_family_sees_the_real_icon_font_fixture() {
+        let names = registered_icon_font_names();
+        let family = names.first().expect("at least one family name");
+        assert!(
+            has_font_family(family),
+            "just-registered family {family:?} should be reported as installed"
+        );
+    }
+
+    /// On a Homebrew/macOS GTK4 build, Pango's default font map is a
+    /// `PangoCoreTextFontMap`, which never consults Fontconfig.
+    /// Registering a font with `FcConfigAppFontAddFile` alone therefore
+    /// leaves it invisible to Pango there, and every PUA glyph from it
+    /// renders as tofu: Pango's font map has no knowledge of the family
+    /// at all, so `font_map.load_font` either returns `None` or
+    /// substitutes some unrelated installed family — exactly the
+    /// "doesn't fail, just substitutes" trap
     /// `macos_core_text::has_font_family`'s doc describes for
-    /// `CTFontCreateWithName`.
+    /// `CTFontCreateWithName`. This test asserts Pango's default font
+    /// map genuinely resolves the registered family, which only holds if
+    /// the Core Text half of [`register_font_from_memory`] actually ran.
     ///
     /// The glyph-coverage half of this check goes through Core Text
     /// directly (`get_glyphs_for_characters`) rather than Pango's own
@@ -681,19 +838,24 @@ mod tests {
     /// `~/Library/Fonts` or `~/.local/share/fonts` on a dev box that has
     /// actually run vimcode before, racing this test's own ephemeral
     /// process-scoped registration for the same name. That ambiguity is
-    /// a pre-existing Core Text/Pango font-matching property, orthogonal
-    /// to what this issue is about (whether the font reaches Pango's font
-    /// map at all) — asking Core Text directly for the exact family this
-    /// function just resolved, rather than asking Pango to re-resolve the
-    /// name a second time, sidesteps it.
+    /// a Core Text/Pango font-matching property orthogonal to whether
+    /// the font reaches Pango's font map at all — asking Core Text
+    /// directly for the exact family this function just resolved, rather
+    /// than asking Pango to re-resolve the name a second time, sidesteps
+    /// it.
     #[cfg(target_os = "macos")]
     #[test]
     fn gtk_register_font_from_memory_registers_with_core_text_so_pango_resolves_pua_glyph() {
         use pangocairo::pango::prelude::*;
 
-        let names = register_font_from_memory(ICON_FONT_BYTES)
-            .expect("vimcode-icons.ttf is a well-formed font Core Text can parse");
+        let names = registered_icon_font_names();
         let family = names.first().expect("at least one family name").to_string();
+        assert!(
+            macos_core_text::has_font_family(&family),
+            "the family this function returns first on macOS, {family:?}, must be the one \
+             Core Text itself resolves — otherwise the assertions below would just be \
+             re-testing Fontconfig's own name"
+        );
 
         let font_map = pangocairo::FontMap::default();
         let context = pangocairo::pango::Context::new();
@@ -725,11 +887,11 @@ mod tests {
         let mut glyphs: [u16; 1] = [0];
         // SAFETY: `characters`/`glyphs` are both live, 1-element arrays;
         // `1` is their shared length.
-        unsafe {
-            ctfont.get_glyphs_for_characters(characters.as_ptr(), glyphs.as_mut_ptr(), 1);
-        }
-        assert_ne!(
-            glyphs[0], 0,
+        let all_mapped = unsafe {
+            ctfont.get_glyphs_for_characters(characters.as_ptr(), glyphs.as_mut_ptr(), 1)
+        };
+        assert!(
+            all_mapped && glyphs[0] != 0,
             "Core Text resolved family {family:?} but reports glyph 0 (.notdef) for U+EAF0 \
              (the Explorer icon) — the font registration didn't actually reach Core Text"
         );
