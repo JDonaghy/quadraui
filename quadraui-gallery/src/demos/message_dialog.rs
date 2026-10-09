@@ -3,8 +3,8 @@
 //! `MessageDialogController` used directly) and
 //! `quadraui/examples/common/message_dialog_demo.rs` (the
 //! `PlatformServices::show_message_dialog` + `native_dialog_options`
-//! degrade path), as two variants of the same widget rather than two
-//! modules (#1347).
+//! degrade path) as two variants of the same widget rather than two
+//! modules.
 //!
 //! Both variants open a "Save changes?" confirm dialog over the
 //! **entire gallery window**, not just the Demo tab's content area —
@@ -153,7 +153,7 @@ impl Demo for MessageDialogDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        backend.draw_status_bar_interactive(
+        let _ = backend.draw_status_bar_interactive(
             bar_rect,
             &self.status_bar(variant),
             &InteractionState::new(),
@@ -208,13 +208,14 @@ impl Demo for MessageDialogDemo {
         } = event
         {
             let dialog = Self::native_dialog();
-            let opts = native_dialog_options(&dialog)
-                .expect("demo dialog has no table/input — always natively expressible");
-            self.status = match backend.services().show_message_dialog(opts) {
-                Some(id) if id == dialog.buttons[0].id => "Kept editing".to_string(),
-                Some(id) if id == dialog.buttons[1].id => "Discarded".to_string(),
-                Some(other) => format!("Unexpected button: {other:?}"),
-                None => "Cancelled (or unsupported on this backend)".to_string(),
+            self.status = match native_dialog_options(&dialog) {
+                Some(opts) => match backend.services().show_message_dialog(opts) {
+                    Some(id) if id == dialog.buttons[0].id => "Kept editing".to_string(),
+                    Some(id) if id == dialog.buttons[1].id => "Discarded".to_string(),
+                    Some(other) => format!("Unexpected button: {other:?}"),
+                    None => "Cancelled (or unsupported on this backend)".to_string(),
+                },
+                None => "This dialog has no native mapping".to_string(),
             };
             return Reaction::Redraw;
         }
@@ -255,8 +256,13 @@ mod tests {
 
     #[test]
     fn controller_dialog_has_save_and_discard() {
-        let dialog = MessageDialogDemo::controller_dialog();
-        let _ = dialog; // constructs without panicking
+        let controller = MessageDialogDemo::controller_dialog();
+        let dialog = controller.dialog();
+        assert_eq!(dialog.buttons.len(), 2);
+        assert_eq!(dialog.buttons[0].label, "Save");
+        assert!(dialog.buttons[0].is_default);
+        assert_eq!(dialog.buttons[1].label, "Discard");
+        assert!(dialog.buttons[1].is_cancel);
     }
 
     #[test]

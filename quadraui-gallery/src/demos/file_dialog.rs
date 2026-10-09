@@ -7,11 +7,17 @@
 //! (`Content` group), which drives `FilePickerController` /
 //! `FolderPickerController` directly as an always-in-canvas widget. This
 //! demo instead shows the one call an app makes and lets each backend
-//! supply its own answer: a real native `gtk4::FileDialog` on GTK, and
-//! (since quadraui#965) a real in-canvas `FilePickerController` driven
-//! through a nested draw-and-read loop on TUI — same call either way,
-//! `show_folder_open_dialog` being the one method #965 left returning
-//! `None` unconditionally on TUI (see [`Self::caps_note`]).
+//! supply its own answer: a real native `gtk4::FileDialog` on GTK, and a
+//! real in-canvas `FilePickerController` driven through a nested
+//! draw-and-read loop on TUI — same call either way, except
+//! `show_folder_open_dialog`, which has no in-canvas fallback wired up
+//! yet and so returns `None` unconditionally on TUI (see
+//! [`Self::caps_note`]).
+//!
+//! Three variants — Open, Save as, Folder — map directly onto those
+//! three calls; `Enter` triggers whichever one is active, and the
+//! `o`/`s`/`f` keys reach all three directly regardless of the active
+//! variant.
 //!
 //! Rooted at a small synthetic directory tree this demo creates for
 //! itself (see [`build_demo_tree`]), so the listing is a fixed set of
@@ -53,8 +59,16 @@ impl FileDialogDemo {
     pub fn new() -> Self {
         Self {
             root_dir: build_demo_tree(),
-            status: "o = open · s = save-as · f = folder".to_string(),
+            status: "Enter (or o/s/f) opens the dialog".to_string(),
             picked: None,
+        }
+    }
+
+    fn variant_label(variant: usize) -> &'static str {
+        match variant {
+            0 => "Open",
+            1 => "Save as",
+            _ => "Folder",
         }
     }
 
@@ -86,11 +100,11 @@ impl FileDialogDemo {
     /// edge and can blank the whole message; see `file_picker.rs`'s
     /// sibling `FileDialogDemo::status_bar` in `quadraui/examples` for
     /// the regression this split avoids.
-    fn status_bar(&self) -> StatusBar {
+    fn status_bar(&self, variant: usize) -> StatusBar {
         StatusBar {
             id: WidgetId::new("gallery:file-dialog:status"),
             left_segments: vec![StatusBarSegment {
-                text: format!(" {} ", self.status),
+                text: format!(" [{}] {} ", Self::variant_label(variant), self.status),
                 fg: Color::rgb(220, 220, 220),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -114,6 +128,35 @@ impl FileDialogDemo {
             },
         }
     }
+
+    fn open_file(&mut self, backend: &mut dyn Backend) {
+        let opts = FileDialogOptions {
+            title: Some("Open File".to_string()),
+            filters: vec![("Rust files".to_string(), vec!["rs".to_string()])],
+            ..self.base_opts()
+        };
+        let picked = backend.services().show_file_open_dialog(opts);
+        self.record("Opened", "Open", picked);
+    }
+
+    fn save_file(&mut self, backend: &mut dyn Backend) {
+        let opts = FileDialogOptions {
+            title: Some("Save As".to_string()),
+            initial_filename: Some("untitled.txt".to_string()),
+            ..self.base_opts()
+        };
+        let picked = backend.services().show_file_save_dialog(opts);
+        self.record("Save as", "Save", picked);
+    }
+
+    fn open_folder(&mut self, backend: &mut dyn Backend) {
+        let opts = FileDialogOptions {
+            title: Some("Open Folder".to_string()),
+            ..self.base_opts()
+        };
+        let picked = backend.services().show_folder_open_dialog(opts);
+        self.record("Folder", "Folder pick", picked);
+    }
 }
 
 impl Default for FileDialogDemo {
@@ -131,19 +174,23 @@ impl Demo for FileDialogDemo {
         "Overlays"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Open", "Save as", "Folder"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let status_rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
-        backend.draw_status_bar_interactive(
+        let _ = backend.draw_status_bar_interactive(
             status_rect,
-            &self.status_bar(),
+            &self.status_bar(variant),
             &InteractionState::new(),
         );
     }
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
         _area: Rect,
@@ -153,38 +200,32 @@ impl Demo for FileDialogDemo {
                 key: Key::Char('o'),
                 ..
             } => {
-                let opts = FileDialogOptions {
-                    title: Some("Open File".to_string()),
-                    filters: vec![("Rust files".to_string(), vec!["rs".to_string()])],
-                    ..self.base_opts()
-                };
-                let picked = backend.services().show_file_open_dialog(opts);
-                self.record("Opened", "Open", picked);
+                self.open_file(backend);
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Char('s'),
                 ..
             } => {
-                let opts = FileDialogOptions {
-                    title: Some("Save As".to_string()),
-                    initial_filename: Some("untitled.txt".to_string()),
-                    ..self.base_opts()
-                };
-                let picked = backend.services().show_file_save_dialog(opts);
-                self.record("Save as", "Save", picked);
+                self.save_file(backend);
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Char('f'),
                 ..
             } => {
-                let opts = FileDialogOptions {
-                    title: Some("Open Folder".to_string()),
-                    ..self.base_opts()
-                };
-                let picked = backend.services().show_folder_open_dialog(opts);
-                self.record("Folder", "Folder pick", picked);
+                self.open_folder(backend);
+                Reaction::Redraw
+            }
+            UiEvent::KeyPressed {
+                key: Key::Named(quadraui::NamedKey::Enter),
+                ..
+            } => {
+                match variant {
+                    0 => self.open_file(backend),
+                    1 => self.save_file(backend),
+                    _ => self.open_folder(backend),
+                }
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
@@ -195,25 +236,30 @@ impl Demo for FileDialogDemo {
         extract_region(SOURCE)
     }
 
-    fn data(&self, _variant: usize) -> serde_json::Value {
+    fn data(&self, variant: usize) -> serde_json::Value {
         serde_json::json!({
+            "variant": Self::variant_label(variant),
             "root": self.root_dir.path().display().to_string(),
             "status": self.status,
             "picked": self.picked.as_ref().map(|p| p.display().to_string()),
         })
     }
 
-    fn caps_note(&self, _variant: usize, caps: &BackendCaps) -> Option<String> {
-        if caps.file_dialogs && caps.folder_dialogs {
-            None
-        } else {
-            Some(
-                "This backend has no native file-picker facility (BackendCaps::file_dialogs / \
-                 folder_dialogs is false) — open/save still resolve a real path through an \
-                 in-canvas FilePickerController (quadraui#965); only the folder picker ('f') \
-                 degrades all the way to None, with no in-canvas fallback wired yet."
+    fn caps_note(&self, variant: usize, caps: &BackendCaps) -> Option<String> {
+        match variant {
+            0 | 1 if !caps.file_dialogs => Some(
+                "This backend has no native file-picker facility (BackendCaps::file_dialogs is \
+                 false) — open/save still resolve a real path through an in-canvas \
+                 FilePickerController driven by a nested draw-and-read loop."
                     .into(),
-            )
+            ),
+            2 if !caps.folder_dialogs => Some(
+                "This backend has no native folder-picker facility (BackendCaps::folder_dialogs \
+                 is false) and no in-canvas fallback is wired up for it yet — the folder dialog \
+                 degrades all the way to None."
+                    .into(),
+            ),
+            _ => None,
         }
     }
 }
@@ -233,7 +279,14 @@ mod tests {
     #[test]
     fn new_starts_with_the_hint_and_no_pick() {
         let demo = FileDialogDemo::new();
-        assert!(demo.status.contains("o = open"));
+        assert!(demo.status.contains("Enter"));
         assert!(demo.picked.is_none());
+    }
+
+    #[test]
+    fn variant_label_covers_open_save_and_folder() {
+        assert_eq!(FileDialogDemo::variant_label(0), "Open");
+        assert_eq!(FileDialogDemo::variant_label(1), "Save as");
+        assert_eq!(FileDialogDemo::variant_label(2), "Folder");
     }
 }

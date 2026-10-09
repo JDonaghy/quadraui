@@ -1,10 +1,10 @@
 //! `Tooltip` demo — adapted from `quadraui/examples/common/tooltip_demo.rs`.
 //!
-//! Three variants cycle [`TooltipChrome`]'s `border` vocabulary (#541):
-//! `Sides` (bars only), `Full` (closed box, with an optional title row),
-//! and `None` (no chrome at all) — the gap JDonaghy/vimcode#635 hit when
-//! its migrated help popup lost its border and title with no way to ask
-//! for them back. `t` toggles the title on the `Full` variant.
+//! Three variants cycle [`TooltipChrome`]'s `border` vocabulary: `Sides`
+//! (bars only), `Full` (closed box, with an optional title row), and
+//! `None` (no chrome at all) — the full vocabulary a consumer migrating
+//! a bespoke popup needs in order to keep its border and title rather
+//! than losing them. `t` toggles the title on the `Full` variant.
 
 use quadraui::{
     Backend, BackendCaps, Color, InteractionState, Key, Reaction, Rect, StatusBar,
@@ -215,8 +215,21 @@ mod tests {
     #[test]
     fn toggling_title_flips_the_flag() {
         let mut demo = TooltipDemo::new();
+        let mut backend = quadraui::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 0.0, 40.0, 10.0);
         assert!(demo.show_title);
-        demo.show_title = !demo.show_title;
+
+        let key_t = UiEvent::KeyPressed {
+            key: Key::Char('t'),
+            modifiers: quadraui::Modifiers::default(),
+            repeat: false,
+        };
+        demo.handle(1, &key_t, &mut backend, area);
         assert!(!demo.show_title);
+        assert_eq!(demo.data(1)["title_shown"], false);
+
+        demo.handle(1, &key_t, &mut backend, area);
+        assert!(demo.show_title);
+        assert_eq!(demo.data(1)["title_shown"], true);
     }
 }

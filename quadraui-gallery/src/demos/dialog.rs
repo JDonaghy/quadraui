@@ -18,11 +18,15 @@
 //! "this demo is no longer active" hook to pop the dialog's registration
 //! on. Closing it explicitly (Cancel/OK/Esc) always pops it; only
 //! switching away from this demo mid-dialog leaves a stale entry behind.
+//!
+//! Three variants vary the [`Dialog`] shape itself: a neutral two-button
+//! confirm, a destructive action with a tinted button and an error
+//! severity tint, and a three-button stack laid out vertically.
 
 use quadraui::{
     Backend, BackendCaps, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure,
-    FontRole, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
+    DialogSeverity, FontRole, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -53,44 +57,108 @@ impl DialogDemo {
         }
     }
 
-    fn dialog(&self) -> Dialog {
-        Dialog {
-            id: WidgetId::new(DIALOG_ID),
-            title: StyledText::plain("Confirm delete"),
-            body: vec![
-                StyledText::plain("Really delete?"),
-                StyledText::plain("This cannot be undone."),
-            ],
-            table: None,
-            buttons: vec![
-                DialogButton {
-                    id: WidgetId::new("gallery:dialog:ok"),
-                    label: "OK".into(),
-                    is_default: true,
-                    is_cancel: false,
-                    tint: None,
-                },
-                DialogButton {
-                    id: WidgetId::new("gallery:dialog:cancel"),
-                    label: "Cancel".into(),
-                    is_default: false,
-                    is_cancel: true,
-                    tint: None,
-                },
-            ],
-            severity: None,
-            vertical_buttons: false,
-            input: None,
+    fn dialog(&self, variant: usize) -> Dialog {
+        match variant {
+            0 => Dialog {
+                id: WidgetId::new(DIALOG_ID),
+                title: StyledText::plain("Confirm delete"),
+                body: vec![
+                    StyledText::plain("Really delete?"),
+                    StyledText::plain("This cannot be undone."),
+                ],
+                table: None,
+                buttons: vec![
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:ok"),
+                        label: "OK".into(),
+                        is_default: true,
+                        is_cancel: false,
+                        tint: None,
+                    },
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:cancel"),
+                        label: "Cancel".into(),
+                        is_default: false,
+                        is_cancel: true,
+                        tint: None,
+                    },
+                ],
+                severity: None,
+                vertical_buttons: false,
+                input: None,
+            },
+            1 => Dialog {
+                id: WidgetId::new(DIALOG_ID),
+                title: StyledText::plain("Delete permanently?"),
+                body: vec![
+                    StyledText::plain("This removes the pod and all its logs."),
+                    StyledText::plain("This cannot be undone."),
+                ],
+                table: None,
+                buttons: vec![
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:keep"),
+                        label: "Keep".into(),
+                        is_default: true,
+                        is_cancel: true,
+                        tint: None,
+                    },
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:delete"),
+                        label: "Delete".into(),
+                        is_default: false,
+                        is_cancel: false,
+                        tint: Some(Color::rgb(200, 60, 60)),
+                    },
+                ],
+                severity: Some(DialogSeverity::Error),
+                vertical_buttons: false,
+                input: None,
+            },
+            _ => Dialog {
+                id: WidgetId::new(DIALOG_ID),
+                title: StyledText::plain("Unsaved changes"),
+                body: vec![StyledText::plain(
+                    "What should happen to your changes before closing?",
+                )],
+                table: None,
+                buttons: vec![
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:save"),
+                        label: "Save".into(),
+                        is_default: true,
+                        is_cancel: false,
+                        tint: None,
+                    },
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:discard"),
+                        label: "Discard".into(),
+                        is_default: false,
+                        is_cancel: false,
+                        tint: Some(Color::rgb(200, 60, 60)),
+                    },
+                    DialogButton {
+                        id: WidgetId::new("gallery:dialog:cancel-vertical"),
+                        label: "Cancel".into(),
+                        is_default: false,
+                        is_cancel: true,
+                        tint: None,
+                    },
+                ],
+                severity: Some(DialogSeverity::Warning),
+                vertical_buttons: true,
+                input: None,
+            },
         }
     }
 
     /// Dialog layout for `area`. Called from both `render` and `handle`
     /// so paint and hit-test can never disagree.
-    fn dialog_layout(&self, backend: &dyn Backend, area: Rect) -> DialogLayout {
+    fn dialog_layout(&self, backend: &dyn Backend, area: Rect, variant: usize) -> DialogLayout {
         let m = backend.measure();
         let lh = m.line_height;
         let char_w = m.char_width;
-        let dialog = self.dialog();
+        let dialog = self.dialog(variant);
         let button_width = dialog
             .buttons
             .iter()
@@ -107,7 +175,16 @@ impl DialogDemo {
         let body_height = lh * dialog.body.len() as f32;
         let button_row_height = lh;
         let padding = lh;
-        let total_height = padding * 2.0 + title_height + body_height + button_row_height;
+        // A vertical button stack reserves one row per button instead
+        // of one row total — matches the block height `Dialog::layout`
+        // itself substitutes internally, so the two never disagree on
+        // the dialog's total content height.
+        let button_block_height = if dialog.vertical_buttons {
+            button_row_height * dialog.buttons.len().max(1) as f32
+        } else {
+            button_row_height
+        };
+        let total_height = padding * 2.0 + title_height + body_height + button_block_height;
         let measure = DialogMeasure {
             width,
             title_height,
@@ -142,12 +219,17 @@ impl DialogDemo {
         }
     }
 
-    fn status_bar(&self) -> StatusBar {
+    fn status_bar(&self, variant: usize) -> StatusBar {
         let selected = self.selected.clone().unwrap_or_else(|| "nothing".into());
+        let variant_label = match variant {
+            0 => "Confirm",
+            1 => "Destructive",
+            _ => "Vertical",
+        };
         StatusBar {
             id: WidgetId::new("gallery:dialog:status"),
             left_segments: vec![StatusBarSegment {
-                text: format!(" selected: {selected} "),
+                text: format!(" [{variant_label}] selected: {selected} "),
                 fg: Color::rgb(255, 255, 255),
                 bg: Color::rgb(40, 80, 120),
                 bold: false,
@@ -178,9 +260,9 @@ impl DialogDemo {
         let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
     }
 
-    fn open_dialog(&mut self, backend: &mut dyn Backend, area: Rect) {
+    fn open_dialog(&mut self, backend: &mut dyn Backend, area: Rect, variant: usize) {
         self.dialog_open = true;
-        let bounds = self.dialog_layout(backend, area).bounds;
+        let bounds = self.dialog_layout(backend, area, variant).bounds;
         backend
             .modal_stack_handle()
             .borrow_mut()
@@ -196,7 +278,7 @@ impl DialogDemo {
     }
 }
 
-/// Trim `area` by at most one `char_w`/`lh` cell on each axis so that
+/// Trim `area` by less than two `char_w`/`lh` cells on each axis so that
 /// `Dialog::layout`'s centering — `(area_dim - content_dim) / 2` —
 /// always lands on a whole cell.
 ///
@@ -242,7 +324,11 @@ impl Demo for DialogDemo {
         "Overlays"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Confirm", "Destructive", "Vertical"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
 
         for (i, row) in self.rows.iter().enumerate() {
@@ -263,21 +349,21 @@ impl Demo for DialogDemo {
         let status_rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
         let _ = backend.draw_status_bar_interactive(
             status_rect,
-            &self.status_bar(),
+            &self.status_bar(variant),
             &InteractionState::new(),
         );
 
         // Modal paints last (highest z) — the ModalStack has no opinion
         // on draw order, only on hit-test precedence.
         if self.dialog_open {
-            let layout = self.dialog_layout(backend, area);
-            backend.draw_dialog(&self.dialog(), &layout);
+            let layout = self.dialog_layout(backend, area, variant);
+            backend.draw_dialog(&self.dialog(variant), &layout);
         }
     }
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
         area: Rect,
@@ -301,7 +387,7 @@ impl Demo for DialogDemo {
                 position,
                 ..
             } if id.as_str() == DIALOG_ID => {
-                let layout = self.dialog_layout(backend, area);
+                let layout = self.dialog_layout(backend, area, variant);
                 if let DialogHit::Button(_) = layout.hit_test(position.x, position.y) {
                     self.close_dialog(backend);
                 }
@@ -315,7 +401,7 @@ impl Demo for DialogDemo {
                 ..
             } => {
                 if self.on_open_button(backend, area, position.y) && !self.dialog_open {
-                    self.open_dialog(backend, area);
+                    self.open_dialog(backend, area, variant);
                 } else if let Some(idx) = self.row_at(backend, area, position.y) {
                     self.selected = Some(self.rows[idx].clone());
                 }
@@ -358,9 +444,20 @@ mod tests {
     }
 
     #[test]
-    fn dialog_id_matches_the_built_dialog() {
+    fn dialog_id_matches_the_built_dialog_in_every_variant() {
         let demo = DialogDemo::new();
-        assert_eq!(demo.dialog().id, WidgetId::new(DIALOG_ID));
+        for variant in 0..3 {
+            assert_eq!(demo.dialog(variant).id, WidgetId::new(DIALOG_ID));
+        }
+    }
+
+    #[test]
+    fn vertical_variant_actually_stacks_its_buttons() {
+        let demo = DialogDemo::new();
+        assert!(!demo.dialog(0).vertical_buttons);
+        assert!(!demo.dialog(1).vertical_buttons);
+        assert!(demo.dialog(2).vertical_buttons);
+        assert_eq!(demo.dialog(2).buttons.len(), 3);
     }
 
     /// `GalleryApp`'s real demo-content rect for a 100x32 terminal is
@@ -379,7 +476,7 @@ mod tests {
         let demo = DialogDemo::new();
         let backend = quadraui::tui::TuiBackend::new();
         let area = Rect::new(24.0, 1.0, 76.0, 23.0);
-        let layout = demo.dialog_layout(&backend, area);
+        let layout = demo.dialog_layout(&backend, area, 0);
 
         assert_eq!(
             layout.bounds.y.fract(),
@@ -409,6 +506,34 @@ mod tests {
             DialogHit::Button(WidgetId::new("gallery:dialog:ok")),
             "a click at the OK button's own top-left cell must hit it: {:?}",
             ok_button.bounds
+        );
+    }
+
+    /// Same guarantee as the test above, for the `Vertical` variant,
+    /// where the three-button stack adds two extra button rows to the
+    /// total content height — `dialog_layout` must fold that into its
+    /// own `total_height` or the whole-cell parity breaks for the
+    /// bottom buttons specifically.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn vertical_variant_bounds_also_land_on_whole_cells() {
+        let demo = DialogDemo::new();
+        let backend = quadraui::tui::TuiBackend::new();
+        let area = Rect::new(24.0, 1.0, 76.0, 23.0);
+        let layout = demo.dialog_layout(&backend, area, 2);
+
+        let cancel_button = layout
+            .visible_buttons
+            .iter()
+            .find(|b| b.id == WidgetId::new("gallery:dialog:cancel-vertical"))
+            .expect("Cancel button should be laid out");
+        let cell_x = cancel_button.bounds.x.floor() + 0.5;
+        let cell_y = cancel_button.bounds.y.floor() + 0.5;
+        assert_eq!(
+            layout.hit_test(cell_x, cell_y),
+            DialogHit::Button(WidgetId::new("gallery:dialog:cancel-vertical")),
+            "a click at the bottom-most stacked button's own top-left cell must hit it: {:?}",
+            cancel_button.bounds
         );
     }
 }

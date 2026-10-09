@@ -154,7 +154,7 @@ impl Demo for HelpOverlayDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        backend.draw_status_bar_interactive(
+        let _ = backend.draw_status_bar_interactive(
             bar_rect,
             &Self::status_bar(variant, self.overlay.is_open()),
             &InteractionState::new(),
