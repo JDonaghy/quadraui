@@ -59,6 +59,28 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-09
+
+### Fixed
+
+- **GTK on macOS: Nerd Font icons rendered as tofu boxes** with their hex
+  codes (issue #1367). `register_font_from_memory` registered app fonts
+  only with Fontconfig, but GTK4 on macOS uses Pango's Core Text font
+  map; fonts are now also registered with Core Text there.
+- **TUI in macOS Terminal.app: runs of dimmed text** after every
+  underline-coloured span (issue #1366). Terminal.app misparses
+  crossterm's semicolon-form SGR 58 like ConPTY does (trailing `2` →
+  faint); underline colour is now stripped when
+  `TERM_PROGRAM=Apple_Terminal`. iTerm2 keeps coloured underlines.
+- Published-crate hygiene: internal-only docs are excluded from the
+  package, and `docs/decisions/` ships (issue #1351).
+
+### Added
+
+- A `# Examples` doctest on every public primitive, with a lint ratchet
+  (issue #1352), and `examples/hello.rs` rewritten on the canonical
+  `ShellApp` path (issue #1342).
+
 ### Changed
 
 - `rust-version` in `quadraui/Cargo.toml` lowered from 1.97.1 (which only
