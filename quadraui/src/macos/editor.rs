@@ -167,9 +167,8 @@ pub unsafe fn draw_editor(
 
         // Lay the line out as contiguous, non-overlapping runs (gaps in
         // `theme.foreground`, spans in their own colour) so every glyph
-        // is painted exactly once — see `paint_line_text`'s doc for why
-        // a raw-run-then-span-overlay used to double-composite glyphs
-        // (issue #1405).
+        // is painted exactly once — see `paint_line_text`'s doc for the
+        // invariant this maintains.
         let raw_x = text_x_offset;
         paint_line_text(
             ctx,
@@ -231,19 +230,16 @@ pub unsafe fn draw_editor(
 /// runs: gaps between (and around) `line.spans` in `default_fg`, each
 /// span in its own `style.fg` (with `style.bg` filled first, if set).
 ///
-/// Issue #1405: the previous implementation painted the whole line in
-/// `default_fg` via one [`draw_text`] call, then re-painted each span's
-/// slice *on top of it* in its own colour. Core Text anti-aliases glyph
-/// edges with partial coverage; compositing two glyph draws at the same
-/// position turns edge alpha `a` into `1-(1-a)²`, which saturates the
-/// soft edge pixels and makes every stroke look thicker and
-/// stair-stepped next to a renderer (e.g. VS Code) that paints each
-/// glyph once. Splitting into non-overlapping runs — one [`draw_text`]
-/// call per run, zero overlapping coverage — paints every glyph exactly
-/// once. Mirrors [`crate::win::editor`]'s `paint_line_text`, which
-/// already coalesces spans into non-overlapping runs for the same
-/// reason; GTK's rasteriser never had this bug because a single Pango
-/// layout with a `PangoAttrList` paints the whole line in one pass.
+/// Every glyph in the line is painted by exactly one [`draw_text`] call,
+/// because the runs partition `text` with no overlapping coverage. Core
+/// Text anti-aliases glyph edges with partial coverage; compositing two
+/// glyph draws at the same position would turn edge alpha `a` into
+/// `1-(1-a)²`, saturating the soft edge pixels and making strokes look
+/// thicker and stair-stepped. Mirrors [`crate::win::editor`]'s
+/// `paint_line_text`, which coalesces spans into non-overlapping runs
+/// for the same reason; GTK's rasteriser holds the invariant by painting
+/// the whole line in one pass via a single Pango layout with a
+/// `PangoAttrList`.
 ///
 /// Spans are expected to be sorted by `start_byte` and non-overlapping
 /// (the shape every span producer — syntax highlighting, search
@@ -251,7 +247,6 @@ pub unsafe fn draw_editor(
 /// assumption). An out-of-order or overlapping span is tolerated
 /// defensively: any portion already covered by an earlier run is
 /// skipped rather than re-painted.
-#[allow(clippy::too_many_arguments)]
 unsafe fn paint_line_text(
     ctx: CGContextRef,
     font: &CTFont,
@@ -547,13 +542,12 @@ mod tests {
         assert_eq!((r, g, b), (50, 100, 150));
     }
 
-    /// Regression for issue #1405: the previous rasteriser painted every
-    /// line's `raw_text` once as a whole-line run, then re-painted every
-    /// span slice *on top of it* — a span covering the entire line thus
-    /// painted the same glyphs twice. Core Text's recorded [`TextRun`]s
-    /// (via `start_recording_text`/`MacBackend::text_runs`) let this be
-    /// asserted directly: exactly one run for the line's text, not two
-    /// overlapping ones, regardless of how many spans cover it.
+    /// A span covering the entire line must still paint the line's text
+    /// exactly once, not as an overlapping pair of runs. Core Text's
+    /// recorded [`TextRun`]s (via `start_recording_text`/
+    /// `MacBackend::text_runs`) let this be asserted directly: exactly
+    /// one run for the line's text, regardless of how many spans cover
+    /// it.
     #[test]
     fn span_covering_whole_line_paints_exactly_one_text_run() {
         let mut line = one_line("alpha beta");
@@ -597,6 +591,81 @@ mod tests {
             "\"alpha beta\" should be painted exactly once (overlapping raw-run + \
              span-overlay would record it twice at the same position), got: {:?}",
             whole_line_runs,
+        );
+    }
+
+    /// A span covering only part of the line must leave the uncovered
+    /// gaps painted too, and each run — gap or span — must appear
+    /// exactly once with no overlap. Pins both: the recorded
+    /// [`TextRun`]s for `"alpha beta"` with `spans = [0..5]` must be
+    /// exactly the gap `" beta"` and the span `"alpha"`, each starting
+    /// where the previous one ends.
+    #[test]
+    fn span_covering_part_of_line_leaves_gap_runs_contiguous() {
+        let mut line = one_line("alpha beta");
+        line.spans = vec![ESpan {
+            start_byte: 0,
+            end_byte: 5,
+            style: Style {
+                fg: Color::rgb(200, 100, 50),
+                bg: None,
+                bold: false,
+                italic: false,
+                font_scale: 1.0,
+            },
+        }];
+        let mut editor = editor_with_cursor("alpha beta", CursorShape::Bar, 99);
+        editor.lines = vec![line];
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_editor(editor.rect, &editor);
+        });
+        backend.end_frame();
+
+        let metrics = font_metrics(&font());
+        let text_start = 3.0 * metrics.char_width; // gutter_char_width = 3
+
+        let span_runs: Vec<_> = backend
+            .text_runs()
+            .iter()
+            .filter(|run| run.text == "alpha")
+            .collect();
+        assert_eq!(
+            span_runs.len(),
+            1,
+            "the span \"alpha\" should be painted exactly once, got: {:?}",
+            span_runs,
+        );
+        assert!(
+            (span_runs[0].bounds.x as f64 - text_start).abs() < 0.5,
+            "the span run should start at the line's text origin, got x={}",
+            span_runs[0].bounds.x,
+        );
+
+        let gap_runs: Vec<_> = backend
+            .text_runs()
+            .iter()
+            .filter(|run| run.text == " beta")
+            .collect();
+        assert_eq!(
+            gap_runs.len(),
+            1,
+            "the uncovered gap \" beta\" should still be painted exactly \
+             once, got: {:?}",
+            gap_runs,
+        );
+        let gap_x_expected = text_start + 5.0 * metrics.char_width;
+        assert!(
+            (gap_runs[0].bounds.x as f64 - gap_x_expected).abs() < 0.5,
+            "the gap run should start right after the span ends, got x={}, expected={}",
+            gap_runs[0].bounds.x,
+            gap_x_expected,
         );
     }
 
