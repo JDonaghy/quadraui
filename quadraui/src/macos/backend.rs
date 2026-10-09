@@ -7012,6 +7012,48 @@ mod tests {
         );
     }
 
+    /// `TextInput` paints through plain `self`, which resolves
+    /// `chrome_font` for its glyphs — so its caret grid has to use
+    /// `chrome_char_width`, not `current_char_width`, or the caret lands
+    /// somewhere other than where the glyphs it sits between actually
+    /// are. Installs a Menlo editor font and a deliberately much
+    /// narrower Menlo chrome font so the two advances can't agree by
+    /// coincidence, then checks `cursor_bounds.x` against each.
+    #[test]
+    fn text_input_layout_cursor_grid_uses_chrome_char_width_not_editor() {
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font()); // Menlo 14pt — a wide editor advance.
+        backend.set_ui_font("Menlo 6"); // Menlo 6pt — a narrow chrome advance.
+        assert!(
+            (backend.chrome_char_width - backend.current_char_width).abs() > 1.0,
+            "chrome and editor char widths must differ enough that a grid built from \
+             the wrong one can't pass by coincidence: chrome={}, editor={}",
+            backend.chrome_char_width,
+            backend.current_char_width,
+        );
+
+        let mut ti =
+            crate::primitives::text_input::TextInput::new(WidgetId::new("chrome-grid-regression"));
+        ti.lines = vec!["hello".to_string()];
+        ti.cursor_line = 0;
+        ti.cursor_col = 3;
+        ti.has_focus = true;
+
+        let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let layout = backend.text_input_layout(rect, &ti);
+        let cursor = layout.cursor_bounds.expect("cursor visible when has_focus");
+
+        let expected_x = layout.content_bounds.x + 3.0 * backend.chrome_char_width as f32;
+        let wrong_x = layout.content_bounds.x + 3.0 * backend.current_char_width as f32;
+        assert!(
+            (cursor.x - expected_x).abs() < 0.01,
+            "cursor_bounds.x must sit on the chrome_char_width grid \
+             `draw_text_input` actually paints glyphs on: got {}, expected {expected_x} \
+             (the current_char_width grid would have put it at {wrong_x})",
+            cursor.x,
+        );
+    }
+
     // ── #810: draw_chart real-pixel driver tests ────────────────────────
     //
     // Ported from the deleted `macos::chart::tests` (that module already
