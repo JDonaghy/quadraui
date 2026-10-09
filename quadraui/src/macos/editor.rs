@@ -1304,6 +1304,25 @@ mod tests {
         surface
     }
 
+    /// Core Graphics anti-aliases a fill's boundary, bleeding a level or
+    /// two of track colour into the neighbouring text-area pixel, so an
+    /// exact `== background` on a pixel adjacent to the column edge is
+    /// not a stable assertion across hosts. The scrollbar track sits
+    /// ~20 levels per channel clear of the background in every shipped
+    /// theme, far outside this tolerance, so "background" and "track"
+    /// stay unambiguous.
+    const SCROLL_TEST_AA_TOLERANCE: i32 = 4;
+
+    /// Whether the pixel at `(x, y)` is the editor background rather
+    /// than scrollbar track, tolerant of edge anti-aliasing.
+    fn scroll_test_pixel_is_bg(surface: &BitmapSurface, x: u32, y: u32) -> bool {
+        let bg = Theme::default().background;
+        let (r, g, b, _) = surface.pixel(x, y);
+        (r as i32 - bg.r as i32).abs() <= SCROLL_TEST_AA_TOLERANCE
+            && (g as i32 - bg.g as i32).abs() <= SCROLL_TEST_AA_TOLERANCE
+            && (b as i32 - bg.b as i32).abs() <= SCROLL_TEST_AA_TOLERANCE
+    }
+
     /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
     /// `MacBackend::draw_editor` paint a scrollbar column exactly 14px
     /// wide — `[186, 200)` in a 200px viewport — regardless of the
@@ -1311,23 +1330,20 @@ mod tests {
     /// same column for hit-testing.
     #[test]
     fn backend_set_editor_v_scrollbar_width_paints_14px_column() {
-        let bg = Theme::default().background;
         let overflowing = scroll_test_editor(50, 5);
         let surface = scroll_test_paint_via_backend(&overflowing, Some(14.0));
         let y = SCROLL_TEST_H - 4;
         for x in 186..SCROLL_TEST_W {
-            let (r, g, b, _) = surface.pixel(x, y);
-            assert_ne!(
-                (r, g, b),
-                (bg.r, bg.g, bg.b),
+            assert!(
+                !scroll_test_pixel_is_bg(&surface, x, y),
                 "x={x} lies inside the 14px scrollbar column [186, 200) and should be tinted"
             );
         }
-        let (r, g, b, _) = surface.pixel(185, y);
-        assert_eq!(
-            (r, g, b),
-            (bg.r, bg.g, bg.b),
-            "x=185 lies just left of the 14px scrollbar column and should be plain background"
+        // Three pixels clear of the column edge at x=186, so edge
+        // anti-aliasing cannot reach the probe.
+        assert!(
+            scroll_test_pixel_is_bg(&surface, 183, y),
+            "x=183 lies left of the 14px scrollbar column and should be plain background"
         );
 
         let mut backend = MacBackend::new();
@@ -1340,23 +1356,36 @@ mod tests {
         assert_eq!(vsb.x, SCROLL_TEST_W as f32 - 14.0);
     }
 
-    /// Without `set_editor_v_scrollbar_width`, the backend path keeps
-    /// the one-char-wide column: x=186 stays background.
+    /// Without `set_editor_v_scrollbar_width`, the backend path keeps a
+    /// column one `char_width` wide: narrower than the 14px override, so
+    /// the pixels the override would have tinted stay background.
     #[test]
     fn backend_default_editor_v_scrollbar_width_is_one_char() {
-        let bg = Theme::default().background;
         let overflowing = scroll_test_editor(50, 5);
-        let surface = scroll_test_paint_via_backend(&overflowing, None);
-        let (r, g, b, _) = surface.pixel(186, SCROLL_TEST_H - 4);
-        assert_eq!(
-            (r, g, b),
-            (bg.r, bg.g, bg.b),
-            "the default column is one char (~8px) wide, so x=186 is text-area background"
+
+        // The default column is `char_width` wide, which the real font
+        // supplies — derive the boundary from the backend rather than
+        // assuming a glyph advance.
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        assert_eq!(backend.editor_v_scrollbar_width(), None);
+        let char_w = backend.char_width();
+        assert!(
+            char_w > 0.0 && char_w < 14.0,
+            "fixture needs a default column narrower than the 14px override, got {char_w}"
         );
-        let (r, g, b, _) = surface.pixel(SCROLL_TEST_W - 2, SCROLL_TEST_H - 4);
-        assert_ne!(
-            (r, g, b),
-            (bg.r, bg.g, bg.b),
+
+        let surface = scroll_test_paint_via_backend(&overflowing, None);
+        let y = SCROLL_TEST_H - 4;
+        // Three pixels clear of the column's left edge, inside what the
+        // 14px override would have tinted.
+        let text_area_x = (SCROLL_TEST_W as f32 - char_w).floor() as u32 - 3;
+        assert!(
+            scroll_test_pixel_is_bg(&surface, text_area_x, y),
+            "default column is {char_w}px wide, so x={text_area_x} is text-area background"
+        );
+        assert!(
+            !scroll_test_pixel_is_bg(&surface, SCROLL_TEST_W - 2, y),
             "the default column still paints at the right edge"
         );
     }
