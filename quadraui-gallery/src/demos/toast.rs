@@ -1,12 +1,12 @@
 //! `Toast` demo — the gallery's seed exhibit, adapted from
-//! `quadraui/examples/common/toast_app.rs` and extended (issue #1347)
-//! with the keyboard-focus/action behaviour from
+//! `quadraui/examples/common/toast_app.rs` and extended with the
+//! keyboard-focus/action behaviour from
 //! `quadraui/examples/common/toast_actions_app.rs` — `Tab` gives the
 //! toast stack keyboard focus, `Tab`/`Shift+Tab`/`Left`/`Right` cycle
 //! its buttons, `Up`/`Down` move between toasts, `Enter` activates the
-//! focused button, and `Esc` returns focus to the demo. Extended rather
-//! than duplicated into a second module, per #1347's instruction for
-//! `toast_actions_app`.
+//! focused button, and `Esc` returns focus to the demo. The two source
+//! examples are one widget, so they live in this one module rather than
+//! two.
 //!
 //! Exercises [`ToastOverlay`] with varying severities, dismiss, an
 //! action button, and keyboard-driven focus, proving the gallery

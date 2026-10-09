@@ -1,12 +1,13 @@
 //! `Context Menu` demo — merges
 //! `quadraui/examples/common/context_menu_style_demo.rs` (the
-//! `MenuStyle`/`ContextMenuController` "one call" path, issue #1187) and
+//! `MenuStyle`/`ContextMenuController` "one call" path) and
 //! `quadraui/examples/common/right_click_demo.rs` (the richer Cut/Copy/
 //! Paste/Select All item list with key-equivalent accelerators) into one
-//! widget (#1347): right-click opens the same menu either way, `m`
-//! cycles [`MenuStyle`] (`Auto` → `Native` → `Custom` → `Auto`) at
-//! runtime, and the status bar shows both the requested style and
-//! [`Backend::effective_menu_style`] so the live resolution is visible.
+//! widget: right-click opens the same menu either way, and three
+//! variants pick the requested [`MenuStyle`] — `Auto`, `Native`,
+//! `Custom` — so the status bar's live
+//! [`Backend::effective_menu_style`] reading shows how each resolves on
+//! the running backend.
 //!
 //! Either path delivers the same two events —
 //! [`UiEvent::ContextMenuItemActivated`] / [`UiEvent::ContextMenuDismissed`]
@@ -15,7 +16,7 @@
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, Backend, BackendCaps, Color, ContextMenu,
     ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement,
-    InteractionState, Key, KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar,
+    InteractionState, KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar,
     StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
@@ -27,7 +28,6 @@ const SOURCE: &str = include_str!("context_menu.rs");
 pub struct ContextMenuDemo {
     ctx_menu: ContextMenuController,
     last_action: Option<String>,
-    requested_style: MenuStyle,
 }
 
 impl ContextMenuDemo {
@@ -35,7 +35,15 @@ impl ContextMenuDemo {
         Self {
             ctx_menu: ContextMenuController::new(),
             last_action: None,
-            requested_style: MenuStyle::Auto,
+        }
+    }
+
+    /// The [`MenuStyle`] each variant requests.
+    fn requested_style(variant: usize) -> MenuStyle {
+        match variant {
+            0 => MenuStyle::Auto,
+            1 => MenuStyle::Native,
+            _ => MenuStyle::Custom,
         }
     }
 
@@ -61,20 +69,12 @@ impl ContextMenuDemo {
         }
     }
 
-    fn cycle_style(&mut self, backend: &mut dyn Backend) {
-        self.requested_style = match self.requested_style {
-            MenuStyle::Auto => MenuStyle::Native,
-            MenuStyle::Native => MenuStyle::Custom,
-            MenuStyle::Custom => MenuStyle::Auto,
-        };
-        backend.set_menu_style(self.requested_style);
-    }
-
     /// One handler for the context-menu events, reached either from the
     /// top-level `UiEvent` match (native path, queued by
     /// `Backend::show_context_menu`) or from `ContextMenuOutcome::Event`
     /// (painted path, returned synchronously by `ContextMenuController::
-    /// handle`) — the "one code path" issue #1187 asks for.
+    /// handle`) — one code path regardless of which path produced the
+    /// event.
     fn handle_menu_event(&mut self, event: UiEvent) -> Reaction {
         match event {
             UiEvent::ContextMenuItemActivated(id) => {
@@ -86,12 +86,12 @@ impl ContextMenuDemo {
         }
     }
 
-    fn status_bar(&self, effective: ResolvedMenuStyle) -> StatusBar {
+    fn status_bar(&self, variant: usize, effective: ResolvedMenuStyle) -> StatusBar {
         let left = match &self.last_action {
             Some(s) => format!(" Last action: {s} "),
-            None => " Right-click anywhere — m cycles MenuStyle ".to_string(),
+            None => " Right-click anywhere ".to_string(),
         };
-        let style_name = match self.requested_style {
+        let style_name = match Self::requested_style(variant) {
             MenuStyle::Auto => "Auto",
             MenuStyle::Native => "Native",
             MenuStyle::Custom => "Custom",
@@ -150,8 +150,16 @@ impl Demo for ContextMenuDemo {
         "Overlays"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let bar = self.status_bar(backend.effective_menu_style());
+    fn variants(&self) -> &'static [&'static str] {
+        &["Auto", "Native", "Custom"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
+        // Reasserted every frame so the active variant's requested style
+        // is always the one in effect while this demo is showing —
+        // switching the variant picker is the one way to change it.
+        backend.set_menu_style(Self::requested_style(variant));
+        let bar = self.status_bar(variant, backend.effective_menu_style());
         let lh = backend.line_height();
         let rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
         let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
@@ -173,8 +181,13 @@ impl Demo for ContextMenuDemo {
         // Route through the controller first — on the `Custom` path this
         // may return one of the same two events the `Native` path
         // delivers later via the top-level match below.
-        if let ContextMenuOutcome::Event(ev) = self.ctx_menu.handle(event, backend) {
-            return self.handle_menu_event(ev);
+        match self.ctx_menu.handle(event, backend) {
+            ContextMenuOutcome::Event(ev) => return self.handle_menu_event(ev),
+            // Navigation/hit-testing inside the open menu (e.g. arrow
+            // keys moving the selection) — nothing to route, but the
+            // new selection needs painting.
+            ContextMenuOutcome::Consumed => return Reaction::Redraw,
+            ContextMenuOutcome::Ignored => {}
         }
 
         match event {
@@ -195,13 +208,6 @@ impl Demo for ContextMenuDemo {
             UiEvent::ContextMenuItemActivated(_) | UiEvent::ContextMenuDismissed => {
                 self.handle_menu_event(event.clone())
             }
-            UiEvent::KeyPressed {
-                key: Key::Char('m'),
-                ..
-            } => {
-                self.cycle_style(backend);
-                Reaction::Redraw
-            }
             _ => Reaction::Continue,
         }
     }
@@ -210,9 +216,9 @@ impl Demo for ContextMenuDemo {
         extract_region(SOURCE)
     }
 
-    fn data(&self, _variant: usize) -> serde_json::Value {
+    fn data(&self, variant: usize) -> serde_json::Value {
         serde_json::json!({
-            "requested_style": format!("{:?}", self.requested_style),
+            "requested_style": format!("{:?}", Self::requested_style(variant)),
             "last_action": self.last_action,
         })
     }
@@ -237,22 +243,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cycling_style_wraps_auto_native_custom() {
-        let mut demo = ContextMenuDemo::new();
-        assert_eq!(demo.requested_style, MenuStyle::Auto);
-        let mut backend = quadraui::testing::RecordingBackend::new();
-        demo.cycle_style(&mut backend);
-        assert_eq!(demo.requested_style, MenuStyle::Native);
-        demo.cycle_style(&mut backend);
-        assert_eq!(demo.requested_style, MenuStyle::Custom);
-        demo.cycle_style(&mut backend);
-        assert_eq!(demo.requested_style, MenuStyle::Auto);
+    fn requested_style_matches_each_variant() {
+        assert_eq!(ContextMenuDemo::requested_style(0), MenuStyle::Auto);
+        assert_eq!(ContextMenuDemo::requested_style(1), MenuStyle::Native);
+        assert_eq!(ContextMenuDemo::requested_style(2), MenuStyle::Custom);
     }
 
     #[test]
     fn build_context_menu_has_the_merged_item_set() {
         let demo = ContextMenuDemo::new();
         let menu = demo.build_context_menu();
-        assert_eq!(menu.items.len(), 7);
+        let ids: Vec<Option<String>> = menu
+            .items
+            .iter()
+            .map(|i| i.id.as_ref().map(|id| id.as_str().to_string()))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("gallery:ctx:cut".to_string()),
+                Some("gallery:ctx:copy".to_string()),
+                Some("gallery:ctx:paste".to_string()),
+                None, // separator
+                Some("gallery:ctx:select_all".to_string()),
+                None, // separator
+                Some("gallery:ctx:about".to_string()),
+            ]
+        );
     }
 }
