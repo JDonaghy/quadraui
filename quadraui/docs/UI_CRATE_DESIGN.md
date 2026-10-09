@@ -40,7 +40,7 @@ Targets:
   runtime and the web surfaces (`webContents`, `session`, cookies) we don't want.
 - **Not a pixel-perfect Figma-style renderer.** Widgets look *consistent* with each platform's conventions (font, accent, spacing, scrollbar style) but do not attempt to mimic `NSButton` or `ttk::Button` exactly.
 - **Not retained-mode DOM.** No virtual DOM diffing. Full rebuild each frame — see §3.
-- **Not an animation framework.** Transitions are out of scope v1. Fades and spinners can be added later as primitives.
+- **Not a general animation framework.** Apps cannot tween arbitrary properties. Chrome transitions are in scope on GUI backends (hover/press fades, toast slide-in, smooth scrolling, caret blink), and the TUI snaps to the end state. See `GOAL.md` § The visual target.
 
 ---
 
