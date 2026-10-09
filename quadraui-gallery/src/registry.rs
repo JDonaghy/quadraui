@@ -13,19 +13,25 @@ use crate::demos::canvas::CanvasDemo;
 use crate::demos::caret_shape::CaretShapeDemo;
 use crate::demos::chart::ChartDemo;
 use crate::demos::chat::ChatDemo;
+use crate::demos::clipboard::ClipboardDemo;
 use crate::demos::command_line::CommandLineDemo;
+use crate::demos::context_menu::ContextMenuDemo;
 use crate::demos::data_table::DataTableDemo;
+use crate::demos::dialog::DialogDemo;
 use crate::demos::diff_view::DiffViewDemo;
 use crate::demos::editor::EditorDemo;
+use crate::demos::file_dialog::FileDialogDemo;
 use crate::demos::file_picker::FilePickerDemo;
 use crate::demos::find_replace::FindReplaceDemo;
 use crate::demos::float::FloatDemo;
 use crate::demos::focus::FocusDemo;
 use crate::demos::form::FormDemo;
+use crate::demos::help_overlay::HelpOverlayDemo;
 use crate::demos::image::ImageDemo;
 use crate::demos::indicators::IndicatorsDemo;
 use crate::demos::markdown::MarkdownDemo;
 use crate::demos::menu_bar::MenuBarDemo;
+use crate::demos::message_dialog::MessageDialogDemo;
 use crate::demos::message_list::MessageListDemo;
 use crate::demos::minimap::MinimapDemo;
 use crate::demos::palette::PaletteDemo;
@@ -43,6 +49,7 @@ use crate::demos::text_input::TextInputDemo;
 use crate::demos::text_selection::TextSelectionDemo;
 use crate::demos::toast::ToastDemo;
 use crate::demos::toolbar::ToolbarDemo;
+use crate::demos::tooltip::TooltipDemo;
 use crate::demos::tree::TreeDemo;
 use crate::demos::window_control::WindowControlDemo;
 use crate::demos::workspace::WorkspaceDemo;
@@ -58,6 +65,14 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
     #[allow(unused_mut)]
     let mut demos: Vec<Box<dyn Demo>> = vec![
         Box::new(ToastDemo::new()),
+        // Overlays, feedback & platform.
+        Box::new(TooltipDemo::new()),
+        Box::new(DialogDemo::new()),
+        Box::new(MessageDialogDemo::new()),
+        Box::new(HelpOverlayDemo::new()),
+        Box::new(ContextMenuDemo::new()),
+        Box::new(ClipboardDemo::new()),
+        Box::new(FileDialogDemo::new()),
         // Layout & chrome.
         Box::new(ActivityBarDemo::new()),
         Box::new(MenuBarDemo::new()),
