@@ -6,7 +6,7 @@
 > backend. Keep it short and current. The *order* the remaining work lands in —
 > releases, cross-epic gates, the 1.0 bar — is [`ROADMAP.md`](ROADMAP.md).
 >
-> _Last updated: 2026-09-13._
+> _Last updated: 2026-10-08._
 
 ## The goal
 
@@ -74,6 +74,43 @@ also *reactive*: it only finds the gaps vimcode happens to walk into. A
 deliberate audit against the benchmark would find the rest before a consumer
 does.
 
+## The visual target: VS Code on GUI, graceful degradation on the terminal
+
+Capability breadth is half of why teams choose Electron; the other half is that
+the result **looks like a modern desktop app**. A developer evaluating quadraui
+will judge it by its GUI screenshots first. Today too many GUI widgets read as a
+terminal program lifted onto a pixel canvas: monospace chrome, `[value]` inputs,
+`[x]` toggles, text-glyph icons, sizes snapped to whole text lines. That is the
+wrong way round.
+
+- **VS Code is the reference for the GUI backends.** When a look-and-feel
+  question comes up, compare against VS Code on the same display. Default
+  density: activity bar 48 px, tab bar 35 px, status bar 22 px, list and tree
+  rows about 22 px. Chrome uses the platform UI font. Icons are codicons.
+  Overlays such as menus, hovers, the palette, toasts and dialogs have radius
+  and elevation.
+- **The terminal is the graceful degradation of that design, not its source.**
+  A GUI painter must not draw terminal affordances (`[`, `]`, `[x]`, `─`, `▶`)
+  as text, or size chrome in character cells. The TUI painter renders the same
+  descriptor in the best way a terminal can: style tokens it cannot honour are
+  ignored, transitions snap to their end state, and icons fall back to Nerd
+  Font or ASCII. The portability commitment below still holds: it must
+  *function*, it need not *look the same*.
+- **Monospace is a property of the content, not the framework.** Only the
+  editor-class primitives are monospace by intent: Editor, Terminal, DiffView,
+  Minimap and CommandLine. Everything else is chrome and uses the UI font.
+- **Chrome motion is in scope; a general animation framework is not.** Hover
+  and press fades, toast slide-in, smooth scrolling and caret blink are expected
+  on GUI. Tweening arbitrary app properties is not.
+- **The widgets an app developer expects are in scope.** That means Button,
+  radio, switch, a scroll container, number input, editable combo, date picker
+  and multi-select. "App framework" is not credible without them, even though
+  catalogue breadth for its own sake still is not the goal.
+
+This is tracked as the GUI-look epic (#1371). The breaking half (px-first
+sizing, f32 scroll offsets, `Default` + `#[non_exhaustive]` descriptors) rides
+the v0.2 batch (#1095).
+
 ## What this does not change
 
 - **The four-backend portability commitment stands, and TUI must actually
@@ -87,8 +124,9 @@ does.
   parity is not a licence to add GUI-only surfaces. See CLAUDE.md's
   *Cross-backend portability commitment*.
 - **The non-goals in `UI_CRATE_DESIGN.md` §2 stand** — not a general-purpose GUI
-  framework, not a pixel-perfect renderer, not retained-mode, not an animation
-  framework. Breadth of *platform capability* is the target; breadth of *widget
-  catalogue* is not.
+  framework, not a pixel-perfect renderer, not retained-mode, not a general
+  animation framework. Breadth of *platform capability* is the target. Breadth of
+  *widget catalogue* for its own sake is not, but the everyday app widgets above
+  are.
 - **vimcode stays the testbed, not the product.** It is the forcing function for
   these gaps. See code-coordinator's `GOAL.md`.
