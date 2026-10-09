@@ -5183,20 +5183,30 @@ fn form_groups_click_toggle_flips_rendered_value() {
 // proving "no app-side key plumbing is needed to edit a field".
 
 #[test]
-fn form_scroll_tab_focuses_name_field_then_typing_edits_it() {
+fn form_scroll_typing_into_the_already_focused_name_field_edits_it() {
     let mut driver = TuiDriver::new(FormScrollApp::new(), 100, 24);
 
     // `FormScrollApp::new()` starts with the name field already focused
     // (so it's reachable without a GUI-only focus ring) — typing
-    // immediately edits it.
+    // immediately edits it. No `Tab` press here; that's covered by
+    // `form_scroll_tab_moves_focus_from_name_to_first_toggle_and_back`
+    // below.
     driver.type_char('J');
     driver.type_char('o');
     driver.type_char('e');
 
     let after = driver.screen();
-    assert!(
-        after.contains("Joe"),
-        "typed characters should land in the rendered Name field:\n{after}"
+    // "Joe" must appear twice: once in the rendered Name field itself,
+    // once in the status bar's "name = \"Joe\"" echo of the emitted
+    // event. Asserting just `contains("Joe")` would also pass if the
+    // form field painted nothing at all, since the status bar line
+    // alone already contains it — counting occurrences ties the
+    // assertion to the form field actually rendering the typed value.
+    assert_eq!(
+        after.matches("Joe").count(),
+        2,
+        "expected \"Joe\" once in the rendered Name field and once in the \
+         status bar's TextInputChanged echo:\n{after}"
     );
     assert!(
         after.contains("name = \"Joe\""),

@@ -22,7 +22,8 @@
 //! - `Enter` (name focused) → commit the name field
 //! - scroll wheel           → scroll form
 //! - scrollbar drag         → scroll form
-//! - `q` / `Esc`            → quit
+//! - `Esc`                  → quit
+//! - `q` (name not focused) → quit
 
 use quadraui::{
     AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerEvent, FormField,
@@ -39,8 +40,15 @@ pub struct FormScrollApp {
 
 impl FormScrollApp {
     pub fn new() -> Self {
+        let mut fc = FormController::new("settings".into());
+        // This demo has exactly one panel, so the form always has
+        // keyboard focus — `set_has_focus` is what lets
+        // `FormController::handle_cached` accept `KeyPressed`/
+        // `CharTyped` at all (see `compose::form_controller`'s
+        // "Keyboard editing" doc section).
+        fc.set_has_focus(true);
         Self {
-            fc: FormController::new("settings".into()),
+            fc,
             name: String::new(),
             toggles: vec![false; 20],
             focused: Some(WidgetId::new("name")),
@@ -201,6 +209,14 @@ impl AppLogic for FormScrollApp {
                         self.last_action = format!("{:?}", fe);
                     }
                 }
+                // Re-sync `fc`'s cached form with the just-updated
+                // `self.name`/`self.toggles`/`self.focused` before the
+                // runner's next `render()` call. Without this, `render`
+                // would paint the form as it was *before* this event
+                // (`fc.set_form` above ran with the pre-event state),
+                // leaving the field one keystroke behind what the
+                // status bar already reports.
+                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
             FormControllerEvent::ScrollChanged | FormControllerEvent::Consumed => Reaction::Redraw,
