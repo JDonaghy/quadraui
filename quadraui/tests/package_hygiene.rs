@@ -15,7 +15,8 @@
 //!   adds a new internal doc to [`INTERNAL_DOCS`] without a matching
 //!   `Cargo.toml` entry, or vice versa, with no extra flag required.
 //! - [`published_crate_excludes_internal_docs`]/
-//!   [`published_crate_ships_consumer_docs`] run the actual
+//!   [`published_crate_ships_consumer_docs`]/
+//!   [`published_crate_ships_license_files`] run the actual
 //!   `cargo package --list -p quadraui` cargo would use to build the
 //!   `.crate` tarball, rather than re-implementing cargo's
 //!   gitignore-style include/exclude matching — belt-and-braces proof
@@ -28,6 +29,13 @@
 //!   ```sh
 //!   cargo test -p quadraui --test package_hygiene -- --ignored
 //!   ```
+//!
+//!   [`license_symlinks_resolve_to_real_license_text`] is a third,
+//!   cheap, always-run layer specifically for the license symlinks: it
+//!   doesn't shell out to `cargo package`, so it catches the realistic
+//!   regression (the symlinks being deleted, or materialising as plain
+//!   text on a checkout without symlink support) on every plain
+//!   `cargo test`, without waiting on the `--ignored` run above.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -163,16 +171,15 @@ fn published_crate_ships_consumer_docs() {
     }
 }
 
-/// #1393: the published `.crate` shipped no license text at all —
 /// `quadraui/LICENSE-MIT` and `quadraui/LICENSE-APACHE` are symlinks to
 /// the repo-root originals (see `Cargo.toml`'s `license.workspace`
-/// comment for why symlinks rather than a `license-file` field), added
-/// specifically so cargo's default packaging picks them up. This is the
-/// regression guard on that: `cargo package --list` resolving a symlink
-/// to a path outside the crate dir down to zero files, or the symlinks
-/// going missing again, both fail silently otherwise — there's no
-/// `cargo publish` dry run in this repo's quality gate that would have
-/// caught a licenseless tarball on its own.
+/// comment for why symlinks rather than a `license-file` field), so
+/// cargo's default packaging picks them up. This is the regression guard
+/// on that: `cargo package --list` resolving a symlink to a path outside
+/// the crate dir down to zero files, or the symlinks going missing, both
+/// fail silently otherwise — there's no `cargo publish` dry run in this
+/// repo's quality gate that would catch a licenseless tarball on its
+/// own.
 #[test]
 #[ignore = "shells out to a real `cargo package --list` subprocess"]
 fn published_crate_ships_license_files() {
@@ -187,6 +194,40 @@ fn published_crate_ships_license_files() {
              license text at all. Check that `quadraui/{license_file}` \
              still exists as a symlink to the repo-root original and \
              isn't covered by Cargo.toml's `exclude`."
+        );
+    }
+}
+
+/// Cheap, always-run companion to [`published_crate_ships_license_files`]
+/// above: that test only runs with `--ignored` (see the module doc), so
+/// nothing in a plain `cargo test` would catch someone deleting, or
+/// `.gitignore`-ing, `quadraui/LICENSE-MIT`/`LICENSE-APACHE` outright.
+/// This reads each symlink's target content directly (no `cargo package`
+/// subprocess needed) and checks it starts with the real license header,
+/// which also catches the one platform where the symlink shape can go
+/// wrong silently: a checkout without symlink support (e.g. Windows
+/// without `core.symlinks` enabled in git) materialises each path as a
+/// regular file whose *contents* are the literal target string
+/// (`../LICENSE-MIT`) rather than the license text, and releases must
+/// not be packaged from a checkout in that state.
+#[test]
+fn license_symlinks_resolve_to_real_license_text() {
+    for (name, expected_prefix) in [
+        ("LICENSE-MIT", "MIT License"),
+        ("LICENSE-APACHE", "Apache License"),
+    ] {
+        let path = crate_root().join(name);
+        let contents = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        assert!(
+            contents.trim_start().starts_with(expected_prefix),
+            "{} does not resolve to the real license text (starts with: \
+             {:?}) — on a checkout without symlink support, this file \
+             materialises as a plain text file containing the literal \
+             symlink target path instead of the license text. Package \
+             releases from a checkout with working symlinks.",
+            path.display(),
+            contents.lines().next().unwrap_or("").trim(),
         );
     }
 }
