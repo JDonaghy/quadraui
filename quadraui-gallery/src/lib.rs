@@ -22,6 +22,7 @@ pub mod capture;
 pub mod demo;
 pub mod demos;
 pub mod registry;
+pub mod site_export;
 
 pub use app::GalleryApp;
 pub use demo::Demo;
