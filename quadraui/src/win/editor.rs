@@ -28,6 +28,20 @@
 //! glyph. `EditorPaintResult::cursor_position_native` is always `None`
 //! — this backend paints its own caret directly (via [`fill_rect`]),
 //! the same posture `GtkBackend::draw_editor`'s doc documents for GTK.
+//!
+//! ## Scrollbar geometry, not paint
+//!
+//! This rasteriser does not paint a vertical scrollbar at all — that
+//! was already out of scope for #26 (see the module doc above) and
+//! stays that way here. [`draw_editor_with_options`] exists only so a
+//! host can still reach [`EditorPaintOptions::v_scrollbar_w`] /
+//! [`EditorPaintOptions::suppress_v_scrollbar`] through
+//! [`Editor::layout_with_options`] — e.g. to keep the *text* column's
+//! width consistent with a sibling GTK/macOS window using the same
+//! `Editor` data and a non-default `v_scrollbar_w`, even though this
+//! backend paints nothing into the reserved column itself. Painting a
+//! real Direct2D scrollbar here is tracked as its own follow-up, same
+//! footing as every other "Not yet painted" item above.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -35,13 +49,18 @@ use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::backend::EditorPaintResult;
 use crate::event::Rect;
 use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorSelection,
+    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorPaintOptions, EditorSelection,
 };
 use crate::theme::Theme;
 use crate::types::Color;
 
 /// Draw an [`Editor`] viewport (`editor.rect`) on `target`, at uniform
 /// `cell_width` / `line_height` (DIPs).
+///
+/// Equivalent to [`draw_editor_with_options`] with
+/// `EditorPaintOptions::default()` — kept as a separate, unchanged
+/// function (rather than growing this one's argument list) so every
+/// existing caller keeps compiling untouched.
 ///
 /// # Visual contract
 ///
@@ -70,8 +89,35 @@ pub fn draw_editor(
     line_height: f32,
     theme: &Theme,
 ) -> EditorPaintResult {
+    draw_editor_with_options(
+        target,
+        dwrite,
+        editor,
+        cell_width,
+        line_height,
+        theme,
+        EditorPaintOptions::default(),
+    )
+}
+
+/// [`draw_editor`], plus [`EditorPaintOptions`] a host can set to
+/// override otherwise-automatic layout decisions — `suppress_v_scrollbar`
+/// and `v_scrollbar_w`. See the module doc's "Scrollbar
+/// geometry, not paint" section: this backend paints no scrollbar
+/// either way, but the options still narrow the text column exactly as
+/// `Editor::layout_with_options` computes for every other backend.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_editor_with_options(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    editor: &Editor,
+    cell_width: f32,
+    line_height: f32,
+    theme: &Theme,
+    options: EditorPaintOptions,
+) -> EditorPaintResult {
     let rect = editor.rect;
-    let layout = editor.layout(rect, cell_width, line_height);
+    let layout = editor.layout_with_options(rect, cell_width, line_height, options);
 
     let bg = if editor.show_active_bg {
         theme.editor_active_background
@@ -440,6 +486,47 @@ mod tests {
             cursorline: true,
             lightbulb_glyph: '!',
         }
+    }
+
+    /// `draw_editor_with_options`'s layout call honours
+    /// `EditorPaintOptions::v_scrollbar_w`, narrowing `text_bounds` by
+    /// exactly the override's delta from `cell_width` — the same
+    /// geometry every backend's `Editor::layout_with_options` call
+    /// shares (see `primitives::editor`'s own tests for the backend-
+    /// agnostic coverage). This backend paints no scrollbar itself (see
+    /// module doc), but must still compute the narrower text column so
+    /// a host mixing this window alongside a GTK/macOS one using the
+    /// same `Editor` data stays geometry-consistent. Pure layout, no
+    /// `HeadlessSurface`/`DWrite` needed.
+    #[test]
+    fn v_scrollbar_w_option_narrows_text_bounds() {
+        let mut e = editor(vec![plain_line(0, "line one")]);
+        e.total_lines = 50; // overflow: far more than the viewport's rows
+        let rect = e.rect;
+
+        let baseline = e.layout(rect, CELL_W, LINE_H);
+        let baseline_vsb = baseline
+            .v_scrollbar_bounds
+            .expect("overflowing buffer reserves a vertical scrollbar column");
+        assert_eq!(baseline_vsb.width, CELL_W);
+
+        let widened = e.layout_with_options(
+            rect,
+            CELL_W,
+            LINE_H,
+            EditorPaintOptions {
+                v_scrollbar_w: Some(14.0),
+                ..Default::default()
+            },
+        );
+        let widened_vsb = widened
+            .v_scrollbar_bounds
+            .expect("still overflowing with the override applied");
+        assert_eq!(widened_vsb.width, 14.0);
+        assert_eq!(
+            widened.text_bounds.width,
+            baseline.text_bounds.width - (14.0 - CELL_W)
+        );
     }
 
     /// Painting must not panic across a mix of plain lines, a cursor, a

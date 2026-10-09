@@ -59,8 +59,26 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `EditorPaintOptions::v_scrollbar_w: Option<f32>` (issue #1411) — lets a
+  host override the editor's vertical scrollbar column width instead of
+  the `cell_width` default `Editor::layout`/`layout_with_options` has
+  always used, e.g. to match VS Code's fixed 14px gutter independent of
+  font size. Honoured in layout (`v_scrollbar_bounds.width` and the
+  text-area narrowing it causes) and in every GUI backend's editor paint
+  (GTK, macOS, Win); `None` (the default) is non-breaking — every
+  existing caller keeps the old `cell_width`-wide column unchanged.
+
 ### Fixed
 
+- **macOS native: the editor painted no vertical scrollbar at all**
+  (issue #1411), even when the buffer overflowed the viewport and VS
+  Code showed a 14px one on the same screen. `Editor::layout` already
+  reserved the column (`v_scrollbar_bounds`), but no macOS rasteriser
+  call ever filled it in. `macos::editor::draw_editor` now paints it
+  through the same shared scrollbar paint GTK already uses, narrowing
+  the text clip to match so no glyph paints under the reserved column.
 - **macOS native: editor text looked heavy and blocky next to VS Code**
   (issue #1405). The "Lines + gutter" paint loop drew every line's
   `raw_text` once in the default foreground colour, then re-drew each
