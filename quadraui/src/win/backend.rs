@@ -7941,15 +7941,17 @@ mod tests {
         }
 
         let default = paint(None);
+        // Probes sit two pixels clear of the column edge at x=192: Direct2D
+        // anti-aliases the edge pixel itself by one colour level.
         assert_eq!(
-            probe(&default, 191),
+            probe(&default, 189),
             bg,
-            "default column is 8px: x=191 is text area"
+            "default column is 8px: x=189 is text area"
         );
         assert_ne!(
-            probe(&default, 192),
+            probe(&default, 194),
             bg,
-            "default column is 8px: x=192 is track"
+            "default column is 8px: x=194 is track"
         );
 
         let mut backend = WinBackend::new();
