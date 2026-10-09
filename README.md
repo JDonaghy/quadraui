@@ -173,6 +173,11 @@ Then:
 
 - Run `hello` (the `ShellApp` path above), then `tui_demo` / `gtk_demo`,
   which use the same `AppLogic` body under two runners.
+- Or start a new app from the `templates/app` starter —
+  `cargo generate --git https://github.com/JDonaghy/quadraui templates/app`
+  — which already has the `hello`/`main.rs` shape above wired to all four
+  backend features and a `TuiDriver` test, with no edits needed to build
+  and run `--features tui`.
 - Read [`quadraui/docs/GUIDE.md`](quadraui/docs/GUIDE.md) for the app
   model and [`quadraui/docs/APP_ARCHITECTURE.md`](quadraui/docs/APP_ARCHITECTURE.md)
   for how a larger app is put together.
