@@ -8,13 +8,22 @@
 
 use crate::demos::activity_bar::ActivityBarDemo;
 use crate::demos::bottom_panel::BottomPanelDemo;
+use crate::demos::caret_shape::CaretShapeDemo;
+use crate::demos::command_line::CommandLineDemo;
+use crate::demos::file_picker::FilePickerDemo;
+use crate::demos::find_replace::FindReplaceDemo;
 use crate::demos::float::FloatDemo;
+use crate::demos::focus::FocusDemo;
+use crate::demos::form::FormDemo;
 use crate::demos::menu_bar::MenuBarDemo;
+use crate::demos::palette::PaletteDemo;
 use crate::demos::panel::PanelDemo;
 use crate::demos::sidebar::SidebarDemo;
 use crate::demos::split::SplitDemo;
 use crate::demos::status_bar::StatusBarDemo;
 use crate::demos::tab_bar::TabBarDemo;
+use crate::demos::text_input::TextInputDemo;
+use crate::demos::text_selection::TextSelectionDemo;
 use crate::demos::toast::ToastDemo;
 use crate::demos::toolbar::ToolbarDemo;
 use crate::demos::window_control::WindowControlDemo;
@@ -43,5 +52,15 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(FloatDemo::new()),
         Box::new(WindowControlDemo::new()),
         Box::new(WorkspaceDemo::new()),
+        // Input & forms.
+        Box::new(TextInputDemo::new()),
+        Box::new(FormDemo::new()),
+        Box::new(CaretShapeDemo::new()),
+        Box::new(CommandLineDemo::new()),
+        Box::new(TextSelectionDemo::new()),
+        Box::new(FindReplaceDemo::new()),
+        Box::new(FocusDemo::new()),
+        Box::new(PaletteDemo::new()),
+        Box::new(FilePickerDemo::new()),
     ]
 }
