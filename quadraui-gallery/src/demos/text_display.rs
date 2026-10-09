@@ -20,7 +20,7 @@ const SOURCE: &str = include_str!("text_display.rs");
 /// Distinctive word placed at the very end of the long line in the
 /// word-wrap variant. Never painted anywhere on screen if `TextDisplay`
 /// truncates instead of wrapping.
-pub const TAIL_MARKER: &str = "TAILMARKER";
+const TAIL_MARKER: &str = "TAILMARKER";
 
 fn long_line_text() -> String {
     let mut s = String::from(
@@ -239,8 +239,16 @@ mod tests {
         assert!(demo.auto_scroll);
     }
 
+    /// Sanity check on the fixture itself — that `TAIL_MARKER` actually
+    /// ends up in the long line `render(1)` hands the backend. The
+    /// property worth testing is whether `TextDisplay` actually *wraps*
+    /// that line onto a continuation row rather than truncating it
+    /// (`TAIL_MARKER`'s own doc) — that needs a painted screen to
+    /// observe, which is what
+    /// `text_display_wrap_variant_scrolls_the_tail_marker_into_view` in
+    /// `tests/gallery_driver.rs` checks.
     #[test]
-    fn wrap_variant_includes_the_tail_marker() {
+    fn long_line_text_ends_with_the_tail_marker() {
         let demo = TextDisplayDemo::new();
         let display = demo.build(1);
         let joined: String = display

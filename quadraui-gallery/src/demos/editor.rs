@@ -6,6 +6,12 @@
 //! and overriding the painted font via `Backend::set_editor_font` —
 //! called directly here rather than through `ShellConfig::with_editor_font`,
 //! since the gallery's single shared `ShellConfig` can't vary per-demo.
+//! The font override passes the `"monospace"` [`quadraui::GenericFamily`]
+//! token rather than a concrete family name, so the demo doesn't assume a
+//! fontconfig-only face (e.g. `"DejaVu Sans Mono"`) is installed on every
+//! backend's host — every backend that honours
+//! [`BackendCaps::generic_font_families`] resolves it to whatever
+//! monospace face that platform actually ships.
 
 use std::cell::Cell;
 
@@ -21,18 +27,26 @@ const SOURCE: &str = include_str!("editor.rs");
 
 // gallery:begin
 const LINE_LEN: usize = 500;
-const DEMO_FONT_FAMILY: &str = "DejaVu Sans Mono";
+/// CSS/Pango generic-family token — see [`quadraui::GenericFamily`] — not
+/// a concrete font name, so this resolves to whatever monospace face
+/// each backend's host actually has installed instead of assuming a
+/// fontconfig-only name like `"DejaVu Sans Mono"` exists everywhere.
+const DEMO_FONT_FAMILY: &str = "monospace";
 const DEMO_FONT_SIZE_PT: f32 = 24.0;
 
 fn plain_line(raw_text: String, gutter: &str, idx: usize) -> EditorLine {
     let fg = Color::rgb(220, 220, 220);
-    let len = raw_text.len();
+    // `EditorStyledSpan::{start_byte,end_byte}` are byte offsets (see
+    // that struct's own field doc), so `raw_text.len()` — the string's
+    // byte length, not a char count — is the correct span end for any
+    // text, ASCII or not.
+    let end_byte = raw_text.len();
     EditorLine {
         raw_text,
         gutter_text: gutter.to_string(),
         spans: vec![EditorStyledSpan {
             start_byte: 0,
-            end_byte: len,
+            end_byte,
             style: EditorStyle {
                 fg,
                 bg: None,
@@ -117,27 +131,70 @@ impl HScrollState {
     }
 }
 
-/// Variant 1 state: font-override smoke test. `applied` tracks the font
-/// actually pushed to the backend so repeated renders of the same
-/// variant don't re-issue `set_editor_font` every frame — mirroring the
-/// `Caret Shape` demo's debounce pattern.
+/// Font this demo restores on variant 0 once it has applied the
+/// override at least once — the shell runner's own documented default
+/// (`ShellConfig`'s doc: GTK falls back to `"Monospace 11"` when no
+/// `with_editor_font` override is configured), expressed as the generic
+/// token so every backend resolves it to its own native monospace face
+/// rather than this demo hardcoding one.
+const DEFAULT_FONT_FAMILY: &str = "monospace";
+const DEFAULT_FONT_SIZE_PT: f32 = 11.0;
+
+/// Variant 1 state: font-override smoke test. `applied` tracks the
+/// `(family, size_pt)` pair actually last pushed to the backend, so
+/// repeated renders of the same variant don't re-issue `set_editor_font`
+/// every frame — mirroring the `Caret Shape` demo's
+/// `Cell<Option<EditorCursorShape>>` debounce pattern, including its
+/// shape: `None` until this demo's font is touched for the first time,
+/// so a session that never visits "Font override" never calls
+/// `set_editor_font` at all.
 struct FontState {
-    applied: Cell<bool>,
+    applied: Cell<Option<(&'static str, f32)>>,
     calls: Cell<u32>,
 }
 
 impl FontState {
     fn new() -> Self {
         Self {
-            applied: Cell::new(false),
+            applied: Cell::new(None),
             calls: Cell::new(0),
+        }
+    }
+
+    /// Re-applies the override (debounced) and counts the call.
+    fn apply_override(&self, backend: &mut dyn Backend) {
+        let desired = (DEMO_FONT_FAMILY, DEMO_FONT_SIZE_PT);
+        if self.applied.get() != Some(desired) {
+            backend.set_editor_font(desired.0, desired.1);
+            self.applied.set(Some(desired));
+            self.calls.set(self.calls.get() + 1);
+        }
+    }
+
+    /// Puts the default font back, but only if this demo had actually
+    /// overridden it — leaving a session that never visited "Font
+    /// override" untouched, and not counting the restore in `calls`
+    /// (that counter answers "how many times did the override fire",
+    /// not "how many times was the font touched at all").
+    ///
+    /// Only reaches the backend while this `EditorDemo` instance is
+    /// itself the one rendering: the gallery's `Demo` trait has no
+    /// "leaving this demo" hook, so switching straight from "Font
+    /// override" to another demo (Diff View, Minimap, Caret Shape, …)
+    /// still leaves the 24pt override live there until this demo's own
+    /// variant 0 renders again.
+    fn restore_default_if_overridden(&self, backend: &mut dyn Backend) {
+        let default = (DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE_PT);
+        if matches!(self.applied.get(), Some(current) if current != default) {
+            backend.set_editor_font(default.0, default.1);
+            self.applied.set(Some(default));
         }
     }
 
     fn build_editor(area: Rect) -> Editor {
         let texts = [
             "The quick brown fox jumps over the lazy dog",
-            "set_editor_font() painted this at 24pt DejaVu Sans Mono",
+            "set_editor_font() painted this at 24pt \"monospace\"",
         ];
         let lines = texts
             .iter()
@@ -202,11 +259,7 @@ impl Demo for EditorDemo {
 
         let status = match variant {
             1 => {
-                if !self.font.applied.get() {
-                    backend.set_editor_font(DEMO_FONT_FAMILY, DEMO_FONT_SIZE_PT);
-                    self.font.applied.set(true);
-                    self.font.calls.set(self.font.calls.get() + 1);
-                }
+                self.font.apply_override(backend);
                 let editor = FontState::build_editor(editor_area);
                 backend.draw_editor(editor.rect, &editor);
                 format!(
@@ -215,6 +268,7 @@ impl Demo for EditorDemo {
                 )
             }
             _ => {
+                self.font.restore_default_if_overridden(backend);
                 let editor = self.hscroll.build_editor(editor_area);
                 backend.draw_editor(editor.rect, &editor);
                 let vpc = HScrollState::viewport_cols(editor_area, backend);

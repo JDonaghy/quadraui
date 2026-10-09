@@ -804,6 +804,41 @@ fn text_display_k_key_disables_auto_scroll() {
     );
 }
 
+/// The `Text Display` demo's word-wrap variant actually wraps its
+/// over-wide line onto continuation rows instead of silently truncating
+/// it. `TAILMARKER` is the very last word of that line (see
+/// `demos::text_display`'s own `TAIL_MARKER` doc), so scrolling it into
+/// view proves a continuation row exists and is painted — the property
+/// the demo's in-module unit test can't observe since it only inspects
+/// the `TextDisplayLine`s handed to the backend, never a painted screen.
+#[test]
+fn text_display_wrap_variant_scrolls_the_tail_marker_into_view() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Text Display");
+
+    let (vx, vy) = driver
+        .find("Word-wrap (long line)")
+        .expect("variant picker should list \"Word-wrap (long line)\"");
+    driver.click(vx, vy);
+
+    // Scroll down a bounded number of times until the wrapped tail word
+    // comes into view, rather than assuming a fixed scroll distance tied
+    // to this driver's exact terminal height.
+    let mut found = driver.screen_contains("TAILMARKER");
+    for _ in 0..20 {
+        if found {
+            break;
+        }
+        driver.type_char('j');
+        found = driver.screen_contains("TAILMARKER");
+    }
+    assert!(
+        found,
+        "the word-wrap variant's long line should eventually scroll TAILMARKER into view:\n{}",
+        driver.screen()
+    );
+}
+
 /// Pressing `$` on the `Editor` demo's default ("Horizontal scroll")
 /// variant jumps the cursor to the end of the 500-char line and scrolls
 /// it into view.

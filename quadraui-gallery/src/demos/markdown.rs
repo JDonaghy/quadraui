@@ -104,6 +104,12 @@ impl MarkdownDemo {
             .max()
             .unwrap_or(0);
         let content_w = (widest as f32 + 1.0) * col_w;
+        // Grows with the pane instead of a fixed row count, so a tall
+        // viewport actually shows more of the document —
+        // `RichTextPopup::layout` still clamps this down to whatever the
+        // viewport has room for, this just stops it from being
+        // needlessly short on a tall one.
+        let max_visible_rows = ((area.height / row_h).floor() as usize).max(4);
 
         let popup = RichTextPopup {
             id: WidgetId::new("gallery:markdown:popup"),
@@ -111,7 +117,7 @@ impl MarkdownDemo {
             line_text: rendered.line_text,
             line_scales: rendered.line_scales,
             scroll_top: self.popup.scroll_top,
-            max_visible_rows: 16,
+            max_visible_rows,
             has_focus: true,
             selection: None,
             links: Vec::new(),
@@ -141,6 +147,19 @@ impl MarkdownDemo {
         let cw = backend.char_width();
         let total_cols = (area.width / cw).floor() as usize;
         total_cols.saturating_sub(2)
+    }
+
+    /// How many word-wrapped rows [`Self::render_wrap`] will build for
+    /// `area`'s current width — used by `handle` to clamp
+    /// `WrapState::scroll_offset`/`selected_idx` to the list's real
+    /// bounds rather than relying solely on `ListView`'s own internal
+    /// clamp (`primitives/list.rs`), so the demo's own state never
+    /// drifts arbitrarily far past what's actually on screen.
+    fn wrap_row_count(area: Rect, backend: &dyn Backend) -> usize {
+        let width = Self::content_cols(area, backend).max(10);
+        render_markdown_to_styled_wrapped(DOC, &Theme::default(), width)
+            .lines
+            .len()
     }
 
     fn render_wrap(&self, backend: &mut dyn Backend, area: Rect) {
@@ -206,15 +225,17 @@ impl Demo for MarkdownDemo {
         &mut self,
         variant: usize,
         event: &UiEvent,
-        _backend: &mut dyn Backend,
-        _area: Rect,
+        backend: &mut dyn Backend,
+        area: Rect,
     ) -> Reaction {
         match variant {
             1 => match event {
                 UiEvent::KeyPressed { key, .. } => match key {
                     Key::Char('j') | Key::Named(NamedKey::Down) => {
-                        self.wrap.scroll_offset = self.wrap.scroll_offset.saturating_add(1);
-                        self.wrap.selected_idx = self.wrap.selected_idx.saturating_add(1);
+                        let last = Self::wrap_row_count(area, backend).saturating_sub(1);
+                        self.wrap.scroll_offset =
+                            self.wrap.scroll_offset.saturating_add(1).min(last);
+                        self.wrap.selected_idx = self.wrap.selected_idx.saturating_add(1).min(last);
                         Reaction::Redraw
                     }
                     Key::Char('k') | Key::Named(NamedKey::Up) => {

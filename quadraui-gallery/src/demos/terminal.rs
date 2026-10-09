@@ -27,12 +27,26 @@ const SOURCE: &str = include_str!("terminal.rs");
 
 // gallery:begin
 /// Shell command fed to the "Scripted output" variant immediately after
-/// it spawns — POSIX `printf` octal escapes, portable across
-/// bash/zsh/dash. `GALLERYSCRIPTOK` is a plain, uncoloured marker a test
-/// can search for without caring how each shell's prompt wraps the
-/// colour escapes.
+/// it spawns, chosen per `target_os` to match `default_shell()`'s own
+/// split (POSIX `sh`-family shells everywhere but Windows,
+/// `powershell.exe` there — `quadraui::terminal_engine::default_shell`'s
+/// doc). `GALLERYSCRIPTOK` is a plain, uncoloured marker a test can
+/// search for without caring how each shell's prompt wraps the colour
+/// escapes.
+///
+/// The POSIX form uses `printf` octal escapes, portable across
+/// bash/zsh/dash. The PowerShell form builds the same ESC byte via
+/// `[char]27` — PowerShell has no string escape for a raw control
+/// character — and ends in `\r\n` rather than `\n`: every Windows console
+/// line editor (cmd.exe and powershell.exe alike) wants a carriage return
+/// to submit a line, the same requirement
+/// `windows_conpty_spawn_echo_exit`'s doc in `terminal_engine.rs` spells
+/// out for `TerminalSession::send_str`.
+#[cfg(not(target_os = "windows"))]
 const SCRIPT: &str =
     "printf '\\033[31mRed\\033[0m \\033[1mBold\\033[0m \\033[4mUnderline\\033[0m GALLERYSCRIPTOK\\n'\n";
+#[cfg(target_os = "windows")]
+const SCRIPT: &str = "Write-Host \"$([char]27)[31mRed$([char]27)[0m $([char]27)[1mBold$([char]27)[0m $([char]27)[4mUnderline$([char]27)[0m GALLERYSCRIPTOK\"\r\n";
 
 /// Smallest PTY size this demo will resize to — mirrors
 /// `terminal_app.rs`'s own floor, and `vt100::Parser`'s panic guard
@@ -45,7 +59,14 @@ struct SessionSlot {
     size: (u16, u16),
 }
 
-fn spawn_slot(scripted: bool) -> RefCell<SessionSlot> {
+/// Spawns the real shell process. Called lazily — once per slot, the
+/// first time that slot is actually touched — rather than eagerly from
+/// [`TerminalDemo::new`], so that constructing a [`TerminalDemo`] (which
+/// happens every time `registry::registry` builds a fresh
+/// [`crate::app::GalleryApp`], including every iteration of the
+/// registry-wide driver test and capture mode) doesn't spawn two real
+/// child processes the user may never actually open this demo to see.
+fn spawn_slot(scripted: bool) -> SessionSlot {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
     let shell = default_shell();
     let size = (80, 24);
@@ -56,7 +77,7 @@ fn spawn_slot(scripted: bool) -> RefCell<SessionSlot> {
             sess.send_str(SCRIPT);
         }
     }
-    RefCell::new(SessionSlot { session, size })
+    SessionSlot { session, size }
 }
 
 /// `(cols, rows)` a PTY inside `rect` should have, given the backend's
@@ -70,18 +91,24 @@ fn area_to_pty(rect: Rect, backend: &dyn Backend) -> (u16, u16) {
 }
 
 pub struct TerminalDemo {
-    slots: [RefCell<SessionSlot>; 2],
+    slots: [RefCell<Option<SessionSlot>>; 2],
 }
 
 impl TerminalDemo {
     pub fn new() -> Self {
         Self {
-            slots: [spawn_slot(false), spawn_slot(true)],
+            slots: [RefCell::new(None), RefCell::new(None)],
         }
     }
 
-    fn slot(&self, variant: usize) -> &RefCell<SessionSlot> {
-        &self.slots[variant.min(self.slots.len() - 1)]
+    /// Borrows the slot for `variant`, spawning its shell on first touch.
+    fn slot(&self, variant: usize) -> std::cell::RefMut<'_, SessionSlot> {
+        let idx = variant.min(self.slots.len() - 1);
+        let mut slot = self.slots[idx].borrow_mut();
+        if slot.is_none() {
+            *slot = Some(spawn_slot(idx == 1));
+        }
+        std::cell::RefMut::map(slot, |opt| opt.as_mut().expect("just populated above"))
     }
 }
 
@@ -107,9 +134,11 @@ impl Demo for TerminalDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height().max(1.0);
         let term_area = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-        let mut slot = self.slot(variant).borrow_mut();
+        let mut slot = self.slot(variant);
         let (cols, rows) = area_to_pty(term_area, backend);
-        let needs_resize = (cols, rows) != slot.size && cols >= MIN_COLS && rows >= MIN_ROWS;
+        // `area_to_pty` already clamps both dimensions to the `MIN_COLS`/
+        // `MIN_ROWS` floor, so re-checking it here could never be false.
+        let needs_resize = (cols, rows) != slot.size;
         if needs_resize {
             slot.size = (cols, rows);
         }
@@ -159,7 +188,7 @@ impl Demo for TerminalDemo {
         _backend: &mut dyn Backend,
         _area: Rect,
     ) -> Reaction {
-        let mut slot = self.slot(variant).borrow_mut();
+        let mut slot = self.slot(variant);
         let sess = match slot.session.as_mut() {
             Ok(s) => s,
             Err(_) => return Reaction::Continue,
@@ -204,7 +233,7 @@ impl Demo for TerminalDemo {
     }
 
     fn tick(&mut self, variant: usize, _backend: &mut dyn Backend) -> Reaction {
-        let mut slot = self.slot(variant).borrow_mut();
+        let mut slot = self.slot(variant);
         if let Ok(sess) = slot.session.as_mut() {
             if sess.poll() {
                 return Reaction::Redraw;
@@ -218,7 +247,7 @@ impl Demo for TerminalDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        let slot = self.slot(variant).borrow();
+        let slot = self.slot(variant);
         match &slot.session {
             Ok(sess) => serde_json::json!({
                 "cols": sess.cols(),
@@ -247,11 +276,27 @@ mod tests {
     #[test]
     fn scripted_variant_sends_the_script_before_any_render() {
         let demo = TerminalDemo::new();
-        let slot = demo.slot(1).borrow();
+        let mut slot = demo.slot(1);
         // Spawning a real shell may fail in some sandboxes — only assert
-        // the send actually happened when it succeeded.
-        if let Ok(sess) = &slot.session {
-            assert!(!sess.is_exited());
+        // the script's canned output actually appears when spawning
+        // succeeded. Bounded poll, not a fixed sleep: the child shell
+        // needs a moment to actually run `printf`/`Write-Host` and the
+        // PTY reader thread needs a moment to deliver it.
+        if let Ok(sess) = slot.session.as_mut() {
+            let mut found = false;
+            for _ in 0..100 {
+                sess.poll();
+                if sess.full_text().contains("GALLERYSCRIPTOK") {
+                    found = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert!(
+                found,
+                "the scripted variant's canned command output should appear after polling: {:?}",
+                sess.full_text()
+            );
         }
     }
 }
