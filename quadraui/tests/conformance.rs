@@ -230,15 +230,8 @@ impl runner::DriverFactory for MacFactory {
 //
 // It registers **blocking, not burn-down** (see `runner::Gating`): the
 // windows-latest leg itself has been blocking since #674 (see `ci.yml`'s
-// `Test (win feature, real Windows)` step), and this Tier-1 column was
-// originally registered `register_burn_down` instead (quadraui#708) while
-// `WinBackend` had rasterisers left to build. It stopped failing any
-// scenario once those landed, which is what `runner::verdict`'s
-// `promotable` check exists to notice — a `BurnDown` column that stops
-// failing makes the suite itself fail with "promote them" until a human
-// moves its `backends()` registration from `register_burn_down` to
-// `register`, which is what #1320 did. The matrix rows *were* the
-// burn-down checklist (#480/#580) up to that point, not permanently — a
+// `Test (win feature, real Windows)` step), and `WinBackend` has no
+// rasterisers left to build for this Tier-1 scenario suite — a
 // regression here now reds the Windows column of every unrelated PR,
 // which is the point: this column has nothing left to burn down.
 // `c0_paint_smoke`'s own column list is separate and still keeps a `win`
@@ -510,8 +503,11 @@ fn classify_c0_case(
 /// its own follow-up rather than something to paper over here by, say,
 /// special-casing that one row. The `draw_diff_view` row below is proven
 /// on TUI and GTK only — `win`'s column has no needle-text coverage at all
-/// yet (see the burn-down note above), so it says nothing about that row
-/// either, just more loudly.
+/// yet (see this doc's own `win`-is-the-one-exception paragraph above,
+/// *not* the unrelated Tier-1 `backends()` registration note hundreds of
+/// lines above that — this tier gates `win` as `BurnDown` independently
+/// of what Tier-1 does), so it says nothing about that row either, just
+/// more loudly.
 ///
 /// That is a pre-existing limitation inherited from #491's tier-1 suite
 /// rather than something this tier introduced, and it is why the

@@ -918,6 +918,14 @@ fn quadraui_crate_has_no_duplicate_readme() {
 /// Deliberately a line-level `starts_with("#[test]")` check (not a plain
 /// substring `contains`): a doc comment that merely *mentions* `#[test]`
 /// in prose (this very file has several) must not inflate the count.
+///
+/// Scope: only `quadraui/src` and `quadraui/tests` — not `kubeui*` or
+/// `quadraui-gallery`, even though the root README's "Heavily tested"
+/// bullet this backs reads as a claim about the whole workspace. Widening
+/// this walk to match that literally would move the count by enough to
+/// jump a bucket on its own; keep the walk narrow and treat the bullet's
+/// "Around N" wording as deliberately approximate rather than "fixing" it
+/// by widening the walk.
 fn test_fn_count() -> usize {
     fn walk(dir: &std::path::Path, total: &mut usize) {
         let entries = fs::read_dir(dir)
@@ -959,9 +967,9 @@ fn round_down(n: usize, step: usize) -> usize {
 }
 
 /// Render a bucketed test count the way the README spells it, e.g.
-/// `5100` -> `"5,100"`. Every bucket this crate will plausibly reach for a
-/// long time is 4+ digits, so a single-separator formatter is enough —
-/// this isn't a general-purpose number formatter.
+/// `5100` -> `"5,100"`. The loop below groups from the right in
+/// threes regardless of digit count, so it handles any `n` this crate
+/// could plausibly reach, not just today's 4-digit range.
 fn with_thousands_separator(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
