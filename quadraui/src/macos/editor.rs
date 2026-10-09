@@ -12,18 +12,20 @@
 //!
 //! `Editor::layout`'s `v_scrollbar_bounds` reserves the column (so
 //! `EditorLayout::hit_test` and the content clip below already know
-//! about it) and [`draw_editor_with_options`] now actually paints into
-//! it, mirroring `gtk::editor::draw_editor_with_options`'s "Scrollbars"
-//! section: geometry comes from [`Editor::layout_with_options`] (the
-//! same call hit-testing uses), the text clip is narrowed to
+//! about it) and [`draw_editor_with_options_and_v_scrollbar_w`] paints
+//! into it, mirroring `gtk::editor::draw_editor_with_options`'s "Scrollbars"
+//! section: geometry comes from
+//! [`Editor::layout_with_options_and_v_scrollbar_w`] (the same layout
+//! hit-testing uses), the text clip is narrowed to
 //! `text_bounds` so no glyph paints under the reserved column, and the
 //! column itself is painted afterwards through the shared
 //! [`crate::primitives::scrollbar::native_surface_paint::paint`] via the
 //! [`super::surface::CgSurface`] adapter — the same pattern
 //! `macos::data_table` uses to paint an embedded scrollbar from a bare
-//! `ctx: CGContextRef`. [`EditorPaintOptions::v_scrollbar_w`] lets a
-//! host override the column's width (e.g. VS Code's fixed 14px) instead
-//! of the `cell_width` default; [`EditorPaintOptions::suppress_v_scrollbar`]
+//! `ctx: CGContextRef`. The `v_scrollbar_w` argument lets a host
+//! override the column's width (e.g. VS Code's fixed 14px, set via
+//! [`crate::Backend::set_editor_v_scrollbar_width`]) instead of the
+//! `cell_width` default; [`EditorPaintOptions::suppress_v_scrollbar`]
 //! continues to opt out entirely for a `Minimap`-as-scrollbar host, same
 //! as GTK.
 //!
@@ -86,8 +88,11 @@ pub unsafe fn draw_editor(
 }
 
 /// [`draw_editor`], plus [`EditorPaintOptions`] a host can set to
-/// override otherwise-automatic paint decisions — `suppress_v_scrollbar`
-/// and `v_scrollbar_w`. See the module doc's "Scrollbar" section.
+/// override otherwise-automatic paint decisions — `suppress_v_scrollbar`.
+/// See the module doc's "Scrollbar" section.
+///
+/// Equivalent to [`draw_editor_with_options_and_v_scrollbar_w`] with
+/// `v_scrollbar_w: None` (a `char_width`-wide scrollbar column).
 ///
 /// # Safety
 ///
@@ -102,6 +107,40 @@ pub unsafe fn draw_editor_with_options(
     char_width: f64,
     line_height: f64,
     options: EditorPaintOptions,
+) -> EditorPaintResult {
+    draw_editor_with_options_and_v_scrollbar_w(
+        ctx,
+        font,
+        editor,
+        theme,
+        char_width,
+        line_height,
+        options,
+        None,
+    )
+}
+
+/// [`draw_editor_with_options`], plus a host-settable vertical scrollbar
+/// width in points — see
+/// [`Editor::layout_with_options_and_v_scrollbar_w`] for the geometry
+/// and the module doc's "Scrollbar" section for the paint. `None` sizes
+/// the column at `char_width`. `MacBackend::draw_editor` calls this with
+/// the width set through [`crate::Backend::set_editor_v_scrollbar_width`].
+///
+/// # Safety
+///
+/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
+/// the call.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
+    ctx: CGContextRef,
+    font: &CTFont,
+    editor: &Editor,
+    theme: &Theme,
+    char_width: f64,
+    line_height: f64,
+    options: EditorPaintOptions,
+    v_scrollbar_w: Option<f32>,
 ) -> EditorPaintResult {
     let rect = &editor.rect;
     if rect.width <= 0.0 || rect.height <= 0.0 {
@@ -131,8 +170,13 @@ pub unsafe fn draw_editor_with_options(
     // clip below can be narrowed by the same reserved scrollbar column
     // the scrollbar paint and `EditorLayout::hit_test` already agree on
     // — see the module doc's "Scrollbar" section.
-    let editor_geom =
-        editor.layout_with_options(*rect, char_width as f32, line_height as f32, options);
+    let editor_geom = editor.layout_with_options_and_v_scrollbar_w(
+        *rect,
+        char_width as f32,
+        line_height as f32,
+        options,
+        v_scrollbar_w,
+    );
 
     // Cursorline / diff / DAP stopped-line backgrounds — painted before
     // text. Priority mirrors GTK: DAP-stopped > diff status >
@@ -1073,12 +1117,22 @@ mod tests {
     /// `GtkBackend` (its trait-level `draw_editor` has no options
     /// parameter; see `EditorPaintOptions`'s doc for why).
     fn scroll_test_paint(editor: &Editor, options: EditorPaintOptions) -> BitmapSurface {
+        scroll_test_paint_with_v_scrollbar_w(editor, options, None)
+    }
+
+    /// [`scroll_test_paint`], plus a scrollbar-width override via
+    /// [`draw_editor_with_options_and_v_scrollbar_w`].
+    fn scroll_test_paint_with_v_scrollbar_w(
+        editor: &Editor,
+        options: EditorPaintOptions,
+        v_scrollbar_w: Option<f32>,
+    ) -> BitmapSurface {
         let surface = BitmapSurface::new(SCROLL_TEST_W, SCROLL_TEST_H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let f = font();
         let theme = Theme::default();
         unsafe {
-            draw_editor_with_options(
+            draw_editor_with_options_and_v_scrollbar_w(
                 surface.context_ptr(),
                 &f,
                 editor,
@@ -1086,6 +1140,7 @@ mod tests {
                 SCROLL_TEST_CHAR_W,
                 SCROLL_TEST_LINE_H,
                 options,
+                v_scrollbar_w,
             );
         }
         surface
@@ -1140,15 +1195,15 @@ mod tests {
         );
     }
 
-    /// `EditorPaintOptions::v_scrollbar_w` widens the painted column to
-    /// a host-chosen pixel width (e.g. VS Code's
-    /// fixed 14px) instead of `cell_width`. Viewport is `SCROLL_TEST_W`
+    /// A `v_scrollbar_w` override widens the painted column to a
+    /// host-chosen pixel width (e.g. VS Code's fixed 14px) instead of
+    /// `cell_width`. Viewport is `SCROLL_TEST_W`
     /// = 200, `SCROLL_TEST_CHAR_W` = 8.0: the default column spans
     /// `[192, 200)`; a 14px override spans `[186, 200)`. `x = 188` sits
     /// in the gap between those two spans — plain background at
     /// baseline, inside the track once widened.
     #[test]
-    fn draw_editor_with_options_v_scrollbar_w_widens_painted_column() {
+    fn draw_editor_v_scrollbar_w_widens_painted_column() {
         let bg = Theme::default().background;
         let overflowing = scroll_test_editor(50, 5);
 
@@ -1160,18 +1215,16 @@ mod tests {
             "x=188 sits outside the default 8px-wide column, [192, 200)"
         );
 
-        let widened = scroll_test_paint(
+        let widened = scroll_test_paint_with_v_scrollbar_w(
             &overflowing,
-            EditorPaintOptions {
-                v_scrollbar_w: Some(14.0),
-                ..Default::default()
-            },
+            EditorPaintOptions::default(),
+            Some(14.0),
         );
         let (r2, g2, b2, _) = widened.pixel(188, 40);
         assert_ne!(
             (r2, g2, b2),
             (bg.r, bg.g, bg.b),
-            "v_scrollbar_w: Some(14.0) should widen the painted track to cover x=188 ([186, 200))"
+            "a Some(14.0) v_scrollbar_w should widen the painted track to cover x=188 ([186, 200))"
         );
     }
 
@@ -1183,7 +1236,7 @@ mod tests {
     /// `scroll_test_editor`'s blank fixture, since clip narrowing is
     /// otherwise invisible with no content to clip.
     #[test]
-    fn draw_editor_with_options_v_scrollbar_w_narrows_text_clip() {
+    fn draw_editor_v_scrollbar_w_narrows_text_clip() {
         let mut editor = scroll_test_editor(50, 5);
         // Spaces, not glyphs: the background fill is what's under test,
         // not anti-aliased ink from a probe landing mid-stroke.
@@ -1217,18 +1270,94 @@ mod tests {
         // Widened: the text clip now stops 14px short of the right
         // edge, so the same pixel (188) falls outside the (shrunk) text
         // area — it reads as the scrollbar track tint instead.
-        let widened = scroll_test_paint(
+        let widened = scroll_test_paint_with_v_scrollbar_w(
             &editor,
-            EditorPaintOptions {
-                v_scrollbar_w: Some(14.0),
-                ..Default::default()
-            },
+            EditorPaintOptions::default(),
+            Some(14.0),
         );
         let (r2, g2, b2, _) = widened.pixel(188, 40);
         assert_ne!(
             (r2, g2, b2),
             (10, 200, 10),
-            "v_scrollbar_w: Some(14.0) should narrow the text clip so x=188 no longer shows span bg"
+            "a Some(14.0) v_scrollbar_w should narrow the text clip so x=188 no longer shows span bg"
+        );
+    }
+
+    /// Paint `editor` through `MacBackend::draw_editor` after
+    /// `set_editor_v_scrollbar_width(v_scrollbar_w)` — the path a host
+    /// actually reaches, as opposed to calling the rasteriser directly.
+    fn scroll_test_paint_via_backend(editor: &Editor, v_scrollbar_w: Option<f32>) -> BitmapSurface {
+        let surface = BitmapSurface::new(SCROLL_TEST_W, SCROLL_TEST_H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_editor_v_scrollbar_width(v_scrollbar_w);
+        backend.begin_frame(Viewport::new(
+            SCROLL_TEST_W as f32,
+            SCROLL_TEST_H as f32,
+            1.0,
+        ));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_editor(editor.rect, editor);
+        });
+        backend.end_frame();
+        surface
+    }
+
+    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
+    /// `MacBackend::draw_editor` paint a scrollbar column exactly 14px
+    /// wide — `[186, 200)` in a 200px viewport — regardless of the
+    /// font's own char width, and `Backend::editor_layout` reports the
+    /// same column for hit-testing.
+    #[test]
+    fn backend_set_editor_v_scrollbar_width_paints_14px_column() {
+        let bg = Theme::default().background;
+        let overflowing = scroll_test_editor(50, 5);
+        let surface = scroll_test_paint_via_backend(&overflowing, Some(14.0));
+        let y = SCROLL_TEST_H - 4;
+        for x in 186..SCROLL_TEST_W {
+            let (r, g, b, _) = surface.pixel(x, y);
+            assert_ne!(
+                (r, g, b),
+                (bg.r, bg.g, bg.b),
+                "x={x} lies inside the 14px scrollbar column [186, 200) and should be tinted"
+            );
+        }
+        let (r, g, b, _) = surface.pixel(185, y);
+        assert_eq!(
+            (r, g, b),
+            (bg.r, bg.g, bg.b),
+            "x=185 lies just left of the 14px scrollbar column and should be plain background"
+        );
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_editor_v_scrollbar_width(Some(14.0));
+        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
+        let layout = backend.editor_layout(overflowing.rect, &overflowing);
+        let vsb = layout.v_scrollbar_bounds.expect("buffer overflows");
+        assert_eq!(vsb.width, 14.0);
+        assert_eq!(vsb.x, SCROLL_TEST_W as f32 - 14.0);
+    }
+
+    /// Without `set_editor_v_scrollbar_width`, the backend path keeps
+    /// the one-char-wide column: x=186 stays background.
+    #[test]
+    fn backend_default_editor_v_scrollbar_width_is_one_char() {
+        let bg = Theme::default().background;
+        let overflowing = scroll_test_editor(50, 5);
+        let surface = scroll_test_paint_via_backend(&overflowing, None);
+        let (r, g, b, _) = surface.pixel(186, SCROLL_TEST_H - 4);
+        assert_eq!(
+            (r, g, b),
+            (bg.r, bg.g, bg.b),
+            "the default column is one char (~8px) wide, so x=186 is text-area background"
+        );
+        let (r, g, b, _) = surface.pixel(SCROLL_TEST_W - 2, SCROLL_TEST_H - 4);
+        assert_ne!(
+            (r, g, b),
+            (bg.r, bg.g, bg.b),
+            "the default column still paints at the right edge"
         );
     }
 }

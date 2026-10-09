@@ -194,6 +194,10 @@ pub struct MacBackend {
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
+    /// Editor vertical scrollbar column width set through
+    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
+    /// `current_char_width` wide.
+    editor_v_scrollbar_w: Option<f32>,
     /// Chrome (UI) font — issue #963's fix for macOS being the only
     /// pixel backend where `set_ui_font` was a silent no-op and every
     /// piece of chrome (status bar today; more rasterisers follow-up)
@@ -613,6 +617,7 @@ impl MacBackend {
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
+            editor_v_scrollbar_w: None,
             chrome_font,
             chrome_line_height: chrome_metrics.line_height,
             chrome_char_width: chrome_metrics.char_width,
@@ -2943,8 +2948,26 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
+        let v_scrollbar_w = self.editor_v_scrollbar_w;
         // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::editor::draw_editor(ctx, font, editor, &theme, char_width, line_height) }
+        unsafe {
+            super::editor::draw_editor_with_options_and_v_scrollbar_w(
+                ctx,
+                font,
+                editor,
+                &theme,
+                char_width,
+                line_height,
+                crate::primitives::editor::EditorPaintOptions::default(),
+                v_scrollbar_w,
+            )
+        }
+    }
+    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
+        self.editor_v_scrollbar_w = px;
+    }
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        self.editor_v_scrollbar_w
     }
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
         let ctx = self.current_cg();

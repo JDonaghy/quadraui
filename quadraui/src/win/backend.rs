@@ -502,6 +502,10 @@ pub struct WinBackend {
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
+    /// Editor vertical scrollbar column width set through
+    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
+    /// `current_char_width` wide.
+    editor_v_scrollbar_w: Option<f32>,
     /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
     /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
     /// to resolve the row pitch (and per-column width) a paint or layout
@@ -801,6 +805,7 @@ impl WinBackend {
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            editor_v_scrollbar_w: None,
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             #[cfg(target_os = "windows")]
             dpi_scale: 1.0,
@@ -3889,18 +3894,45 @@ impl Backend for WinBackend {
     /// attached yet" fallback posture. `rect` is unused on the painted
     /// path — `editor.rect` is authoritative (mirrors
     /// `GtkBackend::draw_editor`, which does the same).
+    ///
+    /// The vertical scrollbar column (sized by
+    /// [`Self::set_editor_v_scrollbar_width`]) is painted after the
+    /// rasteriser returns, through [`Self::draw_scrollbar`] — see
+    /// `win::editor`'s "Scrollbar" module doc.
     fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let _ = rect;
-            return super::editor::draw_editor(
+            let options = crate::primitives::editor::EditorPaintOptions::default();
+            let result = super::editor::draw_editor_with_options_and_v_scrollbar_w(
                 &surface.target,
                 dwrite,
                 editor,
                 self.current_char_width,
                 self.current_line_height,
                 &self.current_theme,
+                options,
+                self.editor_v_scrollbar_w,
             );
+            let layout = editor.layout_with_options_and_v_scrollbar_w(
+                editor.rect,
+                self.current_char_width,
+                self.current_line_height,
+                options,
+                self.editor_v_scrollbar_w,
+            );
+            if let Some(v_track) = layout.v_scrollbar_bounds {
+                let sb = Scrollbar::vertical(
+                    "win:editor:v_scrollbar",
+                    v_track,
+                    editor.scroll_top as f32,
+                    editor.total_lines as f32,
+                    layout.visible_lines as f32,
+                    self.current_line_height,
+                );
+                self.draw_scrollbar(v_track, &sb);
+            }
+            return result;
         }
         // No surface/DWrite yet — paint nothing and report no cursor
         // position, matching every other backend's "nothing painted"
@@ -3908,6 +3940,14 @@ impl Backend for WinBackend {
         // #924).
         let _ = (rect, editor);
         EditorPaintResult::default()
+    }
+
+    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
+        self.editor_v_scrollbar_w = px;
+    }
+
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        self.editor_v_scrollbar_w
     }
 
     /// #30: real Direct2D/DirectWrite rasteriser via `win::message_list`
@@ -7845,6 +7885,80 @@ mod tests {
             (custom_bg.r, custom_bg.g, custom_bg.b),
             "editor background must reflect the live theme, not `Theme::default()`",
         );
+    }
+
+    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
+    /// `WinBackend::draw_editor` paint a scrollbar column exactly 14 DIPs
+    /// wide — `[186, 200)` in a 200-DIP viewport — instead of one
+    /// `current_char_width` (8 DIPs), and `Backend::editor_layout`
+    /// reports the same column for hit-testing.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_editor_v_scrollbar_width_paints_14px_column() {
+        use crate::primitives::editor::Editor;
+        use crate::theme::Theme;
+        use crate::types::WidgetId;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 80;
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let mut editor = Editor::new(WidgetId::new("editor"), rect);
+        editor.total_lines = 50;
+        let bg = Theme::default().background;
+        let bg = (bg.r, bg.g, bg.b);
+
+        let paint = |v_scrollbar_w: Option<f32>| {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.set_editor_v_scrollbar_width(v_scrollbar_w);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let _ = backend.draw_editor(rect, &editor);
+            backend.end_frame();
+            surface
+        };
+        let probe = |surface: &HeadlessSurface, x: u32| {
+            let px = surface.pixel_at(x, H - 4);
+            (px.r, px.g, px.b)
+        };
+
+        let widened = paint(Some(14.0));
+        assert_eq!(
+            probe(&widened, 185),
+            bg,
+            "x=185 lies just left of the 14px column"
+        );
+        for x in 186..W {
+            assert_ne!(
+                probe(&widened, x),
+                bg,
+                "x={x} lies inside the 14px column [186, 200)"
+            );
+        }
+
+        let default = paint(None);
+        assert_eq!(
+            probe(&default, 191),
+            bg,
+            "default column is 8px: x=191 is text area"
+        );
+        assert_ne!(
+            probe(&default, 192),
+            bg,
+            "default column is 8px: x=192 is track"
+        );
+
+        let mut backend = WinBackend::new();
+        backend.set_editor_v_scrollbar_width(Some(14.0));
+        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
+        let vsb = Backend::editor_layout(&backend, rect, &editor)
+            .v_scrollbar_bounds
+            .expect("buffer overflows");
+        assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
     }
 
     /// `draw_tree` (the Explorer sidebar's own content rasteriser) must read

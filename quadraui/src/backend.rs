@@ -3288,6 +3288,28 @@ pub trait Backend: sealed::Sealed {
     /// the result; GTK paints its own caret and returns the default.
     fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult;
 
+    /// Set the width, in this backend's native pixel units, of the
+    /// vertical scrollbar column every subsequent [`Self::draw_editor`]
+    /// (and [`Self::editor_layout`]) reserves and paints for an
+    /// overflowing buffer. `None` restores the default: a column one
+    /// [`Self::char_width`] wide.
+    ///
+    /// GUI hosts call this once at setup — e.g. `Some(14.0)` to match
+    /// VS Code's fixed 14px editor scrollbar regardless of font size.
+    /// See [`Editor::layout_with_options_and_v_scrollbar_w`] for the
+    /// geometry. The GTK, macOS and Win backends honour it; TUI keeps its
+    /// one-cell scrollbar column and ignores it (the default body is a
+    /// no-op).
+    fn set_editor_v_scrollbar_width(&mut self, _px: Option<f32>) {}
+
+    /// The width last set through [`Self::set_editor_v_scrollbar_width`],
+    /// or `None` when unset or ignored by this backend (the default
+    /// body). [`Self::editor_layout`] reads this so hit-testing agrees
+    /// with what [`Self::draw_editor`] painted.
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        None
+    }
+
     /// Compute the editor viewport layout (gutter / text / scrollbar
     /// bounds) without painting — the no-paint twin of [`Self::draw_editor`]
     /// (issue #506: `Editor::layout` already existed but no `Backend`
@@ -3318,7 +3340,13 @@ pub trait Backend: sealed::Sealed {
     /// diverges from `editor.rect` and this method's return value quietly
     /// stops matching what GTK painted (issue #506 review follow-up).
     fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
-        editor.layout(rect, self.char_width(), self.line_height())
+        editor.layout_with_options_and_v_scrollbar_w(
+            rect,
+            self.char_width(),
+            self.line_height(),
+            crate::primitives::editor::EditorPaintOptions::default(),
+            self.editor_v_scrollbar_width(),
+        )
     }
 
     /// Resolve a click x-coordinate to a text column on one visible row
