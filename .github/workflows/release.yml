@@ -1,71 +1,105 @@
 name: Release
 
-# Publishes `quadraui` to crates.io when a `vX.Y.Z` tag is pushed, then
-# creates the matching GitHub release from CHANGELOG.md's `## [X.Y.Z]`
-# section. Publishing uses crates.io Trusted Publishing:
-# `crates-io-auth-action` exchanges this job's GitHub OIDC identity for a
-# ~30-minute token scoped to the crates configured on crates.io, so no
-# long-lived API token is stored anywhere. crates.io's
-# trusted-publisher entry for `quadraui` names this file (`release.yml`) and
-# the `release` environment — renaming either breaks publishing until the
-# crates.io side is updated to match.
+# Releases `quadraui` on every push to `main` that carries a version bump,
+# then creates the matching GitHub release from CHANGELOG.md's `## [X.Y.Z]`
+# section. `main` only ever moves via a reviewed, CI-green `develop` -> `main`
+# promotion PR (see CLAUDE.md's "Branching + releases"), so that promotion —
+# not a hand-pushed tag — is the release trigger (#1368). Most promotions
+# don't bump the version, so most runs here are a fast no-op: see the `check`
+# job below.
 #
-# The `release` environment requires a reviewer's approval and only admits
-# `v*` tags, so pushing a tag queues the publish but does not run it
-# unattended. Tagging itself stays a coordinator action (CHANGELOG.md's
-# *Versioning* section); this workflow only turns an approved tag into a
-# published crate.
+# Publishing uses crates.io Trusted Publishing: `crates-io-auth-action`
+# exchanges this job's GitHub OIDC identity for a ~30-minute token scoped to
+# the crates configured on crates.io, so no long-lived API token is stored
+# anywhere. crates.io's trusted-publisher entry for `quadraui` names this
+# file (`release.yml`) and the `release` environment — renaming either breaks
+# publishing until the crates.io side is updated to match.
+#
+# The `release` environment requires a reviewer's approval and is scoped to
+# the `publish` job only (not `check`), so a no-op push to `main` resolves in
+# seconds with nobody paged, and a real version bump still queues the
+# publish for a human to approve rather than running it unattended.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
-# Two pushes of the same tag must not race each other to `cargo publish`.
+# Keyed on the workflow, not `github.ref` — every push to `main` shares one
+# group, so two quick `develop` -> `main` promotions queue strictly one after
+# another instead of racing two `cargo publish`/tag-push attempts. Each
+# `main` push is a discrete release decision, not a stream of superseding
+# commits (the opposite of e.g. a PR's own build-the-latest-push model), so
+# `cancel-in-progress: false` is load-bearing: cancelling a queued run could
+# throw away a version bump that was pushed first and got queued behind one
+# that pushed second but happened to be a no-op.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
+  check:
+    # No `environment:` here deliberately — this job must run unattended and
+    # fast on every push to `main`, including the common case where the
+    # version wasn't bumped. Gating it behind the same reviewer approval as
+    # `publish` would mean every merge to `main` pages a human, defeating the
+    # whole point of distinguishing "no-op" from "release" before the
+    # approval-gated job even starts.
+    name: Check whether this push bumps the version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      # Toolchain is pinned in rust-toolchain.toml; rustup's override
+      # resolution honors that file regardless of what this action installs
+      # as its default, so this reads the version with the same 1.97.1 as CI.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Read the quadraui crate version
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "quadraui") | .version')
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # `decide` queries the remote directly (`git ls-remote --tags origin`),
+      # not this shallow checkout's local refs — a depth-1 clone has no tag
+      # objects at all, so a local-only check would always read "missing"
+      # and try to re-create a tag that already exists upstream. See
+      # `scripts/release_decide.py`'s module doc and
+      # `scripts/test_release_decide.py` for the three branches this covers.
+      - name: Decide no-op vs. publish (tag v<version> exists on origin?)
+        id: decide
+        run: |
+          python3 scripts/release_decide.py decide \
+            --version "${{ steps.version.outputs.version }}"
+
   publish:
     name: Publish to crates.io
+    needs: check
+    if: needs.check.outputs.decision == 'publish'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
     permissions:
       id-token: write # lets crates-io-auth-action request the OIDC token
-      contents: write # lets `gh release create` publish the GitHub release
+      contents: write # lets this job push the release tag and create the GitHub release
     steps:
       - uses: actions/checkout@v4
-      # Toolchain is pinned in rust-toolchain.toml; rustup's override
-      # resolution honors that file regardless of what this action installs
-      # as its default, so the publish builds with the same 1.97.1 as CI.
       - uses: dtolnay/rust-toolchain@stable
 
-      # A tag that disagrees with `quadraui/Cargo.toml`'s version would
-      # publish a crate whose version no tag points at. Fail before
-      # requesting a token rather than after.
-      - name: Tag matches the crate version
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 --locked \
-            | jq -r '.packages[] | select(.name == "quadraui") | .version')
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match quadraui/Cargo.toml version ${version}"
-            exit 1
-          fi
-
       # The GitHub release's notes are CHANGELOG.md's `## [X.Y.Z]` section.
-      # Extracted (and required non-empty) before publishing, so a tag cut
-      # without its changelog section fails here instead of leaving a
-      # published crate with no release beside it.
+      # Extracted (and required non-empty) before `cargo publish` runs, so a
+      # version bump with no changelog section fails here — before any tag
+      # is created and before anything touches crates.io.
       - name: Extract release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v hdr="## [${version}]" \
-            'index($0, hdr) == 1 { f = 1; next } f && /^## \[/ { exit } f' \
-            CHANGELOG.md > "${RUNNER_TEMP}/notes.md"
-          if ! grep -q '[^[:space:]]' "${RUNNER_TEMP}/notes.md"; then
-            echo "::error::CHANGELOG.md has no non-empty '## [${version}]' section"
-            exit 1
-          fi
+          python3 scripts/release_decide.py notes \
+            --changelog CHANGELOG.md \
+            --version "${{ needs.check.outputs.version }}" \
+            --out "${RUNNER_TEMP}/notes.md"
 
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
@@ -73,22 +107,58 @@ jobs:
       # `cargo publish` verifies by building the packaged crate with default
       # features — `quadraui` has none, so no system libraries (gtk4 etc.)
       # are needed on this runner.
+      #
+      # Tolerates exactly one failure mode: this version is already on
+      # crates.io. That happens on a re-run after a prior run published
+      # successfully but then failed before tagging/releasing (e.g. a
+      # transient `gh release create` failure) — re-running must finish the
+      # tag + release, not fail a second time on a publish that already
+      # succeeded. Any other failure still fails the step.
       - name: cargo publish
-        run: cargo publish -p quadraui --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-
-      # After the publish, so a GitHub release only ever exists for a version
-      # that is actually on crates.io. Skipped if one was already created by
-      # hand for this tag.
-      - name: Create GitHub release
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "release ${GITHUB_REF_NAME} already exists; leaving it as is"
-          else
-            gh release create "${GITHUB_REF_NAME}" --verify-tag \
-              --title "quadraui ${GITHUB_REF_NAME}" \
-              --notes-file "${RUNNER_TEMP}/notes.md"
+          set +e
+          output=$(cargo publish -p quadraui --locked 2>&1)
+          status=$?
+          echo "${output}"
+          set -e
+          if [ "${status}" -ne 0 ]; then
+            if echo "${output}" | grep -qiE 'already (uploaded|exists)'; then
+              echo "::notice::quadraui ${{ needs.check.outputs.version }} is already published on crates.io; treating this as a partial-failure re-run and continuing to tag + release."
+            else
+              exit "${status}"
+            fi
           fi
+
+      # Idempotent for the same re-run scenario as the publish step above: a
+      # prior run may have already pushed this tag before failing later. A
+      # lightweight tag needs no committer identity, so no `git config` step
+      # is needed first.
+      - name: Create + push release tag
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "tag ${TAG} already exists on origin; skipping create+push"
+          else
+            git tag "${TAG}"
+            git push origin "${TAG}"
+          fi
+
+      # After the tag, so `--verify-tag` has something to verify, and after
+      # the publish, so a GitHub release only ever exists for a version that
+      # is actually on crates.io. Skipped if one was already created by a
+      # prior partial run for this tag.
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; leaving it as is"
+          else
+            gh release create "${TAG}" --verify-tag \
+              --title "quadraui ${TAG}" \
+              --notes-file "${RUNNER_TEMP}/notes.md"
+          fi

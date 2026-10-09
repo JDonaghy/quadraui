@@ -153,6 +153,53 @@ jobs:
       - name: cargo publish --dry-run
         run: cargo publish --dry-run -p quadraui --locked
 
+  semver-checks:
+    # #1368: `cargo-semver-checks` diffs `quadraui`'s public API against the
+    # version already published on crates.io, so an accidental breaking
+    # change is visible on the PR that introduces it rather than discovered
+    # after `release.yml` has already published it (publish is irreversible;
+    # yank only). Pre-1.0 the tool already applies Cargo's own semver
+    # convention — a `0.MINOR` bump is treated as the breaking-change bump,
+    # matching `CHANGELOG.md`'s *Versioning* section — so no extra
+    # configuration is needed to get that rule.
+    #
+    # No `features:`/`feature-group:` input: left at the action's default,
+    # which heuristically enables every non-unstable, non-internal feature
+    # (tui, gtk, win, terminal, layout, macos), the same backend surface the
+    # `doc` job below documents. `gtk` needs the same system libraries as
+    # that job and the `gtk` job further down, hence the apt-get step. `win`
+    # and `macos` are target-gated internally (see their own Cargo.toml
+    # feature comments), so enabling them on this ubuntu runner is a no-op
+    # for their platform-specific code, same reasoning the `tui` job's win/
+    # macos compile gates already rely on.
+    #
+    # Required vs. advisory: a breaking public-API change is routine
+    # *between* releases on `develop` — that's what `CHANGELOG.md`'s
+    # `### Deprecated`/rule-8 workflow exists for — so hard-failing every
+    # `develop` PR on any API diff from the last crates.io release would be
+    # noise, not signal. The `develop` -> `main` promotion PR is the actual
+    # release gate (release.yml#1368), so that is where this must block:
+    # `continue-on-error` is true (advisory) everywhere except a
+    # `pull_request` targeting `main`, where it is false (required). Plain
+    # `push` runs (no `base_ref`) stay advisory too — nothing to block once
+    # a push has already landed.
+    name: cargo-semver-checks (public API vs. published crates.io)
+    runs-on: ubuntu-latest
+    # #1292: downloads a prebuilt `cargo-semver-checks` binary and diffs one
+    # crate's API against its published baseline, normally a few minutes.
+    timeout-minutes: 20
+    continue-on-error: ${{ !(github.event_name == 'pull_request' && github.base_ref == 'main') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK4 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: quadraui
+          manifest-path: Cargo.toml
+
   doc:
     # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal`/`layout` only if they
     # build clean under `cargo doc` — this is the local proxy for that, run with
