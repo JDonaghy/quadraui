@@ -1,6 +1,19 @@
-//! Headless capture mode (#1348): iterate every registered demo ×
-//! variant × backend and write one image per combination, plus a
-//! `manifest.json` describing what was (or wasn't) captured.
+//! Headless capture mode: iterate every registered demo × variant ×
+//! backend and write one image per combination, plus a `manifest.json`
+//! describing what was (or wasn't) captured.
+//!
+//! ## Manifest composition across capture runs
+//!
+//! Each run of [`run_capture`] writes one `manifest.json` covering every
+//! backend compiled into *that* binary — a `tui`-only build's manifest
+//! marks `macos` (and every other backend it can't reach) `unsupported`,
+//! and a `macos`-only build's manifest marks `tui` the same way. The
+//! Linux and macOS CI legs each produce their own capture directory and
+//! manifest for exactly this reason. A publishing step that wants one
+//! gallery covering every backend needs to merge manifests keyed by
+//! `(demo, group, variant, backend)`, preferring any row with a `path`
+//! over the same key's `unsupported`/`capture-pending` row from another
+//! run — this module does not do that merge itself.
 //!
 //! [`run_capture`] is the entry point `src/main.rs`'s `--capture <dir>`
 //! flag calls, and the same function a test calls directly (see
@@ -34,6 +47,16 @@
 //! its entries get `"status": "unsupported"` instead — distinct from
 //! `"capture-pending"` because it isn't a permanent gap in this crate,
 //! just this particular build/host.
+//!
+//! ## Per-(demo, variant) failure isolation
+//!
+//! A single demo/variant that fails to capture — an I/O error writing
+//! its image, or a panic inside the click sequence that drives it to
+//! the right screen (e.g. a label that isn't painted at the capture
+//! size) — gets its own `"status": "error"` manifest row (with a
+//! `note` carrying the failure's own message) instead of aborting the
+//! whole run. Every other demo/variant/backend, and `manifest.json`
+//! itself, still gets written.
 
 use std::fs;
 use std::io;
@@ -62,9 +85,10 @@ pub struct ManifestEntry {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// Human-readable reason for `status`, e.g. naming the tracking
-    /// issue a `capture-pending` gap is blocked on. `None` whenever
-    /// `status` is `None` (a real `path` entry needs no explanation).
+    /// Human-readable reason for `status`: the tracking issue a
+    /// `capture-pending` gap is blocked on, or the error/panic message
+    /// for an `"error"` row. `None` whenever `status` is `None` (a real
+    /// `path` entry needs no explanation).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -204,46 +228,120 @@ fn group_index_of(demo: &dyn crate::Demo) -> usize {
 
 #[cfg(feature = "tui")]
 fn capture_tui(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()> {
+    capture_tui_over(registry, dir, manifest)
+}
+
+/// [`capture_tui`]'s body, generic over the demo-list constructor so a
+/// test can drive it with a demo double instead of the production
+/// [`registry`] — in particular to exercise the `variants.len() > 1`
+/// click branch, which [`registry`] itself never reaches today (its one
+/// entry, `ToastDemo`, has a single variant). Takes a `fn() ->
+/// Vec<Box<dyn Demo>>` (the same shape as [`registry`] itself), not an
+/// already-built `Vec`, because each (demo, variant) iteration needs
+/// its own fresh [`GalleryApp`] built from the *whole* demo list (so
+/// its sidebar/activity-bar navigation works), not just the one demo
+/// being captured that iteration.
+#[cfg(feature = "tui")]
+fn capture_tui_over(
+    demos_fn: fn() -> Vec<Box<dyn crate::Demo>>,
+    dir: &Path,
+    manifest: &mut Vec<ManifestEntry>,
+) -> io::Result<()> {
     use quadraui::testing::{Anchor, ConformanceDriver};
     use quadraui::tui::testing::driver_with_shell;
 
-    for demo in registry() {
+    for demo in demos_fn() {
         let group = demo.group().to_string();
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
         for &variant in variants {
-            let mut driver = driver_with_shell(
-                GalleryApp::new(),
-                GalleryApp::config(),
-                TUI_CAPTURE_WIDTH,
-                TUI_CAPTURE_HEIGHT,
+            let filename = format!(
+                "tui__{}__{}__{}.svg",
+                slug(&group),
+                slug(demo.name()),
+                slug(variant)
             );
-            click_group_zone(&mut driver, group_idx);
-            driver.click_text_at(demo.name(), Anchor::Center);
-            if variants.len() > 1 {
-                driver.click_text_at(variant, Anchor::Center);
-            }
+            let dest = dir.join(&filename);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut driver = driver_with_shell(
+                    GalleryApp::from_demos(demos_fn()),
+                    GalleryApp::config(),
+                    TUI_CAPTURE_WIDTH,
+                    TUI_CAPTURE_HEIGHT,
+                );
+                click_group_zone(&mut driver, group_idx);
+                driver.click_text_at(demo.name(), Anchor::Center);
+                if variants.len() > 1 {
+                    driver.click_text_at(variant, Anchor::Center);
+                }
+                write_tui_svg(&driver, TUI_CAPTURE_WIDTH, TUI_CAPTURE_HEIGHT, &dest)
+            }));
 
-            let filename = format!("tui__{}__{}.svg", slug(demo.name()), slug(variant));
-            write_tui_svg(
-                &driver,
-                TUI_CAPTURE_WIDTH,
-                TUI_CAPTURE_HEIGHT,
-                &dir.join(&filename),
-            )?;
-
-            manifest.push(ManifestEntry {
-                demo: demo.name().to_string(),
-                group: group.clone(),
-                variant: variant.to_string(),
-                backend: "tui".to_string(),
-                path: Some(filename),
-                status: None,
-                note: None,
-            });
+            manifest.push(capture_outcome_entry(
+                demo.name(),
+                &group,
+                variant,
+                "tui",
+                filename,
+                outcome,
+            ));
         }
     }
     Ok(())
+}
+
+/// Turn one (demo, variant, backend) capture attempt's outcome into its
+/// manifest row: a successful write gets a real `path`; an I/O failure
+/// or a caught panic (e.g.
+/// [`quadraui::testing::ConformanceDriver::click_text_at`] not finding
+/// its label at this capture size) gets a `status: "error"` row
+/// carrying the failure's own message instead — so one broken demo
+/// can't take down every other row in the same capture run, including
+/// `manifest.json` itself.
+#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+fn capture_outcome_entry(
+    demo: &str,
+    group: &str,
+    variant: &str,
+    backend: &str,
+    filename: String,
+    outcome: std::thread::Result<io::Result<()>>,
+) -> ManifestEntry {
+    let (path, status, note) = match outcome {
+        Ok(Ok(())) => (Some(filename), None, None),
+        Ok(Err(io_err)) => (None, Some("error".to_string()), Some(io_err.to_string())),
+        Err(panic_payload) => (
+            None,
+            Some("error".to_string()),
+            Some(panic_message(&panic_payload)),
+        ),
+    };
+    ManifestEntry {
+        demo: demo.to_string(),
+        group: group.to_string(),
+        variant: variant.to_string(),
+        backend: backend.to_string(),
+        path,
+        status,
+        note,
+    }
+}
+
+/// Extract a human-readable message from a caught panic payload.
+/// `&'static str` (`panic!("literal")`) and `String`
+/// (`panic!("{}", ...)`/`unwrap_or_else`) cover every panicking call
+/// site reachable from this module's own capture path; anything else
+/// falls back to a generic description rather than losing the manifest
+/// row entirely.
+#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "capture panicked with a non-string payload".to_string()
+    }
 }
 
 /// Click [`GROUPS`]`[index]`'s activity-bar item at its real painted
@@ -295,7 +393,7 @@ fn write_tui_svg<A: quadraui::AppLogic>(
     svg.push_str(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{px_w}\" height=\"{px_h}\" \
          viewBox=\"0 0 {px_w} {px_h}\" font-family=\"'SF Mono','DejaVu Sans Mono',monospace\" \
-         font-size=\"{}\">\n",
+         font-size=\"{}\" xml:space=\"preserve\">\n",
         CELL_H - 4
     ));
     svg.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#101010\"/>\n");
@@ -342,9 +440,11 @@ fn write_tui_svg<A: quadraui::AppLogic>(
                     ""
                 };
                 svg.push_str(&format!(
-                    "<text x=\"{}\" y=\"{}\" fill=\"#{r:02x}{g:02x}{b:02x}\"{weight}>{}</text>\n",
+                    "<text x=\"{}\" y=\"{}\" textLength=\"{}\" lengthAdjust=\"spacingAndGlyphs\" \
+                     fill=\"#{r:02x}{g:02x}{b:02x}\"{weight}>{}</text>\n",
                     x as u32 * CELL_W,
                     u32::from(y) * CELL_H + CELL_H - 4,
+                    (end - x) as u32 * CELL_W,
                     xml_escape(&text),
                 ));
             }
@@ -356,63 +456,65 @@ fn write_tui_svg<A: quadraui::AppLogic>(
     fs::write(path, svg)
 }
 
+/// The standard 16-colour ANSI palette, in `Color::Black..=Color::White`
+/// order — shared by [`ansi_rgb`] (named variants) and [`indexed_to_rgb`]
+/// (indices `0..=15`) so the two tables can't drift apart.
+#[cfg(feature = "tui")]
+const BASIC16: [(u8, u8, u8); 16] = [
+    (12, 12, 12),
+    (205, 49, 49),
+    (13, 188, 121),
+    (229, 229, 16),
+    (36, 114, 200),
+    (188, 63, 188),
+    (17, 168, 205),
+    (229, 229, 229),
+    (102, 102, 102),
+    (241, 76, 76),
+    (35, 209, 139),
+    (245, 245, 67),
+    (59, 142, 234),
+    (214, 112, 214),
+    (41, 184, 219),
+    (255, 255, 255),
+];
+
 /// Approximate RGB for a ratatui [`Color`](quadraui::tui::testing::Color)
-/// — the standard 16-colour ANSI palette plus the 256-colour cube/
-/// grayscale ramp, matching common terminal defaults closely enough for
-/// a visual capture. `None` for `Reset`, so callers fall back to the
-/// SVG's own base fill / default text fill instead of painting an
-/// opinionated "default colour" rect/run.
+/// — [`BASIC16`] plus the 256-colour cube/grayscale ramp, matching
+/// common terminal defaults closely enough for a visual capture. `None`
+/// for `Reset`, so callers fall back to the SVG's own base fill /
+/// default text fill instead of painting an opinionated "default
+/// colour" rect/run.
 #[cfg(feature = "tui")]
 fn ansi_rgb(color: quadraui::tui::testing::Color) -> Option<(u8, u8, u8)> {
     use quadraui::tui::testing::Color::*;
     Some(match color {
         Reset => return None,
-        Black => (12, 12, 12),
-        Red => (205, 49, 49),
-        Green => (13, 188, 121),
-        Yellow => (229, 229, 16),
-        Blue => (36, 114, 200),
-        Magenta => (188, 63, 188),
-        Cyan => (17, 168, 205),
-        Gray => (229, 229, 229),
-        DarkGray => (102, 102, 102),
-        LightRed => (241, 76, 76),
-        LightGreen => (35, 209, 139),
-        LightYellow => (245, 245, 67),
-        LightBlue => (59, 142, 234),
-        LightMagenta => (214, 112, 214),
-        LightCyan => (41, 184, 219),
-        White => (255, 255, 255),
+        Black => BASIC16[0],
+        Red => BASIC16[1],
+        Green => BASIC16[2],
+        Yellow => BASIC16[3],
+        Blue => BASIC16[4],
+        Magenta => BASIC16[5],
+        Cyan => BASIC16[6],
+        Gray => BASIC16[7],
+        DarkGray => BASIC16[8],
+        LightRed => BASIC16[9],
+        LightGreen => BASIC16[10],
+        LightYellow => BASIC16[11],
+        LightBlue => BASIC16[12],
+        LightMagenta => BASIC16[13],
+        LightCyan => BASIC16[14],
+        White => BASIC16[15],
         Rgb(r, g, b) => (r, g, b),
         Indexed(i) => indexed_to_rgb(i),
     })
 }
 
-/// xterm 256-colour index → RGB: the first 16 mirror the ANSI palette
-/// (via [`ansi_rgb`]'s own table, re-derived here rather than shared —
-/// `Color` has no `From<u8>` that round-trips through the named
-/// variants), 16–231 are the 6×6×6 colour cube, 232–255 the grayscale
-/// ramp.
+/// xterm 256-colour index → RGB: `0..=15` are [`BASIC16`], `16..=231`
+/// are the 6×6×6 colour cube, `232..=255` the grayscale ramp.
 #[cfg(feature = "tui")]
 fn indexed_to_rgb(i: u8) -> (u8, u8, u8) {
-    const BASIC16: [(u8, u8, u8); 16] = [
-        (12, 12, 12),
-        (205, 49, 49),
-        (13, 188, 121),
-        (229, 229, 16),
-        (36, 114, 200),
-        (188, 63, 188),
-        (17, 168, 205),
-        (229, 229, 229),
-        (102, 102, 102),
-        (241, 76, 76),
-        (35, 209, 139),
-        (245, 245, 67),
-        (59, 142, 234),
-        (214, 112, 214),
-        (41, 184, 219),
-        (255, 255, 255),
-    ];
     match i {
         0..=15 => BASIC16[i as usize],
         16..=231 => {
@@ -457,44 +559,57 @@ fn capture_macos(dir: &Path, manifest: &mut Vec<ManifestEntry>) -> io::Result<()
         let group_idx = group_index_of(demo.as_ref());
         let variants = demo.variants();
         for &variant in variants {
-            let mut driver = driver_with_shell(
-                GalleryApp::new(),
-                GalleryApp::config(),
-                MAC_CAPTURE_WIDTH,
-                MAC_CAPTURE_HEIGHT,
+            let filename = format!(
+                "macos__{}__{}__{}.png",
+                slug(&group),
+                slug(demo.name()),
+                slug(variant)
             );
-            click_group_zone(&mut driver, group_idx);
-            driver.click_text_at(demo.name(), Anchor::Center);
-            if variants.len() > 1 {
-                driver.click_text_at(variant, Anchor::Center);
-            }
+            let dest = dir.join(&filename);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut driver = driver_with_shell(
+                    GalleryApp::new(),
+                    GalleryApp::config(),
+                    MAC_CAPTURE_WIDTH,
+                    MAC_CAPTURE_HEIGHT,
+                );
+                click_group_zone(&mut driver, group_idx);
+                driver.click_text_at(demo.name(), Anchor::Center);
+                if variants.len() > 1 {
+                    driver.click_text_at(variant, Anchor::Center);
+                }
+                write_mac_png(
+                    driver.surface(),
+                    MAC_CAPTURE_WIDTH,
+                    MAC_CAPTURE_HEIGHT,
+                    &dest,
+                )
+            }));
 
-            let filename = format!("macos__{}__{}.png", slug(demo.name()), slug(variant));
-            write_mac_png(
-                driver.surface(),
-                MAC_CAPTURE_WIDTH,
-                MAC_CAPTURE_HEIGHT,
-                &dir.join(&filename),
-            )?;
-
-            manifest.push(ManifestEntry {
-                demo: demo.name().to_string(),
-                group: group.clone(),
-                variant: variant.to_string(),
-                backend: "macos".to_string(),
-                path: Some(filename),
-                status: None,
-                note: None,
-            });
+            manifest.push(capture_outcome_entry(
+                demo.name(),
+                &group,
+                variant,
+                "macos",
+                filename,
+                outcome,
+            ));
         }
     }
     Ok(())
 }
 
 /// PNG-encode a [`BitmapSurface`](quadraui::macos::headless::BitmapSurface)'s
-/// raw RGBA bytes (see that type's module doc for the byte layout —
-/// top-down scanlines, 8bpc RGBA, which is exactly what
-/// [`image::RgbaImage::from_raw`] expects).
+/// raw pixels (see that type's module doc for the byte layout —
+/// top-down scanlines, 8bpc RGBA, `kCGImageAlphaPremultipliedLast`).
+/// [`composite_over_white`] first flattens that premultiplied-alpha
+/// buffer onto an opaque white backdrop: `BitmapSurface` starts
+/// transparent-black and only chrome the shell actually painted gets
+/// any coverage, so encoding the raw bytes straight through would (a)
+/// leave every unpainted margin transparent instead of showing the
+/// window's own background, and (b) read any partially-covered edge
+/// pixel's premultiplied RGB as a straight-alpha PNG would, which comes
+/// out darker than what was actually on screen.
 #[cfg(all(feature = "macos", target_os = "macos"))]
 fn write_mac_png(
     surface: &quadraui::macos::headless::BitmapSurface,
@@ -502,10 +617,33 @@ fn write_mac_png(
     height: u32,
     path: &Path,
 ) -> io::Result<()> {
-    let img = image::RgbaImage::from_raw(width, height, surface.bytes().to_vec())
+    let flattened = composite_over_white(surface.bytes());
+    let img = image::RgbaImage::from_raw(width, height, flattened)
         .expect("BitmapSurface byte length must be exactly width * height * 4");
     img.save(path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+/// Composite premultiplied-alpha RGBA bytes (`BitmapSurface`'s own
+/// layout — see [`write_mac_png`]) onto an opaque white backdrop,
+/// returning straight (`alpha = 255`) RGBA bytes ready for
+/// [`image::RgbaImage::from_raw`]. For a premultiplied pixel
+/// `(r, g, b, a)` composited over opaque white, the "over" operator
+/// reduces to `channel + (255 - a)` — and since a premultiplied
+/// channel never exceeds its own alpha, that sum never exceeds 255, so
+/// no clamping is needed.
+#[cfg(all(feature = "macos", target_os = "macos"))]
+fn composite_over_white(premultiplied_rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(premultiplied_rgba.len());
+    for px in premultiplied_rgba.chunks_exact(4) {
+        let (r, g, b, a) = (px[0], px[1], px[2], px[3]);
+        let inv = 255 - a;
+        out.push(r.saturating_add(inv));
+        out.push(g.saturating_add(inv));
+        out.push(b.saturating_add(inv));
+        out.push(255);
+    }
+    out
 }
 
 // Every test below exercises either the TUI-only SVG-encoding helpers or
@@ -556,5 +694,172 @@ mod tests {
     #[test]
     fn xml_escape_handles_reserved_characters() {
         assert_eq!(xml_escape("a & b <c> d"), "a &amp; b &lt;c&gt; d");
+    }
+
+    #[test]
+    fn panic_message_extracts_str_and_string_payloads() {
+        let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(panic_message(&*str_payload), "boom");
+
+        let string_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("kaboom"));
+        assert_eq!(panic_message(&*string_payload), "kaboom");
+
+        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(
+            panic_message(&*other_payload),
+            "capture panicked with a non-string payload"
+        );
+    }
+
+    #[test]
+    fn capture_outcome_entry_reports_error_status_on_io_failure_without_aborting() {
+        let io_err = io::Error::other("disk full");
+        let entry = capture_outcome_entry(
+            "Demo",
+            "Group",
+            "default",
+            "tui",
+            "demo.svg".to_string(),
+            Ok(Err(io_err)),
+        );
+        assert_eq!(entry.path, None);
+        assert_eq!(entry.status.as_deref(), Some("error"));
+        assert_eq!(entry.note.as_deref(), Some("disk full"));
+    }
+
+    #[test]
+    fn capture_outcome_entry_reports_a_real_path_on_success() {
+        let entry = capture_outcome_entry(
+            "Demo",
+            "Group",
+            "default",
+            "tui",
+            "demo.svg".to_string(),
+            Ok(Ok(())),
+        );
+        assert_eq!(entry.path.as_deref(), Some("demo.svg"));
+        assert_eq!(entry.status, None);
+        assert_eq!(entry.note, None);
+    }
+
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    #[test]
+    fn composite_over_white_fills_fully_transparent_pixels_with_opaque_white() {
+        let transparent_black = [0u8, 0, 0, 0];
+        let out = composite_over_white(&transparent_black);
+        assert_eq!(out, vec![255, 255, 255, 255]);
+    }
+
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    #[test]
+    fn composite_over_white_passes_fully_opaque_pixels_through() {
+        let opaque_red_premultiplied = [255u8, 0, 0, 255];
+        let out = composite_over_white(&opaque_red_premultiplied);
+        assert_eq!(out, vec![255, 0, 0, 255]);
+    }
+
+    /// A two-variant [`crate::Demo`] test double — the production
+    /// [`registry`] never exercises `variants.len() > 1`, since its one
+    /// entry (`ToastDemo`) has a single variant. Pins the variant-click
+    /// branch in [`capture_tui_over`] (and the variant slug landing in
+    /// the filename) against regressing silently.
+    #[cfg(feature = "tui")]
+    struct TwoVariantDemo;
+
+    #[cfg(feature = "tui")]
+    impl crate::Demo for TwoVariantDemo {
+        fn name(&self) -> &'static str {
+            "TwoVariant"
+        }
+
+        fn group(&self) -> &'static str {
+            "Overlays"
+        }
+
+        fn variants(&self) -> &'static [&'static str] {
+            &["Alpha", "Beta"]
+        }
+
+        fn render(
+            &self,
+            variant: usize,
+            backend: &mut dyn quadraui::Backend,
+            area: quadraui::Rect,
+        ) {
+            use quadraui::{Color, InteractionState, StatusBar, StatusBarSegment, WidgetId};
+            let bar = StatusBar {
+                id: WidgetId::new("test:two-variant"),
+                left_segments: vec![StatusBarSegment {
+                    text: format!(" variant={} ", self.variants()[variant]),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            let _ = backend.draw_status_bar_interactive(area, &bar, &InteractionState::new());
+        }
+
+        fn handle(
+            &mut self,
+            _variant: usize,
+            _event: &quadraui::UiEvent,
+            _backend: &mut dyn quadraui::Backend,
+            _area: quadraui::Rect,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+
+        fn source(&self) -> &'static str {
+            "struct TwoVariantDemo;"
+        }
+
+        fn data(&self, _variant: usize) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    fn two_variant_registry() -> Vec<Box<dyn crate::Demo>> {
+        vec![Box::new(TwoVariantDemo)]
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn capture_tui_selects_the_clicked_variant_and_names_it_in_the_filename() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_tui_over(two_variant_registry, dir.path(), &mut manifest)
+            .expect("capture_tui_over");
+
+        assert_eq!(manifest.len(), 2, "one row per variant: {manifest:#?}");
+        for variant in ["Alpha", "Beta"] {
+            let entry = manifest
+                .iter()
+                .find(|e| e.variant == variant)
+                .unwrap_or_else(|| {
+                    panic!("missing manifest row for variant {variant}: {manifest:#?}")
+                });
+            assert!(
+                entry.status.is_none(),
+                "variant {variant} should have captured cleanly: {entry:#?}"
+            );
+            let path = entry
+                .path
+                .as_deref()
+                .unwrap_or_else(|| panic!("variant {variant} should have a path: {entry:#?}"));
+            assert!(
+                path.contains(&slug(variant)),
+                "filename {path} should name its own variant ({variant})"
+            );
+
+            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+            assert!(
+                svg.contains(&format!("variant={variant}")),
+                "SVG for {variant} should show that variant's own rendered content:\n{svg}"
+            );
+        }
     }
 }

@@ -159,8 +159,17 @@ jobs:
       # gtk/tui legs build the gallery but never with `macos`). This is
       # the one real `macos-latest` host, so it's the only place a typo'd
       # `run_with_shell` call in that arm would be caught before merge.
+      # `--all-targets` so `tests/capture_macos_driver.rs` (which is
+      # `#[cfg(all(feature = "macos", target_os = "macos"))]`-gated and
+      # therefore invisible to a bare `cargo check`) is at least
+      # type-checked here, not just compiled by the Test step below.
       - name: Build (gallery, macos feature)
-        run: cargo check -p quadraui-gallery --features macos
+        run: cargo check -p quadraui-gallery --features macos --all-targets
+      # Runs `tests/capture_macos_driver.rs` for real — the only CI step
+      # that does, since it is gated on `target_os = "macos"` plus
+      # `--features macos` and this is the one macOS runner in the fleet.
+      - name: Test (gallery, macos feature)
+        run: cargo test -p quadraui-gallery --features macos
       # #797: the one place `cargo doc --features macos` compiles anything —
       # `lib.rs` gates `mod macos` on `target_os = "macos"`, so `ci.yml`'s
       # `doc` job (ubuntu-only) documents zero lines of `src/macos/`, same
@@ -254,11 +263,10 @@ jobs:
     #
     # `continue-on-error: true` and no dependency on the blocking `macos`
     # job above: a capture-mode bug must never hold up a PR. Correctness
-    # is `tests/capture_macos_driver.rs`'s job — already covered by the
-    # blocking `macos` job's own `cargo test -p quadraui --features macos`
-    # step reaching into `quadraui-gallery`'s workspace member... except it
-    # doesn't (that step is `-p quadraui`, not the gallery crate) — so this
-    # job is also the only place `capture_macos_driver.rs` runs in CI.
+    # is `tests/capture_macos_driver.rs`'s job, run by the blocking
+    # `macos` job's own `cargo test -p quadraui-gallery --features macos`
+    # step — this job itself runs no tests, only `cargo run --capture`,
+    # and exists purely to produce the uploaded artifact.
     # Non-blocking regardless: a real failure here should be fixed by
     # filing/looking at the issue it names, not by retrying the merge.
     name: gallery capture (macos)

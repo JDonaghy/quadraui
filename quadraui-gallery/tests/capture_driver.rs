@@ -1,4 +1,4 @@
-//! Integration test for headless capture mode (#1348).
+//! Integration test for headless capture mode.
 //!
 //! Runs [`quadraui_gallery::capture::run_capture`] — the exact function
 //! `src/main.rs`'s `--capture <dir>` flag calls — into a temp dir and
@@ -85,6 +85,16 @@ fn capture_writes_tui_svg_and_lists_it_in_the_manifest() {
         svg.contains(demo.name()),
         "captured SVG should contain the demo's own name ({}) as a painted label:\n{svg}",
         demo.name()
+    );
+    // Not just the sidebar row: "add severity" only appears in
+    // `ToastDemo`'s own hint bar (same string `tests/gallery_driver.rs`
+    // asserts on), so this proves the group→demo click sequence
+    // actually navigated to the demo's content, not just that its name
+    // is painted somewhere incidental (e.g. the sidebar list).
+    assert!(
+        svg.contains("add severity"),
+        "captured SVG should show the demo's own content (ToastDemo's hint bar), \
+         not just its sidebar label:\n{svg}"
     );
 
     // ── every other backend gets a status-only entry, never a faked image ─
