@@ -1499,6 +1499,9 @@ jobs:
       - name: Generate the template into a temp dir
         run: |
           set -euo pipefail
+          # cargo-generate requires `--destination` to already exist; a
+          # missing directory fails with a bare "No such file or directory".
+          mkdir -p "$RUNNER_TEMP/generated"
           cargo generate \
             --path "$GITHUB_WORKSPACE/templates/app" \
             --name quadraui-template-smoke \
