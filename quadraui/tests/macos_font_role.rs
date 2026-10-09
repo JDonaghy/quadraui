@@ -6,13 +6,30 @@
 //! DataTable, Form, Toast, Panel, Tooltip, Palette, Progress, and Spinner
 //! among them. This file paints each of those eight primitives twice,
 //! with the chrome/editor font sizes swapped between runs, and asserts
-//! the painted ink tracks `chrome_font`'s size every time, proving the
-//! primitive paints in [`quadraui::FontRole::Chrome`] regardless of what
-//! the editor font is set to. Same "two visibly different font sizes"
-//! technique `macos::backend`'s own in-crate
+//! the painted text run tracks `chrome_font`'s size every time, proving
+//! the primitive paints in [`quadraui::FontRole::Chrome`] regardless of
+//! what the editor font is set to.
+//!
+//! ## Why painted-run *width*, and not an ink-pixel count
+//!
+//! A pixel probe ("count the non-black pixels") is the right oracle for
+//! a bare `surface_draw_text_run` call — `macos::backend`'s own in-crate
 //! `mac_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`
-//! test uses for the explicit-role entry point, applied here to the
-//! *default* (no-role-argument) entry points instead.
+//! test uses exactly that for the explicit-role entry point, because the
+//! only thing it paints *is* a glyph. It is the wrong oracle for a whole
+//! primitive: a `Panel`, `ProgressBar` or `DataTable` fills a background,
+//! strokes a border and paints a filled track, all of which are ink and
+//! none of which depend on the font. Those font-independent pixels swamp
+//! the few hundred belonging to the label, so the ratio between two font
+//! sizes collapses towards 1.0 and says nothing about which font shaped
+//! the glyphs.
+//!
+//! So this file reads the text run each primitive actually painted
+//! instead, via [`quadraui::macos::testing::MacDriver::find_bounds`]:
+//! those bounds are recorded at the `macos::text::draw_text` choke point
+//! from the painting font's own metrics, so the run's width *is* a direct
+//! readout of the font that shaped it — exact, independent of
+//! backgrounds, and unaffected by clipping.
 //!
 //! Scoped to macOS only, matching `src/macos/backend.rs`'s own scope. A
 //! primitive is intentionally absent from this file if it is
@@ -20,7 +37,7 @@
 //! `crate::font_role::EditorClassPrimitive::ALL`) or if it is already
 //! covered by `ChromePrimitive`'s direct-call-site convention, proven by
 //! `font_role`'s own `every_chrome_primitive_is_chrome` unit test rather
-//! than a pixel scenario.
+//! than a painted scenario.
 //!
 //! A standalone integration test (not wired into `tests/conformance.rs`'s
 //! shared harness) so it carries its own `cfg` gate rather than a second
@@ -29,80 +46,129 @@
 
 #![cfg(all(feature = "macos", target_os = "macos"))]
 
-use quadraui::macos::backend::MacBackend;
-use quadraui::macos::headless::BitmapSurface;
-use quadraui::macos::text::make_font;
+use quadraui::macos::testing::MacDriver;
 use quadraui::{
-    Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration, FieldKind, Form,
-    FormField, Palette, PaletteItem, PaletteMode, Panel, ProgressBar, Rect, Spinner, StyledText,
-    Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement,
-    Viewport, WidgetId,
+    AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration, FieldKind,
+    Form, FormField, Palette, PaletteItem, PaletteMode, Panel, ProgressBar, Reaction, Rect,
+    Spinner, StyledText, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure,
+    TooltipPlacement, UiEvent, WidgetId,
 };
 
-const W: u32 = 160;
-const H: u32 = 80;
+const W: u32 = 640;
+const H: u32 = 400;
+
+/// The label text every primitive under test paints. Deliberately a
+/// string no primitive's own chrome (title, placeholder, spinner frame,
+/// `×` affordance) can contain, so `find_bounds` can only match the run
+/// this file asked for.
+const LABEL: &str = "ZZZ";
+
+/// The two font sizes swapped between the paired runs. Far enough apart
+/// that no rounding, hinting or fallback difference could account for
+/// the gap.
+const BIG_PT: f32 = 32.0;
+const SMALL_PT: f32 = 5.0;
+
+/// `font_desc` strings for [`Backend::set_ui_font`] matching the two
+/// sizes above.
+const BIG_UI_FONT: &str = "Menlo 32";
+const SMALL_UI_FONT: &str = "Menlo 5";
+
+/// Row pitch and column pitch pinned on the backend before every paint,
+/// so the two runs of a pair lay out identically and the *only* thing
+/// differing between them is which font shapes the glyphs. Without this
+/// the editor font's own metrics would drive the layout (that is what
+/// `MacBackend::set_current_font` derives them from), making the
+/// big-chrome run and the big-editor run paint different geometry as
+/// well as different glyphs. Sized generously enough that a 32pt run
+/// still fits the row it is painted into.
+const PINNED_LINE_HEIGHT: f32 = 40.0;
+const PINNED_CHAR_WIDTH: f32 = 20.0;
 
 fn id(suffix: &str) -> WidgetId {
     WidgetId::new(format!("font-role-{suffix}"))
 }
 
-/// Count of non-black pixels in `surface` — the same ink-pixel probe
-/// `macos::backend`'s own role test uses.
-fn ink_pixel_count(surface: &BitmapSurface) -> u32 {
-    let mut count = 0;
-    for y in 0..H {
-        for x in 0..W {
-            let (r, g, b, _a) = surface.pixel(x, y);
-            if r as u32 + g as u32 + b as u32 > 0 {
-                count += 1;
-            }
-        }
+/// Minimal [`AppLogic`] that installs a chrome/editor font pair and
+/// paints one primitive through `paint`.
+struct PaintApp<F> {
+    ui_font_desc: &'static str,
+    editor_pt: f32,
+    paint: F,
+}
+
+impl<F: Fn(&mut dyn Backend, Rect)> AppLogic for PaintApp<F> {
+    type AreaId = ();
+
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        // Editor font first: installing it is what derives the backend's
+        // row pitch, which `render` then overrides (see
+        // `PINNED_LINE_HEIGHT`).
+        backend.set_editor_font("Menlo", self.editor_pt);
+        backend.set_ui_font(self.ui_font_desc);
     }
-    count
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        backend.set_current_line_height(PINNED_LINE_HEIGHT);
+        backend.set_current_char_width(PINNED_CHAR_WIDTH);
+        (self.paint)(backend, Rect::new(4.0, 4.0, (W - 8) as f32, (H - 8) as f32));
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
 }
 
-/// Paints `paint` twice — once with a huge `chrome_font` / tiny
-/// `current_font`, once with the sizes swapped — and returns the
-/// resulting `(ink_with_big_chrome, ink_with_big_editor)`.
-fn ink_under_font_sizes(paint: impl Fn(&mut MacBackend, Rect)) -> (u32, u32) {
-    let area = Rect::new(2.0, 2.0, (W - 4) as f32, (H - 4) as f32);
-
-    let mut backend = MacBackend::new();
-    backend.set_chrome_font(make_font("Menlo", 32.0).expect("Menlo installed"));
-    backend.set_current_font(make_font("Menlo", 4.0).expect("Menlo installed"));
-    let big_chrome_surface = BitmapSurface::new(W, H);
-    backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-    backend.enter_frame_scope(big_chrome_surface.context_ptr(), |b| paint(b, area));
-    backend.end_frame();
-    let big_chrome_ink = ink_pixel_count(&big_chrome_surface);
-
-    backend.set_chrome_font(make_font("Menlo", 4.0).expect("Menlo installed"));
-    backend.set_current_font(make_font("Menlo", 32.0).expect("Menlo installed"));
-    let big_editor_surface = BitmapSurface::new(W, H);
-    backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-    backend.enter_frame_scope(big_editor_surface.context_ptr(), |b| paint(b, area));
-    backend.end_frame();
-    let big_editor_ink = ink_pixel_count(&big_editor_surface);
-
-    (big_chrome_ink, big_editor_ink)
+/// Width (points) of the [`LABEL`] run `paint` painted, with
+/// `ui_font_desc` as the chrome font and `editor_pt`-sized Menlo as the
+/// editor font.
+fn painted_label_width<F: Fn(&mut dyn Backend, Rect)>(
+    name: &str,
+    ui_font_desc: &'static str,
+    editor_pt: f32,
+    paint: F,
+) -> f32 {
+    let driver = MacDriver::new(
+        PaintApp {
+            ui_font_desc,
+            editor_pt,
+            paint,
+        },
+        W,
+        H,
+    );
+    match driver.find_bounds(LABEL) {
+        Some(bounds) => bounds.width,
+        None => panic!(
+            "{name}: nothing containing {LABEL:?} was painted with chrome font \
+             {ui_font_desc:?} / editor font Menlo {editor_pt}pt, so this scenario \
+             cannot say anything about the font role. Painted runs: {:?}",
+            driver.painted_texts()
+        ),
+    }
 }
 
-/// Asserts `paint` paints in [`quadraui::FontRole::Chrome`]: ink tracks
-/// `chrome_font`'s size, not `current_font`'s (see this file's module
-/// doc).
-fn assert_paints_in_chrome_font(name: &str, paint: impl Fn(&mut MacBackend, Rect)) {
-    let (big_chrome_ink, big_editor_ink) = ink_under_font_sizes(paint);
+/// Asserts `paint` paints in [`quadraui::FontRole::Chrome`]: the painted
+/// run's width tracks `chrome_font`'s size, not `current_font`'s (see
+/// this file's module doc).
+fn assert_paints_in_chrome_font<F>(name: &str, paint: F)
+where
+    F: Fn(&mut dyn Backend, Rect) + Copy,
+{
+    let big_chrome = painted_label_width(name, BIG_UI_FONT, SMALL_PT, paint);
+    let big_editor = painted_label_width(name, SMALL_UI_FONT, BIG_PT, paint);
     assert!(
-        big_chrome_ink > 0 && big_editor_ink > 0,
-        "{name}: both font configurations must paint real ink: \
-         big_chrome={big_chrome_ink}, big_editor={big_editor_ink}"
+        big_chrome > 0.0 && big_editor > 0.0,
+        "{name}: both font configurations must paint a measurable run: \
+         big_chrome={big_chrome}, big_editor={big_editor}"
     );
     assert!(
-        big_chrome_ink > big_editor_ink * 2,
-        "{name} must paint in FontRole::Chrome, not FontRole::Editor — a 32pt chrome \
-         font should paint far more ink than a 4pt one if `chrome_font` really drives \
-         this primitive's glyphs: big_chrome={big_chrome_ink} (32pt chrome / 4pt editor), \
-         big_editor={big_editor_ink} (4pt chrome / 32pt editor)"
+        big_chrome > big_editor * 3.0,
+        "{name} must paint in FontRole::Chrome, not FontRole::Editor — a {BIG_PT}pt chrome \
+         font should paint a far wider run than a {SMALL_PT}pt one if `chrome_font` really \
+         drives this primitive's glyphs: big_chrome={big_chrome} ({BIG_PT}pt chrome / \
+         {SMALL_PT}pt editor), big_editor={big_editor} ({SMALL_PT}pt chrome / {BIG_PT}pt \
+         editor)"
     );
 }
 
@@ -112,12 +178,12 @@ fn draw_data_table_paints_in_chrome_font() {
         let table = DataTable {
             id: id("data-table"),
             columns: vec![Column {
-                title: "fr".to_string(),
+                title: "col".to_string(),
                 width: ColumnWidth::Flex(1.0),
                 align: ColumnAlign::Left,
             }],
             rows: vec![DataRow {
-                cells: vec![StyledText::plain("row")],
+                cells: vec![StyledText::plain(LABEL)],
                 decoration: Decoration::Normal,
             }],
             selected_idx: None,
@@ -141,7 +207,7 @@ fn draw_form_paints_in_chrome_font() {
             id: id("form"),
             fields: vec![FormField {
                 id: id("form-field"),
-                label: StyledText::plain("fr"),
+                label: StyledText::plain(LABEL),
                 kind: FieldKind::ReadOnly {
                     value: StyledText::plain("value"),
                 },
@@ -165,7 +231,7 @@ fn draw_toast_overlay_paints_in_chrome_font() {
             corner: ToastCorner::BottomRight,
             toasts: vec![Toast {
                 id: id("toast"),
-                title: "fr".to_string(),
+                title: LABEL.to_string(),
                 body: String::new(),
                 severity: ToastSeverity::Info,
                 actions: vec![],
@@ -182,7 +248,7 @@ fn draw_panel_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_panel", |b, area| {
         let panel = Panel {
             id: id("panel"),
-            title: Some(StyledText::plain("fr")),
+            title: Some(StyledText::plain(LABEL)),
             actions: vec![],
             accent: None,
             collapsed: false,
@@ -197,7 +263,7 @@ fn draw_tooltip_paints_in_chrome_font() {
         let cw = b.char_width();
         let lh = b.line_height();
         let anchor = Rect::new(area.x, area.y, area.width, lh);
-        let mut tooltip = Tooltip::new(id("tooltip"), "fr");
+        let mut tooltip = Tooltip::new(id("tooltip"), LABEL);
         tooltip.placement = TooltipPlacement::Bottom;
         let measure = TooltipMeasure::new(cw * 9.0, lh * 3.0);
         let layout = tooltip.layout(anchor, area, measure, lh);
@@ -214,7 +280,7 @@ fn draw_palette_paints_in_chrome_font() {
             query: String::new(),
             query_cursor: 0,
             items: vec![PaletteItem {
-                text: StyledText::plain("fr"),
+                text: StyledText::plain(LABEL),
                 detail: None,
                 icon: None,
                 match_positions: vec![],
@@ -240,7 +306,7 @@ fn draw_progress_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_progress", |b, area| {
         let bar = ProgressBar {
             id: id("progress"),
-            label: "fr".to_string(),
+            label: LABEL.to_string(),
             value: Some(0.5),
             frame_idx: 0,
             cancellable: false,
@@ -255,7 +321,7 @@ fn draw_spinner_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_spinner", |b, area| {
         let spinner = Spinner {
             id: id("spinner"),
-            label: "fr".to_string(),
+            label: LABEL.to_string(),
             frame_idx: 0,
             accent: None,
         };
