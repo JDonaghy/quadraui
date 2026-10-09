@@ -3,9 +3,8 @@
 //!
 //! Three variants show sidecar decorations that are requested through a
 //! `Backend::draw_tab_bar_*` call rather than baked into `TabItem` fields:
-//! bracket chrome around the active tab (`TabChrome`, quadraui#631),
-//! per-tab colour icons (`TabIcon`, quadraui#620), and a CJK double-width
-//! label (the vt100 conformance fixture for quadraui#555).
+//! bracket chrome around the active tab (`TabChrome`), per-tab colour icons
+//! (`TabIcon`), and a CJK double-width label (a vt100 conformance fixture).
 
 use quadraui::{
     Backend, BackendCaps, Color, Reaction, Rect, TabBar, TabBarHit, TabChrome, TabFrame, TabIcon,
@@ -137,6 +136,19 @@ impl TabBarDemo {
     fn rect(area: Rect, backend: &dyn Backend) -> Rect {
         Rect::new(area.x, area.y, area.width, backend.line_height())
     }
+
+    fn toggle_icons(&mut self) {
+        self.icons_on = !self.icons_on;
+    }
+
+    fn close_chrome_tab(&mut self, i: usize) {
+        self.chrome_action = format!("closed {}", CHROME_LABELS[i]);
+    }
+
+    fn activate_chrome_tab(&mut self, i: usize) {
+        self.chrome_active = i;
+        self.chrome_action = format!("activated {}", CHROME_LABELS[i]);
+    }
 }
 
 impl Default for TabBarDemo {
@@ -203,12 +215,11 @@ impl Demo for TabBarDemo {
                         );
                         match layout.hit_test(local_x, local_y) {
                             TabBarHit::TabClose(i) => {
-                                self.chrome_action = format!("closed {}", CHROME_LABELS[i]);
+                                self.close_chrome_tab(i);
                                 Reaction::Redraw
                             }
                             TabBarHit::Tab(i) => {
-                                self.chrome_active = i;
-                                self.chrome_action = format!("activated {}", CHROME_LABELS[i]);
+                                self.activate_chrome_tab(i);
                                 Reaction::Redraw
                             }
                             _ => Reaction::Continue,
@@ -240,7 +251,7 @@ impl Demo for TabBarDemo {
                 key: quadraui::Key::Char('i'),
                 ..
             } if variant == 1 => {
-                self.icons_on = !self.icons_on;
+                self.toggle_icons();
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
@@ -253,7 +264,17 @@ impl Demo for TabBarDemo {
 
     fn data(&self, variant: usize) -> serde_json::Value {
         match variant {
-            0 => serde_json::to_value(self.chrome_bar()).unwrap_or(serde_json::Value::Null),
+            0 => {
+                let mut value =
+                    serde_json::to_value(self.chrome_bar()).unwrap_or(serde_json::Value::Null);
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "chrome_action".into(),
+                        serde_json::Value::String(self.chrome_action.clone()),
+                    );
+                }
+                value
+            }
             1 => serde_json::to_value(self.icons_bar()).unwrap_or(serde_json::Value::Null),
             _ => serde_json::to_value(self.wide_bar()).unwrap_or(serde_json::Value::Null),
         }
@@ -273,7 +294,27 @@ mod tests {
     fn icons_toggle_flips_icons_on() {
         let mut demo = TabBarDemo::new();
         assert!(demo.icons_on);
-        demo.icons_on = !demo.icons_on;
+        demo.toggle_icons();
         assert!(!demo.icons_on);
+    }
+
+    #[test]
+    fn closing_the_active_chrome_tab_records_the_action() {
+        let mut demo = TabBarDemo::new();
+        assert_eq!(demo.chrome_action, "ready");
+        demo.close_chrome_tab(0);
+        assert_eq!(demo.chrome_action, format!("closed {}", CHROME_LABELS[0]));
+    }
+
+    #[test]
+    fn activating_a_chrome_tab_updates_both_active_index_and_action() {
+        let mut demo = TabBarDemo::new();
+        assert_eq!(demo.chrome_active, 0);
+        demo.activate_chrome_tab(1);
+        assert_eq!(demo.chrome_active, 1);
+        assert_eq!(
+            demo.chrome_action,
+            format!("activated {}", CHROME_LABELS[1])
+        );
     }
 }

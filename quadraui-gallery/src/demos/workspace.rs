@@ -2,11 +2,14 @@
 //! `quadraui/examples/common/workspace_demo.rs`.
 //!
 //! An open-N-view-one document set living **inside a panel**, not in
-//! shell chrome (quadraui#596): the controller renders its own tab strip
-//! into whatever rect the host hands it, and the host paints the active
-//! document's body wherever it likes. `p` demonstrates the preview tier
-//! (quadraui#597): each press replaces the previous preview tab in place
-//! rather than accumulating tabs.
+//! shell chrome: the controller renders its own tab strip into whatever
+//! rect the host hands it, and the host paints the active document's
+//! body wherever it likes.
+//!
+//! Two variants show the permanent-vs-preview tab tier: variant 0 opens
+//! only permanent tabs, variant 1 starts with one preview tab already
+//! open. In both, `p` demonstrates the preview tier: each press replaces
+//! the previous preview tab in place rather than accumulating tabs.
 
 use std::cell::RefCell;
 
@@ -32,27 +35,43 @@ const BACKLOG: [(&str, &str); 2] = [
 ];
 
 const BAR_ID: &str = "gallery:workspace:tabs";
+const VARIANT_COUNT: usize = 2;
+
+/// Build variant `variant`'s initial controller: variant 1 opens one
+/// extra preview tab on top of the three permanent docs variant 0 has.
+fn build_workspace(variant: usize) -> WorkspaceController {
+    let mut workspace = WorkspaceController::new(BAR_ID);
+    for (id, label) in INITIAL {
+        workspace.open(WorkspaceDoc::new(id, label));
+    }
+    if variant == 1 {
+        let (id, label) = BACKLOG[0];
+        workspace.open_preview(WorkspaceDoc::new(id, label));
+    } else {
+        workspace.activate(INITIAL[0].0);
+    }
+    workspace
+}
 
 pub struct WorkspaceDemo {
     // `RefCell` so `render(&self, …)` can call the controller's `&mut
-    // self` render — the same pattern `bottom_panel.rs` uses.
-    workspace: RefCell<WorkspaceController>,
-    next_backlog: usize,
-    next_preview_backlog: usize,
+    // self` render — each variant gets its own instance and counters so
+    // switching variants doesn't share state.
+    workspaces: [RefCell<WorkspaceController>; VARIANT_COUNT],
+    next_backlog: [usize; VARIANT_COUNT],
+    next_preview_backlog: [usize; VARIANT_COUNT],
     last_event: String,
 }
 
 impl WorkspaceDemo {
     pub fn new() -> Self {
-        let mut workspace = WorkspaceController::new(BAR_ID);
-        for (id, label) in INITIAL {
-            workspace.open(WorkspaceDoc::new(id, label));
-        }
-        workspace.activate(INITIAL[0].0);
         Self {
-            workspace: RefCell::new(workspace),
-            next_backlog: 0,
-            next_preview_backlog: 0,
+            workspaces: [
+                RefCell::new(build_workspace(0)),
+                RefCell::new(build_workspace(1)),
+            ],
+            next_backlog: [0; VARIANT_COUNT],
+            next_preview_backlog: [0, 1],
             last_event: "ready".into(),
         }
     }
@@ -80,34 +99,32 @@ impl WorkspaceDemo {
         Reaction::Redraw
     }
 
-    fn open_next_backlog_doc(&mut self) -> Reaction {
-        let Some((id, label)) = BACKLOG.get(self.next_backlog).copied() else {
+    fn open_next_backlog_doc(&mut self, variant: usize) -> Reaction {
+        let Some((id, label)) = BACKLOG.get(self.next_backlog[variant]).copied() else {
             self.last_event = "backlog exhausted".into();
             return Reaction::Redraw;
         };
-        self.next_backlog += 1;
-        let events = self
-            .workspace
+        self.next_backlog[variant] += 1;
+        let events = self.workspaces[variant]
             .borrow_mut()
             .open(WorkspaceDoc::new(id, label));
         self.record(&events)
     }
 
-    fn open_next_preview_doc(&mut self) -> Reaction {
-        let Some((id, label)) = BACKLOG.get(self.next_preview_backlog).copied() else {
+    fn open_next_preview_doc(&mut self, variant: usize) -> Reaction {
+        let Some((id, label)) = BACKLOG.get(self.next_preview_backlog[variant]).copied() else {
             self.last_event = "preview backlog exhausted".into();
             return Reaction::Redraw;
         };
-        self.next_preview_backlog += 1;
-        let events = self
-            .workspace
+        self.next_preview_backlog[variant] += 1;
+        let events = self.workspaces[variant]
             .borrow_mut()
             .open_preview(WorkspaceDoc::new(id, label));
         self.record(&events)
     }
 
-    fn promote_active(&mut self) -> Reaction {
-        let mut ws = self.workspace.borrow_mut();
+    fn promote_active(&mut self, variant: usize) -> Reaction {
+        let mut ws = self.workspaces[variant].borrow_mut();
         let Some(id) = ws.active_id().map(str::to_string) else {
             return Reaction::Continue;
         };
@@ -150,14 +167,18 @@ impl Demo for WorkspaceDemo {
         "Chrome"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Permanent tabs", "With preview tab"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let strip_h = lh;
         let strip = Rect::new(area.x, area.y, area.width, strip_h);
-        self.workspace.borrow_mut().render(backend, strip);
+        self.workspaces[variant].borrow_mut().render(backend, strip);
 
         let body_rect = Rect::new(area.x, area.y + strip_h, area.width, lh);
-        let ws = self.workspace.borrow();
+        let ws = self.workspaces[variant].borrow();
         let body = match ws.active_id() {
             Some(id) if ws.is_preview(id) => format!(" viewing: {id} (preview) "),
             Some(id) => format!(" viewing: {id} "),
@@ -182,7 +203,7 @@ impl Demo for WorkspaceDemo {
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         _backend: &mut dyn Backend,
         _area: Rect,
@@ -191,17 +212,19 @@ impl Demo for WorkspaceDemo {
             UiEvent::KeyPressed {
                 key: Key::Char('o'),
                 ..
-            } => self.open_next_backlog_doc(),
+            } => self.open_next_backlog_doc(variant),
             UiEvent::KeyPressed {
                 key: Key::Char('p'),
                 ..
-            } => self.open_next_preview_doc(),
+            } => self.open_next_preview_doc(variant),
             UiEvent::KeyPressed {
                 key: Key::Char('m'),
                 ..
-            } => self.promote_active(),
+            } => self.promote_active(variant),
             UiEvent::KeyPressed { key, modifiers, .. } => {
-                let handled = self.workspace.borrow_mut().handle_key(key, *modifiers);
+                let handled = self.workspaces[variant]
+                    .borrow_mut()
+                    .handle_key(key, *modifiers);
                 match handled {
                     Some(ev) => self.record(&[ev]),
                     None => Reaction::Continue,
@@ -210,8 +233,7 @@ impl Demo for WorkspaceDemo {
             UiEvent::MouseDown {
                 position, button, ..
             } => {
-                let events = self
-                    .workspace
+                let events = self.workspaces[variant]
                     .borrow_mut()
                     .handle_click(position.x, position.y, *button);
                 self.record(&events)
@@ -224,8 +246,8 @@ impl Demo for WorkspaceDemo {
         extract_region(SOURCE)
     }
 
-    fn data(&self, _variant: usize) -> serde_json::Value {
-        let ws = self.workspace.borrow();
+    fn data(&self, variant: usize) -> serde_json::Value {
+        let ws = self.workspaces[variant].borrow();
         serde_json::json!({
             "docs": ws.docs().iter().map(|d| &d.label).collect::<Vec<_>>(),
             "active": ws.active_id(),
@@ -246,17 +268,31 @@ mod tests {
     #[test]
     fn open_next_backlog_doc_grows_the_workspace() {
         let mut demo = WorkspaceDemo::new();
-        let before = demo.workspace.borrow().len();
-        demo.open_next_backlog_doc();
-        assert_eq!(demo.workspace.borrow().len(), before + 1);
+        let before = demo.workspaces[0].borrow().len();
+        demo.open_next_backlog_doc(0);
+        assert_eq!(demo.workspaces[0].borrow().len(), before + 1);
     }
 
     #[test]
     fn preview_doc_replaces_itself_on_repeat() {
         let mut demo = WorkspaceDemo::new();
-        let before = demo.workspace.borrow().len();
-        demo.open_next_preview_doc();
-        let after_first = demo.workspace.borrow().len();
+        let before = demo.workspaces[0].borrow().len();
+        demo.open_next_preview_doc(0);
+        let after_first = demo.workspaces[0].borrow().len();
         assert_eq!(after_first, before + 1);
+
+        // A second preview open replaces the first preview tab in place
+        // rather than accumulating a new tab.
+        demo.open_next_preview_doc(0);
+        let after_second = demo.workspaces[0].borrow().len();
+        assert_eq!(after_second, after_first);
+    }
+
+    #[test]
+    fn variant_one_starts_with_a_preview_tab_already_open() {
+        let demo = WorkspaceDemo::new();
+        let ws = demo.workspaces[1].borrow();
+        let active = ws.active_id().expect("variant 1 should have an active doc");
+        assert!(ws.is_preview(active));
     }
 }

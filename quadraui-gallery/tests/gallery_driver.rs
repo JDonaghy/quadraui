@@ -11,7 +11,7 @@
 #![cfg(feature = "tui")]
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
-use quadraui::{testing::ConformanceDriver, AppLogic};
+use quadraui::{testing::ConformanceDriver, AppLogic, Backend};
 
 use quadraui_gallery::app::{group_icon, group_panel_id, GROUPS};
 use quadraui_gallery::registry::registry;
@@ -46,6 +46,27 @@ fn click_group_zone<A: AppLogic>(driver: &mut TuiDriver<A>, index: usize) {
         .unwrap_or_else(|| panic!("no registered zone for group {index}'s activity-bar item"))
         .bounds;
     driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
+}
+
+/// Click the sidebar row at `row_in_group` (0-based, in registry order,
+/// counting only demos in the currently-active group) by computing its
+/// bounds from the registered `app-shell:sidebar-content` zone — not a
+/// `driver.find(name)` scrape, which a name that's a substring of
+/// another demo's name (e.g. "Panel" inside "Bottom Panel") can resolve
+/// to the wrong row. Mirrors `GalleryApp::render_content`'s own row
+/// layout: one `line_height()`-tall row per demo, top to bottom.
+fn click_sidebar_row<A: AppLogic>(driver: &mut TuiDriver<A>, row_in_group: usize) {
+    let id = quadraui::WidgetId::new("app-shell:sidebar-content");
+    let sb = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == id)
+        .expect("no registered zone for the sidebar content area")
+        .bounds;
+    let lh = driver.backend().line_height();
+    let y = sb.y + row_in_group as f32 * lh + lh / 2.0;
+    driver.click(sb.x + sb.width / 2.0, y);
 }
 
 /// Click the Overlays activity-bar icon, click the Toast sidebar row,
@@ -220,6 +241,12 @@ fn keying_a_demo_widget_appends_to_the_event_log() {
 /// `registry::registry`.
 #[test]
 fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
+    // Rows within a group paint in registry order (`GalleryApp::
+    // demos_in_active_group` is a plain filter, order-preserving), so
+    // this running per-group counter reproduces the exact 0-based row
+    // index `click_sidebar_row` needs without a second `registry()` call.
+    let mut row_in_group: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
     for demo in registry() {
         let source = demo.source();
         assert!(
@@ -237,7 +264,11 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
         // with a group's own rendered content by accident of timing (see
         // that constant's doc), and this test is exactly the one that
         // will one day register a demo into `GROUPS[0]` and make a
-        // digit-scraping click land on the wrong element.
+        // digit-scraping click land on the wrong element. The sidebar
+        // row is selected the same way — by its position in the sidebar
+        // content area, not a `find(name)` scrape, since one demo's name
+        // can be a substring of another's (e.g. "Panel" inside "Bottom
+        // Panel").
         let config = GalleryApp::config();
         let mut driver = driver_with_shell(GalleryApp::new(), config, 100, 32);
         let group_idx = GROUPS
@@ -251,9 +282,9 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
                 )
             });
         click_group_zone(&mut driver, group_idx);
-        if let Some((x, y)) = driver.find(demo.name()) {
-            driver.click(x, y);
-        }
+        let row = row_in_group.entry(demo.group()).or_insert(0);
+        click_sidebar_row(&mut driver, *row);
+        *row += 1;
         // Render already happened inside `click` (it redraws on every
         // dispatched event) — reaching here without a panic is the
         // assertion. `screen()` forces one more render for good measure.
@@ -315,7 +346,9 @@ fn toolbar_filter_click_updates_the_hint_line() {
 }
 
 /// Clicking the second Activity Bar icon activates it — visible on the
-/// Data tab as the newly-active item's `is_active: true`.
+/// Data tab as the `last_action` field recording the newly-activated item.
+/// Before the click `last_action` is `"ready"`, so this cannot pass without
+/// the click actually driving `ActivityBarDemo::activate`.
 #[test]
 fn activity_bar_click_activates_the_item() {
     // Tall enough that the Data tab's full `ActivityBar` JSON (3 items,
@@ -324,6 +357,16 @@ fn activity_bar_click_activates_the_item() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 60);
     select_chrome_demo(&mut driver, "Activity Bar");
 
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("\"ready\""),
+        "last_action should start as \"ready\" before any click:\n{}",
+        driver.screen()
+    );
+
+    let (gx, gy) = driver.find("Demo").expect("Demo tab label should paint");
+    driver.click(gx, gy);
     let (x, y) = driver.find("G").unwrap_or_else(|| {
         panic!(
             "'G' (Source Control icon) should paint:\n{}",
@@ -336,19 +379,31 @@ fn activity_bar_click_activates_the_item() {
     driver.click(dx, dy);
     let screen = driver.screen();
     assert!(
-        screen.contains("Source Control") && screen.contains("is_active"),
-        "Data tab should show the activated item:\n{screen}"
+        screen.contains("activated: Source Control"),
+        "Data tab should show the activated item in last_action:\n{screen}"
     );
 }
 
 /// Clicking the "lib.rs" tab on the Tab Bar "Chrome frame" variant
-/// activates it — visible on the Data tab as `is_active: true`.
+/// activates it — visible on the Data tab as `chrome_action` recording the
+/// activation. Before the click `chrome_action` is `"ready"`, so this
+/// cannot pass without the click actually driving `TabBarDemo::activate_chrome_tab`.
 #[test]
 fn tab_bar_chrome_click_activates_the_clicked_tab() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
     select_chrome_demo(&mut driver, "Tab Bar");
     assert!(driver.screen_contains("main.rs"));
 
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("\"ready\""),
+        "chrome_action should start as \"ready\" before any click:\n{}",
+        driver.screen()
+    );
+
+    let (cx, cy) = driver.find("Demo").expect("Demo tab label should paint");
+    driver.click(cx, cy);
     let (x, y) = driver
         .find("lib.rs")
         .unwrap_or_else(|| panic!("lib.rs tab should paint:\n{}", driver.screen()));
@@ -358,8 +413,8 @@ fn tab_bar_chrome_click_activates_the_clicked_tab() {
     driver.click(dx, dy);
     let screen = driver.screen();
     assert!(
-        screen.contains("lib.rs") && screen.contains("is_active"),
-        "Data tab should show lib.rs as the active tab:\n{screen}"
+        screen.contains("activated lib.rs"),
+        "Data tab should show lib.rs as the activated tab in chrome_action:\n{screen}"
     );
 }
 

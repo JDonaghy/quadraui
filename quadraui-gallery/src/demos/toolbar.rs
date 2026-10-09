@@ -34,12 +34,16 @@ impl ToolbarDemo {
         }
     }
 
-    fn toolbar(&self) -> Toolbar {
+    /// `variant == 1` drops button labels and keeps only icon + tooltip —
+    /// the compact style a space-constrained host toolbar would use.
+    fn toolbar(&self, variant: usize) -> Toolbar {
+        let labeled = variant == 0;
+        let label = |text: &str| if labeled { text.into() } else { String::new() };
         Toolbar::new(WidgetId::new("gallery:toolbar"))
             .with_buttons(vec![
                 ToolbarButton::Action {
                     id: WidgetId::new("gallery:toolbar:continue"),
-                    label: "Continue".into(),
+                    label: label("Continue"),
                     icon: Some("▶".into()),
                     key_hint: Some("1".into()),
                     enabled: !self.running,
@@ -48,7 +52,7 @@ impl ToolbarDemo {
                 },
                 ToolbarButton::Action {
                     id: WidgetId::new("gallery:toolbar:pause"),
-                    label: "Pause".into(),
+                    label: label("Pause"),
                     icon: Some("⏸".into()),
                     key_hint: Some("2".into()),
                     enabled: self.running,
@@ -58,7 +62,7 @@ impl ToolbarDemo {
                 ToolbarButton::Separator,
                 ToolbarButton::Action {
                     id: WidgetId::new("gallery:toolbar:filter"),
-                    label: "Filter".into(),
+                    label: label("Filter"),
                     icon: Some("⚙".into()),
                     key_hint: Some("3".into()),
                     enabled: true,
@@ -67,7 +71,7 @@ impl ToolbarDemo {
                 },
                 ToolbarButton::Action {
                     id: WidgetId::new("gallery:toolbar:debug"),
-                    label: "Debug".into(),
+                    label: label("Debug"),
                     icon: None,
                     key_hint: None,
                     enabled: false,
@@ -90,12 +94,11 @@ impl ToolbarDemo {
             .with_focused_index(self.focused_index)
     }
 
-    fn toolbar_rect(area: Rect) -> Rect {
-        Rect::new(area.x, area.y, area.width, area.height)
+    fn toolbar_rect(area: Rect, backend: &dyn Backend) -> Rect {
+        Rect::new(area.x, area.y, area.width, backend.line_height())
     }
 
-    fn hint_bar(&self, backend: &dyn Backend) -> StatusBar {
-        let _ = backend;
+    fn hint_bar(&self) -> StatusBar {
         StatusBar {
             id: WidgetId::new("gallery:toolbar:hint"),
             left_segments: vec![StatusBarSegment {
@@ -130,8 +133,8 @@ impl ToolbarDemo {
         }
     }
 
-    fn focusable_indices(&self) -> Vec<usize> {
-        self.toolbar()
+    fn focusable_indices(&self, variant: usize) -> Vec<usize> {
+        self.toolbar(variant)
             .buttons
             .into_iter()
             .enumerate()
@@ -142,8 +145,8 @@ impl ToolbarDemo {
             .collect()
     }
 
-    fn advance_focus(&mut self, forward: bool) {
-        let candidates = self.focusable_indices();
+    fn advance_focus(&mut self, variant: usize, forward: bool) {
+        let candidates = self.focusable_indices(variant);
         if candidates.is_empty() {
             return;
         }
@@ -169,11 +172,11 @@ impl ToolbarDemo {
         });
     }
 
-    fn activate_focused(&mut self) -> bool {
+    fn activate_focused(&mut self, variant: usize) -> bool {
         let Some(idx) = self.focused_index else {
             return false;
         };
-        let bar = self.toolbar();
+        let bar = self.toolbar(variant);
         if let Some(ToolbarButton::Action { id, enabled, .. }) = bar.buttons.get(idx) {
             if *enabled {
                 let id = id.clone();
@@ -200,23 +203,27 @@ impl Demo for ToolbarDemo {
         "Chrome"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Labeled", "Icon-only"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
-        let rect = Self::toolbar_rect(area);
-        let bar = self.toolbar();
+        let rect = Self::toolbar_rect(area, backend);
+        let bar = self.toolbar(variant);
         let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
 
         let hint_rect = Rect::new(area.x, area.y + lh, area.width, lh);
         let _ = backend.draw_status_bar_interactive(
             hint_rect,
-            &self.hint_bar(backend),
+            &self.hint_bar(),
             &InteractionState::new(),
         );
     }
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
         area: Rect,
@@ -226,21 +233,21 @@ impl Demo for ToolbarDemo {
                 key: Key::Named(NamedKey::Tab),
                 ..
             } => {
-                self.advance_focus(true);
+                self.advance_focus(variant, true);
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::BackTab),
                 ..
             } => {
-                self.advance_focus(false);
+                self.advance_focus(variant, false);
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Enter) | Key::Char(' '),
                 ..
             } => {
-                if self.activate_focused() {
+                if self.activate_focused(variant) {
                     Reaction::Redraw
                 } else {
                     Reaction::Continue
@@ -255,7 +262,7 @@ impl Demo for ToolbarDemo {
                     '2' => "gallery:toolbar:pause",
                     _ => "gallery:toolbar:filter",
                 };
-                let bar = self.toolbar();
+                let bar = self.toolbar(variant);
                 let allowed = bar.buttons.iter().any(|btn| {
                     matches!(btn, ToolbarButton::Action { id: bid, enabled, .. }
                         if bid.as_str() == id && *enabled)
@@ -267,8 +274,8 @@ impl Demo for ToolbarDemo {
                 Reaction::Continue
             }
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
-                let rect = Self::toolbar_rect(area);
-                let bar = self.toolbar();
+                let rect = Self::toolbar_rect(area, backend);
+                let bar = self.toolbar(variant);
                 let layout = backend.toolbar_layout(rect, &bar);
                 let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
                     ToolbarHit::Button(id) => Some(id),
@@ -301,8 +308,8 @@ impl Demo for ToolbarDemo {
         extract_region(SOURCE)
     }
 
-    fn data(&self, _variant: usize) -> serde_json::Value {
-        serde_json::to_value(self.toolbar()).unwrap_or(serde_json::Value::Null)
+    fn data(&self, variant: usize) -> serde_json::Value {
+        serde_json::to_value(self.toolbar(variant)).unwrap_or(serde_json::Value::Null)
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
@@ -328,7 +335,7 @@ mod tests {
         let mut demo = ToolbarDemo::new();
         // `running` starts `true`, so "Continue" (index 0) is disabled —
         // the first focus stop must be "Pause" (index 1), not index 0.
-        demo.advance_focus(true);
+        demo.advance_focus(0, true);
         assert_eq!(demo.focused_index, Some(1));
     }
 }

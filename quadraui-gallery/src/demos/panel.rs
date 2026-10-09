@@ -20,41 +20,77 @@ const CONTENT_LINES: &[&str] = &[
     "How vexingly quick daft zebras jump!",
 ];
 
+const VARIANT_COUNT: usize = 3;
+
 pub struct PanelDemo {
-    collapsed: bool,
+    // Per-variant collapsed state: variant 0 starts expanded, variant 1
+    // starts collapsed, variant 2 (no maximize action) stays expanded.
+    collapsed: [bool; VARIANT_COUNT],
     last_message: String,
 }
 
 impl PanelDemo {
     pub fn new() -> Self {
         Self {
-            collapsed: false,
+            collapsed: [false, true, false],
             last_message: "Click the title bar or the actions".into(),
         }
     }
 
-    fn panel(&self) -> Panel {
+    /// Variant 2 drops the accent colour and the maximize action — a
+    /// minimal panel with only a close button, the shape a transient
+    /// popover host would use.
+    fn panel(&self, variant: usize) -> Panel {
+        let collapsed = self.collapsed[variant];
+        let mut actions = vec![PanelAction {
+            id: WidgetId::new("gallery:panel:close"),
+            icon: "×".into(),
+            tooltip: "Close".into(),
+            is_active: false,
+        }];
+        if variant != 2 {
+            actions.push(PanelAction {
+                id: WidgetId::new("gallery:panel:maximize"),
+                icon: if collapsed { "+" } else { "□" }.into(),
+                tooltip: if collapsed { "Expand" } else { "Maximize" }.into(),
+                is_active: collapsed,
+            });
+        }
         Panel {
             id: WidgetId::new("gallery:panel"),
             title: Some(StyledText {
                 spans: vec![StyledSpan::plain("Demo Panel")],
             }),
-            actions: vec![
-                PanelAction {
-                    id: WidgetId::new("gallery:panel:close"),
-                    icon: "×".into(),
-                    tooltip: "Close".into(),
-                    is_active: false,
-                },
-                PanelAction {
-                    id: WidgetId::new("gallery:panel:maximize"),
-                    icon: if self.collapsed { "+" } else { "□" }.into(),
-                    tooltip: if self.collapsed { "Expand" } else { "Maximize" }.into(),
-                    is_active: self.collapsed,
-                },
-            ],
-            accent: Some(Color::rgb(40, 80, 120)),
-            collapsed: self.collapsed,
+            actions,
+            accent: if variant == 2 {
+                None
+            } else {
+                Some(Color::rgb(40, 80, 120))
+            },
+            collapsed,
+        }
+    }
+
+    fn dispatch_action(&mut self, variant: usize, hit: PanelHit) -> bool {
+        match hit {
+            PanelHit::Action(id) if id.as_str() == "gallery:panel:close" => {
+                self.last_message = "Close clicked".into();
+                true
+            }
+            PanelHit::Action(id) if id.as_str() == "gallery:panel:maximize" => {
+                self.collapsed[variant] = !self.collapsed[variant];
+                self.last_message = if self.collapsed[variant] {
+                    "Collapsed".into()
+                } else {
+                    "Expanded".into()
+                };
+                true
+            }
+            PanelHit::TitleBar(_) => {
+                self.last_message = "Title bar clicked".into();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -88,10 +124,14 @@ impl Demo for PanelDemo {
         "Chrome"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Expanded", "Collapsed", "No accent, close only"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-        let panel = self.panel();
+        let panel = self.panel(variant);
         let layout = backend.draw_panel(panel_rect, &panel);
 
         let cb = layout.content_bounds;
@@ -128,7 +168,7 @@ impl Demo for PanelDemo {
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
         area: Rect,
@@ -137,27 +177,13 @@ impl Demo for PanelDemo {
             UiEvent::MouseDown { position, .. } => {
                 let lh = backend.line_height();
                 let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                let panel = self.panel();
+                let panel = self.panel(variant);
                 let layout = backend.panel_layout(panel_rect, &panel);
-                match layout.hit_test(position.x, position.y) {
-                    PanelHit::Action(id) if id.as_str() == "gallery:panel:close" => {
-                        self.last_message = "Close clicked".into();
-                        Reaction::Redraw
-                    }
-                    PanelHit::Action(id) if id.as_str() == "gallery:panel:maximize" => {
-                        self.collapsed = !self.collapsed;
-                        self.last_message = if self.collapsed {
-                            "Collapsed".into()
-                        } else {
-                            "Expanded".into()
-                        };
-                        Reaction::Redraw
-                    }
-                    PanelHit::TitleBar(_) => {
-                        self.last_message = "Title bar clicked".into();
-                        Reaction::Redraw
-                    }
-                    _ => Reaction::Continue,
+                let hit = layout.hit_test(position.x, position.y);
+                if self.dispatch_action(variant, hit) {
+                    Reaction::Redraw
+                } else {
+                    Reaction::Continue
                 }
             }
             _ => Reaction::Continue,
@@ -168,8 +194,8 @@ impl Demo for PanelDemo {
         extract_region(SOURCE)
     }
 
-    fn data(&self, _variant: usize) -> serde_json::Value {
-        serde_json::to_value(self.panel()).unwrap_or(serde_json::Value::Null)
+    fn data(&self, variant: usize) -> serde_json::Value {
+        serde_json::to_value(self.panel(variant)).unwrap_or(serde_json::Value::Null)
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
@@ -185,8 +211,22 @@ mod tests {
     #[test]
     fn maximize_action_toggles_collapsed() {
         let mut demo = PanelDemo::new();
-        assert!(!demo.collapsed);
-        demo.collapsed = true;
-        assert!(demo.panel().collapsed);
+        assert!(!demo.panel(0).collapsed);
+        let maximize = WidgetId::new("gallery:panel:maximize");
+        assert!(demo.dispatch_action(0, PanelHit::Action(maximize.clone())));
+        assert!(demo.panel(0).collapsed);
+        assert!(demo.dispatch_action(0, PanelHit::Action(maximize)));
+        assert!(!demo.panel(0).collapsed);
+    }
+
+    #[test]
+    fn variant_two_has_no_maximize_action() {
+        let demo = PanelDemo::new();
+        let panel = demo.panel(2);
+        assert!(panel.accent.is_none());
+        assert!(!panel
+            .actions
+            .iter()
+            .any(|a| a.id.as_str() == "gallery:panel:maximize"));
     }
 }

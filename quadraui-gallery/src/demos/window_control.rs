@@ -41,7 +41,7 @@ impl WindowControlDemo {
         }
     }
 
-    fn toolbar(&self) -> Toolbar {
+    fn toolbar(&self, variant: usize) -> Toolbar {
         let btn = |id: &str, label: &str| ToolbarButton::Action {
             id: WidgetId::new(id),
             label: label.into(),
@@ -51,14 +51,25 @@ impl WindowControlDemo {
             is_active: false,
             tooltip: label.into(),
         };
-        Toolbar::new(WidgetId::new("gallery:window-control")).with_buttons(vec![
-            btn("gallery:wc:title", "Set Title"),
-            btn("gallery:wc:fullscreen", "Fullscreen"),
-            btn("gallery:wc:always-on-top", "Always-on-top"),
-            btn("gallery:wc:minimize", "Minimize"),
-            btn("gallery:wc:restore", "Restore"),
-            btn("gallery:wc:center", "Center"),
-        ])
+        let buttons = if variant == 0 {
+            vec![
+                btn("gallery:wc:title", "Set Title"),
+                btn("gallery:wc:fullscreen", "Fullscreen"),
+                btn("gallery:wc:always-on-top", "Always-on-top"),
+                btn("gallery:wc:minimize", "Minimize"),
+                btn("gallery:wc:restore", "Restore"),
+                btn("gallery:wc:center", "Center"),
+            ]
+        } else {
+            // A smaller, realistic toolbar — the subset most apps actually
+            // expose, without the window-manager-only Minimize/Center pair.
+            vec![
+                btn("gallery:wc:title", "Set Title"),
+                btn("gallery:wc:fullscreen", "Fullscreen"),
+                btn("gallery:wc:restore", "Restore"),
+            ]
+        };
+        Toolbar::new(WidgetId::new("gallery:window-control")).with_buttons(buttons)
     }
 
     fn status_bar(&self) -> StatusBar {
@@ -146,11 +157,18 @@ impl Demo for WindowControlDemo {
         "Chrome"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Full toolbar", "Common subset"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        let _ =
-            backend.draw_toolbar_interactive(bar_rect, &self.toolbar(), &InteractionState::new());
+        let _ = backend.draw_toolbar_interactive(
+            bar_rect,
+            &self.toolbar(variant),
+            &InteractionState::new(),
+        );
 
         let status_rect = Rect::new(area.x, area.y + lh, area.width, lh);
         let _ = backend.draw_status_bar_interactive(
@@ -162,7 +180,7 @@ impl Demo for WindowControlDemo {
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
         area: Rect,
@@ -171,7 +189,7 @@ impl Demo for WindowControlDemo {
             let lh = backend.line_height();
             let bar_rect = Rect::new(area.x, area.y, area.width, lh);
             if position.y >= bar_rect.y && position.y < bar_rect.y + bar_rect.height {
-                let bar = self.toolbar();
+                let bar = self.toolbar(variant);
                 let layout = backend.toolbar_layout(bar_rect, &bar);
                 if let ToolbarHit::Button(id) = layout.hit_test(position.x, position.y) {
                     self.dispatch(&id, backend);
@@ -195,20 +213,16 @@ impl Demo for WindowControlDemo {
     }
 
     fn caps_note(&self, _variant: usize, caps: &BackendCaps) -> Option<String> {
-        // `window_control` acts on a real OS toplevel and has no dedicated
-        // `BackendCaps` flag (it's in `tests/conformance.rs`'s ungated
-        // caps, not the gated matrix) — the honest signal is each
-        // button's own `ServiceResult`, shown live in the status line
-        // below rather than summarised here. `window_chrome` is the
-        // closest *gated* relative (CSD drag/resize/maximize), so note
-        // it when absent since the two tend to travel together.
-        if caps.window_chrome {
+        // `BackendCaps::window_control` is the honest signal for whether
+        // `Backend::window()` returns `Some` at all; each button's own
+        // `ServiceResult` (shown live in the status line below) then
+        // covers which individual operations that toplevel supports.
+        if caps.window_control {
             None
         } else {
             Some(
-                "This backend has no client-side window chrome \
-                 (BackendCaps::window_chrome is false) — expect most of \
-                 these buttons to report Unsupported too."
+                "This backend has no window handle (BackendCaps::window_control \
+                 is false) — expect every button here to report Unsupported."
                     .into(),
             )
         }

@@ -3,8 +3,8 @@
 //!
 //! Two variants show the two ways an active item can be highlighted:
 //! a left-edge accent line (`ActivityBar::active_accent`), or a VS-Code-style
-//! soft row fill requested through `Backend::draw_activity_bar_with_style`
-//! (quadraui#658) — never a field on `ActivityBar` itself.
+//! soft row fill requested through `Backend::draw_activity_bar_with_style` —
+//! never a field on `ActivityBar` itself.
 
 use quadraui::{
     ActivityBar, ActivityBarStyle, ActivityItem, Backend, BackendCaps, Color, Reaction, Rect,
@@ -69,10 +69,6 @@ impl ActivityBarDemo {
         ActivityBarStyle::new().with_active_bg(Color::rgb(49, 50, 51))
     }
 
-    fn bar_rect(&self, area: Rect) -> Rect {
-        Rect::new(area.x, area.y, area.width, area.height)
-    }
-
     fn activate(&mut self, variant: usize, idx: usize) {
         self.active[variant] = idx;
         self.last_action = format!("activated: {}", LABELS[idx]);
@@ -99,7 +95,7 @@ impl Demo for ActivityBarDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let rect = self.bar_rect(area);
+        let rect = area;
         let bar = self.bar(variant);
         if variant == 0 {
             let _ = backend.draw_activity_bar(rect, &bar, None);
@@ -117,7 +113,7 @@ impl Demo for ActivityBarDemo {
     ) -> Reaction {
         match event {
             UiEvent::MouseDown { position, .. } => {
-                let rect = self.bar_rect(area);
+                let rect = area;
                 if position.x < rect.x
                     || position.x >= rect.x + rect.width
                     || position.y < rect.y
@@ -149,7 +145,14 @@ impl Demo for ActivityBarDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        serde_json::to_value(self.bar(variant)).unwrap_or(serde_json::Value::Null)
+        let mut value = serde_json::to_value(self.bar(variant)).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "last_action".into(),
+                serde_json::Value::String(self.last_action.clone()),
+            );
+        }
+        value
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {

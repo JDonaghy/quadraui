@@ -30,7 +30,7 @@ use crate::Demo;
 pub fn registry() -> Vec<Box<dyn Demo>> {
     vec![
         Box::new(ToastDemo::new()),
-        // Layout & chrome (issue #1343).
+        // Layout & chrome.
         Box::new(ActivityBarDemo::new()),
         Box::new(MenuBarDemo::new()),
         Box::new(ToolbarDemo::new()),
