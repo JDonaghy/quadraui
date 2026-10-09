@@ -12,9 +12,11 @@ use crate::demos::bottom_panel::BottomPanelDemo;
 use crate::demos::canvas::CanvasDemo;
 use crate::demos::caret_shape::CaretShapeDemo;
 use crate::demos::chart::ChartDemo;
+use crate::demos::chat::ChatDemo;
 use crate::demos::command_line::CommandLineDemo;
 use crate::demos::data_table::DataTableDemo;
 use crate::demos::diff_view::DiffViewDemo;
+use crate::demos::editor::EditorDemo;
 use crate::demos::file_picker::FilePickerDemo;
 use crate::demos::find_replace::FindReplaceDemo;
 use crate::demos::float::FloatDemo;
@@ -22,6 +24,7 @@ use crate::demos::focus::FocusDemo;
 use crate::demos::form::FormDemo;
 use crate::demos::image::ImageDemo;
 use crate::demos::indicators::IndicatorsDemo;
+use crate::demos::markdown::MarkdownDemo;
 use crate::demos::menu_bar::MenuBarDemo;
 use crate::demos::message_list::MessageListDemo;
 use crate::demos::minimap::MinimapDemo;
@@ -33,6 +36,9 @@ use crate::demos::sidebar::SidebarDemo;
 use crate::demos::split::SplitDemo;
 use crate::demos::status_bar::StatusBarDemo;
 use crate::demos::tab_bar::TabBarDemo;
+#[cfg(feature = "terminal")]
+use crate::demos::terminal::TerminalDemo;
+use crate::demos::text_display::TextDisplayDemo;
 use crate::demos::text_input::TextInputDemo;
 use crate::demos::text_selection::TextSelectionDemo;
 use crate::demos::toast::ToastDemo;
@@ -49,7 +55,8 @@ use crate::Demo;
 /// `tests/gallery_driver.rs` exercises every entry this returns, so a
 /// newly-appended demo gets smoke coverage for free.
 pub fn registry() -> Vec<Box<dyn Demo>> {
-    vec![
+    #[allow(unused_mut)]
+    let mut demos: Vec<Box<dyn Demo>> = vec![
         Box::new(ToastDemo::new()),
         // Layout & chrome.
         Box::new(ActivityBarDemo::new()),
@@ -74,6 +81,11 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(FocusDemo::new()),
         Box::new(PaletteDemo::new()),
         Box::new(FilePickerDemo::new()),
+        // Text & content.
+        Box::new(MarkdownDemo::new()),
+        Box::new(TextDisplayDemo::new()),
+        Box::new(EditorDemo::new()),
+        Box::new(ChatDemo::new()),
         // Data views.
         Box::new(DataTableDemo::new()),
         Box::new(TreeDemo::new()),
@@ -87,5 +99,12 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(ImageDemo::new()),
         Box::new(SearchPanelDemo::new()),
         Box::new(MessageListDemo::new()),
-    ]
+    ];
+    // Spawns a real PTY (quadraui::terminal_engine) — only registered
+    // when the `terminal` feature is enabled, so a plain `tui`/`gtk`
+    // gallery build never tries to spawn a shell it has no feature
+    // support for.
+    #[cfg(feature = "terminal")]
+    demos.push(Box::new(TerminalDemo::new()));
+    demos
 }
