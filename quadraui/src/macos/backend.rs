@@ -297,8 +297,12 @@ pub struct MacBackend {
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     /// (issue #683). Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
-    /// [`Backend::set_nerd_fonts`]; defaults to `false` — see that
-    /// method's doc for why every backend now agrees on this default.
+    /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
+    /// see `GtkBackend`'s matching field doc for why a
+    /// GUI backend with the bundled codicon font always available
+    /// carries none of the "terminal with no Nerd Font installed" risk
+    /// [`Backend::set_nerd_fonts`]'s own doc gives for keeping TUI's
+    /// default at `false`.
     nerd_fonts_enabled: bool,
     /// Single owner of keyboard focus (issue #830) — see
     /// [`crate::focus`]'s module doc. Mutated only by the shared
@@ -592,10 +596,23 @@ impl MacBackend {
     /// the viewport each frame via [`Backend::begin_frame`]; apps
     /// install a font via [`Self::set_current_font`] in `setup()`.
     pub fn new() -> Self {
+        // Self-register the bundled codicon font unconditionally
+        // before anything paints — see
+        // `crate::gtk::app_font::ensure_codicon_registered`'s matching
+        // call for the full "degrade, don't fail" rationale, which
+        // applies identically here.
+        super::text::ensure_codicon_registered();
+
         // Seed chrome with the CoreText system UI font (issue #963) so
         // chrome paints correctly before any `set_ui_font` call — see
-        // `chrome_font`'s field doc.
-        let chrome_font = super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT);
+        // `chrome_font`'s field doc. Wrapped with the bundled codicon
+        // cascade so built-in chrome glyphs (tab dirty/close) resolve
+        // from the very first frame, with no app call required — see
+        // `font_with_builtin_fallback`'s own doc.
+        let chrome_font = super::text::font_with_builtin_fallback(
+            &super::text::system_ui_font(DEFAULT_UI_FONT_SIZE_PT),
+            None,
+        );
         let chrome_metrics = super::text::font_metrics(&chrome_font);
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
@@ -630,7 +647,7 @@ impl MacBackend {
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             window: None,
             pending_window_press: WindowDragArm::new(),
-            nerd_fonts_enabled: false,
+            nerd_fonts_enabled: true,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             wake_callback: Arc::new(std::sync::OnceLock::new()),
@@ -726,10 +743,16 @@ impl MacBackend {
     /// can land in either order: whichever runs second re-applies the
     /// other's effect instead of silently dropping it.
     pub fn set_current_font(&mut self, font: CTFont) {
-        let font = match &self.nerd_font_fallback_family {
-            Some(family) => super::text::font_with_fallback(&font, family),
-            None => font,
-        };
+        // `font_with_builtin_fallback` always appends the
+        // bundled codicon family, plus `nerd_font_fallback_family`
+        // ahead of it when the app has set one — see that fn's own doc
+        // for why this must not stay conditional on
+        // `nerd_font_fallback_family.is_some()` the way `font_with_fallback`
+        // alone would leave it.
+        let font = super::text::font_with_builtin_fallback(
+            &font,
+            self.nerd_font_fallback_family.as_deref(),
+        );
         let metrics = super::text::font_metrics(&font);
         self.current_line_height = metrics.line_height;
         self.current_char_width = metrics.char_width;
@@ -754,10 +777,13 @@ impl MacBackend {
     /// which has applied `with_nerd_font_fallback` at every #624 call
     /// site since #929.
     pub fn set_chrome_font(&mut self, font: CTFont) {
-        let font = match &self.nerd_font_fallback_family {
-            Some(family) => super::text::font_with_fallback(&font, family),
-            None => font,
-        };
+        // See `set_current_font`'s matching comment —
+        // `font_with_builtin_fallback` always carries the bundled
+        // codicon cascade entry, unlike `font_with_fallback` alone.
+        let font = super::text::font_with_builtin_fallback(
+            &font,
+            self.nerd_font_fallback_family.as_deref(),
+        );
         let metrics = super::text::font_metrics(&font);
         self.chrome_line_height = metrics.line_height;
         self.chrome_char_width = metrics.char_width;
@@ -1301,10 +1327,15 @@ impl Backend for MacBackend {
     /// editor ones now).
     fn set_nerd_font_fallback(&mut self, family: &str) {
         self.nerd_font_fallback_family = Some(family.to_string());
+        // `font_with_builtin_fallback`, not `font_with_fallback`
+        // directly — a cascade list is a full replacement, not an
+        // append, so rebuilding it from `family` alone here would drop
+        // the bundled codicon entry `set_current_font`/`set_chrome_font`
+        // already put on these two fonts.
         if let Some(font) = self.current_font.take() {
-            self.current_font = Some(super::text::font_with_fallback(&font, family));
+            self.current_font = Some(super::text::font_with_builtin_fallback(&font, Some(family)));
         }
-        self.chrome_font = super::text::font_with_fallback(&self.chrome_font, family);
+        self.chrome_font = super::text::font_with_builtin_fallback(&self.chrome_font, Some(family));
     }
 
     /// Maps onto the existing [`Self::set_current_font`] machinery

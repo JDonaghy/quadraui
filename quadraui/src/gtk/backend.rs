@@ -275,6 +275,16 @@ pub struct GtkBackend {
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
     /// its own toggle. Mirrors the `TuiBackend` field of the same
     /// name (#268).
+    ///
+    /// Defaults to `true` on this backend — unlike TUI,
+    /// where a wrong `true` paints tofu for a terminal with no Nerd
+    /// Font installed (see [`crate::Backend::set_nerd_fonts`]'s own
+    /// doc for that risk calculus), a GTK host always has the bundled
+    /// codicon font available (`GtkBackend::new` self-registers it
+    /// unconditionally), so an app's own [`crate::Icon::glyph`] built
+    /// from a codicon codepoint paints correctly with no app opt-in.
+    /// An app whose own glyph choice assumes a *different*, uninstalled
+    /// icon font can still call `set_nerd_fonts(false)` to opt back out.
     nerd_fonts_enabled: bool,
     /// Pango font description string for UI chrome (sans-serif text
     /// in title/buttons of `Dialog`, etc). Format is
@@ -550,6 +560,18 @@ impl GtkBackend {
     /// `Rc<RefCell<GtkBackend>>` to every widget callback that needs
     /// access.
     pub fn new() -> Self {
+        // Self-register the bundled codicon font unconditionally,
+        // before anything paints — every chrome rasteriser that reaches
+        // for a codicon glyph assumes it is already resolvable via
+        // `crate::gtk::with_nerd_font_fallback`'s family list. Ignoring a
+        // `false` return here is deliberate: a registration failure
+        // leaves the Nerd-Font fallback chain exactly as it would be
+        // without this call, so the worst case is a missing codicon
+        // falling through to tofu rather than this constructor failing
+        // outright (the same "degrade, don't fail" posture every other
+        // optional font registration in this crate takes).
+        super::app_font::ensure_codicon_registered();
+
         let events = Rc::new(std::cell::RefCell::new(VecDeque::new()));
         // #955: share the same queue with `GtkPlatformServices` so a
         // notification-action activation can push
@@ -582,7 +604,7 @@ impl GtkBackend {
             // `list_char_width()`, same posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
-            nerd_fonts_enabled: false,
+            nerd_fonts_enabled: true,
             ui_font: "Sans 11".to_string(),
             editor_font_family: "Monospace".to_string(),
             editor_font_size_pt: 11.0,

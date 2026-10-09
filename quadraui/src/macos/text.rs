@@ -200,6 +200,50 @@ pub(crate) fn font_with_fallback(font: &CTFont, fallback_family: &str) -> CTFont
     unsafe { CTFont::wrap_under_create_rule(font_ref) }
 }
 
+/// [`font_with_fallback`]'s always-on counterpart: copy
+/// `font` with [`crate::codicon::FONT_FAMILY`] appended to its Core Text
+/// cascade list — ahead of it, `app_fallback_family` too, when the app
+/// has configured one via `Backend::set_nerd_font_fallback`.
+///
+/// `MacBackend::set_current_font`/`set_chrome_font`/
+/// `set_nerd_font_fallback` call this instead of [`font_with_fallback`]
+/// directly, so every built-in chrome glyph this crate paints through
+/// `current_font`/`chrome_font` (tab dirty/close) resolves its codicon
+/// codepoint whether or not the app has ever called
+/// `set_nerd_font_fallback` — unlike [`font_with_fallback`], which is
+/// only ever reached from behind `self.nerd_font_fallback_family.is_some()`
+/// and so never runs at all for an app that hasn't opted into its own
+/// Nerd-Font fallback. `codicon::FONT_FAMILY`'s own doc explains why
+/// appending it after `app_fallback_family` can never shadow an
+/// app-supplied icon glyph: the two PUA ranges are disjoint by
+/// construction.
+pub(crate) fn font_with_builtin_fallback(
+    font: &CTFont,
+    app_fallback_family: Option<&str>,
+) -> CTFont {
+    let cascade_key = unsafe { CFString::wrap_under_get_rule(kCTFontCascadeListAttribute) };
+    let mut entries: Vec<CTFontDescriptor> = Vec::with_capacity(2);
+    if let Some(family) = app_fallback_family {
+        entries.push(cascade_descriptor_for(family));
+    }
+    entries.push(cascade_descriptor_for(crate::codicon::FONT_FAMILY));
+    let cascade_list = CFArray::from_CFTypes(&entries);
+    let attrs = CFDictionary::from_CFType_pairs(&[(cascade_key, cascade_list.as_CFType())]);
+    let desc = font_descriptor::new_from_attributes(&attrs);
+    // SAFETY: same contract as [`font_with_fallback`]'s identical call
+    // just above — `font`/`desc` are both live for this synchronous
+    // call, `0.0`/`null()` mean "keep the original size, no transform".
+    let font_ref = unsafe {
+        CTFontCreateCopyWithAttributes(
+            font.as_concrete_TypeRef(),
+            0.0,
+            std::ptr::null(),
+            desc.as_concrete_TypeRef(),
+        )
+    };
+    unsafe { CTFont::wrap_under_create_rule(font_ref) }
+}
+
 /// Apple's system "no font anywhere covers this" placeholder carries only
 /// a handful of generic category-box glyphs — one shared glyph per
 /// Unicode block, rather than per character. Measured directly on a real
@@ -427,6 +471,21 @@ pub fn register_font_from_memory(bytes: &[u8]) -> Option<String> {
     }
 
     Some(family)
+}
+
+/// Register [`crate::codicon::FONT_BYTES`] exactly once per process via
+/// [`register_font_from_memory`] — mirrors
+/// `crate::gtk::app_font::ensure_codicon_registered`'s `OnceLock`
+/// idempotency (a second `CTFontManagerRegisterGraphicsFont` call for
+/// the same bytes fails on a duplicate PostScript name, so repeated
+/// `MacBackend::new()` calls across e.g. a test binary must not re-run
+/// the real registration). `MacBackend::new` calls this once per
+/// instance.
+///
+/// Returns whether the font is available for painting this process.
+pub(crate) fn ensure_codicon_registered() -> bool {
+    static REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REGISTERED.get_or_init(|| register_font_from_memory(crate::codicon::FONT_BYTES).is_some())
 }
 
 /// Sample a font's typographic metrics. The returned `char_width`

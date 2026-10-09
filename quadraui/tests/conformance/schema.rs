@@ -97,6 +97,14 @@ pub enum Step {
     CtrlChar(char),
     /// Click the centre of the first painted run containing this text.
     ClickText(String),
+    /// Click the centre of the first painted run containing *any* of
+    /// these texts: `{"click_text_any": ["×", "\u{ea76}"]}`. For the one
+    /// logical affordance a backend paints as more than one literal
+    /// string — a built-in codicon glyph on GTK/macOS/Win vs. the plain
+    /// Unicode character TUI still paints — rather than every scenario
+    /// needing its own backend-specific copy. Tried in the order given;
+    /// the first one actually painted is clicked.
+    ClickTextAny(Vec<String>),
     /// Click a specific anchor within a painted run:
     /// `{"click_text_at": {"text": "Name", "anchor": "right_edge"}}`.
     /// `anchor` is optional and defaults to `center` (same as `click_text`)
@@ -318,6 +326,28 @@ mod tests {
                 text: "Name".into(),
                 anchor: AnchorSpec::Center
             }
+        );
+    }
+
+    /// `click_text_any` parses an ordered list of candidate needles — the
+    /// shape a scenario needs when one backend paints a built-in glyph
+    /// (a codicon codepoint) where another still paints the plain
+    /// Unicode character it always has.
+    #[test]
+    fn click_text_any_parses_an_ordered_needle_list() {
+        let src = r#"{
+            "id": "x",
+            "fixture": "panel_app",
+            "tier": 1,
+            "viewport": { "cols": 100, "rows": 30 },
+            "steps": [
+                { "click_text_any": ["×", ""] }
+            ]
+        }"#;
+        let s = Scenario::from_json("inline", src).expect("click_text_any must parse");
+        assert_eq!(
+            s.steps[0],
+            Step::ClickTextAny(vec!["×".into(), "\u{ea76}".into()])
         );
     }
 

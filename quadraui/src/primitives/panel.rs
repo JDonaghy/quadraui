@@ -348,7 +348,15 @@ pub(crate) mod native_surface_paint {
             // Unclamped — see this module's doc for the named win vs.
             // gtk/macos divergence.
             let glyph_x = va.bounds.x + (va.bounds.width - gw) / 2.0;
-            surface.surface_draw_text_run(
+            // `surface_draw_icon_glyph`, not `surface_draw_text_run` —
+            // `PanelAction::icon` is a plain app-chosen string (no
+            // `Icon::glyph`/`fallback` split to pick between), so an app
+            // that wants VS Code-style chrome (a codicon codepoint,
+            // matching the maximise/close affordances this crate's own
+            // chrome paints as codicon glyphs elsewhere) needs this
+            // glyph to resolve through the same icon-font fallback path
+            // those use, not whatever plain chrome font is live.
+            surface.surface_draw_icon_glyph(
                 Rect::new(glyph_x, va.bounds.y, gw, gh),
                 &action.icon,
                 theme.foreground,

@@ -657,16 +657,18 @@ pub(crate) mod native_surface_paint {
             );
 
             if item.submenu.is_some() {
-                // Submenu-parent: show a `▶` pull-right affordance at the
-                // far-right column instead of a keyboard-shortcut hint —
-                // mirrors `crate::tui::draw_context_menu` (#370). Submenu
-                // parents open a child menu rather than dispatching an
-                // action, so a shortcut hint would never fire anyway.
-                const SUBMENU_ARROW: &str = "\u{25b6}";
-                let (aw, ah) = surface.surface_measure_text(SUBMENU_ARROW);
-                surface.surface_draw_text_run(
+                // Submenu-parent: show a codicon chevron pull-right
+                // affordance at the far-right column instead of a
+                // keyboard-shortcut hint — mirrors the shape
+                // `crate::tui::draw_context_menu` (#370) paints with a
+                // plain `▶` glyph instead. Submenu parents open a child
+                // menu rather than dispatching an action, so a shortcut
+                // hint would never fire anyway.
+                let submenu_arrow = crate::codicon::CHEVRON_RIGHT.to_string();
+                let (aw, ah) = surface.surface_measure_text(&submenu_arrow);
+                surface.surface_draw_icon_glyph(
                     Rect::new(row.x + row.width - aw - 8.0, text_y, aw.max(1.0), ah),
-                    SUBMENU_ARROW,
+                    &submenu_arrow,
                     label_fg,
                 );
             } else if let Some(shortcut) = shortcut_text(item, platform) {

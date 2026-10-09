@@ -263,14 +263,15 @@ fn form_all_field_kinds_render_on_macos() {
 /// Deliberately asserts on the hint bar's text (one contiguous
 /// [`quadraui::StatusBarSegment`] string, painted as a single run on every
 /// backend) rather than the tab bar's own painted bracket/label/glyph —
-/// GTK paints those as separate Pango runs (`"["`, `"main.rs"`, `"×"`,
-/// `"]"`), while TUI's cell grid reads them back concatenated, so a needle
+/// GTK paints those as separate Pango runs (`"["`, `"main.rs"`, a codicon
+/// close glyph, `"]"`), while TUI's cell grid reads them back concatenated
+/// (bracket, label, plain `×`), so a needle
 /// spanning more than one of those pieces (`"[main.rs"`) is a
 /// TUI-only string, not a portable one; see `docs/TESTING.md`'s
 /// "assert on logic/text, not pixels" rule.
-fn run_tab_chrome_script<D: ConformanceDriver>(d: &mut D) -> Vec<bool> {
+fn run_tab_chrome_script<D: ConformanceDriver>(d: &mut D, close_glyph: &str) -> Vec<bool> {
     let before = d.screen_has("closed main.rs");
-    d.click_text("×");
+    d.click_text(close_glyph);
     let closed_not_activated = d.screen_has("closed main.rs");
     // A close that had been mis-resolved as `TabActivated` on tab 0 would
     // show this instead — the click stayed a close, not a same-tab
@@ -291,8 +292,13 @@ fn tab_chrome_parity_tui_and_gtk_agree_on_logical_state() {
     let mut tui = TuiDriver::new_fixture(TabChromeDemo::new(), LogicalViewport::new(100, 10));
     let mut gtk = GtkDriver::new_fixture(TabChromeDemo::new(), LogicalViewport::new(800, 300));
 
-    let tui_observations = run_tab_chrome_script(&mut tui);
-    let gtk_observations = run_tab_chrome_script(&mut gtk);
+    // GTK paints the tab close button as a codicon glyph (mirroring
+    // quadraui's private `codicon::CLOSE`); TUI keeps painting the
+    // plain `×` it always has — the two backends' logical states
+    // still agree below even though the glyph clicked to produce them
+    // differs.
+    let tui_observations = run_tab_chrome_script(&mut tui, "×");
+    let gtk_observations = run_tab_chrome_script(&mut gtk, "\u{ea76}");
 
     assert_eq!(
         tui_observations, gtk_observations,
@@ -955,13 +961,19 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
     let main_content_zone = WidgetId::new("app-shell:main-content");
 
     for (name, inv) in [("TUI", &tui_inv), ("GTK", &gtk_inv)] {
+        // GTK paints `AppShellDemo::config`'s codicon-source-control glyph
+        // (`Icon::glyph`, since `nerd_fonts_enabled` defaults to `true`
+        // there) where TUI paints the plain ASCII fallback `"G"`
+        // (`nerd_fonts_enabled` defaults to `false` on TUI) — the same
+        // `Icon`, two different painted strings, per backend.
+        let icon = if name == "GTK" { "\u{ea68}" } else { "G" };
         assert!(
             inv.screen_has("CONTROL"),
             "{name}: sidebar header should read SOURCE CONTROL after 'p'"
         );
         assert!(
-            inv.left_of("G", "CONTROL"),
-            "{name}: the activity bar's Source Control icon ('G') must sit \
+            inv.left_of(icon, "CONTROL"),
+            "{name}: the activity bar's Source Control icon must sit \
              left of the sidebar header it activates"
         );
         assert!(

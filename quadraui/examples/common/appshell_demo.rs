@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp,
+    Backend, Color, Icon, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp,
     ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
@@ -101,23 +101,28 @@ impl AppShellDemo {
     }
 
     pub fn config() -> ShellConfig {
+        let explorer = WidgetId::new("panel:explorer");
+        let search = WidgetId::new("panel:search");
+        let git = WidgetId::new("panel:git");
+        let settings = WidgetId::new("panel:settings");
+
         ShellConfig::new(
             "AppShell Demo",
             vec![
                 PanelDefinition {
-                    id: WidgetId::new("panel:explorer"),
+                    id: explorer.clone(),
                     icon: "E".into(),
                     tooltip: "Explorer".into(),
                     title: "EXPLORER".into(),
                 },
                 PanelDefinition {
-                    id: WidgetId::new("panel:search"),
+                    id: search.clone(),
                     icon: "S".into(),
                     tooltip: "Search".into(),
                     title: "SEARCH".into(),
                 },
                 PanelDefinition {
-                    id: WidgetId::new("panel:git"),
+                    id: git.clone(),
                     icon: "G".into(),
                     tooltip: "Source Control".into(),
                     title: "SOURCE CONTROL".into(),
@@ -125,11 +130,24 @@ impl AppShellDemo {
             ],
         )
         .with_bottom_items(vec![PanelDefinition {
-            id: WidgetId::new("panel:settings"),
+            id: settings.clone(),
             icon: "*".into(),
             tooltip: "Settings".into(),
             title: "Settings".into(),
         }])
+        // A distinct codicon glyph per panel — the GUI backends'
+        // `nerd_fonts_enabled` default is `true` (this crate's own
+        // codicon font is always bundled and self-registered, so there
+        // is no "Nerd Font not installed" risk the way an app-chosen
+        // glyph would carry), so these paint as real icons with no
+        // further app configuration; TUI still renders each panel's
+        // plain ASCII `icon` string above (`E`/`S`/`G`/`*`) via the
+        // `nerd_fonts_enabled`-gated `Icon::fallback` path, so this
+        // call changes nothing on TUI.
+        .with_panel_icon(explorer, Icon::new("\u{eaf0}", "E")) // codicon-files
+        .with_panel_icon(search, Icon::new("\u{ea6d}", "S")) // codicon-search
+        .with_panel_icon(git, Icon::new("\u{ea68}", "G")) // codicon-source-control
+        .with_panel_icon(settings, Icon::new("\u{eb51}", "*")) // codicon-settings-gear
     }
 }
 

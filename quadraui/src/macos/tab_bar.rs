@@ -2,7 +2,8 @@
 //!
 //! Mirrors [`crate::gtk::tab_bar::draw_tab_bar`]: measures tab widths
 //! via Core Text, lays out left-to-right with active-tab highlighting,
-//! close glyphs (× or ● for dirty), and right-aligned segments.
+//! close glyphs (a codicon close mark, or a filled circle for dirty —
+//! see [`crate::codicon`]), and right-aligned segments.
 //! Returns a [`TabBarHits`] carrying per-tab + per-segment screen
 //! bounds for the caller's click dispatch.
 //!
@@ -272,8 +273,12 @@ pub fn mac_tab_bar_native_layout_icons(
     let reserved_px: f64 = right_widths.iter().sum();
     let effective_tab_area = (width - reserved_px).max(0.0);
 
+    // Measure the codicon close glyph actually painted — `font`
+    // already carries the bundled codicon cascade unconditionally
+    // (`chrome_font` is wrapped via `font_with_builtin_fallback`), so
+    // this resolves the real glyph's advance width.
     let close_w = if bar.show_tab_close {
-        measure_text(font, "×").0
+        measure_text(font, &crate::codicon::CLOSE.to_string()).0
     } else {
         0.0
     };
@@ -563,10 +568,15 @@ pub unsafe fn draw_tab_bar_icons(
         if let Some((close_lo, _)) = hits.close_bounds[tab_idx] {
             let close_x = close_lo + CLOSE_PAD;
             let is_close_hovered = hovered_close_tab == Some(tab_idx);
+            // Codicon glyphs, painted through the same `font` the
+            // label/icon above already use, since
+            // `MacBackend::set_chrome_font` wraps it with the bundled
+            // codicon cascade unconditionally (see
+            // `font_with_builtin_fallback`'s doc).
             let close_glyph = if tab.is_dirty && !is_close_hovered {
-                "●"
+                crate::codicon::DIRTY.to_string()
             } else {
-                "×"
+                crate::codicon::CLOSE.to_string()
             };
             let close_fg = if tab.is_dirty || is_close_hovered {
                 theme.foreground
@@ -578,7 +588,7 @@ pub unsafe fn draw_tab_bar_icons(
             draw_text(
                 ctx,
                 font,
-                close_glyph,
+                &close_glyph,
                 close_x,
                 text_y_offset,
                 color_to_cg(close_fg),
@@ -780,11 +790,13 @@ mod tests {
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn dirty_tab_uses_filled_circle_glyph() {
-        // `is_dirty` swaps the close glyph from `×` to `●`. We can't
-        // easily compare glyph shape pixel-by-pixel, but a row-wise
-        // ink ratio differs noticeably: `●` is mostly filled, `×` is
-        // two thin diagonals. Compare the dirty tab's close column
-        // against the active tab's: dirty should be visibly denser.
+        // `is_dirty` swaps the close glyph for a codicon filled circle
+        // (`crate::codicon::DIRTY`). We can't easily compare glyph
+        // shape pixel-by-pixel, but a row-wise ink ratio differs
+        // noticeably: a filled circle is mostly filled, the codicon
+        // close mark (`crate::codicon::CLOSE`) is thin strokes.
+        // Compare the dirty tab's close column against the active
+        // tab's: dirty should be visibly denser.
         let bar = sample_bar();
         let (surface, hits) = paint_via_backend(&bar, None);
 
@@ -792,8 +804,9 @@ mod tests {
         let dirty_close = hits.close_bounds[1].unwrap();
 
         // Count non-bg pixels in a 1-column strip across the line
-        // height for each close glyph. The dirty (●) column should
-        // have more inked pixels than the × column.
+        // height for each close glyph. The dirty (filled circle)
+        // column should have more inked pixels than the close-mark
+        // column.
         fn ink_density(surface: &BitmapSurface, x: u32, bg: Color) -> u32 {
             (0..H)
                 .filter(|&y| {
@@ -815,7 +828,7 @@ mod tests {
         );
         assert!(
             dirty_ink > active_ink,
-            "dirty `●` glyph should ink more rows ({}) than active `×` ({})",
+            "dirty glyph should ink more rows ({}) than the active close glyph ({})",
             dirty_ink,
             active_ink,
         );

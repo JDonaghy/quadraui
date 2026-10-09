@@ -166,6 +166,27 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
     Some(names)
 }
 
+/// Register [`crate::codicon::FONT_BYTES`] exactly once per process via
+/// [`register_font_from_memory`] — every GUI backend's
+/// built-in chrome glyphs (tree chevrons, tab dirty/close, the
+/// context-menu submenu arrow) need this done unconditionally, with no
+/// app opt-in, unlike an app's own Nerd-Font registration. `GtkBackend::new`
+/// calls this once per instance; a `OnceLock` collapses repeated calls
+/// (e.g. several `GtkBackend`s built across a test binary) to a single
+/// real registration rather than leaking one Fontconfig app-font entry
+/// and one temp file per call — see [`register_font_from_memory`]'s own
+/// doc for why each call writes a fresh temp file.
+///
+/// Returns whether the font is available for painting this process —
+/// `false` only if registration itself failed (a corrupt bundled asset,
+/// which `codicon::tests::font_bytes_is_a_real_sfnt_font` already guards
+/// against, or an environment where neither Fontconfig nor Core Text
+/// registration could write the temp file at all).
+pub(crate) fn ensure_codicon_registered() -> bool {
+    static REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REGISTERED.get_or_init(|| register_font_from_memory(crate::codicon::FONT_BYTES).is_some())
+}
+
 /// Moves `name` to the front of `names`, removing any case-insensitive
 /// match already present — see [`register_font_from_memory`]'s own doc
 /// for why the Core Text name must lead on macOS.

@@ -95,11 +95,19 @@ impl TextMeasure for PangoTabMeasure<'_> {
 /// not pick up a `Backend::set_nerd_font_fallback` override — see that
 /// const's doc for the known gap) so this and `with_nerd_font_fallback`
 /// can't drift apart.
+///
+/// [`crate::codicon::FONT_FAMILY`] is appended unconditionally, the
+/// same append [`super::with_nerd_font_fallback`] makes —
+/// this is also the font [`draw_tab_bar_icons`] paints the built-in
+/// dirty/close codicon glyphs with, so it must resolve codicon
+/// codepoints regardless of the app's own `set_nerd_font_fallback`
+/// choice.
 pub(crate) fn tab_icon_font(base: &pango::FontDescription) -> pango::FontDescription {
     let mut f = base.clone();
     f.set_family(&format!(
-        "{}, monospace",
-        super::current_nerd_font_fallback_family()
+        "{}, {}, monospace",
+        super::current_nerd_font_fallback_family(),
+        crate::codicon::FONT_FAMILY
     ));
     f
 }
@@ -210,8 +218,8 @@ fn rounded_rect_path(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) 
 /// - **Active tab:** `theme.tab_active_bg` background, plus a 1 px accent
 ///   line at the top edge when [`TabBar::active_accent`] is `Some` — `None`
 ///   paints no accent at all, matching the TUI and macOS rasterisers.
-/// - **Dirty tab:** close glyph is `●` (in `theme.foreground`)
-///   instead of `×`.
+/// - **Dirty tab:** close glyph is a codicon filled circle (in
+///   `theme.foreground`) instead of the codicon close glyph.
 /// - **Preview tab:** italicised label.
 /// - **Right segments:** painted in `tab_inactive_fg` (or
 ///   `tab_active_fg` when `seg.is_active`), no bold.
@@ -367,13 +375,18 @@ pub fn draw_tab_bar_icons_with_chrome(
     let normal_font = saved_font.clone();
     let mut italic_font = normal_font.clone();
     italic_font.set_style(pango::Style::Italic);
+    // The close/dirty glyph is a codicon codepoint, so its width must
+    // be measured (and painted) against `icon_font`, not
+    // `normal_font` — computed up front, ahead of the pre-measure block
+    // below, since that block needs it already.
+    let icon_font = tab_icon_font(&normal_font);
 
     // ── Pre-measure close glyph ─────────────────────────────────────
-    // Measure the × glyph width once; individual tabs use it conditionally
-    // based on `bar.show_tab_close && tab.is_closable`.
+    // Measure the close glyph's width once; individual tabs use it
+    // conditionally based on `bar.show_tab_close && tab.is_closable`.
     let close_glyph_w = if bar.show_tab_close {
-        pango_layout.set_font_description(Some(&normal_font));
-        pango_layout.set_text("×");
+        pango_layout.set_font_description(Some(&icon_font));
+        pango_layout.set_text(&crate::codicon::CLOSE.to_string());
         let (w, _) = pango_layout.pixel_size();
         w as f64
     } else {
@@ -396,7 +409,6 @@ pub fn draw_tab_bar_icons_with_chrome(
         })
         .collect();
 
-    let icon_font = tab_icon_font(&normal_font);
     let tab_icon_extras = tab_icon_extras(pango_layout, &icon_font, bar.tabs.len(), icons);
 
     // #631: bracket glyph width, needed below only for the paint loop's
@@ -417,7 +429,7 @@ pub fn draw_tab_bar_icons_with_chrome(
     // `PangoTabMeasure` measures in whatever font is currently set on
     // `pango_layout` — reset to the (non-italic, non-icon) label font
     // before handing it to the shared fn, since every glyph it measures
-    // itself (×, [, ], right-segment labels, the char-width sample) is
+    // itself ([, ], right-segment labels, the char-width sample) is
     // single-font.
     pango_layout.set_font_description(Some(&normal_font));
     let measure = PangoTabMeasure {
@@ -577,10 +589,15 @@ pub fn draw_tab_bar_icons_with_chrome(
                     cr.fill().ok();
                 }
 
+                // Codicon glyphs, painted through `icon_font` (same
+                // font `tab_icon_extras` already paints app `TabIcon`
+                // glyphs with), since that's the font whose family
+                // list carries `codicon::FONT_FAMILY` (see
+                // `tab_icon_font`'s doc).
                 let close_glyph = if tab.is_dirty && !is_close_hovered {
-                    "●"
+                    crate::codicon::DIRTY
                 } else {
-                    "×"
+                    crate::codicon::CLOSE
                 };
                 let close_fg = if tab.is_dirty || is_close_hovered {
                     theme.foreground
@@ -590,10 +607,11 @@ pub fn draw_tab_bar_icons_with_chrome(
                     theme.separator
                 };
                 set_source(cr, close_fg);
-                pango_layout.set_font_description(Some(&normal_font));
-                pango_layout.set_text(close_glyph);
+                pango_layout.set_font_description(Some(&icon_font));
+                pango_layout.set_text(&close_glyph.to_string());
                 cr.move_to(x_offset + close_x, text_y_offset);
                 super::painted_text::show_layout(cr, pango_layout);
+                pango_layout.set_font_description(Some(&normal_font));
 
                 // #631: closing bracket, right after the glyph — `cb.x`
                 // already stops short of it via

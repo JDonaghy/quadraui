@@ -511,14 +511,25 @@ pub(crate) mod native_surface_paint {
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
+                    // A codicon chevron, not
+                    // `tree.style.chevron_expanded`/`chevron_collapsed`'s
+                    // plain `▾`/`▸` — those two fields stay as TUI's own
+                    // paint path (`tui::tree::draw_tree`) reads them
+                    // directly, so this GUI-only divergence does not
+                    // change TUI output or this type's serde shape.
                     let chevron = if expanded {
-                        &tree.style.chevron_expanded
+                        crate::codicon::CHEVRON_DOWN
                     } else {
-                        &tree.style.chevron_collapsed
-                    };
-                    let (cw, ch) = surface.surface_measure_text(chevron);
+                        crate::codicon::CHEVRON_RIGHT
+                    }
+                    .to_string();
+                    let (cw, ch) = surface.surface_measure_text(&chevron);
                     let cy = row_y + (row_h - ch) / 2.0;
-                    surface.surface_draw_text_run(Rect::new(cursor_x, cy, cw, ch), chevron, def_fg);
+                    surface.surface_draw_icon_glyph(
+                        Rect::new(cursor_x, cy, cw, ch),
+                        &chevron,
+                        def_fg,
+                    );
                     cursor_x += cw + 4.0;
                 }
             } else {
