@@ -61,14 +61,21 @@ only a push to `main` runs this workflow.
 
 ### Added
 
-- `EditorPaintOptions::v_scrollbar_w: Option<f32>` (issue #1411) — lets a
-  host override the editor's vertical scrollbar column width instead of
-  the `cell_width` default `Editor::layout`/`layout_with_options` has
-  always used, e.g. to match VS Code's fixed 14px gutter independent of
-  font size. Honoured in layout (`v_scrollbar_bounds.width` and the
-  text-area narrowing it causes) and in every GUI backend's editor paint
-  (GTK, macOS, Win); `None` (the default) is non-breaking — every
-  existing caller keeps the old `cell_width`-wide column unchanged.
+- `Backend::set_editor_v_scrollbar_width(Option<f32>)` (issue #1411) — a
+  provided (default no-op) trait method a GUI host calls once to size the
+  editor's vertical scrollbar column in pixels, e.g. `Some(14.0)` to match
+  VS Code's fixed 14px editor scrollbar independent of font size. Honoured
+  by the GTK, macOS and Win backends in `draw_editor` and in
+  `Backend::editor_layout` (so hit-testing agrees with the paint); TUI
+  keeps its one-cell column. `Backend::editor_v_scrollbar_width()` reads
+  it back. `None` (the default) keeps the existing one-`char_width`
+  column.
+- `Editor::layout_with_options_and_v_scrollbar_w(viewport, cell_width,
+  line_height, options, v_scrollbar_w)` — the layout behind the above:
+  `Some(px)` sizes `v_scrollbar_bounds` (and the text-area narrowing it
+  causes) independently of `cell_width`. `Editor::layout_with_options` is
+  unchanged and delegates with `None`. Purely additive:
+  `EditorPaintOptions` is untouched.
 
 ### Fixed
 
@@ -79,6 +86,8 @@ only a push to `main` runs this workflow.
   call ever filled it in. `macos::editor::draw_editor` now paints it
   through the same shared scrollbar paint GTK already uses, narrowing
   the text clip to match so no glyph paints under the reserved column.
+  The Win backend's `draw_editor` likewise now paints the column through
+  `Backend::draw_scrollbar`.
 - **macOS native: editor text looked heavy and blocky next to VS Code**
   (issue #1405). The "Lines + gutter" paint loop drew every line's
   `raw_text` once in the default foreground colour, then re-drew each

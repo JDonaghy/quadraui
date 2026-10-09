@@ -551,7 +551,7 @@ fn default_lightbulb_glyph() -> char {
 /// would break every one of those call sites with `E0063`. A small,
 /// independently-growable options struct with no existing call sites to
 /// break sidesteps that, and can gain more fields later for free.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EditorPaintOptions {
     /// Suppress this editor's own vertical scrollbar even though the
     /// buffer overflows the viewport (#968).
@@ -571,25 +571,6 @@ pub struct EditorPaintOptions {
     /// for editors with no minimap, or one that isn't acting as a
     /// scrollbar.
     pub suppress_v_scrollbar: bool,
-    /// Host-settable vertical scrollbar width, in the same pixel units
-    /// as `cell_width`/`line_height`.
-    ///
-    /// `Editor::layout`/`layout_with_options` has always sized the
-    /// vertical scrollbar column at exactly `cell_width` — fine for
-    /// TUI's fixed-cell grid, but on a GUI backend that ties the
-    /// scrollbar's width to the font's glyph advance rather than to a
-    /// fixed chrome dimension. VS Code's editor scrollbar is a constant
-    /// 14px gutter independent of font size; a host matching that chrome
-    /// has no way to ask for it, short of faking a `cell_width` that
-    /// would also distort gutter and text-column math. `Some(px)`
-    /// overrides just the scrollbar column's width (both
-    /// `v_scrollbar_bounds.width` and the text-area narrowing it causes)
-    /// while every other geometry calculation keeps using `cell_width`.
-    /// `None` (the default) keeps today's behaviour — the scrollbar
-    /// column is `cell_width` wide, like the gutter and text columns.
-    /// Ignored (has no column to size) when `suppress_v_scrollbar` is
-    /// `true` or the buffer doesn't overflow the viewport.
-    pub v_scrollbar_w: Option<f32>,
 }
 
 // ─── EditorLayout + hit_test ──────────────────────────────────────────────────
@@ -997,14 +978,47 @@ impl Editor {
     }
 
     /// [`Self::layout`], plus [`EditorPaintOptions`] a host can set to
-    /// override otherwise-automatic geometry decisions — `suppress_v_scrollbar`
-    /// (#968) and `v_scrollbar_w`.
+    /// override otherwise-automatic geometry decisions — currently just
+    /// `suppress_v_scrollbar` (#968).
+    ///
+    /// Equivalent to [`Self::layout_with_options_and_v_scrollbar_w`] with
+    /// `v_scrollbar_w: None` (a `cell_width`-wide scrollbar column).
     pub fn layout_with_options(
         &self,
         viewport: Rect,
         cell_width: f32,
         line_height: f32,
         options: EditorPaintOptions,
+    ) -> EditorLayout {
+        self.layout_with_options_and_v_scrollbar_w(viewport, cell_width, line_height, options, None)
+    }
+
+    /// [`Self::layout_with_options`], plus a host-settable vertical
+    /// scrollbar width in the same pixel units as `cell_width` /
+    /// `line_height`.
+    ///
+    /// Without an override the vertical scrollbar column is exactly
+    /// `cell_width` wide — right for TUI's fixed-cell grid, but on a GUI
+    /// backend that ties the scrollbar's width to the font's glyph
+    /// advance rather than to a fixed chrome dimension. VS Code's editor
+    /// scrollbar is a constant 14px column independent of font size.
+    /// `Some(px)` overrides just the scrollbar column's width (both
+    /// `v_scrollbar_bounds.width` and the text-area narrowing it causes)
+    /// while every other geometry calculation keeps using `cell_width`.
+    /// `None` sizes the column at `cell_width`. Ignored (there is no
+    /// column to size) when `options.suppress_v_scrollbar` is `true` or
+    /// the buffer doesn't overflow the viewport.
+    ///
+    /// GUI hosts normally reach this through
+    /// [`crate::Backend::set_editor_v_scrollbar_width`] rather than
+    /// calling it directly.
+    pub fn layout_with_options_and_v_scrollbar_w(
+        &self,
+        viewport: Rect,
+        cell_width: f32,
+        line_height: f32,
+        options: EditorPaintOptions,
+        v_scrollbar_w: Option<f32>,
     ) -> EditorLayout {
         let gutter_w = self.gutter_char_width as f32 * cell_width;
         let visible_lines = if line_height > 0.0 {
@@ -1016,7 +1030,7 @@ impl Editor {
             && self.total_lines > visible_lines
             && viewport.width > gutter_w + cell_width;
         let v_scrollbar_w = if has_v_scrollbar {
-            options.v_scrollbar_w.unwrap_or(cell_width)
+            v_scrollbar_w.unwrap_or(cell_width)
         } else {
             0.0
         };
@@ -1264,7 +1278,6 @@ mod tests {
             1.0,
             EditorPaintOptions {
                 suppress_v_scrollbar: true,
-                ..Default::default()
             },
         );
         assert!(
@@ -1277,13 +1290,12 @@ mod tests {
     }
 
     /// A host can override the vertical scrollbar's width via
-    /// `EditorPaintOptions::v_scrollbar_w` — e.g. to match VS Code's
-    /// fixed 14px gutter regardless of `cell_width`. Both the reserved
+    /// `layout_with_options_and_v_scrollbar_w` — e.g. to match VS Code's
+    /// fixed 14px column regardless of `cell_width`. Both the reserved
     /// column's own width and the text area it narrows must reflect the
-    /// override; `layout()` (no options) keeps today's `cell_width`
-    /// default.
+    /// override; `layout()` keeps the `cell_width` default.
     #[test]
-    fn editor_layout_with_options_v_scrollbar_w_overrides_width() {
+    fn editor_layout_v_scrollbar_w_overrides_width() {
         let ed = make_editor(4, 100, 40);
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
 
@@ -1293,14 +1305,12 @@ mod tests {
         assert_eq!(baseline_vsb.width, 1.0);
         assert_eq!(baseline.text_bounds.width, 75.0);
 
-        let l = ed.layout_with_options(
+        let l = ed.layout_with_options_and_v_scrollbar_w(
             vp,
             1.0,
             1.0,
-            EditorPaintOptions {
-                v_scrollbar_w: Some(14.0),
-                ..Default::default()
-            },
+            EditorPaintOptions::default(),
+            Some(14.0),
         );
         let vsb = l.v_scrollbar_bounds.expect("buffer overflows the viewport");
         assert_eq!(vsb.width, 14.0);
@@ -1310,38 +1320,36 @@ mod tests {
         assert_eq!(l.text_bounds.width, 80.0 - 4.0 - 14.0);
     }
 
-    /// `v_scrollbar_w` has no column to size when the buffer fits the
-    /// viewport (no scrollbar at all) or when `suppress_v_scrollbar` is
-    /// set — in both cases it must be silently ignored, not force a
-    /// column into existence.
+    /// A `v_scrollbar_w` override has no column to size when the buffer
+    /// fits the viewport (no scrollbar at all) or when
+    /// `suppress_v_scrollbar` is set — in both cases it must be silently
+    /// ignored, not force a column into existence.
     #[test]
-    fn editor_layout_with_options_v_scrollbar_w_ignored_without_a_scrollbar() {
+    fn editor_layout_v_scrollbar_w_ignored_without_a_scrollbar() {
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
 
         // Content fits: no scrollbar regardless of the override.
         let fits = make_editor(4, 10, 20);
-        let l = fits.layout_with_options(
+        let l = fits.layout_with_options_and_v_scrollbar_w(
             vp,
             1.0,
             1.0,
-            EditorPaintOptions {
-                v_scrollbar_w: Some(14.0),
-                ..Default::default()
-            },
+            EditorPaintOptions::default(),
+            Some(14.0),
         );
         assert!(l.v_scrollbar_bounds.is_none());
         assert_eq!(l.text_bounds.width, 76.0);
 
         // Overflowing buffer, but suppressed: still no column.
         let overflow = make_editor(4, 100, 40);
-        let l = overflow.layout_with_options(
+        let l = overflow.layout_with_options_and_v_scrollbar_w(
             vp,
             1.0,
             1.0,
             EditorPaintOptions {
                 suppress_v_scrollbar: true,
-                v_scrollbar_w: Some(14.0),
             },
+            Some(14.0),
         );
         assert!(l.v_scrollbar_bounds.is_none());
         assert_eq!(l.text_bounds.width, 76.0);
