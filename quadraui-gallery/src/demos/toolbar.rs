@@ -72,7 +72,9 @@ impl ToolbarDemo {
                 ToolbarButton::Action {
                     id: WidgetId::new("gallery:toolbar:debug"),
                     label: label("Debug"),
-                    icon: None,
+                    // Every button carries an icon so the icon-only
+                    // variant has something to paint for each one.
+                    icon: Some("⚑".into()),
                     key_hint: None,
                     enabled: false,
                     is_active: false,
@@ -337,5 +339,30 @@ mod tests {
         // the first focus stop must be "Pause" (index 1), not index 0.
         demo.advance_focus(0, true);
         assert_eq!(demo.focused_index, Some(1));
+    }
+
+    #[test]
+    fn icon_only_variant_leaves_no_action_button_blank() {
+        let demo = ToolbarDemo::new();
+        // Variant 1 drops every label, so an `icon: None` action would
+        // paint as an empty gap with nothing to click or read.
+        for button in &demo.toolbar(1).buttons {
+            if let ToolbarButton::Action {
+                id, label, icon, ..
+            } = button
+            {
+                assert!(label.is_empty(), "{id:?} should have no label in variant 1");
+                assert!(
+                    icon.as_deref().is_some_and(|i| !i.is_empty()),
+                    "{id:?} has neither a label nor an icon in the icon-only variant"
+                );
+            }
+        }
+        // The labelled variant keeps its labels, so the two really differ.
+        assert!(demo
+            .toolbar(0)
+            .buttons
+            .iter()
+            .any(|b| matches!(b, ToolbarButton::Action { label, .. } if label == "Continue")));
     }
 }
