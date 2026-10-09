@@ -18,47 +18,48 @@ use crate::demo::{extract_region, Demo};
 const SOURCE: &str = include_str!("status_bar.rs");
 
 // gallery:begin
-pub struct StatusBarDemo {
-    dirty: bool,
+/// Build the status bar for either state: `dirty == true` pads the mode
+/// segment wide enough, at this demo's width, to force a low-priority
+/// right segment to drop under priority-drop truncation.
+fn status_bar(dirty: bool) -> StatusBar {
+    let mode_text = if dirty {
+        format!("NORMAL{}", " [+]".repeat(60))
+    } else {
+        "NORMAL".to_string()
+    };
+    let plain = |text: &str| StatusBarSegment {
+        text: text.to_string(),
+        fg: Color::rgb(220, 220, 220),
+        bg: Color::rgb(40, 80, 120),
+        bold: false,
+        action_id: None,
+    };
+    StatusBar {
+        id: WidgetId::new("gallery:status-bar"),
+        left_segments: vec![StatusBarSegment {
+            text: mode_text,
+            fg: Color::rgb(255, 255, 255),
+            bg: Color::rgb(40, 80, 120),
+            bold: true,
+            action_id: None,
+        }],
+        // Least-important first, cursor-position segment last — the
+        // documented convention that keeps it visible under
+        // priority-drop.
+        right_segments: vec![
+            plain("Spaces: 4"),
+            plain("UTF-8"),
+            plain("LF"),
+            plain("Ln 1, Col 1"),
+        ],
+    }
 }
+
+pub struct StatusBarDemo;
 
 impl StatusBarDemo {
     pub fn new() -> Self {
-        Self { dirty: false }
-    }
-
-    fn status_bar(&self) -> StatusBar {
-        let mode_text = if self.dirty {
-            format!("NORMAL{}", " [+]".repeat(60))
-        } else {
-            "NORMAL".to_string()
-        };
-        let plain = |text: &str| StatusBarSegment {
-            text: text.to_string(),
-            fg: Color::rgb(220, 220, 220),
-            bg: Color::rgb(40, 80, 120),
-            bold: false,
-            action_id: None,
-        };
-        StatusBar {
-            id: WidgetId::new("gallery:status-bar"),
-            left_segments: vec![StatusBarSegment {
-                text: mode_text,
-                fg: Color::rgb(255, 255, 255),
-                bg: Color::rgb(40, 80, 120),
-                bold: true,
-                action_id: None,
-            }],
-            // Least-important first, cursor-position segment last — the
-            // documented convention that keeps it visible under
-            // priority-drop.
-            right_segments: vec![
-                plain("Spaces: 4"),
-                plain("UTF-8"),
-                plain("LF"),
-                plain("Ln 1, Col 1"),
-            ],
-        }
+        Self
     }
 }
 
@@ -84,8 +85,7 @@ impl Demo for StatusBarDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let rect = Rect::new(area.x, area.y, area.width, lh);
-        let dirty = variant == 1;
-        let bar = StatusBarDemo { dirty }.status_bar();
+        let bar = status_bar(variant == 1);
         let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
     }
 
@@ -104,9 +104,7 @@ impl Demo for StatusBarDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        let dirty = variant == 1;
-        serde_json::to_value(StatusBarDemo { dirty }.status_bar())
-            .unwrap_or(serde_json::Value::Null)
+        serde_json::to_value(status_bar(variant == 1)).unwrap_or(serde_json::Value::Null)
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
@@ -121,8 +119,8 @@ mod tests {
 
     #[test]
     fn dirty_variant_grows_the_left_segment() {
-        let clean = StatusBarDemo { dirty: false }.status_bar();
-        let dirty = StatusBarDemo { dirty: true }.status_bar();
+        let clean = status_bar(false);
+        let dirty = status_bar(true);
         assert!(dirty.left_segments[0].text.len() > clean.left_segments[0].text.len());
     }
 }

@@ -6,6 +6,17 @@
 //! Both are pushed onto `Backend::modal_stack_handle()` — the host never
 //! hand-rolls an "is a float open" bool chain; it asks
 //! `top_focusable()`.
+//!
+//! Two variants show the menu anchored on either side of the selected
+//! row (`Side::Bottom` vs `Side::Top`).
+//!
+//! The pushed floats are only popped on explicit close (Escape / `m` /
+//! clicking elsewhere); navigating away from this demo while one is open
+//! — switching variants, tabs, or sidebar rows — leaves it registered on
+//! `Backend::modal_stack_handle()`, which can swallow clicks in that
+//! screen region for whatever demo renders next. The gallery's `Demo`
+//! trait has no deactivate hook to pop on, so this is a known gap rather
+//! than a fixed one.
 
 use quadraui::{
     Anchor, Backend, BackendCaps, Color, Float, FloatLayout, FloatMeasure, InteractionState, Key,
@@ -47,18 +58,26 @@ impl FloatDemo {
         Rect::new(area.x, area.y + idx as f32 * lh, area.width, lh)
     }
 
-    fn menu_anchor(&self, area: Rect, backend: &dyn Backend) -> Anchor {
-        Anchor::new(self.row_rect(area, backend, self.selected), Side::Bottom)
+    fn menu_anchor(&self, variant: usize, area: Rect, backend: &dyn Backend) -> Anchor {
+        let side = if variant == 0 {
+            Side::Bottom
+        } else {
+            Side::Top
+        };
+        Anchor::new(self.row_rect(area, backend, self.selected), side)
     }
 
-    fn menu_float(&self, area: Rect, backend: &dyn Backend) -> Float {
-        Float::new(WidgetId::new(MENU_ID), self.menu_anchor(area, backend))
+    fn menu_float(&self, variant: usize, area: Rect, backend: &dyn Backend) -> Float {
+        Float::new(
+            WidgetId::new(MENU_ID),
+            self.menu_anchor(variant, area, backend),
+        )
     }
 
-    fn menu_layout(&self, area: Rect, backend: &dyn Backend) -> FloatLayout {
+    fn menu_layout(&self, variant: usize, area: Rect, backend: &dyn Backend) -> FloatLayout {
         let cw = backend.char_width();
         let lh = backend.line_height();
-        let float = self.menu_float(area, backend);
+        let float = self.menu_float(variant, area, backend);
         let measure = FloatMeasure::new(cw * 16.0, lh * (MENU_ITEMS.len() as f32 + 2.0));
         float.layout(area, measure)
     }
@@ -144,11 +163,11 @@ impl FloatDemo {
         }
     }
 
-    fn open_menu(&mut self, area: Rect, backend: &mut dyn Backend) {
+    fn open_menu(&mut self, variant: usize, area: Rect, backend: &mut dyn Backend) {
         self.menu_open = true;
         self.menu_selected = 0;
-        let bounds = self.menu_layout(area, backend).bounds;
-        let float = self.menu_float(area, backend);
+        let bounds = self.menu_layout(variant, area, backend).bounds;
+        let float = self.menu_float(variant, area, backend);
         backend
             .modal_stack_handle()
             .borrow_mut()
@@ -197,7 +216,11 @@ impl Demo for FloatDemo {
         "Chrome"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Menu below row", "Menu above row"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         for (i, cmd) in COMMANDS.iter().enumerate() {
             let row = self.row_rect(area, backend, i);
             Self::line_at(
@@ -210,8 +233,8 @@ impl Demo for FloatDemo {
         }
 
         if self.menu_open {
-            let layout = self.menu_layout(area, backend);
-            let float = self.menu_float(area, backend);
+            let layout = self.menu_layout(variant, area, backend);
+            let float = self.menu_float(variant, area, backend);
             backend.draw_float(&float, &layout);
             self.paint_menu_content(backend, &layout);
         }
@@ -225,7 +248,7 @@ impl Demo for FloatDemo {
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
         area: Rect,
@@ -245,7 +268,7 @@ impl Demo for FloatDemo {
                 if self.menu_open {
                     self.close_menu(backend);
                 } else {
-                    self.open_menu(area, backend);
+                    self.open_menu(variant, area, backend);
                 }
                 Reaction::Redraw
             }
@@ -320,7 +343,7 @@ impl Demo for FloatDemo {
                 position,
                 ..
             } if id.as_str() == MENU_ID => {
-                let layout = self.menu_layout(area, backend);
+                let layout = self.menu_layout(variant, area, backend);
                 let lh = backend.line_height();
                 let rel_y = position.y - layout.content_bounds.y;
                 if rel_y >= 0.0 {
@@ -380,10 +403,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opening_the_menu_sets_menu_open() {
+    fn opening_the_menu_pushes_it_onto_the_modal_stack() {
         let mut demo = FloatDemo::new();
+        let mut backend = quadraui::tui::TuiBackend::new();
+        let area = Rect::new(0.0, 0.0, 40.0, 10.0);
         assert!(!demo.menu_open);
-        demo.menu_open = true;
+        assert_eq!(backend.modal_stack_handle().borrow().len(), 0);
+
+        demo.open_menu(0, area, &mut backend);
         assert!(demo.menu_open);
+        assert_eq!(backend.modal_stack_handle().borrow().len(), 1);
+
+        demo.close_menu(&mut backend);
+        assert!(!demo.menu_open);
+        assert_eq!(backend.modal_stack_handle().borrow().len(), 0);
     }
 }

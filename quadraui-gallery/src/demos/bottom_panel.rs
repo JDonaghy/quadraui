@@ -91,8 +91,8 @@ impl BackendWidget for ProblemsContent {
     }
 }
 
-fn build_controller() -> BottomPanelController {
-    let tabs = vec![
+fn build_tabs() -> Vec<BottomPanelTab> {
+    vec![
         BottomPanelTab {
             id: "bp:terminal".into(),
             label: "TERMINAL".into(),
@@ -114,12 +114,18 @@ fn build_controller() -> BottomPanelController {
                 ],
             }),
         },
-    ];
+    ]
+}
+
+/// `variant == 1` starts already maximised, showing the full-height tab
+/// strip a user would get after clicking `^`.
+fn build_controller(variant: usize) -> BottomPanelController {
+    let tabs = build_tabs();
     let active_tab_id = tabs[0].id.clone();
     BottomPanelController::new(BottomPanelConfig {
         tabs,
         active_tab_id,
-        maximised: false,
+        maximised: variant == 1,
         height_fraction: 1.0,
     })
 }
@@ -127,17 +133,18 @@ fn build_controller() -> BottomPanelController {
 pub struct BottomPanelDemo {
     // `BottomPanelController::render` needs `&mut self` to cache its hit
     // map for `handle_click` — `Demo::render` only hands out `&self` —
-    // so the controller lives behind a `RefCell`, the same pattern
-    // `examples/common/frame_demo.rs`'s `cached_hit_map` uses for the
-    // same reason.
-    controller: RefCell<BottomPanelController>,
+    // so each variant's controller lives behind its own `RefCell`.
+    controllers: [RefCell<BottomPanelController>; 2],
     last_event: String,
 }
 
 impl BottomPanelDemo {
     pub fn new() -> Self {
         Self {
-            controller: RefCell::new(build_controller()),
+            controllers: [
+                RefCell::new(build_controller(0)),
+                RefCell::new(build_controller(1)),
+            ],
             last_event: "click a tab, × to close, ^ to maximise".into(),
         }
     }
@@ -158,10 +165,16 @@ impl Demo for BottomPanelDemo {
         "Chrome"
     }
 
-    fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
+    fn variants(&self) -> &'static [&'static str] {
+        &["Two tabs", "Maximised"]
+    }
+
+    fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-        self.controller.borrow_mut().render(backend, panel_rect);
+        self.controllers[variant]
+            .borrow_mut()
+            .render(backend, panel_rect);
 
         let hint_rect = Rect::new(area.x, area.y + panel_rect.height, area.width, lh);
         let bar = StatusBar {
@@ -180,7 +193,7 @@ impl Demo for BottomPanelDemo {
 
     fn handle(
         &mut self,
-        _variant: usize,
+        variant: usize,
         event: &UiEvent,
         _backend: &mut dyn Backend,
         _area: Rect,
@@ -188,8 +201,7 @@ impl Demo for BottomPanelDemo {
         if let UiEvent::MouseDown { position, .. } = event {
             // `last_hits` / `last_strip_bounds` were populated by the
             // `render` call this same frame already made.
-            if let Some(ev) = self
-                .controller
+            if let Some(ev) = self.controllers[variant]
                 .borrow_mut()
                 .handle_click(position.x, position.y)
             {
@@ -209,8 +221,8 @@ impl Demo for BottomPanelDemo {
         extract_region(SOURCE)
     }
 
-    fn data(&self, _variant: usize) -> serde_json::Value {
-        let controller = self.controller.borrow();
+    fn data(&self, variant: usize) -> serde_json::Value {
+        let controller = self.controllers[variant].borrow();
         serde_json::json!({
             "active_tab_id": controller.active_tab_id,
             "maximised": controller.maximised,
@@ -231,8 +243,15 @@ mod tests {
     #[test]
     fn closing_a_tab_removes_it() {
         let demo = BottomPanelDemo::new();
-        assert_eq!(demo.controller.borrow().tabs().len(), 2);
-        demo.controller.borrow_mut().close_tab("bp:problems");
-        assert_eq!(demo.controller.borrow().tabs().len(), 1);
+        assert_eq!(demo.controllers[0].borrow().tabs().len(), 2);
+        demo.controllers[0].borrow_mut().close_tab("bp:problems");
+        assert_eq!(demo.controllers[0].borrow().tabs().len(), 1);
+    }
+
+    #[test]
+    fn variant_one_starts_maximised() {
+        let demo = BottomPanelDemo::new();
+        assert!(!demo.controllers[0].borrow().maximised);
+        assert!(demo.controllers[1].borrow().maximised);
     }
 }

@@ -4,11 +4,11 @@
 //! `sidebar_panel_body_demo.rs`.
 //!
 //! Four variants cover the sidebar-family primitives: a plain
-//! [`SidebarSystem`] tree with programmatic `reveal` (quadraui#595), a
-//! [`SidebarPanel`] with a toolbar header above a task list (quadraui#259),
-//! a [`SidebarSystem`] tree with `Decoration::Header` group rows, and a
+//! [`SidebarSystem`] tree with programmatic `reveal`, a [`SidebarPanel`]
+//! with a toolbar header above a task list, a [`SidebarSystem`] tree
+//! with `Decoration::Header` group rows, and a
 //! [`compose::sidebar_panel_body::SidebarPanelBody`] composing background +
-//! chrome + a raw `TreeView` body + scrollbar (quadraui#1041).
+//! chrome + a raw `TreeView` body + scrollbar.
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
 use quadraui::{
