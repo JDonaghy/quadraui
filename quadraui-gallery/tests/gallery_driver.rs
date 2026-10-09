@@ -17,10 +17,10 @@ use quadraui_gallery::app::{group_icon, group_panel_id, GROUPS};
 use quadraui_gallery::registry::registry;
 use quadraui_gallery::GalleryApp;
 
-/// Index of `"Overlays"` in [`GROUPS`] — the only group with a
-/// registered demo today. Resolved from the list rather than hardcoded
-/// as `3`, so a future reordering of `GROUPS` doesn't silently break
-/// this test's activity-bar click.
+/// Index of `"Overlays"` in [`GROUPS`] — where `ToastDemo` lives.
+/// Resolved from the list rather than hardcoded as `3`, so a future
+/// reordering of `GROUPS` doesn't silently break this test's
+/// activity-bar click.
 fn overlays_group_index() -> usize {
     GROUPS
         .iter()
@@ -94,10 +94,18 @@ fn navigating_group_then_demo_shows_it_and_its_code_region() {
     let config = GalleryApp::config();
     let mut driver = driver_with_shell(GalleryApp::new(), config, 100, 32);
 
-    // Nothing selected yet in the default (Content) group.
+    // "Containers" has no demos registered yet (Input & forms and
+    // Layout & chrome both do now) — navigate there first to exercise
+    // the empty-group placeholder this test used to get for free from
+    // the default (Content) group.
+    let containers_idx = GROUPS
+        .iter()
+        .position(|g| *g == "Containers")
+        .expect("GROUPS must include \"Containers\"");
+    click_group_zone(&mut driver, containers_idx);
     assert!(
-        driver.screen_contains("Select a demo"),
-        "no demo should be selected in the default group:\n{}",
+        driver.screen_contains("Select a demo") || driver.screen_contains("no demos ported yet"),
+        "no demo should be selected in an empty group:\n{}",
         driver.screen()
     );
 
@@ -297,7 +305,15 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
                     demo.group()
                 )
             });
-        click_group_zone(&mut driver, group_idx);
+        // `GalleryApp::new()` already starts on `GROUPS[0]` — clicking
+        // that *same* activity-bar icon again would hit `AppShell`'s
+        // "click the already-active icon to hide the sidebar" toggle
+        // (quadraui's `app_shell.rs`), collapsing the very sidebar the
+        // next line needs to click into. Only click the icon when this
+        // demo's group isn't already the default active one.
+        if group_idx != 0 {
+            click_group_zone(&mut driver, group_idx);
+        }
         let row = row_in_group.entry(demo.group()).or_insert(0);
         click_sidebar_row(&mut driver, *row);
         *row += 1;
@@ -514,4 +530,171 @@ fn click_sidebar_row_panics_on_a_row_the_sidebar_never_painted() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
     click_group_zone(&mut driver, chrome_group_index());
     click_sidebar_row(&mut driver, 9_999);
+}
+
+// ── Input & forms demos — targeted interaction tests ──────────────────────
+
+/// Select the demo named `name` from the sidebar. Unlike
+/// `select_chrome_demo`, this does **not** click the Content group's own
+/// activity-bar icon first: `GalleryApp::new()` already starts on
+/// `GROUPS[0]` ("Content"), and `AppShell` toggles (hides) the sidebar
+/// when the *already-active* icon is clicked again — clicking it here
+/// would collapse the sidebar these tests need to click into, rather
+/// than re-selecting it.
+fn select_content_demo<A: AppLogic>(driver: &mut TuiDriver<A>, name: &str) {
+    let (x, y) = driver
+        .find(name)
+        .unwrap_or_else(|| panic!("{name} sidebar row should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+}
+
+/// Typing a character into the "Empty" `TextInput` variant inserts it —
+/// proves the click→type→render round trip, not just that the primitive
+/// paints a placeholder.
+#[test]
+fn text_input_typing_inserts_the_character() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Text Input");
+    assert!(driver.screen_contains("Type something"));
+
+    driver.type_char('~');
+
+    assert!(
+        driver.screen_contains("~"),
+        "typing '~' should insert it into the empty buffer:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing Tab moves the `Focus` demo's status-bar echo from the left
+/// list to the right one.
+#[test]
+fn focus_tab_key_moves_the_focus_echo() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Focus");
+    assert!(driver.screen_contains("focus: gallery:focus:left"));
+
+    driver.press_named(quadraui::NamedKey::Tab);
+
+    assert!(
+        driver.screen_contains("focus: gallery:focus:right"),
+        "Tab should move the focus echo from left to right:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the Find & Replace panel's chevron flips `show_replace`,
+/// visible on the Data tab.
+#[test]
+fn find_replace_chevron_click_toggles_show_replace() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Find & Replace");
+
+    // `FindReplaceDemo::new` starts with `show_replace: true`, so the
+    // chevron paints collapsed (▼).
+    let (x, y) = driver
+        .find("▼")
+        .unwrap_or_else(|| panic!("chevron glyph should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("\"show_replace\": false"),
+        "clicking the chevron should flip show_replace to false:\n{}",
+        driver.screen()
+    );
+}
+
+/// Switching the dual-mode palette to Input mode, typing a branch name
+/// and pressing Enter creates and switches to it.
+#[test]
+fn palette_text_confirmed_creates_a_branch() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Command Palette");
+    assert!(driver.screen_contains("main"));
+
+    driver.press_named(quadraui::NamedKey::Tab);
+    for c in "my-new-branch".chars() {
+        driver.type_char(c);
+    }
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    assert!(
+        driver.screen_contains("my-new-branch"),
+        "confirming a typed branch name should switch to it:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing Escape on the "Choose folder" variant cancels the picker —
+/// visible on the Data tab's `confirmed` field.
+#[test]
+fn file_picker_escape_cancels_the_folder_picker() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "File Picker");
+
+    let (x, y) = driver
+        .find("Choose folder")
+        .expect("variant picker should list \"Choose folder\"");
+    driver.click(x, y);
+
+    driver.press_named(quadraui::NamedKey::Escape);
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("Dismissed"),
+        "Escape should cancel the folder picker:\n{}",
+        driver.screen()
+    );
+}
+
+/// Switching the "Caret Shape" demo's variant calls
+/// `Backend::set_caret_shape` exactly once per actual shape change — the
+/// counter in the status line only advances on a real change, never on
+/// every repaint.
+#[test]
+fn caret_shape_variant_switch_calls_set_caret_shape_once() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Caret Shape");
+    assert!(driver.screen_contains("calls: 1"));
+
+    // Re-rendering the same (default) variant must not bump the count —
+    // force an unrelated redraw via a harmless key.
+    driver.press_named(quadraui::NamedKey::Left);
+    assert!(driver.screen_contains("calls: 1"));
+
+    let (x, y) = driver
+        .find("Insert (Bar)")
+        .expect("variant picker should list \"Insert (Bar)\"");
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("calls: 2"),
+        "switching to a different shape should bump the call count:\n{}",
+        driver.screen()
+    );
+}
+
+/// Dragging across the "Text Selection" demo's content, then Ctrl-C,
+/// copies the selected lines — the runner-owned selection pipeline
+/// reached through nothing but `register_text_region`.
+#[test]
+fn text_selection_drag_then_ctrl_c_copies() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Text Selection");
+    assert!(driver.screen_contains("quick brown fox"));
+
+    let region = driver
+        .find_bounds("quick brown fox")
+        .expect("first content row should paint");
+    let y = region.y + region.height / 2.0;
+    driver.drag(region.x, y, region.x + region.width, y);
+    driver.ctrl_char('c');
+
+    assert!(
+        driver.screen_contains("Copied:"),
+        "Ctrl-C after a drag-select should copy and show a preview:\n{}",
+        driver.screen()
+    );
 }
