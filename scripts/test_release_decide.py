@@ -17,6 +17,7 @@ Covers the three branches `.github/workflows/release.yml` relies on:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_decide  # noqa: E402
 
 
+def _hermetic_git_env() -> dict[str, str]:
+    """Environment for subprocess git calls that ignores ambient git config.
+
+    `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_SYSTEM=/dev/null` stop an
+    ambient `commit.gpgsign = true` or `core.hooksPath` pointing at this
+    repo's `.githooks/` from reaching into the throwaway temp repos these
+    tests create, which would otherwise break `git commit` under
+    `check=True` on a machine where either is set globally.
+    """
+    env = dict(os.environ)
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    return env
+
+
 def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args],
@@ -34,6 +50,7 @@ def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         check=True,
+        env=_hermetic_git_env(),
     )
 
 
@@ -119,6 +136,35 @@ class DecideCommandTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("decision=publish", result.stdout)
+
+    def test_decide_writes_github_output_file(self):
+        # `release.yml` reads `steps.decide.outputs.{decision,tag}` from
+        # `$GITHUB_OUTPUT`, not from stdout — this is the code path the
+        # workflow's `if: needs.check.outputs.decision == 'publish'` gate
+        # (and the `publish` job's `tag` input) actually depend on.
+        with TempRemoteRepo() as repo:
+            output_path = repo.root / "github_output.txt"
+            output_path.write_text("")
+            env = dict(os.environ)
+            env["GITHUB_OUTPUT"] = str(output_path)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(release_decide.__file__)),
+                    "decide",
+                    "--version",
+                    "0.2.0",
+                    "--repo-dir",
+                    str(repo.clone),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            contents = output_path.read_text()
+            self.assertIn("decision=publish", contents)
+            self.assertIn("tag=v0.2.0", contents)
 
 
 class ChangelogSectionTests(unittest.TestCase):

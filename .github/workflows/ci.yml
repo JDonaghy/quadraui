@@ -165,13 +165,18 @@ jobs:
     #
     # No `features:`/`feature-group:` input: left at the action's default,
     # which heuristically enables every non-unstable, non-internal feature
-    # (tui, gtk, win, terminal, layout, macos), the same backend surface the
-    # `doc` job below documents. `gtk` needs the same system libraries as
-    # that job and the `gtk` job further down, hence the apt-get step. `win`
-    # and `macos` are target-gated internally (see their own Cargo.toml
-    # feature comments), so enabling them on this ubuntu runner is a no-op
-    # for their platform-specific code, same reasoning the `tui` job's win/
-    # macos compile gates already rely on.
+    # (tui, gtk, win, terminal, layout, macos). That is a *larger* surface
+    # than the `doc` job below documents — `doc` deliberately excludes
+    # `macos` since `lib.rs` gates `mod macos` on `target_os = "macos"` (see
+    # that job's own comment), so on this ubuntu runner `macos`'s public API
+    # is invisible to rustdoc/cargo-semver-checks on *both* sides of a diff
+    # here too, and a macOS-only API break is not caught by this job. `gtk`
+    # needs the same system libraries as that job and the `gtk` job further
+    # down, hence the apt-get step. `win` and `macos` are target-gated
+    # internally (see their own Cargo.toml feature comments), so enabling
+    # them on this ubuntu runner is a no-op for their platform-specific
+    # code, same reasoning the `tui` job's win/macos compile gates already
+    # rely on.
     #
     # Required vs. advisory: a breaking public-API change is routine
     # *between* releases on `develop` — that's what `CHANGELOG.md`'s
@@ -185,12 +190,38 @@ jobs:
     # a push has already landed.
     name: cargo-semver-checks (public API vs. published crates.io)
     runs-on: ubuntu-latest
-    # #1292: downloads a prebuilt `cargo-semver-checks` binary and diffs one
-    # crate's API against its published baseline, normally a few minutes.
-    timeout-minutes: 20
+    # #1292: this job builds quadraui's full heuristic feature surface
+    # *twice* (current tree + the crates.io baseline) plus rustdoc, from a
+    # cold `target/` (see the `rust-cache` step below for why there's no
+    # warm one to rely on) — call it 2x the cached, single-build `doc` job's
+    # own 25-minute budget, rounded up for margin, since this is a hard
+    # block on the `develop` -> `main` promotion PR specifically.
+    timeout-minutes: 45
     continue-on-error: ${{ !(github.event_name == 'pull_request' && github.base_ref == 'main') }}
+    # A semver diff answers "does the public API differ from what's on
+    # crates.io", not "does it lint clean" — the registry baseline crate is
+    # already built with `--cap-lints allow`, but this job's own checkout
+    # isn't, so inheriting the workflow-level `-D warnings` would couple a
+    # release-blocking job to whatever lint set the pinned toolchain
+    # happens to ship. Same reasoning as the `downstream` and `msrv` jobs'
+    # own `RUSTFLAGS: ""` overrides elsewhere in this file.
+    env:
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
+      # Toolchain is pinned in rust-toolchain.toml; rustup's own override
+      # resolution honors that file regardless of what any action installs
+      # as its "default" — including `cargo-semver-checks-action`'s own
+      # `rust-toolchain` input, which installs via `rustup default` and
+      # therefore loses to this directory's override too (see that file's
+      # header, and the `msrv` job's comment on the same precedence rule).
+      # Installing explicitly here, the same way every other job in this
+      # file does, makes that precedence visible instead of implicit: the
+      # action always ends up running cargo-semver-checks against this
+      # checkout's pinned 1.97.1 rustdoc, regardless of what it thinks it
+      # selected.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install GTK4 system libraries
         run: |
           sudo apt-get update
@@ -301,6 +332,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Comment-history lint
         run: python3 tools/comment_history_lint.py
+      # Piggybacks on this job rather than a dedicated one: this is already
+      # a checkout-only, stdlib-Python, 10-minute-timeout job, the same
+      # shape `scripts/test_release_decide.py` needs to actually run
+      # somewhere in CI instead of only on a worker's local machine.
+      - name: release_decide.py unit tests
+        run: python3 scripts/test_release_decide.py
 
   tui:
     name: tui + win (build, test, clippy) — ${{ matrix.os }}

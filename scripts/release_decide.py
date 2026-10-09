@@ -39,9 +39,8 @@ from pathlib import Path
 def changelog_section(text: str, version: str) -> str:
     """Return the body of CHANGELOG.md's `## [<version>]` section.
 
-    Mirrors `release.yml`'s prior inline `awk` extraction: everything after
-    the matching `## [<version>]` header line, up to (not including) the
-    next `## [` header. Returns "" if no such header exists.
+    Everything after the matching `## [<version>]` header line, up to (not
+    including) the next `## [` header. Returns "" if no such header exists.
     """
     header = f"## [{version}]"
     lines = text.splitlines()
@@ -91,7 +90,11 @@ def _write_github_output(name: str, value: str) -> None:
 
 def cmd_decide(args: argparse.Namespace) -> int:
     tag = f"v{args.version}"
-    exists = tag_exists(args.remote, tag, Path(args.repo_dir))
+    try:
+        exists = tag_exists(args.remote, tag, Path(args.repo_dir))
+    except RuntimeError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 1
     decision = "noop" if exists else "publish"
     print(f"decision={decision}")
     _write_github_output("decision", decision)

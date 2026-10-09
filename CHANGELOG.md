@@ -45,15 +45,17 @@ Pre-1.0, per Cargo's own semver convention: a `0.MINOR.PATCH` bump treats
 treats `MINOR`/`PATCH` combined (additive or fix). A rule-8 breaking change
 bumps `MINOR`; everything else bumps `PATCH`.
 
-Releases are tagged `vX.Y.Z` against `develop`, the default branch (`main`
-is unmaintained). Tagging is a coordinator release action (see
-`quadraui#797`), not something an individual PR does — a PR adds
-its entry under `[Unreleased]`, and the coordinator retitles that section to
-`[X.Y.Z] - YYYY-MM-DD` (adding a fresh empty `[Unreleased]` above it) at
-release time.
-Pushing the tag queues `.github/workflows/release.yml`, which publishes to
-crates.io via Trusted Publishing once a reviewer approves the `release`
-environment, then creates the GitHub release from the `[X.Y.Z]` section.
+A release is a reviewed, CI-green `develop` -> `main` promotion PR (see
+`CLAUDE.md`'s *Branching + releases* section), assembled and merged by the
+coordinator, not something an individual feature PR does — a feature PR
+only ever adds its own entry under `[Unreleased]`. The promotion PR bumps
+`quadraui/Cargo.toml`'s version and retitles `[Unreleased]` to
+`[X.Y.Z] - YYYY-MM-DD` (adding a fresh empty `[Unreleased]` above it).
+Merging that PR to `main` triggers `.github/workflows/release.yml`, which
+publishes to crates.io via Trusted Publishing once a reviewer approves the
+`release` environment, then creates the GitHub release from the `[X.Y.Z]`
+section. A hand-pushed `vX.Y.Z` tag on `develop` no longer does anything —
+only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
