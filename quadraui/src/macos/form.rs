@@ -270,6 +270,19 @@ mod tests {
         }
     }
 
+    /// Paint `form` through the real `Backend::draw_form` and return the
+    /// painted pixels alongside the layout that paint used.
+    ///
+    /// The layout comes from [`Backend::form_layout`] — the no-paint twin
+    /// of `draw_form` — rather than a local `mac_form_layout` call with a
+    /// font of the test's own choosing. A `Form` is chrome, so both of
+    /// those backend methods resolve the *chrome* font; re-deriving the
+    /// expectation here against the editor font this helper installs as
+    /// `current_font` would measure per-item widths in a font nothing
+    /// painted with, and every `item_bounds`-relative pixel probe below
+    /// would drift by the difference between the two fonts' advances.
+    /// Asking the backend is also what a host does, so paint↔hit-test
+    /// agreement is part of what these tests cover.
     fn paint_via_backend(form: &Form) -> (BitmapSurface, FormLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -278,14 +291,9 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_form(QRect::new(0.0, 0.0, W as f32, H as f32), form);
-            let l = super::mac_form_layout(
-                form,
-                QRect::new(0.0, 0.0, W as f32, H as f32),
-                b.line_height() as f64,
-                &font(),
-            );
-            *layout.borrow_mut() = Some(l);
+            let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+            b.draw_form(area, form);
+            *layout.borrow_mut() = Some(b.form_layout(area, form));
         });
         backend.end_frame();
         (surface, layout.into_inner().unwrap())
@@ -502,6 +510,26 @@ mod tests {
         false
     }
 
+    /// True when `px` carries `ink`'s colour over a `bg` backdrop —
+    /// either `ink` outright, or any antialiased blend of the two.
+    ///
+    /// Each channel must sit between the two endpoints (one unit of
+    /// rounding slack either side) and the pixel must differ from `bg`,
+    /// so an untouched backdrop pixel never counts as ink. For a thin
+    /// fill at a fractional offset that is the strongest claim available
+    /// per pixel — see the caller's comment.
+    fn carries_ink_of(px: (u8, u8, u8), bg: Color, ink: Color) -> bool {
+        let on_blend_line = |v: u8, from: u8, to: u8| {
+            let lo = from.min(to).saturating_sub(1);
+            let hi = from.max(to).saturating_add(1);
+            (lo..=hi).contains(&v)
+        };
+        px != (bg.r, bg.g, bg.b)
+            && on_blend_line(px.0, bg.r, ink.r)
+            && on_blend_line(px.1, bg.g, ink.g)
+            && on_blend_line(px.2, bg.b, ink.b)
+    }
+
     #[test]
     fn toggle_group_on_item_paints_selected_bg() {
         // The "on" toggle (regex / `.*`) must paint `selected_bg`
@@ -650,12 +678,21 @@ mod tests {
         let (_surface, layout) = paint_via_backend(&form);
         let vis = &layout.visible_fields[0];
         assert_eq!(vis.item_bounds.len(), 2);
-        // Each item rect should be wide enough to span the bracketed
-        // label (e.g. "[Find]" is 6 monospace chars wide).
+        // Each item rect has to span the text painted inside it. The
+        // bound is measured in the chrome font the backend paints a
+        // `Form` with rather than assumed to be a count of monospace
+        // cells: a proportional UI font has no single cell width, and
+        // "wide enough for its own label" is the invariant either way.
+        let label_of = |id: &WidgetId| match id.as_str() {
+            "find" => "Find",
+            "replace" => "Replace",
+            other => panic!("unexpected button id {other:?}"),
+        };
         for (id, rect) in &vis.item_bounds {
+            let label_w = chrome_text_width(label_of(id)) as f32;
             assert!(
-                rect.width >= 6.0 * 4.0,
-                "button {id:?} rect width {} too narrow",
+                rect.width >= label_w,
+                "button {id:?} rect width {} too narrow for its {label_w}pt label",
                 rect.width,
             );
             let hit = layout.hit_test(rect.x + 1.0, rect.y + rect.height * 0.5);
@@ -812,6 +849,24 @@ mod tests {
         (surface, lh)
     }
 
+    /// Width of `text` in the font `Backend::draw_settings_chrome`
+    /// actually paints with.
+    ///
+    /// The settings header and search row are chrome, so the backend
+    /// renders them through [`crate::FontRole::Chrome`] regardless of
+    /// which editor font a host last installed as `current_font`.
+    /// Measuring with [`Backend::measure_text`] against that role is what
+    /// keeps an x-offset expectation here pointing at the glyphs on the
+    /// surface; measuring with [`font`] (the editor font
+    /// [`paint_settings_chrome_at`] installs, to prove it is *not* what
+    /// chrome uses) would offset every probe by the difference between
+    /// the two fonts' advances.
+    fn chrome_text_width(text: &str) -> f64 {
+        MacBackend::new()
+            .measure_text(text, crate::FontRole::Chrome)
+            .0 as f64
+    }
+
     #[test]
     fn settings_chrome_paints_header_then_search_row() {
         let (surface, lh) = paint_settings_chrome_at(
@@ -871,14 +926,25 @@ mod tests {
         );
 
         // With an empty query the caret sits right after the " /  "
-        // prefix. Scan that row for the accent stroke.
-        let (prefix_w, _) = measure_text(&font(), SETTINGS_SEARCH_PREFIX);
+        // prefix (whose two trailing spaces leave the band scanned below
+        // free of prefix ink). Scan that band for the accent stroke.
+        //
+        // Asserting "some pixel is *exactly* `accent_fg`" would be
+        // asserting a fact about the caret's sub-pixel position rather
+        // than about the caret: Core Graphics antialiases the
+        // `SETTINGS_CURSOR_W`-wide fill, and a 1.5pt span starting at a
+        // fractional x covers no whole pixel for half of the possible
+        // fractions — it lands as two partially-covered columns blended
+        // with the row background. So the band only has to carry accent
+        // *ink*: a pixel off the row's `selected_bg` and on the
+        // `selected_bg`→`accent_fg` blend line. Same lesson as
+        // `region_has_color` above.
+        let prefix_w = chrome_text_width(SETTINGS_SEARCH_PREFIX);
         let caret_x = (2.0 + prefix_w) as u32;
         let row = (lh * 1.5) as u32;
-        let accent = (theme.accent_fg.r, theme.accent_fg.g, theme.accent_fg.b);
         let found = (caret_x.saturating_sub(1)..=caret_x + 2).any(|x| {
             let (r, g, b, _) = surface.pixel(x.min(W - 1), row);
-            (r, g, b) == accent
+            carries_ink_of((r, g, b), theme.selected_bg, theme.accent_fg)
         });
         assert!(
             found,
