@@ -57,6 +57,36 @@ const MIN_ROWS: u16 = 3;
 struct SessionSlot {
     session: Result<TerminalSession, String>,
     size: (u16, u16),
+    /// Script still waiting to be typed into the shell — see
+    /// [`SessionSlot::poll`].
+    pending_script: Option<&'static str>,
+}
+
+impl SessionSlot {
+    /// Drains PTY output, then types any pending script once the shell
+    /// is ready to read it. Returns `true` if new output arrived.
+    ///
+    /// A POSIX PTY's line discipline buffers input typed before the shell
+    /// starts reading, so the script is sent straight away there. A
+    /// Windows ConPTY does not: bytes written before the console shell
+    /// has started reading its input can be dropped, so the script waits
+    /// for the shell's prompt (`>`) to show up first.
+    fn poll(&mut self) -> bool {
+        let Ok(sess) = self.session.as_mut() else {
+            return false;
+        };
+        let changed = sess.poll();
+        if let Some(script) = self.pending_script {
+            let ready = cfg!(not(target_os = "windows")) || sess.full_text().contains('>');
+            if sess.is_exited() {
+                self.pending_script = None;
+            } else if ready {
+                sess.send_str(script);
+                self.pending_script = None;
+            }
+        }
+        changed
+    }
 }
 
 /// Spawns the real shell process. Called lazily — once per slot, the
@@ -70,14 +100,15 @@ fn spawn_slot(scripted: bool) -> SessionSlot {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
     let shell = default_shell();
     let size = (80, 24);
-    let mut session = TerminalSession::spawn(size.0, size.1, &shell, &cwd, 2_000)
+    let session = TerminalSession::spawn(size.0, size.1, &shell, &cwd, 2_000)
         .map_err(|e| format!("failed to spawn PTY: {e}"));
-    if scripted {
-        if let Ok(sess) = session.as_mut() {
-            sess.send_str(SCRIPT);
-        }
-    }
-    SessionSlot { session, size }
+    let mut slot = SessionSlot {
+        session,
+        size,
+        pending_script: scripted.then_some(SCRIPT),
+    };
+    slot.poll();
+    slot
 }
 
 /// `(cols, rows)` a PTY inside `rect` should have, given the backend's
@@ -143,11 +174,13 @@ impl Demo for TerminalDemo {
             slot.size = (cols, rows);
         }
 
-        if let Ok(sess) = slot.session.as_mut() {
-            if needs_resize {
+        if needs_resize {
+            if let Ok(sess) = slot.session.as_mut() {
                 sess.resize(cols, rows);
             }
-            sess.poll();
+        }
+        slot.poll();
+        if let Ok(sess) = slot.session.as_mut() {
             let total = sess.history_len() + sess.rows() as usize;
             let sb = if total > sess.rows() as usize {
                 Some(sess.scrollbar_state(None))
@@ -233,13 +266,11 @@ impl Demo for TerminalDemo {
     }
 
     fn tick(&mut self, variant: usize, _backend: &mut dyn Backend) -> Reaction {
-        let mut slot = self.slot(variant);
-        if let Ok(sess) = slot.session.as_mut() {
-            if sess.poll() {
-                return Reaction::Redraw;
-            }
+        if self.slot(variant).poll() {
+            Reaction::Redraw
+        } else {
+            Reaction::Continue
         }
-        Reaction::Continue
     }
 
     fn source(&self) -> &'static str {
@@ -274,29 +305,42 @@ mod tests {
     }
 
     #[test]
-    fn scripted_variant_sends_the_script_before_any_render() {
+    fn scripted_variant_sends_the_script_without_any_render() {
         let demo = TerminalDemo::new();
         let mut slot = demo.slot(1);
         // Spawning a real shell may fail in some sandboxes — only assert
         // the script's canned output actually appears when spawning
         // succeeded. Bounded poll, not a fixed sleep: the child shell
-        // needs a moment to actually run `printf`/`Write-Host` and the
-        // PTY reader thread needs a moment to deliver it.
-        if let Ok(sess) = slot.session.as_mut() {
-            let mut found = false;
-            for _ in 0..100 {
-                sess.poll();
-                if sess.full_text().contains("GALLERYSCRIPTOK") {
-                    found = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            assert!(
-                found,
-                "the scripted variant's canned command output should appear after polling: {:?}",
-                sess.full_text()
-            );
+        // needs a moment to start (PowerShell on a loaded CI runner can
+        // take many seconds), run `printf`/`Write-Host`, and the PTY
+        // reader thread needs a moment to deliver it. The deadline only
+        // costs time when the output never arrives.
+        if slot.session.is_err() {
+            return;
         }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut found = false;
+        while std::time::Instant::now() < deadline {
+            slot.poll();
+            let sess = slot.session.as_ref().expect("checked above");
+            if sess.full_text().contains("GALLERYSCRIPTOK") {
+                found = true;
+                break;
+            }
+            if sess.is_exited() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let sess = slot.session.as_ref().expect("checked above");
+        assert!(
+            found,
+            "the scripted variant's canned command output should appear after polling: {:?}",
+            sess.full_text()
+        );
+        assert!(
+            slot.pending_script.is_none(),
+            "the script should have been sent once the shell was ready"
+        );
     }
 }

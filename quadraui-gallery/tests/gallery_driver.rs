@@ -942,9 +942,12 @@ fn terminal_scripted_variant_shows_its_canned_output_after_ticking() {
     // No real timer in the driver (see `TuiDriver::tick`'s doc) — poll a
     // bounded number of frames, pausing briefly between them so the real
     // child shell has a chance to actually run `printf` and the PTY
-    // reader thread has a chance to deliver its output.
+    // reader thread has a chance to deliver its output. The 30 s deadline
+    // covers PowerShell's start-up on a loaded Windows CI runner; it only
+    // costs time when the output never arrives.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut found = false;
-    for _ in 0..100 {
+    while std::time::Instant::now() < deadline {
         driver.tick();
         if driver.screen_contains("GALLERYSCRIPTOK") {
             found = true;
