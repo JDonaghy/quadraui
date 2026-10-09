@@ -165,47 +165,21 @@ pub unsafe fn draw_editor(
             );
         }
 
-        // Raw text painted as a single fg run; per-span colouring is
-        // applied on top below.
+        // Lay the line out as contiguous, non-overlapping runs (gaps in
+        // `theme.foreground`, spans in their own colour) so every glyph
+        // is painted exactly once — see `paint_line_text`'s doc for why
+        // a raw-run-then-span-overlay used to double-composite glyphs
+        // (issue #1405).
         let raw_x = text_x_offset;
-        if !line.raw_text.is_empty() {
-            draw_text(
-                ctx,
-                font,
-                &line.raw_text,
-                raw_x,
-                line_y,
-                color_to_cg(theme.foreground),
-            );
-        }
-
-        // Per-span colouring — re-render coloured slices on top of the
-        // raw run. Crude but produces correct colour at character
-        // boundaries given the monospace baseline.
-        for span in &line.spans {
-            let start = snap_to_char_boundary(&line.raw_text, span.start_byte);
-            let end = snap_to_char_boundary(&line.raw_text, span.end_byte);
-            if start >= end {
-                continue;
-            }
-            let prefix = &line.raw_text[..start];
-            let slice = &line.raw_text[start..end];
-            let (px, _) = measure_text(font, prefix);
-            // Repaint the slice's bg first (if set) so the raw run
-            // beneath doesn't bleed through.
-            if let Some(sbg) = span.style.bg {
-                let (sw, _) = measure_text(font, slice);
-                fill_rect(ctx, raw_x + px, line_y, sw, line_height, sbg);
-            }
-            draw_text(
-                ctx,
-                font,
-                slice,
-                raw_x + px,
-                line_y,
-                color_to_cg(span.style.fg),
-            );
-        }
+        paint_line_text(
+            ctx,
+            font,
+            line,
+            raw_x,
+            line_y,
+            line_height,
+            theme.foreground,
+        );
     }
 
     // Primary cursor.
@@ -251,6 +225,92 @@ pub unsafe fn draw_editor(
 
     CGContextRestoreGState(ctx);
     EditorPaintResult::default()
+}
+
+/// Paint `line.raw_text` as a sequence of contiguous, non-overlapping
+/// runs: gaps between (and around) `line.spans` in `default_fg`, each
+/// span in its own `style.fg` (with `style.bg` filled first, if set).
+///
+/// Issue #1405: the previous implementation painted the whole line in
+/// `default_fg` via one [`draw_text`] call, then re-painted each span's
+/// slice *on top of it* in its own colour. Core Text anti-aliases glyph
+/// edges with partial coverage; compositing two glyph draws at the same
+/// position turns edge alpha `a` into `1-(1-a)²`, which saturates the
+/// soft edge pixels and makes every stroke look thicker and
+/// stair-stepped next to a renderer (e.g. VS Code) that paints each
+/// glyph once. Splitting into non-overlapping runs — one [`draw_text`]
+/// call per run, zero overlapping coverage — paints every glyph exactly
+/// once. Mirrors [`crate::win::editor`]'s `paint_line_text`, which
+/// already coalesces spans into non-overlapping runs for the same
+/// reason; GTK's rasteriser never had this bug because a single Pango
+/// layout with a `PangoAttrList` paints the whole line in one pass.
+///
+/// Spans are expected to be sorted by `start_byte` and non-overlapping
+/// (the shape every span producer — syntax highlighting, search
+/// matches — emits in practice, mirroring `crate::win::editor`'s same
+/// assumption). An out-of-order or overlapping span is tolerated
+/// defensively: any portion already covered by an earlier run is
+/// skipped rather than re-painted.
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_line_text(
+    ctx: CGContextRef,
+    font: &CTFont,
+    line: &EditorLine,
+    raw_x: f64,
+    line_y: f64,
+    line_height: f64,
+    default_fg: Color,
+) {
+    let text = &line.raw_text;
+    if text.is_empty() {
+        return;
+    }
+
+    let mut ordered_spans: Vec<(usize, usize, Color, Option<Color>)> = line
+        .spans
+        .iter()
+        .filter_map(|span| {
+            let start = snap_to_char_boundary(text, span.start_byte);
+            let end = snap_to_char_boundary(text, span.end_byte);
+            (start < end).then_some((start, end, span.style.fg, span.style.bg))
+        })
+        .collect();
+    ordered_spans.sort_by_key(|&(start, _, _, _)| start);
+
+    // Paint the run `text[from..to]` at its own x position (derived
+    // from measuring the prefix `text[..from]`, same baseline the
+    // original per-span code used) in `fg`, filling `bg` first when
+    // present.
+    let paint_run = |from: usize, to: usize, fg: Color, bg: Option<Color>| {
+        if from >= to {
+            return;
+        }
+        let (prefix_w, _) = measure_text(font, &text[..from]);
+        let run_x = raw_x + prefix_w;
+        let slice = &text[from..to];
+        if let Some(bg) = bg {
+            let (run_w, _) = measure_text(font, slice);
+            fill_rect(ctx, run_x, line_y, run_w, line_height, bg);
+        }
+        draw_text(ctx, font, slice, run_x, line_y, color_to_cg(fg));
+    };
+
+    let mut cursor = 0usize;
+    for (start, end, fg, bg) in ordered_spans {
+        let start = start.max(cursor);
+        if start >= end {
+            // Fully consumed by an earlier (overlapping) run.
+            continue;
+        }
+        if start > cursor {
+            paint_run(cursor, start, default_fg, None);
+        }
+        paint_run(start, end, fg, bg);
+        cursor = end;
+    }
+    if cursor < text.len() {
+        paint_run(cursor, text.len(), default_fg, None);
+    }
 }
 
 /// Byte offset corresponding to the `col`-th character of `s`. Saturates
@@ -485,6 +545,59 @@ mod tests {
         let (r, g, b, _) = surface.pixel(px, py);
         // Span bg painted over editor bg.
         assert_eq!((r, g, b), (50, 100, 150));
+    }
+
+    /// Regression for issue #1405: the previous rasteriser painted every
+    /// line's `raw_text` once as a whole-line run, then re-painted every
+    /// span slice *on top of it* — a span covering the entire line thus
+    /// painted the same glyphs twice. Core Text's recorded [`TextRun`]s
+    /// (via `start_recording_text`/`MacBackend::text_runs`) let this be
+    /// asserted directly: exactly one run for the line's text, not two
+    /// overlapping ones, regardless of how many spans cover it.
+    #[test]
+    fn span_covering_whole_line_paints_exactly_one_text_run() {
+        let mut line = one_line("alpha beta");
+        line.spans = vec![ESpan {
+            start_byte: 0,
+            end_byte: line.raw_text.len(),
+            style: Style {
+                fg: Color::rgb(200, 100, 50),
+                bg: None,
+                bold: false,
+                italic: false,
+                font_scale: 1.0,
+            },
+        }];
+        // `Bar` cursor at an out-of-range column: the cursor overlay
+        // never draws a glyph of its own (only `Block` repaints one),
+        // so the only `draw_text` calls for "alpha beta" come from the
+        // line-text painter under test.
+        let mut editor = editor_with_cursor("alpha beta", CursorShape::Bar, 99);
+        editor.lines = vec![line];
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_painted_text_recording(true);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_editor(editor.rect, &editor);
+        });
+        backend.end_frame();
+
+        let whole_line_runs: Vec<_> = backend
+            .text_runs()
+            .iter()
+            .filter(|run| run.text == "alpha beta")
+            .collect();
+        assert_eq!(
+            whole_line_runs.len(),
+            1,
+            "\"alpha beta\" should be painted exactly once (overlapping raw-run + \
+             span-overlay would record it twice at the same position), got: {:?}",
+            whole_line_runs,
+        );
     }
 
     /// Regression for issue #503: syntax-highlighting `StyledSpan`

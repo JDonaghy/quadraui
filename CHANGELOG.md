@@ -59,6 +59,20 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS native: editor text looked heavy and blocky next to VS Code**
+  (issue #1405). The "Lines + gutter" paint loop drew every line's
+  `raw_text` once in the default foreground colour, then re-drew each
+  `line.spans` slice *on top of it* in its own colour — Core Text
+  anti-aliases glyph edges, and compositing the same glyph twice turns
+  edge alpha `a` into `1-(1-a)²`, saturating soft edges and making every
+  stroke look thicker and stair-stepped. The line is now painted as
+  contiguous, non-overlapping runs (default-coloured gaps + each span's
+  own colour), so every glyph is painted exactly once — matching GTK
+  (single Pango layout + `AttrList`) and Windows (coalesced
+  non-overlapping `DrawText` runs), which never had this bug.
+
 ## [0.1.2] - 2026-10-09
 
 ### Fixed
