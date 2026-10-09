@@ -1,5 +1,5 @@
 //! Dump the demo registry to JSON for the website generator
-//! (`tools/site_gen.py`, quadraui#1349).
+//! (`tools/site_gen.py`).
 //!
 //! The mdBook site built from this crate's gallery must have **no
 //! hand-maintained per-widget content** (CLAUDE.md's "Demos are

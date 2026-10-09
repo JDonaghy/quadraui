@@ -28,17 +28,23 @@ name: Deploy site
 on:
   push:
     branches: [develop]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 # Only one Pages deployment at a time; a second push while one is still
-# building supersedes it rather than racing it (the opposite of CI's own
-# per-ref concurrency groups, since Pages has exactly one live target,
-# not one per branch/PR).
+# building supersedes the queued one rather than racing it (the opposite
+# of CI's own per-ref concurrency groups, since Pages has exactly one live
+# target, not one per branch/PR). `cancel-in-progress` stays `false`
+# deliberately: GitHub's own Pages guidance is not to cancel an
+# in-progress production deployment (`deploy-pages` mid-flight can leave
+# the environment with a pending deployment); queuing the newest run
+# behind it gets the same "newest wins" outcome without aborting one that
+# is already live.
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -71,12 +77,12 @@ jobs:
       - name: Dump demo registry
         run: |
           mkdir -p target/site
-          cargo run -p quadraui-gallery --features tui -- \
+          cargo run -p quadraui-gallery --bin quadraui-gallery --features tui -- \
             --dump-registry target/site/registry.json
 
       - name: Capture demo screenshots (TUI)
         run: |
-          cargo run -p quadraui-gallery --features tui -- \
+          cargo run -p quadraui-gallery --bin quadraui-gallery --features tui -- \
             --capture target/site/capture-tui
 
       - name: Generate gallery pages
@@ -89,8 +95,15 @@ jobs:
       - name: Build mdBook
         run: mdbook build site
 
-      - uses: actions/configure-pages@v5
-
+      # No `actions/configure-pages@v5` step here: that action's only
+      # output is `base_url`/`origin` metadata, neither of which this job
+      # passes to `mdbook build` (mdBook needs no runtime base-path
+      # injection the way some static-site generators do), and the action
+      # itself calls `GET /repos/{owner}/{repo}/pages`, which needs the
+      # `pages: write` permission this job deliberately does not hold
+      # (that scope lives on the `deploy` job below, which is the one
+      # that actually talks to the Pages API). Running it here would just
+      # add a permission this job has no other reason to need.
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/book

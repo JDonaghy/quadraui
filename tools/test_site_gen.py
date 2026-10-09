@@ -32,6 +32,16 @@ FIXTURE_REGISTRY = [
         "variants": ["Accent line", "Row fill (VS Code)"],
         "source": "pub struct ActivityBarDemo;\n",
     },
+    {
+        "demo": "Markdown",
+        "group": "Content",
+        "variants": ["Popup"],
+        # Mirrors `quadraui-gallery/src/demos/markdown.rs`'s `DOC`
+        # constant: its own `source` region embeds a column-0 ```rust
+        # fence, which must not be able to close the page's wrapping
+        # fence early.
+        "source": 'const DOC: &str = "\\\n# Heading\n```rust\nfn main() {}\n```";\n',
+    },
 ]
 
 
@@ -141,6 +151,34 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(site_gen.slug(""), "demo")
 
 
+class CodeFenceTest(unittest.TestCase):
+    def test_plain_source_gets_the_minimum_three_backtick_fence(self):
+        self.assertEqual(site_gen.code_fence("pub struct Foo;\n"), "```")
+
+    def test_source_with_a_nested_triple_backtick_fence_gets_a_longer_one(self):
+        # Mirrors `quadraui-gallery/src/demos/markdown.rs`'s `DOC`
+        # constant: a demo's own source can embed a column-0 ```rust
+        # fence (e.g. a markdown-adapter sample), which must not be able
+        # to close our wrapping fence early.
+        source = 'const DOC: &str = "\\\n```rust\nfn main() {}\n```";\n'
+        fence = site_gen.code_fence(source)
+        self.assertGreater(len(fence), 3)
+        self.assertTrue(set(fence) == {"`"})
+
+    def test_source_with_a_longer_nested_fence_still_gets_a_strictly_longer_one(self):
+        source = "`````rust\ncode\n`````"
+        fence = site_gen.code_fence(source)
+        self.assertGreater(len(fence), 5)
+
+
+class TableCellTextTest(unittest.TestCase):
+    def test_collapses_newlines_and_escapes_pipes(self):
+        self.assertEqual(
+            site_gen.table_cell_text("line one\nline two | still one cell"),
+            "line one line two \\| still one cell",
+        )
+
+
 class MergeManifestsTest(unittest.TestCase):
     def test_path_row_wins_over_status_only_row_for_same_key(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,8 +235,24 @@ class GenerateTest(unittest.TestCase):
     def test_pending_and_unsupported_cells_are_labelled(self):
         page = (self.out_dir / "gallery" / "activity-bar.md").read_text()
         self.assertIn("Pending", page)
-        self.assertIn("Unsupported", page)
+        self.assertIn("Not captured in this build", page)
         self.assertIn("Error: label not found at capture size", page)
+
+    def test_markdown_demo_fence_is_longer_than_its_own_nested_fence(self):
+        # The regression this guards: a demo (like the real
+        # `quadraui-gallery` `Markdown` demo) whose own `source` embeds a
+        # 3-backtick fence must get a wrapping fence *longer* than 3, or
+        # that nested fence (or its own close) could terminate the page's
+        # code block early and reflow the rest of the source as markdown
+        # prose instead of code.
+        page = (self.out_dir / "gallery" / "markdown.md").read_text()
+        markdown_entry = next(e for e in FIXTURE_REGISTRY if e["demo"] == "Markdown")
+        lines = page.splitlines()
+        open_idx = next(i for i, line in enumerate(lines) if line.startswith("`"))
+        self.assertEqual(lines[open_idx], "````rust,noplayground")
+        close_idx = lines.index("````", open_idx + 1)
+        body = "\n".join(lines[open_idx + 1 : close_idx])
+        self.assertEqual(body, markdown_entry["source"])
 
     def test_captured_image_is_embedded_and_copied(self):
         page = (self.out_dir / "gallery" / "toast.md").read_text()
@@ -231,6 +285,114 @@ class GenerateTest(unittest.TestCase):
 
         self.assertTrue((self.out_dir / "gallery" / "toast.md").exists())
         self.assertFalse((self.out_dir / "gallery" / "activity-bar.md").exists())
+
+    def test_error_note_with_a_pipe_and_newline_does_not_corrupt_the_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry_path = root / "registry.json"
+            registry_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "demo": "Toast",
+                            "group": "Overlays",
+                            "variants": ["default"],
+                            "source": "pub struct ToastDemo;\n",
+                        }
+                    ]
+                )
+            )
+            capture_dir = root / "capture"
+            capture_dir.mkdir()
+            (capture_dir / "manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "demo": "Toast",
+                            "group": "Overlays",
+                            "variant": "default",
+                            "backend": "tui",
+                            "status": "error",
+                            "note": "panic at row 1 | col 2\nsecond line",
+                        }
+                    ]
+                )
+            )
+            out_dir = root / "site-src"
+            site_gen.generate(registry_path, [capture_dir], out_dir)
+
+            page = (out_dir / "gallery" / "toast.md").read_text()
+            row_line = next(line for line in page.splitlines() if line.startswith("| default"))
+            # Exactly 6 unescaped `|`s: the table's own 5 column
+            # separators (leading, 4 internal, trailing) — none
+            # contributed by the note's own `\|` or its collapsed
+            # newline.
+            self.assertEqual(row_line.count("|") - row_line.count("\\|"), 6)
+            self.assertIn("panic at row 1 \\| col 2 second line", row_line)
+
+
+class SlugCollisionTest(unittest.TestCase):
+    def test_two_demo_names_sharing_a_slug_raise_instead_of_overwriting(self):
+        registry = [
+            {
+                "demo": "Foo Bar",
+                "group": "Chrome",
+                "variants": ["default"],
+                "source": "a\n",
+            },
+            {
+                "demo": "foo-bar",
+                "group": "Chrome",
+                "variants": ["default"],
+                "source": "b\n",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry_path = root / "registry.json"
+            registry_path.write_text(json.dumps(registry))
+            capture_dir = root / "capture"
+            capture_dir.mkdir()
+            (capture_dir / "manifest.json").write_text("[]")
+
+            with self.assertRaises(ValueError):
+                site_gen.generate(registry_path, [capture_dir], root / "site-src")
+
+
+class ReadJsonArrayTest(unittest.TestCase):
+    def test_missing_file_raises_a_message_naming_the_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist.json"
+            with self.assertRaises(FileNotFoundError) as ctx:
+                site_gen.read_json_array(missing, "registry.json from --dump-registry")
+            self.assertIn(str(missing), str(ctx.exception))
+
+    def test_non_array_raises_a_message_naming_the_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "registry.json"
+            path.write_text(json.dumps({"not": "a list"}))
+            with self.assertRaises(ValueError) as ctx:
+                site_gen.read_json_array(path, "registry.json from --dump-registry")
+            self.assertIn(str(path), str(ctx.exception))
+
+
+class CopyImagesTest(unittest.TestCase):
+    def test_path_escaping_the_capture_dir_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture_dir = root / "capture"
+            capture_dir.mkdir()
+            outside = root / "outside.svg"
+            outside.write_text("<svg></svg>")
+
+            merged = {
+                ("Toast", "Overlays", "default", "tui"): {
+                    "path": "../outside.svg",
+                    "_capture_dir": capture_dir,
+                }
+            }
+            with self.assertRaises(ValueError):
+                site_gen.copy_images(merged, root / "images-out")
 
 
 if __name__ == "__main__":
