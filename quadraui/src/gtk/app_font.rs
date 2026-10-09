@@ -124,24 +124,17 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
         return None;
     }
 
-    let mut names = register_with_fontconfig(&path);
+    let names = register_with_fontconfig(&path);
 
+    // Rebinding `names` (rather than mutating a shared `let mut`) keeps
+    // this platform-neutral: on every other target `names` is exactly
+    // what `register_with_fontconfig` produced and is never mutated, so
+    // it has no business being `mut` there.
     #[cfg(target_os = "macos")]
-    {
+    let names = {
         let registration = macos_core_text::register(&path);
         match registration.family {
-            Some(name) => {
-                // Core Text's name goes first — see this function's own
-                // doc for why `names.first()` must resolve through
-                // `PangoCoreTextFontMap` on this platform.
-                if let Some(pos) = names
-                    .iter()
-                    .position(|existing| existing.eq_ignore_ascii_case(&name))
-                {
-                    names.remove(pos);
-                }
-                names.insert(0, name);
-            }
+            Some(name) => fold_in_core_text_name(names, name),
             None => {
                 // Pango's default font map on macOS never consults
                 // Fontconfig — a Fontconfig-only success here would hand
@@ -157,7 +150,7 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
                 return None;
             }
         }
-    }
+    };
 
     if names.is_empty() {
         // Neither registration produced a family this function could
@@ -171,6 +164,21 @@ pub(crate) fn register_font_from_memory(bytes: &[u8]) -> Option<Vec<String>> {
 
     notify_fontmap_config_changed();
     Some(names)
+}
+
+/// Moves `name` to the front of `names`, removing any case-insensitive
+/// match already present — see [`register_font_from_memory`]'s own doc
+/// for why the Core Text name must lead on macOS.
+#[cfg(target_os = "macos")]
+fn fold_in_core_text_name(mut names: Vec<String>, name: String) -> Vec<String> {
+    if let Some(pos) = names
+        .iter()
+        .position(|existing| existing.eq_ignore_ascii_case(&name))
+    {
+        names.remove(pos);
+    }
+    names.insert(0, name);
+    names
 }
 
 /// The Fontconfig half of [`register_font_from_memory`] (issue #1013):
