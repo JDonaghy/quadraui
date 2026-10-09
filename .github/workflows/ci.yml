@@ -502,9 +502,18 @@ jobs:
       # order). Same gap, same fix shape as the `win`/`macos` compile
       # gates above: a typo'd `run_with_shell` call in the gallery's `win`
       # arm would otherwise ship green.
+      #
+      # `--all-targets` so the gallery lib's own `#[cfg(test)]` modules
+      # compile with `tui` off: a `quadraui::tui::…` reference from an
+      # ungated test module is invisible to every `tui`-feature step
+      # above and to `macos.yml` (whose `paths` filter is
+      # `quadraui/src/**`, which gallery sources don't match), so it
+      # would land green here and break the macOS lane on an unrelated
+      # PR. This leg needs no system packages, so it is the cheapest
+      # place to catch a `tui`-off gallery build.
       - name: Compile check (gallery, win feature)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo check -p quadraui-gallery --features win
+        run: cargo check -p quadraui-gallery --features win --all-targets
       # macOS compile gate, cross-target — the same trick the win compile
       # gate above plays, for the one backend that had no Linux-side gate
       # at all. `lib.rs` cfg's `mod macos` on `target_os = "macos"`, so a
@@ -834,8 +843,10 @@ jobs:
       # green despite the issue's headline deliverable being exactly
       # `cargo run -p quadraui-gallery --features gtk`. `--features gtk`
       # alone (no `tui`) is what actually reaches the arm.
+      # `--all-targets` for the same reason the `win` gallery gate uses
+      # it: the lib's `#[cfg(test)]` modules must compile with `tui` off.
       - name: Compile check (gallery, gtk feature only)
-        run: cargo check -p quadraui-gallery --features gtk
+        run: cargo check -p quadraui-gallery --features gtk --all-targets
       # Both backends registered at once, so the artifact from this job is
       # the full cross-backend matrix rather than a single column.
       - name: Conformance matrix (gtk + tui)

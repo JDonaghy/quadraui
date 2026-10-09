@@ -55,6 +55,14 @@ fn click_group_zone<A: AppLogic>(driver: &mut TuiDriver<A>, index: usize) {
 /// another demo's name (e.g. "Panel" inside "Bottom Panel") can resolve
 /// to the wrong row. Mirrors `GalleryApp::render_content`'s own row
 /// layout: one `line_height()`-tall row per demo, top to bottom.
+///
+/// Panics if the row falls outside the sidebar's painted area.
+/// `render_content` stops drawing rows once they would overflow
+/// (`if y + lh > sb.y + sb.height { break }`), so a group with more
+/// demos than the sidebar has lines would otherwise make this helper a
+/// silent no-op: the click would land on blank space, the selection
+/// would never change, and a caller whose only check is "didn't panic"
+/// would keep passing while exercising the empty-selection screen.
 fn click_sidebar_row<A: AppLogic>(driver: &mut TuiDriver<A>, row_in_group: usize) {
     let id = quadraui::WidgetId::new("app-shell:sidebar-content");
     let sb = driver
@@ -65,8 +73,16 @@ fn click_sidebar_row<A: AppLogic>(driver: &mut TuiDriver<A>, row_in_group: usize
         .expect("no registered zone for the sidebar content area")
         .bounds;
     let lh = driver.backend().line_height();
-    let y = sb.y + row_in_group as f32 * lh + lh / 2.0;
-    driver.click(sb.x + sb.width / 2.0, y);
+    let y = sb.y + row_in_group as f32 * lh;
+    assert!(
+        y + lh <= sb.y + sb.height,
+        "sidebar row {row_in_group} is past the painted sidebar area \
+         (rows are {lh} tall, content area is {} tall, fits {} rows) — \
+         grow the driver's terminal height or paginate the sidebar",
+        sb.height,
+        (sb.height / lh) as usize
+    );
+    driver.click(sb.x + sb.width / 2.0, y + lh / 2.0);
 }
 
 /// Click the Overlays activity-bar icon, click the Toast sidebar row,
@@ -286,9 +302,39 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
         click_sidebar_row(&mut driver, *row);
         *row += 1;
         // Render already happened inside `click` (it redraws on every
-        // dispatched event) — reaching here without a panic is the
-        // assertion. `screen()` forces one more render for good measure.
-        let _ = driver.screen();
+        // dispatched event), but "didn't panic" alone would also pass if
+        // the click missed its row and left nothing selected. Assert the
+        // selection actually took: with `selected == None`,
+        // `render_content` paints the "Select a demo from the sidebar"
+        // placeholder instead of ever calling `Demo::render`, so its
+        // absence is what proves this demo was driven through the shell.
+        let demo_screen = driver.screen();
+        assert!(
+            !demo_screen.contains("Select a demo from the sidebar"),
+            "clicking {}'s sidebar row should select it, but the main pane \
+             still shows the empty-selection placeholder:\n{demo_screen}",
+            demo.name()
+        );
+
+        // The Code tab must show this demo's own gallery region — a
+        // second, demo-specific check that the right row got selected
+        // (not merely *some* row). Compares against the region's first
+        // non-blank line, trimmed, since the pane wraps and indents.
+        if let Some((x, y)) = driver.find("Code") {
+            driver.click(x, y);
+            let first_line = source
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .expect("a non-empty Code region must have a non-blank line");
+            let code_screen = driver.screen();
+            assert!(
+                code_screen.contains(first_line),
+                "Code tab for {} should show the first line of its own \
+                 gallery region ({first_line:?}):\n{code_screen}",
+                demo.name()
+            );
+        }
 
         // The Data tab must also render without panicking.
         if let Some((x, y)) = driver.find("Data") {
@@ -359,8 +405,10 @@ fn activity_bar_click_activates_the_item() {
 
     let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
     driver.click(dx, dy);
+    // Pin the key as well as the value: a bare `"ready"` would match any
+    // field in the payload that happens to hold that string.
     assert!(
-        driver.screen_contains("\"ready\""),
+        driver.screen_contains("\"last_action\": \"ready\""),
         "last_action should start as \"ready\" before any click:\n{}",
         driver.screen()
     );
@@ -396,8 +444,9 @@ fn tab_bar_chrome_click_activates_the_clicked_tab() {
 
     let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
     driver.click(dx, dy);
+    // Pin the key as well as the value, as above.
     assert!(
-        driver.screen_contains("\"ready\""),
+        driver.screen_contains("\"chrome_action\": \"ready\""),
         "chrome_action should start as \"ready\" before any click:\n{}",
         driver.screen()
     );
@@ -452,4 +501,17 @@ fn workspace_open_key_adds_a_document() {
         "pressing 'o' should open the next backlog document:\n{}",
         driver.screen()
     );
+}
+
+/// `click_sidebar_row` must refuse a row the sidebar never painted
+/// rather than clicking blank space. Guards the guard: without the
+/// bounds assertion this returns normally, the selection stays empty,
+/// and every caller whose check is "didn't panic" keeps passing while
+/// driving nothing.
+#[test]
+#[should_panic(expected = "past the painted sidebar area")]
+fn click_sidebar_row_panics_on_a_row_the_sidebar_never_painted() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    click_group_zone(&mut driver, chrome_group_index());
+    click_sidebar_row(&mut driver, 9_999);
 }

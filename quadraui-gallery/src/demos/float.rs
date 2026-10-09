@@ -398,7 +398,10 @@ impl Demo for FloatDemo {
 }
 // gallery:end
 
-#[cfg(test)]
+// `TuiBackend` only exists under `feature = "tui"`, and this crate has
+// no default features: the `macos` and `win` gates compile these test
+// targets with `tui` off, so the module itself must carry the feature.
+#[cfg(all(test, feature = "tui"))]
 mod tests {
     use super::*;
 
