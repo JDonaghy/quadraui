@@ -266,3 +266,135 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
         let _ = driver.screen();
     }
 }
+
+// ── Layout & chrome demos — targeted interaction tests ────────────────────
+
+/// Index of `"Chrome"` in [`GROUPS`] — where every Layout & chrome demo
+/// lives.
+fn chrome_group_index() -> usize {
+    GROUPS
+        .iter()
+        .position(|g| *g == "Chrome")
+        .expect("GROUPS must include \"Chrome\"")
+}
+
+/// Navigate to the Chrome group and select the demo named `name` from
+/// the sidebar.
+fn select_chrome_demo<A: AppLogic>(driver: &mut TuiDriver<A>, name: &str) {
+    click_group_zone(driver, chrome_group_index());
+    let (x, y) = driver
+        .find(name)
+        .unwrap_or_else(|| panic!("{name} sidebar row should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+}
+
+/// Clicking a Toolbar action button (Filter) toggles it and the hint
+/// line reflects the new state.
+#[test]
+fn toolbar_filter_click_updates_the_hint_line() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_chrome_demo(&mut driver, "Toolbar");
+    assert!(driver.screen_contains("Tab to focus"));
+
+    let (x, y) = driver
+        .find("Filter")
+        .unwrap_or_else(|| panic!("Filter button should paint:\n{}", driver.screen()));
+    // A full press+release cycle, not a bare `click()` (`MouseDown`
+    // only) — `ToolbarDemo::dispatch` fires on `MouseUp`, matching the
+    // release-on-the-same-button click contract every quadraui toolbar
+    // follows (see `quadraui/tests/tui_example_driver.rs`'s
+    // `toolbar_press_release_on_filter_toggles_is_active_state`).
+    driver.mouse_down(x, y);
+    driver.mouse_up(x, y);
+
+    assert!(
+        driver.screen_contains("Filter on"),
+        "clicking Filter should flip it on and update the hint line:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the second Activity Bar icon activates it — visible on the
+/// Data tab as the newly-active item's `is_active: true`.
+#[test]
+fn activity_bar_click_activates_the_item() {
+    // Tall enough that the Data tab's full `ActivityBar` JSON (3 items,
+    // ~30 lines) fits without the Demo-tab text clipping cutting off the
+    // activated item before it ever paints.
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 60);
+    select_chrome_demo(&mut driver, "Activity Bar");
+
+    let (x, y) = driver.find("G").unwrap_or_else(|| {
+        panic!(
+            "'G' (Source Control icon) should paint:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(x, y);
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("Source Control") && screen.contains("is_active"),
+        "Data tab should show the activated item:\n{screen}"
+    );
+}
+
+/// Clicking the "lib.rs" tab on the Tab Bar "Chrome frame" variant
+/// activates it — visible on the Data tab as `is_active: true`.
+#[test]
+fn tab_bar_chrome_click_activates_the_clicked_tab() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_chrome_demo(&mut driver, "Tab Bar");
+    assert!(driver.screen_contains("main.rs"));
+
+    let (x, y) = driver
+        .find("lib.rs")
+        .unwrap_or_else(|| panic!("lib.rs tab should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    let screen = driver.screen();
+    assert!(
+        screen.contains("lib.rs") && screen.contains("is_active"),
+        "Data tab should show lib.rs as the active tab:\n{screen}"
+    );
+}
+
+/// Clicking a Window Control button updates the status line with the
+/// `ServiceResult` outcome.
+#[test]
+fn window_control_click_shows_a_result_in_the_status_line() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_chrome_demo(&mut driver, "Window Control");
+
+    let (x, y) = driver
+        .find("Set Title")
+        .unwrap_or_else(|| panic!("Set Title button should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("set_title"),
+        "clicking Set Title should show the set_title ServiceResult:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing `o` on the Workspace demo opens the next backlog document,
+/// growing the tab strip and updating the event log.
+#[test]
+fn workspace_open_key_adds_a_document() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_chrome_demo(&mut driver, "Workspace");
+    assert!(driver.screen_contains("alpha"));
+
+    driver.type_char('o');
+
+    assert!(
+        driver.screen_contains("delta-doc") || driver.screen_contains("opened"),
+        "pressing 'o' should open the next backlog document:\n{}",
+        driver.screen()
+    );
+}
