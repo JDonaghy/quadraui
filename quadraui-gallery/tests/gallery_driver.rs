@@ -85,6 +85,16 @@ fn click_sidebar_row<A: AppLogic>(driver: &mut TuiDriver<A>, row_in_group: usize
     driver.click(sb.x + sb.width / 2.0, y + lh / 2.0);
 }
 
+/// Navigate to the Overlays group and select the demo named `name` from
+/// the sidebar.
+fn select_overlays_demo<A: AppLogic>(driver: &mut TuiDriver<A>, name: &str) {
+    click_group_zone(driver, overlays_group_index());
+    let (x, y) = driver
+        .find(name)
+        .unwrap_or_else(|| panic!("{name} sidebar row should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+}
+
 /// Click the Overlays activity-bar icon, click the Toast sidebar row,
 /// then the Code tab — asserting the demo shows, and the Code tab shows
 /// text from `ToastDemo`'s own `// gallery:begin` / `// gallery:end`
@@ -1205,6 +1215,322 @@ fn message_list_row_click_reports_the_row_text() {
     assert!(
         driver.screen_contains("clicked row 0"),
         "clicking the first row should report it in the status line:\n{}",
+        driver.screen()
+    );
+}
+
+// ── Overlays, feedback & platform demos — targeted interaction tests ──────
+
+/// A plain `Char` key with no modifiers — shorthand for the scripted
+/// `queue_dialog_events` input the native-dialog demos below drive the
+/// nested TUI dialog loop with.
+fn char_key(c: char) -> quadraui::UiEvent {
+    quadraui::UiEvent::KeyPressed {
+        key: quadraui::Key::Char(c),
+        modifiers: quadraui::Modifiers::default(),
+        repeat: false,
+    }
+}
+
+fn named_key(key: quadraui::NamedKey) -> quadraui::UiEvent {
+    quadraui::UiEvent::KeyPressed {
+        key: quadraui::Key::Named(key),
+        modifiers: quadraui::Modifiers::default(),
+        repeat: false,
+    }
+}
+
+/// `Tab` gives the extended `Toast` demo's stack keyboard focus (seeded
+/// on the newest toast's dismiss button); `Enter` then dismisses it —
+/// the `toast_actions_app` behaviour folded into the seed demo (#1347).
+#[test]
+fn toast_tab_focus_then_enter_dismisses_the_focused_toast() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Toast");
+
+    driver.type_char('1');
+    assert!(
+        driver.screen_contains("Toast #1"),
+        "pressing 1 should add an Info toast:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(quadraui::NamedKey::Tab);
+    driver.press_named(quadraui::NamedKey::Enter);
+    assert!(
+        !driver.screen_contains("Toast #1"),
+        "Tab to focus the stack then Enter should dismiss the focused toast:\n{}",
+        driver.screen()
+    );
+}
+
+/// Switching the `Tooltip` demo to its `Full` variant shows a title by
+/// default; `t` toggles it off — the `TooltipChrome` border/title
+/// vocabulary (#541).
+#[test]
+fn tooltip_full_variant_title_toggle_flips_the_status_line() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Tooltip");
+    assert!(driver.screen_contains("border: Sides"));
+
+    let (x, y) = driver
+        .find("Full")
+        .unwrap_or_else(|| panic!("\"Full\" variant should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+    assert!(
+        driver.screen_contains("title: true"),
+        "Full variant should start with the title shown:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('t');
+    assert!(
+        driver.screen_contains("title: false"),
+        "t should toggle the title off:\n{}",
+        driver.screen()
+    );
+}
+
+/// The `Dialog` demo's whole point (#491's click-through bug class): a
+/// click that lands inside the open dialog must never fall through to
+/// the row list underneath it, and a click on one of the dialog's own
+/// buttons must close it.
+#[test]
+fn dialog_click_inside_modal_does_not_select_the_row_behind_it() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Dialog");
+    assert!(driver.screen_contains("selected: nothing"));
+
+    let (ox, oy) = driver
+        .find("Open dialog")
+        .unwrap_or_else(|| panic!("\"Open dialog\" row should paint:\n{}", driver.screen()));
+    driver.click(ox, oy);
+    assert!(
+        driver.screen_contains("Confirm delete"),
+        "clicking Open dialog should open the modal:\n{}",
+        driver.screen()
+    );
+
+    let (bx, by) = driver
+        .find("Really delete?")
+        .unwrap_or_else(|| panic!("dialog body should paint:\n{}", driver.screen()));
+    driver.click(bx, by);
+    assert!(
+        driver.screen_contains("selected: nothing") && driver.screen_contains("Confirm delete"),
+        "a click inside the dialog on no button must neither select the row \
+         behind it nor close the dialog:\n{}",
+        driver.screen()
+    );
+
+    let (okx, oky) = driver
+        .find("OK")
+        .unwrap_or_else(|| panic!("OK button should paint:\n{}", driver.screen()));
+    driver.click(okx, oky);
+    assert!(
+        !driver.screen_contains("Confirm delete"),
+        "clicking OK should close the dialog:\n{}",
+        driver.screen()
+    );
+}
+
+/// `Message Dialog`'s "Direct controller" variant: Enter opens the
+/// confirm dialog, Enter again activates its default button.
+#[test]
+fn message_dialog_direct_controller_enter_opens_then_resolves() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Message Dialog");
+    assert!(driver.screen_contains("Direct controller"));
+
+    driver.press_named(quadraui::NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Unsaved Changes"),
+        "Enter should open the confirm dialog:\n{}",
+        driver.screen()
+    );
+
+    driver.press_named(quadraui::NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Resolved: gallery:message-dialog:save"),
+        "a second Enter should activate the default (Save) button:\n{}",
+        driver.screen()
+    );
+}
+
+/// `Message Dialog`'s "Native service" variant: scripting `Right` then
+/// `Enter` on the nested TUI dialog loop resolves the non-default
+/// button, proving `backend.services().show_message_dialog` returns a
+/// real choice on TUI (quadraui#965), not just an in-canvas paint.
+#[test]
+fn message_dialog_native_service_resolves_a_real_non_default_button_on_tui() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Message Dialog");
+
+    let (x, y) = driver.find("Native service").unwrap_or_else(|| {
+        panic!(
+            "\"Native service\" variant should paint:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(x, y);
+
+    driver.queue_dialog_events(vec![
+        named_key(quadraui::NamedKey::Right),
+        named_key(quadraui::NamedKey::Enter),
+    ]);
+    driver.press_named(quadraui::NamedKey::Enter);
+    assert!(
+        driver.screen_contains("Discarded"),
+        "Right then Enter on the nested loop should resolve the non-default (Discard) button:\n{}",
+        driver.screen()
+    );
+}
+
+/// The `Help Overlay` demo is context-sensitive: `?` on the "Source
+/// Control" variant shows that panel's own registered action, and the
+/// "Settings (no help)" variant still opens a visible fallback instead
+/// of silently swallowing the key.
+#[test]
+fn help_overlay_is_context_sensitive_per_variant() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Help Overlay");
+
+    let (x, y) = driver.find("Source Control").unwrap_or_else(|| {
+        panic!(
+            "\"Source Control\" variant should paint:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(x, y);
+    driver.type_char('?');
+    assert!(
+        driver.screen_contains("Commit"),
+        "? on Source Control should show that panel's own registered action:\n{}",
+        driver.screen()
+    );
+    driver.type_char('?');
+
+    let (sx, sy) = driver.find("Settings (no help)").unwrap_or_else(|| {
+        panic!(
+            "\"Settings (no help)\" variant should paint:\n{}",
+            driver.screen()
+        )
+    });
+    driver.click(sx, sy);
+    driver.type_char('?');
+    assert!(
+        driver.screen_contains("No help available"),
+        "? on the Settings variant must still open a visible fallback:\n{}",
+        driver.screen()
+    );
+}
+
+/// `Context Menu`: right-click opens the painted menu (TUI has no
+/// native menu, so every `MenuStyle` resolves to `Custom`), clicking an
+/// item reports it in the status line, and `m` cycles the requested
+/// style.
+#[test]
+fn context_menu_right_click_then_item_click_activates_it() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Context Menu");
+
+    let main = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == quadraui::WidgetId::new("app-shell:main-content"))
+        .expect("app-shell:main-content zone should be registered")
+        .bounds;
+    let lh = driver.backend().line_height();
+    driver.right_click(main.x + main.width / 2.0, main.y + 4.0 * lh);
+    assert!(
+        driver.screen_contains("Copy"),
+        "right-click should open the painted context menu:\n{}",
+        driver.screen()
+    );
+
+    let (cx, cy) = driver
+        .find("Copy")
+        .unwrap_or_else(|| panic!("Copy item should paint:\n{}", driver.screen()));
+    driver.click(cx, cy);
+    assert!(
+        driver.screen_contains("Last action: gallery:ctx:copy"),
+        "clicking Copy should report its id in the status line:\n{}",
+        driver.screen()
+    );
+
+    driver.type_char('m');
+    assert!(
+        driver.screen_contains("style=Native") && driver.screen_contains("effective=custom"),
+        "m should cycle the requested style; TUI always resolves to custom:\n{}",
+        driver.screen()
+    );
+}
+
+/// `Clipboard`: Ctrl-C copies the seeded line (status confirms the
+/// write completed), proving the call reaches
+/// `PlatformServices::clipboard()` without panicking/blocking —
+/// quadraui#398.
+#[test]
+fn clipboard_ctrl_c_confirms_the_copy() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "Clipboard");
+    assert!(driver.screen_contains("Copy me to the system clipboard!"));
+
+    driver.ctrl_char('c');
+    assert!(
+        driver.screen_contains("Copied"),
+        "Ctrl-C should update the status to confirm the copy:\n{}",
+        driver.screen()
+    );
+}
+
+/// `File Dialog`'s open/save legs resolve a real path through the
+/// nested TUI dialog loop (quadraui#965); the folder leg is the one
+/// method that #965 deliberately left returning `None` unconditionally
+/// on TUI.
+#[test]
+fn file_dialog_open_confirms_a_real_path_on_tui() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "File Dialog");
+
+    driver.queue_dialog_events(vec![
+        char_key('m'),
+        char_key('a'),
+        char_key('i'),
+        char_key('n'),
+        named_key(quadraui::NamedKey::Enter),
+    ]);
+    driver.type_char('o');
+    assert!(
+        driver.screen_contains("Opened:") && driver.screen_contains("main.rs"),
+        "typing a filter that narrows to main.rs then Enter must confirm that real path:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn file_dialog_save_confirms_the_seeded_filename_on_tui() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "File Dialog");
+
+    driver.queue_dialog_events(vec![named_key(quadraui::NamedKey::Enter)]);
+    driver.type_char('s');
+    assert!(
+        driver.screen_contains("Save as:") && driver.screen_contains("untitled.txt"),
+        "immediate Enter must save under the seeded filename:\n{}",
+        driver.screen()
+    );
+}
+
+#[test]
+fn file_dialog_folder_reports_unsupported_on_tui() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_overlays_demo(&mut driver, "File Dialog");
+
+    driver.type_char('f');
+    assert!(
+        driver.screen_contains("unsupported"),
+        "the folder dialog must report None as unsupported on TUI:\n{}",
         driver.screen()
     );
 }
