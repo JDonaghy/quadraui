@@ -516,7 +516,15 @@ impl Demo for FormDemo {
                 } => {
                     let form_rect = Self::form_rect(area, backend);
                     let layout = backend.form_layout(form_rect, &self.search_replace.build_form());
-                    match layout.hit_test(position.x, position.y) {
+                    // `FormLayout`'s hit regions are relative to
+                    // `form_rect`'s own top-left corner, not the
+                    // surface origin (`compose::FormController::click_inner`
+                    // does the same subtraction) — `position` is an
+                    // absolute surface coordinate, which only happens to
+                    // equal the local one when `form_rect` starts at
+                    // `(0, 0)`, which it never does once this demo is
+                    // embedded below the gallery's own chrome.
+                    match layout.hit_test(position.x - form_rect.x, position.y - form_rect.y) {
                         FormHit::Field(id) => {
                             self.search_replace.click(&id);
                             Reaction::Redraw
@@ -623,6 +631,56 @@ mod tests {
     #[test]
     fn all_fields_form_has_every_field_kind_represented() {
         let form = build_all_fields_form();
-        assert_eq!(form.fields.len(), 14);
+        let has = |pred: fn(&FieldKind) -> bool| form.fields.iter().any(|f| pred(&f.kind));
+        assert!(has(|k| matches!(k, FieldKind::Label)), "Label missing");
+        assert!(
+            has(|k| matches!(k, FieldKind::Toggle { .. })),
+            "Toggle missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::TextInput { .. })),
+            "TextInput missing"
+        );
+        assert!(has(|k| matches!(k, FieldKind::Button)), "Button missing");
+        assert!(
+            has(|k| matches!(k, FieldKind::ReadOnly { .. })),
+            "ReadOnly missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::Slider { .. })),
+            "Slider missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::ColorPicker { .. })),
+            "ColorPicker missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::Dropdown { .. })),
+            "Dropdown missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::TextArea { .. })),
+            "TextArea missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::PasswordInput { .. })),
+            "PasswordInput missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::SegmentedControl { .. })),
+            "SegmentedControl missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::ToggleGroup { .. })),
+            "ToggleGroup missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::ButtonRow { .. })),
+            "ButtonRow missing"
+        );
+        assert!(
+            has(|k| matches!(k, FieldKind::Toolbar(_))),
+            "Toolbar missing"
+        );
     }
 }

@@ -4,6 +4,21 @@
 //! Exercises `FindReplacePanel::hit_test`: clicking a toggle/nav/close
 //! button reports which `FindReplaceClickTarget` was hit. Two variants
 //! show the panel at its two documented widths — compact and wide.
+//!
+//! Click routing scales the panel's column/row geometry by the running
+//! backend's real [`Backend::char_width`] / [`Backend::line_height`]
+//! (1.0/1.0 on TUI, real pixel metrics on GTK/macOS/Win), so a click
+//! lands in the right neighbourhood of cells on every backend rather
+//! than being off by whole screens on a pixel backend. It is still an
+//! **approximation** of each backend's actual panel position: every
+//! backend's `draw_find_replace` anchors the popup with its own formula
+//! (TUI clamps to whole cells; the shared GUI `paint()` uses a fixed
+//! 10px right inset and 2px top gap that don't reduce to a `char_width`/
+//! `line_height` multiple), and there is no `Backend`-owned method yet
+//! that reports a backend's resolved content origin back to the caller.
+//! A consumer that needs pixel-exact routing on a GUI backend should
+//! track that gap as a follow-up rather than copy this approximation
+//! verbatim.
 
 use quadraui::{
     compute_find_replace_hit_regions, Backend, BackendCaps, Color, FindReplaceClickTarget,
@@ -88,17 +103,26 @@ impl FindReplaceDemo {
         Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0))
     }
 
-    /// The panel's content corner (inside its 1-cell border), in the
-    /// same absolute coordinates the rasteriser paints at. Mirrors that
-    /// function's `x`/`y` derivation so click routing can't drift from
-    /// where the panel is actually painted.
-    fn content_origin(panel: &FindReplacePanel, rect: Rect) -> (f32, f32) {
-        let panel_w = (panel.panel_width as f32).min((rect.width - 2.0).max(0.0));
+    /// The panel's content corner (inside its one-cell border), in the
+    /// same absolute coordinates the rasteriser paints at, scaled by the
+    /// real `char_width`/`line_height` of the backend that is about to
+    /// hit-test against it (see the module doc for why this is a
+    /// cross-backend *approximation*, not each backend's exact anchor
+    /// formula).
+    fn content_origin(
+        panel: &FindReplacePanel,
+        rect: Rect,
+        char_width: f32,
+        line_height: f32,
+    ) -> (f32, f32) {
+        let cw = char_width.max(1.0);
+        let lh = line_height.max(1.0);
+        let panel_w = (panel.panel_width as f32 * cw).min((rect.width - 2.0 * cw).max(0.0));
         let gb = &panel.group_bounds;
         let gb_right = rect.x + gb.x + gb.width;
-        let x = (gb_right - (panel_w + 1.0)).max(rect.x);
-        let y = gb.y.max(1.0);
-        (x + 1.0, y + 1.0)
+        let x = (gb_right - (panel_w + cw)).max(rect.x);
+        let y = gb.y.max(lh);
+        (x + cw, y + lh)
     }
 
     fn status_bar(&self) -> StatusBar {
@@ -169,8 +193,10 @@ impl Demo for FindReplaceDemo {
                 let rect = Self::editor_rect(area, backend);
                 let group_bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
                 let probe = self.panel_for(variant, group_bounds);
-                let origin = Self::content_origin(&probe, rect);
-                let hit = probe.hit_test(position.x, position.y, origin, 1.0, 1.0);
+                let char_width = backend.char_width();
+                let line_height = backend.line_height();
+                let origin = Self::content_origin(&probe, rect, char_width, line_height);
+                let hit = probe.hit_test(position.x, position.y, origin, char_width, line_height);
                 self.panel.group_bounds = group_bounds;
                 self.last_click = Some(match hit {
                     FindReplaceHit::Target(target) => {

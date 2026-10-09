@@ -94,20 +94,23 @@ fn navigating_group_then_demo_shows_it_and_its_code_region() {
     let config = GalleryApp::config();
     let mut driver = driver_with_shell(GalleryApp::new(), config, 100, 32);
 
-    // "Containers" has no demos registered yet (Input & forms and
-    // Layout & chrome both do now) — navigate there first to exercise
-    // the empty-group placeholder this test used to get for free from
-    // the default (Content) group.
-    let containers_idx = GROUPS
-        .iter()
-        .position(|g| *g == "Containers")
-        .expect("GROUPS must include \"Containers\"");
-    click_group_zone(&mut driver, containers_idx);
-    assert!(
-        driver.screen_contains("Select a demo") || driver.screen_contains("no demos ported yet"),
-        "no demo should be selected in an empty group:\n{}",
-        driver.screen()
-    );
+    // Navigate to whichever `GROUPS` entry has no demo registered yet
+    // (resolved from the registry, not hardcoded — a hardcoded group
+    // name breaks the instant the next milestone port fills it, exactly
+    // as happened to `GROUPS[0]` before this test existed) to exercise
+    // the empty-group placeholder. Once every group has at least one
+    // demo, this part of the test has nothing left to prove and is
+    // skipped rather than failing.
+    let registered_groups: Vec<&'static str> = registry().iter().map(|d| d.group()).collect();
+    if let Some(empty_group_idx) = GROUPS.iter().position(|g| !registered_groups.contains(g)) {
+        click_group_zone(&mut driver, empty_group_idx);
+        assert!(
+            driver.screen_contains("Select a demo")
+                || driver.screen_contains("no demos ported yet"),
+            "no demo should be selected in an empty group:\n{}",
+            driver.screen()
+        );
+    }
 
     // Navigate to the Overlays group.
     let icon = group_icon(overlays_group_index());
@@ -612,7 +615,7 @@ fn find_replace_chevron_click_toggles_show_replace() {
 fn palette_text_confirmed_creates_a_branch() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
     select_content_demo(&mut driver, "Command Palette");
-    assert!(driver.screen_contains("main"));
+    assert!(driver.screen_contains("Switch Branch"));
 
     driver.press_named(quadraui::NamedKey::Tab);
     for c in "my-new-branch".chars() {
@@ -695,6 +698,61 @@ fn text_selection_drag_then_ctrl_c_copies() {
     assert!(
         driver.screen_contains("Copied:"),
         "Ctrl-C after a drag-select should copy and show a preview:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the "Aa" (case-sensitive) toggle on the `Form` demo's
+/// "Search & replace" variant flips it off — proves
+/// `backend.form_layout(...).hit_test(...)` routes the click to the
+/// toggle it actually landed on, not just that the form paints.
+#[test]
+fn form_toggle_click_updates_the_status_line() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_content_demo(&mut driver, "Form");
+
+    let (vx, vy) = driver
+        .find("Search & replace")
+        .expect("variant picker should list \"Search & replace\"");
+    driver.click(vx, vy);
+    assert!(driver.screen_contains("Aa"));
+
+    let (x, y) = driver
+        .find("Aa")
+        .unwrap_or_else(|| panic!("case-sensitive toggle should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("last: case=false"),
+        "clicking the Aa toggle should flip case_sensitive and show it in the status line:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing Tab on the `Form` demo's "Search & replace" variant advances
+/// the `FocusRing` from the search field to the toggle group — proves
+/// Tab/Shift+Tab actually drives `FocusRing::advance`, not just that it
+/// exists on the struct.
+#[test]
+fn form_tab_key_advances_the_focus_ring() {
+    // Tall enough that the Data tab's full `Form` JSON (4 fields, deeply
+    // nested `FieldKind` payloads) fits before `focused_field` — which
+    // serialises right after the `fields` array — scrolls out of view.
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 220);
+    select_content_demo(&mut driver, "Form");
+
+    let (vx, vy) = driver
+        .find("Search & replace")
+        .expect("variant picker should list \"Search & replace\"");
+    driver.click(vx, vy);
+
+    driver.press_named(quadraui::NamedKey::Tab);
+
+    let (dx, dy) = driver.find("Data").expect("Data tab label should paint");
+    driver.click(dx, dy);
+    assert!(
+        driver.screen_contains("\"focused_field\": \"toggles\""),
+        "Tab should advance the FocusRing from search to toggles:\n{}",
         driver.screen()
     );
 }

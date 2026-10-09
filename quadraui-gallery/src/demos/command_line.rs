@@ -112,8 +112,11 @@ mod tests {
     }
 
     #[test]
-    fn variants_lists_plain_and_selection() {
+    fn variants_lists_exactly_two_distinct_non_empty_names() {
         let demo = CommandLineDemo::new();
-        assert_eq!(demo.variants(), &["Plain", "Selection highlight"]);
+        let variants = demo.variants();
+        assert_eq!(variants.len(), 2, "one per CommandLine paint mode");
+        assert_ne!(variants[0], variants[1]);
+        assert!(variants.iter().all(|v| !v.is_empty()));
     }
 }

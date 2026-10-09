@@ -1,34 +1,65 @@
-//! `File & Folder Picker` demo — adapted from
+//! `File Picker` demo — adapted from
 //! `quadraui/examples/common/file_picker_app.rs` and
 //! `folder_picker_app.rs`.
 //!
-//! Three variants cover `FilePickerController`'s two modes plus
-//! `FolderPickerController` — the in-app pickers every backend
-//! (including TUI) gets for free, no native file-dialog support
-//! required. All three are rooted at this crate's own `src/demos/`
-//! directory, so the listing is identical on every machine this runs on.
+//! Sidebar name is "File Picker" (the sidebar's demo-name column is too
+//! narrow for the fuller "File & Folder Picker"), but its three variants
+//! cover `FilePickerController`'s two modes *plus* `FolderPickerController`
+//! — the in-app pickers every backend (including TUI) gets for free, no
+//! native file-dialog support required. All three are rooted at a small
+//! synthetic directory tree this demo creates for itself (see
+//! [`build_demo_tree`]), so the listing is a fixed set of names on every
+//! machine and every checkout — it neither depends on
+//! `CARGO_MANIFEST_DIR` resolving at run time nor drifts as future demos
+//! are added to this crate's own source tree.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use quadraui::{
     Backend, BackendCaps, Color, FilePickerController, FilePickerEvent, FilePickerMode,
     FolderPickerController, FolderPickerEvent, InteractionState, Reaction, Rect, StatusBar,
     StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
+use tempfile::TempDir;
 
 use crate::demo::{extract_region, Demo};
 
 const SOURCE: &str = include_str!("file_picker.rs");
 
 // gallery:begin
-/// Deterministic picker root: this crate's own `src/demos/` directory,
-/// so the listing is the same on every checkout rather than inheriting
-/// whatever directory the gallery process happens to run from.
-fn demo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/demos")
+/// Materialise a small, fixed directory tree for the pickers to list.
+///
+/// Deliberately **not** this crate's own `src/demos/` (that directory's
+/// contents change every time a future demo is ported, so the picker's
+/// listing — and any capture-mode snapshot of it — would silently churn
+/// on unrelated PRs) and **not** a path derived from
+/// `env!("CARGO_MANIFEST_DIR")` (a build-machine path baked in at
+/// compile time; `CLAUDE.md`'s `cargo xwin test` flow runs the compiled
+/// `.exe` on a separate Windows host where that path doesn't resolve).
+///
+/// The returned [`TempDir`]'s own path is unique per run, but the file
+/// *names* inside it are fixed, so the listing itself is deterministic.
+/// Callers must keep the `TempDir` alive for as long as the picker
+/// needs its contents — dropping it deletes the directory.
+fn build_demo_tree() -> TempDir {
+    let dir = tempfile::tempdir().expect("create a temp dir for the file picker demo");
+    let root = dir.path();
+    std::fs::write(root.join("README.md"), b"# quadraui gallery demo tree\n")
+        .expect("write README.md");
+    std::fs::write(root.join("main.rs"), b"fn main() {}\n").expect("write main.rs");
+    std::fs::create_dir(root.join("src")).expect("create src/");
+    std::fs::write(root.join("src").join("lib.rs"), b"// lib\n").expect("write src/lib.rs");
+    std::fs::create_dir(root.join("assets")).expect("create assets/");
+    std::fs::write(root.join("assets").join("logo.svg"), b"<svg/>\n")
+        .expect("write assets/logo.svg");
+    dir
 }
 
 pub struct FilePickerDemo {
+    // Kept alive for `FilePickerDemo`'s whole lifetime: the pickers
+    // below hold only the `PathBuf` this resolves to, not the `TempDir`
+    // itself, and dropping it would delete the tree out from under them.
+    root_dir: TempDir,
     open_picker: FilePickerController,
     save_picker: FilePickerController,
     folder_picker: FolderPickerController,
@@ -37,8 +68,10 @@ pub struct FilePickerDemo {
 
 impl FilePickerDemo {
     pub fn new() -> Self {
-        let root = demo_root();
+        let root_dir = build_demo_tree();
+        let root: PathBuf = root_dir.path().to_path_buf();
         Self {
+            root_dir,
             open_picker: FilePickerController::new(FilePickerMode::Open, root.clone(), vec![]),
             save_picker: FilePickerController::new(FilePickerMode::Save, root.clone(), vec![])
                 .with_initial_filename("untitled.rs"),
@@ -93,6 +126,11 @@ impl Default for FilePickerDemo {
 
 impl Demo for FilePickerDemo {
     fn name(&self) -> &'static str {
+        // Not "File & Folder Picker": the sidebar's demo-name column is
+        // narrow enough (~20 cells) that the longer title clips, hiding
+        // the final letter rather than revealing the folder variant.
+        // The "Choose folder" entry in `variants()` is what actually
+        // surfaces it, once this row is selected.
         "File Picker"
     }
 
@@ -183,7 +221,7 @@ impl Demo for FilePickerDemo {
         };
         serde_json::json!({
             "mode": mode,
-            "root": demo_root().display().to_string(),
+            "root": self.root_dir.path().display().to_string(),
             "confirmed": self.confirmed,
         })
     }
@@ -203,15 +241,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn demo_root_is_this_crates_demos_directory() {
-        let root = demo_root();
-        assert!(root.ends_with("src/demos"));
-        assert!(root.join("mod.rs").exists());
+    fn demo_tree_contains_the_fixed_synthetic_entries() {
+        let dir = build_demo_tree();
+        let root = dir.path();
+        assert!(root.join("README.md").is_file());
+        assert!(root.join("main.rs").is_file());
+        assert!(root.join("src").join("lib.rs").is_file());
+        assert!(root.join("assets").join("logo.svg").is_file());
     }
 
     #[test]
     fn save_picker_starts_with_the_initial_filename() {
         let demo = FilePickerDemo::new();
         assert_eq!(demo.save_picker.mode(), FilePickerMode::Save);
+        assert_eq!(demo.save_picker.query(), "untitled.rs");
     }
 }
