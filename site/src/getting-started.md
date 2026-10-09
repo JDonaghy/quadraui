@@ -24,7 +24,7 @@ Pick the backend feature(s) your app needs:
 ```sh
 git clone https://github.com/JDonaghy/quadraui
 cd quadraui
-cargo run --example hello --features tui
+cargo run -p quadraui --example hello --features tui
 ```
 
 Press any key to bump the counter; `q` to quit. Swap `--features tui` for

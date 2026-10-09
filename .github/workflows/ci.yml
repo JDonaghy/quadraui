@@ -338,6 +338,10 @@ jobs:
       # somewhere in CI instead of only on a worker's local machine.
       - name: release_decide.py unit tests
         run: python3 scripts/test_release_decide.py
+      - name: site_gen.py unit tests
+        run: python3 tools/test_site_gen.py
+      - name: introduction.md / README.md hello-world sync check
+        run: python3 tools/test_introduction_matches_readme.py
 
   tui:
     name: tui + win (build, test, clippy) — ${{ matrix.os }}

@@ -14,8 +14,8 @@
 //! <file>` drives [`quadraui_gallery::site_export::dump_registry`] — the
 //! same functions, not parallel copies, that `tests/capture_driver.rs`
 //! and `quadraui_gallery::site_export`'s own tests call directly.
-//! `tools/site_gen.py` (quadraui#1349) is the one consumer of both: it
-//! joins a `--dump-registry` JSON file against a `--capture` directory's
+//! `tools/site_gen.py` is the one consumer of both: it joins a
+//! `--dump-registry` JSON file against a `--capture` directory's
 //! `manifest.json` to build the mdBook gallery site.
 
 /// If argv requests `--capture <dir>` or `--capture=<dir>`, run headless

@@ -62,7 +62,7 @@ fn main() {
 ```
 
 The full version is `quadraui/examples/hello.rs`:
-`cargo run --example hello --features tui`.
+`cargo run -p quadraui --example hello --features tui`.
 
 ## Why it is different
 

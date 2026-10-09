@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -52,8 +53,15 @@ KNOWN_GROUP_ORDER = ["Content", "Chrome", "Containers", "Overlays", "Data"]
 BACKENDS = ["tui", "gtk", "macos", "win"]
 BACKEND_LABELS = {"tui": "TUI", "gtk": "GTK", "macos": "macOS", "win": "Windows"}
 
+# `"unsupported"` means "this particular build/host didn't capture this
+# backend" (`quadraui-gallery/src/capture.rs`'s own doc is explicit about
+# that), never "quadraui doesn't support this backend". On a public
+# landing site whose whole pitch is four backends, labelling every
+# macOS/Windows cell "Unsupported" (as a `tui`-only CI build necessarily
+# does) reads as the opposite of the truth, so the label names the build,
+# not the project.
 STATUS_LABELS = {
-    "unsupported": "Unsupported",
+    "unsupported": "Not captured in this build",
     "capture-pending": "Pending",
 }
 
@@ -80,11 +88,23 @@ def slug(s: str) -> str:
     return "".join(out) or "demo"
 
 
-def load_registry(path: Path) -> list[dict[str, Any]]:
+def read_json_array(path: Path, what: str) -> list[dict[str, Any]]:
+    """Read `path` as a JSON array, raising a message that names the file
+    and what it was expected to be instead of a bare traceback — both
+    "file doesn't exist" and "file isn't the shape we expected" are
+    equally easy mistakes to make when wiring this script into a new CI
+    job, and both should read as "fix your invocation", not a stack trace.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"{path}: no such file ({what})")
     entries = json.loads(path.read_text())
     if not isinstance(entries, list):
-        raise ValueError(f"{path}: expected a JSON array of registry entries")
+        raise ValueError(f"{path}: expected a JSON array ({what})")
     return entries
+
+
+def load_registry(path: Path) -> list[dict[str, Any]]:
+    return read_json_array(path, "registry.json from --dump-registry")
 
 
 def manifest_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -108,7 +128,7 @@ def merge_manifests(capture_dirs: list[Path]) -> dict[tuple[str, str, str, str],
     merged: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for capture_dir in capture_dirs:
         manifest_path = capture_dir / "manifest.json"
-        rows = json.loads(manifest_path.read_text())
+        rows = read_json_array(manifest_path, "manifest.json from --capture")
         for row in rows:
             key = manifest_key(row)
             row = dict(row, _capture_dir=capture_dir)
@@ -126,11 +146,17 @@ def copy_images(
     (a `status`-only row) have nothing to copy.
     """
     images_out.mkdir(parents=True, exist_ok=True)
-    for row in merged.values():
+    for key, row in merged.items():
         rel_path = row.get("path")
         if not rel_path:
             continue
-        src = row["_capture_dir"] / rel_path
+        capture_dir = row["_capture_dir"].resolve()
+        src = (capture_dir / rel_path).resolve()
+        if capture_dir not in (src, *src.parents):
+            raise ValueError(
+                f"manifest row for {key} has an unsafe path outside its "
+                f"capture dir: {rel_path!r}"
+            )
         dest = images_out / Path(rel_path).name
         shutil.copyfile(src, dest)
 
@@ -158,8 +184,33 @@ def cell_markdown(row: dict[str, Any] | None, backend: str) -> str:
     status = row.get("status") or "unknown"
     if status == "error":
         note = row.get("note") or "unknown error"
-        return f"Error: {note}"
+        return f"Error: {table_cell_text(note)}"
     return STATUS_LABELS.get(status, status)
+
+
+def table_cell_text(text: str) -> str:
+    """Make free-form text (a capture's panic/IO `note`) safe to embed in
+    a markdown table cell: collapse embedded newlines (a multi-line
+    message would otherwise terminate the row early) and escape `|` (a
+    literal pipe would otherwise be read as a column separator), either
+    of which would silently corrupt the rest of the table.
+    """
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def code_fence(source: str) -> str:
+    """A backtick fence long enough that nothing inside `source` can close
+    it early. CommonMark lets a fence be 3+ backticks, and closes on the
+    first line whose own backtick run is at least as long as the
+    opening one — so a demo whose own `source` embeds a fenced code
+    sample (e.g. a markdown-adapter demo's own ```rust ``` example) can
+    close our wrapping fence prematurely if we always open with exactly
+    three. Scanning `source` for its longest run of backticks and adding
+    one more guarantees no line inside it can ever match or exceed our
+    opening fence's length.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", source)), default=0)
+    return "`" * max(longest + 1, 3)
 
 
 def render_demo_page(
@@ -169,8 +220,24 @@ def render_demo_page(
     group = entry["group"]
     variants = entry["variants"]
     source = entry["source"]
+    fence = code_fence(source)
 
-    lines = [f"# {demo}", "", f"**Group:** {group}", "", "## Code", "", "```rust", source, "```", ""]
+    # `rust,noplayground`: a bare `rust` info string gets mdBook's Rust
+    # Playground "Run" button, but every sample here is a fragment lifted
+    # from inside a larger file (a `gallery:begin`/`end` region) and
+    # cannot compile standalone, so that button would just error.
+    lines = [
+        f"# {demo}",
+        "",
+        f"**Group:** {group}",
+        "",
+        "## Code",
+        "",
+        f"{fence}rust,noplayground",
+        source,
+        fence,
+        "",
+    ]
 
     lines.append("## Backends")
     lines.append("")
@@ -229,6 +296,18 @@ def render_summary(entries: list[dict[str, Any]]) -> str:
 def generate(registry_path: Path, capture_dirs: list[Path], out_dir: Path) -> None:
     entries = load_registry(registry_path)
     merged = merge_manifests(capture_dirs)
+
+    seen_slugs: dict[str, str] = {}
+    for entry in entries:
+        demo_slug = slug(entry["demo"])
+        collision = seen_slugs.get(demo_slug)
+        if collision is not None and collision != entry["demo"]:
+            raise ValueError(
+                f"demo names {collision!r} and {entry['demo']!r} both slug "
+                f"to {demo_slug!r} — their gallery pages would overwrite "
+                "each other"
+            )
+        seen_slugs[demo_slug] = entry["demo"]
 
     gallery_dir = out_dir / "gallery"
     if gallery_dir.exists():
