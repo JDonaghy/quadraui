@@ -1,0 +1,6 @@
+# Config for `cargo generate --git https://github.com/JDonaghy/quadraui templates/app`.
+# No custom `[placeholders]`: this template only uses cargo-generate's
+# built-in `{{project-name}}` / `{{crate_name}}`, so `--name <name>` on the
+# command line (or the interactive prompt) is all a caller needs to supply.
+[template]
+cargo_generate_version = ">=0.17.0"

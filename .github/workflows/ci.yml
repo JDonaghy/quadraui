@@ -1453,3 +1453,92 @@ jobs:
             fi
           fi
           exit "$fail"
+
+  template:
+    # `templates/app` is a `cargo generate` starter: a would-be
+    # consumer runs `cargo generate --git https://github.com/JDonaghy/quadraui
+    # templates/app` and gets a binary crate with one backend-generic
+    # `AppLogic`/`ShellApp` already wired to every backend feature. A
+    # template that silently rots — a renamed trait method, a feature flag
+    # that no longer forwards — is worse than no template: it is the very
+    # first thing a new consumer runs, so its breakage is a new consumer's
+    # first impression of this project. This job generates it fresh on
+    # every PR and proves it still builds and passes its own test, the same
+    # "is this still true" question `example-coverage` and `downstream`
+    # (above) ask for examples and consumers.
+    #
+    # `templates/app` is deliberately NOT a workspace member (root
+    # `Cargo.toml`'s `exclude` lists it) — it is a standalone crate shape
+    # cargo-generate copies out of this repo, not something this repo's own
+    # `cargo build --workspace` should ever compile in place. Its
+    # `Cargo.toml` pins `quadraui` to the published crates.io version (the
+    # same lead dependency shape the root README's "Getting started"
+    # section recommends), which this job overrides onto this PR's
+    # checkout with the same `.cargo/config.toml` `paths` override the
+    # `downstream` job above uses for coord-tui's git+rev pin — see that
+    # job's comment for why `working-directory:` (not `--manifest-path`) is
+    # load-bearing for cargo to actually discover it.
+    name: template (cargo generate smoke test)
+    runs-on: ubuntu-latest
+    # #1292: install cargo-generate (a few minutes, cached), generate the
+    # template, and `cargo test --features tui` the result — normally
+    # under 10 minutes with a warm cache.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Shares this runner's `~/.cargo/registry` across both `cargo install
+      # cargo-generate` below and the generated app's own build (which
+      # happens outside this checkout, in `$RUNNER_TEMP`, so the generated
+      # app's `target/` itself isn't what this caches — the registry is).
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-generate
+        run: cargo install cargo-generate --version 0.25.0 --locked
+
+      - name: Generate the template into a temp dir
+        run: |
+          set -euo pipefail
+          cargo generate \
+            --path "$GITHUB_WORKSPACE/templates/app" \
+            --name quadraui-template-smoke \
+            --destination "$RUNNER_TEMP/generated" \
+            --no-workspace \
+            --force
+
+      # Same mechanism the `downstream` job above uses for coord-tui's
+      # pinned git+rev dependency: a `paths` override matches by package
+      # name regardless of what source (a crates.io version, in this case)
+      # the manifest declares, redirecting it onto this PR's checkout
+      # instead.
+      - name: Point the generated app's quadraui dependency at this PR's checkout
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/generated/quadraui-template-smoke"
+          Q="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)"
+          mkdir -p "$D/.cargo"
+          printf 'paths = ["%s"]\n' "$Q" > "$D/.cargo/config.toml"
+
+      # Asserted, not assumed — same reasoning as the `downstream` job's own
+      # identical check: a silently-inert override would make this job prove
+      # nothing about the PR's quadraui at all.
+      - name: Assert the generated app resolves quadraui to this PR's checkout
+        working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
+        run: |
+          set -euo pipefail
+          want="$(cd "$GITHUB_WORKSPACE/quadraui" && pwd -P)/Cargo.toml"
+          got="$(cargo metadata --format-version 1 --features tui \
+                 | jq -r '.packages[] | select(.name=="quadraui") | .manifest_path')"
+          echo "quadraui resolved to: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::The generated template resolved quadraui to '$got', expected this PR's checkout at '$want'. The .cargo/config.toml paths override did not take effect, so this job would build the template against its pinned crates.io version and prove nothing about this PR."
+            exit 1
+          fi
+
+      - name: cargo test --features tui (the template's own quality bar)
+        working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
+        run: cargo test --features tui
+
+      - name: cargo fmt --check (generated output matches rustfmt defaults)
+        working-directory: ${{ runner.temp }}/generated/quadraui-template-smoke
+        run: cargo fmt --check
