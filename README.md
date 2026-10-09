@@ -307,7 +307,7 @@ for how to regenerate it.
 | Crate | Purpose |
 |---|---|
 | `quadraui` | The library. |
-| `quadraui-gallery` | Interactive catalogue of quadraui primitives — one `Demo` trait, one shell, Demo/Code/Data tabs and an event log, running unmodified on every backend. Unpublished. |
+| `quadraui-gallery` | Interactive catalogue of quadraui primitives — one `Demo` trait, one shell, Demo/Code/Data tabs and an event log, running unmodified on every backend. Also runnable headless via `--capture <dir>`, which writes one image per (demo, variant, backend) plus a `manifest.json`. Unpublished. |
 | `kubeui-core`, `kubeui`, `kubeui-gtk` | A small Kubernetes dashboard demo: TUI and GTK front ends over shared domain logic. A demo, not a production consumer. |
 | `tools/lint` | Repository lints run in CI. |
 

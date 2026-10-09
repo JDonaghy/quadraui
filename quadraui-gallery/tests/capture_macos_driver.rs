@@ -1,5 +1,5 @@
-//! macOS leg of the headless capture mode integration test (#1348) —
-//! the `tests/capture_driver.rs` twin, scoped to the backend that needs
+//! macOS leg of the headless capture mode integration test — the
+//! `tests/capture_driver.rs` twin, scoped to the backend that needs
 //! a real macOS host plus `--features macos` to exercise at all (see
 //! `Cargo.toml`'s `macos` feature comment for why it's `target_os`-gated
 //! in full).

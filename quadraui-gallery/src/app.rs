@@ -118,10 +118,13 @@ impl GalleryApp {
         Self::from_demos(registry())
     }
 
-    /// Shared by [`Self::new`] (the real `registry()`) and this module's
-    /// own tests (a hand-built `Vec` exercising a shape `registry()`
-    /// doesn't today, e.g. a demo with more than one variant).
-    fn from_demos(demos: Vec<Box<dyn Demo>>) -> Self {
+    /// Shared by [`Self::new`] (the real `registry()`), this module's
+    /// own tests, and `crate::capture`'s test-only double registries (a
+    /// hand-built `Vec` exercising a shape `registry()` doesn't today,
+    /// e.g. a demo with more than one variant) — `pub(crate)` rather
+    /// than private for that last use, never exposed outside this
+    /// crate.
+    pub(crate) fn from_demos(demos: Vec<Box<dyn Demo>>) -> Self {
         let demo_ids: Vec<WidgetId> = (0..demos.len())
             .map(|i| WidgetId::new(format!("gallery:demo:{i}")))
             .collect();

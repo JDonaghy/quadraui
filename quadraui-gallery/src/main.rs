@@ -8,26 +8,34 @@
 //! set — see each arm's `#[cfg(...)]` for the priority order used when
 //! more than one backend feature is enabled at once (e.g. the repo's own
 //! `--features gtk,tui` CI leg). Every surviving arm calls
-//! [`maybe_run_capture`] first: `--capture <dir>` (#1348) short-circuits
-//! the interactive runner and drives
+//! [`maybe_run_capture`] first: `--capture <dir>` short-circuits the
+//! interactive runner and drives
 //! [`quadraui_gallery::capture::run_capture`] instead — the same
 //! function, not a parallel copy, that `tests/capture_driver.rs` calls
 //! directly.
 
-/// If argv requests `--capture <dir>`, run headless capture mode into
-/// `<dir>` and exit the process (`0` on success, `1` on I/O failure,
-/// `2` on a malformed flag) — never returning. Otherwise returns
-/// normally so the caller's own interactive runner proceeds.
+/// If argv requests `--capture <dir>` or `--capture=<dir>`, run headless
+/// capture mode into `<dir>` and exit the process (`0` on success, `1`
+/// on I/O failure, `2` on a malformed flag) — that path never returns.
+/// Otherwise (no `--capture` flag present) returns normally so the
+/// caller's own interactive runner proceeds.
 fn maybe_run_capture() {
     let args: Vec<String> = std::env::args().collect();
-    let Some(pos) = args.iter().position(|a| a == "--capture") else {
+    let dir = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--capture=").map(str::to_string))
+        .or_else(|| {
+            let pos = args.iter().position(|a| a == "--capture")?;
+            args.get(pos + 1).cloned()
+        });
+    let Some(dir) = dir else {
+        if args.iter().any(|a| a == "--capture") {
+            eprintln!("quadraui-gallery: --capture requires a directory argument");
+            std::process::exit(2);
+        }
         return;
     };
-    let Some(dir) = args.get(pos + 1) else {
-        eprintln!("quadraui-gallery: --capture requires a directory argument");
-        std::process::exit(2);
-    };
-    match quadraui_gallery::capture::run_capture(std::path::Path::new(dir)) {
+    match quadraui_gallery::capture::run_capture(std::path::Path::new(&dir)) {
         Ok(entries) => {
             eprintln!(
                 "quadraui-gallery: captured {} manifest entries into {dir}",
