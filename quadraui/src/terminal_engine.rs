@@ -1024,9 +1024,9 @@ impl TerminalSession {
     }
 
     /// [`spawn`](Self::spawn), plus extra argv entries passed straight to
-    /// [`CommandBuilder::arg`].
+    /// [`CommandBuilder::args`].
     ///
-    /// `#[doc(hidden)]`: not part of the public API surface a consuming app
+    /// Crate-private: not part of the public API surface a consuming app
     /// should build on — `spawn` covers every production call site, since a
     /// consumer picks its shell via [`default_shell`] and never needs to
     /// hand it flags. This exists so Windows-gated tests can start
@@ -1034,8 +1034,7 @@ impl TerminalSession {
     /// of real-hardware startup-time variance (the copyright banner, and a
     /// profile-script existence check across up to four disk paths) that
     /// have nothing to do with the behaviour those tests verify.
-    #[doc(hidden)]
-    pub fn spawn_with_args(
+    pub(crate) fn spawn_with_args(
         cols: u16,
         rows: u16,
         shell: &str,
@@ -3713,6 +3712,13 @@ mod tests {
     /// fixed sleep — `poll_until` below returns the moment the marker shows
     /// up, so a generous budget costs nothing on a fast run and only buys
     /// headroom on a loaded CI runner.
+    ///
+    /// Before sending `send_line`, this waits for a prompt (`>`) to appear
+    /// in `full_text()`. Without that handshake, `send_str` races the
+    /// shell's own startup: the bytes can land in the ConPTY input buffer
+    /// before the shell has even started reading it, a failure mode that a
+    /// longer `timeout_ms` budget alone does not close, since the race is
+    /// about *order*, not *time*.
     #[cfg(target_os = "windows")]
     fn windows_conpty_spawn_echo_exit(
         shell: &str,
@@ -3724,6 +3730,18 @@ mod tests {
         let cwd = std::env::temp_dir();
         let mut sess = TerminalSession::spawn_with_args(80, 24, shell, args, &cwd, 1000)
             .unwrap_or_else(|e| panic!("failed to spawn {shell}: {e}"));
+
+        // Wait for the shell's own prompt before sending any input, so
+        // `send_str` below can never race the shell's startup: the ConPTY
+        // input buffer only needs to hold bytes typed after the shell is
+        // already reading from it.
+        let ready = poll_until(&mut sess, timeout_ms, |s| {
+            s.full_text().contains('>') || s.exited
+        });
+        assert!(
+            ready,
+            "{shell} did not show a ready prompt within {timeout_ms}ms"
+        );
 
         // Every Windows console line editor (cmd.exe and powershell.exe
         // alike) wants a carriage return to submit a line, same as a real
@@ -3781,9 +3799,9 @@ mod tests {
 
     /// `default_shell()`'s own Windows branch — this is the shell
     /// `TerminalSession::spawn` actually receives in production, and the
-    /// one `cmd.exe` coverage above cannot stand in for: console-host
-    /// banner text, VT mode initialisation and process start-up are all
-    /// slower and shaped differently than `cmd.exe`'s. PowerShell's variable
+    /// one `cmd.exe` coverage above cannot stand in for: VT mode
+    /// initialisation and process start-up are slower and shaped
+    /// differently than `cmd.exe`'s. PowerShell's variable
     /// syntax (`$env:NAME`) differs from cmd.exe's (`%NAME%`), so the send
     /// line is PowerShell-specific; the subexpression form
     /// `$($env:PROCESSOR_ARCHITECTURE)` avoids the string-interpolation
