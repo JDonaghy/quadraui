@@ -19,27 +19,44 @@
 //!
 //! ## Keyboard editing
 //!
-//! `KeyPressed` / `CharTyped` route to the field named by
-//! `Form.focused_field`:
+//! `KeyPressed` / `CharTyped` / `ClipboardPaste` route to the field named
+//! by `Form.focused_field`, and only while [`FormController::has_focus`]
+//! is true — a host is expected to forward every event in (see the two
+//! event-handling paths above), so without this gate a form that isn't
+//! even the active panel would still swallow `Tab` and every other key.
+//! Toggle it with [`FormController::set_has_focus`], the same shape
+//! `compose::sidebar_system` uses.
 //!
 //! - `Tab` / `Shift+Tab` (or `BackTab`) move focus to the next/previous
-//!   non-`Label`, non-disabled field and emit
-//!   [`FormEvent::FocusChanged`]. The app stores the new id and feeds it
-//!   back as `focused_field` on the next [`FormController::set_form`] —
-//!   same contract `primitives/form.rs`'s module doc already describes.
+//!   non-`Label`, non-`ReadOnly`, non-disabled field, scroll it into
+//!   view, and emit [`FormEvent::FocusChanged`]. The app stores the new
+//!   id and feeds it back as `focused_field` on the next
+//!   [`FormController::set_form`] — same contract `primitives/form.rs`'s
+//!   module doc already describes.
 //! - While a `TextInput` / `TextArea` / `PasswordInput` field is
 //!   focused, every other key is decoded through
 //!   [`crate::EditOp::from_key`] and applied via [`crate::TextEditor::apply`]
 //!   against that field's `value`, emitting
-//!   [`FormEvent::TextInputChanged`] with the new value. `Enter` commits
-//!   instead of inserting a newline, emitting
-//!   [`FormEvent::TextInputCommitted`].
+//!   [`FormEvent::TextInputChanged`] with the new value.
+//!   `Ctrl`/`Cmd`+`<character>` combos are rejected before
+//!   `EditOp::from_key` sees them — every backend delivers those as
+//!   `Key::Char` with the modifier set, so an unregistered accelerator
+//!   (Ctrl+C, Cmd+S, ...) doesn't get typed as a literal character.
+//!   `Enter` commits instead of inserting a newline, emitting
+//!   [`FormEvent::TextInputCommitted`] — except on a `TextArea`, where
+//!   `Enter` inserts a newline, since that is the one field kind meant
+//!   to hold them. `ClipboardPaste` inserts its text via
+//!   [`crate::EditOp::InsertText`].
 //! - The cursor/selection position is **owned by `FormController`**, not
 //!   the app — it survives across keystrokes internally (see
 //!   `text_edit` below) even though the app only ever has to persist the
 //!   `value` string from `TextInputChanged`/`TextInputCommitted`. This is
 //!   what makes "no app-side key plumbing" true: the app's model needs a
-//!   `String` per text field, nothing else.
+//!   `String` per text field, nothing else. Each keystroke builds a
+//!   throwaway [`crate::TextEditor`] (see `apply_text_edit_op`), so
+//!   `EditOp::Undo`/`Redo` never have history to act on for a form
+//!   field — out of scope here, since nothing in `Form`'s per-frame data
+//!   carries edit history across keystrokes.
 
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
@@ -277,9 +294,25 @@ impl FormController {
                 FormControllerEvent::Consumed
             }
 
-            UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
+            // Gate on `self.has_focus`: `FormController::handle`'s
+            // documented usage is "forward every event in" (see this
+            // module's top doc), so without this a host that always
+            // routes `KeyPressed` through a form would lose global `Tab`
+            // (and every other key) to a form that isn't even the
+            // active panel. `set_has_focus`/`form_has_focus` exist for
+            // exactly this (mirrors `compose/sidebar_system.rs`).
+            UiEvent::KeyPressed { key, modifiers, .. } if self.has_focus => {
+                let vr = viewport_rows_lh(lh, rect);
+                self.handle_key(key, modifiers, vr)
+            }
 
-            UiEvent::CharTyped(ch) => self.handle_text_op(EditOp::InsertChar(*ch)),
+            UiEvent::CharTyped(ch) if self.has_focus => {
+                self.handle_text_op(EditOp::InsertChar(*ch))
+            }
+
+            UiEvent::ClipboardPaste(text) if self.has_focus => {
+                self.handle_text_op(EditOp::InsertText(text.clone()))
+            }
 
             _ => FormControllerEvent::Ignored,
         }
@@ -312,13 +345,35 @@ impl FormController {
 
     // ── Keyboard: focus traversal + text editing ──────────────────────
 
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FormControllerEvent {
+    fn handle_key(
+        &mut self,
+        key: &Key,
+        modifiers: &Modifiers,
+        viewport_rows: usize,
+    ) -> FormControllerEvent {
         match key {
-            Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt => {
-                self.move_focus(if modifiers.shift { -1 } else { 1 })
+            Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
+                self.move_focus(if modifiers.shift { -1 } else { 1 }, viewport_rows)
             }
-            Key::Named(NamedKey::BackTab) => self.move_focus(-1),
+            Key::Named(NamedKey::BackTab) => self.move_focus(-1, viewport_rows),
+            // `Enter` commits for `TextInput`/`PasswordInput` (a single
+            // commit boundary), but `TextArea` is the one field kind
+            // that is meant to hold newlines, so `Enter` inserts one
+            // there instead — same split VS Code makes between a
+            // single-line input and a multi-line text area.
+            Key::Named(NamedKey::Enter) if self.focused_field_is_text_area() => {
+                self.handle_text_op(EditOp::InsertChar('\n'))
+            }
             Key::Named(NamedKey::Enter) => self.commit_focused_text(),
+            // Every backend delivers Ctrl/Cmd+<letter> as `Key::Char`
+            // with the modifier set (so an unregistered accelerator can
+            // still be recovered), not as a dedicated key variant — see
+            // `EditOp::from_key`'s callers in `examples/common/text_input_demo.rs`
+            // for the same guard. Without this, Ctrl+C/Ctrl+V/Ctrl+W (or
+            // Cmd+<letter> on macOS) would type a stray literal character
+            // into the focused field instead of falling through to an
+            // app-level accelerator.
+            Key::Char(_) if modifiers.ctrl || modifiers.cmd => FormControllerEvent::Ignored,
             _ => match EditOp::from_key(key, *modifiers) {
                 Some(op) => self.handle_text_op(op),
                 None => FormControllerEvent::Ignored,
@@ -326,11 +381,28 @@ impl FormController {
         }
     }
 
-    /// Move focus to the next/previous non-`Label`, non-disabled field,
-    /// wrapping around. Emits [`FormEvent::FocusChanged`] — the app
-    /// persists the new `focused_field` the same way it already persists
-    /// a toggle flip (see this module's "Keyboard editing" doc section).
-    fn move_focus(&mut self, delta: isize) -> FormControllerEvent {
+    /// Whether the currently-focused field is a `TextArea` — gives
+    /// `Enter` its kind-specific meaning (insert a newline there, commit
+    /// everywhere else).
+    fn focused_field_is_text_area(&self) -> bool {
+        let Some(form) = &self.form else {
+            return false;
+        };
+        let Some(focused_id) = &form.focused_field else {
+            return false;
+        };
+        form.fields
+            .iter()
+            .find(|f| &f.id == focused_id)
+            .is_some_and(|f| matches!(f.kind, FieldKind::TextArea { .. }))
+    }
+
+    /// Move focus to the next/previous non-`Label`, non-`ReadOnly`,
+    /// non-disabled field, wrapping around, and scroll it into view.
+    /// Emits [`FormEvent::FocusChanged`] — the app persists the new
+    /// `focused_field` the same way it already persists a toggle flip
+    /// (see this module's "Keyboard editing" doc section).
+    fn move_focus(&mut self, delta: isize, viewport_rows: usize) -> FormControllerEvent {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
         };
@@ -354,12 +426,40 @@ impl FormController {
             None => stops.len() - 1,
         };
         let id = stops[next_idx].clone();
-        self.text_edit = None;
+        // The stop's index among `stops` isn't necessarily its index in
+        // `form.fields` (non-focusable fields are filtered out above),
+        // so re-find its field index for scrolling and for seeding the
+        // new field's starting cursor below. Resolved up front (and
+        // `form`'s borrow dropped here) because both steps below need
+        // `&mut self`.
+        let field_idx = form.fields.iter().position(|f| f.id == id);
+        // Seed a starting cursor for the newly-focused field if it's
+        // text-editable, so `build_form` overlays a caret immediately
+        // instead of the field rendering as read-only (no cursor, per
+        // `primitives/form.rs`) until the first keystroke.
+        let new_text_edit = field_idx
+            .and_then(|i| form.fields.get(i))
+            .filter(|f| text_field_value(&f.kind).is_some())
+            .map(|f| {
+                let (cursor, selection_anchor) = default_text_cursor(&f.kind);
+                TextEditState {
+                    field_id: id.clone(),
+                    cursor,
+                    selection_anchor,
+                }
+            });
+
+        if let Some(field_idx) = field_idx {
+            self.scroll_to_field(field_idx, viewport_rows);
+        }
+        self.text_edit = new_text_edit;
         FormControllerEvent::FormAction(FormEvent::FocusChanged { id })
     }
 
-    /// `Enter` on a focused text field commits instead of inserting a
-    /// newline — see this module's "Keyboard editing" doc section.
+    /// `Enter` on a focused `TextInput`/`PasswordInput` field commits
+    /// instead of inserting a newline — see this module's "Keyboard
+    /// editing" doc section. (`TextArea` is handled separately in
+    /// `handle_key`.)
     fn commit_focused_text(&mut self) -> FormControllerEvent {
         let Some(form) = &self.form else {
             return FormControllerEvent::Ignored;
@@ -414,6 +514,14 @@ impl FormController {
         let value_before = value.to_string();
         let (new_value, new_cursor, new_anchor) = apply_text_edit_op(value, cursor, anchor, op);
         let text_changed = new_value != value_before;
+        // `TextEditor::move_cursor_to` leaves a degenerate `anchor ==
+        // cursor` selection in place for a no-op extend (e.g. Shift+Left
+        // at offset 0). Left uncleared, the *next* keystroke would see a
+        // phantom one-character-wide selection and silently eat a
+        // character. Normalise it away here, where the controller caches
+        // the anchor across keystrokes (unlike a one-shot `TextEditor`
+        // call, which never notices).
+        let new_anchor = new_anchor.filter(|a| *a != new_cursor);
         self.text_edit = Some(TextEditState {
             field_id: focused_id.clone(),
             cursor: new_cursor,
@@ -602,12 +710,14 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
 
-/// Whether `field` is a Tab stop: not a `Label`, and not disabled.
-/// Mirrors `primitives/form.rs`'s module doc ("Tab / Shift-Tab moves
+/// Whether `field` is a Tab stop: not a `Label`, not a non-interactive
+/// `ReadOnly` display field, and not disabled. Mirrors
+/// `primitives/form.rs`'s module doc ("Tab / Shift-Tab moves
 /// focused_field forward/backward through interactive fields (skip
-/// Label)").
+/// Label)") — VS Code, the stated GUI reference, does not focus a
+/// read-only row either.
 fn field_is_focusable(field: &crate::primitives::form::FormField) -> bool {
-    !matches!(field.kind, FieldKind::Label) && !field.disabled
+    !matches!(field.kind, FieldKind::Label | FieldKind::ReadOnly { .. }) && !field.disabled
 }
 
 /// The editable text of a `TextInput` / `TextArea` / `PasswordInput`
@@ -714,6 +824,13 @@ fn apply_text_edit_op(
         .with_cursor_col(col);
     let mut editor = TextEditor::new(input);
     if let Some(anchor_byte) = selection_anchor {
+        // `selection_anchor` is app-owned public data (see
+        // `primitives/form.rs`'s doc on `FieldKind::TextInput`) and isn't
+        // guaranteed to land on a char boundary — snap and clamp it the
+        // same way `cursor` already is above, so a bogus byte offset
+        // (e.g. an app computing it in char counts) clamps the
+        // selection instead of panicking on a mid-char slice.
+        let anchor_byte = snap_to_char_boundary(value, anchor_byte.min(value.len()));
         editor.set_selection_anchor(Some(byte_offset_to_line_col(value, anchor_byte)));
     }
     editor.apply(op);
@@ -1327,6 +1444,10 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
         });
+        // The controller's own `has_focus` gates `KeyPressed`/`CharTyped`/
+        // `ClipboardPaste` (not `Form.has_focus` above, which only
+        // affects rendering) — these keyboard-editing tests need it set.
+        fc.set_has_focus(true);
         fc.set_backend_info(1.0);
         fc
     }
@@ -1634,6 +1755,79 @@ mod tests {
                 id: WidgetId::new("notes"),
                 value: "line one\nXline two".to_string(),
             })
+        );
+    }
+
+    fn ctrl() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
+    }
+
+    fn cmd() -> Modifiers {
+        Modifiers {
+            cmd: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ctrl_c_on_a_focused_text_field_is_ignored_not_typed() {
+        // Every backend delivers Ctrl+C as `Key::Char('c')` with
+        // `modifiers.ctrl == true` (see this module's "Keyboard editing"
+        // doc section) — without the guard in `handle_key`, this would
+        // insert a literal 'c' into the field *and* report
+        // `TextInputChanged`, i.e. the keystroke was "consumed" as text
+        // instead of falling through to an app-level Copy accelerator.
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
+        let ev = fc.handle_cached(&key_event(Key::Char('c'), ctrl()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+        // The value is genuinely untouched, not just the return value.
+        match &fc.form().unwrap().fields[0].kind {
+            FieldKind::TextInput { value, .. } => assert_eq!(value, "ab"),
+            other => panic!("expected TextInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cmd_s_on_a_focused_text_field_is_ignored_not_typed() {
+        // Same guard, macOS's modifier.
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
+        let ev = fc.handle_cached(&key_event(Key::Char('s'), cmd()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn selection_anchor_mid_multibyte_char_snaps_instead_of_panicking() {
+        // `selection_anchor` is app-owned public data (`primitives/form.rs`
+        // documents it as "a byte offset into `value`") and isn't
+        // guaranteed to land on a char boundary — e.g. an app that
+        // accidentally computes it in char counts instead of bytes.
+        // `byte_offset_to_line_col` slices `value[..byte_offset]`, which
+        // would panic on a non-boundary offset into "h\u{e9}llo" (byte 2
+        // is the second byte of the two-byte 'é').
+        let field = FormField {
+            id: WidgetId::new("name"),
+            label: StyledText::plain("Name"),
+            kind: FieldKind::TextInput {
+                value: "h\u{e9}llo".to_string(),
+                placeholder: String::new(),
+                cursor: Some(5),
+                selection_anchor: Some(2), // mid-char: not a valid boundary
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let mut fc = controller_with(vec![field], Some("name"));
+        // Must not panic. `EditOp::MoveRight` with `extend: false` drops
+        // the selection, so the exact resulting event only needs to be
+        // some non-panicking outcome — the regression is the absence of
+        // a panic, not this particular value.
+        let _ = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Right), Modifiers::default()),
+            RECT,
         );
     }
 }
