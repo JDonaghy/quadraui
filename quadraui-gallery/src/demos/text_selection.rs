@@ -101,7 +101,7 @@ impl Demo for TextSelectionDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar_interactive(
+            let _ = backend.draw_status_bar_interactive(
                 Rect::new(content.x, row_y, content.width, lh),
                 &bar,
                 &InteractionState::new(),
@@ -130,7 +130,7 @@ impl Demo for TextSelectionDemo {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
+        let _ = backend.draw_status_bar_interactive(
             Self::status_rect(area, backend),
             &status_bar,
             &InteractionState::new(),
@@ -142,7 +142,7 @@ impl Demo for TextSelectionDemo {
         _variant: usize,
         event: &UiEvent,
         backend: &mut dyn Backend,
-        _area: Rect,
+        area: Rect,
     ) -> Reaction {
         match event {
             UiEvent::TextCopied(text) => {
@@ -153,9 +153,14 @@ impl Demo for TextSelectionDemo {
                 Reaction::Redraw
             }
             UiEvent::TextSelectionChanged { anchor, focus, .. } => {
+                // Rows are reported relative to the content area's own
+                // top edge, not the whole demo area — subtract
+                // `content.y` first, or this echoes absolute screen rows
+                // (e.g. "rows 6–8" for the demo's first three lines).
+                let content = Self::content_rect(area, backend);
                 let lh = backend.line_height();
-                let a_row = (anchor.y / lh).floor() as usize + 1;
-                let f_row = (focus.y / lh).floor() as usize + 1;
+                let a_row = ((anchor.y - content.y) / lh).floor() as usize + 1;
+                let f_row = ((focus.y - content.y) / lh).floor() as usize + 1;
                 let (start, end) = if a_row <= f_row {
                     (a_row, f_row)
                 } else {
@@ -199,11 +204,11 @@ impl Demo for TextSelectionDemo {
         }
     }
 }
-// gallery:end
 
 fn hint() -> String {
     "drag to select · Ctrl-A select all · Ctrl-C copy".into()
 }
+// gallery:end
 
 #[cfg(test)]
 mod tests {
@@ -227,5 +232,34 @@ mod tests {
         );
         assert!(matches!(reaction, Reaction::Redraw));
         assert!(demo.status.contains("hello world"));
+    }
+
+    /// `TextSelectionChanged`'s `anchor`/`focus` are absolute surface
+    /// coordinates — when the demo's own `area` doesn't start at `y =
+    /// 0` (as it never does inside the real gallery shell, which
+    /// stacks an activity bar + tab strip above it), the status line
+    /// must still echo *content-relative* rows, not the raw absolute
+    /// ones.
+    #[test]
+    fn selection_changed_reports_rows_relative_to_the_content_area() {
+        let mut demo = TextSelectionDemo::new();
+        let mut backend = quadraui::testing::RecordingBackend::new();
+        let area = Rect::new(0.0, 100.0, 40.0, 10.0);
+        let reaction = demo.handle(
+            0,
+            &UiEvent::TextSelectionChanged {
+                region: WidgetId::new(CONTENT_ID),
+                anchor: quadraui::Point::new(0.0, 100.0),
+                focus: quadraui::Point::new(0.0, 102.0),
+            },
+            &mut backend,
+            area,
+        );
+        assert!(matches!(reaction, Reaction::Redraw));
+        assert!(
+            demo.status.contains("rows 1–3"),
+            "expected content-relative rows 1-3, got: {}",
+            demo.status
+        );
     }
 }

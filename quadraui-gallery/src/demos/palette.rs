@@ -218,7 +218,6 @@ impl Demo for PaletteDemo {
         None
     }
 }
-// gallery:end
 
 fn make_picker(branches: &[&str]) -> DualModePaletteController {
     let items = branches_as_items(branches);
@@ -242,6 +241,7 @@ fn branches_as_items(branches: &[&str]) -> Vec<PaletteItem> {
         })
         .collect()
 }
+// gallery:end
 
 #[cfg(test)]
 mod tests {

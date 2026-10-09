@@ -104,6 +104,9 @@ impl CaretShapeDemo {
             .with_gutter_char_width(4)
             .with_is_active(true)
             .with_cursorline(true)
+            // `'\0'` means "no lightbulb" — this demo has nothing to
+            // offer a code action for, unlike the primitive's own
+            // default of `'!'`.
             .with_lightbulb_glyph('\0')
     }
 

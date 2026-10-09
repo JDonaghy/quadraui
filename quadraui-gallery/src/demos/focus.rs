@@ -7,7 +7,7 @@
 //! the other two don't. Two variants swap the ring's declared order,
 //! showing that Tab visits whatever order the app registered.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use quadraui::{
     Backend, BackendCaps, Color, FocusRing, Key, ListItem, ListView, NamedKey, Reaction, Rect,
@@ -30,14 +30,14 @@ pub struct FocusDemo {
     /// `handle()` call — the variant-picker click itself is handled
     /// entirely inside the shell and never reaches `Demo::handle`.
     focus: RefCell<FocusRing>,
-    variant: std::cell::Cell<usize>,
+    variant: Cell<usize>,
 }
 
 impl FocusDemo {
     pub fn new() -> Self {
         Self {
             focus: RefCell::new(Self::ring_for_variant(0)),
-            variant: std::cell::Cell::new(0),
+            variant: Cell::new(0),
         }
     }
 

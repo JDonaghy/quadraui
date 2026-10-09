@@ -4,7 +4,7 @@
 //! Two independent `TextEditor` buffers (one per variant) exercise
 //! cursor movement, line wrap on Enter, Shift+arrow selection and
 //! click-to-position via `TextInputLayout::hit_test` — every edit goes
-//! through `TextEditor::apply(EditOp)` (quadraui#833), never hand-rolled
+//! through `TextEditor::apply(EditOp)`, never hand-rolled
 //! insert/backspace/cursor logic.
 
 use quadraui::{

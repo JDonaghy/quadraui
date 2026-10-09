@@ -58,6 +58,8 @@ serde_json = "1.0"
 image = { version = "0.25", optional = true, default-features = false, features = [
     "png",
 ] }
-
-[dev-dependencies]
+# Used by `demos::file_picker` to materialise a small, fixed synthetic
+# directory tree for `FilePickerDemo`'s pickers to list — not a
+# dev-only dependency, since that tree is built at demo construction
+# time (every gallery launch), not just under `cargo test`.
 tempfile = "3"
