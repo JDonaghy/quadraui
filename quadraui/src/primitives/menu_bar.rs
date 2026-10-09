@@ -342,11 +342,42 @@ pub(crate) mod native_surface_paint {
     /// - **Alt-underline:** a [`UNDERLINE_HEIGHT`]-tall bar under the
     ///   character following `&` in the raw label, in the label's own
     ///   foreground colour. No `&` in the label ⇒ no underline at all.
+    ///
+    /// GTK and Windows both have an Alt-mnemonic convention, so this is
+    /// the one every call site but macOS's own wants — see
+    /// [`paint_without_mnemonics`] for the macOS twin, which paints
+    /// everything here except the underline.
     pub(crate) fn paint(
         bar: &MenuBar,
         layout: &MenuBarLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+    ) {
+        paint_with_mnemonics(bar, layout, surface, theme, true);
+    }
+
+    /// [`paint`]'s macOS twin: identical in every respect — background,
+    /// active/disabled colouring, centred label text — except it never
+    /// paints the Alt-underline. macOS has no Alt-mnemonic keyboard
+    /// convention (⌘-based shortcuts are the platform idiom instead,
+    /// wired through [`crate::accelerator::Accelerator`] /
+    /// `NSMenuItem.keyEquivalent`, not a label prefix), so underlining a
+    /// character nothing responds to would be a visual lie.
+    pub(crate) fn paint_without_mnemonics(
+        bar: &MenuBar,
+        layout: &MenuBarLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        paint_with_mnemonics(bar, layout, surface, theme, false);
+    }
+
+    fn paint_with_mnemonics(
+        bar: &MenuBar,
+        layout: &MenuBarLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        show_mnemonics: bool,
     ) {
         surface.surface_fill_rect(layout.bounds, theme.tab_bar_bg);
 
@@ -376,6 +407,10 @@ pub(crate) mod native_surface_paint {
                 &text,
                 fg,
             );
+
+            if !show_mnemonics {
+                continue;
+            }
 
             if let Some(idx) = alt_char_index(&item.label) {
                 if let Some(ch) = text.chars().nth(idx) {
@@ -546,6 +581,46 @@ pub(crate) mod native_surface_paint {
                         && *c == theme.tab_active_fg),
                 "expected an underline fill at {expected:?} in {:?}, got fills: {:?}",
                 theme.tab_active_fg,
+                surface.fills,
+            );
+        }
+
+        /// `paint_without_mnemonics` is `paint`'s macOS twin — same bar,
+        /// same layout, but never paints the underline fill the test
+        /// above pins for `paint`. Asserted against the exact rect
+        /// `paint` fills, so a future change that makes the two converge
+        /// (defeating the whole point of the split) fails loudly here
+        /// rather than only on a macOS-only pixel test.
+        #[test]
+        fn paint_without_mnemonics_never_fills_the_underline() {
+            let bar = drift_bar();
+            let layout = drift_layout(&bar);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint_without_mnemonics(&bar, &layout, &mut surface, &theme);
+
+            let (label_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| t == "File")
+                .expect("File label painted");
+            let underline_rect = Rect::new(
+                label_rect.x,
+                label_rect.y + label_rect.height - UNDERLINE_HEIGHT,
+                8.0,
+                UNDERLINE_HEIGHT,
+            );
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(r, c)| (r.x - underline_rect.x).abs() < 0.01
+                        && (r.y - underline_rect.y).abs() < 0.01
+                        && (r.width - underline_rect.width).abs() < 0.01
+                        && (r.height - underline_rect.height).abs() < 0.01
+                        && *c == theme.tab_active_fg),
+                "macOS has no Alt-mnemonic convention — expected no underline fill at \
+                 {underline_rect:?}, got fills: {:?}",
                 surface.fills,
             );
         }

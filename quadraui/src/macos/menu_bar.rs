@@ -2,17 +2,16 @@
 //!
 //! Layout (`mac_menu_bar_layout`) stays here — it needs Core Text's own
 //! measurement to size each item. Content painting (background,
-//! active/disabled colouring, label text, Alt-key underline) moved to
-//! the shared [`crate::primitives::menu_bar::native_surface_paint::paint`]
-//! (#1081, `PaintSurface` Phase 4 slice 5/8), which also **closes this
-//! backend's own documented gap**: pre-migration macOS painted no
-//! Alt-key underline at all (Core Text's `kCTUnderlineStyleAttributeName`
-//! needs attributed-string plumbing `super::text::draw_text` never had —
-//! see this module's git history for the old "Scope omissions" doc).
-//! The shared `paint` draws the underline as a manually-positioned
-//! filled rectangle instead of a font-level attribute, so it needs
-//! nothing beyond the measure/fill verbs every backend already has —
-//! see that fn's module doc for the full three-way drift it resolved.
+//! active/disabled colouring, label text) moved to the shared
+//! [`crate::primitives::menu_bar::native_surface_paint`].
+//!
+//! **No Alt-mnemonic underline here.** This backend paints through
+//! [`crate::primitives::menu_bar::native_surface_paint::paint_without_mnemonics`]
+//! rather than that module's plain `paint`. macOS has no Alt-mnemonic
+//! keyboard convention at all — ⌘-based shortcuts
+//! ([`crate::accelerator::Accelerator`] / `NSMenuItem.keyEquivalent`) are
+//! the platform idiom instead — so underlining a character nothing
+//! responds to would be a visual lie.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
@@ -72,7 +71,7 @@ pub unsafe fn draw_menu_bar(
         ctx,
         font: Some(font),
     };
-    native_surface_paint::paint(bar, &layout, &mut surface, theme);
+    native_surface_paint::paint_without_mnemonics(bar, &layout, &mut surface, theme);
 
     CGContextRestoreGState(ctx);
     layout
@@ -190,15 +189,15 @@ mod tests {
         );
     }
 
-    /// Regression guard for #1081: pre-migration macOS painted **no**
-    /// Alt-key underline at all (see this module's doc comment above —
-    /// Core Text's attributed-string underline plumbing never existed
-    /// here). Mirrors `gtk::menu_bar::tests::
-    /// draw_menu_bar_paints_alt_underline_beneath_activation_char`, but
-    /// runs through the real `draw_menu_bar` → `CgSurface` → CGContext
-    /// path instead of a synthetic `RecordingSurface`, so it actually
-    /// proves the macOS backend now paints the pixel, not just that the
-    /// shared `native_surface_paint::paint` fn computes the right rect.
+    /// macOS has no Alt-mnemonic keyboard convention, so `draw_menu_bar`
+    /// must never paint the underline bar beneath an item's activation
+    /// character, even for the open item. Mirrors `gtk::menu_bar::tests::
+    /// draw_menu_bar_paints_alt_underline_beneath_activation_char`'s
+    /// scan shape (a long contiguous run of `tab_active_fg` pixels in
+    /// the lower half of the item is what an underline bar looks like),
+    /// but asserts the run's *absence* — proving the backend routes
+    /// through `native_surface_paint::paint_without_mnemonics`, not
+    /// `paint`.
     ///
     /// Deliberately does **not** recompute `text_x`/`text_y` via its own
     /// `measure_text(&font(), ..)` call — that assumes the test's font
@@ -207,15 +206,12 @@ mod tests {
     /// overriding `set_current_font`. Instead it scans directly inside
     /// the item's *layout* bounds (which the real paint call already
     /// resolved) for a horizontal run of contiguous `tab_active_fg`
-    /// pixels in the lower half of the item. The underline is a solid
-    /// filled rect (`native_surface_paint::paint`'s `UNDERLINE_HEIGHT`
-    /// bar), so it always yields a long contiguous run of matching
-    /// pixels; individual glyph strokes (same colour) don't — "F"'s
-    /// vertical stem is only 2-3px wide, and its horizontal bars sit in
-    /// the upper half of the glyph, above the baseline the underline
-    /// sits under.
+    /// pixels in the lower half of the item — individual glyph strokes
+    /// (same colour) don't produce a long run; "F"'s vertical stem is
+    /// only 2-3px wide, and its horizontal bars sit in the upper half of
+    /// the glyph, above the baseline an underline would sit under.
     #[test]
-    fn open_item_paints_alt_underline_beneath_activation_char() {
+    fn open_item_paints_no_alt_underline_beneath_activation_char() {
         let bar = sample_bar();
         let (surface, layout) = paint_via_backend(&bar);
         let theme = Theme::default();
@@ -227,7 +223,10 @@ mod tests {
         let y_mid = (file.bounds.y + file.bounds.height / 2.0).floor() as u32;
         let y1 = ((file.bounds.y + file.bounds.height).ceil() as u32).min(H);
 
-        const MIN_RUN: u32 = 3;
+        // What an underline bar would look like, if one were painted —
+        // a run at least this long, of exactly this colour, is not
+        // explainable by glyph strokes alone.
+        const UNDERLINE_RUN: u32 = 3;
         let target = (
             theme.tab_active_fg.r,
             theme.tab_active_fg.g,
@@ -249,10 +248,11 @@ mod tests {
         }
 
         assert!(
-            best_run >= MIN_RUN,
-            "expected a contiguous run of >= {MIN_RUN} {target:?} pixels in the lower half \
-             of the File item (columns {x0}..{x1}, rows {y_mid}..{y1}); found longest run \
-             of {best_run}",
+            best_run < UNDERLINE_RUN,
+            "macOS has no Alt-mnemonic convention and must paint no underline bar — found a \
+             contiguous run of {best_run} {target:?} pixels in the lower half of the File \
+             item (columns {x0}..{x1}, rows {y_mid}..{y1}), as long as an underline bar's own \
+             {UNDERLINE_RUN}px minimum",
         );
     }
 
