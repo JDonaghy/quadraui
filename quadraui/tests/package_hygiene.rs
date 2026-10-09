@@ -30,12 +30,12 @@
 //!   cargo test -p quadraui --test package_hygiene -- --ignored
 //!   ```
 //!
-//!   [`license_symlinks_resolve_to_real_license_text`] is a third,
-//!   cheap, always-run layer specifically for the license symlinks: it
-//!   doesn't shell out to `cargo package`, so it catches the realistic
-//!   regression (the symlinks being deleted, or materialising as plain
-//!   text on a checkout without symlink support) on every plain
-//!   `cargo test`, without waiting on the `--ignored` run above.
+//!   [`license_symlinks_resolve_to_real_license_text`] is a third, cheap
+//!   layer specifically for the license symlinks: it doesn't shell out
+//!   to `cargo package`, so it catches the realistic regression (the
+//!   symlinks being deleted) on every plain `cargo test`, without
+//!   waiting on the `--ignored` run above. It's `#[cfg(unix)]` (see its
+//!   own doc comment), so it doesn't run on the Windows CI leg.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -203,14 +203,20 @@ fn published_crate_ships_license_files() {
 /// nothing in a plain `cargo test` would catch someone deleting, or
 /// `.gitignore`-ing, `quadraui/LICENSE-MIT`/`LICENSE-APACHE` outright.
 /// This reads each symlink's target content directly (no `cargo package`
-/// subprocess needed) and checks it starts with the real license header,
-/// which also catches the one platform where the symlink shape can go
-/// wrong silently: a checkout without symlink support (e.g. Windows
-/// without `core.symlinks` enabled in git) materialises each path as a
-/// regular file whose *contents* are the literal target string
-/// (`../LICENSE-MIT`) rather than the license text, and releases must
-/// not be packaged from a checkout in that state.
+/// subprocess needed) and checks it starts with the real license header.
+///
+/// ── Unix-only, deliberately (mirrors `tools/lint/src/githooks_worktree.rs`) ──
+///
+/// This asserts on the *content* a symlink resolves to, which only means
+/// what it says on a platform where these paths are actually symlinks. A
+/// Windows checkout without `core.symlinks` enabled in git materialises
+/// each path as a regular file whose contents are the literal target
+/// string (`../LICENSE-MIT`) rather than the license text — not a real
+/// release-hygiene bug on that platform, just how non-symlink-aware
+/// checkouts represent the tracked symlink, so this is `#[cfg(unix)]`
+/// rather than asserting a false positive on Windows CI.
 #[test]
+#[cfg(unix)]
 fn license_symlinks_resolve_to_real_license_text() {
     for (name, expected_prefix) in [
         ("LICENSE-MIT", "MIT License"),
@@ -222,10 +228,12 @@ fn license_symlinks_resolve_to_real_license_text() {
         assert!(
             contents.trim_start().starts_with(expected_prefix),
             "{} does not resolve to the real license text (starts with: \
-             {:?}) — on a checkout without symlink support, this file \
-             materialises as a plain text file containing the literal \
-             symlink target path instead of the license text. Package \
-             releases from a checkout with working symlinks.",
+             {:?}) — most likely cause: a checkout without symlink \
+             support, where this file materialises as a plain text file \
+             containing the literal symlink target path instead of the \
+             license text. Package releases from a checkout with working \
+             symlinks. (Could also mean the symlink was replaced with a \
+             hand-written stub, or the root LICENSE file was truncated.)",
             path.display(),
             contents.lines().next().unwrap_or("").trim(),
         );
