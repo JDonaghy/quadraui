@@ -4,23 +4,6 @@ version = "0.1.2"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
-# No `license-file` field, deliberately: that field takes exactly one
-# path and is for a *non-standard* license text an SPDX `license`
-# expression can't name. `license.workspace = true` above resolves to
-# the standard, SPDX-nameable `"MIT OR Apache-2.0"`, which crates.io's
-# own convention satisfies by shipping both full license texts as plain
-# files at the package root instead: `quadraui/LICENSE-MIT` and
-# `quadraui/LICENSE-APACHE` are symlinks to the repo-root copies, rather
-# than duplicate copies that could drift from the originals — the same
-# "canonical copy lives one level up" shape `readme`'s comment below uses
-# for `README.md`. `include`/`exclude` globs can't reach outside the
-# crate dir any more than `readme` can point at one directly (see that
-# comment), so a symlink physically inside `quadraui/` is the only way to
-# get cargo's default packaging to pick these files up; `cargo package`
-# resolves a symlink to its target's real content at pack time, not a
-# dangling link, so the shipped `.crate` carries the actual license text.
-# `tests/package_hygiene.rs` asserts both are present in the packaged
-# list.
 repository.workspace = true
 # crates.io/docs.rs metadata. `readme` points *above* this
 # crate's own dir on purpose — the authoritative README lives at the repo
@@ -32,6 +15,23 @@ repository.workspace = true
 # `root_readme()`, which reads the same file by a different, repo-root-
 # relative path.
 readme = "../README.md"
+# No `license-file` field, deliberately: that field takes exactly one
+# path and is for a *non-standard* license text an SPDX `license`
+# expression can't name. `license.workspace` above resolves to the
+# standard, SPDX-nameable `"MIT OR Apache-2.0"`, which crates.io's own
+# convention satisfies by shipping both full license texts as plain
+# files at the package root instead: `quadraui/LICENSE-MIT` and
+# `quadraui/LICENSE-APACHE` are symlinks to the repo-root copies, rather
+# than duplicate copies that could drift from the originals — the same
+# "canonical copy lives one level up" shape the `readme` comment above
+# uses for `README.md`. `include`/`exclude` globs can't reach outside
+# the crate dir any more than `readme` can point at one directly (see
+# that comment), so a symlink physically inside `quadraui/` is the only
+# way to get cargo's default packaging to pick these files up; `cargo
+# package` resolves a symlink to its target's real content at pack time,
+# not a dangling link, so the shipped `.crate` carries the actual
+# license text. `tests/package_hygiene.rs` asserts both are present in
+# the packaged list.
 documentation = "https://docs.rs/quadraui"
 # crates.io caps this at 5 entries, each <= 20 bytes, lowercase ASCII +
 # `-`/`_`/digits only.
