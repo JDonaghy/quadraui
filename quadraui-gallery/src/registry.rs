@@ -7,17 +7,28 @@
 //! changes.
 
 use crate::demos::activity_bar::ActivityBarDemo;
+use crate::demos::board::BoardDemo;
 use crate::demos::bottom_panel::BottomPanelDemo;
+use crate::demos::canvas::CanvasDemo;
 use crate::demos::caret_shape::CaretShapeDemo;
+use crate::demos::chart::ChartDemo;
 use crate::demos::command_line::CommandLineDemo;
+use crate::demos::data_table::DataTableDemo;
+use crate::demos::diff_view::DiffViewDemo;
 use crate::demos::file_picker::FilePickerDemo;
 use crate::demos::find_replace::FindReplaceDemo;
 use crate::demos::float::FloatDemo;
 use crate::demos::focus::FocusDemo;
 use crate::demos::form::FormDemo;
+use crate::demos::image::ImageDemo;
+use crate::demos::indicators::IndicatorsDemo;
 use crate::demos::menu_bar::MenuBarDemo;
+use crate::demos::message_list::MessageListDemo;
+use crate::demos::minimap::MinimapDemo;
 use crate::demos::palette::PaletteDemo;
 use crate::demos::panel::PanelDemo;
+use crate::demos::pipeline::PipelineDemo;
+use crate::demos::search_panel::SearchPanelDemo;
 use crate::demos::sidebar::SidebarDemo;
 use crate::demos::split::SplitDemo;
 use crate::demos::status_bar::StatusBarDemo;
@@ -26,6 +37,7 @@ use crate::demos::text_input::TextInputDemo;
 use crate::demos::text_selection::TextSelectionDemo;
 use crate::demos::toast::ToastDemo;
 use crate::demos::toolbar::ToolbarDemo;
+use crate::demos::tree::TreeDemo;
 use crate::demos::window_control::WindowControlDemo;
 use crate::demos::workspace::WorkspaceDemo;
 use crate::Demo;
@@ -62,5 +74,18 @@ pub fn registry() -> Vec<Box<dyn Demo>> {
         Box::new(FocusDemo::new()),
         Box::new(PaletteDemo::new()),
         Box::new(FilePickerDemo::new()),
+        // Data views.
+        Box::new(DataTableDemo::new()),
+        Box::new(TreeDemo::new()),
+        Box::new(ChartDemo::new()),
+        Box::new(BoardDemo::new()),
+        Box::new(PipelineDemo::new()),
+        Box::new(DiffViewDemo::new()),
+        Box::new(MinimapDemo::new()),
+        Box::new(IndicatorsDemo::new()),
+        Box::new(CanvasDemo::new()),
+        Box::new(ImageDemo::new()),
+        Box::new(SearchPanelDemo::new()),
+        Box::new(MessageListDemo::new()),
     ]
 }

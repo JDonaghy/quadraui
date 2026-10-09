@@ -756,3 +756,250 @@ fn form_tab_key_advances_the_focus_ring() {
         driver.screen()
     );
 }
+
+// ── Data views demos — targeted interaction tests ──────────────────────────
+
+/// Index of `"Data"` in [`GROUPS`] — where every Data views demo lives.
+fn data_group_index() -> usize {
+    GROUPS
+        .iter()
+        .position(|g| *g == "Data")
+        .expect("GROUPS must include \"Data\"")
+}
+
+/// Navigate to the Data group and select the demo named `name` from the
+/// sidebar.
+fn select_data_demo<A: AppLogic>(driver: &mut TuiDriver<A>, name: &str) {
+    click_group_zone(driver, data_group_index());
+    let (x, y) = driver
+        .find(name)
+        .unwrap_or_else(|| panic!("{name} sidebar row should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+}
+
+/// Clicking the "Status" column header on the `Data Table` demo's
+/// sortable variant sorts by it.
+#[test]
+fn data_table_header_click_sorts_by_that_column() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Data Table");
+    assert!(driver.screen_contains("sort: Name asc"));
+
+    // Click near the right edge of the header text, not `find()`'s
+    // default (the glyph's left edge): the column's divider sits
+    // immediately to the left of "Status", and a click within 3 cells
+    // of it resolves to `HeaderDivider`, not `Header` — the same
+    // "anchor on the whole span, click away from the ambiguous edge"
+    // rule `clicking_a_demo_widget_appends_to_the_event_log` uses above.
+    let bounds = driver
+        .find_bounds("Status")
+        .unwrap_or_else(|| panic!("Status column header should paint:\n{}", driver.screen()));
+    driver.click(
+        bounds.x + bounds.width - 0.5,
+        bounds.y + bounds.height / 2.0,
+    );
+
+    assert!(
+        driver.screen_contains("sort: Status asc"),
+        "clicking the Status header should sort by it:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the collapsed "tests/" header on the `Tree` demo's "File
+/// tree" variant expands it, revealing its hidden child.
+#[test]
+fn tree_file_variant_header_click_expands_it() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Tree");
+
+    let (vx, vy) = driver
+        .find("File tree")
+        .expect("variant picker should list \"File tree (expand/collapse)\"");
+    driver.click(vx, vy);
+    assert!(!driver.screen_contains("smoke.rs"));
+
+    let (x, y) = driver
+        .find("tests/")
+        .unwrap_or_else(|| panic!("tests/ row should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("smoke.rs"),
+        "clicking the collapsed tests/ header should expand it:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking a card on the `Board` demo's sprint-board variant selects
+/// it, updating the status line.
+#[test]
+fn board_card_click_selects_it() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Board");
+
+    // The card box clips its title ("Fix memory leak in " without
+    // "parser") at this terminal width — search for the clipped prefix
+    // that's guaranteed to paint, not the full title.
+    let (x, y) = driver
+        .find("Fix memory leak in")
+        .unwrap_or_else(|| panic!("backlog card should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("Selected: Fix memory leak in parser"),
+        "clicking a card should select it and update the status line:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing Enter on the `Pipeline` demo's default-focused stage fires
+/// its action.
+#[test]
+fn pipeline_enter_fires_the_focused_stage_action() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Pipeline");
+
+    driver.press_named(quadraui::NamedKey::Enter);
+
+    assert!(
+        driver.screen_contains("Retry on 'Test'"),
+        "Enter should fire the focused (Test) stage's Retry action:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking a diff row on the `Diff View` demo reports which row (and
+/// pane) was hit.
+#[test]
+fn diff_view_row_click_reports_the_hit_row() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Diff View");
+
+    let (x, y) = driver
+        .find("original")
+        .unwrap_or_else(|| panic!("left pane label should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("clicked"),
+        "clicking inside the diff view should report the hit in the status line:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing Down on the `Minimap` demo scrolls the viewport, visible in
+/// the status line's line counter.
+#[test]
+fn minimap_down_key_advances_the_line_counter() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Minimap");
+    assert!(driver.screen_contains("line 0"));
+
+    driver.press_named(quadraui::NamedKey::Down);
+
+    assert!(
+        driver.screen_contains("line 1"),
+        "Down should advance the minimap's scroll line counter:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing space on the `Indicators` demo's Progress variant advances
+/// the progress bar's percentage label.
+#[test]
+fn indicators_space_key_advances_progress() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Indicators");
+    assert!(driver.screen_contains("30%"));
+
+    driver.type_char(' ');
+
+    assert!(
+        driver.screen_contains("40%"),
+        "space should advance the progress bar by 10%:\n{}",
+        driver.screen()
+    );
+}
+
+/// Pressing `+` on the `Canvas` demo's first gauge raises its value,
+/// visible in both the gauge label and the status line.
+#[test]
+fn canvas_plus_key_raises_the_gauge_value() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Canvas");
+    assert!(driver.screen_contains("gauge: 30%"));
+
+    driver.type_char('+');
+
+    assert!(
+        driver.screen_contains("gauge: 40%"),
+        "+ should raise the gauge value by 10:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the `Image` demo's "File" menu item activates it — a more
+/// reliable click target than the logo itself: TUI paints the logo's
+/// `fallback_text` centered in the full icon slot, while
+/// `Image::layout`'s `Contain`-fit hit box is a much smaller,
+/// independently-centered sub-rect (real on GTK, where the fallback
+/// text and the rasterised pixels occupy the same bounds) — the
+/// per-crate `tui_tests` module below pins the logo click at an exact,
+/// hand-computed coordinate instead of relying on `find()`'s glyph
+/// center to land inside that smaller box.
+#[test]
+fn image_menu_item_click_reports_in_the_status_line() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Image");
+
+    let (x, y) = driver
+        .find("File")
+        .unwrap_or_else(|| panic!("File menu item should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("activated: &File"),
+        "clicking the File menu item should update the status line:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking the expanded "src/main.rs" header on the `Search Panel`
+/// demo collapses it, hiding its match rows.
+#[test]
+fn search_panel_header_click_collapses_the_file_group() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Search Panel");
+    assert!(driver.screen_contains("fn main()"));
+
+    let (x, y) = driver
+        .find("src/main.rs")
+        .unwrap_or_else(|| panic!("src/main.rs header should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("Collapsed src/main.rs"),
+        "clicking the header should collapse it and update the status line:\n{}",
+        driver.screen()
+    );
+}
+
+/// Clicking a row on the `Message List` demo reports its index and
+/// text in the status line.
+#[test]
+fn message_list_row_click_reports_the_row_text() {
+    let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
+    select_data_demo(&mut driver, "Message List");
+
+    let (x, y) = driver
+        .find("row 0:")
+        .unwrap_or_else(|| panic!("first row should paint:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    assert!(
+        driver.screen_contains("clicked row 0"),
+        "clicking the first row should report it in the status line:\n{}",
+        driver.screen()
+    );
+}
