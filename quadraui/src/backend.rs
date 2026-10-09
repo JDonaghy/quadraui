@@ -1316,8 +1316,9 @@ pub trait Backend: sealed::Sealed {
     /// (issue #1013: a lying capability, and the direct reason vimcode
     /// kept a system-wide `~/.local/share/fonts` + `fc-cache` installer
     /// for GTK specifically). GTK now overrides this via
-    /// `FcConfigAppFontAddFile` — see `crate::gtk::app_font`'s module
-    /// doc.
+    /// `FcConfigAppFontAddFile` and, on macOS, also Core Text directly
+    /// (`PangoCoreTextFontMap` never consults Fontconfig there) — see
+    /// `crate::gtk::app_font`'s module doc.
     fn register_font_from_memory(&mut self, _bytes: &[u8]) -> Option<Vec<String>> {
         None
     }

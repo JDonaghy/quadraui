@@ -414,6 +414,13 @@ keyring = { version = "4", optional = true }
 taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree", "flexbox", "grid", "std", "content_size"], optional = true }
 
 [build-dependencies]
+# `build.rs`'s `pangoft2` probe (`gtk` feature only): the hand-declared
+# `pango_fc_font_map_config_changed` symbol
+# `crate::gtk::app_font::notify_fontmap_config_changed` calls when the
+# default Pango-Cairo font map is genuinely Fc-backed lives in
+# `libpangoft2-1.0`, not `libpango-1.0`/`libpangocairo-1.0` — same crate
+# `yeslogic-fontconfig-sys`'s own build script uses to find fontconfig.
+pkg-config = "0.3"
 # Unix-only optional dep (quadraui#1048): `tui::caps::probe_sgr_pixel_mouse`'s
 # DECRQM reply read needs a raw, cancellable `poll(2)` on stdin — crossterm's
 # own `event::poll`/`read` don't recognise the `CSI ? 1016 ; Ps $ y` reply as
