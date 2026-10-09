@@ -13,14 +13,26 @@
 //! the rest — `draw_tree` included, the most visible — painting the host
 //! chrome in the *editor's* monospace font.
 //!
-//! [`ChromePrimitive`] is the single place that answers the question
-//! from now on. A backend's `draw_*`/`*_layout` method for one of these
-//! primitives resolves its font by consulting this list rather than
-//! re-deciding — see `gtk::backend::GtkBackend`'s `ui_font_desc` call
-//! sites and `macos::backend::MacBackend`'s `chrome_font` field uses for
-//! the two backends' call-site conventions. Everything **not** listed
-//! here paints in the editor font (or has no font at all: dividers,
-//! scrollbar tracks, images).
+//! [`ChromePrimitive`] is an explicit allow-list of 13 primitives a
+//! backend's `draw_*`/`*_layout` method consults directly
+//! (`&self.chrome_font` et al. — see `macos::backend::MacBackend::draw_tree`'s
+//! own comment for the call-site convention).
+//!
+//! The shared paint seam, [`crate::PaintSurface::surface_draw_text_run`]
+//! (and its `_styled`/measure twins), sits one layer below that allow-list
+//! and governs every other primitive — DataTable, Form, Toast, Panel,
+//! Tooltip, Palette, Progress, Spinner, and more — that paints through it
+//! without an explicit role. On the backends where that seam has been
+//! inverted (macOS so far; GTK and Win-GUI in their own follow-up work),
+//! the rule is: **every primitive paints in [`FontRole::Chrome`] unless it
+//! is editor-class**. [`EditorClassPrimitive`] is the opt-out list: the
+//! handful of primitives that genuinely need [`FontRole::Editor`], because
+//! they render the user's actual code/content rather than host UI. A
+//! primitive absent from both [`ChromePrimitive::ALL`] and
+//! [`EditorClassPrimitive::ALL`] is chrome by default on an inverted
+//! backend; [`ChromePrimitive`]'s allow-list role stops mattering for it
+//! once that backend inverts, though the 13 listed primitives remain
+//! correctly [`FontRole::Chrome`] either way.
 //!
 //! TUI is deliberately absent from this picture — a terminal cell grid
 //! has one font by definition, so `FontRole` has nothing to say there
@@ -153,6 +165,75 @@ impl std::fmt::Display for ChromePrimitive {
     }
 }
 
+/// Every primitive that paints in [`FontRole::Editor`] on a backend where
+/// chrome is the default for everything else (see the module doc) — the
+/// opt-out list. Each of these renders the user's actual code or terminal
+/// content, not host UI chrome, so it has to track
+/// [`crate::Backend::set_editor_font`] rather than
+/// [`crate::Backend::set_ui_font`].
+///
+/// Deliberately **not** `#[non_exhaustive]`-grown casually the way
+/// [`ChromePrimitive`] is: adding an entry here *removes* chrome
+/// painting from a primitive that previously had it (by the module's new
+/// default), the opposite direction of risk from adding to
+/// [`ChromePrimitive`]. Still `#[non_exhaustive]` for the same downstream
+/// reason as that enum (see its doc) — it just means a new variant here
+/// needs the same scrutiny `ChromePrimitive` additions always needed,
+/// not that the mechanism is any looser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EditorClassPrimitive {
+    Editor,
+    Terminal,
+    DiffView,
+    TextDisplay,
+    Minimap,
+    CommandLine,
+}
+
+impl EditorClassPrimitive {
+    /// Every editor-class primitive.
+    ///
+    /// Intended to be walked by the same cross-backend conformance
+    /// scenario [`ChromePrimitive::ALL`]'s doc describes — asserting
+    /// [`FontRole::Editor`] for each of these and [`FontRole::Chrome`]
+    /// for everything else a backend paints.
+    pub const ALL: [EditorClassPrimitive; 6] = [
+        EditorClassPrimitive::Editor,
+        EditorClassPrimitive::Terminal,
+        EditorClassPrimitive::DiffView,
+        EditorClassPrimitive::TextDisplay,
+        EditorClassPrimitive::Minimap,
+        EditorClassPrimitive::CommandLine,
+    ];
+
+    /// Every [`EditorClassPrimitive`] is [`FontRole::Editor`] by
+    /// construction — the editor-class twin of
+    /// [`ChromePrimitive::font_role`].
+    pub const fn font_role(self) -> FontRole {
+        FontRole::Editor
+    }
+
+    /// Short, stable name for diagnostics — not for parsing. Mirrors
+    /// [`ChromePrimitive::name`].
+    pub const fn name(self) -> &'static str {
+        match self {
+            EditorClassPrimitive::Editor => "editor",
+            EditorClassPrimitive::Terminal => "terminal",
+            EditorClassPrimitive::DiffView => "diff_view",
+            EditorClassPrimitive::TextDisplay => "text_display",
+            EditorClassPrimitive::Minimap => "minimap",
+            EditorClassPrimitive::CommandLine => "command_line",
+        }
+    }
+}
+
+impl std::fmt::Display for EditorClassPrimitive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +259,31 @@ mod tests {
     #[test]
     fn name_round_trips_through_display() {
         for p in ChromePrimitive::ALL {
+            assert_eq!(p.to_string(), p.name());
+        }
+    }
+
+    #[test]
+    fn every_editor_class_primitive_is_editor() {
+        for p in EditorClassPrimitive::ALL {
+            assert_eq!(p.font_role(), FontRole::Editor, "{p}");
+        }
+    }
+
+    #[test]
+    fn editor_class_all_has_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for p in EditorClassPrimitive::ALL {
+            assert!(
+                seen.insert(p),
+                "duplicate entry in EditorClassPrimitive::ALL: {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_class_name_round_trips_through_display() {
+        for p in EditorClassPrimitive::ALL {
             assert_eq!(p.to_string(), p.name());
         }
     }

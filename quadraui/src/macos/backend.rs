@@ -2033,7 +2033,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_data_table called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: `DataTable` is chrome, not editor content — paint
+        // through `chrome_font`, matching `draw_tree`'s comment above.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -2053,7 +2055,9 @@ impl Backend for MacBackend {
         }
     }
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: no-paint twin of `draw_data_table` — must agree
+        // with what that method painted.
+        let font = &self.chrome_font;
         super::data_table::mac_data_table_layout(
             table,
             font,
@@ -2120,10 +2124,13 @@ impl Backend for MacBackend {
             !self.current_cg().is_null(),
             "MacBackend::draw_form called outside enter_frame_scope",
         );
-        let font = self
-            .current_font
-            .clone()
-            .unwrap_or_else(|| self.chrome_font.clone());
+        // Issue #1372: `Form` is chrome, not editor content — see
+        // `draw_data_table`'s comment. `crate::primitives::form::paint`
+        // below paints through `self` as `&mut dyn PaintSurface`, which
+        // now defaults to `chrome_font` too (see `MacBackend`'s own
+        // `PaintSurface` impl), so this `font` variable — used only for
+        // layout/measurement here — has to agree with it.
+        let font = self.chrome_font.clone();
         let theme = self.current_theme;
         let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
         let origin = Point::new(rect.x, rect.y);
@@ -2173,7 +2180,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_palette called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: `Palette` is chrome, not editor content — see
+        // `draw_data_table`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -2217,7 +2226,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_settings_chrome called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: the settings header/search bar is chrome (part of
+        // `Form`), not editor content — see `draw_data_table`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
@@ -2636,18 +2647,28 @@ impl Backend for MacBackend {
         };
         let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
 
-        crate::primitives::terminal::paint(
-            term,
-            self,
-            &theme,
-            rect.x,
-            rect.y,
-            cell_area_w as f32,
-            rect.height,
-            line_height as f32,
-            char_width as f32,
-            None,
-        );
+        // Issue #1372: the terminal is editor-class — paint through
+        // `EditorSurface` so its cell glyphs keep painting in
+        // `current_font` now that the plain `self` surface defaults to
+        // `chrome_font` (see `EditorSurface`'s doc). Scoped to a block so
+        // `self` is free again for the scrollbar paint below, which has
+        // no text of its own and is fine through the plain (chrome)
+        // surface.
+        {
+            let mut surface = EditorSurface { backend: self };
+            crate::primitives::terminal::paint(
+                term,
+                &mut surface,
+                &theme,
+                rect.x,
+                rect.y,
+                cell_area_w as f32,
+                rect.height,
+                line_height as f32,
+                char_width as f32,
+                None,
+            );
+        }
 
         if let Some(ref sb_state) = term.scrollbar {
             let sb = crate::primitives::scrollbar::Scrollbar::vertical(
@@ -2690,7 +2711,17 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
         let char_width = self.current_char_width as f32;
-        crate::primitives::text_display::paint(td, rect, self, &theme, line_height, char_width);
+        // Issue #1372: `TextDisplay` is editor-class — see
+        // `draw_terminal`'s comment / `EditorSurface`'s doc.
+        let mut surface = EditorSurface { backend: self };
+        crate::primitives::text_display::paint(
+            td,
+            rect,
+            &mut surface,
+            &theme,
+            line_height,
+            char_width,
+        );
     }
     fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
         self.draw_command_line_selection(rect, cmd, None);
@@ -2799,7 +2830,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_tooltip called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: `Tooltip` is chrome, not editor content — see
+        // `draw_data_table`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.current_line_height;
         let char_width = self.current_char_width;
@@ -2930,7 +2963,9 @@ impl Backend for MacBackend {
         tree.vscrollbar(rect, row_h as f32)
     }
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: no-paint twin of `draw_form` — must agree with
+        // what that method painted.
+        let font = &self.chrome_font;
         super::form::mac_form_layout(form, rect, self.current_line_height, font)
     }
     fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
@@ -2952,7 +2987,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_message_list called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: `MessageList` is chrome, not editor content — see
+        // `draw_data_table`'s comment.
+        let font = &self.chrome_font;
         let line_height = self.current_line_height;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -3028,7 +3065,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_completions called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: the completions popup chrome (labels, icons) is
+        // chrome, not editor content — see `draw_data_table`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { super::completions::draw_completions(ctx, font, completions, layout, &theme) }
@@ -3171,7 +3210,12 @@ impl Backend for MacBackend {
         )
     }
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: no-paint twin of `draw_toast_overlay` — that
+        // method paints through `self` as `&mut dyn PaintSurface`, which
+        // now defaults to `chrome_font` (`Toast` is chrome, not editor
+        // content) — see `draw_data_table`'s comment and `MacBackend`'s
+        // own `PaintSurface` impl.
+        let font = &self.chrome_font;
         super::toast::mac_toast_stack_layout(
             stack,
             font,
@@ -3235,7 +3279,9 @@ impl Backend for MacBackend {
             !ctx.is_null(),
             "MacBackend::draw_spinner called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: `Spinner` is chrome, not editor content — see
+        // `draw_data_table`'s comment.
+        let font = &self.chrome_font;
         let theme = self.current_theme;
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -3243,7 +3289,9 @@ impl Backend for MacBackend {
         }
     }
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
+        // Issue #1372: no-paint twin of `draw_spinner` — must agree
+        // with what that method painted.
+        let font = &self.chrome_font;
         super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
     }
     fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
@@ -3427,11 +3475,15 @@ impl Backend for MacBackend {
         // `Self::surface_fill_rect` — so this method needs no separate
         // ctx/font fetch of its own, matching `Self::draw_status_bar`'s
         // #860 shape.
+        //
+        // Issue #1372: `DiffView` is editor-class — see `draw_terminal`'s
+        // comment / `EditorSurface`'s doc.
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
+        let mut surface = EditorSurface { backend: self };
         crate::primitives::diff_view::native_surface_paint::paint(
             view,
-            self,
+            &mut surface,
             &theme,
             rect,
             line_height,
@@ -3987,6 +4039,158 @@ impl PaintSurface for ChromeSurface<'_> {
     }
 }
 
+/// The editor-class twin of [`ChromeSurface`] just above: that adapter
+/// exists to reach `chrome_font` from a primitive-generic call site;
+/// this one exists to reach `current_font` from one, since
+/// [`MacBackend`]'s own [`PaintSurface`] impl (below) defaults to
+/// `chrome_font` and a handful of primitives still need the editor font
+/// — the terminal and the plain text display paint through this trait
+/// and need `EditorSurface`; the diff view also paints through this
+/// trait and needs it too; the full-screen editor paints through its
+/// own dedicated Core Text calls instead of this trait at all, so it
+/// needs neither adapter.
+///
+/// Every font-agnostic method (fills, strokes, clip, lines, images, frame
+/// lifecycle, line-height/char-width pitch) forwards straight through to
+/// [`MacBackend`]'s own impl, which doesn't read the font either way —
+/// only the three text-shaped methods below differ, and they resolve
+/// `current_font` with the same "falls back to `chrome_font`, never
+/// panics" behaviour as every other `current_font` read site in this
+/// file.
+struct EditorSurface<'a> {
+    backend: &'a mut MacBackend,
+}
+
+impl PaintSurface for EditorSurface<'_> {
+    fn surface_begin_frame(&mut self, viewport: Viewport) {
+        self.backend.surface_begin_frame(viewport)
+    }
+
+    fn surface_end_frame(&mut self) {
+        self.backend.surface_end_frame()
+    }
+
+    fn surface_viewport(&self) -> Viewport {
+        self.backend.surface_viewport()
+    }
+
+    fn surface_line_height(&self) -> f32 {
+        self.backend.surface_line_height()
+    }
+
+    fn surface_char_width(&self) -> f32 {
+        self.backend.surface_char_width()
+    }
+
+    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+        let font = self
+            .backend
+            .current_font
+            .as_ref()
+            .unwrap_or(&self.backend.chrome_font);
+        let (w, h) = super::text::measure_text(font, text);
+        (w as f32, h as f32)
+    }
+
+    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+        self.backend.surface_fill_rect(rect, color)
+    }
+
+    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        self.backend.surface_fill_rounded_rect(rect, radius, color)
+    }
+
+    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+        self.backend.surface_stroke_rect(rect, color, stroke_width)
+    }
+
+    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+        let ctx = self.backend.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "EditorSurface::surface_draw_text_run called outside enter_frame_scope",
+        );
+        let font = self
+            .backend
+            .current_font
+            .as_ref()
+            .unwrap_or(&self.backend.chrome_font);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text(
+                ctx,
+                font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    /// The `current_font` twin of [`MacBackend`]'s own
+    /// `surface_draw_text_run_styled` — same `bold`/`italic`/`underline`-
+    /// unsupported posture, same `scale_x` support via
+    /// [`super::text::draw_text_scaled_x`] (the terminal's wide-glyph
+    /// advance fix, #500/#703), just against `current_font`.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_draw_text_run_styled(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        color: Color,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        scale_x: f32,
+    ) {
+        let _ = (bold, italic, underline);
+        let ctx = self.backend.current_cg();
+        debug_assert!(
+            !ctx.is_null(),
+            "EditorSurface::surface_draw_text_run_styled called outside enter_frame_scope",
+        );
+        let font = self
+            .backend
+            .current_font
+            .as_ref()
+            .unwrap_or(&self.backend.chrome_font);
+        // SAFETY: ctx is non-null inside the frame scope.
+        unsafe {
+            super::text::draw_text_scaled_x(
+                ctx,
+                font,
+                text,
+                rect.x as f64,
+                rect.y as f64,
+                scale_x as f64,
+                ns_color_to_cg(color),
+            );
+        }
+    }
+
+    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
+        self.backend
+            .surface_draw_line(from, to, color, stroke_width)
+    }
+
+    fn surface_push_clip(&mut self, rect: Rect) {
+        self.backend.surface_push_clip(rect)
+    }
+
+    fn surface_pop_clip(&mut self) {
+        self.backend.surface_pop_clip()
+    }
+
+    fn surface_draw_image(
+        &mut self,
+        rect: Rect,
+        image: &crate::primitives::image::Image,
+    ) -> crate::backend::ImagePaintResult {
+        self.backend.surface_draw_image(rect, image)
+    }
+}
+
 impl PaintSurface for MacBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -4008,9 +4212,17 @@ impl PaintSurface for MacBackend {
         Backend::char_width(self)
     }
 
+    /// Issue #1372: `self` is the surface every non-editor-class
+    /// primitive paints through unwrapped (`draw_panel`, `draw_toast_overlay`,
+    /// `draw_progress`, …) — see [`EditorSurface`]'s doc for the three
+    /// editor-class primitives that opt back into `current_font` via a
+    /// dedicated adapter instead. Before this issue this method read
+    /// `current_font` first, which is exactly how DataTable/Toast/Panel
+    /// (etc) ended up painting in the editor's monospace font the moment
+    /// a host called `set_current_font` — see `crate::font_role`'s module
+    /// doc.
     fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
-        let (w, h) = super::text::measure_text(font, text);
+        let (w, h) = super::text::measure_text(&self.chrome_font, text);
         (w as f32, h as f32)
     }
 
@@ -4050,18 +4262,19 @@ impl PaintSurface for MacBackend {
         unsafe { ns_stroke_rect(ctx, rect, color, stroke_width as f64) };
     }
 
+    /// See [`Self::surface_measure_text`]'s doc for why this reads
+    /// `chrome_font` unconditionally rather than `current_font`.
     fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
         let ctx = self.current_cg();
         debug_assert!(
             !ctx.is_null(),
             "MacBackend::surface_draw_text_run called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::text::draw_text(
                 ctx,
-                font,
+                &self.chrome_font,
                 text,
                 rect.x as f64,
                 rect.y as f64,
@@ -4077,6 +4290,12 @@ impl PaintSurface for MacBackend {
     /// doc), but `draw_text_scaled_x` already existed here for the
     /// wide-glyph advance fix (#500/#703), so that capability isn't
     /// lost by routing through this trait.
+    ///
+    /// Issue #1372: reads `chrome_font` unconditionally — see
+    /// [`Self::surface_measure_text`]'s doc. [`EditorSurface`] carries the
+    /// `current_font` twin of this method for the editor-class callers
+    /// that still need it (the terminal's wide-glyph advance fix among
+    /// them).
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(
         &mut self,
@@ -4094,12 +4313,11 @@ impl PaintSurface for MacBackend {
             !ctx.is_null(),
             "MacBackend::surface_draw_text_run_styled called outside enter_frame_scope",
         );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
             super::text::draw_text_scaled_x(
                 ctx,
-                font,
+                &self.chrome_font,
                 text,
                 rect.x as f64,
                 rect.y as f64,

@@ -395,7 +395,7 @@ mod backend_core;
 pub use a11y::A11yInfo;
 pub use diff::compute_hunks;
 pub use focus::FocusManager;
-pub use font_role::{ChromePrimitive, FontRole};
+pub use font_role::{ChromePrimitive, EditorClassPrimitive, FontRole};
 pub use generic_font::GenericFamily;
 pub use primitives::activity_bar::{
     ActivityBar, ActivityBarEvent, ActivityBarHit, ActivityBarLayout, ActivityBarRowHit,
