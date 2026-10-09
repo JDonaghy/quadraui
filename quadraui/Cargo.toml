@@ -4,6 +4,27 @@ version = "0.1.2"
 edition.workspace = true
 description = "Cross-platform Rust UI toolkit: write one AppLogic and run it unmodified on TUI, GTK4 (Linux), macOS, and Windows backends"
 license.workspace = true
+# No `license-file` field, deliberately: that field takes exactly one
+# path and is for a *non-standard* license text an SPDX `license`
+# expression can't name — this crate is dual-licensed under two standard,
+# SPDX-nameable licenses (`license.workspace = true` above resolves to
+# `"MIT OR Apache-2.0"`), which crates.io's own convention satisfies by
+# shipping both full license texts as plain files at the package root
+# instead. `quadraui/LICENSE-MIT` and `quadraui/LICENSE-APACHE` are
+# symlinks to the repo-root copies (same "canonical copy lives one level
+# up, this crate just needs it inside its own package root at pack time"
+# shape `readme`'s comment above already uses for `README.md`) rather
+# than duplicate copies that could drift from the originals. Unlike
+# `readme`, there is no manifest field to point at them from outside the
+# crate dir — `include`/`exclude` globs can't reach outside it either
+# (see that comment) — so a symlink physically inside `quadraui/` is the
+# only way to get cargo's default packaging (which includes any
+# non-excluded file in the package root) to pick them up; `cargo package`
+# resolves a symlink to its target's real content at pack time, not a
+# dangling link, so the shipped `.crate` carries the actual license text.
+# Before #1393, neither file shipped at all — a dual-licensed crate with
+# no license text in its own tarball. `tests/package_hygiene.rs` asserts
+# both are present in the packaged list.
 repository.workspace = true
 # crates.io/docs.rs metadata. `readme` points *above* this
 # crate's own dir on purpose — the authoritative README lives at the repo
@@ -101,11 +122,14 @@ rust-version = "1.92.0"
 # `COMPOSE.md`, `EVENT_ROUTING_TOUR.md`, `INSTALL.md`,
 # `KITTY_KEYBOARD_PROTOCOL.md`, `decisions/`) is written for app authors
 # consuming this crate and keeps shipping — confirmed with
-# `cargo package --list -p quadraui`: 584 files packaged with this
-# exclude list, vs. 582 with `docs/decisions/` also excluded. The
+# `cargo package --list -p quadraui`: 586 files packaged with this
+# exclude list (584 before #1393 added the two `LICENSE-*` symlinks
+# below), vs. 584 with `docs/decisions/` also excluded. The
 # tests/benches-only baseline, with `docs/` untouched by `exclude`
-# entirely, is 629 files / 3.3MiB compressed, down to 580 files / 3.0MiB
-# compressed with just `tests/`/`benches/` excluded. None of the
+# entirely, was 629 files / 3.3MiB compressed as of #528, down to 580
+# files / 3.0MiB compressed with just `tests/`/`benches/` excluded —
+# both stale by some amount from docs/tests growth since, independent of
+# #1393's +2; re-measure before trusting either to the file. None of the
 # excluded files above are reached by a rustdoc
 # `#[doc = include_str!(...)]` — confirmed by grepping `src/` for
 # `include_str!` — so excluding them cannot break the docs.rs build.

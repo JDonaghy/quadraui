@@ -228,14 +228,21 @@ impl runner::DriverFactory for MacFactory {
 // feature, real Windows)` runs `cargo test -p quadraui --features win`
 // on a real host.
 //
-// It registers **burn-down, not blocking** (see `runner::Gating`): that
-// Windows leg is blocking since #674, and `WinBackend` has no
-// painted-text-run recording yet, so every text-locating step in the suite
-// honestly reports "not painted". Gating on those would red the Windows
-// column of every unrelated PR while saying nothing new — the matrix rows
-// *are* the burn-down checklist (#480/#580), which is what quadraui#708
-// asks this registration to produce. `verdict`'s `promotable` check flips
-// it back to blocking automatically once the column stops failing.
+// It registers **blocking, not burn-down** (see `runner::Gating`): the
+// windows-latest leg itself has been blocking since #674 (see `ci.yml`'s
+// `Test (win feature, real Windows)` step), and this Tier-1 column was
+// originally registered `register_burn_down` instead (quadraui#708) while
+// `WinBackend` had rasterisers left to build. It stopped failing any
+// scenario once those landed, which is what `runner::verdict`'s
+// `promotable` check exists to notice — a `BurnDown` column that stops
+// failing makes the suite itself fail with "promote them" until a human
+// moves its `backends()` registration from `register_burn_down` to
+// `register`, which is what #1320 did. The matrix rows *were* the
+// burn-down checklist (#480/#580) up to that point, not permanently — a
+// regression here now reds the Windows column of every unrelated PR,
+// which is the point: this column has nothing left to burn down.
+// `c0_paint_smoke`'s own column list is separate and still keeps a `win`
+// burn-down entry.
 #[cfg(all(feature = "win", target_os = "windows"))]
 struct WinFactory;
 

@@ -163,6 +163,34 @@ fn published_crate_ships_consumer_docs() {
     }
 }
 
+/// #1393: the published `.crate` shipped no license text at all —
+/// `quadraui/LICENSE-MIT` and `quadraui/LICENSE-APACHE` are symlinks to
+/// the repo-root originals (see `Cargo.toml`'s `license.workspace`
+/// comment for why symlinks rather than a `license-file` field), added
+/// specifically so cargo's default packaging picks them up. This is the
+/// regression guard on that: `cargo package --list` resolving a symlink
+/// to a path outside the crate dir down to zero files, or the symlinks
+/// going missing again, both fail silently otherwise — there's no
+/// `cargo publish` dry run in this repo's quality gate that would have
+/// caught a licenseless tarball on its own.
+#[test]
+#[ignore = "shells out to a real `cargo package --list` subprocess"]
+fn published_crate_ships_license_files() {
+    let files = packaged_files();
+
+    for license_file in ["LICENSE-MIT", "LICENSE-APACHE"] {
+        assert!(
+            files.contains(license_file),
+            "{license_file} is missing from the published package — this \
+             crate is dual-licensed (`license.workspace = true` resolves \
+             to \"MIT OR Apache-2.0\") but its `.crate` tarball carries no \
+             license text at all. Check that `quadraui/{license_file}` \
+             still exists as a symlink to the repo-root original and \
+             isn't covered by Cargo.toml's `exclude`."
+        );
+    }
+}
+
 /// `INTERNAL_DOCS` and `CONSUMER_DOCS` above must not overlap and, together
 /// with the always-excluded `tests/`/`benches/` directories, should account
 /// for everything currently under `docs/` — guards this test's own two

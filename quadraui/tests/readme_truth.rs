@@ -168,6 +168,10 @@ fn compose_md() -> String {
     read(crate_root().join("docs/COMPOSE.md"))
 }
 
+fn canvas_rs() -> String {
+    read(crate_root().join("src/primitives/canvas.rs"))
+}
+
 /// Number of primitive modules declared in `src/primitives/mod.rs`. This is
 /// the crate's own definition of "how many primitives exist" — the same
 /// thing a `pub mod` grep would show a human, just automated so the docs
@@ -352,6 +356,28 @@ fn root_readme_states_the_real_primitive_count() {
         "root README.md doesn't contain \"{needle}\", but \
          src/primitives/mod.rs declares {count} `pub mod` primitive \
          modules. Update the README's Primitives section count."
+    );
+}
+
+#[test]
+fn canvas_doc_states_the_real_other_primitive_count() {
+    // #1393: `Canvas` is itself one of the `pub mod` entries
+    // `primitive_module_count` counts, so its own module doc's "the N
+    // other shipped primitives" phrasing must say one less than the
+    // total — it went stale at "40 other" against a 42-module crate (41
+    // others) after #798/#1107 kept `lib.rs`/README.md in sync but never
+    // taught this file about `canvas.rs`'s own doc comment.
+    let others = primitive_module_count() - 1;
+    let canvas = canvas_rs();
+    let needle = format!("{others} other shipped primitive");
+    assert!(
+        canvas.contains(&needle),
+        "quadraui/src/primitives/canvas.rs's module doc doesn't contain \
+         \"{needle}\", but src/primitives/mod.rs declares {} `pub mod` \
+         primitive modules total ({others} other than `canvas` itself). \
+         A primitive was added or removed without updating canvas.rs's \
+         doc comment, or its count was hand-edited to a wrong number.",
+        others + 1
     );
 }
 
@@ -881,5 +907,92 @@ fn quadraui_crate_has_no_duplicate_readme() {
          is how they drifted apart before. Fold any new content into the \
          root README.md instead of recreating this one.",
         dup.display()
+    );
+}
+
+// ── Test count (#1393) ──────────────────────────────────────────────────
+
+/// Every `#[test]`-attributed item under this crate's own `src/` and
+/// `tests/` — the same mechanical "count the real thing instead of
+/// re-pinning a snapshot" strategy [`primitive_module_count`] already uses.
+/// Deliberately a line-level `starts_with("#[test]")` check (not a plain
+/// substring `contains`): a doc comment that merely *mentions* `#[test]`
+/// in prose (this very file has several) must not inflate the count.
+fn test_fn_count() -> usize {
+    fn walk(dir: &std::path::Path, total: &mut usize) {
+        let entries = fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("failed to read dir {}: {e}", dir.display()));
+        for entry in entries {
+            let entry = entry.expect("dir entry readable");
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, total);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = read(path);
+                *total += text
+                    .lines()
+                    .filter(|l| l.trim_start().starts_with("#[test]"))
+                    .count();
+            }
+        }
+    }
+    let mut total = 0;
+    walk(&crate_root().join("src"), &mut total);
+    walk(&crate_root().join("tests"), &mut total);
+    assert!(
+        total > 0,
+        "found zero `#[test]` items under quadraui/src and quadraui/tests — \
+         either the crate's tests emptied out or this test's parsing broke. \
+         Either way, investigate before trusting the count below."
+    );
+    total
+}
+
+/// Round `n` down to the nearest `step`. The root README's "Heavily
+/// tested" bullet states an approximate count ("Around N tests"), not an
+/// exact one — rounding both the stated claim and the real count to the
+/// same bucket means this test only needs re-running (and the bullet
+/// re-editing) once the real count crosses into the next bucket, not on
+/// every single `#[test]` a PR adds.
+fn round_down(n: usize, step: usize) -> usize {
+    (n / step) * step
+}
+
+/// Render a bucketed test count the way the README spells it, e.g.
+/// `5100` -> `"5,100"`. Every bucket this crate will plausibly reach for a
+/// long time is 4+ digits, so a single-separator formatter is enough —
+/// this isn't a general-purpose number formatter.
+fn with_thousands_separator(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[test]
+fn root_readme_states_the_real_test_count_ballpark() {
+    // #1393: the "Heavily tested" bullet said "Around 4,000 tests" against
+    // a crate with over 5,000 — stale since whenever that bullet was last
+    // hand-edited. `TEST_COUNT_BUCKET` is the granularity both this test
+    // and the README text round to; bump the README bullet (and nothing
+    // else) when this test starts failing.
+    const TEST_COUNT_BUCKET: usize = 100;
+    let actual = test_fn_count();
+    let bucket = round_down(actual, TEST_COUNT_BUCKET);
+    let readme = root_readme();
+    let needle = format!("Around {} tests", with_thousands_separator(bucket));
+    assert!(
+        readme.contains(&needle),
+        "root README.md's \"Heavily tested\" bullet doesn't contain \
+         \"{needle}\", but this crate has {actual} `#[test]` items under \
+         src/ and tests/ (rounded down to the nearest {TEST_COUNT_BUCKET}). \
+         This is the exact drift #1393 fixed (\"Around 4,000 tests\" \
+         claimed against a crate with over 5,000) — update the bullet's \
+         count to match."
     );
 }
