@@ -1710,6 +1710,7 @@ mod tests {
             &theme,
             EditorPaintOptions {
                 suppress_v_scrollbar: true,
+                ..Default::default()
             },
         );
         let px = scroll_test_pixel(&data, stride as usize, 198, 40);
@@ -1718,6 +1719,45 @@ mod tests {
             rgb(theme.background),
             "suppress_v_scrollbar should stop the vertical scrollbar from painting even \
              though total_lines overflows the viewport"
+        );
+    }
+
+    /// The GTK rasteriser's vertical scrollbar column honours
+    /// `EditorPaintOptions::v_scrollbar_w` end-to-end — a wider override
+    /// both paints further out and narrows the text clip, matching the
+    /// layout-level assertions in `primitives::editor`'s own tests.
+    ///
+    /// Viewport is `SCROLL_TEST_W` = 200px, `SCROLL_TEST_CHAR_W` = 8.0.
+    /// The default column spans `[192, 200)`; a 14px override spans
+    /// `[186, 200)`. `x = 188` falls in the gap between those two spans
+    /// — plain text-area background at baseline, inside the track once
+    /// widened.
+    #[test]
+    fn draw_editor_with_options_v_scrollbar_w_widens_painted_column() {
+        let theme = Theme::default();
+        let overflowing = scroll_test_editor(50, 0, 5);
+
+        let (data0, stride0) = scroll_test_paint(&overflowing, &theme);
+        let baseline_px = scroll_test_pixel(&data0, stride0 as usize, 188, 40);
+        assert_eq!(
+            baseline_px,
+            rgb(theme.background),
+            "x=188 sits outside the default 8px-wide column, [192, 200)"
+        );
+
+        let (data, stride) = scroll_test_paint_with_options(
+            &overflowing,
+            &theme,
+            EditorPaintOptions {
+                v_scrollbar_w: Some(14.0),
+                ..Default::default()
+            },
+        );
+        let widened_px = scroll_test_pixel(&data, stride as usize, 188, 40);
+        assert_ne!(
+            widened_px,
+            rgb(theme.background),
+            "v_scrollbar_w: Some(14.0) should widen the painted track to cover x=188 ([186, 200))"
         );
     }
 
