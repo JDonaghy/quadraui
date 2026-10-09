@@ -1127,8 +1127,7 @@ impl TerminalSession {
         let mut changed = false;
         while let Ok(data) = self.rx.try_recv() {
             changed = true;
-            self.respond_to_terminal_queries(&data);
-            self.process_with_capture(&data);
+            self.ingest(&data);
         }
         if !self.exited {
             if let Ok(Some(status)) = self.child.try_wait() {
@@ -1169,6 +1168,21 @@ impl TerminalSession {
             let _ = self.writer.write_all(&reply);
             let _ = self.writer.flush();
         }
+    }
+
+    /// Consume one chunk of child output: answer any terminal queries in
+    /// it, then parse it into the screen and scrollback.
+    ///
+    /// Every path that drains `rx` must go through here, not straight to
+    /// [`process_with_capture`](Self::process_with_capture). A query that
+    /// is parsed but never answered is lost for good, and on Windows an
+    /// unanswered start-up handshake (see
+    /// [`respond_to_terminal_queries`](Self::respond_to_terminal_queries))
+    /// leaves the session permanently blank — which is what a resize issued
+    /// before the shell's first output would otherwise cause.
+    fn ingest(&mut self, data: &[u8]) {
+        self.respond_to_terminal_queries(data);
+        self.process_with_capture(data);
     }
 
     /// Send raw bytes as keyboard input to the shell.
@@ -1704,7 +1718,7 @@ impl TerminalSession {
         // change dimensions, so in-flight redraws land on the grid they were
         // computed for rather than the one we are about to re-size to.
         while let Ok(data) = self.rx.try_recv() {
-            self.process_with_capture(&data);
+            self.ingest(&data);
         }
         self.cols = cols;
         self.rows = rows;
@@ -1752,7 +1766,7 @@ impl TerminalSession {
     /// vt100 parse time never inflates the idle-gap measurement.
     fn settle_after_resize(&mut self) {
         for chunk in collect_post_resize_output(&self.rx) {
-            self.process_with_capture(&chunk);
+            self.ingest(&chunk);
         }
     }
 
@@ -3828,6 +3842,28 @@ mod tests {
             "echo \"MARK_$($env:PROCESSOR_ARCHITECTURE)_END\"\r\n",
             &marker,
             30_000,
+        );
+    }
+
+    /// A resize issued before the shell's first output must not swallow
+    /// ConPTY's start-up handshake. `resize` drains pending output itself;
+    /// if that drain parsed the `ESC[6n` query without answering it, the
+    /// console host would wait for a reply forever and the session would
+    /// never paint a prompt.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_resize_before_first_output_still_answers_startup_handshake() {
+        let cwd = std::env::temp_dir();
+        let mut sess = TerminalSession::spawn_with_args(80, 24, "cmd.exe", &[], &cwd, 1000)
+            .unwrap_or_else(|e| panic!("failed to spawn cmd.exe: {e}"));
+        sess.resize(78, 21);
+        let ready = poll_until(&mut sess, 30_000, |s| {
+            s.full_text().contains('>') || s.exited
+        });
+        assert!(
+            ready && !sess.is_exited(),
+            "cmd.exe never showed a prompt after an early resize: {:?}",
+            sess.full_text()
         );
     }
 
