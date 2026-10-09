@@ -7925,32 +7925,38 @@ mod tests {
             let px = surface.pixel_at(x, H - 4);
             (px.r, px.g, px.b)
         };
+        // Direct2D anti-aliases a fill's boundary pixel, bleeding a level or
+        // two of track colour into the neighbouring text-area pixel, so an
+        // exact `== bg` on a pixel next to the column edge is not a stable
+        // assertion. The track (40, 44, 56) is ~20 levels per channel clear
+        // of the background (20, 22, 30), far outside this tolerance, so
+        // "background" and "track" stay unambiguous.
+        const AA_TOLERANCE: i32 = 4;
+        let is_bg = |px: (u8, u8, u8)| {
+            (px.0 as i32 - bg.0 as i32).abs() <= AA_TOLERANCE
+                && (px.1 as i32 - bg.1 as i32).abs() <= AA_TOLERANCE
+                && (px.2 as i32 - bg.2 as i32).abs() <= AA_TOLERANCE
+        };
 
         let widened = paint(Some(14.0));
-        assert_eq!(
-            probe(&widened, 185),
-            bg,
-            "x=185 lies just left of the 14px column"
+        assert!(
+            is_bg(probe(&widened, 183)),
+            "x=183 lies left of the 14px column at [186, 200)"
         );
         for x in 186..W {
-            assert_ne!(
-                probe(&widened, x),
-                bg,
+            assert!(
+                !is_bg(probe(&widened, x)),
                 "x={x} lies inside the 14px column [186, 200)"
             );
         }
 
         let default = paint(None);
-        // Probes sit two pixels clear of the column edge at x=192: Direct2D
-        // anti-aliases the edge pixel itself by one colour level.
-        assert_eq!(
-            probe(&default, 189),
-            bg,
+        assert!(
+            is_bg(probe(&default, 189)),
             "default column is 8px: x=189 is text area"
         );
-        assert_ne!(
-            probe(&default, 194),
-            bg,
+        assert!(
+            !is_bg(probe(&default, 194)),
             "default column is 8px: x=194 is track"
         );
 
