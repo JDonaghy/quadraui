@@ -16,12 +16,41 @@
 //!   cached by [`FormController::render`] or [`FormController::set_backend_info`].
 //!   Use when the event handler runs without a backend (e.g. vimcode's
 //!   TUI mouse handler).
+//!
+//! ## Keyboard editing
+//!
+//! `KeyPressed` / `CharTyped` route to the field named by
+//! `Form.focused_field`:
+//!
+//! - `Tab` / `Shift+Tab` (or `BackTab`) move focus to the next/previous
+//!   non-`Label`, non-disabled field and emit
+//!   [`FormEvent::FocusChanged`]. The app stores the new id and feeds it
+//!   back as `focused_field` on the next [`FormController::set_form`] —
+//!   same contract `primitives/form.rs`'s module doc already describes.
+//! - While a `TextInput` / `TextArea` / `PasswordInput` field is
+//!   focused, every other key is decoded through
+//!   [`crate::EditOp::from_key`] and applied via [`crate::TextEditor::apply`]
+//!   against that field's `value`, emitting
+//!   [`FormEvent::TextInputChanged`] with the new value. `Enter` commits
+//!   instead of inserting a newline, emitting
+//!   [`FormEvent::TextInputCommitted`].
+//! - The cursor/selection position is **owned by `FormController`**, not
+//!   the app — it survives across keystrokes internally (see
+//!   `text_edit` below) even though the app only ever has to persist the
+//!   `value` string from `TextInputChanged`/`TextInputCommitted`. This is
+//!   what makes "no app-side key plumbing" true: the app's model needs a
+//!   `String` per text field, nothing else.
 
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
 };
 use crate::primitives::scrollbar::{scroll_by_clamped, PressZone, ThumbDrag};
-use crate::{Backend, ButtonMask, MouseButton, Point, Rect, Scrollbar, UiEvent, WidgetId};
+use crate::primitives::text_input::{EditOp, TextEditor, TextInput};
+use crate::text_util::snap_to_char_boundary;
+use crate::{
+    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, UiEvent,
+    WidgetId,
+};
 
 /// What happened after [`FormController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +65,18 @@ pub enum FormControllerEvent {
     Ignored,
 }
 
+/// Live cursor/selection for the field currently being typed into.
+/// `value` is **not** cached here — it is always read fresh from
+/// `FormController::form` (the app's own canonical string, pushed via
+/// `set_form`), so the app staying the single source of truth for field
+/// *content* still holds; only cursor placement is controller-owned.
+/// See this module's "Keyboard editing" doc section for why.
+struct TextEditState {
+    field_id: WidgetId,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+}
+
 pub struct FormController {
     id: String,
     form: Option<Form>,
@@ -43,6 +84,7 @@ pub struct FormController {
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
     cached_lh: Option<f32>,
+    text_edit: Option<TextEditState>,
 }
 
 impl FormController {
@@ -54,6 +96,7 @@ impl FormController {
             has_focus: false,
             scroll_drag: None,
             cached_lh: None,
+            text_edit: None,
         }
     }
 
@@ -234,6 +277,10 @@ impl FormController {
                 FormControllerEvent::Consumed
             }
 
+            UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
+
+            UiEvent::CharTyped(ch) => self.handle_text_op(EditOp::InsertChar(*ch)),
+
             _ => FormControllerEvent::Ignored,
         }
     }
@@ -246,6 +293,11 @@ impl FormController {
                 let mut form = f.clone();
                 form.scroll_offset = self.scroll_offset;
                 form.has_focus = self.has_focus;
+                if let Some(e) = &self.text_edit {
+                    if let Some(field) = form.fields.iter_mut().find(|fld| fld.id == e.field_id) {
+                        overlay_text_cursor(&mut field.kind, e.cursor, e.selection_anchor);
+                    }
+                }
                 form
             }
             None => Form {
@@ -255,6 +307,129 @@ impl FormController {
                 scroll_offset: self.scroll_offset,
                 has_focus: self.has_focus,
             },
+        }
+    }
+
+    // ── Keyboard: focus traversal + text editing ──────────────────────
+
+    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> FormControllerEvent {
+        match key {
+            Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt => {
+                self.move_focus(if modifiers.shift { -1 } else { 1 })
+            }
+            Key::Named(NamedKey::BackTab) => self.move_focus(-1),
+            Key::Named(NamedKey::Enter) => self.commit_focused_text(),
+            _ => match EditOp::from_key(key, *modifiers) {
+                Some(op) => self.handle_text_op(op),
+                None => FormControllerEvent::Ignored,
+            },
+        }
+    }
+
+    /// Move focus to the next/previous non-`Label`, non-disabled field,
+    /// wrapping around. Emits [`FormEvent::FocusChanged`] — the app
+    /// persists the new `focused_field` the same way it already persists
+    /// a toggle flip (see this module's "Keyboard editing" doc section).
+    fn move_focus(&mut self, delta: isize) -> FormControllerEvent {
+        let Some(form) = &self.form else {
+            return FormControllerEvent::Ignored;
+        };
+        let stops: Vec<&WidgetId> = form
+            .fields
+            .iter()
+            .filter(|f| field_is_focusable(f))
+            .map(|f| &f.id)
+            .collect();
+        if stops.is_empty() {
+            return FormControllerEvent::Ignored;
+        }
+        let n = stops.len() as isize;
+        let cur_idx = form
+            .focused_field
+            .as_ref()
+            .and_then(|id| stops.iter().position(|fid| *fid == id));
+        let next_idx = match cur_idx {
+            Some(i) => (((i as isize + delta) % n + n) % n) as usize,
+            None if delta >= 0 => 0,
+            None => stops.len() - 1,
+        };
+        let id = stops[next_idx].clone();
+        self.text_edit = None;
+        FormControllerEvent::FormAction(FormEvent::FocusChanged { id })
+    }
+
+    /// `Enter` on a focused text field commits instead of inserting a
+    /// newline — see this module's "Keyboard editing" doc section.
+    fn commit_focused_text(&mut self) -> FormControllerEvent {
+        let Some(form) = &self.form else {
+            return FormControllerEvent::Ignored;
+        };
+        let Some(focused_id) = form.focused_field.clone() else {
+            return FormControllerEvent::Ignored;
+        };
+        let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
+            return FormControllerEvent::Ignored;
+        };
+        if field.disabled {
+            return FormControllerEvent::Ignored;
+        }
+        let Some(value) = text_field_value(&field.kind) else {
+            return FormControllerEvent::Ignored;
+        };
+        let value = value.to_string();
+        self.text_edit = None;
+        FormControllerEvent::FormAction(FormEvent::TextInputCommitted {
+            id: focused_id,
+            value,
+        })
+    }
+
+    /// Apply `op` to the currently-focused text field (if any), emitting
+    /// [`FormEvent::TextInputChanged`] with the new value. The cursor
+    /// produced by `op` is cached on `self.text_edit` so the next
+    /// keystroke continues from it — see `TextEditState`'s doc.
+    fn handle_text_op(&mut self, op: EditOp) -> FormControllerEvent {
+        let Some(form) = &self.form else {
+            return FormControllerEvent::Ignored;
+        };
+        let Some(focused_id) = form.focused_field.clone() else {
+            return FormControllerEvent::Ignored;
+        };
+        let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
+            return FormControllerEvent::Ignored;
+        };
+        if field.disabled {
+            return FormControllerEvent::Ignored;
+        }
+        let Some(value) = text_field_value(&field.kind) else {
+            return FormControllerEvent::Ignored;
+        };
+
+        let (cursor, anchor) = match &self.text_edit {
+            Some(e) if e.field_id == focused_id => (e.cursor, e.selection_anchor),
+            _ => default_text_cursor(&field.kind),
+        };
+        let cursor = snap_to_char_boundary(value, cursor.min(value.len()));
+
+        let value_before = value.to_string();
+        let (new_value, new_cursor, new_anchor) = apply_text_edit_op(value, cursor, anchor, op);
+        let text_changed = new_value != value_before;
+        self.text_edit = Some(TextEditState {
+            field_id: focused_id.clone(),
+            cursor: new_cursor,
+            selection_anchor: new_anchor,
+        });
+        if text_changed {
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: focused_id,
+                value: new_value,
+            })
+        } else {
+            // Cursor-only movement (or selection extend): the field's
+            // text content is unchanged, so there is nothing for the app
+            // to persist — but the cursor/selection did move, so the
+            // caller should still redraw to show it.
+            FormControllerEvent::Consumed
         }
     }
 
@@ -423,6 +598,132 @@ pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent 
     FormEvent::FocusChanged {
         id: clicked_id.clone(),
     }
+}
+
+// ── Keyboard editing helpers ──────────────────────────────────────────
+
+/// Whether `field` is a Tab stop: not a `Label`, and not disabled.
+/// Mirrors `primitives/form.rs`'s module doc ("Tab / Shift-Tab moves
+/// focused_field forward/backward through interactive fields (skip
+/// Label)").
+fn field_is_focusable(field: &crate::primitives::form::FormField) -> bool {
+    !matches!(field.kind, FieldKind::Label) && !field.disabled
+}
+
+/// The editable text of a `TextInput` / `TextArea` / `PasswordInput`
+/// field, or `None` for every other `FieldKind` (not text-editable).
+fn text_field_value(kind: &FieldKind) -> Option<&str> {
+    match kind {
+        FieldKind::TextInput { value, .. }
+        | FieldKind::TextArea { value, .. }
+        | FieldKind::PasswordInput { value, .. } => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+/// Starting cursor/selection for a text field that has no cached
+/// [`TextEditState`] yet — the field's own `cursor` (defaulting to
+/// end-of-text) and `selection_anchor` where the kind carries one.
+fn default_text_cursor(kind: &FieldKind) -> (usize, Option<usize>) {
+    match kind {
+        FieldKind::TextInput {
+            value,
+            cursor,
+            selection_anchor,
+            ..
+        } => (cursor.unwrap_or(value.len()), *selection_anchor),
+        FieldKind::TextArea { value, cursor, .. } => (cursor.unwrap_or(value.len()), None),
+        FieldKind::PasswordInput { value, cursor, .. } => (cursor.unwrap_or(value.len()), None),
+        _ => (0, None),
+    }
+}
+
+/// Write `cursor`/`selection_anchor` back onto `kind` for rendering.
+/// No-op for `FieldKind` variants with no cursor (anything but the three
+/// text-editable kinds).
+fn overlay_text_cursor(kind: &mut FieldKind, cursor: usize, selection_anchor: Option<usize>) {
+    match kind {
+        FieldKind::TextInput {
+            cursor: c,
+            selection_anchor: a,
+            ..
+        } => {
+            *c = Some(cursor);
+            *a = selection_anchor;
+        }
+        FieldKind::TextArea { cursor: c, .. } | FieldKind::PasswordInput { cursor: c, .. } => {
+            *c = Some(cursor);
+        }
+        _ => {}
+    }
+}
+
+/// Byte offset `byte_offset` into `value` (which may contain `'\n'`,
+/// e.g. a `TextArea`) → `(line, char_column)`, the coordinate space
+/// [`TextEditor`]/[`EditOp`] operate in.
+fn byte_offset_to_line_col(value: &str, byte_offset: usize) -> (usize, usize) {
+    let byte_offset = byte_offset.min(value.len());
+    let prefix = &value[..byte_offset];
+    let line = prefix.matches('\n').count();
+    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col = prefix[line_start..].chars().count();
+    (line, col)
+}
+
+/// Inverse of [`byte_offset_to_line_col`]: `(line, char_column)` →
+/// byte offset into `value`.
+fn line_col_to_byte_offset(value: &str, line: usize, col: usize) -> usize {
+    let mut offset = 0usize;
+    for (i, l) in value.split('\n').enumerate() {
+        if i == line {
+            let take: usize = l.chars().take(col).map(char::len_utf8).sum();
+            return offset + take.min(l.len());
+        }
+        offset += l.len() + 1; // +1 for the '\n' separator consumed between lines
+    }
+    value.len()
+}
+
+/// Route one [`EditOp`] through [`TextEditor::apply`] against a flat
+/// `value` + byte-offset `cursor`/`selection_anchor` — the shape every
+/// `FieldKind::TextInput`/`TextArea`/`PasswordInput` field uses — and
+/// hand back the resulting `(value, cursor, selection_anchor)`.
+///
+/// `TextEditor` itself works in `(line, char_column)` coordinates (see
+/// `text_input.rs`'s module doc), so this wraps `value` in a throwaway
+/// single-use [`TextInput`] for the one `apply` call and converts back
+/// via [`byte_offset_to_line_col`]/[`line_col_to_byte_offset`] — the
+/// conversion this controller owns so every other call site keeps
+/// working in the byte-offset space `Form`'s `FieldKind` already
+/// documents.
+fn apply_text_edit_op(
+    value: &str,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+    op: EditOp,
+) -> (String, usize, Option<usize>) {
+    let lines: Vec<String> = if value.is_empty() {
+        vec![String::new()]
+    } else {
+        value.split('\n').map(str::to_string).collect()
+    };
+    let (line, col) = byte_offset_to_line_col(value, cursor);
+    let input = TextInput::new(WidgetId::new("form-field-edit"))
+        .with_lines(lines)
+        .with_cursor_line(line)
+        .with_cursor_col(col);
+    let mut editor = TextEditor::new(input);
+    if let Some(anchor_byte) = selection_anchor {
+        editor.set_selection_anchor(Some(byte_offset_to_line_col(value, anchor_byte)));
+    }
+    editor.apply(op);
+
+    let new_value = editor.lines.join("\n");
+    let new_cursor = line_col_to_byte_offset(&new_value, editor.cursor_line, editor.cursor_col);
+    let new_anchor = editor
+        .selection_anchor()
+        .map(|(l, c)| line_col_to_byte_offset(&new_value, l, c));
+    (new_value, new_cursor, new_anchor)
 }
 
 // ── Pure helpers (line_height → derived values) ─────────────────────
@@ -960,5 +1261,379 @@ mod tests {
         let (form_rect, sb) = split_rect_lh(20, 1.0, Rect::new(0.0, 0.0, 40.0, 10.0));
         assert!(sb.is_some());
         assert!(form_rect.width < 40.0);
+    }
+
+    // ── Keyboard editing ───────────────────────────────────────────
+
+    fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn shift() -> Modifiers {
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        }
+    }
+
+    fn text_field(id: &str, value: &str, cursor: Option<usize>) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain("Label"),
+            kind: FieldKind::TextInput {
+                value: value.to_string(),
+                placeholder: String::new(),
+                cursor,
+                selection_anchor: None,
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        }
+    }
+
+    fn label_field(id: &str) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain("Header"),
+            kind: FieldKind::Label,
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        }
+    }
+
+    fn toggle_field(id: &str, disabled: bool) -> FormField {
+        FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain("On"),
+            kind: FieldKind::Toggle { value: false },
+            hint: StyledText::default(),
+            disabled,
+            validation: None,
+        }
+    }
+
+    fn controller_with(fields: Vec<FormField>, focused: Option<&str>) -> FormController {
+        let mut fc = FormController::new("f".into());
+        fc.set_form(Form {
+            id: WidgetId::new("form"),
+            fields,
+            focused_field: focused.map(WidgetId::new),
+            scroll_offset: 0,
+            has_focus: true,
+        });
+        fc.set_backend_info(1.0);
+        fc
+    }
+
+    const RECT: Rect = Rect::new(0.0, 0.0, 40.0, 10.0);
+
+    #[test]
+    fn tab_moves_focus_to_first_focusable_field_skipping_label() {
+        let mut fc = controller_with(
+            vec![
+                label_field("hdr"),
+                text_field("name", "", None),
+                toggle_field("tgl", false),
+            ],
+            None,
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("name")
+            })
+        );
+    }
+
+    #[test]
+    fn tab_advances_and_wraps_around() {
+        let mut fc = controller_with(
+            vec![text_field("a", "", None), toggle_field("b", false)],
+            Some("b"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("a")
+            }),
+            "tab from the last field should wrap to the first"
+        );
+    }
+
+    #[test]
+    fn shift_tab_retreats_and_wraps() {
+        let mut fc = controller_with(
+            vec![text_field("a", "", None), toggle_field("b", false)],
+            Some("a"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Named(NamedKey::Tab), shift()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("b")
+            }),
+            "shift+tab from the first field should wrap to the last"
+        );
+    }
+
+    #[test]
+    fn back_tab_also_retreats() {
+        let mut fc = controller_with(
+            vec![text_field("a", "", None), toggle_field("b", false)],
+            Some("b"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::BackTab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("a")
+            })
+        );
+    }
+
+    #[test]
+    fn tab_skips_disabled_field() {
+        let mut fc = controller_with(
+            vec![
+                text_field("a", "", None),
+                toggle_field("disabled-tgl", true),
+                toggle_field("c", false),
+            ],
+            Some("a"),
+        );
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Tab), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::FocusChanged {
+                id: WidgetId::new("c")
+            }),
+            "tab should skip the disabled field entirely"
+        );
+    }
+
+    #[test]
+    fn typing_char_appends_and_updates_value() {
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
+        let ev = fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "abc".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn cursor_persists_across_keystrokes_even_if_app_never_echoes_it_back() {
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
+        let ev1 = fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev1,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "abc".to_string(),
+            })
+        );
+
+        // The app updates `value` per the emitted event but — as the
+        // issue requires — never tracks `cursor` itself; it stays `None`.
+        fc.set_form(Form {
+            id: WidgetId::new("form"),
+            fields: vec![text_field("name", "abc", None)],
+            focused_field: Some(WidgetId::new("name")),
+            scroll_offset: 0,
+            has_focus: true,
+        });
+
+        let ev2 = fc.handle_cached(&key_event(Key::Char('d'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev2,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "abcd".to_string(),
+            }),
+            "the controller's cached cursor (after 'c') should carry over, \
+             appending 'd' at the end rather than re-deriving a stale position"
+        );
+    }
+
+    #[test]
+    fn backspace_deletes_char_before_cursor() {
+        let mut fc = controller_with(vec![text_field("name", "abc", Some(3))], Some("name"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Backspace), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "ab".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn enter_commits_text_field_instead_of_inserting_newline() {
+        let mut fc = controller_with(vec![text_field("name", "hello", Some(5))], Some("name"));
+        let ev = fc.handle_cached(
+            &key_event(Key::Named(NamedKey::Enter), Modifiers::default()),
+            RECT,
+        );
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::TextInputCommitted {
+                id: WidgetId::new("name"),
+                value: "hello".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn char_typed_event_also_inserts_into_the_focused_field() {
+        let mut fc = controller_with(vec![text_field("name", "", None)], Some("name"));
+        let ev = fc.handle_cached(&UiEvent::CharTyped('x'), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "x".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn disabled_text_field_ignores_keystrokes() {
+        let mut fc = controller_with(
+            vec![FormField {
+                id: WidgetId::new("name"),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::TextInput {
+                    value: "ab".to_string(),
+                    placeholder: String::new(),
+                    cursor: Some(2),
+                    selection_anchor: None,
+                },
+                hint: StyledText::default(),
+                disabled: true,
+                validation: None,
+            }],
+            Some("name"),
+        );
+        let ev = fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn no_focused_field_ignores_text_keys() {
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], None);
+        let ev = fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
+        assert_eq!(ev, FormControllerEvent::Ignored);
+    }
+
+    #[test]
+    fn shift_left_then_char_replaces_the_selection() {
+        // "ab|c" (cursor after 'b') — shift+Left selects "b", typing 'X'
+        // replaces the selection (EditOp::InsertChar's documented
+        // selection-replace behaviour), landing on "aXc".
+        let mut fc = controller_with(vec![text_field("name", "abc", Some(2))], Some("name"));
+        let ev1 = fc.handle_cached(&key_event(Key::Named(NamedKey::Left), shift()), RECT);
+        assert_eq!(
+            ev1,
+            FormControllerEvent::Consumed,
+            "pure cursor/selection movement changes no text, so it's Consumed not a FormEvent"
+        );
+
+        let ev2 = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev2,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("name"),
+                value: "aXc".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn build_form_overlays_the_cached_cursor_for_rendering() {
+        let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
+        fc.handle_cached(&key_event(Key::Char('c'), Modifiers::default()), RECT);
+
+        // Realistic round-trip: the app persists `value` from the
+        // emitted `TextInputChanged` (same as it already does for a
+        // toggle flip) but — per this module's "Keyboard editing" doc
+        // section — never has to track `cursor` itself, so it stays
+        // `None` here.
+        fc.set_form(Form {
+            id: WidgetId::new("form"),
+            fields: vec![text_field("name", "abc", None)],
+            focused_field: Some(WidgetId::new("name")),
+            scroll_offset: 0,
+            has_focus: true,
+        });
+
+        let rendered = fc.build_form(RECT);
+        match &rendered.fields[0].kind {
+            FieldKind::TextInput { value, cursor, .. } => {
+                assert_eq!(value, "abc");
+                assert_eq!(
+                    *cursor,
+                    Some(3),
+                    "controller-cached cursor should overlay the app's \
+                     None, sitting after the just-typed 'c'"
+                );
+            }
+            other => panic!("expected TextInput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_area_newline_round_trips_through_byte_offset_conversion() {
+        // TextArea's `value` embeds '\n' directly — exercise the
+        // multi-line byte_offset_to_line_col / line_col_to_byte_offset
+        // conversion, not just the single-line TextInput path.
+        let field = FormField {
+            id: WidgetId::new("notes"),
+            label: StyledText::plain("Notes"),
+            kind: FieldKind::TextArea {
+                value: "line one\nline two".to_string(),
+                placeholder: String::new(),
+                cursor: Some("line one\n".len()), // start of "line two"
+                visible_rows: 3,
+            },
+            hint: StyledText::default(),
+            disabled: false,
+            validation: None,
+        };
+        let mut fc = controller_with(vec![field], Some("notes"));
+        let ev = fc.handle_cached(&key_event(Key::Char('X'), Modifiers::default()), RECT);
+        assert_eq!(
+            ev,
+            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
+                id: WidgetId::new("notes"),
+                value: "line one\nXline two".to_string(),
+            })
+        );
     }
 }
