@@ -1118,7 +1118,14 @@ pub(crate) mod native_surface_paint {
                 hit_regions: vec![],
             };
             let mut surface = RecordingSurface::default();
-            paint(&dialog, &dlayout, 14.0, &mut surface, &Theme::default());
+            paint(
+                &dialog,
+                &dlayout,
+                14.0,
+                &mut surface,
+                &Theme::default(),
+                &crate::style::Style::default(),
+            );
 
             assert!(
                 surface.text_runs.iter().any(|(_, t, _)| t == "OK"),
