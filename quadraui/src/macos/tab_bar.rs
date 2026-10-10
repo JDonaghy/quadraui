@@ -25,9 +25,15 @@
 //! which `PaintSurface` Phase 4 slice 5/8 collapsed into
 //! `primitives::<name>::native_surface_paint::paint`, every pixel this
 //! module paints is still Core Graphics-specific and still triplicated
-//! with `gtk::tab_bar` / `win::tab_bar` — the two "Scope omissions"
-//! above are two of the five live drifts between those copies. **This
-//! backend is the blocker**: `mac_tab_bar_layout_icons` /
+//! with `gtk::tab_bar` / `win::tab_bar`. Two of the five rows in that
+//! drift table are now closed — active-tab background and
+//! active-tab top accent match GTK exactly (rounded, y-inset chip;
+//! 1 px accent on the chip's own inset top edge) — leaving three rows
+//! where macOS still drifts from GTK: the two "Scope omissions" above
+//! (close-button hover backdrop, italic preview tabs) plus
+//! [`crate::primitives::tab_bar::TabFrame::Brackets`] framing. Windows
+//! still drifts on all five rows regardless. **This backend is the
+//! blocker** for #1081 closing as complete: `mac_tab_bar_layout_icons` /
 //! `mac_tab_bar_native_layout_icons` below still derive geometry
 //! themselves instead of going through the shared
 //! [`crate::primitives::layout_metrics::pixel_tab_bar_layout`] that
@@ -66,8 +72,10 @@ const TAB_INNER_GAP: f64 = 10.0;
 /// Gap between adjacent tabs.
 const TAB_OUTER_GAP: f64 = 1.0;
 /// Top-edge accent strip height for the active tab (when `active_accent`
-/// is set).
-const ACCENT_HEIGHT: f64 = 2.0;
+/// is set) — same value as [`crate::gtk::tab_bar`]'s
+/// `TAB_ACTIVE_BORDER_TOP_PX`, so the accent is the same thickness on
+/// both pixel backends, not just the same position on the chip.
+const ACCENT_HEIGHT: f64 = 1.0;
 /// 15-char sample used to estimate cell width for `available_cols`.
 /// Same string the GTK rasteriser uses, so app-level cell budgets
 /// remain comparable between backends.
@@ -798,6 +806,53 @@ mod tests {
         );
     }
 
+    /// The active-tab chip is *rounded*, not just inset — mirrors
+    /// `gtk::tab_bar::active_chip_corners_are_bar_background_not_active_fill`.
+    /// `active_chip_is_inset_from_top_and_bottom_of_the_row` above only
+    /// probes a point well clear of the corners (`TAB_CHIP_RADIUS + 4.0`
+    /// in from the left edge), so a regression that swapped
+    /// `ns_fill_rounded_rect` for a plain rectangular fill at the same
+    /// inset would still pass it. Probe all four corners of the chip's
+    /// bounding rect instead: a rounded corner leaves them painted the
+    /// bar background, not the active fill.
+    #[test]
+    #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
+    fn active_chip_corners_are_bar_background_not_active_fill() {
+        // No `active_accent` here, unlike `sample_bar()` — the accent
+        // strip paints the chip's full inset top edge including its top
+        // corners (square "ears" over the rounded chip, same as
+        // `gtk::tab_bar`), which would otherwise overwrite exactly the
+        // pixels this test probes with the accent colour instead of the
+        // bar background it's checking for.
+        let mut bar = sample_bar();
+        bar.active_accent = None;
+        let (surface, hits) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let bar_bg = theme.tab_bar_bg;
+
+        let (slot_x, slot_end) = hits.slot_positions[0];
+        let tab_content_w = slot_end - slot_x - TAB_OUTER_GAP;
+        let chip_x0 = slot_x as u32;
+        let chip_x1 = (slot_x + tab_content_w) as u32 - 1;
+        let chip_y0 = TAB_CHIP_INSET_Y as u32;
+        let chip_y1 = H - TAB_CHIP_INSET_Y as u32 - 1;
+
+        for (x, y) in [
+            (chip_x0, chip_y0),
+            (chip_x1, chip_y0),
+            (chip_x0, chip_y1),
+            (chip_x1, chip_y1),
+        ] {
+            let (r, g, b, _) = surface.pixel(x, y);
+            assert_eq!(
+                (r, g, b),
+                (bar_bg.r, bar_bg.g, bar_bg.b),
+                "chip bounding-rect corner ({x},{y}) should be bar background \
+                 (rounded off by TAB_CHIP_RADIUS), not the active fill",
+            );
+        }
+    }
+
     #[test]
     #[allow(deprecated)] // exercises the deprecated `TabBarHits` — issue #823
     fn active_accent_paints_at_top_of_active_tab_chip() {
@@ -901,11 +956,15 @@ mod tests {
             chip_y1,
             theme.tab_active_bg,
         );
+        // Same `[chip_y0, chip_y1)` band as `active_ink` — scanning both
+        // columns over the same window keeps the comparison about glyph
+        // shape, not about one column getting a taller scan range than
+        // the other.
         let dirty_ink = ink_density(
             &surface,
             ((dirty_close.0 + dirty_close.1) / 2.0) as u32,
-            0,
-            H,
+            chip_y0,
+            chip_y1,
             theme.tab_bar_bg,
         );
         assert!(

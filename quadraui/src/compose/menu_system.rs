@@ -166,6 +166,23 @@ impl MenuSystem {
         bar_rect: Rect,
     ) -> MenuEvent {
         match event {
+            // ── Native menu-bar activation ────────────────────────────
+            // `Backend::draw_menu_bar` installs a real `NSMenu` instead
+            // of painting whenever `effective_menu_style()` resolves
+            // `Native` (macOS, by default) — see that method's doc.
+            // AppKit then reports a click as a top-level
+            // `UiEvent::MenuActivated`, not a hit on this struct's own
+            // `bar_rect`-relative dropdown state (there is none; the
+            // dropdown is AppKit's own). Translating it to the same
+            // `MenuEvent::Activated` the painted path produces means
+            // every consumer's existing `match self.menu_system.handle(...)
+            // { MenuEvent::Activated(id) => ... }` arm already covers
+            // the native path with no separate call site — the same
+            // "one call either way" shape
+            // [`crate::compose::ContextMenuController::handle`] uses for
+            // `ContextMenuItemActivated`.
+            UiEvent::MenuActivated(id) => MenuEvent::Activated(id.clone()),
+
             // ── Keyboard ──────────────────────────────────────────
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Escape),
@@ -1443,6 +1460,30 @@ mod tests {
                 items: vec![],
             },
         ]
+    }
+
+    /// A native `NSMenu` activation (`UiEvent::MenuActivated`,
+    /// what AppKit reports once `Backend::draw_menu_bar` installs rather
+    /// than paints) must translate to the same `MenuEvent::Activated` the
+    /// painted dropdown path produces — same shape as
+    /// `ContextMenuController` already uses for its own native event —
+    /// so consumer code written against `MenuEvent::Activated` works
+    /// unchanged under either `MenuStyle`. The menu need not be "open"
+    /// in this struct's own sense at all; the native path has no
+    /// in-struct open/dropdown state, only AppKit's own.
+    #[test]
+    fn handle_routes_native_menu_activated_to_menu_event_activated() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        assert!(
+            !ms.is_open(),
+            "native path never opens the struct's own dropdown state"
+        );
+
+        let ev = UiEvent::MenuActivated(WidgetId::new("save"));
+        let result = ms.handle(&ev, &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Activated(WidgetId::new("save")));
     }
 
     #[test]

@@ -29,8 +29,8 @@
 //!
 //! | Behaviour | GTK | macOS | Windows |
 //! |---|---|---|---|
-//! | Active-tab background | rounded, y-inset chip (radius 4, 4 px inset) | full-height square rect | full-height square rect |
-//! | Active-tab top accent | 1 px, on the chip's inset top edge | 2 px, on the strip's top edge | 2 px, on the strip's top edge |
+//! | Active-tab background | rounded, y-inset chip (radius 4, 4 px inset) | rounded, y-inset chip (radius 4, 4 px inset) | full-height square rect |
+//! | Active-tab top accent | 1 px, on the chip's inset top edge | 1 px, on the chip's inset top edge | 2 px, on the strip's top edge |
 //! | Close-button hover backdrop | rounded, `foreground` @ 15 % alpha | **none painted** | square, `tab_bar_bg.lighten(0.15)` |
 //! | Preview-tab label | italic + `tab_preview_*_fg` | upright + `tab_preview_*_fg` | upright, **`tab_preview_*_fg` ignored** |
 //! | [`TabFrame::Brackets`] framing | painted | **not painted** | **not painted** |
