@@ -10,17 +10,22 @@
 //! the primitive paints in [`quadraui::FontRole::Chrome`] regardless of
 //! what the editor font is set to.
 //!
-//! It also covers the opposite direction for one `EditorClassPrimitive`:
-//! `TextDisplay` paints through `EditorSurface`, the dedicated adapter
-//! that opts a handful of primitives back into `current_font` — so
-//! `draw_text_display_paints_in_editor_font` runs the same paired-run
-//! probe with the assertion flipped, proving that call site still
-//! tracks the *editor* font's size regardless of what chrome is set to.
-//! `draw_terminal`/`draw_diff_view` share the same `EditorSurface`
-//! wiring and the same risk of a role swap, but are not independently
-//! painted here — one editor-class call site exercising the shared
-//! adapter is the acceptance bar this file adds; the other two are
-//! follow-up coverage, not proof the wiring could regress silently.
+//! It also covers the opposite direction for every
+//! `EditorClassPrimitive` with a macOS call site: `TextDisplay`,
+//! `Terminal` and `DiffView` each paint through `EditorSurface`, the
+//! dedicated adapter that opts them back into `current_font` — so
+//! `draw_text_display_paints_in_editor_font`,
+//! `draw_terminal_paints_in_editor_font` and
+//! `draw_diff_view_paints_in_editor_font` run the same paired-run probe
+//! with the assertion flipped, proving each call site tracks the
+//! *editor* font's size regardless of what chrome is set to. Each is
+//! wired independently (three separate `EditorSurface` constructions in
+//! `macos::backend`), so each gets its own scenario rather than relying
+//! on one to stand in for the adapter as a whole.
+//!
+//! `Terminal`'s probe looks for a one-character needle, not [`LABEL`]:
+//! `primitives::terminal::paint` emits one text run per grid cell, so
+//! the widest run it can produce is a single glyph.
 //!
 //! ## Why painted-run *width*, and not an ink-pixel count
 //!
@@ -60,10 +65,12 @@
 
 use quadraui::macos::testing::MacDriver;
 use quadraui::{
-    AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration, FieldKind,
-    Form, FormField, Palette, PaletteItem, PaletteMode, Panel, ProgressBar, Reaction, Rect,
-    Spinner, StyledSpan, StyledText, TextDisplay, TextDisplayLine, Toast, ToastCorner,
-    ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration,
+    DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, FieldKind, Form,
+    FormField, Palette, PaletteItem, PaletteMode, Panel, ProgressBar, Reaction, Rect, Spinner,
+    StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay,
+    TextDisplayLine, Toast, ToastCorner, ToastOverlay, ToastSeverity, Tooltip, TooltipMeasure,
+    TooltipPlacement, UiEvent, WidgetId,
 };
 
 const W: u32 = 640;
@@ -131,11 +138,12 @@ impl<F: Fn(&mut dyn Backend, Rect)> AppLogic for PaintApp<F> {
     }
 }
 
-/// Width (points) of the [`LABEL`] run `paint` painted, with
+/// Width (points) of the `needle`-bearing run `paint` painted, with
 /// `ui_font_desc` as the chrome font and `editor_pt`-sized Menlo as the
 /// editor font.
-fn painted_label_width<F: Fn(&mut dyn Backend, Rect)>(
+fn painted_run_width<F: Fn(&mut dyn Backend, Rect)>(
     name: &str,
+    needle: &str,
     ui_font_desc: &'static str,
     editor_pt: f32,
     paint: F,
@@ -149,10 +157,10 @@ fn painted_label_width<F: Fn(&mut dyn Backend, Rect)>(
         W,
         H,
     );
-    match driver.find_bounds(LABEL) {
+    match driver.find_bounds(needle) {
         Some(bounds) => bounds.width,
         None => panic!(
-            "{name}: nothing containing {LABEL:?} was painted with chrome font \
+            "{name}: nothing containing {needle:?} was painted with chrome font \
              {ui_font_desc:?} / editor font Menlo {editor_pt}pt, so this scenario \
              cannot say anything about the font role. Painted runs: {:?}",
             driver.painted_texts()
@@ -167,8 +175,8 @@ fn assert_paints_in_chrome_font<F>(name: &str, paint: F)
 where
     F: Fn(&mut dyn Backend, Rect) + Copy,
 {
-    let big_chrome = painted_label_width(name, BIG_UI_FONT, SMALL_PT, paint);
-    let big_editor = painted_label_width(name, SMALL_UI_FONT, BIG_PT, paint);
+    let big_chrome = painted_run_width(name, LABEL, BIG_UI_FONT, SMALL_PT, paint);
+    let big_editor = painted_run_width(name, LABEL, SMALL_UI_FONT, BIG_PT, paint);
     assert!(
         big_chrome > 0.0 && big_editor > 0.0,
         "{name}: both font configurations must paint a measurable run: \
@@ -191,8 +199,18 @@ fn assert_paints_in_editor_font<F>(name: &str, paint: F)
 where
     F: Fn(&mut dyn Backend, Rect) + Copy,
 {
-    let big_chrome = painted_label_width(name, BIG_UI_FONT, SMALL_PT, paint);
-    let big_editor = painted_label_width(name, SMALL_UI_FONT, BIG_PT, paint);
+    assert_run_paints_in_editor_font(name, LABEL, paint)
+}
+
+/// [`assert_paints_in_editor_font`] for a primitive whose widest painted
+/// run can't carry the whole of [`LABEL`] — `Terminal`, which paints one
+/// run per grid cell.
+fn assert_run_paints_in_editor_font<F>(name: &str, needle: &str, paint: F)
+where
+    F: Fn(&mut dyn Backend, Rect) + Copy,
+{
+    let big_chrome = painted_run_width(name, needle, BIG_UI_FONT, SMALL_PT, paint);
+    let big_editor = painted_run_width(name, needle, SMALL_UI_FONT, BIG_PT, paint);
     assert!(
         big_chrome > 0.0 && big_editor > 0.0,
         "{name}: both font configurations must paint a measurable run: \
@@ -226,6 +244,68 @@ fn draw_text_display_paints_in_editor_font() {
             show_scrollbar: false,
         };
         b.draw_text_display(area, &td);
+    });
+}
+
+/// `Terminal` is editor-class: its cell glyphs must stay monospace at
+/// the editor font's size even though the surface they paint through
+/// defaults to chrome. One run per cell, so the needle is one glyph —
+/// see this file's module doc.
+#[test]
+fn draw_terminal_paints_in_editor_font() {
+    const CELL: &str = "Z";
+    assert_run_paints_in_editor_font("draw_terminal", CELL, |b, area| {
+        let term = Terminal {
+            id: id("terminal"),
+            cells: vec![vec![TerminalCell {
+                text: CELL.to_string(),
+                fg: Color::rgb(220, 220, 220),
+                bg: Color::rgb(30, 30, 30),
+                bold: false,
+                italic: false,
+                underline: false,
+                dim: false,
+                selected: false,
+                is_cursor: false,
+                cursor_shape: TerminalCursorShape::Block,
+                cursor_blinking: false,
+                is_find_match: false,
+                is_find_active: false,
+            }]],
+            scrollbar: None,
+        };
+        b.draw_terminal(area, &term);
+    });
+}
+
+/// `DiffView` is editor-class for the same reason `Terminal` is: both
+/// panes show file content on a column grid, so a chrome-font row would
+/// stop lining up with the editor the diff was opened from.
+#[test]
+fn draw_diff_view_paints_in_editor_font() {
+    assert_paints_in_editor_font("draw_diff_view", |b, area| {
+        let view = DiffView {
+            id: id("diff-view"),
+            left: LABEL.to_string(),
+            right: "other".to_string(),
+            left_label: None,
+            right_label: None,
+            hunks: vec![DiffHunk {
+                left_start: 1,
+                right_start: 1,
+                rows: vec![DiffRow {
+                    left: Some(LABEL.to_string()),
+                    right: Some("other".to_string()),
+                    kind: DiffRowKind::Changed,
+                }],
+            }],
+            mode: DiffMode::SideBySide,
+            editability: DiffEditability::ReadOnly,
+            scroll_offset: 0,
+            focused_pane: DiffPane::Left,
+            has_focus: false,
+        };
+        let _ = b.draw_diff_view(area, &view);
     });
 }
 
