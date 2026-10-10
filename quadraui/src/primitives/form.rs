@@ -431,6 +431,22 @@ impl Form {
             self.fields.len(),
         );
 
+        // First pass: walk fields in order deciding which ones are
+        // visible and how tall each renders, using the original
+        // sequential "stop once the viewport is exhausted" rule. This
+        // is a selection decision (how many fields fit), not layout
+        // math, so it stays hand-rolled regardless of the `layout`
+        // feature — a flex container has no notion of "stop adding
+        // children partway through".
+        struct Row {
+            idx: usize,
+            full_height: f32,
+            clipped_height: f32,
+            item_measures: Vec<FormItemMeasure>,
+            items_start_x: f32,
+            item_gap: f32,
+        }
+        let mut rows: Vec<Row> = Vec::new();
         let mut y = 0.0_f32;
         for i in resolved_scroll_offset..self.fields.len() {
             if y >= viewport_height {
@@ -438,32 +454,51 @@ impl Form {
             }
             let m = measure_field(i);
             let remaining = viewport_height - y;
-            let height = m.height.min(remaining).max(0.0);
-            if height <= 0.0 {
+            let clipped_height = m.height.min(remaining).max(0.0);
+            if clipped_height <= 0.0 {
                 break;
             }
-            let bounds = Rect::new(0.0, y, viewport_width, height);
-            let id = self.fields[i].id.clone();
+            y += m.height;
+            rows.push(Row {
+                idx: i,
+                full_height: m.height,
+                clipped_height,
+                item_measures: m.item_measures,
+                items_start_x: m.items_start_x,
+                item_gap: m.item_gap,
+            });
+        }
+
+        // Second pass: now that membership is settled, compute each
+        // row's `y` from the cumulative full heights (unclipped, same
+        // invariant as the selection pass above — a row's position
+        // never shrinks to make room for its own clipped height).
+        let full_heights: Vec<f32> = rows.iter().map(|r| r.full_height).collect();
+        let ys = row_y_positions(viewport_width, &full_heights);
+
+        for (row, y) in rows.into_iter().zip(ys) {
+            let bounds = Rect::new(0.0, y, viewport_width, row.clipped_height);
+            let id = self.fields[row.idx].id.clone();
 
             let mut item_bounds = Vec::new();
-            if !m.item_measures.is_empty() {
-                let mut item_x = m.items_start_x;
-                for item in &m.item_measures {
-                    let item_rect = Rect::new(item_x, y, item.width, height);
+            if !row.item_measures.is_empty() {
+                let widths: Vec<f32> = row.item_measures.iter().map(|item| item.width).collect();
+                let item_xs =
+                    item_x_positions(row.items_start_x, row.clipped_height, row.item_gap, &widths);
+                for (item, item_x) in row.item_measures.iter().zip(item_xs) {
+                    let item_rect = Rect::new(item_x, y, item.width, row.clipped_height);
                     hit_regions.push((item_rect, FormHit::Field(item.id.clone())));
                     item_bounds.push((item.id.clone(), item_rect));
-                    item_x += item.width + m.item_gap;
                 }
             }
             hit_regions.push((bounds, FormHit::Field(id.clone())));
 
             visible_fields.push(VisibleFormField {
-                field_idx: i,
+                field_idx: row.idx,
                 id,
                 bounds,
                 item_bounds,
             });
-            y += m.height;
         }
 
         FormLayout {
@@ -474,6 +509,69 @@ impl Form {
             resolved_scroll_offset,
         }
     }
+}
+
+/// Compute each visible field row's top edge given its full
+/// (unclipped) height, top-to-bottom, never shrinking — the vertical
+/// counterpart of `Toolbar`'s item packing. `viewport_width` is every
+/// row's fixed cross-axis size.
+///
+/// With the `layout` feature this runs through [`crate::flex`]'s shared
+/// flexbox engine, so `Form` composes with the same engine
+/// [`crate::primitives::Toolbar`] and [`crate::compose::AppShell`] use.
+/// Without it, the same arithmetic is done by hand. Both arms are
+/// covered by this module's exact-value tests to guarantee they agree
+/// bit-for-bit.
+#[cfg(feature = "layout")]
+fn row_y_positions(viewport_width: f32, heights: &[f32]) -> Vec<f32> {
+    crate::flex::pack_1d(
+        crate::flex::FlexDirection::Column,
+        0.0,
+        heights,
+        0.0,
+        viewport_width,
+    )
+}
+
+/// Same contract as the `layout`-feature arm above, computed by hand.
+#[cfg(not(feature = "layout"))]
+fn row_y_positions(_viewport_width: f32, heights: &[f32]) -> Vec<f32> {
+    let mut y = 0.0_f32;
+    let mut ys = Vec::with_capacity(heights.len());
+    for &h in heights {
+        ys.push(y);
+        y += h;
+    }
+    ys
+}
+
+/// Compute each `ToggleGroup`/`ButtonRow` item's left edge, left-to-right
+/// starting at `origin_x` with `gap` between consecutive items, never
+/// shrinking. `row_height` is every item's fixed cross-axis size.
+///
+/// With the `layout` feature this runs through [`crate::flex`]'s shared
+/// flexbox engine. Without it, the same arithmetic is done by hand.
+#[cfg(feature = "layout")]
+fn item_x_positions(origin_x: f32, row_height: f32, gap: f32, widths: &[f32]) -> Vec<f32> {
+    crate::flex::pack_1d(
+        crate::flex::FlexDirection::Row,
+        origin_x,
+        widths,
+        gap,
+        row_height,
+    )
+}
+
+/// Same contract as the `layout`-feature arm above, computed by hand.
+#[cfg(not(feature = "layout"))]
+fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -> Vec<f32> {
+    let mut x = origin_x;
+    let mut xs = Vec::with_capacity(widths.len());
+    for &w in widths {
+        xs.push(x);
+        x += w + gap;
+    }
+    xs
 }
 
 // ── PaintSurface paint (#808, Phase 2a of the PaintSurface milestone) ────

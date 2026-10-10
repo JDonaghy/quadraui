@@ -1290,6 +1290,14 @@ impl AppShell {
         };
 
         // ── Horizontal carve: activity bar + sidebar + divider + main ──
+        //
+        // Band widths (`ab_w`, `sidebar_w`, `divider_w`, `main_w`) are still
+        // decided by hand — they depend on clamping/min/max rules that are
+        // AppShell's own policy, not a layout concern. Once the widths are
+        // known, turning them into left-to-right x-positions is exactly the
+        // one-dimensional packing `crate::flex::pack_1d` already does for
+        // `Toolbar` and `Form` (same shared engine, see those modules), so
+        // `row_x_positions` delegates to it under the `layout` feature.
 
         let ab_w = self
             .activity_bar_width_px
@@ -1297,16 +1305,20 @@ impl AppShell {
         let divider_w = (lh * 0.25).max(1.0).round().min(4.0);
 
         if !self.sidebar_visible || self.panels.is_empty() {
+            let main_w = (area.width - ab_w).max(0.0);
             let (ab_bounds, main_bounds) = match self.position {
-                ShellPosition::Left => (
-                    Rect::new(area.x, band_y, ab_w, band_h),
-                    Rect::new(area.x + ab_w, band_y, (area.width - ab_w).max(0.0), band_h),
-                ),
-                ShellPosition::Right => {
-                    let ab_x = area.x + area.width - ab_w;
+                ShellPosition::Left => {
+                    let x = row_x_positions(area.x, &[ab_w, main_w]);
                     (
-                        Rect::new(ab_x.max(area.x), band_y, ab_w, band_h),
-                        Rect::new(area.x, band_y, (area.width - ab_w).max(0.0), band_h),
+                        Rect::new(x[0], band_y, ab_w, band_h),
+                        Rect::new(x[1], band_y, main_w, band_h),
+                    )
+                }
+                ShellPosition::Right => {
+                    let x = row_x_positions(area.x, &[main_w, ab_w]);
+                    (
+                        Rect::new(x[1], band_y, ab_w, band_h),
+                        Rect::new(x[0], band_y, main_w, band_h),
                     )
                 }
             };
@@ -1336,19 +1348,19 @@ impl AppShell {
         let sidebar_w = sidebar_w.min(remaining * 0.8);
         let header_h = lh;
 
+        let main_w = (area.width - ab_w - sidebar_w - divider_w).max(0.0);
+
         match self.position {
             ShellPosition::Left => {
-                let ab_bounds = Rect::new(area.x, band_y, ab_w, band_h);
-                let sidebar_x = area.x + ab_w;
+                let x = row_x_positions(area.x, &[ab_w, sidebar_w, divider_w, main_w]);
+                let ab_bounds = Rect::new(x[0], band_y, ab_w, band_h);
+                let sidebar_x = x[1];
                 let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
                 let content_y = band_y + header_h;
                 let content_h = (band_h - header_h).max(0.0);
                 let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
-                let div_x = sidebar_x + sidebar_w;
-                let div_bounds = Rect::new(div_x, band_y, divider_w, band_h);
-                let main_x = div_x + divider_w;
-                let main_w = (area.x + area.width - main_x).max(0.0);
-                let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
+                let div_bounds = Rect::new(x[2], band_y, divider_w, band_h);
+                let main_bounds = Rect::new(x[3], band_y, main_w, band_h);
                 let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                     carve_bottom_chrome(main_bounds);
                 *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
@@ -1367,19 +1379,15 @@ impl AppShell {
                 }
             }
             ShellPosition::Right => {
-                let ab_x = area.x + area.width - ab_w;
-                let ab_bounds = Rect::new(ab_x.max(area.x), band_y, ab_w, band_h);
-                let sidebar_x = ab_x - sidebar_w;
-                let header_bounds = Rect::new(sidebar_x.max(area.x), band_y, sidebar_w, header_h);
+                let x = row_x_positions(area.x, &[main_w, divider_w, sidebar_w, ab_w]);
+                let ab_bounds = Rect::new(x[3], band_y, ab_w, band_h);
+                let sidebar_x = x[2];
+                let header_bounds = Rect::new(sidebar_x, band_y, sidebar_w, header_h);
                 let content_y = band_y + header_h;
                 let content_h = (band_h - header_h).max(0.0);
-                let content_bounds =
-                    Rect::new(sidebar_x.max(area.x), content_y, sidebar_w, content_h);
-                let div_x = sidebar_x - divider_w;
-                let div_bounds = Rect::new(div_x.max(area.x), band_y, divider_w, band_h);
-                let main_x = area.x;
-                let main_w = (div_x - area.x).max(0.0);
-                let main_bounds = Rect::new(main_x, band_y, main_w, band_h);
+                let content_bounds = Rect::new(sidebar_x, content_y, sidebar_w, content_h);
+                let div_bounds = Rect::new(x[1], band_y, divider_w, band_h);
+                let main_bounds = Rect::new(x[0], band_y, main_w, band_h);
                 let (main_bounds, bottom_band_bounds, bottom_panel_bounds) =
                     carve_bottom_chrome(main_bounds);
                 *self.cached_bottom_band_bounds.borrow_mut() = bottom_band_bounds;
@@ -1468,6 +1476,29 @@ impl AppShell {
             self.hovered_activity_idx = None;
         }
     }
+}
+
+/// Compute each chrome band's left edge, left-to-right starting at
+/// `origin`, with no gap between consecutive bands, never shrinking.
+///
+/// With the `layout` feature this runs through [`crate::flex`]'s shared
+/// flexbox engine — the same one `Toolbar` and `Form` pack their rows
+/// through. Without it, the same arithmetic is done by hand.
+#[cfg(feature = "layout")]
+fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
+    crate::flex::pack_1d(crate::flex::FlexDirection::Row, origin, sizes, 0.0, 0.0)
+}
+
+/// Same contract as the `layout`-feature arm above, computed by hand.
+#[cfg(not(feature = "layout"))]
+fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
+    let mut x = origin;
+    let mut xs = Vec::with_capacity(sizes.len());
+    for &s in sizes {
+        xs.push(x);
+        x += s;
+    }
+    xs
 }
 
 fn contains(rect: Rect, point: Point) -> bool {

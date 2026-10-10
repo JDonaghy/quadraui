@@ -8558,3 +8558,182 @@ fn status_bar_priority_demo_pressing_q_exits() {
     driver.type_char('q');
     assert!(driver.exited(), "'q' should make the app exit");
 }
+
+// ─── flex-layout rewire: packing must stay identical with and without `layout` ─
+//
+// `AppShell`, `Form` and `Toolbar` each route their 1D position arithmetic
+// through `crate::flex::pack_1d` when the `layout` feature is enabled, and
+// through the original hand-rolled arithmetic when it is not. The three
+// tests below assert the *packing* each primitive is responsible for —
+// item order, adjacency, cumulative row offsets, band carve — in terms the
+// screen reveals, so running this file with `--features tui` and with
+// `--features tui,layout` must produce the same verdict.
+//
+// They are deliberately written against painted text and relative offsets
+// (`find_bounds` deltas, the column a divider lands on) rather than a
+// full-screen byte snapshot: a snapshot pins absolute cell coordinates and,
+// with its expected art spanning source lines, would also be hostage to
+// whatever line endings the checkout happens to use.
+
+/// The whole screen row that contains `needle`, as painted.
+///
+/// Panics if `needle` isn't on screen, or if it appears on more than one
+/// row — an ambiguous needle would silently assert against the wrong row.
+fn row_containing(screen: &str, needle: &str) -> String {
+    let hits: Vec<&str> = screen.lines().filter(|l| l.contains(needle)).collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected exactly one row containing {needle:?}, found {}:\n{screen}",
+        hits.len()
+    );
+    hits[0].to_string()
+}
+
+/// `(x, y, width)` of each needle's painted bounds, in the order given.
+///
+/// Panics naming the first needle that isn't on screen.
+fn bounds_of<A: quadraui::AppLogic>(
+    driver: &TuiDriver<A>,
+    needles: &[&str],
+) -> Vec<(f32, f32, f32)> {
+    needles
+        .iter()
+        .map(|needle| {
+            let b = driver
+                .find_bounds(needle)
+                .unwrap_or_else(|| panic!("{needle:?} not on screen:\n{}", driver.screen()));
+            (b.x, b.y, b.width)
+        })
+        .collect()
+}
+
+/// Assert `items` sit on one row, in the given order, without overlapping.
+fn assert_packed_in_one_row(items: &[(f32, f32, f32)], labels: &[&str]) {
+    for (pair, names) in items.windows(2).zip(labels.windows(2)) {
+        let (lx, ly, lw) = pair[0];
+        let (rx, ry, _) = pair[1];
+        assert_eq!(
+            ly, ry,
+            "{:?} and {:?} must pack onto the same row",
+            names[0], names[1]
+        );
+        assert!(
+            lx + lw <= rx,
+            "{:?} (x={lx}, w={lw}) must end before {:?} starts (x={rx})",
+            names[0],
+            names[1]
+        );
+    }
+}
+
+#[test]
+fn toolbar_items_pack_left_to_right_in_one_row() {
+    let driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
+    let screen = driver.screen();
+
+    // The bar row shows every item packed flush, in declaration order,
+    // with the group separators between groups. `Toolbar::layout` decides
+    // each item's left edge, so any packing drift rewrites this row.
+    assert_eq!(
+        row_containing(&screen, "Continue").trim_end(),
+        "[ ▶ Continue (1) ][ ⏸ Pause (2) ] │[ * Filter (3) ][ % Reset (4) ] │[ Debug ] running"
+    );
+
+    let labels = ["Continue", "Pause", "Filter", "Reset", "Debug"];
+    assert_packed_in_one_row(&bounds_of(&driver, &labels), &labels);
+}
+
+#[test]
+fn appshell_chrome_bands_carve_left_to_right() {
+    let config = AppShellDemo::config();
+    let mut driver = driver_with_shell(AppShellDemo::new(), config, 100, 30);
+    driver.render();
+    let screen = driver.screen();
+
+    // The activity-bar separator is one band edge in the horizontal carve,
+    // so it lands on one column for the full height of the band — a
+    // shifted carve on any row would split this set.
+    let divider_columns: Vec<usize> = screen
+        .lines()
+        .filter_map(|line| line.chars().position(|c| c == '│'))
+        .collect();
+    assert!(
+        divider_columns.len() >= 20,
+        "divider should paint down the band, saw {} rows:\n{screen}",
+        divider_columns.len()
+    );
+    let divider_x = divider_columns[0];
+    assert!(
+        divider_columns.iter().all(|&c| c == divider_x),
+        "divider column must be the same on every row, saw {divider_columns:?}:\n{screen}"
+    );
+
+    // Bands run left to right: activity bar, separator, sidebar, main area.
+    let [(activity_x, _, _), (explorer_x, _, _), (main_x, _, _)] =
+        bounds_of(&driver, &["E", "EXPLORER", "Tab=focus bar"])[..]
+    else {
+        unreachable!("bounds_of returns one entry per needle")
+    };
+    assert!(
+        activity_x < divider_x as f32,
+        "activity bar (x={activity_x}) sits left of the separator (x={divider_x})"
+    );
+    assert!(
+        explorer_x > divider_x as f32,
+        "sidebar header (x={explorer_x}) sits right of the separator (x={divider_x})"
+    );
+    assert!(
+        main_x > explorer_x,
+        "main area (x={main_x}) sits right of the sidebar header (x={explorer_x})"
+    );
+
+    // The sidebar band's width is what clips its content, so the demo's
+    // placeholder text stops at the band edge rather than running under
+    // the main area.
+    assert_eq!(
+        row_containing(&screen, "(sidebar content").trim_end(),
+        " S│ (sidebar content he"
+    );
+}
+
+#[test]
+fn form_fields_stack_and_group_items_pack() {
+    let driver = TuiDriver::new(FormGroupsApp::new(), 100, 20);
+    let screen = driver.screen();
+
+    // Each field's top edge is the running sum of the heights above it:
+    // the two-row Find field (label + options), then the two-row Replace
+    // field (label + button row), then Scope.
+    let [(_, find_y, _), (_, replace_y, _), (_, scope_y, _)] =
+        bounds_of(&driver, &["Find ", "Replace ", "Scope"])[..]
+    else {
+        unreachable!("bounds_of returns one entry per needle")
+    };
+    assert_eq!(
+        replace_y - find_y,
+        2.0,
+        "Replace field stacks two rows below Find (Find is label + options)"
+    );
+    assert_eq!(
+        scope_y - replace_y,
+        2.0,
+        "Scope field stacks two rows below Replace (Replace is label + buttons)"
+    );
+
+    // Items inside a `ToggleGroup` / `ButtonRow` pack left-to-right with
+    // the field's own gap, which is the other half of `Form`'s packing.
+    assert_eq!(
+        row_containing(&screen, "Workspace").trim(),
+        "Scope [ Workspace ][ File ][ Selection ]"
+    );
+    assert_eq!(
+        row_containing(&screen, "Find Next").trim(),
+        "[Find Next] [Replace] [Replace All]"
+    );
+
+    let toggles = ["Workspace", "File", "Selection"];
+    assert_packed_in_one_row(&bounds_of(&driver, &toggles), &toggles);
+    let buttons = ["Find Next", "Replace]", "Replace All"];
+    assert_packed_in_one_row(&bounds_of(&driver, &buttons), &buttons);
+}

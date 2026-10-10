@@ -59,6 +59,22 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- `FlexLayout::without_rounding(self) -> Self` (issue #1428) — opts a
+  `FlexLayout` out of its default pixel-snapping so a caller can compare
+  raw `taffy` output bit-for-bit against a hand-rolled layout in tests.
+  `AppShell`'s chrome-band carve, `Form`'s field stacking, and `Toolbar`'s
+  item packing now route their 1D position arithmetic through
+  `crate::flex::pack_1d` when the `layout` feature is enabled, falling
+  back to the original hand-rolled arithmetic when it isn't; both paths
+  are verified byte-identical by each primitive's own exact-value tests
+  plus three `TuiDriver` end-to-end tests, all run under both
+  configurations. `layout` stays its own opt-in feature (not
+  bundled into `tui`/`gtk`/`win`/`macos`, per this crate's "no feature
+  pulls in another opt-in feature" policy) — see its doc comment in
+  `quadraui/Cargo.toml` for how to enable it alongside a backend feature.
+
 ## [0.1.3] - 2026-10-10
 
 ### Added
