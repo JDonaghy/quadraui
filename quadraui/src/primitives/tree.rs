@@ -511,14 +511,33 @@ pub(crate) mod native_surface_paint {
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
+                    // On GUI, an app-supplied `chevron_expanded`/
+                    // `chevron_collapsed` override is still honoured —
+                    // only the *default* `▾`/`▸` strings are swapped
+                    // for the sharper codicon glyph. TUI's own paint
+                    // path (`tui::tree::draw_tree`) always reads the
+                    // two fields directly and never substitutes a
+                    // codicon, since a terminal cell can't assume a
+                    // codicon-patched font is installed.
+                    let default_style = crate::types::TreeStyle::default();
                     let chevron = if expanded {
-                        &tree.style.chevron_expanded
+                        if tree.style.chevron_expanded == default_style.chevron_expanded {
+                            crate::codicon::CHEVRON_DOWN.to_string()
+                        } else {
+                            tree.style.chevron_expanded.clone()
+                        }
+                    } else if tree.style.chevron_collapsed == default_style.chevron_collapsed {
+                        crate::codicon::CHEVRON_RIGHT.to_string()
                     } else {
-                        &tree.style.chevron_collapsed
+                        tree.style.chevron_collapsed.clone()
                     };
-                    let (cw, ch) = surface.surface_measure_text(chevron);
+                    let (cw, ch) = surface.surface_measure_text(&chevron);
                     let cy = row_y + (row_h - ch) / 2.0;
-                    surface.surface_draw_text_run(Rect::new(cursor_x, cy, cw, ch), chevron, def_fg);
+                    surface.surface_draw_icon_glyph(
+                        Rect::new(cursor_x, cy, cw, ch),
+                        &chevron,
+                        def_fg,
+                    );
                     cursor_x += cw + 4.0;
                 }
             } else {
@@ -828,6 +847,83 @@ pub(crate) mod native_surface_paint {
                 "expected a fill at the v-scrollbar track {:?}, got fills: {:?}",
                 expected.track,
                 surface.fills
+            );
+        }
+
+        /// A branch row's default-style chevron paints as the codicon
+        /// glyph on GUI, not the plain `▾`/`▸` `TreeStyle::default()`
+        /// carries — the "Done when" behaviour this swap exists for.
+        #[test]
+        fn default_style_chevron_paints_as_codicon_glyph() {
+            let mut rows = vec![leaf(0, "branch")];
+            rows[0].is_expanded = Some(true);
+            let tree = make_tree(rows);
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(
+                surface
+                    .texts
+                    .iter()
+                    .any(|(_, t, _)| t == crate::codicon::CHEVRON_DOWN.to_string().as_str()),
+                "expected the codicon expanded-chevron glyph among painted text runs, got: {:?}",
+                surface.texts
+            );
+            assert!(
+                !surface.texts.iter().any(|(_, t, _)| t == "▾"),
+                "the plain `▾` default must not be painted verbatim on GUI, got: {:?}",
+                surface.texts
+            );
+        }
+
+        /// An app-supplied, non-default `chevron_expanded`/
+        /// `chevron_collapsed` override is still honoured on GUI — only
+        /// the *default* string gets swapped for a codicon glyph (see
+        /// the previous test).
+        #[test]
+        fn non_default_chevron_override_is_honoured_verbatim_on_gui() {
+            let mut rows = vec![leaf(0, "branch")];
+            rows[0].is_expanded = Some(true);
+            let mut tree = make_tree(rows);
+            tree.style.chevron_expanded = "+".into();
+            tree.style.chevron_collapsed = "-".into();
+            let layout =
+                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let mut surface = RecordingSurface::default();
+            let theme = Theme::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &theme,
+            );
+
+            assert!(
+                surface.texts.iter().any(|(_, t, _)| t == "+"),
+                "expected the app's own override glyph among painted text runs, got: {:?}",
+                surface.texts
+            );
+            assert!(
+                !surface
+                    .texts
+                    .iter()
+                    .any(|(_, t, _)| t == crate::codicon::CHEVRON_DOWN.to_string().as_str()),
+                "an explicit override must not be silently replaced by the codicon glyph, got: {:?}",
+                surface.texts
             );
         }
 

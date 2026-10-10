@@ -502,6 +502,10 @@ pub struct WinBackend {
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
+    /// Editor vertical scrollbar column width set through
+    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
+    /// `current_char_width` wide.
+    editor_v_scrollbar_w: Option<f32>,
     /// [`crate::backend::Backend::minimap_scale`]'s backing field (issue
     /// #1143) — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
     /// to resolve the row pitch (and per-column width) a paint or layout
@@ -652,6 +656,21 @@ pub struct WinBackend {
     /// `MacBackend`/vimcode's own single-subset-font usage.
     #[cfg(target_os = "windows")]
     registered_font_collection: Option<IDWriteFontCollection1>,
+    /// Private font collection for the bundled codicon font, built once
+    /// by [`Self::new`] via [`crate::win::text::register_font_from_memory`] —
+    /// kept separate from `registered_font_collection`,
+    /// which is reserved for the app's own
+    /// [`Backend::register_font_from_memory`] calls and is overwritten
+    /// by each one; this field must survive those calls so
+    /// [`Self::nerd_font_fallback`] can always resolve the codicon
+    /// family regardless of what the app has registered since. No
+    /// equivalent to `registered_font_bytes`'s owned-copy dance is
+    /// needed: [`crate::codicon::FONT_BYTES`] is `'static` (compiled
+    /// into the binary's own data section), so it already outlives
+    /// every `IDWriteFontFile`/collection/fallback built from it for the
+    /// rest of the process.
+    #[cfg(target_os = "windows")]
+    codicon_font_collection: Option<IDWriteFontCollection1>,
     /// Every byte buffer ever handed to a
     /// [`Backend::register_font_from_memory`] call, in an owned copy
     /// that is **appended** here and never overwritten or dropped for
@@ -729,12 +748,17 @@ pub struct WinBackend {
     /// / `MacBackend::nerd_fonts_enabled` (issue #683, extended to
     /// Win-GUI by #804). Picks `Icon::glyph` vs `Icon::fallback` in
     /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to
-    /// `false`, matching every other backend. Not `target_os`-gated:
-    /// the flag itself is a plain `bool` with no WinAPI dependency,
-    /// same rationale as `current_pointer_shape`/`painted_text_recording`
-    /// above — only the DirectWrite paint call that reads it needs a
-    /// real host to actually render Nerd Font glyphs, not to store the
-    /// setting or run headless tests against it.
+    /// `true` on this backend — see `GtkBackend`'s
+    /// matching field doc for why a GUI backend with the bundled
+    /// codicon font always available carries none of the "terminal
+    /// with no Nerd Font installed" risk [`Backend::set_nerd_fonts`]'s
+    /// own doc gives for keeping TUI's default at `false`. Not
+    /// `target_os`-gated: the flag itself is a plain `bool` with no
+    /// WinAPI dependency, same rationale as
+    /// `current_pointer_shape`/`painted_text_recording` above — only
+    /// the DirectWrite paint call that reads it needs a real host to
+    /// actually render Nerd Font glyphs, not to store the setting or
+    /// run headless tests against it.
     nerd_fonts_enabled: bool,
     /// The most recent [`BackendError`] recorded by `end_frame`, drained
     /// (and cleared) by [`Backend::last_error`] (issue #805, D-009). Not
@@ -790,6 +814,31 @@ pub struct WinBackend {
 
 impl WinBackend {
     pub fn new() -> Self {
+        // Self-register the bundled codicon font and seed a
+        // codicon-only `nerd_font_fallback` before anything paints —
+        // mirrors `crate::gtk::app_font::ensure_codicon_registered`'s
+        // "degrade, don't fail" posture: a registration failure just
+        // leaves both locals `None`, so the worst case is a missing
+        // codicon falling through to tofu rather than this constructor
+        // failing outright. Real `IDWriteFactory`/
+        // `IDWriteInMemoryFontFileLoader` calls, so this can only run
+        // for real on `target_os = "windows"`; elsewhere (`cargo check
+        // --features win` on Linux) this whole block is compiled out,
+        // matching every other real WinAPI call in this constructor.
+        #[cfg(target_os = "windows")]
+        let (codicon_font_collection, nerd_font_fallback) =
+            match crate::win::text::register_font_from_memory(crate::codicon::FONT_BYTES) {
+                Ok((collection, _names)) => {
+                    let fallback = crate::win::text::build_nerd_font_fallback_multi(&[(
+                        crate::codicon::FONT_FAMILY,
+                        Some(&collection),
+                    )])
+                    .ok();
+                    (Some(collection), fallback)
+                }
+                Err(_) => (None, None),
+            };
+
         Self {
             viewport: Viewport::new(0.0, 0.0, 1.0),
             modal_stack: Rc::new(RefCell::new(ModalStack::new())),
@@ -801,6 +850,7 @@ impl WinBackend {
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
+            editor_v_scrollbar_w: None,
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             #[cfg(target_os = "windows")]
             dpi_scale: 1.0,
@@ -829,9 +879,11 @@ impl WinBackend {
             #[cfg(target_os = "windows")]
             ui_font_size_pt: DEFAULT_UI_FONT_SIZE_PT,
             #[cfg(target_os = "windows")]
-            nerd_font_fallback: None,
+            nerd_font_fallback,
             #[cfg(target_os = "windows")]
             registered_font_collection: None,
+            #[cfg(target_os = "windows")]
+            codicon_font_collection,
             #[cfg(target_os = "windows")]
             registered_font_bytes: Vec::new(),
             current_theme: crate::theme::Theme::default(),
@@ -839,7 +891,7 @@ impl WinBackend {
             current_pointer_shape: PointerShape::Default,
             painted_text_recording: false,
             text_runs: Vec::new(),
-            nerd_fonts_enabled: false,
+            nerd_fonts_enabled: true,
             last_error: None,
             focus: crate::focus::FocusManager::new(),
             user_events: crate::runtime::UserEventQueue::new(),
@@ -2050,10 +2102,20 @@ impl Backend for WinBackend {
     fn set_nerd_font_fallback(&mut self, family: &str) {
         #[cfg(target_os = "windows")]
         {
-            let built = crate::win::text::build_nerd_font_fallback(
-                family,
-                self.registered_font_collection.as_ref(),
-            );
+            // `build_nerd_font_fallback_multi` with both
+            // mappings, not a bare `build_nerd_font_fallback(family,
+            // ...)` — a single `IDWriteFontFallback` is a full
+            // replacement when stored into `self.nerd_font_fallback`
+            // (DirectWrite text formats carry exactly one), so
+            // rebuilding from `family` alone here would drop the
+            // bundled codicon mapping `Self::new` seeded.
+            let built = crate::win::text::build_nerd_font_fallback_multi(&[
+                (family, self.registered_font_collection.as_ref()),
+                (
+                    crate::codicon::FONT_FAMILY,
+                    self.codicon_font_collection.as_ref(),
+                ),
+            ]);
             match built {
                 Ok(fallback) => self.nerd_font_fallback = Some(fallback),
                 Err(err) => {
@@ -3889,18 +3951,45 @@ impl Backend for WinBackend {
     /// attached yet" fallback posture. `rect` is unused on the painted
     /// path — `editor.rect` is authoritative (mirrors
     /// `GtkBackend::draw_editor`, which does the same).
+    ///
+    /// The vertical scrollbar column (sized by
+    /// [`Self::set_editor_v_scrollbar_width`]) is painted after the
+    /// rasteriser returns, through [`Self::draw_scrollbar`] — see
+    /// `win::editor`'s "Scrollbar" module doc.
     fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             let _ = rect;
-            return super::editor::draw_editor(
+            let options = crate::primitives::editor::EditorPaintOptions::default();
+            let result = super::editor::draw_editor_with_options_and_v_scrollbar_w(
                 &surface.target,
                 dwrite,
                 editor,
                 self.current_char_width,
                 self.current_line_height,
                 &self.current_theme,
+                options,
+                self.editor_v_scrollbar_w,
             );
+            let layout = editor.layout_with_options_and_v_scrollbar_w(
+                editor.rect,
+                self.current_char_width,
+                self.current_line_height,
+                options,
+                self.editor_v_scrollbar_w,
+            );
+            if let Some(v_track) = layout.v_scrollbar_bounds {
+                let sb = Scrollbar::vertical(
+                    "win:editor:v_scrollbar",
+                    v_track,
+                    editor.scroll_top as f32,
+                    editor.total_lines as f32,
+                    layout.visible_lines as f32,
+                    self.current_line_height,
+                );
+                self.draw_scrollbar(v_track, &sb);
+            }
+            return result;
         }
         // No surface/DWrite yet — paint nothing and report no cursor
         // position, matching every other backend's "nothing painted"
@@ -3908,6 +3997,14 @@ impl Backend for WinBackend {
         // #924).
         let _ = (rect, editor);
         EditorPaintResult::default()
+    }
+
+    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
+        self.editor_v_scrollbar_w = px;
+    }
+
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        self.editor_v_scrollbar_w
     }
 
     /// #30: real Direct2D/DirectWrite rasteriser via `win::message_list`
@@ -7847,6 +7944,88 @@ mod tests {
         );
     }
 
+    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
+    /// `WinBackend::draw_editor` paint a scrollbar column exactly 14 DIPs
+    /// wide — `[186, 200)` in a 200-DIP viewport — instead of one
+    /// `current_char_width` (8 DIPs), and `Backend::editor_layout`
+    /// reports the same column for hit-testing.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_editor_v_scrollbar_width_paints_14px_column() {
+        use crate::primitives::editor::Editor;
+        use crate::theme::Theme;
+        use crate::types::WidgetId;
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 200;
+        const H: u32 = 80;
+
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let mut editor = Editor::new(WidgetId::new("editor"), rect);
+        editor.total_lines = 50;
+        let bg = Theme::default().background;
+        let bg = (bg.r, bg.g, bg.b);
+
+        let paint = |v_scrollbar_w: Option<f32>| {
+            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+            let mut backend = WinBackend::new();
+            backend
+                .attach_headless(surface.target().clone(), W, H)
+                .expect("attach headless surface");
+            backend.set_editor_v_scrollbar_width(v_scrollbar_w);
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let _ = backend.draw_editor(rect, &editor);
+            backend.end_frame();
+            surface
+        };
+        let probe = |surface: &HeadlessSurface, x: u32| {
+            let px = surface.pixel_at(x, H - 4);
+            (px.r, px.g, px.b)
+        };
+        // Direct2D anti-aliases a fill's boundary pixel, bleeding a level or
+        // two of track colour into the neighbouring text-area pixel, so an
+        // exact `== bg` on a pixel next to the column edge is not a stable
+        // assertion. The track (40, 44, 56) is ~20 levels per channel clear
+        // of the background (20, 22, 30), far outside this tolerance, so
+        // "background" and "track" stay unambiguous.
+        const AA_TOLERANCE: i32 = 4;
+        let is_bg = |px: (u8, u8, u8)| {
+            (px.0 as i32 - bg.0 as i32).abs() <= AA_TOLERANCE
+                && (px.1 as i32 - bg.1 as i32).abs() <= AA_TOLERANCE
+                && (px.2 as i32 - bg.2 as i32).abs() <= AA_TOLERANCE
+        };
+
+        let widened = paint(Some(14.0));
+        assert!(
+            is_bg(probe(&widened, 183)),
+            "x=183 lies left of the 14px column at [186, 200)"
+        );
+        for x in 186..W {
+            assert!(
+                !is_bg(probe(&widened, x)),
+                "x={x} lies inside the 14px column [186, 200)"
+            );
+        }
+
+        let default = paint(None);
+        assert!(
+            is_bg(probe(&default, 189)),
+            "default column is 8px: x=189 is text area"
+        );
+        assert!(
+            !is_bg(probe(&default, 194)),
+            "default column is 8px: x=194 is track"
+        );
+
+        let mut backend = WinBackend::new();
+        backend.set_editor_v_scrollbar_width(Some(14.0));
+        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
+        let vsb = Backend::editor_layout(&backend, rect, &editor)
+            .v_scrollbar_bounds
+            .expect("buffer overflows");
+        assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
+    }
+
     /// `draw_tree` (the Explorer sidebar's own content rasteriser) must read
     /// the live theme from `WinBackend::current_theme` rather than building
     /// its own `Theme::default()`.
@@ -9753,6 +9932,85 @@ mod tests {
         assert!(
             painted_something,
             "draw_text must paint something other than the sentinel background"
+        );
+    }
+
+    // ── bundled codicon font self-registration ───────────────────────────
+
+    /// `WinBackend::new` self-registers the bundled codicon font and
+    /// seeds a codicon-only `nerd_font_fallback` before any app code
+    /// runs — no app configuration required.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn new_self_registers_codicon_and_seeds_a_fallback() {
+        let backend = WinBackend::new();
+        assert!(
+            backend.codicon_font_collection.is_some(),
+            "WinBackend::new() must self-register the bundled codicon font"
+        );
+        assert!(
+            backend.nerd_font_fallback.is_some(),
+            "a codicon-only fallback must be seeded even before any app \
+             set_nerd_font_fallback call"
+        );
+    }
+
+    /// `nerd_fonts_enabled` defaults to `true` on this backend — see
+    /// the field's own doc for why that default differs from TUI's.
+    #[test]
+    fn nerd_fonts_enabled_defaults_to_true() {
+        let backend = WinBackend::new();
+        assert!(backend.nerd_fonts_enabled());
+    }
+
+    /// `set_nerd_font_fallback` must not drop the bundled codicon
+    /// mapping `Self::new` seeded — `build_nerd_font_fallback_multi`
+    /// rebuilds the whole `IDWriteFontFallback` from scratch each call
+    /// (DirectWrite text formats carry exactly one), so this guards
+    /// against a future edit that narrows it back down to just the
+    /// app's own family. Painting the codicon close glyph through a
+    /// `DWrite` built *after* an app `set_nerd_font_fallback` call must
+    /// still produce real ink, not tofu.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn set_nerd_font_fallback_keeps_the_codicon_mapping() {
+        use crate::win::testing::HeadlessSurface;
+
+        const W: u32 = 40;
+        const H: u32 = 40;
+        const BG: crate::Color = crate::Color::rgb(10, 20, 30);
+
+        let surface = HeadlessSurface::new(W, H).expect("create headless surface");
+        let mut backend = WinBackend::new();
+        backend.set_nerd_font_fallback("Segoe UI Symbol");
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach_headless");
+
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), BG);
+        let glyph = crate::codicon::CLOSE.to_string();
+        backend.draw_text(
+            &glyph,
+            Rect::new(4.0, 4.0, W as f32 - 8.0, H as f32 - 8.0),
+            crate::Color::rgb(220, 40, 40),
+        );
+        backend.end_frame();
+
+        let mut painted_something = false;
+        'outer: for y in 0..H {
+            for x in 0..W {
+                let px = surface.pixel_at(x, y);
+                if (px.r, px.g, px.b) != (BG.r, BG.g, BG.b) {
+                    painted_something = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            painted_something,
+            "the codicon close glyph must still paint real ink after an app \
+             set_nerd_font_fallback call, not just before one"
         );
     }
 

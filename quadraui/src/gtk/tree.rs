@@ -70,8 +70,12 @@ pub fn gtk_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeVi
 /// - **Indent:** `(line_height * 0.9).round()` pixels per depth level.
 /// - **Chevrons:** [`tree.style.chevron_expanded`] /
 ///   [`tree.style.chevron_collapsed`] for branches when
-///   `tree.style.show_chevrons` is true; leaves get a `line_height *
-///   0.8` leading offset for visual alignment.
+///   `tree.style.show_chevrons` is true, *unless* the field is still
+///   holding `TreeStyle::default()`'s `"▾"`/`"▸"`, in which case the
+///   shared paint path (`primitives::tree::paint`) substitutes the
+///   sharper `codicon::CHEVRON_DOWN`/`CHEVRON_RIGHT` glyph instead; a
+///   non-default override is always painted verbatim. Leaves get a
+///   `line_height * 0.8` leading offset for visual alignment.
 /// - **Badge** (right-aligned): rendered in `badge.fg`/`badge.bg`
 ///   (falling back to [`Theme::muted_fg`] / row bg) when there's
 ///   room past the text.

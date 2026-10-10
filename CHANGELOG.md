@@ -59,8 +59,52 @@ only a push to `main` runs this workflow.
 
 ## [Unreleased]
 
+### Added
+
+- Bundled Microsoft's codicon icon font (CC-BY-4.0; license text ships at
+  `quadraui/assets/CODICON_LICENSE`) and self-register it on every GUI
+  backend with no app configuration required (issue #1377). Tree
+  expand/collapse chevrons, tab dirty/close marks, the context-menu
+  submenu arrow, and (GTK) data-table sort arrows now paint as codicon
+  glyphs on GTK, macOS and Windows instead of plain text characters; TUI
+  output is unchanged.
+- `Backend::set_editor_v_scrollbar_width(Option<f32>)` (issue #1411) — a
+  provided (default no-op) trait method a GUI host calls once to size the
+  editor's vertical scrollbar column in pixels, e.g. `Some(14.0)` to match
+  VS Code's fixed 14px editor scrollbar independent of font size. Honoured
+  by the GTK, macOS and Win backends in `draw_editor` and in
+  `Backend::editor_layout` (so hit-testing agrees with the paint); TUI
+  keeps its one-cell column. `Backend::editor_v_scrollbar_width()` reads
+  it back. `None` (the default) keeps the existing one-`char_width`
+  column.
+- `Editor::layout_with_options_and_v_scrollbar_w(viewport, cell_width,
+  line_height, options, v_scrollbar_w)` — the layout behind the above:
+  `Some(px)` sizes `v_scrollbar_bounds` (and the text-area narrowing it
+  causes) independently of `cell_width`. `Editor::layout_with_options` is
+  unchanged and delegates with `None`. Purely additive:
+  `EditorPaintOptions` is untouched.
+
+### Changed
+
+- `GtkBackend`/`MacBackend`/`WinBackend` now default `nerd_fonts_enabled`
+  to `true` (issue #1377) — the bundled codicon font removes the
+  "Nerd Font not installed" risk that kept every backend defaulting to
+  `false`, so an app's own `Icon::glyph` paints with no
+  `Backend::set_nerd_fonts` call. TUI's default is unchanged (`false`).
+  An app that needs the old default can call `set_nerd_fonts(false)`
+  itself.
+
 ### Fixed
 
+- **macOS native: the editor painted no vertical scrollbar at all**
+  (issue #1411), even when the buffer overflowed the viewport and VS
+  Code showed a 14px one on the same screen. `Editor::layout` already
+  reserved the column (`v_scrollbar_bounds`), but no macOS rasteriser
+  call ever filled it in. `macos::editor::draw_editor` now paints it
+  through the same shared scrollbar paint GTK already uses, narrowing
+  the text clip to match so no glyph paints under the reserved column.
+  The Win backend's `draw_editor` likewise now paints the column through
+  `Backend::draw_scrollbar`.
 - **macOS native: editor text looked heavy and blocky next to VS Code**
   (issue #1405). The "Lines + gutter" paint loop drew every line's
   `raw_text` once in the default foreground colour, then re-drew each

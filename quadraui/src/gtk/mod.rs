@@ -276,21 +276,34 @@ pub(crate) fn chrome_font_description(ui_font: &str) -> pango::FontDescription {
     with_nerd_font_fallback(&pango::FontDescription::from_string(ui_font))
 }
 
-/// Clone `base` with [`NERD_FONT_FALLBACK_FAMILY`] appended to its family
-/// list. Used where a rasteriser can't build a fresh description from a
-/// `ui_font` string (the caller only hands it an already-live
+/// Clone `base` with [`NERD_FONT_FALLBACK_FAMILY`] (or whatever the app
+/// last set via [`crate::Backend::set_nerd_font_fallback`]) and
+/// [`crate::codicon::FONT_FAMILY`] appended to its family list. Used
+/// where a rasteriser can't build a fresh description from a `ui_font`
+/// string (the caller only hands it an already-live
 /// [`pango::FontDescription`] to paint one glyph with, e.g. an icon
 /// inside an otherwise editor-font-painted row) — see
 /// [`chrome_font_description`] for the string-based sibling and the full
 /// rationale.
+///
+/// The codicon family is appended *unconditionally* —
+/// every built-in chrome glyph this crate paints through this function
+/// (tree chevrons, tab dirty/close, the context-menu submenu arrow)
+/// must resolve regardless of whatever the app's own `set_nerd_font_fallback`
+/// call last chose, and `codicon::FONT_FAMILY`'s own doc explains why
+/// that can never shadow an app-supplied icon glyph: `FONT_FAMILY` is
+/// always appended *last*, after `app_fallback_family`, so an
+/// app-supplied font earlier in the list wins any overlapping
+/// codepoint.
 pub(crate) fn with_nerd_font_fallback(base: &pango::FontDescription) -> pango::FontDescription {
     let mut desc = base.clone();
     let fallback = current_nerd_font_fallback_family();
     let family = desc.family().map(|f| f.to_string()).unwrap_or_default();
+    let codicon = crate::codicon::FONT_FAMILY;
     let with_fallback = if family.is_empty() {
-        fallback
+        format!("{fallback},{codicon}")
     } else {
-        format!("{family},{fallback}")
+        format!("{family},{fallback},{codicon}")
     };
     desc.set_family(&with_fallback);
     desc
@@ -309,7 +322,7 @@ mod tests {
     fn chrome_font_description_appends_nerd_font_fallback() {
         let desc = chrome_font_description("Sans 11");
         let family = desc.family().expect("family set").to_string();
-        assert_eq!(family, "Sans,Symbols Nerd Font");
+        assert_eq!(family, "Sans,Symbols Nerd Font,codicon");
     }
 
     /// The point size from the input description string must survive —
@@ -328,7 +341,7 @@ mod tests {
     fn chrome_font_description_appends_after_existing_family_list() {
         let desc = chrome_font_description("Cantarell,DejaVu Sans 12");
         let family = desc.family().expect("family set").to_string();
-        assert_eq!(family, "Cantarell,DejaVu Sans,Symbols Nerd Font");
+        assert_eq!(family, "Cantarell,DejaVu Sans,Symbols Nerd Font,codicon");
     }
 
     /// [`with_nerd_font_fallback`] mirrors [`chrome_font_description`]
@@ -341,7 +354,7 @@ mod tests {
         let base = pango::FontDescription::from_string("Monospace 13");
         let desc = with_nerd_font_fallback(&base);
         let family = desc.family().expect("family set").to_string();
-        assert_eq!(family, "Monospace,Symbols Nerd Font");
+        assert_eq!(family, "Monospace,Symbols Nerd Font,codicon");
         assert_eq!(desc.size(), base.size());
     }
 
@@ -379,7 +392,7 @@ mod tests {
 
         let desc = chrome_font_description("Sans 11");
         let family = desc.family().expect("family set").to_string();
-        assert_eq!(family, "Sans,Consumer Icons");
+        assert_eq!(family, "Sans,Consumer Icons,codicon");
     }
 
     /// [`tab_bar::tab_icon_font`] replaces the family entirely (see its
@@ -393,6 +406,6 @@ mod tests {
         let base = pango::FontDescription::from_string("Sans 11");
         let desc = tab_bar::tab_icon_font(&base);
         let family = desc.family().expect("family set").to_string();
-        assert_eq!(family, "Consumer Icons, monospace");
+        assert_eq!(family, "Consumer Icons, codicon, monospace");
     }
 }

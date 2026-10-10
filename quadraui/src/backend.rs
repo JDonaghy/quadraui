@@ -1163,18 +1163,28 @@ pub trait Backend: sealed::Sealed {
     /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
-    /// **Default value, and why every backend now agrees on it (issue
-    /// #683):** every backend that owns this flag (`TuiBackend`,
-    /// `GtkBackend`, `MacBackend`) starts it at `false` — fallback, not
-    /// glyph. Before #683 the TUI defaulted to `true` and GTK to `false`,
-    /// so identical `ShellConfig` produced a different icon variant
-    /// depending only on which backend launched the app. `false` is the
-    /// safer default of the two failure modes: a wrong `false` shows a
-    /// plain-but-correct ASCII/Unicode glyph, while a wrong `true` shows
-    /// tofu — particularly for the TUI, where Nerd Font availability is a
-    /// property of the user's terminal that the app cannot see or
-    /// control. Hosts that know their environment has Nerd Fonts (or that
-    /// probe for it) call this explicitly to opt in.
+    /// **Default value, and why it differs by backend family:**
+    /// `TuiBackend` starts this flag at `false` — fallback, not glyph.
+    /// For a terminal, Nerd Font availability is a property of the
+    /// user's environment that the app cannot see or control, so
+    /// `false` is the safer of the two failure modes: a wrong `false`
+    /// shows a plain-but-correct ASCII/Unicode glyph, while a wrong
+    /// `true` shows tofu. Hosts that know their terminal has Nerd Fonts
+    /// (or that probe for it) call this explicitly to opt in.
+    ///
+    /// `GtkBackend`, `MacBackend` and `WinBackend` all start this flag
+    /// at `true` instead. None of that terminal risk applies to a GUI
+    /// backend: each of the three bundles the `codicon` font and
+    /// self-registers it unconditionally at construction (see
+    /// `GtkBackend::nerd_fonts_enabled`'s field doc for the registration
+    /// path), so `Icon::glyph` built from a codicon codepoint always
+    /// paints correctly with no app opt-in required. An app whose own
+    /// glyph choice assumes a *different*, uninstalled icon font can
+    /// still call `set_nerd_fonts(false)` to opt back out. The three
+    /// GUI backends therefore agree with each other, and the TUI
+    /// backend is the one deliberate outlier, for the reason above —
+    /// not an accidental drift back to the per-backend inconsistency
+    /// this flag's default once had.
     ///
     /// Call at the start of `render_content()` if the setting can change
     /// at runtime (a settings toggle, a config file reload), or once from
@@ -3288,6 +3298,28 @@ pub trait Backend: sealed::Sealed {
     /// the result; GTK paints its own caret and returns the default.
     fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult;
 
+    /// Set the width, in this backend's native pixel units, of the
+    /// vertical scrollbar column every subsequent [`Self::draw_editor`]
+    /// (and [`Self::editor_layout`]) reserves and paints for an
+    /// overflowing buffer. `None` restores the default: a column one
+    /// [`Self::char_width`] wide.
+    ///
+    /// GUI hosts call this once at setup — e.g. `Some(14.0)` to match
+    /// VS Code's fixed 14px editor scrollbar regardless of font size.
+    /// See [`Editor::layout_with_options_and_v_scrollbar_w`] for the
+    /// geometry. The GTK, macOS and Win backends honour it; TUI keeps its
+    /// one-cell scrollbar column and ignores it (the default body is a
+    /// no-op).
+    fn set_editor_v_scrollbar_width(&mut self, _px: Option<f32>) {}
+
+    /// The width last set through [`Self::set_editor_v_scrollbar_width`],
+    /// or `None` when unset or ignored by this backend (the default
+    /// body). [`Self::editor_layout`] reads this so hit-testing agrees
+    /// with what [`Self::draw_editor`] painted.
+    fn editor_v_scrollbar_width(&self) -> Option<f32> {
+        None
+    }
+
     /// Compute the editor viewport layout (gutter / text / scrollbar
     /// bounds) without painting — the no-paint twin of [`Self::draw_editor`]
     /// (issue #506: `Editor::layout` already existed but no `Backend`
@@ -3318,7 +3350,13 @@ pub trait Backend: sealed::Sealed {
     /// diverges from `editor.rect` and this method's return value quietly
     /// stops matching what GTK painted (issue #506 review follow-up).
     fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
-        editor.layout(rect, self.char_width(), self.line_height())
+        editor.layout_with_options_and_v_scrollbar_w(
+            rect,
+            self.char_width(),
+            self.line_height(),
+            crate::primitives::editor::EditorPaintOptions::default(),
+            self.editor_v_scrollbar_width(),
+        )
     }
 
     /// Resolve a click x-coordinate to a text column on one visible row

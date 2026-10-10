@@ -73,9 +73,16 @@ pub const ICON_FONT_DESC: &str = "Symbols Nerd Font, monospace 18";
 fn activity_bar_icon_font(size_px: f32) -> FontDescription {
     let pt = size_px * 72.0 / 96.0;
     let mut f = FontDescription::from_string(&format!("monospace {pt}"));
+    // `crate::codicon::FONT_FAMILY` appended unconditionally,
+    // the same append `with_nerd_font_fallback`/`tab_icon_font` make —
+    // an activity-bar `Icon::glyph` built from a codicon codepoint
+    // (this crate's own appshell demo does exactly that) must resolve
+    // regardless of whatever `set_nerd_font_fallback` family the app
+    // chose for its own icon set.
     f.set_family(&format!(
-        "{}, monospace",
-        super::current_nerd_font_fallback_family()
+        "{}, {}, monospace",
+        super::current_nerd_font_fallback_family(),
+        crate::codicon::FONT_FAMILY
     ));
     f
 }

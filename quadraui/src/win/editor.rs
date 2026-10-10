@@ -28,6 +28,18 @@
 //! glyph. `EditorPaintResult::cursor_position_native` is always `None`
 //! — this backend paints its own caret directly (via [`fill_rect`]),
 //! the same posture `GtkBackend::draw_editor`'s doc documents for GTK.
+//!
+//! ## Scrollbar
+//!
+//! This rasteriser paints no vertical scrollbar itself — it takes a raw
+//! `ID2D1RenderTarget`, not a `PaintSurface`.
+//! [`draw_editor_with_options_and_v_scrollbar_w`] reserves the column:
+//! it lays out through [`Editor::layout_with_options_and_v_scrollbar_w`]
+//! and clips text and selections to the resulting `text_bounds`, so no
+//! glyph paints under the column. `WinBackend::draw_editor` then paints
+//! the column through `Backend::draw_scrollbar` (the shared
+//! `scrollbar::native_surface_paint`), using the same layout, with the
+//! width set through [`crate::Backend::set_editor_v_scrollbar_width`].
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
@@ -35,13 +47,16 @@ use super::text::{fill_rect, pop_clip, push_clip, DWrite};
 use crate::backend::EditorPaintResult;
 use crate::event::Rect;
 use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorSelection,
+    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorPaintOptions, EditorSelection,
 };
 use crate::theme::Theme;
 use crate::types::Color;
 
 /// Draw an [`Editor`] viewport (`editor.rect`) on `target`, at uniform
 /// `cell_width` / `line_height` (DIPs).
+///
+/// Equivalent to [`draw_editor_with_options_and_v_scrollbar_w`] with
+/// `EditorPaintOptions::default()` and no scrollbar-width override.
 ///
 /// # Visual contract
 ///
@@ -70,8 +85,42 @@ pub fn draw_editor(
     line_height: f32,
     theme: &Theme,
 ) -> EditorPaintResult {
+    draw_editor_with_options_and_v_scrollbar_w(
+        target,
+        dwrite,
+        editor,
+        cell_width,
+        line_height,
+        theme,
+        EditorPaintOptions::default(),
+        None,
+    )
+}
+
+/// [`draw_editor`], plus [`EditorPaintOptions`] and a host-settable
+/// vertical scrollbar width in DIPs (`None` = one `cell_width`). Both
+/// feed [`Editor::layout_with_options_and_v_scrollbar_w`], so the text
+/// clip stops short of the reserved column; see the module doc's
+/// "Scrollbar" section for who paints the column itself.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_editor_with_options_and_v_scrollbar_w(
+    target: &ID2D1RenderTarget,
+    dwrite: &DWrite,
+    editor: &Editor,
+    cell_width: f32,
+    line_height: f32,
+    theme: &Theme,
+    options: EditorPaintOptions,
+    v_scrollbar_w: Option<f32>,
+) -> EditorPaintResult {
     let rect = editor.rect;
-    let layout = editor.layout(rect, cell_width, line_height);
+    let layout = editor.layout_with_options_and_v_scrollbar_w(
+        rect,
+        cell_width,
+        line_height,
+        options,
+        v_scrollbar_w,
+    );
 
     let bg = if editor.show_active_bg {
         theme.editor_active_background
@@ -440,6 +489,39 @@ mod tests {
             cursorline: true,
             lightbulb_glyph: '!',
         }
+    }
+
+    /// The `v_scrollbar_w` override narrows `text_bounds` by exactly
+    /// its delta from `cell_width` — the layout
+    /// `draw_editor_with_options_and_v_scrollbar_w` clips text to. Pure
+    /// layout, no `HeadlessSurface`/`DWrite` needed.
+    #[test]
+    fn v_scrollbar_w_option_narrows_text_bounds() {
+        let mut e = editor(vec![plain_line(0, "line one")]);
+        e.total_lines = 50; // overflow: far more than the viewport's rows
+        let rect = e.rect;
+
+        let baseline = e.layout(rect, CELL_W, LINE_H);
+        let baseline_vsb = baseline
+            .v_scrollbar_bounds
+            .expect("overflowing buffer reserves a vertical scrollbar column");
+        assert_eq!(baseline_vsb.width, CELL_W);
+
+        let widened = e.layout_with_options_and_v_scrollbar_w(
+            rect,
+            CELL_W,
+            LINE_H,
+            EditorPaintOptions::default(),
+            Some(14.0),
+        );
+        let widened_vsb = widened
+            .v_scrollbar_bounds
+            .expect("still overflowing with the override applied");
+        assert_eq!(widened_vsb.width, 14.0);
+        assert_eq!(
+            widened.text_bounds.width,
+            baseline.text_bounds.width - (14.0 - CELL_W)
+        );
     }
 
     /// Painting must not panic across a mix of plain lines, a cursor, a

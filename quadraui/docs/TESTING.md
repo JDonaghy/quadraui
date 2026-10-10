@@ -705,7 +705,7 @@ Steps, one key each (`quadraui/tests/conformance/schema.rs`):
 | Act | Assert | Document |
 |---|---|---|
 | `press`, `type_char`, `type_text`, `ctrl_char` | `assert_screen_has`, `assert_absent`, `assert_count` | `note` |
-| `click_text`, `click_text_at` | `assert_left_of`, `assert_above`, `assert_inside` | |
+| `click_text`, `click_text_at`, `click_text_any` | `assert_left_of`, `assert_above`, `assert_inside` | |
 | `drag_text`, `scroll_at` | `assert_exited` | |
 
 **There is no numeric coordinate field anywhere in the schema**, and
