@@ -1067,6 +1067,18 @@ impl GtkBackend {
         self.pango_ctx.as_ref().map(pango::Layout::new)
     }
 
+    /// A fresh layout on the stored Pango context carrying the chrome
+    /// font (`chrome_font_description(&self.ui_font)`), for the no-paint
+    /// `*_layout` twins of chrome rasterisers that paint in `ui_font`.
+    /// Measuring with the context's own font instead lets the layout's
+    /// column/label widths diverge from what the painter resolves on
+    /// platforms where the two descriptions shape differently.
+    fn chrome_measure_layout(&self) -> Option<pango::Layout> {
+        let pl = self.pango_ctx.as_ref().map(pango::Layout::new)?;
+        pl.set_font_description(Some(&crate::gtk::chrome_font_description(&self.ui_font)));
+        Some(pl)
+    }
+
     /// Measure a plain string width in pixels using Pango if
     /// available, falling back to `chars().count() * char_w`.
     fn pango_str_width(
@@ -2541,7 +2553,7 @@ impl Backend for GtkBackend {
     /// `Self::status_bar_layout`/`Self::form_layout`/`Self::toast_stack_layout`.
     fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -3926,7 +3938,7 @@ impl Backend for GtkBackend {
     fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
         let row_h = crate::primitives::layout_metrics::form_row_height(self.current_line_height);
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -4497,7 +4509,7 @@ impl Backend for GtkBackend {
         // `data_table_layout` had. Sharing `pixel_toast_stack_layout`
         // fixes both at once.
         let char_w = self.current_char_width as f32;
-        let pango_layout = self.pango_ctx.as_ref().map(pango::Layout::new);
+        let pango_layout = self.chrome_measure_layout();
         let measure = PangoTextMeasure {
             layout: &pango_layout,
             char_w,
@@ -7979,6 +7991,81 @@ mod tests {
     /// sees it, and scans the whole row band (not one fixed `y`) since a
     /// much taller glyph's visible ink sits at a different vertical
     /// offset than a small one's.
+    /// The no-paint `data_table_layout` twin must resolve the same
+    /// content-sized column geometry `draw_data_table` paints with, even
+    /// when the stored Pango context carries a font unlike `ui_font` —
+    /// otherwise click hit-testing and separator positions drift off the
+    /// painted columns.
+    #[test]
+    fn gtk_backend_data_table_layout_matches_painted_columns() {
+        const W: i32 = 1200;
+        const H: i32 = 200;
+        let surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let table = crate::DataTable {
+            id: WidgetId::new("test:data-table-parity"),
+            columns: vec![
+                crate::Column {
+                    title: "Name".to_string(),
+                    width: crate::ColumnWidth::Content {
+                        min: 0.0,
+                        max: 1000.0,
+                    },
+                    align: crate::ColumnAlign::Left,
+                },
+                crate::Column {
+                    title: "Status".to_string(),
+                    width: crate::ColumnWidth::Flex(1.0),
+                    align: crate::ColumnAlign::Left,
+                },
+            ],
+            rows: vec![crate::DataRow {
+                cells: vec![
+                    crate::types::StyledText::plain("a-fairly-long-pod-name-xyz".to_string()),
+                    crate::types::StyledText::plain("Running".to_string()),
+                ],
+                decoration: crate::types::Decoration::Normal,
+            }],
+            selected_idx: None,
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: vec![],
+            footer: None,
+        };
+        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+        let stored_ctx = pangocairo::functions::create_context(&cr);
+        stored_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
+        let frame_ctx = pangocairo::functions::create_context(&cr);
+        frame_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
+        let frame_layout = pango::Layout::new(&frame_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(stored_ctx);
+        Backend::set_current_line_height(&mut backend, 20.0);
+        Backend::set_ui_font(&mut backend, "Sans 20");
+
+        let measured = backend.data_table_layout(rect, &table);
+        let mut painted = None;
+        backend.enter_frame_scope(&cr, &frame_layout, |b| {
+            painted = Some(b.draw_data_table(rect, &table, None));
+        });
+        let painted = painted.expect("draw_data_table ran");
+        let xs = |l: &crate::DataTableLayout| {
+            l.columns.iter().map(|c| (c.x, c.width)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            xs(&measured),
+            xs(&painted),
+            "data_table_layout must measure with the same chrome font draw_data_table paints with"
+        );
+    }
+
     #[test]
     fn gtk_backend_draw_data_table_uses_ui_font_not_editor_font() {
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
