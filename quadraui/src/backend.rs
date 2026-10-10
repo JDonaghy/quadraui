@@ -1,69 +1,34 @@
-//! The `Backend` trait — one implementation per platform target.
+//! The `Backend` trait — one implementation per platform target (TUI, GTK,
+//! Win-GUI, and eventually macOS). Apps write render code once, parameterised
+//! over `<B: Backend>`; every backend rasterises the same primitive
+//! descriptions with platform-native drawing + input. See
+//! `quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4 for design rationale.
 //!
-//! Each backend (TUI, GTK, Win-GUI, and eventually macOS) implements this
-//! trait. Apps write render code once, parameterised over `<B: Backend>`,
-//! and every supported platform rasterises the same primitive descriptions
-//! with platform-native drawing + input.
+//! Every `draw_<name>` method is the low-level rasteriser entry point for its
+//! primitive, always public. Prefer [`crate::frame::ScreenLayout`] +
+//! [`crate::frame::Surface`] to assemble a top-level screen from multiple
+//! primitives — it routes every backend through the same call site. `draw_*`
+//! stays directly reachable for rasteriser tests and compose helpers.
 //!
-//! See `quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4 for design rationale.
+//! ## Coordinate frames for `*_layout` methods
 //!
-//! ## `draw_*` here vs. `Surface` in `frame.rs` (issue #456)
+//! Every `Backend::<name>_layout` method documents which of two frames its
+//! `hit_regions` / `bounds` fields are in:
 //!
-//! Every `draw_<name>` method below is the low-level rasteriser entry
-//! point for its primitive — always public, never deprecated. A
-//! consumer assembling a top-level screen from multiple primitives
-//! should reach for [`crate::frame::ScreenLayout`] + [`crate::frame::Surface`]
-//! instead of calling `draw_*` methods directly: it routes every
-//! backend through the same call site, so two backends of one app
-//! cannot silently paint the same primitive two different ways (the
-//! drift #456 documents). `ScreenLayout::draw` calls these `draw_*`
-//! methods internally — see `frame.rs`'s module doc and
-//! `quadraui/docs/decisions/DECISIONS.md` D-006 for the full picture.
-//! Every primitive with a `draw_*` method here has a matching
-//! `Surface` variant, so `draw_*` is reachable directly by design
-//! (rasteriser tests, compose helpers) rather than because some
-//! primitive has no declarative-frame path at all.
-//!
-//! ## Coordinate frames for `*_layout` methods (issue #505)
-//!
-//! Every `Backend::<name>_layout` method (and its `draw_<name>` twin,
-//! where one returns hit-region data) documents **which** of two frames
-//! its `hit_regions` / `bounds` fields are in — there is no third option
-//! and no undocumented exception:
-//!
-//! - **LOCAL** — relative to `rect`'s origin; `(0, 0)` is `rect`'s
-//!   top-left corner. Used by primitives a parent composer paints
-//!   *inline* and localises clicks for before calling `hit_test`
-//!   (`tree_layout`, `form_layout`, `data_table_layout`,
-//!   `text_display_layout`, `status_bar_layout`, `activity_bar_layout`,
-//!   `list_layout`, `terminal_layout`).
+//! - **LOCAL** — relative to `rect`'s origin; `(0, 0)` is `rect`'s top-left
+//!   corner. Used by primitives a parent composer paints inline and
+//!   localises clicks for before calling `hit_test`.
 //! - **ABSOLUTE** — shifted by `rect.x` / `rect.y`, i.e. target-surface
-//!   coordinates a caller can compare directly against raw click
-//!   coordinates with no further adjustment. Used by primitives that are
-//!   painted as a freestanding widget at their own screen rect and whose
-//!   callers don't otherwise track that rect (`tab_bar_layout`,
-//!   `menu_bar_layout`, `split_layout`, `split_tree_layout`,
-//!   `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`,
-//!   `progress_layout`, `spinner_layout`, `command_center_layout`,
-//!   `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`,
-//!   `minimap_layout`, `msv_layout`, `text_input_layout`, `board_layout`,
-//!   `editor_layout`, `command_line_layout`, `canvas_layout`).
+//!   coordinates comparable directly against raw click coordinates. Used by
+//!   primitives painted as a freestanding widget at their own screen rect.
 //!
-//! A third category returns no coordinates at all — `diff_view_layout`
-//! returns row *counts* (`visible_rows` / `total_rows`), not positions —
-//! so LOCAL/ABSOLUTE doesn't apply; its doc comment says so explicitly
-//! rather than silently picking neither.
+//! A third case returns no coordinates at all — `diff_view_layout` returns
+//! row *counts*, not positions — and its own doc says so explicitly.
 //!
-//! Both frames are legitimate — the rule this file enforces is that the
-//! frame is *stated on the method's doc comment* and *matches what every
-//! backend implementation actually returns* (see
-//! `quadraui/docs/decisions/DECISIONS.md` D-005 for why the split exists and why
-//! it isn't collapsed to one frame; `quadraui/docs/PRIMITIVE_RULES.md`
-//! "Coordinate frames for `*_layout` methods" for the authoring rule).
-//! `quadraui/docs/LESSONS.md` "Layout helpers must return coords in the
-//! same frame across backends" records the bug class this convention
-//! guards against: a `*_layout` twin that silently disagrees with its
-//! own TUI/GTK siblings about which frame it returns.
+//! Both frames are legitimate; what this file enforces is that each method's
+//! doc states its frame and every backend implementation actually returns
+//! that frame (see `quadraui/docs/PRIMITIVE_RULES.md` "Coordinate frames for
+//! `*_layout` methods" for the authoring rule).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -110,9 +75,9 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-// `TabBarHits` is `#[deprecated]` (issue #823) — this trait still returns it
-// from six methods below (the "real, separate follow-up work" its own doc
-// names), so the import itself needs the same allow every use site does.
+// `TabBarHits` is `#[deprecated]` — this trait still returns it from six
+// methods below, so the import itself needs the same allow every use site
+// does.
 #[allow(deprecated)]
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout, TabChrome, TabIcon};
 use crate::primitives::text_display::TextDisplayLayout;
@@ -160,49 +125,32 @@ pub enum PointerShape {
 
 /// Window-state control surface — set/get the title, size, position and
 /// tri-state chrome (fullscreen/always-on-top/minimize) of the OS window a
-/// backend owns, once a real window exists (issue #950).
+/// backend owns, once a real window exists.
 ///
 /// Reached through [`Backend::window`], which returns `Option<&mut dyn
 /// WindowControl>` rather than requiring every backend to implement this
-/// trait unconditionally — `None` is the honest, *structural* answer for
-/// a backend with no OS window at all (TUI has no window even though it
-/// implements [`Self::set_title`] — see that method's doc) or for any
-/// backend before its window is constructed (the same "no window yet"
-/// state [`Backend::begin_window_drag`] and friends already handle by
-/// returning `false`). There is deliberately no `BackendCaps` bool for
-/// "has a window at all" to keep in sync by hand — `Backend::window`
-/// returning `Option` makes the absence a compile-time-checkable match
-/// arm instead of a capability flag that could drift from reality.
+/// trait unconditionally: `None` is the honest, structural answer for a
+/// backend with no OS window at all, or for one before its window is
+/// constructed.
 ///
-/// Individual methods still return [`ServiceResult<()>`] (D-009 seam-2
-/// shape, same as [`PlatformServices`]/[`Clipboard`]'s `_result` twins)
-/// rather than a bare `bool`/no-op: `Backend::window` returning `Some`
-/// only promises *some* window-control surface is real, not that every
-/// method on it is — GTK4/Wayland, for example, has no way to pin a
-/// window always-on-top at all (X11-only, via `gdk_x11`, quadraui#950),
-/// so [`Self::set_always_on_top`] must report [`BackendError::Unsupported`]
-/// honestly there rather than either silently no-op'ing or making the
-/// caller distrust the whole surface because one call in it can fail.
+/// Individual methods still return [`ServiceResult<()>`] rather than a bare
+/// `bool`/no-op, because `Backend::window` returning `Some` only promises
+/// *some* window-control surface is real, not that every method on it is —
+/// a given platform may lack a native call for one method and must report
+/// [`BackendError::Unsupported`] for just that call rather than faking
+/// success or hiding the whole surface.
 ///
-/// Every method defaults to `Err(BackendError::Unsupported)`, mirroring
-/// [`Clipboard::read_primary_selection`]'s "the trait states a capability
-/// only some implementors have" shape: a backend that implements
-/// `WindowControl` at all (i.e. ever returns `Some` from
-/// [`Backend::window`]) overrides only the methods it can genuinely back
-/// with a native call, and callers that hit `Unsupported` on the rest
-/// treat that exactly like a `None` from `Backend::window` — a real,
-/// nameable gap, not a crash.
+/// Every method defaults to `Err(BackendError::Unsupported)`: a backend that
+/// implements `WindowControl` at all overrides only the methods it can
+/// genuinely back with a native call.
 pub trait WindowControl {
     /// Set the window's title / (GTK) taskbar label / (macOS) titlebar
     /// text / (Win) `WM_SETTEXT` caption.
     ///
-    /// **TUI's one genuine `WindowControl` capability**: `TuiBackend`
-    /// emits the OSC 0/2 terminal escape sequence (crossterm's
-    /// `SetTitle`) to retitle the terminal emulator's tab/window, which
-    /// is the terminal-native equivalent of a desktop window's title —
-    /// see `TuiBackend`'s `impl WindowControl` for why this is the one
-    /// method TUI overrides while every other method here stays
-    /// `Unsupported` on it.
+    /// TUI's one genuine `WindowControl` capability: `TuiBackend` emits the
+    /// OSC 0/2 terminal escape sequence (crossterm's `SetTitle`) to retitle
+    /// the terminal emulator's tab/window, the terminal-native equivalent of
+    /// a desktop window's title.
     fn set_title(&mut self, _title: &str) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
@@ -213,16 +161,16 @@ pub trait WindowControl {
         Err(BackendError::Unsupported)
     }
 
-    /// Floor the window's resizable range at `width` × `height` — the
-    /// user (and [`Self::set_size`]/[`Self::set_bounds`]) can no longer
-    /// shrink it smaller.
+    /// Floor the window's resizable range at `width` × `height` —
+    /// [`Self::set_size`]/[`Self::set_bounds`] cannot shrink it smaller
+    /// than this, and neither can the user.
     fn set_min_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 
-    /// Cap the window's resizable range at `width` × `height` — the user
-    /// (and [`Self::set_size`]/[`Self::set_bounds`]) can no longer grow it
-    /// larger.
+    /// Cap the window's resizable range at `width` × `height` —
+    /// [`Self::set_size`]/[`Self::set_bounds`] cannot grow it larger than
+    /// this, and neither can the user.
     fn set_max_size(&mut self, _width: f32, _height: f32) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
@@ -252,37 +200,29 @@ pub trait WindowControl {
         Err(BackendError::Unsupported)
     }
 
-    /// Whether the window is currently maximized/zoomed.
-    ///
-    /// Issue #1022: [`Backend::toggle_window_maximize`] flips the state
-    /// but only reports whether the flip succeeded — it cannot tell a
-    /// caller which state the window landed in, so a maximize/restore
-    /// glyph (vimcode's use case) has nothing to render from. This method
-    /// is the missing getter, read-only and side-effect-free, so it can
-    /// be polled from a paint path without racing the toggle itself.
+    /// Whether the window is currently maximized/zoomed. Read-only and
+    /// side-effect-free, so it can be polled from a paint path (e.g. to
+    /// pick a maximize/restore glyph) without racing
+    /// [`Backend::toggle_window_maximize`], which only reports whether its
+    /// flip succeeded, not which state it landed in.
     fn is_maximized(&self) -> ServiceResult<bool> {
         Err(BackendError::Unsupported)
     }
 
     /// Pin (`true`) or unpin (`false`) the window above all others.
     ///
-    /// **Not available on GTK4/Wayland** — Wayland's window-stacking
-    /// model has no client-requestable always-on-top protocol (X11 only,
-    /// via `gdk_x11`, quadraui#950's design note); `GtkBackend` reports
-    /// [`BackendError::Unsupported`] there rather than silently doing
-    /// nothing, so a caller can tell "not pinned because it's
-    /// unsupported here" from "not pinned because nobody asked".
+    /// Not available on GTK4/Wayland: Wayland's window-stacking model has
+    /// no client-requestable always-on-top protocol, so `GtkBackend`
+    /// reports [`BackendError::Unsupported`] there rather than silently
+    /// doing nothing.
     fn set_always_on_top(&mut self, _on_top: bool) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
 
     /// Show (`true`) or hide (`false`) the window's native chrome
-    /// (titlebar + border) without changing its content area.
-    ///
-    /// Issue #1022: backs vimcode's client-side-decoration path (its
-    /// #552) — a host that paints its own titlebar first turns the
-    /// native one off with this, rather than living with two titlebars
-    /// stacked on top of each other.
+    /// (titlebar + border) without changing its content area. Lets a host
+    /// that paints its own titlebar turn the native one off, rather than
+    /// showing two titlebars stacked on top of each other.
     fn set_decorated(&mut self, _decorated: bool) -> ServiceResult<()> {
         Err(BackendError::Unsupported)
     }
@@ -314,45 +254,30 @@ pub trait WindowControl {
     }
 }
 
-/// Tray / status-bar icon control surface (issue #953) — set the icon,
-/// tooltip, and right-click menu of an OS notification-area/menu-bar
-/// icon, once one exists.
+/// Tray / status-bar icon control surface — set the icon, tooltip, and
+/// right-click menu of an OS notification-area/menu-bar icon, once one
+/// exists.
 ///
 /// Reached through [`Backend::tray`], which returns `Option<&mut dyn
-/// TrayService>` — the same *structural* absence pattern
-/// [`Backend::window`] established for [`WindowControl`] (issue #950):
-/// `None` on a backend with no tray facility at all (TUI, genuinely —
-/// see [`Backend::tray`]'s own doc for why that is not merely "not
-/// implemented yet" the way GTK's gap is) or before a lazily-created
-/// tray icon exists. Every method still returns [`ServiceResult<()>`]
-/// rather than a bare `bool`, mirroring `WindowControl`'s own reasoning:
-/// a backend can genuinely implement part of this surface (a status
-/// item with an icon but no attached menu) without the whole surface
-/// being fake.
+/// TrayService>`: the same structural-absence pattern as
+/// [`Backend::window`]/[`WindowControl`]. `None` on a backend with no tray
+/// facility at all, or before a lazily-created tray icon exists. Every
+/// method still returns [`ServiceResult<()>`] rather than a bare `bool`,
+/// since a backend can genuinely implement part of this surface (a status
+/// item with an icon but no attached menu) without the whole surface being
+/// fake.
 ///
-/// Every method defaults to `Err(BackendError::Unsupported)` — a
-/// backend that implements `TrayService` at all overrides only the
-/// methods it can genuinely back with a native call.
+/// Every method defaults to `Err(BackendError::Unsupported)` — a backend
+/// that implements `TrayService` at all overrides only the methods it can
+/// genuinely back with a native call.
 ///
-/// ## Icon source
-///
-/// [`Self::set_icon`] takes an [`ImageSource`] — the same source type
-/// [`crate::primitives::image::Image`] already decodes behind
-/// `Backend::draw_image` — rather than a tray-specific type, per this
-/// issue's own design note (it shares the source type with the
-/// clipboard-formats work, quadraui#953).
-///
-/// ## Menu
-///
-/// [`Self::set_menu`] takes a [`ContextMenu`] — the same primitive
-/// [`Backend::show_context_menu`] already renders natively — rather than
-/// a tray-specific menu model, so there is one menu vocabulary and one
-/// `WidgetId` activation path (`UiEvent::ContextMenuItemActivated`)
-/// shared between a right-click context menu and a tray menu. See each
-/// backend's `impl TrayService` for how its native menu-tracking API
-/// interacts with the click event `Backend::tray`'s own doc describes
-/// (some platforms show the menu automatically on any click once one is
-/// attached, superseding the plain click event for that click).
+/// [`Self::set_icon`] takes an [`ImageSource`], the same source type
+/// [`crate::primitives::image::Image`] decodes behind `Backend::draw_image`.
+/// [`Self::set_menu`] takes a [`ContextMenu`], the same primitive
+/// [`Backend::show_context_menu`] renders natively, so there is one menu
+/// vocabulary and one `WidgetId` activation path
+/// (`UiEvent::ContextMenuItemActivated`) shared between a right-click
+/// context menu and a tray menu.
 pub trait TrayService {
     /// Set (or replace) the tray icon's image. The first successful call
     /// is what makes the icon appear at all on backends that create the
@@ -379,7 +304,7 @@ pub trait TrayService {
     }
 }
 
-/// Colour fidelity a render target actually supports (quadraui#826).
+/// Colour fidelity a render target actually supports.
 ///
 /// Unlike every `bool` field on [`BackendCaps`], this is not a "this
 /// backend implements method X" promise — it's a runtime-detected (or
@@ -395,27 +320,24 @@ pub trait TrayService {
 /// this value drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorDepth {
-    /// Palette narrowed to the 16 basic ANSI colours. The safe fallback
-    /// for a terminal this backend cannot positively identify as
-    /// supporting more. Note this narrows the *palette*, not the
-    /// escape-sequence family: crossterm emits these named colours via
-    /// the same extended `38;5;n` / `48;5;n` form as [`Self::Indexed256`]
-    /// (see `crate::tui::color::rgb_to_ansi16`), never classic `30-37` /
-    /// `90-97` codes — so this does not by itself help a terminal that
-    /// only understands classic 3/4-bit SGR.
+    /// Palette narrowed to the 16 basic ANSI colours. The safe fallback for
+    /// a terminal this backend cannot positively identify as supporting
+    /// more. This narrows the *palette*, not the escape-sequence family:
+    /// crossterm emits these named colours via the same extended
+    /// `38;5;n` / `48;5;n` form as [`Self::Indexed256`] (see
+    /// `crate::tui::color::rgb_to_ansi16`), never classic `30-37` /
+    /// `90-97` codes.
     Ansi16,
     /// 8-bit / 256-colour indexed (SGR `38;5;n` / `48;5;n`).
     Indexed256,
-    /// 24-bit truecolor (SGR `38;2;r;g;b` / `48;2;r;g;b`). quadraui's
-    /// only behavior before quadraui#826, and still the default for
+    /// 24-bit truecolor (SGR `38;2;r;g;b` / `48;2;r;g;b`). The default for
     /// every non-terminal backend.
     TrueColor,
 }
 
 impl Default for ColorDepth {
-    /// `TrueColor` — matches quadraui's pre-#826 unconditional behavior
-    /// (so a caller that never touches this field sees no change) and is
-    /// the honest value for every pixel-native backend (GTK/Win/macOS).
+    /// `TrueColor` — the honest value for every pixel-native backend
+    /// (GTK/Win/macOS).
     fn default() -> Self {
         Self::TrueColor
     }
@@ -423,61 +345,40 @@ impl Default for ColorDepth {
 
 /// What a backend actually implements, beyond the required trait surface.
 ///
-/// quadraui#492: several `Backend` methods take a no-op (or `false`)
-/// default so a new backend compiles before every optional feature is
-/// wired up (see the "Default: no-op" doc comments throughout this
-/// trait). That silence is exactly the problem — a backend that never
-/// overrides [`Backend::install_menu_bar`] compiles identically to one
-/// that has a real native menu, and nothing tells the two apart. Each
-/// backend's [`Backend::backend_caps`] is the declared, honest answer:
-/// "these are the optional surfaces I actually implement", so the
-/// conformance runner can skip a scenario that needs one with a named
-/// reason instead of either silently passing or spuriously failing.
+/// Several `Backend` methods take a no-op (or `false`) default so a new
+/// backend compiles before every optional feature is wired up. Each
+/// backend's [`Backend::backend_caps`] is the declared, honest answer —
+/// "these are the optional surfaces I actually implement" — so the
+/// conformance runner can skip a scenario that needs one, with a named
+/// reason, instead of either silently passing or spuriously failing.
 ///
-/// Deliberately a plain bitflag-shaped struct — one `bool` field per
-/// capability — rather than pulling in the `bitflags` crate: eleven
-/// fields is small enough that a dependency buys nothing but the `|` operator,
-/// and every field maps to zero or more `Backend` /
+/// A plain bitflag-shaped struct — one `bool` field per capability — rather
+/// than the `bitflags` crate: small enough that a dependency buys nothing
+/// but the `|` operator. Every field maps to zero or more `Backend` /
 /// [`PlatformServices`] methods (documented per field below) that a
 /// `BackendCaps` field of `true` promises are overridden away from their
 /// no-op default.
 ///
-/// ## This is the *only* capability vocabulary
+/// This struct's fields are the *only* capability vocabulary: a scenario's
+/// `requires` list matches against exactly these fields, and `BackendReg::caps`
+/// is [`Backend::backend_caps`] itself, so there is no second, hand-maintained
+/// list to drift out of sync.
 ///
-/// quadraui#492 review: the conformance runner used to carry a second,
-/// hand-maintained `&[&str]` per backend (`TUI_CAPS` / `GTK_CAPS` in
-/// `tests/conformance.rs`) that a scenario's `requires` list matched
-/// against, with nothing tying it to what the backend actually declares.
-/// Two vocabularies means silent drift in both directions: a capability
-/// here that no scenario could ever name, and a `requires` string no
-/// backend could ever declare. So there is now exactly one list — this
-/// struct's fields — and `BackendReg::caps` is [`Backend::backend_caps`]
-/// itself. That is why the three *input* capabilities below
-/// (`mouse`/`scroll`/`drag`) live here alongside the seven optional
-/// surfaces quadraui#492 enumerates: they are what the existing Tier-1
-/// scenarios gate on, and folding them in is what makes the single
-/// vocabulary complete rather than merely smaller.
-///
-/// ## The honesty check
-///
-/// A `true` here is a claim about source, not a hope, and
-/// `tests/conformance/caps.rs` mechanically checks it for every backend
-/// in the tree (including Win/macOS, which have no conformance driver
-/// yet): a declared capability whose methods are still the trait's no-op
-/// default fails, and so does an *undeclared* capability whose methods
-/// are overridden. Each field's doc comment below names the methods that
-/// check reads; a capability that cannot be checked that way says so
-/// explicitly there and in `CAP_CONTRACTS`.
+/// A `true` here is a claim about source, not a hope: `tests/conformance/caps.rs`
+/// mechanically checks it for every backend in the tree (including Win/macOS,
+/// which have no conformance driver yet) — a declared capability whose
+/// methods are still the trait's no-op default fails, and so does an
+/// undeclared capability whose methods are overridden. Each field's doc
+/// comment below names the methods that check reads; a capability that
+/// cannot be checked that way says so explicitly there and in `CAP_CONTRACTS`.
 ///
 /// Construct with [`BackendCaps::empty`] (or `..BackendCaps::empty()` in
 /// struct-update syntax) plus the fields a given backend actually
 /// implements — see `TuiBackend::backend_caps` / `GtkBackend::backend_caps`
 /// for worked examples. `#[non_exhaustive]`-free on purpose: this is
-/// in-tree-only (no external `Backend` implementors, `BACKEND.md`), so a
-/// new field is a breaking change to every backend impl by design — the
-/// same trade-off the `Backend` trait itself already makes for a new
-/// `draw_*` method (`backend.rs` module docs, "Adding a primitive is a
-/// breaking change to this trait — intentional").
+/// in-tree-only (no external `Backend` implementors, `BACKEND.md`), so a new
+/// field is a breaking change to every backend impl by design, the same
+/// trade-off the `Backend` trait itself makes for a new `draw_*` method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BackendCaps {
     /// This backend delivers pointer press/release events
@@ -515,15 +416,12 @@ pub struct BackendCaps {
     /// glyph actually changes what the user sees, rather than being a
     /// `false`-returning no-op.
     pub pointer_cursor: bool,
-    /// This backend positions a native IME composition window (preedit)
-    /// at the caret. `false` on every backend today — quadraui has no
-    /// backend-level IME method yet. See `docs/IME_INPUT_PROPOSAL.md`
-    /// (issue #502) for the proposed `Backend::set_ime_cursor_area`
-    /// method this flag is reserved for, and [`crate::event::UiEvent`]'s
-    /// `CharTyped` doc comment for the current (pre-#502) composed-text
-    /// contract; composed text arrives pre-resolved from the OS either
-    /// way, so this tracks *positioning* the IME candidate window, not
-    /// whether typing composed characters works at all.
+    /// This backend positions a native IME composition window (preedit) at
+    /// the caret. `false` on every backend today — reserved for a future
+    /// `Backend::set_ime_cursor_area` method (see `docs/IME_INPUT_PROPOSAL.md`).
+    /// Composed text arrives pre-resolved from the OS regardless, so this
+    /// tracks *positioning* the IME candidate window, not whether typing
+    /// composed characters works at all.
     pub ime: bool,
     /// [`PlatformServices::show_file_open_dialog`] /
     /// [`PlatformServices::show_file_save_dialog`] show a real native
@@ -540,8 +438,8 @@ pub struct BackendCaps {
     /// `CAP_CONTRACTS`.
     pub file_dialogs: bool,
     /// [`PlatformServices::show_folder_open_dialog`] shows a real native
-    /// directory chooser rather than unconditionally returning `None`
-    /// (quadraui#935). Split out from [`Self::file_dialogs`] rather than
+    /// directory chooser rather than unconditionally returning `None`.
+    /// Split out from [`Self::file_dialogs`] rather than
     /// folded into it: a backend can plausibly have one native facility
     /// without the other, and a host reading this flag needs the honest,
     /// narrower answer — "can I open a *directory* chooser", not "does
@@ -556,12 +454,12 @@ pub struct BackendCaps {
     /// `None`. Same no-default, same `None`-is-ambiguous shape as
     /// [`Self::file_dialogs`] — this flag is the caller's only way to
     /// tell "the user dismissed it" from "this backend has no native
-    /// alert facility" (quadraui#666).
+    /// alert facility".
     ///
     /// [`crate::primitives::dialog::native_dialog_options`] is the pure
-    /// mapping from a [`Dialog`] descriptor to
-    /// [`MessageDialogOptions`], and returns `None` for a dialog
-    /// carrying a [`crate::primitives::dialog::DialogTable`] or
+    /// mapping from a [`Dialog`] descriptor to [`MessageDialogOptions`],
+    /// and returns `None` for a dialog carrying a
+    /// [`crate::primitives::dialog::DialogTable`] or
     /// [`crate::primitives::dialog::DialogInput`] — no native alert
     /// facility hosts either, so those dialogs stay in-canvas
     /// (`draw_dialog`) even on a backend where this flag is `true`.
@@ -578,26 +476,13 @@ pub struct BackendCaps {
     /// [`Backend::set_nerd_font_fallback`] are overridden — this backend
     /// can register an app-supplied font's raw bytes *and* resolve
     /// Nerd-Font (or other PUA-codepoint) glyphs to a real fallback
-    /// family, instead of painting tofu (issue #929).
-    ///
-    /// Was `Any` rather than `All` until issue #1013: the original
-    /// reasoning was that a backend may reasonably wire only the
-    /// fallback half (GTK, which already has a system-installed Nerd
-    /// Font to point at) or only the registration half. In practice that
-    /// let `tests/conformance/caps.rs`'s honesty check pass GTK
-    /// vacuously off `set_nerd_font_fallback` alone while
-    /// `register_font_from_memory` silently kept the trait's no-op
-    /// default — a real bug (a consumer bundling its own icon font got a
-    /// silent no-op on GTK) that the `Any` proof was mechanically unable
-    /// to catch. Every backend that declares this today
-    /// (`MacBackend`/`WinBackend`, and `GtkBackend` since #1013's
-    /// `crate::gtk::app_font`) overrides both, so `All` is both the
-    /// accurate contract and the one that would have caught #1013 in CI
-    /// instead of a consumer.
+    /// family, instead of painting tofu. Requires both methods, not
+    /// either: a backend that wires only one half still leaves a gap this
+    /// flag must not paper over.
     pub app_font_registration: bool,
     /// [`Backend::window`] is overridden and returns `Some` at least
     /// sometimes — this backend has a real [`WindowControl`] surface
-    /// rather than the trait's always-`None` default (issue #950).
+    /// rather than the trait's always-`None` default.
     ///
     /// Doesn't promise every [`WindowControl`] method succeeds — see
     /// that trait's own doc for why individual methods (GTK's
@@ -606,23 +491,23 @@ pub struct BackendCaps {
     /// `true`.
     pub window_control: bool,
     /// [`Backend::tray`] is overridden and returns `Some` at least
-    /// sometimes — this backend has a real [`TrayService`] surface
-    /// rather than the trait's always-`None` default (issue #953).
+    /// sometimes — this backend has a real [`TrayService`] surface rather
+    /// than the trait's always-`None` default.
     ///
-    /// Doesn't promise every [`TrayService`] method succeeds, same
-    /// caveat as [`Self::window_control`]. TUI declares this `false`
+    /// Doesn't promise every [`TrayService`] method succeeds, same caveat
+    /// as [`Self::window_control`]. TUI declares this `false`
     /// permanently — see [`Backend::tray`]'s doc for why that is a
     /// structural fact, not a gap to close.
     pub tray: bool,
     /// [`Backend::set_editor_font`] and [`Backend::set_ui_font`] are both
-    /// overridden — this backend resolves CSS/Pango generic family
-    /// tokens (`monospace`, `sans-serif`, `system-ui`; see
+    /// overridden — this backend resolves CSS/Pango generic family tokens
+    /// (`monospace`, `sans-serif`, `system-ui`; see
     /// [`crate::GenericFamily`]) to a real native font instead of
     /// silently discarding whatever `family`/`font_desc` string a caller
-    /// handed it (issue #1023). `false` on TUI permanently — a terminal
-    /// cell grid has no font concept to resolve a family token into, the
-    /// same structural reason both methods take the trait's no-op
-    /// default there (see each method's own doc).
+    /// handed it. `false` on TUI permanently — a terminal cell grid has
+    /// no font concept to resolve a family token into, the same
+    /// structural reason both methods take the trait's no-op default
+    /// there (see each method's own doc).
     pub generic_font_families: bool,
     /// This render target's actual colour fidelity — see [`ColorDepth`].
     /// Not part of the bool-capability vocabulary below ([`Self::names`] /
@@ -639,46 +524,35 @@ pub struct BackendCaps {
     pub color_depth: ColorDepth,
     /// Whether the kitty keyboard protocol (progressive keyboard
     /// enhancement — unambiguous modifier keys, key-release events) is
-    /// actually active on this backend right now (quadraui#827).
+    /// actually active on this backend right now.
     ///
     /// Not part of the bool-capability vocabulary below, for the same
-    /// reason as [`Self::color_depth`]: this is a runtime-detected (or
+    /// reason as [`Self::color_depth`]: a runtime-detected (or
     /// test-overridden) property of the *terminal* a TUI session happens
     /// to be running in, not a static "does this backend implement method
-    /// X" fact `tests/conformance/caps.rs` can check by asking whether a
-    /// method was overridden. `false` on every non-TUI backend (GTK,
-    /// Win-GUI, macOS): none of them speak a terminal protocol at all, so
-    /// `false` is the honest, structural answer, not a gap. On TUI it is
-    /// `true` only when [`crate::tui::run`] actually pushed the
-    /// protocol's enhancement flags — see
+    /// X" fact. `false` on every non-TUI backend (none speak a terminal
+    /// protocol). On TUI it is `true` only when [`crate::tui::run`]
+    /// actually pushed the protocol's enhancement flags — see
     /// `crate::tui::caps::probe_kitty_keyboard` for how that is decided,
     /// and `crate::tui::backend::TuiBackend::set_kitty_keyboard` for where
-    /// the live answer lands here. Before this flag existed, an app had no
-    /// way to tell "the terminal doesn't support this" from "it does, and
-    /// the push already happened" — a gesture built assuming the latter
-    /// would simply never fire on a terminal where it wasn't, with no
-    /// signal anywhere. Check this before relying on a gesture that needs
-    /// the protocol (e.g. Ctrl+Enter distinct from Enter) and fall back to
-    /// an always-available binding (Alt+Enter) when it's `false` — see
-    /// `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade table for which real
-    /// terminals land on which side.
+    /// the live answer lands here. Check this before relying on a gesture
+    /// that needs the protocol (e.g. Ctrl+Enter distinct from Enter) and
+    /// fall back to an always-available binding (Alt+Enter) when it's
+    /// `false` — see `docs/KITTY_KEYBOARD_PROTOCOL.md`'s degrade table for
+    /// which real terminals land on which side.
     pub kitty_keyboard: bool,
     /// Whether SGR-Pixels mouse mode (`?1016h` — pixel-resolution mouse
     /// coordinates instead of whole-cell ones) is actually active on this
-    /// backend right now (quadraui#1048).
+    /// backend right now.
     ///
     /// Not part of the bool-capability vocabulary below, for the same
-    /// reason as [`Self::kitty_keyboard`]: a runtime-detected (or
-    /// test-overridden) property of the *terminal* a TUI session happens to
-    /// be running in, not a static "does this backend implement method X"
-    /// fact `tests/conformance/caps.rs` can check by asking whether a
-    /// method was overridden. `false` on every non-TUI backend (GTK,
-    /// Win-GUI, macOS): none of them speak a terminal mouse-tracking
-    /// protocol at all. On TUI it is `true` only when both
+    /// reason as [`Self::kitty_keyboard`]. `false` on every non-TUI
+    /// backend. On TUI it is `true` only when both
     /// `crate::tui::caps::probe_sgr_pixel_mouse`'s live DECRQM round trip
     /// answered yes *and* the terminal's real per-cell pixel size could be
-    /// determined — see `crate::tui::backend::TuiBackend::set_sgr_pixel_mouse`
-    /// for where the live answer lands here, and
+    /// determined — see
+    /// `crate::tui::backend::TuiBackend::set_sgr_pixel_mouse` for where the
+    /// live answer lands here, and
     /// `crate::tui::backend::TuiBackend::cell_pixel_size` for the divisor a
     /// gesture that wants pixel-accurate dragging (a scrollbar or minimap
     /// thumb) needs alongside this flag — the coordinate itself is already
@@ -722,8 +596,8 @@ impl BackendCaps {
 
     /// Every capability name this instance declares, in field-declaration
     /// order — the vocabulary a conformance scenario's `requires` list
-    /// (quadraui#491) matches capability names against, and what a skip
-    /// row names as missing.
+    /// matches capability names against, and what a skip row names as
+    /// missing.
     pub fn names(&self) -> Vec<&'static str> {
         Self::ALL_NAMES
             .iter()
@@ -749,11 +623,10 @@ impl BackendCaps {
     /// field-declaration order.
     ///
     /// This is the closed vocabulary a conformance scenario's `requires`
-    /// list may draw from (quadraui#492 review: there used to be a second
-    /// hand-maintained list, and the two could drift). [`Self::names`]
-    /// is the subset one backend answers `true` for; this is the whole
-    /// alphabet, so a `requires` entry outside it can be reported as a
-    /// typo rather than silently skipping every backend forever.
+    /// list may draw from. [`Self::names`] is the subset one backend
+    /// answers `true` for; this is the whole alphabet, so a `requires`
+    /// entry outside it can be reported as a typo rather than silently
+    /// skipping every backend forever.
     pub fn vocabulary() -> Vec<&'static str> {
         Self::ALL_NAMES.iter().map(|(name, _)| *name).collect()
     }
@@ -787,7 +660,7 @@ impl BackendCaps {
 // in-tree backend implements it below) but not from outside it. That is
 // the enforcement mechanism behind the stance this module documents on
 // `Backend` itself, `docs/PRIMITIVE_RULES.md` rule 7, and `BACKEND.md`:
-// four in-tree backends, no external implementors, ever (quadraui#800).
+// four in-tree backends, no external implementors, ever.
 pub(crate) mod sealed {
     /// Unnameable outside this crate — see [`super::Backend`]'s "Sealed"
     /// docs.
@@ -795,8 +668,8 @@ pub(crate) mod sealed {
 }
 
 /// A backend-reported failure at a frame, event-loop, or
-/// [`PlatformServices`]/[`Clipboard`] seam (issue #507, design D-009 in
-/// `docs/decisions/DECISIONS.md`; shipped by issue #805).
+/// [`PlatformServices`]/[`Clipboard`] seam (design D-009 in
+/// `docs/decisions/DECISIONS.md`).
 ///
 /// Not used by `draw_*` methods or the four CSD `bool` methods
 /// (`begin_window_drag`, `toggle_window_maximize`, `begin_window_resize`,
@@ -844,16 +717,10 @@ pub type ServiceResult<T> = Result<T, BackendError>;
 
 /// Bundled font metrics for one call to [`Backend::measure`] — the two
 /// numbers ([`Backend::char_width`] and [`Backend::line_height`]) every
-/// primitive's `*Measure` type is actually built from.
-///
-/// Before this existed, an app that needed both numbers called
-/// `backend.line_height()` and `backend.char_width()` separately and
-/// threaded them into its own hand-built `*Measure` literal — every
-/// caller re-deriving the same two-field bundle the backend already
-/// knows how to hand back in one call (quadraui#817). `Metrics` is that
-/// bundle; a primitive's `XMeasure::from_metrics(&Metrics)` constructor
-/// (see [`crate::TextInputMeasure::from_metrics`] for the pattern) turns
-/// it into that primitive's own measure shape without the app touching
+/// primitive's `*Measure` type is actually built from. A primitive's
+/// `XMeasure::from_metrics(&Metrics)` constructor (see
+/// [`crate::TextInputMeasure::from_metrics`] for the pattern) turns it
+/// into that primitive's own measure shape without the app touching
 /// `char_width` / `line_height` by name.
 ///
 /// `#[non_exhaustive]`: this is in-tree-only today (no external `Backend`
@@ -871,20 +738,12 @@ pub struct Metrics {
 }
 
 /// This backend's platform-native font defaults for the editor and UI
-/// (chrome) roles — [`Backend::default_fonts`] (issue #1156).
+/// (chrome) roles — [`Backend::default_fonts`].
 ///
 /// Exists so a consumer can seed its own font settings from the
 /// platform-appropriate convention (`Menlo 12` on macOS, `Consolas 14`
-/// on Windows, `monospace 14` on Linux/GTK — the same table VS Code
-/// itself uses) without branching on `cfg!(target_os)` in otherwise
-/// backend-generic code, the exact workaround vimcode's own
-/// platform-neutrality rule forbids. Before this existed, a consumer
-/// had no portable way to ask "what should the editor font default to
-/// on whatever platform I'm running on right now" and typically
-/// hardcoded one OS's convention for every backend — vimcode shipped
-/// `"Monospace"`/14pt editor/10pt UI everywhere, which reads
-/// noticeably wrong on macOS (code text too large, chrome text too
-/// small next to VS Code's own defaults).
+/// on Windows, `monospace 14` on Linux/GTK) without branching on
+/// `cfg!(target_os)` in otherwise backend-generic code.
 ///
 /// These are **static, backend-type-level facts** — the value this
 /// backend *would* use before any [`Backend::set_editor_font`] /
@@ -925,12 +784,10 @@ pub struct PlatformFontDefaults {
 
 /// Framework-level policy for whether a context menu (or, follow-up
 /// work permitting, a menu bar) shows as a real OS menu or as an
-/// in-window painted popup (issue #1187).
+/// in-window painted popup.
 ///
 /// Set via [`Backend::set_menu_style`] (defaults to `Auto`), resolved
-/// per backend via [`Backend::effective_menu_style`] /
-/// [`Self::resolve`]. `Default` is `Auto`, matching the framework
-/// default described in the issue.
+/// per backend via [`Backend::effective_menu_style`] / [`Self::resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MenuStyle {
     /// Native where the backend can do it ([`BackendCaps::native_menu`]
@@ -1065,17 +922,14 @@ mod menu_style_tests {
 /// `Backend` cannot be implemented downstream: it requires the private
 /// supertrait [`sealed::Sealed`], which lives in a `pub(crate)` module and
 /// so cannot even be *named*, let alone implemented, from another crate.
-/// This makes real what `docs/PRIMITIVE_RULES.md` rule 7 already asserted
-/// in prose — "adding a required `Backend` method is not a breaking
-/// change, because there are no external implementors to break" — instead
-/// of leaving it an aspiration a `pub` trait quietly contradicted
-/// (quadraui#800). Concretely: a new primitive adds a new required
-/// `draw_<name>` method to this trait in the same PR that adds the
-/// primitive itself, with no default and no version-bump ceremony, and
-/// every in-tree backend (TUI, GTK, Win-GUI, macOS) fills it in as an
-/// intentional compile error surfaced by that PR — see `docs/BACKEND.md`
-/// and the "Adding a primitive is a breaking change to this trait —
-/// intentional" note under *Drawing* below.
+/// This makes real what `docs/PRIMITIVE_RULES.md` rule 7 already asserts in
+/// prose — "adding a required `Backend` method is not a breaking change,
+/// because there are no external implementors to break." Concretely: a new
+/// primitive adds a new required `draw_<name>` method to this trait, with
+/// no default and no version-bump ceremony, and every in-tree backend
+/// (TUI, GTK, Win-GUI, macOS) must fill it in or fail to compile — see
+/// `docs/BACKEND.md` and the "Adding a primitive is a breaking change to
+/// this trait — intentional" note under *Drawing* below.
 ///
 /// If you want quadraui to render onto a target none of the four in-tree
 /// backends cover, the supported path is contributing a fifth in-tree
@@ -1124,10 +978,10 @@ pub trait Backend: sealed::Sealed {
     /// last value passed to [`Self::set_theme`], or the backend's own
     /// default if it was never called.
     ///
-    /// Lets shared compose code (e.g. `AppShell::render`, quadraui#1180)
-    /// source its chrome colours from the same palette every `draw_*`
-    /// call already paints with, instead of hardcoding literals — without
-    /// needing a `Theme` threaded through every call site that only has a
+    /// Lets shared compose code (e.g. `AppShell::render`) source its
+    /// chrome colours from the same palette every `draw_*` call already
+    /// paints with, instead of hardcoding literals — without needing a
+    /// `Theme` threaded through every call site that only has a
     /// `&dyn Backend` in scope.
     ///
     /// Default: [`crate::Theme::default()`]. Backends that carry a
@@ -1163,50 +1017,19 @@ pub trait Backend: sealed::Sealed {
     /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
-    /// **Default value, and why it differs by backend family:**
-    /// `TuiBackend` starts this flag at `false` — fallback, not glyph.
-    /// For a terminal, Nerd Font availability is a property of the
-    /// user's environment that the app cannot see or control, so
-    /// `false` is the safer of the two failure modes: a wrong `false`
-    /// shows a plain-but-correct ASCII/Unicode glyph, while a wrong
-    /// `true` shows tofu. Hosts that know their terminal has Nerd Fonts
-    /// (or that probe for it) call this explicitly to opt in.
+    /// `TuiBackend` starts at `false` (fallback): Nerd Font availability in
+    /// a terminal is outside the app's control, so the safe default shows
+    /// a plain-but-correct glyph rather than risking tofu; hosts that know
+    /// or probe for Nerd Font support opt in explicitly. `GtkBackend`,
+    /// `MacBackend` and `WinBackend` start at `true`: each bundles and
+    /// self-registers the `codicon` font at construction, so glyphs always
+    /// paint correctly with no opt-in required.
     ///
-    /// `GtkBackend`, `MacBackend` and `WinBackend` all start this flag
-    /// at `true` instead. None of that terminal risk applies to a GUI
-    /// backend: each of the three bundles the `codicon` font and
-    /// self-registers it unconditionally at construction (see
-    /// `GtkBackend::nerd_fonts_enabled`'s field doc for the registration
-    /// path), so `Icon::glyph` built from a codicon codepoint always
-    /// paints correctly with no app opt-in required. An app whose own
-    /// glyph choice assumes a *different*, uninstalled icon font can
-    /// still call `set_nerd_fonts(false)` to opt back out. The three
-    /// GUI backends therefore agree with each other, and the TUI
-    /// backend is the one deliberate outlier, for the reason above —
-    /// not an accidental drift back to the per-backend inconsistency
-    /// this flag's default once had.
-    ///
-    /// Call at the start of `render_content()` if the setting can change
-    /// at runtime (a settings toggle, a config file reload), or once from
-    /// `setup()` only if it is truly static for the process lifetime.
-    /// This mirrors `set_theme`'s contract above, and for the same
-    /// reason: the backend does not re-derive this flag on its own each
-    /// frame the way it re-derives `line_height`/`char_width` from the
-    /// editor font — whatever was last set stays set until the host sets
-    /// it again.
-    ///
-    /// **Don't call this only from `setup()` and assume it stays synced.**
-    /// vimcode#547 was exactly this bug: nerd-fonts detection used to be
-    /// re-applied on a periodic "refresh" message, which stopped firing
-    /// after the `ShellApp` cutover — nothing re-called `set_nerd_fonts`
-    /// after the first frame, so the flag silently stuck at whatever
-    /// `setup()` had seen (often `false`, if the capability probe hadn't
-    /// resolved yet at startup), and every icon fell back to ASCII from
-    /// then on with no visible error. If the setting can ever change
-    /// after `setup()` runs — including "probe finishes after the first
-    /// frame" — call this from `render_content()` every frame instead;
-    /// it's cheap, and correctness doesn't depend on remembering to
-    /// re-fire a refresh path elsewhere.
+    /// The backend does not re-derive this flag on its own each frame —
+    /// whatever was last set stays set. If the setting can change at
+    /// runtime (a settings toggle, a probe that resolves after the first
+    /// frame), call this from `render_content()` every frame rather than
+    /// once from `setup()`.
     ///
     /// Default: no-op. Backends that always use one icon form (e.g. a
     /// headless test backend) can accept this default.
@@ -1215,9 +1038,9 @@ pub trait Backend: sealed::Sealed {
     /// Whatever was last handed to [`Self::set_nerd_fonts`].
     ///
     /// Hosts need this to resolve a [`crate::ToolbarIcons`] table at the
-    /// point of use — `icons.apply(&bar, backend.nerd_fonts_enabled())`
-    /// (issue #913) — without having to mirror the flag in their own
-    /// state. `Toolbar` icons are plain strings, so the glyph-or-fallback
+    /// point of use — `icons.apply(&bar, backend.nerd_fonts_enabled())` —
+    /// without having to mirror the flag in their own state. `Toolbar`
+    /// icons are plain strings, so the glyph-or-fallback
     /// choice has to be made before the `Toolbar` reaches the backend;
     /// this is how the caller learns which one to bake in.
     ///
@@ -1228,14 +1051,13 @@ pub trait Backend: sealed::Sealed {
         false
     }
 
-    /// Override the font used to paint editor content (family name + size
+    /// Override the font that paints editor content (family name + size
     /// in points).
     ///
     /// Backends that build a shared per-frame text layout (GTK's Pango
     /// layout) resolve `line_height()` / `char_width()` from this same
     /// font on every frame, so painted glyphs and click-to-column math
-    /// (e.g. `editor_col_at_x`) always derive from one source of truth —
-    /// closing the paint↔click drift that motivated this method (#422).
+    /// (e.g. `editor_col_at_x`) always derive from one source of truth.
     /// `family` should name a monospace font: primitives that map columns
     /// to pixels (`draw_editor`'s `scroll_left * char_width`, etc.) assume
     /// uniform glyph width.
@@ -1248,7 +1070,7 @@ pub trait Backend: sealed::Sealed {
     /// every glyph already occupies exactly one terminal cell.
     fn set_editor_font(&mut self, _family: &str, _size_pt: f32) {}
 
-    /// Override the font used to paint **chrome** — status bar, tab bar,
+    /// Override the font that paints **chrome** — status bar, tab bar,
     /// tree, menu bar, dialogs, rich-text popups — as opposed to
     /// [`Self::set_editor_font`], which only affects editor content.
     /// `font_desc` is a Pango-style font description string (e.g.
@@ -1261,13 +1083,12 @@ pub trait Backend: sealed::Sealed {
     /// takes effect on the next repaint.
     ///
     /// Default: no-op. Fixed-cell backends (TUI) have no font concept —
-    /// every glyph already occupies exactly one terminal cell. GTK is
-    /// currently the only backend that overrides this (#624).
+    /// every glyph already occupies exactly one terminal cell.
     fn set_ui_font(&mut self, _font_desc: &str) {}
 
     /// This backend's platform-native font defaults for the editor and
     /// UI roles — see [`PlatformFontDefaults`]'s doc for the full
-    /// contract (issue #1156).
+    /// contract.
     ///
     /// No default body: every in-tree backend has a real, distinct
     /// answer (unlike [`Self::set_editor_font`]/[`Self::set_ui_font`],
@@ -1277,122 +1098,72 @@ pub trait Backend: sealed::Sealed {
     fn default_fonts(&self) -> PlatformFontDefaults;
 
     /// Register an application-supplied font (raw TTF/OTF bytes) with the
-    /// platform font manager for the lifetime of this process — no
-    /// filesystem write, no user font directory, no `fc-cache`-style
-    /// daemon (issue #929).
-    ///
-    /// This exists because a backend has no built-in Nerd-Font glyph
-    /// coverage to fall back to (unlike GTK, which cascades to
-    /// fontconfig's installed `Symbols Nerd Font` automatically — see
-    /// `crate::gtk::NERD_FONT_FALLBACK_FAMILY`): an app that wants icon
-    /// glyphs to resolve on macOS/Win-GUI has to hand the backend its own
-    /// font bytes (e.g. an `include_bytes!`-embedded subset) before
-    /// [`Self::set_nerd_font_fallback`] can name a family for [`Self::draw_tree`]/
-    /// [`Self::draw_activity_bar`]/etc. to actually resolve glyphs against.
+    /// platform font manager, kept alive as long as the program runs —
+    /// no filesystem write, no user font directory, no `fc-cache`-style
+    /// daemon. Lets an app that wants icon glyphs to resolve on
+    /// macOS/Win-GUI hand the backend its own font bytes (e.g. an
+    /// `include_bytes!`-embedded subset) before [`Self::set_nerd_font_fallback`]
+    /// names a family for [`Self::draw_tree`]/[`Self::draw_activity_bar`]/etc.
+    /// to resolve glyphs against.
     ///
     /// Returns the family name(s) the font registered under (read back
-    /// from the font's own name table, not the caller's guess), so a
-    /// caller can pass one straight to [`Self::set_nerd_font_fallback`]
-    /// without hardcoding it — or `None` if `bytes` isn't a font this
-    /// backend's platform font manager can parse, or registration itself
+    /// from the font's own name table), or `None` if `bytes` isn't a font
+    /// this backend's platform font manager can parse, or registration
     /// failed.
     ///
-    /// Call once from `setup()`, before [`Self::set_nerd_font_fallback`]
-    /// — same "static for the process lifetime" convention as
-    /// [`Self::set_editor_font`]/[`Self::set_ui_font`].
+    /// Call once from `setup()`, before [`Self::set_nerd_font_fallback`].
     ///
-    /// `bytes` itself does **not** need to outlive this call — a caller
-    /// may pass a local `Vec` read from disk and drop it the instant this
-    /// method returns, same as the `include_bytes!` case. Any backend
-    /// whose platform font manager keeps a raw, uncopied pointer into
-    /// `bytes` for longer than the call (Win-GUI's DirectWrite
-    /// `IDWriteInMemoryFontFileLoader` is documented to do exactly this —
-    /// see `win::text::register_font_from_memory`'s doc) is responsible
-    /// for making its own owned copy before handing that pointer to the
-    /// platform API, and for keeping that copy alive for the process
-    /// lifetime itself — mirroring the macOS backend's `Arc<Vec<u8>>`
-    /// copy into `CGDataProvider::from_buffer`. The caller's buffer is
-    /// never the one the platform ends up holding a live reference to.
+    /// `bytes` does **not** need to outlive this call — any backend whose
+    /// platform font manager keeps a raw, uncopied pointer into `bytes`
+    /// past the call (Win-GUI's DirectWrite `IDWriteInMemoryFontFileLoader`
+    /// does this) is responsible for making its own owned copy and
+    /// keeping it alive for the process lifetime, mirroring the macOS
+    /// backend's `Arc<Vec<u8>>` copy into `CGDataProvider::from_buffer`.
     ///
-    /// Default: no-op, returns `None`. TUI takes this default for the
-    /// same reason [`Self::set_editor_font`] does: a fixed-cell backend
-    /// has no font concept at all. GTK used to take this default as well
-    /// — reasoning that Fontconfig already resolves a system-installed
-    /// Nerd Font via [`Self::set_nerd_fonts`]'s cascade, so there was
-    /// nothing to register at the backend level — but that left an app
-    /// bundling its *own* icon font (rather than relying on one already
-    /// being installed system-wide) with no in-process path on GTK, and
-    /// [`BackendCaps::app_font_registration`] declaring `true` regardless
-    /// (issue #1013: a lying capability, and the direct reason vimcode
-    /// kept a system-wide `~/.local/share/fonts` + `fc-cache` installer
-    /// for GTK specifically). GTK now overrides this via
-    /// `FcConfigAppFontAddFile` and, on macOS, also Core Text directly
-    /// (`PangoCoreTextFontMap` never consults Fontconfig there) — see
+    /// Default: no-op, returns `None`. TUI takes this default — a
+    /// fixed-cell backend has no font concept at all. GTK overrides it via
+    /// `FcConfigAppFontAddFile`, and macOS via Core Text directly — see
     /// `crate::gtk::app_font`'s module doc.
     fn register_font_from_memory(&mut self, _bytes: &[u8]) -> Option<Vec<String>> {
         None
     }
 
     /// Set the font family consulted for characters the primary
-    /// (editor/UI) font cannot cover — the portable, explicit form of
-    /// what GTK already does implicitly via
-    /// `crate::gtk::NERD_FONT_FALLBACK_FAMILY` (issue #929).
+    /// (editor/UI) font cannot cover.
     ///
     /// `family` is looked up first among any fonts this backend
     /// registered via [`Self::register_font_from_memory`], then (for a
-    /// backend that supports it) the platform's own installed fonts —
-    /// so this also works for a system-installed Nerd Font with no
+    /// backend that supports it) the platform's own installed fonts — so
+    /// this also works for a system-installed Nerd Font with no
     /// `register_font_from_memory` call at all.
     ///
     /// Call once from `setup()` for a static fallback, or again any time
-    /// the app's font preference changes at runtime — same convention as
-    /// [`Self::set_editor_font`]/[`Self::set_ui_font`], including the
-    /// same "a live surface may not rebuild immediately" caveat on
-    /// backends that build their text-shaping state once per surface
-    /// rather than once per frame.
+    /// the app's font preference changes at runtime.
     ///
-    /// Default: no-op. GTK overrides it anyway, even though it already
-    /// has a working (if hardcoded) fallback via
-    /// `crate::gtk::NERD_FONT_FALLBACK_FAMILY`: this method makes that
-    /// family *settable* instead, so an app that treats this as the
-    /// portable entry point (rather than reaching for the GTK-specific
-    /// constant) gets the same effect on every backend, including GTK.
-    /// TUI takes the default for the same fixed-cell reason
-    /// [`Self::set_ui_font`] does.
+    /// Default: no-op. GTK overrides it even though it already has a
+    /// working fallback via `crate::gtk::NERD_FONT_FALLBACK_FAMILY`, so
+    /// that family is *settable* through this portable entry point on
+    /// every backend, including GTK. TUI takes the default for the same
+    /// fixed-cell reason [`Self::set_ui_font`] does.
     fn set_nerd_font_fallback(&mut self, _family: &str) {}
 
-    /// Answer whether `family` is already installed on this platform as
-    /// a system font — the "the user installed their own Nerd Font"
-    /// case, which no other method here answers (issue #1024).
-    /// [`Self::register_font_from_memory`] only reports fonts the *app*
-    /// bundled and registered itself; this is its complement, a query
-    /// against whatever the platform's own font manager already knows
-    /// about, with no registration side effect.
+    /// Answer whether `family` is already installed on this platform as a
+    /// system font. [`Self::register_font_from_memory`] only reports
+    /// fonts the *app* bundled and registered itself; this is its
+    /// complement, a query against whatever the platform's own font
+    /// manager already knows about, with no registration side effect.
     ///
     /// A caller deciding whether to enable Nerd-Font-glyph rendering
-    /// (icon fonts, PUA codepoints) should check, in order: an
-    /// app-bundled [`Self::register_font_from_memory`] call already
-    /// succeeded (take priority — that font is guaranteed complete and
-    /// versioned with the app); else this method for a
-    /// system-installed one; else fall back to plain glyphs. This
-    /// replaces the `cfg!(target_os = ...)` guess vimcode's
-    /// `core/settings.rs` used to make before either backend answer
-    /// existed — a fixed-cell TUI genuinely cannot answer this (the
-    /// terminal emulator's own font is invisible to the process it
-    /// hosts), so the *user's own setting* decides there instead of a
-    /// platform guess.
+    /// should check, in order: an app-bundled
+    /// [`Self::register_font_from_memory`] call already succeeded (that
+    /// font is guaranteed complete and versioned with the app); else this
+    /// method for a system-installed one; else fall back to plain glyphs.
     ///
-    /// Returns `Some(true)`/`Some(false)` on a backend that can
-    /// enumerate installed font families (GTK via Fontconfig, macOS via
-    /// Core Text, Win-GUI via DirectWrite's system font collection).
-    /// Returns `None` when the question is unanswerable — today, only
-    /// the TUI backend, which takes this default. `None` means "don't
-    /// know", never "false": a caller must not conflate the two, the
-    /// same distinction [`Self::register_font_from_memory`] already
-    /// draws between "not a font" and "not attempted".
-    ///
-    /// Default: `None`, matching every other fixed-cell method in this
-    /// section.
+    /// Returns `Some(true)`/`Some(false)` on a backend that can enumerate
+    /// installed font families (GTK via Fontconfig, macOS via Core Text,
+    /// Win-GUI via DirectWrite's system font collection). Returns `None`
+    /// when the question is unanswerable — today, only TUI, which takes
+    /// this default. `None` means "don't know", never "false".
     fn has_font_family(&self, _family: &str) -> Option<bool> {
         None
     }
@@ -1421,8 +1192,7 @@ pub trait Backend: sealed::Sealed {
     /// Record one hit-testable widget zone painted during the current
     /// frame — the `WidgetId`-keyed counterpart to
     /// [`Self::register_text_region`], and the source
-    /// [`crate::testing::FrameInventory::zones`] reads from
-    /// (quadraui#490, `docs/SMELL_AUDIT_2026-07.md` §6.2/B3).
+    /// [`crate::testing::FrameInventory::zones`] reads from.
     ///
     /// Call once per zone during render (chrome composers like
     /// [`crate::compose::app_shell::AppShell::render`] call this for
@@ -1477,7 +1247,7 @@ pub trait Backend: sealed::Sealed {
 
     /// Return a `Send + Sync` handle a **background thread** can call to
     /// deliver a value to the app and wake this backend's event loop so the
-    /// value is observed promptly — issue #831.
+    /// value is observed promptly.
     ///
     /// Every other `Backend` method requires `&mut self` or `&self` on the
     /// thread that owns the event loop; this is the one exception,
@@ -1497,53 +1267,16 @@ pub trait Backend: sealed::Sealed {
     ///
     /// The backend wakes its event loop and delivers the payload as
     /// [`UiEvent::User`] to [`crate::runner::AppLogic::handle`] — see that
-    /// variant's doc for the full contract and why this closes a real gap
-    /// rather than a cosmetic one: **before this method existed, every
-    /// runner was poll-only** (grep any `run.rs` for `mpsc`/`Waker`/
-    /// `channel(` — issue #831 found zero), so an app doing background I/O
-    /// had no way to be told a result was ready except by re-checking its
-    /// own state from [`crate::runner::AppLogic::tick`] on whatever cadence
-    /// the backend happens to poll at. That cadence isn't uniform, and for
-    /// two of the four backends it doesn't exist at all absent unrelated
-    /// activity:
-    /// - TUI polled every 16ms (`tui::run::POLL_TIMEOUT`) regardless —
-    ///   `waker` only tightened *when* a background result was folded into
-    ///   that already-frequent poll, it didn't newly enable delivery.
-    /// - GTK polled every 33ms (`gtk::run::run_with`'s idle timer) — same
-    ///   shape as TUI, coarser interval.
-    /// - **macOS and Windows called [`crate::runner::AppLogic::tick`] not
-    ///   at all** — macOS only drained its event queue from inside a
-    ///   paint pass, and Windows' `wndproc` dispatched directly per Win32
-    ///   message with no idle timer of its own. Without a live redraw or
-    ///   an unrelated native event, a background result on either backend
-    ///   would otherwise never reach the app at all. `waker`'s closure is
-    ///   what forced the wake on these two: GTK/macOS/Windows
-    ///   implementations use their native thread-safe "run this on the UI
-    ///   thread" primitive (`glib::MainContext::invoke`,
-    ///   `dispatch2::DispatchQueue::main`, `PostMessageW`, respectively)
-    ///   precisely because none of the three has anything else that
-    ///   reliably runs soon after being poked from off-thread. TUI's
-    ///   implementation only needed to feed the payload into the queue its
-    ///   existing bounded poll already drains.
+    /// variant's doc for the full contract.
     ///
-    /// **Since quadraui#832** ([`Self::request_frame_in`]), the fixed-
-    /// cadence part of that list is history rather than current
-    /// behavior: TUI/GTK's unconditional polls are gone (both now poll a
-    /// much coarser fallback ceiling, `crate::runtime::IDLE_POLL_CEILING`,
-    /// 250ms — see that constant's doc), and macOS/Windows gained their
-    /// first `tick` invocations ever, but at that point *only* when
-    /// something (a native event or a `request_frame_in` deadline) asked
-    /// for one. **Since quadraui#940**, macOS joined TUI/GTK's coarse
-    /// fallback ceiling too (`macos::run`'s repeating `idlePollTick:`
-    /// timer) — #832 alone had left macOS silently unable to notice
-    /// deferred host work that never called `request_frame_in`/returned
-    /// `RedrawAfter`, unlike TUI/GTK's idle-poll safety net. Windows
-    /// remains deliberately wake-only, with no fallback ceiling of its
-    /// own — see [`crate::runner::AppLogic::tick`]'s per-backend cadence
-    /// table for the current state of all four. This method's own
-    /// latency contract is unchanged by any of that: a `waker` call
-    /// still forces a prompt wake exactly as described above,
-    /// independent of whatever cadence (if any) `tick` runs on.
+    /// GTK/macOS/Windows implementations use their native thread-safe "run
+    /// this on the UI thread" primitive (`glib::MainContext::invoke`,
+    /// `dispatch2::DispatchQueue::main`, `PostMessageW`, respectively) to
+    /// force a prompt wake from off-thread. TUI feeds the payload into the
+    /// queue its bounded poll already drains, backed by a coarse idle-poll
+    /// fallback ceiling every backend keeps (`crate::runtime::IDLE_POLL_CEILING`)
+    /// as a safety net — see [`crate::runner::AppLogic::tick`]'s
+    /// per-backend cadence table for the current state of all four.
     ///
     /// Implementations must be safe to call from any thread, at any time,
     /// any number of times, including concurrently with each other and
@@ -1560,18 +1293,13 @@ pub trait Backend: sealed::Sealed {
     /// Arm a scheduled wake: after `delay`, make sure the event loop wakes
     /// up and [`crate::runner::AppLogic::tick`] (or the app's `handle`
     /// dispatch, for whichever native event the wake rides in on) runs
-    /// again — issue #832.
+    /// again.
     ///
-    /// This is [`Self::waker`]'s sibling for the other half of the
-    /// pre-#832 gap that method's doc describes: before #832, TUI and GTK
-    /// each polled unconditionally (16ms / 33ms) regardless of whether
-    /// anything was scheduled, burning CPU on a fully idle app, while
-    /// macOS and Windows didn't call `tick` *at all* absent some
-    /// unrelated native event to ride in on. `waker` fixed "a background
-    /// thread has a result, deliver it promptly"; this method fixes "the
-    /// app itself knows it wants to be woken again in `delay`, without
-    /// resorting to a fixed poll cadence to eventually notice" — a
-    /// spinner's next frame, a caret blink toggle, a countdown tick.
+    /// This is [`Self::waker`]'s sibling for app-driven scheduling rather
+    /// than a background thread: "the app itself knows it wants to be
+    /// woken again in `delay`, without resorting to a fixed poll cadence
+    /// to eventually notice" — a spinner's next frame, a caret blink
+    /// toggle, a countdown tick.
     ///
     /// Called by the runner from [`crate::runner::Reaction::RedrawAfter`]
     /// (via [`crate::runner::AppLogic::tick`]/`handle`'s return value) —
@@ -1605,8 +1333,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// This one-shot timer is independent of, and doesn't replace, the
     /// separate always-repeating idle-poll fallback every backend keeps
-    /// (`crate::runtime::IDLE_POLL_CEILING`, since quadraui#1265 gave
-    /// Windows parity with TUI/GTK/macOS — see
+    /// (`crate::runtime::IDLE_POLL_CEILING` — see
     /// [`crate::runner::AppLogic::tick`]'s per-backend cadence table):
     /// this method exists for an app that knows the *exact* interval it
     /// wants to be woken after, the fallback for an app that doesn't ask
@@ -1620,7 +1347,7 @@ pub trait Backend: sealed::Sealed {
 
     /// Ask the backend to paint the *next* frame as if the physical
     /// display were blank, discarding whatever incremental-diff cache it
-    /// keeps against the real screen — issue #1037.
+    /// keeps against the real screen.
     ///
     /// This exists for exactly one situation: the backend's own idea of
     /// "what's on screen" has drifted from what's actually there, through
@@ -1673,15 +1400,10 @@ pub trait Backend: sealed::Sealed {
     /// event queue as [`UiEvent::MenuActivated`].
     ///
     /// TUI / GTK / Win-GUI: no-op default. Apps that want an in-window
-    /// menu keep calling `draw_menu_bar` from their render path; a
-    /// native GTK installer (`set_menu_bar`) lands in a follow-up ticket
-    /// when a consumer needs it. Win-GUI (`WinBackend`) previously built
-    /// an `HMENU` bar here via `CreateMenu`/`AppendMenuW`/`SetMenu`
-    /// (issue #1200), but issue #1228 removed it: the custom caption bar
-    /// from #1199 hid the native menu row and ate the window's
-    /// min/max/close buttons, so `WinBackend` switched to the same
-    /// drawn-menu-row + `draw_menu_bar` approach as GTK and now takes
-    /// this trait default like every other backend but macOS.
+    /// menu keep calling `draw_menu_bar` from their render path; `WinBackend`
+    /// and `GtkBackend` both use the same drawn-menu-row + `draw_menu_bar`
+    /// approach, since a native menu bar would conflict with their custom
+    /// window chrome.
     ///
     /// Apps typically call this once during `AppLogic::setup`. Re-calling
     /// replaces the previously-installed menu wholesale.
@@ -1700,7 +1422,7 @@ pub trait Backend: sealed::Sealed {
     /// TUI / GTK / Win-GUI: no-op default. Apps that want a painted
     /// right-click menu on those backends continue to manage their
     /// own `ContextMenu` state and call `draw_context_menu` from
-    /// their render path — or, since issue #1187, let
+    /// their render path — or let
     /// [`crate::compose::ContextMenuController`] own that state for
     /// them (it calls this method for the `Native` half of the
     /// resolved style and manages painting/hit-testing itself for the
@@ -1722,7 +1444,7 @@ pub trait Backend: sealed::Sealed {
     ) {
     }
 
-    // ─── MenuStyle (#1187) ──────────────────────────────────────────────
+    // ─── MenuStyle ───────────────────────────────────────────────────────
     /// This backend's current [`MenuStyle`] setting. Defaults to
     /// [`MenuStyle::Auto`] on every backend. Set via
     /// [`Self::set_menu_style`]; resolve to an actual presentation via
@@ -1757,26 +1479,18 @@ pub trait Backend: sealed::Sealed {
     /// every backend already has to supply. No backend needs to
     /// override this.
     ///
-    /// # Why the "one call" from issue #1187 lives on
+    /// # Why the "one call" entry point lives on
     /// [`crate::compose::ContextMenuController`], not here
     ///
     /// A `Backend`-trait default method has nowhere to keep "a menu is
     /// currently open, painted, and hit-testable" state — that's a
-    /// per-call-site concern, not a per-backend one, and every backend
-    /// struct would need a new field to carry it. A default method that
-    /// only implemented the `Native` half (delegating to
-    /// [`Self::show_context_menu`]) and silently no-op'd on `Custom`
-    /// would violate the one hard rule this issue states for every
-    /// [`MenuStyle`]: *never shows nothing* — and `Custom` is where
-    /// `Auto` (the default style) resolves on every backend except
-    /// macOS. So this trait intentionally does **not** grow an
-    /// `open_context_menu` method; [`crate::compose::ContextMenuController::open`]
-    /// is the real one-call entry point — it owns the state
-    /// `Custom` needs, calls [`Self::show_context_menu`] itself for
-    /// `Native`, and its `handle`/`render` cover both paths uniformly.
-    /// See that type's module doc for the full recipe, and its own doc
-    /// for the same event-handler-time-only call contract
-    /// [`Self::show_context_menu`] already documents.
+    /// per-call-site concern, and every [`MenuStyle`] must never show
+    /// nothing, including on the painted `Custom` path. So this trait
+    /// intentionally does **not** grow an `open_context_menu` method;
+    /// [`crate::compose::ContextMenuController::open`] is the real
+    /// one-call entry point — it owns the state `Custom` needs, calls
+    /// [`Self::show_context_menu`] itself for `Native`, and its
+    /// `handle`/`render` cover both paths uniformly.
     fn effective_menu_style(&self) -> ResolvedMenuStyle {
         self.menu_style().resolve(&self.backend_caps())
     }
@@ -1796,7 +1510,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// `GtkBackend` arms a deferred `gdk4::Toplevel::begin_move` call, using
     /// the press context `gtk::run`'s click controller stashes just before
-    /// the press is translated to a portable [`UiEvent`] (see #400) — GDK
+    /// the press is translated to a portable [`UiEvent`] — GDK
     /// requires the *originating* event's device/timestamp, not synthesized
     /// values, or the drag silently no-ops on some compositors. The actual
     /// `begin_move` call only fires once the pointer moves past the drag
@@ -1868,7 +1582,6 @@ pub trait Backend: sealed::Sealed {
     /// ([`crate::compose::app_shell::AppShellLayout::title_bar_bounds`])
     /// occupied by backend-drawn window controls, in the same native
     /// units every other `Rect` this trait returns uses. `Rect::default()`
-    /// (the default, and the only value on every backend before #947)
     /// means the backend puts nothing of its own into that band, so the
     /// app may paint the whole width of `title_bar_bounds`. That is the
     /// answer on TUI (no window concept at all), and on GTK/Win-GUI,
@@ -1897,46 +1610,39 @@ pub trait Backend: sealed::Sealed {
         Rect::default()
     }
 
-    // ─── Window control (issue #950) ────────────────────────────────────
+    // ─── Window control ──────────────────────────────────────────────────
     /// This backend's window-state control surface, or `None` when this
     /// backend has no OS window to control right now.
     ///
-    /// `None` is the *structural* absence this issue's design calls for:
-    /// TUI (no OS window concept at all, though see
-    /// [`WindowControl::set_title`] for the one thing it genuinely can
-    /// do) and any windowed backend before its window is constructed
-    /// both answer `None` here, and a caller that only ever sees `Option`
-    /// cannot forget to check it the way a silently-false-returning
-    /// capability flag can be forgotten. See [`WindowControl`]'s own doc
-    /// for why individual methods on the returned trait object still
-    /// report [`ServiceResult`] rather than being infallible once
-    /// `Some` is reached.
+    /// `None` is the *structural* absence: TUI (no OS window concept at
+    /// all, though see [`WindowControl::set_title`] for the one thing it
+    /// genuinely can do) and any windowed backend before its window is
+    /// constructed both answer `None` here, and a caller that only ever
+    /// sees `Option` cannot forget to check it the way a
+    /// silently-false-returning capability flag can be forgotten. See
+    /// [`WindowControl`]'s own doc for why individual methods on the
+    /// returned trait object still report [`ServiceResult`] rather than
+    /// being infallible once `Some` is reached.
     ///
     /// `&mut self`, not `&self`: every [`WindowControl`] method mutates
-    /// OS window state, so the borrow this returns has to allow that —
-    /// matching [`Self::modal_stack_handle`]'s reasoning for why that
-    /// one is `Rc<RefCell<_>>` instead (window control has no
-    /// stash-then-reuse-from-an-unrelated-borrow requirement the way the
-    /// modal stack does, so a plain borrow is simpler and sufficient
-    /// here).
+    /// OS window state, so the borrow this returns has to allow that.
     ///
     /// Default: `None` — a backend that hasn't wired a `WindowControl`
     /// impl yet is indistinguishable from one that genuinely has no
-    /// window, which is the honest answer before this issue's `gtk`/
-    /// `macos`/`win`/`tui` implementations land.
+    /// window, which is the honest answer either way.
     fn window(&mut self) -> Option<&mut dyn WindowControl> {
         None
     }
 
-    // ─── Tray / status-bar icon (issue #953) ────────────────────────────
+    // ─── Tray / status-bar icon ─────────────────────────────────────────
     /// This backend's tray/status-bar icon control surface, or `None`
     /// when this backend has no way to show one right now.
     ///
     /// `None` is the *structural* absence [`Self::window`] already
-    /// established for [`WindowControl`] (issue #950): a backend that
-    /// hasn't wired a [`TrayService`] impl yet is indistinguishable from
-    /// one with no tray facility at all, which is the honest default
-    /// before a given backend's implementation lands.
+    /// established for [`WindowControl`]: a backend that hasn't wired a
+    /// [`TrayService`] impl yet is indistinguishable from one with no
+    /// tray facility at all, which is the honest default before a given
+    /// backend's implementation lands.
     ///
     /// **TUI is genuinely, permanently `None` here** — not merely
     /// "not implemented yet" the way [`WindowControl::set_title`] still
@@ -1982,19 +1688,15 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Every in-tree backend implements this by owning its modal stack
     /// behind `Rc<RefCell<ModalStack>>` and cloning the `Rc` here — see
-    /// `GtkBackend::modal_stack_handle` for the pattern this trait
-    /// method generalises (quadraui#699). No default: a host holding
-    /// only `&mut dyn Backend` needs this to work identically on every
-    /// backend, including a future macOS/Win-GUI host, so a backend
+    /// `GtkBackend::modal_stack_handle` for the pattern this trait method
+    /// generalises. No default: a host holding only `&mut dyn Backend`
+    /// needs this to work identically on every backend, so a backend
     /// that forgets to wire it up should fail to compile rather than
     /// silently hand back a handle to a stack nobody else observes.
     ///
-    /// Reentrant mutation goes through `RefCell`'s normal runtime
-    /// borrow check (a stale `borrow_mut()` still alive when another
-    /// call tries to borrow again panics loudly) — quadraui#704 removed
-    /// the earlier `modal_stack_mut()` / `drag_and_modal_mut()` bridges,
-    /// which synthesized a `&mut` via `unsafe { Rc::as_ptr(..) }` and so
-    /// bypassed that check instead of enforcing it.
+    /// Reentrant mutation goes through `RefCell`'s normal runtime borrow
+    /// check: a stale `borrow_mut()` still alive when another call tries
+    /// to borrow again panics loudly.
     ///
     /// See [`ModalStack`] and [`crate::dispatch::dispatch_mouse_down`]
     /// for the routing contract.
@@ -2002,10 +1704,10 @@ pub trait Backend: sealed::Sealed {
 
     /// Shared handle to the drag state, with the same stash-then-reuse
     /// contract as [`Self::modal_stack_handle`]. See that method's docs
-    /// for the pattern and rationale (quadraui#699).
+    /// for the pattern and rationale.
     fn drag_state_handle(&self) -> Rc<RefCell<DragState>>;
 
-    // ─── Focus (issue #830) ──────────────────────────────────────────────
+    // ─── Focus ───────────────────────────────────────────────────────────
     /// Read-only access to this backend's [`FocusManager`] — the single
     /// owner of "what widget currently has keyboard focus". See
     /// [`crate::focus`]'s module doc for the full design and the six
@@ -2036,7 +1738,7 @@ pub trait Backend: sealed::Sealed {
     /// portability risk, not a precedent to follow.
     fn draw_focus_ring(&mut self, rect: Rect);
 
-    // ─── Error reporting (issue #507, D-009) ────────────────────────────
+    // ─── Error reporting (D-009) ─────────────────────────────────────────
     /// The most recent [`BackendError`] this backend recorded, if any,
     /// since the last time this method was called.
     ///
@@ -2097,8 +1799,8 @@ pub trait Backend: sealed::Sealed {
 
     // ─── Capability declaration ─────────────────────────────────────────
     /// This backend's declared [`BackendCaps`] — which optional surfaces
-    /// (quadraui#492) it actually implements, versus which ones are still
-    /// sitting on the trait's no-op default.
+    /// it actually implements, versus which ones are still sitting on the
+    /// trait's no-op default.
     ///
     /// No default impl: every backend states its own caps explicitly
     /// (`Backend` has no external implementors — `BACKEND.md` — so there
@@ -2171,14 +1873,14 @@ pub trait Backend: sealed::Sealed {
     /// This is **not** always the same number [`Self::char_width`]
     /// returns. `char_width` reports the *editor* font's advance, but
     /// `draw_list` paints chrome (list rows are UI content, not editor
-    /// content — quadraui#416/#624), and on a pixel backend "chrome
+    /// content), and on a pixel backend "chrome
     /// font" can be a proportional face (GTK's default `ui_font` is
     /// `"Sans 11"`, macOS's is the CoreText system UI font) with a
     /// different — usually narrower — average glyph advance than the
     /// monospace editor face `char_width` measures. A consumer that
     /// divides a list's pixel width by [`Self::char_width`] to decide
     /// how many characters of row text fit under-fills the row by
-    /// whatever ratio separates the two fonts (quadraui#912).
+    /// whatever ratio separates the two fonts.
     ///
     /// Call this instead of [`Self::char_width`] when budgeting text for
     /// a `ListView` row. It is still only an *average* advance — a
@@ -2197,18 +1899,14 @@ pub trait Backend: sealed::Sealed {
 
     /// [`Self::char_width`] and [`Self::line_height`] bundled into one
     /// [`Metrics`] value, for apps that need both instead of calling each
-    /// method separately (quadraui#817).
+    /// method separately.
     ///
     /// Default impl composes the two required methods above, so it
     /// returns each backend's real metrics automatically — no backend
     /// needs to override this to get real numbers instead of defaults.
-    /// A primitive's `XMeasure::from_metrics(&backend.measure())` replaces
-    /// the old pattern of an app hand-building that `*Measure` literal
-    /// from `backend.line_height()` / `backend.char_width()` itself (or,
-    /// worse, approximating one of them — see
-    /// `examples/common/dialog_table_demo.rs`'s pre-#817 `char_w = lh *
-    /// 0.6` guess, replaced with the real [`Self::char_width`] via this
-    /// method once it existed).
+    /// A primitive's `XMeasure::from_metrics(&backend.measure())` avoids
+    /// hand-building that `*Measure` literal from `backend.line_height()`
+    /// / `backend.char_width()` directly, or approximating one of them.
     fn measure(&self) -> Metrics {
         Metrics {
             char_width: self.char_width(),
@@ -2217,52 +1915,29 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Real `(width, height)`, in this backend's native units, of `text`
-    /// rendered in `role`'s font (issue #1132).
+    /// rendered in `role`'s font.
     ///
-    /// Before this existed, an app building a `*Layout` for a primitive
-    /// with no `Backend::X_layout` entry point of its own — [`Dialog`]
-    /// and [`ContextMenu`] are the two in this crate; see
-    /// [`Dialog::measure_generic`] and
-    /// [`ContextMenu::measure_generic_width`]'s own docs for the exact
-    /// gap — had no portable way to ask "how wide does this label render
-    /// in the chrome font." It fell back to `char_width() * label.chars().count()`,
-    /// which is exactly right for TUI's fixed cell grid and exactly
+    /// Lets an app building a `*Layout` for a primitive with no
+    /// `Backend::X_layout` entry point of its own ([`Dialog`] and
+    /// [`ContextMenu`] are the two in this crate — see
+    /// [`Dialog::measure_generic`] / [`ContextMenu::measure_generic_width`])
+    /// ask "how wide does this label render in the chrome font" without
+    /// falling back to `char_width() * label.chars().count()`, which is
     /// wrong for a proportional chrome font (GTK's default `ui_font` is
-    /// `"Sans 11"`, macOS's is the CoreText system UI font) — the same
-    /// `#912` bug class [`Self::list_char_width`] exists to fix for
-    /// `ListView`, generalised to arbitrary text instead of one average
-    /// advance.
-    ///
-    /// Primitives whose paint already migrated onto `PaintSurface`
-    /// (`TabBar`, `MenuBar`, `Toolbar`, `StatusBar`, …) solved this
-    /// internally, years before this method existed: each one threads a
-    /// [`crate::primitives::layout_metrics::TextMeasure`] (or an inline
-    /// closure of the same shape) from its own backend module into the
-    /// shared `layout_metrics` function, so their width math was never
-    /// char-cell arithmetic in the first place — this method does not
-    /// change any of their call sites. It exists for everything above
-    /// that layer: an app computing a `Dialog`/`ContextMenu` `*Measure`
-    /// by hand, or a future primitive that needs the same seam without
-    /// re-deriving it per backend.
+    /// `"Sans 11"`, macOS's is the CoreText system UI font).
     ///
     /// D-014 (`docs/decisions/DECISIONS.md`) settles the TUI story as
     /// **degrade, not full parity**: GUI backends return the font's real
     /// shaped advance; TUI returns
-    /// [`crate::text_util::display_width`]'s cell count (same value
-    /// [`Self::char_width`]-based arithmetic already produced there, so
-    /// TUI layouts are bit-for-bit unchanged) with a `height` of `1.0`.
-    /// `role` is accepted but has nothing to select between on TUI — a
-    /// terminal cell grid has one font by definition (see
+    /// [`crate::text_util::display_width`]'s cell count with a `height`
+    /// of `1.0`. `role` is accepted but has nothing to select between on
+    /// TUI — a terminal cell grid has one font by definition (see
     /// [`crate::FontRole`]'s module doc).
     ///
-    /// No default: a monospace fallback (`char_width() * text.chars().count()`)
-    /// would quietly reproduce the exact bug this method exists to fix on
-    /// three of the four in-tree backends, the same reasoning
-    /// [`Self::list_char_width`] already documents for itself. Every
-    /// in-tree backend measures for real: `GtkBackend` via a scratch
-    /// `pango::Layout` built from the role's `FontDescription`,
-    /// `MacBackend` via `macos::text::measure_text` against
-    /// `chrome_font`/`current_font`, `WinBackend` via
+    /// No default: every in-tree backend measures for real — `GtkBackend`
+    /// via a scratch `pango::Layout` built from the role's
+    /// `FontDescription`, `MacBackend` via `macos::text::measure_text`
+    /// against `chrome_font`/`current_font`, `WinBackend` via
     /// `DWrite::measure_text` against `chrome_dwrite`/`dwrite` (falling
     /// back to a `char_width`-scaled estimate before a surface attaches,
     /// matching every other pre-attach degrade on that backend).
@@ -2273,7 +1948,7 @@ pub trait Backend: sealed::Sealed {
     /// overlay scrollbar, drawn on top of the content edge rather than
     /// laid out beside it. A caller computing a content viewport width
     /// (`rect.width - backend.scrollbar_reserve()`) gets the right
-    /// answer without asking which backend it's talking to (issue #776).
+    /// answer without asking which backend it's talking to.
     ///
     /// Distinct from [`Self::terminal_scrollbar_default_width`]: that one
     /// is the gutter width of the `Terminal` *primitive*'s own scrollbar,
@@ -2317,11 +1992,9 @@ pub trait Backend: sealed::Sealed {
     /// paint fractional heights exactly and return the input unchanged.
     ///
     /// This is the sanctioned replacement for consumer-side `.round()` on
-    /// a `line_height`-derived extent (quadraui#632). Before this method
-    /// existed, `coord-tui` reimplemented TUI's cell-rounding rule by hand
-    /// in two places — the layout math and the hit-test — that had to be
-    /// kept in sync manually, and drifted by one row twice (#464, #995).
-    /// Call this instead of modelling the rounding yourself:
+    /// a `line_height`-derived extent. Call this instead of modelling the
+    /// rounding yourself, so the layout math and the hit-test can't drift
+    /// apart:
     ///
     /// ```ignore
     /// let tab_bar_h = backend.snap_height(backend.line_height() * 1.4);
@@ -2353,14 +2026,13 @@ pub trait Backend: sealed::Sealed {
     /// `line_height * 1.4`; TUI: fixed 1 cell) but a host can pin it via
     /// [`TreeStyle::row_height`](crate::types::TreeStyle::row_height)
     /// instead — e.g. to match a fixed design-system row pitch
-    /// independent of editor font size (#623). TUI ignores the override
+    /// independent of editor font size. TUI ignores the override
     /// (a terminal cell can't be subdivided).
     fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     fn draw_list(&mut self, rect: Rect, list: &ListView);
     /// Draw `table` into `rect` and return its layout for hit-testing.
     /// Coordinate frame: **LOCAL** — `hit_regions` / row bounds are
-    /// relative to `rect`'s origin, matching [`Self::data_table_layout`]
-    /// (issue #505).
+    /// relative to `rect`'s origin, matching [`Self::data_table_layout`].
     fn draw_data_table(
         &mut self,
         rect: Rect,
@@ -2370,8 +2042,8 @@ pub trait Backend: sealed::Sealed {
     /// Compute the data-table layout without painting. Coordinate frame:
     /// **LOCAL** — relative to `rect`'s origin, `(0, 0)` at `rect`'s
     /// top-left; callers subtract `rect.x` / `rect.y` from absolute
-    /// click coordinates before calling `hit_test` (issue #505; see the
-    /// module doc's *Coordinate frames* section).
+    /// click coordinates before calling `hit_test` (see the module doc's
+    /// *Coordinate frames* section).
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
@@ -2388,39 +2060,27 @@ pub trait Backend: sealed::Sealed {
     /// Mirrors [`Backend::list_hscrollbar`]; see [`ListView::vscrollbar`].
     fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
     /// Compute the list layout without painting — the no-paint twin of
-    /// [`Self::draw_list`] (issue #506: `ListView::layout` already existed
-    /// but `draw_list` computed it inline, with no way for a host to ask
-    /// for the same geometry without repainting). `draw_list` and this
-    /// method route through the same backend-internal resolver
-    /// (`tui_list_layout` / `gtk_list_layout` / `win_list_layout` /
-    /// `mac_list_layout`), so paint and no-paint can't drift apart. Every
-    /// pixel backend's resolver shares its h-scrollbar row reservation
-    /// via `primitives::layout_metrics::list_layout` (#712) — before
-    /// that fix, `mac_list_layout` had no way to compute the reservation
-    /// at all and `macos::list::draw_list` recomputed a second, reduced
-    /// layout only at paint time, so this method's claim didn't actually
-    /// hold on macOS whenever `max_content_width` forced a scrollbar.
+    /// [`Self::draw_list`]. `draw_list` and this method route through the
+    /// same backend-internal resolver (`tui_list_layout` / `gtk_list_layout`
+    /// / `win_list_layout` / `mac_list_layout`), so paint and no-paint
+    /// can't drift apart. Every pixel backend's resolver shares its
+    /// h-scrollbar row reservation via `primitives::layout_metrics::list_layout`.
     ///
     /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
     /// at `rect`'s top-left; does **not** account for
     /// [`ListView::bordered`]'s 1-cell/1px border inset, matching every
-    /// backend's `draw_list` (issue #505).
+    /// backend's `draw_list`.
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
     fn draw_form(&mut self, rect: Rect, form: &Form);
     fn draw_palette(&mut self, rect: Rect, palette: &Palette);
 
     /// Compute the palette layout without painting — the no-paint twin
-    /// of [`Self::draw_palette`] (issue #818). Added deliberately later
-    /// than sibling `<name>_layout` methods: see
-    /// `docs/decisions/DECISIONS.md` D-007 "Palette: deferred, not
-    /// missed" for why shipping this before fixing a latent 1px item-row
-    /// drift in `gtk::draw_palette` (and TUI's `draw_palette` never
-    /// calling [`Palette::layout`] at all) would have made that drift
-    /// externally visible the moment a host trusted this for
-    /// hit-testing. Both are fixed as of this method landing — every
-    /// backend's `palette_layout` now shares its row/column arithmetic
-    /// with its own `draw_palette` (`tui_palette_layout`,
-    /// `gtk_palette_layout`, `mac_palette_layout`, `win_palette_layout`).
+    /// of [`Self::draw_palette`]. Every backend's `palette_layout` shares
+    /// its row/column arithmetic with its own `draw_palette`
+    /// (`tui_palette_layout`, `gtk_palette_layout`, `mac_palette_layout`,
+    /// `win_palette_layout`), so paint and no-paint can't drift apart —
+    /// see `docs/decisions/DECISIONS.md` D-007 "Palette: deferred, not
+    /// missed" for the rationale.
     ///
     /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
     /// at `rect`'s top-left, matching [`Palette::layout`]'s native
@@ -2441,17 +2101,14 @@ pub trait Backend: sealed::Sealed {
     /// exact row layout, `" / "`-prefixed prompt construction, and
     /// placeholder logic.
     ///
-    /// **Height contract (issue #1041 review):** the header row always
-    /// paints at one `line_height`. The search row paints only when
-    /// `rect.height` covers a second row (every implementer uses the
-    /// same `line_height * 1.5` threshold, matching TUI's `area.height
-    /// < 2` cell check) — a caller that reserves a single row (e.g.
+    /// **Height contract:** the header row always paints at one
+    /// `line_height`. The search row paints only when `rect.height`
+    /// covers a second row (every implementer uses the same
+    /// `line_height * 1.5` threshold, matching TUI's `area.height < 2`
+    /// cell check) — a caller that reserves a single row (e.g.
     /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
     /// gets a header-only strip, not a second, unrequested row painted
-    /// past the rect the caller reserved. Before this contract existed,
-    /// GTK/macOS/Windows always painted both rows regardless of
-    /// `rect.height`, silently overpainting whatever a "header-only"
-    /// caller placed directly beneath the chrome.
+    /// past the rect the caller reserved.
     ///
     /// No default impl — every backend implementer sees this as a compile
     /// error and fills in a real rasteriser (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`
@@ -2475,9 +2132,9 @@ pub trait Backend: sealed::Sealed {
     //
     // Methods that produce hit-region data (clickable segments,
     // close-button rects, link rects) return it directly so callers
-    // route clicks against the same data the rasteriser used to paint.
+    // route clicks against the same data the rasteriser paints with.
     /// Draw a status bar, reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`] (issue #819).
+    /// [`InteractionState`] keyed by [`WidgetId`].
     ///
     /// The rasteriser tints the background of the clickable segment
     /// whose `action_id` matches `interaction.hovered()` /
@@ -2499,7 +2156,7 @@ pub trait Backend: sealed::Sealed {
     /// font this one call paints with, without touching the ambient
     /// [`Self::set_ui_font`] state every *other* status bar (or any other
     /// [`crate::font_role::ChromePrimitive::StatusBar`] paint) draws in
-    /// this frame (issue #1045 item 2).
+    /// this frame.
     ///
     /// `font_scale` multiplies the backend's current UI font's point
     /// size for this call only — `1.0` behaves identically to
@@ -2509,27 +2166,13 @@ pub trait Backend: sealed::Sealed {
     /// `set_ui_font` call (which would perturb every other chrome
     /// primitive too — see [`Self::set_ui_font`]'s own doc).
     ///
-    /// Before this method existed, a host had no portable way to render
-    /// *one* status bar at a different size at all: neither
-    /// `draw_status_bar_interactive` nor the primitive's own `StatusBar`
-    /// data carried a font-size knob, unlike [`Self::draw_dialog`] /
-    /// [`Self::draw_rich_text_popup`], both of which already vary a
-    /// per-line/per-call scale independent of the ambient chrome font.
-    /// `vimcode`'s `render::BREADCRUMB_ROW_HEIGHT_PX` doc names this
-    /// exact gap — its breadcrumb *row height* is already independent of
-    /// `settings.font_size` (a fixed pixel constant), but the breadcrumb
-    /// *text* painted into that row still tracked it because this method
-    /// did not exist yet.
-    ///
     /// Default: ignores `font_scale` and forwards to
     /// [`Self::draw_status_bar_interactive`] unscaled — the honest
     /// default for TUI (a fixed-cell backend has no font size to scale)
     /// and any future backend that hasn't wired real per-call scaling
     /// yet. Additive over `draw_status_bar_interactive`, not a
-    /// replacement for it — see `CLAUDE.md`'s public-API rule 2 for why a
-    /// new method alongside the old one, rather than a signature change,
-    /// is what keeps every existing in-tree and downstream call site
-    /// compiling unchanged.
+    /// replacement for it, so every existing in-tree and downstream call
+    /// site keeps compiling unchanged.
     ///
     /// `font_scale` is expected to be a small positive multiplier (e.g.
     /// `0.5`–`2.0`); implementations clamp a degenerate value (`0.0` or
@@ -2548,20 +2191,17 @@ pub trait Backend: sealed::Sealed {
 
     /// Draw a status bar with hover/pressed supplied positionally.
     ///
-    /// # Deprecated (issue #819)
+    /// # Deprecated
     ///
     /// Superseded by [`Self::draw_status_bar_interactive`], which reads
     /// the same two values out of one [`InteractionState`] keyed by
-    /// [`WidgetId`] instead of two positional `Option<&WidgetId>`
-    /// slots. Both real downstream consumers migrated off this ahead of
-    /// issue #1251 (the v0.1.0 breaking batch, phase 2) — but this one
-    /// stays, unlike its `draw_toolbar`/`draw_sidebar_panel`/
-    /// `draw_toast_stack` siblings #1251 did remove, because the sealed
-    /// milestone acceptance slices `tests/acceptance/ms-11/{structural_parity,c0_paint_smoke}.rs`
+    /// [`WidgetId`] instead of two positional `Option<&WidgetId>` slots.
+    /// Kept because the sealed milestone acceptance slices
+    /// `tests/acceptance/ms-11/{structural_parity,c0_paint_smoke}.rs`
     /// still call it positionally and this crate cannot edit anything
     /// under `tests/acceptance/` (see `quadraui/tests/acceptance.rs`'s
-    /// module doc). Removal target: whichever Gate A pass migrates
-    /// those two slices off the positional call, not before v0.2.0.
+    /// module doc). Removal target: whichever Gate A pass migrates those
+    /// two slices off the positional call, not before v0.2.0.
     #[deprecated(
         since = "0.0.1",
         note = "use `draw_status_bar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819; removal target: once the sealed `tests/acceptance/ms-11` slices that still call this positionally migrate, not before v0.2.0"
@@ -2583,10 +2223,9 @@ pub trait Backend: sealed::Sealed {
     /// mouse state). Returns [`TabBarHits`] for click dispatch +
     /// scroll-offset reconciliation.
     ///
-    /// `TabBarHits` itself is `#[deprecated]` (issue #823); this method's
-    /// signature isn't changing in this PR — see that struct's doc for why
-    /// the actual six-method/four-backend swap to [`TabBarLayout`] is
-    /// separate follow-up work, not something this shim PR does.
+    /// `TabBarHits` itself is `#[deprecated]` — see that struct's doc for
+    /// why the six-method/four-backend swap to [`TabBarLayout`] is
+    /// separate follow-up work.
     #[allow(deprecated)]
     fn draw_tab_bar(
         &mut self,
@@ -2595,12 +2234,8 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
     /// Draw a tab bar, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`] (issue #919).
-    ///
-    /// #823 deprecated `TabBarHits` but left every accessor returning it
-    /// with no replacement a consumer could call instead — #919 is that
-    /// replacement, added *alongside* [`Self::draw_tab_bar`] rather than
-    /// in place of it, so no existing caller breaks (`CLAUDE.md` rule 8).
+    /// deprecated [`TabBarHits`]. Added *alongside* [`Self::draw_tab_bar`]
+    /// rather than in place of it, so no existing caller breaks.
     /// Paints exactly what [`Self::draw_tab_bar`] paints (icon-less
     /// sidecar of [`Self::draw_tab_bar_icons_layout`]); the two must never
     /// drift apart, same invariant [`Self::draw_tab_bar`] already holds
@@ -2622,8 +2257,8 @@ pub trait Backend: sealed::Sealed {
         bar: &TabBar,
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout;
-    /// Draw a tab bar with per-tab icon glyphs (#620) — VS Code's
-    /// coloured language/file-type badge on each tab.
+    /// Draw a tab bar with per-tab icon glyphs — VS Code's coloured
+    /// language/file-type badge on each tab.
     ///
     /// `icons` is a **sidecar slice parallel to `bar.tabs`**: entry `i`
     /// decorates tab `i`, `None` (or an index past the slice's end)
@@ -2651,7 +2286,7 @@ pub trait Backend: sealed::Sealed {
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     ///
-    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
     #[allow(deprecated)]
     fn draw_tab_bar_icons(
         &mut self,
@@ -2661,8 +2296,8 @@ pub trait Backend: sealed::Sealed {
         hovered_close_tab: Option<usize>,
     ) -> TabBarHits;
     /// Draw a tab bar with per-tab icon glyphs, returning [`TabBarLayout`]
-    /// instead of the deprecated [`TabBarHits`] (issue #919). The
-    /// icon-aware twin of [`Self::draw_tab_bar_layout`], exactly as
+    /// instead of the deprecated [`TabBarHits`]. The icon-aware twin of
+    /// [`Self::draw_tab_bar_layout`], exactly as
     /// [`Self::draw_tab_bar_icons`] is the twin of [`Self::draw_tab_bar`]
     /// — same `icons` sidecar convention, same bar-relative coordinate
     /// space as [`Self::draw_tab_bar_layout`].
@@ -2676,15 +2311,15 @@ pub trait Backend: sealed::Sealed {
         icons: &[Option<TabIcon>],
         hovered_close_tab: Option<usize>,
     ) -> TabBarLayout;
-    /// Draw a tab bar with an explicit [`TabChrome`] request (#631): which
+    /// Draw a tab bar with an explicit [`TabChrome`] request: which
     /// decoration, if any, should enclose the active tab's full content
     /// (label *and* close glyph).
     ///
     /// Added rather than folded into [`Self::draw_tab_bar`]'s signature,
-    /// and given a default body, so that #631 breaks no existing `Backend`
-    /// implementor and no existing call site — see
-    /// `primitives::tab_bar`'s [`TabChrome`] doc, which mirrors #541's
-    /// [`crate::TooltipChrome`] shape for exactly this reason.
+    /// and given a default body, so it breaks no existing `Backend`
+    /// implementor and no existing call site — see `primitives::tab_bar`'s
+    /// [`TabChrome`] doc, which mirrors [`crate::TooltipChrome`]'s shape
+    /// for exactly this reason.
     ///
     /// The default body **ignores `chrome`** and delegates to
     /// [`Self::draw_tab_bar`], i.e. renders [`crate::TabFrame::None`] —
@@ -2692,7 +2327,7 @@ pub trait Backend: sealed::Sealed {
     /// own. The TUI and GTK backends override it and honour
     /// [`crate::TabFrame::Brackets`] in full.
     ///
-    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
     #[allow(deprecated)]
     fn draw_tab_bar_with_chrome(
         &mut self,
@@ -2705,9 +2340,8 @@ pub trait Backend: sealed::Sealed {
         self.draw_tab_bar(rect, bar, hovered_close_tab)
     }
     /// Draw a tab bar with an explicit [`TabChrome`] request, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] (issue
-    /// #919) — the `TabBarLayout`-returning twin of
-    /// [`Self::draw_tab_bar_with_chrome`].
+    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] — the
+    /// `TabBarLayout`-returning twin of [`Self::draw_tab_bar_with_chrome`].
     ///
     /// Default body **ignores `chrome`** and delegates to
     /// [`Self::draw_tab_bar_layout`], matching
@@ -2726,7 +2360,7 @@ pub trait Backend: sealed::Sealed {
     /// state so the rasteriser can paint a tint on the hovered row.
     /// Returns per-row hit regions for click + tooltip dispatch.
     ///
-    /// # Coordinate space — **relative to `rect`** (issue #552)
+    /// # Coordinate space — **relative to `rect`**
     ///
     /// Each [`ActivityBarRowHit`]'s `y_start` / `y_end` is measured from
     /// the **top edge of `rect`**: the first row starts at `0.0` no
@@ -2755,24 +2389,24 @@ pub trait Backend: sealed::Sealed {
         hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit>;
 
-    /// Draw an activity bar with an explicit [`ActivityBarStyle`] request
-    /// (#658) — currently just the active item's row-fill colour, VS Code
-    /// style (no line, a soft chip on the row itself).
+    /// Draw an activity bar with an explicit [`ActivityBarStyle`] request —
+    /// currently just the active item's row-fill colour, VS Code style
+    /// (no line, a soft chip on the row itself).
     ///
     /// Added rather than folded into [`Self::draw_activity_bar`]'s
-    /// signature, and given a default body, so that #658 breaks no existing
+    /// signature, and given a default body, so it breaks no existing
     /// `Backend` implementor and no existing call site — mirrors
-    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`] (#541)
-    /// and [`TabChrome`] / [`Self::draw_tab_bar_with_chrome`] (#631), which
-    /// solve the identical "additive field would break exhaustive
-    /// downstream literals" problem for `Tooltip` and `TabBar`. See
+    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`] and
+    /// [`TabChrome`] / [`Self::draw_tab_bar_with_chrome`], which solve the
+    /// identical "additive field would break exhaustive downstream
+    /// literals" problem for `Tooltip` and `TabBar`. See
     /// [`ActivityBarStyle`]'s doc for the full reasoning.
     ///
     /// The default body **ignores `style`** and delegates to
     /// [`Self::draw_activity_bar`] — the correct fallback for a backend
     /// with no fill vocabulary of its own. The TUI, GTK, and macOS
     /// backends override it and honour `style.active_bg` in full; Win
-    /// takes the default for now (#19 — every `draw_*` method there is a
+    /// takes the default for now (every `draw_*` method there is a
     /// stub).
     fn draw_activity_bar_with_style(
         &mut self,
@@ -2790,14 +2424,10 @@ pub trait Backend: sealed::Sealed {
     /// recover hit regions for click dispatch.
     ///
     /// Returns `hit_regions` in the same **bar-local** space as
-    /// [`Self::draw_status_bar`] (relative to `rect.x` / `rect.y`).
-    ///
-    /// Audited under issue #552 and **ruled out**: all four paths (TUI /
-    /// GTK × draw / layout) return the primitive's own unshifted
-    /// `StatusBar::layout` output, so paint and no-paint already agree and
-    /// no backend folds the origin in. Unlike the activity bar, nothing
-    /// here needed changing — only this note, so the next reader doesn't
-    /// have to re-derive it.
+    /// [`Self::draw_status_bar`] (relative to `rect.x` / `rect.y`): every
+    /// backend returns the primitive's own unshifted `StatusBar::layout`
+    /// output, so paint and no-paint already agree and no backend folds
+    /// the origin in.
     fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
 
     /// Compute the tab bar layout without painting. Returns the same
@@ -2805,49 +2435,22 @@ pub trait Backend: sealed::Sealed {
     /// right-segment bounds are all in **target-surface (absolute)
     /// coordinates**, i.e. shifted by `rect.x` / `rect.y` so callers can
     /// compare them directly against raw click coordinates without any
-    /// further adjustment.
-    ///
-    /// Audited under issue #552 and **fixed**: this was documented
-    /// absolute but returned bar-relative x on *both* TUI and GTK, because
-    /// only `draw_tab_bar` applied the origin shift. Both impls now route
-    /// through [`shift_tab_bar_hits`], the same helper the rasterisers
-    /// use. Note the tab bar's absolute convention is the opposite of
+    /// further adjustment. Every backend routes through
+    /// [`shift_tab_bar_hits`], the same helper the rasterisers use. Note
+    /// the tab bar's absolute convention is the opposite of
     /// [`Self::draw_activity_bar`]'s bar-relative one — deliberate, and
-    /// now stated on both.
+    /// stated on both.
     ///
-    /// # Downstream impact (issue #552)
-    ///
-    /// This changes the actual values `tab_bar_layout` returns, not just
-    /// its doc. `grep -rn "tab_bar_layout" ~/src/claude-coordinator/tui/src
-    /// ~/src/vimcode/src`: `coord-tui`'s `tui/src/app/render.rs:229` only
-    /// reads `.correct_scroll_offset`, unaffected. `vimcode`'s
-    /// `src/gtk/mod.rs` — `tab_hits_to_pixel_hits` (~line 141),
-    /// `abs_visible_slots` (~line 216), `abs_close_record` (~line 198),
-    /// plus the call sites in `src/gtk/click.rs` and `src/gtk/draw.rs` —
-    /// all consume `hits.slot_positions` / `close_bounds` under the
-    /// explicit assumption the doc comment at `gtk/mod.rs:135-137` states
-    /// ("absolute pixel x, from `Backend::tab_bar_layout`"). Since the
-    /// pre-fix implementation didn't actually deliver that, vimcode's
-    /// `tab_hits_to_pixel_hits` — which subtracts `bar_left_x` from
-    /// already-relative input via its `rel()` closure — was very likely
-    /// silently double-subtracting whenever `rect.x != 0` (sidebar
-    /// visible, or the 2nd+ split-group tab bar), shifting GTK tab-bar
-    /// click/close-button hit-testing left by `rect.x`. This PR is
-    /// believed to **fix** that latent bug, not introduce a regression —
-    /// but that is this repo's analysis, not a vimcode-side confirmation;
-    /// vimcode should verify with its own GTK tab-bar click tests before
-    /// relying on the corrected geometry.
-    ///
-    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
     #[allow(deprecated)]
     fn tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarHits;
 
     /// Compute the tab bar layout without painting, returning
-    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`] (issue
-    /// #919). The `TabBarLayout`-returning twin of [`Self::tab_bar_layout`],
-    /// added alongside it rather than in place of it (`CLAUDE.md` rule 8)
-    /// — every backend already resolves this geometry internally before
-    /// narrowing it down to `TabBarHits`; this exposes it directly.
+    /// [`TabBarLayout`] instead of the deprecated [`TabBarHits`]. The
+    /// `TabBarLayout`-returning twin of [`Self::tab_bar_layout`], added
+    /// alongside it rather than in place of it — every backend already
+    /// resolves this geometry internally before narrowing it down to
+    /// `TabBarHits`; this exposes it directly.
     ///
     /// Returned in `TabBarLayout`'s own **bar-relative** space — see that
     /// struct's doc — which is the *opposite* convention from
@@ -2865,7 +2468,7 @@ pub trait Backend: sealed::Sealed {
     fn resolve_tab_bar_layout(&self, rect: Rect, bar: &TabBar) -> TabBarLayout;
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with per-tab icons (#620). The no-paint twin of
+    /// with per-tab icons. The no-paint twin of
     /// [`Self::draw_tab_bar_icons`], exactly as [`Self::tab_bar_layout`]
     /// is the twin of [`Self::draw_tab_bar`] — same absolute-coordinate
     /// contract, same `icons` sidecar convention.
@@ -2879,7 +2482,7 @@ pub trait Backend: sealed::Sealed {
     /// No default impl — same rule-7 reasoning as
     /// [`Self::draw_tab_bar_icons`].
     ///
-    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
     #[allow(deprecated)]
     fn tab_bar_layout_icons(
         &self,
@@ -2890,7 +2493,7 @@ pub trait Backend: sealed::Sealed {
 
     /// Compute the tab bar layout without painting, for a bar painted
     /// with per-tab icons, returning [`TabBarLayout`] instead of the
-    /// deprecated [`TabBarHits`] (issue #919). The icon-aware twin of
+    /// deprecated [`TabBarHits`]. The icon-aware twin of
     /// [`Self::resolve_tab_bar_layout`], exactly as
     /// [`Self::tab_bar_layout_icons`] is the twin of
     /// [`Self::tab_bar_layout`] — same `icons` sidecar convention, same
@@ -2906,8 +2509,8 @@ pub trait Backend: sealed::Sealed {
     ) -> TabBarLayout;
 
     /// Compute the tab bar layout without painting, for a bar painted
-    /// with [`Self::draw_tab_bar_with_chrome`] (#631). The no-paint twin
-    /// of that method, exactly as [`Self::tab_bar_layout`] is the twin of
+    /// with [`Self::draw_tab_bar_with_chrome`]. The no-paint twin of that
+    /// method, exactly as [`Self::tab_bar_layout`] is the twin of
     /// [`Self::draw_tab_bar`] — same absolute-coordinate contract.
     ///
     /// A caller that paints with chrome **must** route its no-paint click
@@ -2920,7 +2523,7 @@ pub trait Backend: sealed::Sealed {
     /// [`Self::tab_bar_layout`], matching [`Self::draw_tab_bar_with_chrome`]'s
     /// default.
     ///
-    /// `TabBarHits` is `#[deprecated]` (issue #823) — see [`Self::draw_tab_bar`].
+    /// `TabBarHits` is `#[deprecated]` — see [`Self::draw_tab_bar`].
     #[allow(deprecated)]
     fn tab_bar_layout_with_chrome(
         &self,
@@ -2934,7 +2537,7 @@ pub trait Backend: sealed::Sealed {
 
     /// Compute the tab bar layout without painting, for a bar painted
     /// with chrome, returning [`TabBarLayout`] instead of the deprecated
-    /// [`TabBarHits`] (issue #919) — the `TabBarLayout`-returning twin of
+    /// [`TabBarHits`] — the `TabBarLayout`-returning twin of
     /// [`Self::tab_bar_layout_with_chrome`].
     ///
     /// Default body ignores `chrome` and delegates to
@@ -2953,7 +2556,7 @@ pub trait Backend: sealed::Sealed {
     /// Compute activity bar row hit regions without painting. Returns
     /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
     /// `y_start` / `y_end` measured from `rect.y`, first row at `0.0`.
-    /// See that method for the full contract (issue #552).
+    /// See that method for the full contract.
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
 
     /// Draw a terminal cell grid. No hit-region data is returned;
@@ -2962,8 +2565,8 @@ pub trait Backend: sealed::Sealed {
     fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
     /// The reserved width of a `Terminal`'s scrollbar gutter when
     /// [`TerminalScrollbar::width`](crate::primitives::terminal::TerminalScrollbar::width)
-    /// is `None`, in this backend's own surface-native unit (issue #506
-    /// review fix). Every `draw_terminal` implementation falls back to a
+    /// is `None`, in this backend's own surface-native unit. Every
+    /// `draw_terminal` implementation falls back to a
     /// hardcoded default when the caller didn't specify a width, and
     /// that default is backend-shaped, not uniform: TUI's cells *are*
     /// the coordinate system, so its gutter is exactly one column
@@ -2982,10 +2585,7 @@ pub trait Backend: sealed::Sealed {
         8.0
     }
     /// Compute the viewport → grid conversion [`Self::draw_terminal`]
-    /// implicitly uses (issue #506: `Terminal::layout` already existed as
-    /// a pure fn but no `Backend` method exposed it, so hosts had to
-    /// re-derive `rect.width / char_width` by hand to hit-test a click
-    /// against a cell). Uses this backend's own [`Self::char_width`] /
+    /// implicitly uses. Uses this backend's own [`Self::char_width`] /
     /// [`Self::line_height`] as the cell dimensions — TUI's `(1.0, 1.0)`
     /// reproduces its uniform cell grid exactly; pixel backends get the
     /// same font metrics `draw_terminal`'s cell iteration assumes.
@@ -2998,14 +2598,12 @@ pub trait Backend: sealed::Sealed {
     /// iterating cells (`cell_area_w = area.width.saturating_sub(sb_cols)`
     /// on TUI; `cell_area_w = (rect.width - sb_width).max(0.0)` on
     /// GTK/macOS/Win). Skipping this step would report `grid_cols` wide
-    /// enough to claim the scrollbar gutter itself as a clickable cell —
-    /// exactly the "paint and no-paint silently disagree" bug class rule
-    /// 5 exists to prevent (issue #506 review fix).
+    /// enough to claim the scrollbar gutter itself as a clickable cell.
     ///
     /// Coordinate frame: **LOCAL** — relative to `rect`'s origin; see
     /// [`crate::primitives::terminal::TerminalLayout::hit_test`] /
     /// [`crate::primitives::terminal::TerminalLayout::cell_bounds`],
-    /// neither of which fold in an origin offset (issue #505).
+    /// neither of which fold in an origin offset.
     ///
     /// Default body: uniform for every backend, since it's a pure
     /// function of the metrics above plus [`Self::terminal_scrollbar_default_width`]
@@ -3049,16 +2647,10 @@ pub trait Backend: sealed::Sealed {
     /// color block (e.g. `AppShell`'s sidebar/editor resize divider),
     /// not a widget.
     ///
-    /// Added by issue #996: the divider used to be faked as N stacked
-    /// one-row `StatusBar`s (`fg == bg`, blank text) — exact on a cell
-    /// grid, where consecutive rows abut by construction, but wrong on a
-    /// pixel backend, where `draw_status_bar_interactive` fills only
-    /// `current_line_height` regardless of the row rect's own height, so
-    /// every row painted short of its own pitch and the gaps between
-    /// rows showed as a dashed line. A single fill over the *whole*
-    /// rect is exact on every backend and strictly cheaper than N
-    /// layouts per frame — use this instead of the `StatusBar` hack for
-    /// any future solid-fill chrome.
+    /// A single fill over the *whole* rect is exact on every backend
+    /// (unlike faking it as N stacked one-row `StatusBar`s, which paints
+    /// short of a pixel backend's own row pitch and leaves gaps between
+    /// rows) and strictly cheaper than N layouts per frame.
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser
@@ -3085,15 +2677,13 @@ pub trait Backend: sealed::Sealed {
     /// zero-width range) paints identically to `draw_command_line`.
     ///
     /// This is a **new method, not a new `CommandLine` field or a changed
-    /// `draw_command_line` signature** (issue #1001) — `CommandLine` is an
-    /// all-`pub`-field, exhaustively-constructed-by-consumers primitive
-    /// (see `crate::primitives::text_input`'s module doc for why that
-    /// makes a field addition breaking under `PRIMITIVE_RULES.md` rule 8),
-    /// so the selection a host is tracking is threaded through as an
-    /// argument instead — the same non-breaking shape `TextInput`/
-    /// `TextEditor` (#833) established. `Backend` itself is in-tree-only
-    /// (`CLAUDE.md`'s *Downstream consumers* section), so adding a method
-    /// here costs no downstream consumer anything.
+    /// `draw_command_line` signature** — `CommandLine` is an all-`pub`-field,
+    /// exhaustively-constructed-by-consumers primitive (see
+    /// `crate::primitives::text_input`'s module doc for why that makes a
+    /// field addition breaking under `PRIMITIVE_RULES.md` rule 8), so the
+    /// selection a host is tracking is threaded through as an argument
+    /// instead — the same non-breaking shape `TextInput`/`TextEditor`
+    /// established.
     fn draw_command_line_selection(
         &mut self,
         rect: Rect,
@@ -3101,24 +2691,18 @@ pub trait Backend: sealed::Sealed {
         selection: Option<(usize, usize)>,
     );
 
-    /// Compute the click/selection layout `draw_command_line` paints from
-    /// (issue #705). Hosts call this to hit-test a click to a **byte
-    /// offset** in `cmd.text` (`CommandLineLayout::hit_test`) and to turn a
-    /// selection range back into a paintable rect
+    /// Compute the click/selection layout `draw_command_line` paints from.
+    /// Hosts call this to hit-test a click to a **byte offset** in
+    /// `cmd.text` (`CommandLineLayout::hit_test`) and to turn a selection
+    /// range back into a paintable rect
     /// (`CommandLineLayout::selection_bounds`), without re-deriving glyph
-    /// metrics or repainting.
-    ///
-    /// This is the fix for the gap `CommandLine` shipped with: the TUI
-    /// rasteriser could support mouse drag-selection only by reading back
-    /// inverted terminal cells after paint, a trick with no GTK/macOS/Win
-    /// equivalent — so the command line was mouse-selectable on TUI and
-    /// structurally could not be on any pixel backend. Every backend now
-    /// exposes the same character-offset mapping, so a host can share one
-    /// selection implementation instead of leaving pixel backends behind.
+    /// metrics or repainting. Every backend exposes the same
+    /// character-offset mapping, so a host can share one selection
+    /// implementation across all of them.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
     /// callers compare directly against raw click coordinates, matching
-    /// [`Self::text_input_layout`] (issue #505).
+    /// [`Self::text_input_layout`].
     fn command_line_layout(&self, rect: Rect, cmd: &CommandLine) -> CommandLineLayout;
 
     /// Compute the text-display layout the rasteriser would produce for
@@ -3127,8 +2711,7 @@ pub trait Backend: sealed::Sealed {
     /// re-deriving metrics — paint and click consume one layout per
     /// frame, the source-of-truth contract.
     ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin
-    /// (issue #505).
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin.
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout;
 
     /// Draw a [`TextInput`] (multi-line text entry) and return the
@@ -3136,16 +2719,14 @@ pub trait Backend: sealed::Sealed {
     /// text lines, cursor, and placeholder (when active).
     ///
     /// Coordinate frame: **ABSOLUTE** — `content_bounds` / hit regions
-    /// are shifted by `rect.x` / `rect.y`, matching [`Self::text_input_layout`]
-    /// (issue #505).
+    /// are shifted by `rect.x` / `rect.y`, matching [`Self::text_input_layout`].
     fn draw_text_input(&mut self, rect: Rect, ti: &TextInput) -> TextInputLayout;
 
     /// Compute the layout `draw_text_input` would produce. Used by
     /// hosts to route clicks without re-rendering.
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
-    /// callers compare directly against raw click coordinates
-    /// (issue #505).
+    /// callers compare directly against raw click coordinates.
     fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
 
     /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
@@ -3159,12 +2740,12 @@ pub trait Backend: sealed::Sealed {
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout);
 
     /// Draw a [`Tooltip`] popup with an explicit [`TooltipChrome`]
-    /// request (#541): which border to stroke (`Sides` / `Full` /
-    /// `None`) and an optional title to embed in `Full`'s top rule.
+    /// request: which border to stroke (`Sides` / `Full` / `None`) and an
+    /// optional title to embed in `Full`'s top rule.
     ///
     /// Added rather than folded into [`Backend::draw_tooltip`]'s
-    /// signature, and given a default body, so that #541 breaks no
-    /// existing `Backend` implementor and no existing call site — see
+    /// signature, and given a default body, so it breaks no existing
+    /// `Backend` implementor and no existing call site — see
     /// `primitives::tooltip`'s module doc.
     ///
     /// The default body **ignores `chrome`** and delegates to
@@ -3242,7 +2823,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — `hit_regions` / body bounds are
     /// shifted by `rect.x` / `rect.y`; callers compare them directly
-    /// against raw click coordinates (issue #505).
+    /// against raw click coordinates.
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout;
 
     /// Return the layout metrics this backend uses for MSV layout.
@@ -3259,10 +2840,9 @@ pub trait Backend: sealed::Sealed {
     /// Coordinate frame: **LOCAL** — `visible_rows.bounds` / `hit_regions`
     /// are relative to `rect`'s origin (`(0, 0)` at `rect`'s top-left);
     /// callers subtract `rect.x` / `rect.y` from absolute click
-    /// coordinates before calling `hit_test` (issue #505; see
-    /// `primitives::layout_metrics::tree_layout`'s doc, and
-    /// `docs/LESSONS.md`'s `mac_tree_layout` postmortem for why this
-    /// frame is load-bearing).
+    /// coordinates before calling `hit_test` (see
+    /// `primitives::layout_metrics::tree_layout`'s doc for why this frame
+    /// is load-bearing).
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
 
     /// Vertical scrollbar geometry for `tree` rendered into `rect`, or
@@ -3271,11 +2851,11 @@ pub trait Backend: sealed::Sealed {
     /// same values a rasteriser would paint, so consumers hit-test the
     /// returned thumb to implement drag without re-deriving geometry.
     ///
-    /// #1043: `Backend::draw_tree` paints no scrollbar affordance of its
-    /// own — an overflowing tree scrolls (mouse wheel, keyboard) but gave
-    /// no visual indication there was more content, and there was no
-    /// host-facing way to ask for one short of hand-rolling a scrollbar
-    /// per backend. This mirrors [`Backend::list_hscrollbar`] /
+    /// `Backend::draw_tree` paints no scrollbar affordance of its own —
+    /// an overflowing tree scrolls (mouse wheel, keyboard) with no visual
+    /// indication there is more content, so a host asks here instead of
+    /// hand-rolling a scrollbar per backend. This mirrors
+    /// [`Backend::list_hscrollbar`] /
     /// [`Backend::list_vscrollbar`]'s already-established shape: a
     /// layout-level scroll extent the host passes to the existing
     /// [`Scrollbar`] primitive and paints itself via
@@ -3288,8 +2868,7 @@ pub trait Backend: sealed::Sealed {
     /// `ButtonRow` fields where per-item hit regions depend on
     /// backend-specific text measurement.
     ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin
-    /// (issue #505).
+    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin.
     fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout;
 
     /// Draw an [`Editor`]. Returns paint-side data the host needs
@@ -3321,9 +2900,8 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Compute the editor viewport layout (gutter / text / scrollbar
-    /// bounds) without painting — the no-paint twin of [`Self::draw_editor`]
-    /// (issue #506: `Editor::layout` already existed but no `Backend`
-    /// method exposed it). Uses this backend's own [`Self::char_width`] /
+    /// bounds) without painting — the no-paint twin of [`Self::draw_editor`].
+    /// Uses this backend's own [`Self::char_width`] /
     /// [`Self::line_height`] as the cell metrics — the same values
     /// `draw_editor` resolves them to on every backend that implements it
     /// today (`GtkBackend`/`WinBackend`/`MacBackend` all pass
@@ -3334,7 +2912,7 @@ pub trait Backend: sealed::Sealed {
     /// Coordinate frame: **ABSOLUTE** — `text_bounds` / `gutter_bounds` /
     /// scrollbar bounds are shifted by `rect.x` / `rect.y`, matching
     /// [`Self::editor_col_at_x`]'s "x is an absolute (surface-space)
-    /// coordinate" contract (issue #505).
+    /// coordinate" contract.
     ///
     /// Default body: uniform for every backend, since it's a pure
     /// function of the two metrics above — no backend needs to override
@@ -3348,7 +2926,7 @@ pub trait Backend: sealed::Sealed {
     /// (`src/gtk/editor.rs`). The two happen to always match in every
     /// call site today, but nothing enforces it — pass a `rect` that
     /// diverges from `editor.rect` and this method's return value quietly
-    /// stops matching what GTK painted (issue #506 review follow-up).
+    /// stops matching what GTK painted.
     fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
         editor.layout_with_options_and_v_scrollbar_w(
             rect,
@@ -3363,7 +2941,7 @@ pub trait Backend: sealed::Sealed {
     /// of an [`Editor`], honouring the same glyph-advance metrics
     /// [`Self::draw_editor`] painted that row with (bold / italic /
     /// `font_scale` spans on GTK's Pango layout; uniform monospace
-    /// cells on TUI) — the paint↔click round-trip fix for #420.
+    /// cells on TUI) — keeping paint and click resolution in agreement.
     ///
     /// `layout` is the [`EditorLayout`] `editor.layout(...)` produced
     /// for the same viewport/metrics the caller painted with.
@@ -3406,23 +2984,19 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Drive the terminal/OS **hardware** caret to match an
-    /// [`Editor`]'s [`EditorCursorShape`] (issue #1015) — block for
-    /// Normal/Visual, bar for Insert, underline for a pending
-    /// replace-char command. This is a distinct surface from the
-    /// caret [`Self::draw_editor`] *paints* into the frame buffer:
-    /// GTK/Win/macOS already paint their own caret there and have no
-    /// separate hardware cursor to steer, so the default here is a
-    /// genuine, permanent no-op for them — not a gap to fill in
-    /// later, the same "structurally absent, not merely
+    /// [`Editor`]'s [`EditorCursorShape`] — block for Normal/Visual, bar
+    /// for Insert, underline for a pending replace-char command. This is
+    /// a distinct surface from the caret [`Self::draw_editor`] *paints*
+    /// into the frame buffer: GTK/Win/macOS already paint their own caret
+    /// there and have no separate hardware cursor to steer, so the
+    /// default here is a genuine, permanent no-op for them — not a gap
+    /// to fill in later, the same "structurally absent, not merely
     /// unimplemented" reasoning [`Backend::tray`] uses for TUI.
     ///
     /// **TUI is the one backend that overrides this**, emitting
     /// DECSCUSR (`ESC [ n SP q`) via crossterm's `SetCursorStyle` to
-    /// steer the terminal emulator's own cursor glyph. Before this
-    /// method existed, that write had to happen in consumer code
-    /// (vimcode's `shell_app.rs`, straight through crossterm) — a
-    /// rule-6 violation this method closes off: only quadraui writes
-    /// escape sequences.
+    /// steer the terminal emulator's own cursor glyph — the one place
+    /// that writes this escape sequence, so consumer code never has to.
     ///
     /// Not [`Self::draw_editor`]'s job to call this itself: painting
     /// happens every frame regardless of whether the shape changed,
@@ -3525,8 +3099,7 @@ pub trait Backend: sealed::Sealed {
     /// layout that was painted — never re-derive with a hand-rolled
     /// measurer.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
 
     /// Draw a [`Split`] divider. The backend computes the layout with
@@ -3541,7 +3114,7 @@ pub trait Backend: sealed::Sealed {
     /// drag handlers to recompute the ratio from cursor position.
     ///
     /// Coordinate frame: **ABSOLUTE** — `first_bounds` / `divider_bounds`
-    /// / `second_bounds` are shifted by `rect.x` / `rect.y` (issue #505).
+    /// / `second_bounds` are shifted by `rect.x` / `rect.y`.
     fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout;
 
     /// Draw a [`SplitTree`]'s dividers. The backend computes the
@@ -3560,7 +3133,7 @@ pub trait Backend: sealed::Sealed {
     /// position without re-painting.
     ///
     /// Coordinate frame: **ABSOLUTE** — leaf / divider bounds are
-    /// shifted by `rect.x` / `rect.y` (issue #505).
+    /// shifted by `rect.x` / `rect.y`.
     fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
 
     /// Draw a [`Panel`] chrome (title bar + action buttons). The
@@ -3576,7 +3149,7 @@ pub trait Backend: sealed::Sealed {
     /// click handlers to resolve hits without re-deriving metrics.
     ///
     /// Coordinate frame: **ABSOLUTE** — `title_bar_bounds` / action /
-    /// `content_bounds` are shifted by `rect.x` / `rect.y` (issue #505).
+    /// `content_bounds` are shifted by `rect.x` / `rect.y`.
     fn panel_layout(&self, rect: Rect, panel: &Panel) -> PanelLayout;
 
     /// Draw a [`ToastOverlay`] overlay. The backend computes the layout
@@ -3589,8 +3162,7 @@ pub trait Backend: sealed::Sealed {
     /// Compute the toast-stack layout without painting. Hosts call
     /// this in click handlers to resolve hits.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout;
 
     /// Draw a [`PipelineView`] (horizontal multi-stage workflow widget).
@@ -3605,8 +3177,7 @@ pub trait Backend: sealed::Sealed {
     /// click handlers to resolve hits against the same layout that was
     /// painted — never re-derive with a hand-rolled measurer.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn pipeline_view_layout(&self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
 
     /// Draw a [`DiffView`] (two-pane side-by-side or unified diff viewer).
@@ -3615,7 +3186,7 @@ pub trait Backend: sealed::Sealed {
     fn draw_diff_view(&mut self, rect: Rect, view: &DiffView) -> DiffViewLayout;
 
     /// Compute the diff-view layout without painting — the no-paint twin
-    /// of [`Self::draw_diff_view`] (issue #506). `visible_rows` uses this
+    /// of [`Self::draw_diff_view`]. `visible_rows` uses this
     /// backend's [`Self::line_height`] exactly as every backend's
     /// `draw_diff_view` does today: in [`DiffMode::SideBySide`] one
     /// `line_height` band is reserved for the header row when either
@@ -3628,7 +3199,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Frame: no coordinates are returned — `visible_rows` /
     /// `total_rows` are counts, not positions — so there is no LOCAL vs
-    /// ABSOLUTE distinction to state (issue #505).
+    /// ABSOLUTE distinction to state.
     ///
     /// Default body: uniform for every backend, since it's a pure
     /// function of `rect`, `view`, and `Self::line_height` — no backend
@@ -3679,8 +3250,7 @@ pub trait Backend: sealed::Sealed {
 
     /// Compute progress-bar layout without painting.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
 
     /// Draw a [`Spinner`] (indeterminate activity indicator). Returns
@@ -3690,8 +3260,7 @@ pub trait Backend: sealed::Sealed {
 
     /// Compute spinner layout without painting.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
 
     /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
@@ -3701,16 +3270,13 @@ pub trait Backend: sealed::Sealed {
 
     /// Compute command-center layout without painting.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505; regression-tested against `LESSONS.md`'s "same
-    /// frame across backends" rule by `mac_command_center_layout`'s
-    /// non-zero-origin test).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 
     /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
     /// content area — distinct from `StatusBar` which is read-only),
     /// reading hover/pressed state from a single [`InteractionState`]
-    /// keyed by [`WidgetId`] (issue #819).
+    /// keyed by [`WidgetId`].
     ///
     /// The rasteriser tints the background of the button whose id
     /// matches `interaction.hovered()` / `interaction.pressed()`.
@@ -3741,8 +3307,8 @@ pub trait Backend: sealed::Sealed {
 
     /// [`Self::draw_toolbar_interactive`], plus [`ToolbarPaintOptions`]
     /// a host can set to override otherwise-fixed paint decisions —
-    /// currently just `valign` (issue #260), which resolves where
-    /// button/label text paints within a slot taller than one text row.
+    /// currently just `valign`, which resolves where button/label text
+    /// paints within a slot taller than one text row.
     ///
     /// `Toolbar` itself can't carry this: both known downstream
     /// consumers build it with exhaustive struct literals — see
@@ -3751,7 +3317,7 @@ pub trait Backend: sealed::Sealed {
     /// This is the implemented method — every `Backend` writes its
     /// rasteriser here, and [`Self::draw_toolbar_interactive`] forwards
     /// into it with [`ToolbarPaintOptions::default()`] (`ToolbarVAlign::Top`,
-    /// byte-identical to the pre-#260 paint on a 1-row slot).
+    /// byte-identical to the plain paint on a 1-row slot).
     fn draw_toolbar_with_options(
         &mut self,
         rect: Rect,
@@ -3763,8 +3329,7 @@ pub trait Backend: sealed::Sealed {
     /// Compute toolbar layout without painting. Hosts call this after
     /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
 
     /// Draw a [`SidebarPanel`] — optional header toolbar + content
@@ -3774,8 +3339,8 @@ pub trait Backend: sealed::Sealed {
     /// `Panel` rasteriser contract.
     ///
     /// `interaction`'s hovered / pressed [`WidgetId`]s are forwarded to
-    /// the nested toolbar paint for hover / pressed tints (issue #819).
-    /// Same coordinate frame as [`Self::sidebar_panel_layout`]
+    /// the nested toolbar paint for hover / pressed tints. Same
+    /// coordinate frame as [`Self::sidebar_panel_layout`]
     /// (ABSOLUTE).
     ///
     /// This is the implemented method.
@@ -3791,7 +3356,7 @@ pub trait Backend: sealed::Sealed {
     /// outside without re-deriving metrics.
     ///
     /// Coordinate frame: **ABSOLUTE** — `content_bounds` / toolbar
-    /// bounds are shifted by `rect.x` / `rect.y` (issue #505).
+    /// bounds are shifted by `rect.x` / `rect.y`.
     fn sidebar_panel_layout(&self, rect: Rect, panel: &SidebarPanel) -> SidebarPanelLayout;
 
     /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
@@ -3811,8 +3376,7 @@ pub trait Backend: sealed::Sealed {
     /// Compute chart layout without painting.
     ///
     /// Coordinate frame: **ABSOLUTE** — `bounds` / `hit_regions` /
-    /// `data_point_positions` are shifted by `rect.x` / `rect.y`
-    /// (issue #505).
+    /// `data_point_positions` are shifted by `rect.x` / `rect.y`.
     fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;
 
     /// Draw a [`BoardModel`] (kanban/pipeline board widget).
@@ -3830,24 +3394,19 @@ pub trait Backend: sealed::Sealed {
     /// No default impl — every backend implementer sees this as a compile
     /// error and fills in a real rasteriser (`PRIMITIVE_RULES.md` rule 7).
     /// A no-op default here would let a backend silently paint an empty
-    /// board instead of failing to build (quadraui#600, PORT-01).
+    /// board instead of failing to build.
     fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
 
     /// Compute the board layout without painting — the no-paint twin of
-    /// [`Self::draw_board`] (issue #506: [`crate::primitives::board::board_layout`]
-    /// already existed as a free fn, and every backend already wrapped it
-    /// in its own off-trait helper — `tui_board_layout` / `gtk_board_layout`
-    /// / `mac_board_layout` — but nothing put it on the trait, so a host
-    /// could not ask for board geometry without a live paint pass). Each
-    /// backend routes through the exact same helper `draw_board` calls
+    /// [`Self::draw_board`]. Each backend routes through the exact same
+    /// helper `draw_board` calls
     /// internally, using its own [`crate::primitives::board::BoardMeasure`]
     /// (column/card sizing is backend-native, like `TreeStyle::row_height`
     /// — not derivable from [`Self::char_width`] / [`Self::line_height`]
     /// alone), so paint and no-paint can't drift apart.
     ///
     /// Coordinate frame: **ABSOLUTE** — `columns[i].bounds` / card bounds
-    /// are shifted by `rect.x` / `rect.y`, matching [`BoardLayout::hit_test`]
-    /// (issue #505).
+    /// are shifted by `rect.x` / `rect.y`, matching [`BoardLayout::hit_test`].
     ///
     /// No default impl, same rule-7 reasoning as [`Self::draw_board`]: a
     /// backend that forgets to override this would otherwise silently
@@ -3856,16 +3415,13 @@ pub trait Backend: sealed::Sealed {
 
     /// Draw a [`Minimap`] (code-overview density view). GTK and Win-GUI
     /// both tile rows at a fixed pitch and paint one colour block per
-    /// non-blank character column ([`crate::MinimapSizing::FixedPitch`],
-    /// #667, #738); TUI packs `U+2800`-block braille dots, also at a fixed
-    /// pitch — one cell row per minimap row (`FixedPitch(1.0)`, #992,
-    /// which fixed a `Fill`-sizing bug where a short file's stretched
-    /// pitch left blank cell rows between painted ones). All three
-    /// techniques consume the exact same [`Minimap`] data — the primitive
-    /// owns the sampling and colour-aggregation math (`sample_blocks` /
-    /// `aggregate_spans`), and, since #738, the legibility/render-mode
-    /// threshold and span-lookup helpers too (`crate::primitives::minimap`),
-    /// so no backend re-derives any of it (#382, #667, #738).
+    /// non-blank character column ([`crate::MinimapSizing::FixedPitch`]);
+    /// TUI packs `U+2800`-block braille dots, also at a fixed pitch — one
+    /// cell row per minimap row. All three techniques consume the exact
+    /// same [`Minimap`] data — the primitive owns the sampling and
+    /// colour-aggregation math (`sample_blocks` / `aggregate_spans`) and
+    /// the legibility/render-mode threshold and span-lookup helpers too
+    /// (`crate::primitives::minimap`), so no backend re-derives any of it.
     ///
     /// Returns [`MinimapPaintResult`] carrying the resolved
     /// [`MinimapLayout`] so hosts can route clicks via
@@ -3874,23 +3430,13 @@ pub trait Backend: sealed::Sealed {
     ///
     /// No default impl — every backend implementer sees this as a
     /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
-    /// rule 7). #382 scoped macOS's Core Graphics/Core Text paint calls
-    /// for this out for a time, and #802 covered the resulting gap with
-    /// an honest `painted: false` no-op rather than a reachable
-    /// `todo!()` — #961 closed it: `MacBackend::draw_minimap` now paints
-    /// real pixels through `crate::macos::minimap::draw_minimap` and
-    /// reports [`MinimapPaintResult::painted`] `true`, same as
-    /// TUI/GTK/Win-GUI.
+    /// rule 7).
     fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
 
     /// The [`MinimapScale`] [`Self::draw_minimap`]/[`Self::minimap_layout`]
     /// resolve their row pitch (and, for a pixel backend, per-column
-    /// width) from (issue #1143). Default-provided, returning
-    /// [`MinimapScale::One`] — the pre-#1143 fixed pitch (#667) every
-    /// backend already painted at — so this accessor costs nothing to add
-    /// to the trait: `vimcode`'s `Backend::draw_minimap(rect, minimap)` /
-    /// `Backend::minimap_layout(rect, minimap)` call sites (both still
-    /// exactly two arguments) see no change unless a host also calls
+    /// width) from. Default-provided, returning [`MinimapScale::One`] —
+    /// the fixed pitch every backend paints at unless a host also calls
     /// [`Self::set_minimap_scale`]. TUI's braille rasteriser has no font
     /// to scale and never overrides either method — see
     /// [`crate::primitives::minimap::MinimapScale`]'s doc for why this
@@ -3900,13 +3446,12 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Set the [`MinimapScale`] a later [`Self::draw_minimap`]/
-    /// [`Self::minimap_layout`] call resolves its row pitch from (issue
-    /// #1143). Default no-op: a backend that never overrides
-    /// [`Self::minimap_scale`] has nowhere to store this and nothing reads
-    /// it back. GTK, Win-GUI, and macOS override both methods to back a
-    /// real field; a host picks VS Code's own default
-    /// (`MinimapScale::Two`) once, at startup, the same way it configures
-    /// `dpi_scale` or the editor font.
+    /// [`Self::minimap_layout`] call resolves its row pitch from. Default
+    /// no-op: a backend that never overrides [`Self::minimap_scale`] has
+    /// nowhere to store this and nothing reads it back. GTK, Win-GUI, and
+    /// macOS override both methods to back a real field; a host picks
+    /// VS Code's own default (`MinimapScale::Two`) once, at startup, the
+    /// same way it configures `dpi_scale` or the editor font.
     fn set_minimap_scale(&mut self, _scale: MinimapScale) {}
 
     /// Compute [`Minimap`] layout without painting — mirrors
@@ -3915,34 +3460,29 @@ pub trait Backend: sealed::Sealed {
     /// `MinimapPaintResult` `render` produced) to hit-test a click
     /// against the same geometry the last paint used.
     ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`
-    /// (issue #505). Real on every backend, including macOS, which
-    /// computes this exact geometry whether or not a paint has run yet
-    /// (#802, #961).
+    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
+    /// Real on every backend, including macOS, which computes this exact
+    /// geometry whether or not a paint has run yet.
     fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
 
     /// Paint `image` within `rect`, honoring `image.fit` (see
     /// [`Image::layout`] for the geometry). GTK decodes `image.source`
-    /// through `gdk_pixbuf` and paints real pixels; Win is scoped out of
-    /// this first pass. macOS's natural decoder (`NSImage`) is also not
-    /// wired up yet (#662's first pass scoped GTK only) — rather than a
-    /// reachable `todo!()` (#802), `MacBackend::draw_image` reports
-    /// [`ImagePaintResult::Unsupported`] and paints nothing, the same
-    /// signal TUI's categorical case already used below. This method has
-    /// no default (rule 7 below still applies to it), so every backend
-    /// implementer still sees a compile error until it picks one of
-    /// these two honest outcomes.
+    /// through `gdk_pixbuf` and paints real pixels; Win and macOS are
+    /// scoped out for now — rather than a reachable `todo!()`,
+    /// `MacBackend::draw_image` reports [`ImagePaintResult::Unsupported`]
+    /// and paints nothing, the same signal TUI's categorical case already
+    /// uses below. This method has no default (rule 7 below still
+    /// applies to it), so every backend implementer still sees a compile
+    /// error until it picks one of these two honest outcomes.
     ///
     /// **TUI cannot rasterise an image** — there is no pixel grid to
-    /// draw into, and this primitive deliberately does not attempt an
-    /// ASCII-art decoder (see `primitives::image` module docs' scope
+    /// draw into, and `Image` deliberately does not attempt an ASCII-art
+    /// decoder (see `primitives::image` module docs' scope
     /// guard). It paints [`Image::fallback_text`] instead, centered in
     /// `rect`, and reports [`ImagePaintResult::Unsupported`] rather than
-    /// a silent no-op — #507's Unsupported-vs-failure question, and this
-    /// primitive is a fresh, deliberate instance of it: TUI genuinely
-    /// cannot do this, so it says so. A GTK decode failure (bad path,
-    /// corrupt bytes) also reports `Unsupported` and paints nothing, and
-    /// macOS (no decoder wired up yet, #802) reports `Unsupported`
+    /// a silent no-op, so TUI genuinely says it can't do this. A GTK
+    /// decode failure (bad path, corrupt bytes) also reports
+    /// `Unsupported` and paints nothing, and macOS reports `Unsupported`
     /// unconditionally for the same reason — so a host can tell "no
     /// pixels appeared" apart from a successful paint without inspecting
     /// pixels itself.
@@ -3999,10 +3539,8 @@ pub trait Backend: sealed::Sealed {
 pub struct MinimapPaintResult {
     pub layout: MinimapLayout,
     /// Whether this call actually rasterised pixels into the target
-    /// rect. `true` on every backend as of #961 (TUI/GTK/Win-GUI, and
-    /// now macOS's own Core Graphics/Core Text rasteriser,
-    /// `crate::macos::minimap::draw_minimap`) — before that, macOS
-    /// reported `false` here (#802: no rasteriser existed yet, #382).
+    /// rect. `true` on every backend, including macOS's own Core
+    /// Graphics/Core Text rasteriser (`crate::macos::minimap::draw_minimap`).
     /// `layout` is always the real geometry
     /// [`Backend::minimap_layout`] would also return (the shared
     /// `Minimap::layout_with_sizing` logic, not a stub), regardless of
@@ -4031,8 +3569,8 @@ pub enum ImagePaintResult {
     Painted,
     /// The backend could not (or, for TUI/macOS, categorically can not)
     /// rasterise pixels. TUI paints `image.fallback_text` instead; GTK on
-    /// a decode failure and macOS unconditionally (#802, no `NSImage`
-    /// decoder wired up yet) both paint nothing. See
+    /// a decode failure and macOS unconditionally (no `NSImage` decoder
+    /// wired up yet) both paint nothing. See
     /// [`Backend::draw_image`]'s doc comment.
     Unsupported,
 }
@@ -4047,14 +3585,8 @@ pub enum ImagePaintResult {
 /// `tab_bar_layout` variants both call this with `rect.x` so the two
 /// paths return the same space.
 ///
-/// Audited under issue #552: `draw_tab_bar` applied this shift on both
-/// TUI and GTK, but `Backend::tab_bar_layout` applied it on neither — so
-/// the documented-absolute no-paint path silently returned relative x,
-/// off by `rect.x`. That is nonzero for any tab bar right of a sidebar,
-/// i.e. the same latent seam as the activity bar's, one primitive over.
-///
-/// `TabBarHits` is `#[deprecated]` (issue #823) — see its doc for the
-/// replacement plan.
+/// `TabBarHits` is `#[deprecated]` — see its doc for the replacement
+/// plan.
 #[allow(deprecated)]
 pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
     if dx == 0.0 {
@@ -4096,13 +3628,8 @@ pub fn shift_tab_bar_hits(hits: &mut TabBarHits, dx: f64) {
 /// an intermediate `TabBarLayout`, so a safe migration needs new native
 /// per-backend rasterisers, not just a signature change.
 ///
-/// The deprecated `tab_bar_layout_to_hits` alias (renamed to this fn)
-/// was removed in issue #1109 (zero uses in coord-tui's `main` and
-/// vimcode's `develop` — the single vimcode hit was a doc comment, not
-/// a real call).
-///
-/// `TabBarHits` is now `#[deprecated]` itself (issue #823); this
-/// converter is the one place in-tree still allowed to construct it.
+/// `TabBarHits` is `#[deprecated]`; this converter is the one place
+/// in-tree still allowed to construct it.
 #[allow(deprecated)]
 pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHits {
     let mut slot_positions = vec![(0.0, 0.0); bar.tabs.len()];
@@ -4134,7 +3661,7 @@ pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHi
 ///
 /// Spans are **relative to `rect`** per the [`Backend::draw_activity_bar`]
 /// contract: the first top-pinned row starts at `0.0` and only `rect.height`
-/// is consulted (to pin the bottom group), never `rect.y`. Issue #552.
+/// is consulted (to pin the bottom group), never `rect.y`.
 pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<ActivityBarRowHit> {
     let mut hits = Vec::new();
     let mut y = 0.0_f32;
@@ -4169,21 +3696,12 @@ pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<Activity
 /// terminal cursor) populate the actual cursor cell.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EditorPaintResult {
-    /// Cursor's painted position in backend-native units (issue #504),
-    /// if the host is responsible for terminal-cursor positioning.
-    /// `None` when the backend painted its own caret OR when the cursor
-    /// is outside the viewport. TUI rounds to the nearest cell
-    /// internally before returning, then widens the cell coordinates
-    /// back into this field's `f32` unit.
-    ///
-    /// Replaces the deprecated `cursor_position` `(u16, u16)` cell-tuple
-    /// field, which leaked a TUI-only representation — `ratatui::Frame::
-    /// set_cursor_position` wants a `(u16, u16)` cell pair — into a
-    /// portable trait return type every other backend had to fake with
-    /// `None`. That field was removed in issue #1109 (zero uses in
-    /// coord-tui's `main` and vimcode's `develop` — vimcode's
-    /// `src/tui_main/render_impl.rs` call site the deprecation shim was
-    /// kept alive for no longer exists).
+    /// Cursor's painted position in backend-native units, if the host is
+    /// responsible for terminal-cursor positioning. `None` when the
+    /// backend painted its own caret OR when the cursor is outside the
+    /// viewport. TUI rounds to the nearest cell internally before
+    /// returning, then widens the cell coordinates back into this
+    /// field's `f32` unit.
     pub cursor_position_native: Option<Point>,
 }
 
@@ -4238,12 +3756,7 @@ pub trait PlatformServices {
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
 
     /// Show a native directory-select dialog (blocking). Returns `None`
-    /// if the user cancelled. quadraui#935: before this existed,
-    /// `PlatformServices` could pick a *file* (open or save) but not a
-    /// *directory* — a host that wanted "Open Folder" native had no
-    /// choice but to give up and build its own in-canvas picker (see
-    /// vimcode#815, which did exactly that and left a comment on the
-    /// tradeoff pointing at this gap).
+    /// if the user cancelled.
     ///
     /// Reuses [`FileDialogOptions`] rather than a narrower type: only
     /// [`FileDialogOptions::title`] and [`FileDialogOptions::initial_dir`]
@@ -4280,9 +3793,8 @@ pub trait PlatformServices {
     /// the TUI path.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice>;
 
-    /// Dispatch a system notification (issue #955 extended the request
-    /// shape — see [`Notification`]'s doc for `icon`/`actions`/`silent`/
-    /// `tag`).
+    /// Dispatch a system notification — see [`Notification`]'s doc for
+    /// `icon`/`actions`/`silent`/`tag`.
     ///
     /// A click on the notification (its body, or one of `n`'s declared
     /// actions) should push [`UiEvent::NotificationActivated`] where the
@@ -4298,51 +3810,44 @@ pub trait PlatformServices {
     /// Open a URL in the platform's default browser.
     fn open_url(&self, url: &str);
 
-    /// Fallible twin of [`Self::open_url`] (issue #949, D-009 seam-2's
-    /// `_result`-twin pattern — the same shape
-    /// [`Clipboard::write_text_result`] already carries): reports
-    /// [`BackendError::Unsupported`] on a backend with no way to open a
-    /// URL at all, instead of `open_url`'s silent no-op. `open_url`
-    /// itself keeps its infallible signature unchanged — this is rule 2's
-    /// "new function alongside the old one" from
-    /// `docs/PRIMITIVE_RULES.md`, chosen so both existing consumers (which
-    /// only ever call `open_url`) keep compiling untouched.
+    /// Fallible twin of [`Self::open_url`] (D-009 seam-2's `_result`-twin
+    /// pattern — the same shape [`Clipboard::write_text_result`] already
+    /// carries): reports [`BackendError::Unsupported`] on a backend with
+    /// no way to open a URL at all, instead of `open_url`'s silent no-op.
+    /// `open_url` itself keeps its infallible signature unchanged so both
+    /// existing consumers (which only ever call `open_url`) keep
+    /// compiling untouched.
     ///
     /// Default: calls `open_url` and returns `Ok(())` — a backend whose
     /// `open_url` is a real implementation (GTK via
     /// `gio::AppInfo::launch_default_for_uri`, Win-GUI via
     /// `ShellExecuteW`, macOS via `open`) answers exactly like this method
     /// doesn't exist, at zero cost. `TuiPlatformServices` is the one
-    /// override, for two reasons across two issues: quadraui#949 made the
-    /// old empty no-op `open_url` body *detectable* (a caller had no way
-    /// to tell "the browser opened" from "TUI silently discarded this");
-    /// quadraui#969 then made it *functional* — TUI shells out to the
-    /// platform's URL opener (`xdg-open`/`open`/`cmd /c start`) with an
-    /// OSC 8 hyperlink fallback, and only reports
-    /// `Err(BackendError::Unsupported)` when neither reaches anything
-    /// (see `tui::services`'s module doc, "URL opening (issue #969)").
+    /// override: TUI shells out to the platform's URL opener
+    /// (`xdg-open`/`open`/`cmd /c start`) with an OSC 8 hyperlink
+    /// fallback, and only reports `Err(BackendError::Unsupported)` when
+    /// neither reaches anything (see `tui::services`'s module doc,
+    /// "URL opening").
     fn open_url_result(&self, url: &str) -> ServiceResult<()> {
         self.open_url(url);
         Ok(())
     }
 
     /// Reveal `path` in the platform's file manager with it selected —
-    /// "Reveal in Finder" / "Show in Explorer" / "Show in Files" (issue
-    /// #956, `ELECTRON_PARITY_AUDIT.md` §1.2 G8: Electron's
-    /// `shell.showItemInFolder`).
+    /// "Reveal in Finder" / "Show in Explorer" / "Show in Files"
+    /// (Electron's `shell.showItemInFolder`).
     ///
     /// Default: `Err(BackendError::Unsupported)`, the same "future
     /// backend compiles before it has an opinion" placeholder
     /// [`Self::system_theme`]'s default doc explains. GTK, macOS, and
-    /// Win-GUI each override this with a real implementation. TUI used to
-    /// keep this default outright — a terminal has no file manager
-    /// *window* of its own — but issue #1092 gave it a real degrade too
-    /// (`crate::desktop::reveal_in_file_manager`: `open -R` / Explorer
-    /// `/select,` / D-Bus `ShowItems`, falling back to opening the parent
-    /// directory), on the same "the desktop session underneath the
-    /// terminal can do this even though the terminal itself can't"
-    /// reasoning `open_url_result` already applies to launching a browser
-    /// (see `tui::services`'s module doc's "`shell.*` parity" section).
+    /// Win-GUI each override this with a real implementation. TUI also
+    /// has a real degrade (`crate::desktop::reveal_in_file_manager`:
+    /// `open -R` / Explorer `/select,` / D-Bus `ShowItems`, falling back
+    /// to opening the parent directory) — the desktop session underneath
+    /// the terminal can do this even though the terminal itself can't,
+    /// the same reasoning `open_url_result` applies to launching a
+    /// browser (see `tui::services`'s module doc's "`shell.*` parity"
+    /// section).
     fn reveal_in_file_manager(&self, path: &Path) -> ServiceResult<()> {
         let _ = path;
         Err(BackendError::Unsupported)
@@ -4399,12 +3904,7 @@ pub trait PlatformServices {
     }
 
     /// Query the OS-level light/dark preference, accent colour, and
-    /// high-contrast setting (issue #952) — the `nativeTheme` gap named in
-    /// `ELECTRON_PARITY_AUDIT.md` §1.2 G4. Before this method existed,
-    /// [`Theme`][crate::theme::Theme] was entirely app-supplied: nothing in
-    /// this crate could tell an app "the user just flipped their OS to dark
-    /// mode", so an app had to either ignore the OS setting or build its own
-    /// per-platform detection outside quadraui.
+    /// high-contrast setting.
     ///
     /// Returns [`BackendError::Unsupported`] rather than a guessed value on
     /// a backend/session with no way to answer — unlike
@@ -4447,19 +3947,17 @@ pub trait PlatformServices {
     /// (Linux), Windows Credential Manager — for apps that hold an API
     /// token, a password, or an OAuth refresh token and would otherwise
     /// have no choice but to invent their own storage or write it to
-    /// plaintext config (issue #958, `ELECTRON_PARITY_AUDIT.md` §1.2 G16,
-    /// ranked #9b: "value-to-effort ratio is the best on the list").
+    /// plaintext config.
     ///
-    /// Unlike every other capability in that audit, this one is
-    /// **backend-independent**: the returned [`SecretStore`] is backed by
-    /// the cross-platform `keyring` crate directly, not by a per-backend
-    /// native implementation, so it needs no override in
+    /// This one is **backend-independent**: the returned [`SecretStore`]
+    /// is backed by the cross-platform `keyring` crate directly, not by a
+    /// per-backend native implementation, so it needs no override in
     /// `tui`/`gtk`/`macos`/`win::services` — the same default body serves
     /// all four. `keyring` itself needs no window, no display server, and
     /// no desktop session (its Linux store talks to the Secret Service
     /// over D-Bus, not through any GUI toolkit), so this is **full
-    /// support on TUI**, not a degrade — the reason issue #958 prioritised
-    /// it. See [`SecretStore`]'s own doc for the get/set/delete shape.
+    /// support on TUI**, not a degrade. See [`SecretStore`]'s own doc for
+    /// the get/set/delete shape.
     ///
     /// Default: a `keyring`-backed [`SecretStore`] when this crate was
     /// built with any of the `tui`/`gtk`/`macos`/`win` features (the same
@@ -4477,18 +3975,11 @@ pub trait PlatformServices {
     }
 
     /// Enumerate every connected display — bounds, usable work area, DPI
-    /// scale, and which one is primary (issue #959,
-    /// `ELECTRON_PARITY_AUDIT.md` §1.2 G10, ranked #10). Before this
-    /// existed, quadraui exposed only [`crate::event::Viewport::scale`]
-    /// (the *current window's* scale) and
-    /// [`crate::event::UiEvent::DpiChanged`] (a live scale-change
-    /// notification) — nothing answered "how many monitors are there,
-    /// where do they sit relative to each other, and where can a window
-    /// usably be placed on each", needed to restore saved window bounds
-    /// after a monitor change, place a new window sensibly, or position a
-    /// popup near the cursor across displays. See [`Display`]'s own doc
-    /// for the field-by-field contract, including the GTK/Wayland
-    /// work-area caveat.
+    /// scale, and which one is primary. Needed to restore saved window
+    /// bounds after a monitor change, place a new window sensibly, or
+    /// position a popup near the cursor across displays. See
+    /// [`Display`]'s own doc for the field-by-field contract, including
+    /// the GTK/Wayland work-area caveat.
     ///
     /// Default: `Err(BackendError::Unsupported)`, the same placeholder
     /// reasoning [`Self::reveal_in_file_manager`]'s doc explains. Every
@@ -4524,7 +4015,7 @@ pub trait PlatformServices {
     /// same coordinate system [`Self::displays`]'s `bounds`/`work_area`
     /// use, so a caller can directly test which [`Display`] currently
     /// contains the cursor (e.g. positioning a popup near the cursor
-    /// across displays; issue #959).
+    /// across displays).
     ///
     /// Default: `Err(BackendError::Unsupported)`, same placeholder
     /// posture as [`Self::displays`]. **GTK and TUI both keep this
@@ -4548,7 +4039,7 @@ pub trait PlatformServices {
 }
 
 /// A single named entry in the OS credential store, keyed by `service` +
-/// `account` — [`PlatformServices::secret_store`] (issue #958).
+/// `account` — [`PlatformServices::secret_store`].
 ///
 /// Deliberately small and string-keyed, mirroring the `keyring` crate's
 /// own `Entry::new(service, username)` shape it wraps: an app names its
@@ -4663,7 +4154,7 @@ impl SecretStore for KeyringSecretStore {
 }
 
 /// One connected display — bounds, usable work area, DPI scale, and
-/// primary-monitor flag ([`PlatformServices::displays`], issue #959).
+/// primary-monitor flag ([`PlatformServices::displays`]).
 ///
 /// `bounds` and `work_area` share the backend's native coordinate system —
 /// the same "TUI: cells; GTK/macOS/Win: pixels" convention every other
@@ -4709,7 +4200,7 @@ pub struct Display {
 }
 
 /// The OS-level theme preference [`PlatformServices::system_theme`]
-/// reports — light/dark, accent colour, and high-contrast (issue #952).
+/// reports — light/dark, accent colour, and high-contrast.
 ///
 /// Deliberately flat and small, mirroring [`Notification`]'s shape: this is
 /// a snapshot an app reads once per query (or once per
@@ -4738,7 +4229,7 @@ pub struct SystemTheme {
 }
 
 /// Decoded RGBA8 pixel buffer for a clipboard image round-trip
-/// ([`Clipboard::read_image`] / [`Clipboard::write_image`], issue #954).
+/// ([`Clipboard::read_image`] / [`Clipboard::write_image`]).
 ///
 /// Deliberately a bare pixel buffer, not [`ImageSource`] — the type
 /// [`TrayService::set_icon`] shares with `Backend::draw_image` per that
@@ -4759,7 +4250,7 @@ pub struct RgbaImage {
 }
 
 /// One data format present on the clipboard right now — the vocabulary
-/// [`Clipboard::formats`] reports over (issue #954).
+/// [`Clipboard::formats`] reports over.
 ///
 /// No `Html` variant: [`Clipboard::write_html`] has no `read_html` twin
 /// (no in-tree caller needs to read HTML back off the clipboard, only
@@ -4788,15 +4279,11 @@ pub trait Clipboard {
     /// Write plain text to the clipboard.
     fn write_text(&self, text: &str);
 
-    /// Fallible twin of [`Self::write_text`] (issue #805, D-009 seam 2's
-    /// `_result`-twin pattern): same effect, but surfaces a failure a
-    /// caller could not previously observe instead of silently
-    /// discarding it. `write_text` itself keeps its infallible signature
-    /// unchanged — this is rule 2's "new function alongside the old one"
-    /// from `docs/PRIMITIVE_RULES.md`, chosen over a breaking signature
-    /// change because every existing call site (both consumers, per
-    /// `CLAUDE.md`'s downstream-consumer table) only calls `write_text`
-    /// and has no use for a failure reason today.
+    /// Fallible twin of [`Self::write_text`] (D-009 seam 2's `_result`-twin
+    /// pattern): same effect, but surfaces a failure a caller can observe
+    /// instead of silently discarding it. `write_text` itself keeps its
+    /// infallible signature unchanged so every existing call site keeps
+    /// compiling with no use for a failure reason.
     ///
     /// Default: calls `write_text` and always returns `Ok(())` — a
     /// backend that never overrides this answers exactly like it doesn't
@@ -4818,14 +4305,12 @@ pub trait Clipboard {
     ///
     /// Defaults to `None` — most platforms (Windows, macOS, TUI-over-any-
     /// terminal) have no PRIMARY-selection concept at all, so this is
-    /// only meaningfully overridden by the GTK backend on Linux/BSD
-    /// (quadraui#415).
+    /// only meaningfully overridden by the GTK backend on Linux/BSD.
     fn read_primary_selection(&self) -> Option<String> {
         None
     }
 
-    /// Read the current clipboard contents as a decoded RGBA image
-    /// (issue #954).
+    /// Read the current clipboard contents as a decoded RGBA image.
     ///
     /// Default: `Err(BackendError::Unsupported)` — kept **defaulted**,
     /// unlike the rest of [`PlatformServices`]'s required methods, so
@@ -4841,7 +4326,7 @@ pub trait Clipboard {
         Err(BackendError::Unsupported)
     }
 
-    /// Write an RGBA image to the clipboard (issue #954).
+    /// Write an RGBA image to the clipboard.
     ///
     /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
     fn write_image(&self, _image: &RgbaImage) -> ServiceResult<()> {
@@ -4853,7 +4338,7 @@ pub trait Clipboard {
     /// "rich content + text degrade" shape every native clipboard API
     /// exposes this as (`NSPasteboard` HTML + string types, GTK's
     /// `text/html` + `UTF8_STRING` targets, Win32's `CF_HTML` +
-    /// `CF_UNICODETEXT`) (issue #954).
+    /// `CF_UNICODETEXT`).
     ///
     /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
     /// There is deliberately no `read_html` twin; see
@@ -4863,14 +4348,14 @@ pub trait Clipboard {
     }
 
     /// Read the list of file paths currently on the clipboard (a
-    /// Finder/Explorer copy) (issue #954).
+    /// Finder/Explorer copy).
     ///
     /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
     fn read_file_list(&self) -> ServiceResult<Vec<PathBuf>> {
         Err(BackendError::Unsupported)
     }
 
-    /// Which formats the clipboard currently holds (issue #954).
+    /// Which formats the clipboard currently holds.
     ///
     /// Default: probes [`Self::read_text`], [`Self::read_image`], and
     /// [`Self::read_file_list`] **through `self`** — so on a backend that
@@ -4897,8 +4382,7 @@ pub trait Clipboard {
         out
     }
 
-    /// Clear the clipboard of all content, regardless of format
-    /// (issue #954).
+    /// Clear the clipboard of all content, regardless of format.
     ///
     /// Default: `Err(BackendError::Unsupported)` — see [`Self::read_image`].
     fn clear(&self) -> ServiceResult<()> {
@@ -4969,34 +4453,20 @@ pub struct MessageDialogButton {
 /// against each button's `id` directly.
 pub type MessageDialogChoice = WidgetId;
 
-/// A system notification request (issue #955 extends the original
-/// title/body/urgent shape with `icon`/`actions`/`silent`/`tag`).
+/// A system notification request: title/body/urgent plus
+/// `icon`/`actions`/`silent`/`tag`.
 ///
-/// `title`, `body`, and `urgent` stay `pub` fields, unchanged since this
-/// type's original shape — so code outside this module that already
-/// holds a `Notification` (from [`Self::new`]) can still read or
-/// directly assign them (`n.urgent = true`), same as before this issue.
-/// What that does **not** do is keep an exhaustive `Notification {
-/// title, body, urgent }` literal compiling outside `backend`'s own
-/// module: Rust's field privacy is module-scoped, not just crate-scoped,
-/// so the moment the four new fields below are anything other than
-/// `pub`, a literal naming this type from any other module — in-tree or
-/// downstream — needs every field filled, and can't fill a private one
-/// itself. This crate's own two in-tree call sites
-/// (`examples/win_platform_services.rs`, `win::services`'s unit test)
-/// hit exactly that and were switched to [`Self::new`] in the same PR.
-/// The four new fields are deliberately **not** additional `pub` fields
-/// for the same reason `#[non_exhaustive]` was rejected too:
-/// [`crate::primitives::toolbar::ToolbarIcons`]'s own doc records why
-/// growing an already-`pub`-field struct either breaks every existing
-/// exhaustive struct literal outright (`E0063`) or, via
-/// `#[non_exhaustive]`, breaks it a different way (`E0639`) — both hard
-/// breaks with no deprecation shim, per `CLAUDE.md` rule 8's blast-radius
-/// concern. Reached instead through [`Self::new`] plus the chainable
-/// `with_*` builder methods below (rule 2's "a builder... instead of a
-/// new required constructor argument"), so a future field can be added
-/// the same way again without ever repeating this struct's original
-/// mistake of an all-`pub`-field literal.
+/// `title`, `body`, and `urgent` stay `pub` fields, so code outside this
+/// module that already holds a `Notification` (from [`Self::new`]) can
+/// still read or directly assign them (`n.urgent = true`). The other four
+/// fields are deliberately **not** `pub`: growing an already-`pub`-field
+/// struct either breaks every existing exhaustive struct literal outright
+/// (`E0063`) or, via `#[non_exhaustive]`, breaks it a different way
+/// (`E0639`) — both hard breaks with no deprecation shim. Reached instead
+/// through [`Self::new`] plus the chainable `with_*` builder methods
+/// below, so a future field can be added the same way again without ever
+/// repeating this struct's original mistake of an all-`pub`-field
+/// literal.
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub title: String,
@@ -5027,11 +4497,10 @@ impl Notification {
     }
 
     /// Attach an icon. The same [`ImageSource`] shape
-    /// [`TrayService::set_icon`] takes (issue #955's design note: it
-    /// shares the icon type with the tray work, #953) — raw encoded bytes
-    /// or a filesystem path, sniffed/decoded by whichever backend can
-    /// honor it. Backends with no icon facility (TUI's toast degrade,
-    /// today's macOS `osascript` path) ignore this.
+    /// [`TrayService::set_icon`] takes — raw encoded bytes or a
+    /// filesystem path, sniffed/decoded by whichever backend can honor
+    /// it. Backends with no icon facility (TUI's toast degrade, today's
+    /// macOS `osascript` path) ignore this.
     #[must_use]
     pub fn with_icon(mut self, icon: ImageSource) -> Self {
         self.icon = Some(icon);
@@ -5293,13 +4762,13 @@ mod backend_caps_tests {
 
 #[cfg(test)]
 mod clipboard_default_tests {
-    //! Coverage for [`Clipboard`]'s new-in-#954 defaulted methods
+    //! Coverage for [`Clipboard`]'s defaulted methods
     //! (`read_image`/`write_image`/`write_html`/`read_file_list`/
     //! `formats`/`clear`), backend-agnostic: a bare fake `impl Clipboard`
     //! that overrides nothing but `read_text`/`write_text` stands in for
-    //! "a backend that hasn't touched this issue's surface at all" (the
-    //! whole point of keeping these methods defaulted rather than
-    //! required — every existing implementor keeps compiling). Real
+    //! "a backend that hasn't touched this surface at all" (the whole
+    //! point of keeping these methods defaulted rather than required —
+    //! every existing implementor keeps compiling). Real
     //! per-backend wiring (arboard-backed image/html/file-list on
     //! macOS/GTK, `CF_HDROP` file-list + `EmptyClipboard` on Win) is
     //! covered in each backend's own `services.rs` tests instead, since
@@ -5428,8 +4897,8 @@ mod clipboard_default_tests {
 }
 
 /// Coverage for [`KeyringSecretStore`] — the real, `keyring`-backed
-/// implementation [`PlatformServices::secret_store`]'s default vends
-/// (issue #958). Tests a real round trip against this host's actual
+/// implementation [`PlatformServices::secret_store`]'s default vends.
+/// Tests a real round trip against this host's actual
 /// credential store, same headless-skip posture as `desktop.rs`'s
 /// `move_to_trash_tests`: a store that's genuinely unreachable (no D-Bus
 /// session, a locked/sandboxed keychain) is an environment limitation,
