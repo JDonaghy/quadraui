@@ -14,6 +14,17 @@
 //! its test would have gone, just above `draw_form_paints_in_chrome_font`
 //! below.
 //!
+//! `Spinner`, `Tooltip`, the settings header/search box
+//! (`Backend::draw_settings_chrome`) and `MessageList` paint through a
+//! different seam — each has its own `(cr, pango_layout)` call site in
+//! `GtkBackend` rather than going through `PaintSurface` — but the same
+//! chrome-by-default policy applies to all four (none is editor-class),
+//! so `draw_spinner_paints_in_chrome_font`,
+//! `draw_tooltip_paints_in_chrome_font`,
+//! `draw_settings_chrome_paints_in_chrome_font` and
+//! `draw_message_list_paints_in_chrome_font` cover them with the same
+//! paired-run probe.
+//!
 //! It also covers the opposite direction for every
 //! `EditorClassPrimitive` with a GTK call site that paints through
 //! `GtkBackend`'s own `PaintSurface` impl: `TextDisplay`, `Terminal` and
@@ -53,9 +64,10 @@ use quadraui::gtk::testing::GtkDriver;
 use quadraui::{
     AppLogic, Backend, Color, CompletionItem, CompletionItemMeasure, CompletionKind, Completions,
     Decoration, DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView,
-    FieldKind, Form, FormField, Palette, PaletteItem, PaletteMode, Panel, Reaction, Rect,
-    StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape, TextDisplay,
-    TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, UiEvent, WidgetId,
+    FieldKind, Form, FormField, MessageList, MessageRow, Palette, PaletteItem, PaletteMode, Panel,
+    Reaction, Rect, Spinner, StyledSpan, StyledText, Terminal, TerminalCell, TerminalCursorShape,
+    TextDisplay, TextDisplayLine, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
+    Tooltip, TooltipMeasure, UiEvent, WidgetId,
 };
 
 const W: i32 = 640;
@@ -431,5 +443,79 @@ fn draw_completions_paints_in_chrome_font() {
             |_| CompletionItemMeasure::new(PINNED_LINE_HEIGHT),
         );
         b.draw_completions(&completions, &layout);
+    });
+}
+
+/// `Spinner`'s label (e.g. "Indexing…") is chrome — a status indicator,
+/// not editor content. Its GTK call site (`GtkBackend::draw_spinner`)
+/// paints through its own `(cr, pango_layout)` pair rather than
+/// `PaintSurface`.
+#[test]
+fn draw_spinner_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_spinner", |b, area| {
+        let spinner = Spinner {
+            id: id("spinner"),
+            label: LABEL.to_string(),
+            frame_idx: 0,
+            accent: None,
+        };
+        let _ = b.draw_spinner(area, &spinner);
+    });
+}
+
+/// Tooltip text is chrome, like every other floating overlay. Its GTK
+/// call site (`GtkBackend::draw_tooltip_with_chrome`) paints through its
+/// own `(cr, pango_layout)` pair rather than `PaintSurface`.
+#[test]
+fn draw_tooltip_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_tooltip", |b, area| {
+        let tooltip = Tooltip {
+            id: id("tooltip"),
+            text: LABEL.to_string(),
+            styled_lines: None,
+            placement: Default::default(),
+            bg: None,
+            fg: None,
+        };
+        let layout = tooltip.layout(
+            Rect::new(area.x, area.y, 10.0, 10.0),
+            area,
+            // Height must clear `text_top` (2px past the top edge) plus
+            // one full `PINNED_LINE_HEIGHT` row, or
+            // `native_surface_paint::paint` breaks out before drawing
+            // any text — give it generous headroom.
+            TooltipMeasure::new(160.0, PINNED_LINE_HEIGHT + 20.0),
+            4.0,
+        );
+        b.draw_tooltip(&tooltip, &layout);
+    });
+}
+
+/// The settings panel header/search box is chrome — unambiguously host
+/// UI, not editor content. Its GTK call site
+/// (`GtkBackend::draw_settings_chrome`) paints through its own
+/// `(cr, layout)` pair rather than `PaintSurface`.
+#[test]
+fn draw_settings_chrome_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_settings_chrome", |b, area| {
+        b.draw_settings_chrome(area, LABEL, "", "placeholder", true);
+    });
+}
+
+/// `MessageList` rows are chrome — a transcript panel, not editor
+/// content. Absent from both `ChromePrimitive::ALL` and
+/// `EditorClassPrimitive::ALL` in `crate::font_role`, so per that
+/// module's policy it is chrome by default. Its GTK call site
+/// (`GtkBackend::draw_message_list`) paints through its own
+/// `(cr, pango_layout)` pair rather than `PaintSurface`.
+#[test]
+fn draw_message_list_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_message_list", |b, area| {
+        let list = MessageList {
+            id: id("message-list"),
+            rows: vec![MessageRow::new(LABEL, Color::rgb(220, 220, 220), 0.0)],
+            scroll_top: 0,
+        };
+        b.draw_message_list(area, &list);
     });
 }

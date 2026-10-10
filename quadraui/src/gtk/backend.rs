@@ -1493,9 +1493,10 @@ impl GtkBackend {
         let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
         // Status bar segments are chrome, painted in `ui_font` —
         // `GtkBackend`'s own `PaintSurface` impl now resolves that font
-        // straight from `self.ui_font` on every text verb (see that
-        // impl's doc), so there is no shared-layout font to swap onto
-        // for the plain `font_scale == 1.0` case any more. A real
+        // straight from `self.ui_font` on every text verb (see the
+        // cross-reference comment just above `impl PaintSurface for
+        // GtkBackend` below), so there is no shared-layout font to swap
+        // onto for the plain `font_scale == 1.0` case any more. A real
         // `font_scale` still needs a scoped override: save `self.ui_font`,
         // replace it with a size-scaled copy for the paint below, then
         // restore it so later draws in this frame aren't left painting
@@ -2700,9 +2701,16 @@ impl Backend for GtkBackend {
         placeholder: &str,
         active: bool,
     ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_settings_chrome called outside enter_frame_scope");
+        // The settings panel header/search box is chrome, not editor
+        // content — save the editor font on the shared layout, paint in
+        // `ui_font`, then restore, matching `Self::draw_tree`'s
+        // save/swap/restore.
+        let saved_font = layout.font_description();
+        layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_settings_chrome(
             cr,
             layout,
@@ -2717,6 +2725,7 @@ impl Backend for GtkBackend {
             active,
             &self.current_theme,
         );
+        layout.set_font_description(saved_font.as_ref());
     }
 
     // ─── Layout-passthrough primitives ─────────────────────────────────────
@@ -3723,9 +3732,15 @@ impl Backend for GtkBackend {
         layout_arg: &crate::TooltipLayout,
         chrome: &crate::TooltipChrome,
     ) {
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_tooltip called outside enter_frame_scope");
+        // Tooltip text is chrome, not editor content — save the editor
+        // font on the shared layout, paint in `ui_font`, then restore,
+        // matching `Self::draw_tree`'s save/swap/restore.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_tooltip_with_chrome(
             cr,
             pango_layout,
@@ -3736,6 +3751,7 @@ impl Backend for GtkBackend {
             self.current_char_width,
             &self.current_theme,
         );
+        pango_layout.set_font_description(saved_font.as_ref());
         // #542: register the tooltip's own surface — see the matching
         // comment on `TuiBackend::draw_tooltip`. GTK already painted a
         // full 4-sided box here before TUI did (#541); this just makes
@@ -4004,9 +4020,15 @@ impl Backend for GtkBackend {
         list: &crate::primitives::message_list::MessageList,
     ) {
         let line_height = self.current_line_height;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_message_list called outside enter_frame_scope");
+        // MessageList rows are chrome, not editor content — save the
+        // editor font on the shared layout, paint in `ui_font`, then
+        // restore, matching `Self::draw_tree`'s save/swap/restore.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_message_list(
             cr,
             pango_layout,
@@ -4017,6 +4039,7 @@ impl Backend for GtkBackend {
             (rect.y + rect.height) as f64,
             line_height,
         );
+        pango_layout.set_font_description(saved_font.as_ref());
     }
 
     fn draw_rich_text_popup(
@@ -4420,17 +4443,26 @@ impl Backend for GtkBackend {
         spinner: &crate::primitives::spinner::Spinner,
     ) -> crate::primitives::spinner::SpinnerLayout {
         let theme = self.current_theme;
+        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, pango_layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_spinner called outside enter_frame_scope");
-        crate::gtk::draw_spinner(
+        // Spinner's label (e.g. "Indexing…") is chrome, not editor
+        // content — save the editor font on the shared layout, paint in
+        // `ui_font`, then restore, matching `Self::draw_tree`'s
+        // save/swap/restore.
+        let saved_font = pango_layout.font_description();
+        pango_layout.set_font_description(Some(&ui_font_desc));
+        let spinner_layout = crate::gtk::draw_spinner(
             cr,
             pango_layout,
             rect.x as f64,
             rect.y as f64,
             spinner,
             &theme,
-        )
+        );
+        pango_layout.set_font_description(saved_font.as_ref());
+        spinner_layout
     }
 
     fn spinner_layout(
@@ -5068,6 +5100,22 @@ impl crate::backend::WindowControl for GtkBackend {
 /// gap to close for row pitch. Every other font-agnostic verb (fills,
 /// strokes, clip, lines, images, frame lifecycle) forwards straight
 /// through for the same reason.
+///
+/// Also not overridden: `surface_measure_text_styled` and
+/// `surface_draw_icon_glyph`. The trait defaults for both forward to
+/// `surface_measure_text`/`surface_draw_text_run` respectively, which
+/// *this* impl does override to resolve the editor font — so today's
+/// behaviour is correct by construction, not by an explicit override
+/// here. That's a latent gap, not a bug yet: none of
+/// `terminal::paint`/`text_display::paint`/
+/// `diff_view::native_surface_paint::paint` (the three callers that wrap
+/// themselves in this adapter) call either method today. If one of them
+/// starts calling `surface_measure_text_styled` (e.g. to measure a bold
+/// terminal run) or `surface_draw_icon_glyph`, add an explicit override
+/// here so the result still resolves the editor font rather than
+/// silently depending on the trait default continuing to route through
+/// the two methods above. `macos::backend::EditorSurface` has the same
+/// gap for the same reason (same two methods un-overridden there too).
 struct EditorSurface<'a> {
     backend: &'a mut GtkBackend,
 }
@@ -5237,6 +5285,14 @@ impl PaintSurface for EditorSurface<'_> {
 // already did" pure extraction the paragraph above describes for the
 // font-role-bearing verbs specifically — see each verb's own doc below
 // for what changed and why.
+//
+// `Self::status_bar_paint_scaled` relies on that inversion: it stopped
+// swapping a font description onto the shared layout for its unscaled
+// (`font_scale == 1.0`) case specifically because every text verb below
+// already resolves `self.ui_font` fresh on every call rather than
+// trusting whatever font the layout carries in. Touching one side of
+// that coupling without the other silently reintroduces drift — see
+// `status_bar_paint_scaled`'s own doc for the matching pointer back here.
 impl PaintSurface for GtkBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
