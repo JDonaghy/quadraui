@@ -289,17 +289,22 @@ pub trait PaintSurface {
     /// stroke itself lands fully inside `rect`, matching
     /// [`Self::surface_stroke_rect`]'s own inset convention.
     ///
-    /// No default: same reasoning as [`Self::surface_fill_rounded_rect`]
-    /// — there is no backend-agnostic way to approximate a rounded
-    /// stroke out of the other verbs on this trait. Every implementor
-    /// strokes a real rounded-rect path rather than a plain rectangle.
+    /// Default: falls back to [`Self::surface_stroke_rect`], ignoring
+    /// `radius` — the same square border a surface without rounded-stroke
+    /// support (e.g. the TUI cell grid) already paints. Having a default
+    /// keeps this an additive change for out-of-crate implementors of
+    /// this trait. Every in-crate pixel backend overrides it to stroke a
+    /// real rounded-rect path.
     fn surface_stroke_rounded_rect(
         &mut self,
         rect: Rect,
         radius: f32,
         color: Color,
         stroke_width: f32,
-    );
+    ) {
+        let _ = radius;
+        self.surface_stroke_rect(rect, color, stroke_width);
+    }
 
     /// Paint `text` at `rect`'s top-left corner in `color`, using this
     /// surface's current font.
@@ -712,5 +717,49 @@ mod tests {
             1.0,
         );
         assert!(surface.lines.is_empty());
+    }
+
+    /// Implements only the required verbs, so `surface_stroke_rounded_rect`
+    /// runs the trait's default body.
+    #[derive(Default)]
+    struct SquareOnlySurface {
+        strokes: Vec<(Rect, Color, f32)>,
+    }
+
+    impl PaintSurface for SquareOnlySurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            0.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            0.0
+        }
+        fn surface_measure_text(&self, _text: &str) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+        fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+        fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
+        fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
+            self.strokes.push((rect, color, stroke_width));
+        }
+        fn surface_draw_text_run(&mut self, _rect: Rect, _text: &str, _color: Color) {}
+        fn surface_draw_line(&mut self, _from: Point, _to: Point, _color: Color, _w: f32) {}
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    #[test]
+    fn surface_stroke_rounded_rect_default_falls_back_to_square_stroke() {
+        let mut surface = SquareOnlySurface::default();
+        let rect = Rect::new(1.0, 2.0, 30.0, 40.0);
+        surface.surface_stroke_rounded_rect(rect, 6.0, Color::rgb(9, 9, 9), 1.5);
+        assert_eq!(surface.strokes, vec![(rect, Color::rgb(9, 9, 9), 1.5)]);
     }
 }
