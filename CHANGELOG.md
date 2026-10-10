@@ -117,9 +117,10 @@ only a push to `main` runs this workflow.
   different baselines; on Win the gutter number centred itself
   per-glyph while body text and the block-cursor glyph repaint stayed
   top-anchored; on GTK every text paint (gutter, body, ghost
-  continuation, inline annotation, the code-action lightbulb) was
-  top-anchored. All three backends now derive one `text_v_offset` from
-  the font's natural line height vs. the host-set row pitch and add it
+  continuation, the after-cursor AI ghost suggestion, inline annotation,
+  the code-action lightbulb) was top-anchored. All three backends now
+  derive one `text_v_offset` from the font's natural line height vs. the
+  host-set row pitch and add it
   to every text (not row-fill) paint in a row, so gutter and body share
   a baseline and rows read centred like VS Code. Row-sized fills
   (cursor rect, selection, cursorline, diagnostic/spell underlines) are
