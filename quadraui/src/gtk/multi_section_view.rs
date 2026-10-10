@@ -979,7 +979,19 @@ mod tests {
     #[test]
     fn gtk_header_decoration_row_boundary_round_trip() {
         use crate::gtk::tree::gtk_tree_layout;
+        use crate::primitives::layout_metrics::TextMeasure;
         use crate::primitives::tree::TreeViewHit;
+
+        /// Row pitch and row-boundary hit-testing are what this test
+        /// asserts, and neither depends on chevron glyph width — so a
+        /// fixed-advance measurer keeps the row geometry independent of
+        /// whatever chrome font happens to be installed on the host.
+        struct FixedMeasure;
+        impl TextMeasure for FixedMeasure {
+            fn width_of(&self, text: &str) -> f32 {
+                text.chars().count() as f32 * 8.0
+            }
+        }
 
         let rows = vec![
             TreeRow {
@@ -1050,7 +1062,7 @@ mod tests {
             SectionBody::Tree(t) => t,
             _ => panic!("expected tree body"),
         };
-        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT);
+        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT, &FixedMeasure);
 
         let header_h = (LINE_HEIGHT * 1.2).round();
         let item_h = (LINE_HEIGHT * 1.4).round();

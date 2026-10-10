@@ -21,6 +21,7 @@ use core_text::font::CTFont;
 
 use super::cg::{rect, CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use crate::event::Rect as QRect;
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
 
@@ -40,8 +41,19 @@ use crate::theme::Theme;
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
 /// (#499) — identical to [`crate::gtk::tree::gtk_tree_layout`], now
 /// shared instead of duplicated.
-pub fn mac_tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout(tree, area, line_height)
+///
+/// `measure` supplies the chevron glyph's real advance width in the
+/// chrome font: pass the same [`CTFont`] [`draw_tree`] paints with
+/// (`CTFont` implements [`TextMeasure`] directly), so the chevron hit
+/// boundary lands on the painted chevron rather than a
+/// `line_height`-derived fraction of it.
+pub fn mac_tree_layout(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    measure: &dyn TextMeasure,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout(tree, area, line_height, measure)
 }
 
 /// Draw a [`TreeView`] into `(x, y, w, h)` on `ctx`. Returns the
@@ -72,10 +84,13 @@ pub unsafe fn draw_tree(
 ) -> TreeViewLayout {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
     if w <= 0.0 || h <= 0.0 {
-        return mac_tree_layout(tree, area, line_height);
+        return mac_tree_layout(tree, area, line_height, font);
     }
 
-    let layout = mac_tree_layout(tree, area, line_height);
+    // `font` is the chrome `CTFont` the caller resolved, and the same
+    // one the shared paint path measures the chevron through — so the
+    // chevron hit boundary below is the painted one.
+    let layout = mac_tree_layout(tree, area, line_height, font);
 
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, rect(x, y, w, h));
@@ -170,11 +185,11 @@ mod tests {
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.draw_tree(QRect::new(0.0, 0.0, W as f32, H as f32), tree);
-            let l = super::mac_tree_layout(
-                tree,
-                QRect::new(0.0, 0.0, W as f32, H as f32),
-                b.line_height() as f64,
-            );
+            // Through `Backend::tree_layout` rather than
+            // `mac_tree_layout` directly, so the probe hit-tests against
+            // the same chrome-font chevron measurement the backend's own
+            // hit-test path resolves.
+            let l = b.tree_layout(QRect::new(0.0, 0.0, W as f32, H as f32), tree);
             *layout.borrow_mut() = Some(l);
         });
         backend.end_frame();
@@ -280,7 +295,7 @@ mod tests {
         // Area offset by (0, 60) — typical when a tree lives below an
         // MSV header + aux input.
         let area = QRect::new(0.0, 60.0, 240.0, 180.0);
-        let layout = mac_tree_layout(&tree, area, 16.0);
+        let layout = mac_tree_layout(&tree, area, 16.0, &font());
         // Locality: first row's bounds.y must be 0, not 60.
         let first = &layout.visible_rows[0];
         assert_eq!(
@@ -340,8 +355,8 @@ mod tests {
         tree.style.row_height = Some(22);
         let area = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let small = mac_tree_layout(&tree, area, 14.0);
-        let large = mac_tree_layout(&tree, area, 48.0);
+        let small = mac_tree_layout(&tree, area, 14.0, &font());
+        let large = mac_tree_layout(&tree, area, 48.0, &font());
 
         assert_eq!(small.visible_rows.len(), large.visible_rows.len());
         for (s, l) in small.visible_rows.iter().zip(large.visible_rows.iter()) {

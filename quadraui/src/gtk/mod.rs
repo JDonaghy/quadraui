@@ -309,6 +309,27 @@ pub(crate) fn with_nerd_font_fallback(base: &pango::FontDescription) -> pango::F
     desc
 }
 
+/// A live [`pango::Layout`] *is* this backend's text measurer: whatever
+/// font description the layout currently carries is the font the next
+/// `show_layout` paints with, so measuring through it is measuring the
+/// font that will be painted.
+///
+/// A direct impl rather than yet another one-field wrapper struct —
+/// `win::text`'s `impl TextMeasure for DWrite` and `macos::text`'s
+/// `impl TextMeasure for CTFont` are the same shape, so every shared
+/// layout fn taking `&dyn TextMeasure` accepts a live handle from any
+/// of the three pixel backends with no adapter at the call site. The
+/// `Pango*Measure` structs elsewhere in this module stay, because they
+/// add an `Option`al-layout + `char_width` fallback for callers that
+/// may have no Pango context at all; this impl is for the callers that
+/// always do.
+impl crate::primitives::layout_metrics::TextMeasure for pango::Layout {
+    fn width_of(&self, text: &str) -> f32 {
+        self.set_text(text);
+        self.pixel_size().0.max(0) as f32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

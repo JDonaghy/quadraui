@@ -3994,16 +3994,28 @@ impl Backend for WinBackend {
         crate::primitives::layout_metrics::msv_metrics(self.current_line_height as f64, false)
     }
 
-    /// #26: like [`Self::activity_bar_layout`], this needs no measurer
-    /// at all — chevron width is a `line_height`-derived estimate (see
-    /// `win::tree::win_tree_layout`'s doc), not a real DirectWrite
-    /// measurement — so this doesn't even need `self.dwrite`, only the
-    /// `target_os = "windows"` gate every method in this file shares
-    /// (the callee lives in a Windows-only module).
+    /// #26: chevron width is measured in the chrome font through
+    /// [`Backend::measure_text`], adapted to the shared layout math's
+    /// measurement seam by
+    /// [`crate::primitives::layout_metrics::BackendTextMeasure`] — the
+    /// same DirectWrite handle [`Self::draw_tree`] paints the chevron
+    /// with, so this no-paint hit-test layout agrees with the painted
+    /// one even on a proportional chrome font. `measure_text` carries
+    /// its own pre-`attach_surface` degrade (see its doc), so this still
+    /// needs no live `self.dwrite` of its own.
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
         // `crate::primitives::layout_metrics::tree_layout` is fully
         // portable — see `msv_layout`'s doc (issue #924).
-        crate::primitives::layout_metrics::tree_layout(tree, rect, self.current_line_height as f64)
+        let measure = crate::primitives::layout_metrics::BackendTextMeasure {
+            backend: self,
+            role: crate::FontRole::Chrome,
+        };
+        crate::primitives::layout_metrics::tree_layout(
+            tree,
+            rect,
+            self.current_line_height as f64,
+            &measure,
+        )
     }
 
     /// #1043: `vscrollbar` deals purely in row counts/row-height, so

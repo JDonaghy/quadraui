@@ -3905,8 +3905,18 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
+    /// Chevron geometry is measured in the chrome font via
+    /// [`Backend::measure_text`], adapted through
+    /// [`crate::primitives::layout_metrics::BackendTextMeasure`] — the
+    /// same font `Self::draw_tree` installs on the frame layout before
+    /// painting, so this no-paint hit-test layout agrees with the
+    /// painted one even when that font is proportional.
     fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-        crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height)
+        let measure = crate::primitives::layout_metrics::BackendTextMeasure {
+            backend: self,
+            role: crate::FontRole::Chrome,
+        };
+        crate::gtk::gtk_tree_layout(tree, rect, self.current_line_height, &measure)
     }
 
     fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {

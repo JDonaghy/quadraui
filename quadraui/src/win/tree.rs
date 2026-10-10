@@ -11,11 +11,11 @@
 //! treatment like every other backend.
 //!
 //! [`TreeView::layout`] (the D6 layout API) does every positioning and
-//! row-clipping decision; this module only estimates row geometry
-//! (chevron width is an estimate, not a real DirectWrite measurement —
-//! see [`win_tree_layout`]'s doc, same shortcut `gtk::tree::gtk_tree_layout`
-//! takes). Paint and hit-test both derive from one [`win_tree_layout`]
-//! call, so they can't drift apart.
+//! row-clipping decision; this module supplies row geometry — row pitch
+//! from `line_height`, chevron width from a real `DWrite::measure_text`
+//! of the glyph that gets painted (see [`win_tree_layout`]'s doc).
+//! Paint and hit-test both derive from one [`win_tree_layout`] call, so
+//! they can't drift apart.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod tree;` and `backend.rs`'s module
@@ -48,6 +48,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
 use super::text::DWrite;
 use crate::event::Rect;
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::tree::{TreeView, TreeViewLayout};
 use crate::theme::Theme;
 
@@ -60,13 +61,22 @@ use crate::theme::Theme;
 /// Thin wrapper over [`crate::primitives::layout_metrics::tree_layout`]
 /// (#499, adopted for `win/` by #701) — the row-pitch/chevron math is
 /// identical across every pixel backend, so it lives there once instead
-/// of once per backend. `chevron_end_x` is a **layout estimate**
-/// (`line_height * 0.65` for the glyph width), not a real
-/// `DWrite::measure_text` call — same shortcut `gtk::tree::gtk_tree_layout`
-/// / `macos::tree::mac_tree_layout` take, since exact glyph metrics
-/// aren't available without laying out each chevron per row.
-pub fn win_tree_layout(tree: &TreeView, rect: Rect, line_height: f32) -> TreeViewLayout {
-    crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64)
+/// of once per backend.
+///
+/// `chevron_end_x` is a real `DWrite::measure_text` of the chevron
+/// glyph, taken through `measure`: pass the same chrome [`DWrite`]
+/// handle [`draw_tree`] paints with (`DWrite` implements
+/// [`TextMeasure`] directly), or
+/// [`crate::primitives::layout_metrics::BackendTextMeasure`] over a
+/// `&dyn Backend`. Only the two distinct chevron strings are measured
+/// per call, not one per row.
+pub fn win_tree_layout(
+    tree: &TreeView,
+    rect: Rect,
+    line_height: f32,
+    measure: &dyn TextMeasure,
+) -> TreeViewLayout {
+    crate::primitives::layout_metrics::tree_layout(tree, rect, line_height as f64, measure)
 }
 
 /// Draw a [`TreeView`] into `rect` (DIPs) on `target`. Returns the
@@ -108,7 +118,10 @@ pub fn draw_tree(
     nerd_fonts_enabled: bool,
     theme: &Theme,
 ) -> TreeViewLayout {
-    let layout = win_tree_layout(tree, rect, line_height);
+    // `dwrite` is the chrome handle the caller resolved, and the same
+    // one the shared paint path measures the chevron through — so the
+    // chevron hit boundary below is the painted one.
+    let layout = win_tree_layout(tree, rect, line_height, dwrite);
 
     let mut surface = super::surface::D2dSurface {
         target,
@@ -204,7 +217,7 @@ mod tests {
                     &Theme::default(),
                 );
             })
-            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite))
             .expect("paint tree");
 
         assert_eq!(layout.visible_rows.len(), 4, "all four rows should fit");
@@ -246,7 +259,8 @@ mod tests {
     fn chevron_and_body_hit_split() {
         let tree = make_tree(vec![branch(0, "src", true)]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite);
 
         let hit = layout.hit_test(1.0, layout.visible_rows[0].bounds.y + 1.0);
         assert!(matches!(hit, TreeViewHit::Chevron(0)), "got {:?}", hit);
@@ -279,7 +293,7 @@ mod tests {
                     &Theme::default(),
                 );
             })
-            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite))
             .expect("paint");
 
         let first = layout.visible_rows.first().expect("has visible rows");
@@ -299,7 +313,8 @@ mod tests {
     fn click_below_last_row_returns_empty() {
         let tree = make_tree(vec![leaf(0, "a"), leaf(1, "b")]);
         let rect = Rect::new(0.0, 0.0, W, H);
-        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let layout = win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite);
         let last = layout.visible_rows.last().expect("has rows");
         let hit = layout.hit_test(10.0, last.bounds.y + last.bounds.height + 5.0);
         assert!(matches!(hit, TreeViewHit::Empty), "got {:?}", hit);
@@ -326,9 +341,9 @@ mod tests {
                     &Theme::default(),
                 );
             })
-            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+            .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite))
             .expect("paint");
-        let no_paint = win_tree_layout(&tree, rect, LINE_HEIGHT);
+        let no_paint = win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite);
         assert_eq!(painted, no_paint);
     }
 
@@ -534,7 +549,7 @@ mod tests {
                         &Theme::default(),
                     );
                 })
-                .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT))
+                .map(|_| win_tree_layout(&tree, rect, LINE_HEIGHT, &dwrite))
                 .expect("paint tree");
 
             let theme = Theme::default();

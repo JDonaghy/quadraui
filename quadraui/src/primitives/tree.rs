@@ -381,6 +381,56 @@ impl TreeView {
     }
 }
 
+/// The chevron glyph a pixel backend paints for a branch row whose
+/// `is_expanded` is `Some(expanded)`.
+///
+/// An app-supplied [`TreeStyle::chevron_expanded`](crate::types::TreeStyle::chevron_expanded)
+/// / [`chevron_collapsed`](crate::types::TreeStyle::chevron_collapsed)
+/// override is painted verbatim; only the *default* `▾`/`▸` strings are
+/// swapped for the sharper [`crate::codicon`] equivalent. TUI's paint
+/// path reads the two style fields directly and never substitutes a
+/// codicon, since a terminal cell can't assume a codicon-patched font
+/// is installed.
+///
+/// Both the shared pixel paint path and
+/// [`crate::primitives::layout_metrics::tree_layout`] (which measures
+/// this glyph to place the chevron hit region) resolve the glyph
+/// through this one function, so the string that is measured is always
+/// the string that is painted.
+///
+/// On a build with no pixel backend enabled, `crate::codicon` isn't
+/// compiled (the bundled font is dead weight in a terminal-only build),
+/// and the style strings come back verbatim — which is what the TUI
+/// paint path does with them anyway.
+pub(crate) fn chevron_glyph(style: &crate::types::TreeStyle, expanded: bool) -> String {
+    let raw = if expanded {
+        &style.chevron_expanded
+    } else {
+        &style.chevron_collapsed
+    };
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    {
+        let default_style = crate::types::TreeStyle::default();
+        let default_raw = if expanded {
+            &default_style.chevron_expanded
+        } else {
+            &default_style.chevron_collapsed
+        };
+        if raw == default_raw {
+            return if expanded {
+                crate::codicon::CHEVRON_DOWN.to_string()
+            } else {
+                crate::codicon::CHEVRON_RIGHT.to_string()
+            };
+        }
+    }
+    raw.clone()
+}
+
 // ── PaintSurface paint (#1075, PaintSurface Phase 4 slice 2/8) ───────────
 //
 // Before this, `gtk::draw_tree` (Cairo), `macos::tree::draw_tree` (Core
@@ -511,26 +561,13 @@ pub(crate) mod native_surface_paint {
 
             if let Some(expanded) = row.is_expanded {
                 if tree.style.show_chevrons {
-                    // On GUI, an app-supplied `chevron_expanded`/
-                    // `chevron_collapsed` override is still honoured —
-                    // only the *default* `▾`/`▸` strings are swapped
-                    // for the sharper codicon glyph. TUI's own paint
-                    // path (`tui::tree::draw_tree`) always reads the
-                    // two fields directly and never substitutes a
-                    // codicon, since a terminal cell can't assume a
-                    // codicon-patched font is installed.
-                    let default_style = crate::types::TreeStyle::default();
-                    let chevron = if expanded {
-                        if tree.style.chevron_expanded == default_style.chevron_expanded {
-                            crate::codicon::CHEVRON_DOWN.to_string()
-                        } else {
-                            tree.style.chevron_expanded.clone()
-                        }
-                    } else if tree.style.chevron_collapsed == default_style.chevron_collapsed {
-                        crate::codicon::CHEVRON_RIGHT.to_string()
-                    } else {
-                        tree.style.chevron_collapsed.clone()
-                    };
+                    // Glyph resolution (including the default-`▾`/`▸`
+                    // codicon substitution) lives in
+                    // `super::chevron_glyph`, shared with
+                    // `layout_metrics::tree_layout`'s chevron
+                    // measurement so paint and hit-test measure the
+                    // same string.
+                    let chevron = super::chevron_glyph(&tree.style, expanded);
                     let (cw, ch) = surface.surface_measure_text(&chevron);
                     let cy = row_y + (row_h - ch) / 2.0;
                     surface.surface_draw_icon_glyph(
@@ -730,7 +767,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::{Point, Viewport};
-        use crate::primitives::tree::TreeRow;
+        use crate::primitives::tree::{TreeRow, TreeViewHit};
         use crate::types::{Badge, Color, SelectionMode, StyledText, TreeStyle, WidgetId};
         use crate::Image;
 
@@ -780,6 +817,18 @@ pub(crate) mod native_surface_paint {
             }
         }
 
+        /// Reports the same widths as `RecordingSurface::surface_measure_text`
+        /// above, so the layout handed to `paint` is the one a real
+        /// backend — whose `tree_layout` and paint surface resolve one
+        /// font — would produce.
+        struct SurfaceMeasure;
+
+        impl crate::primitives::layout_metrics::TextMeasure for SurfaceMeasure {
+            fn width_of(&self, text: &str) -> f32 {
+                text.chars().count() as f32 * 8.0
+            }
+        }
+
         fn leaf(idx: u16, label: &str) -> TreeRow {
             TreeRow {
                 path: vec![idx],
@@ -808,6 +857,66 @@ pub(crate) mod native_surface_paint {
         const LINE_HEIGHT: f32 = 16.0;
         const AREA: Rect = Rect::new(0.0, 0.0, 100.0, 80.0);
 
+        /// Chevron paint↔click round trip: `chevron_end_x` must land
+        /// where paint actually advanced past the chevron glyph, for a
+        /// surface whose glyph advance is not `line_height * 0.65`
+        /// (`SurfaceMeasure` reports 8.0/char against a 16.0
+        /// `line_height`, so the two differ by more than a pixel).
+        /// A proportional chrome font is exactly this case.
+        #[test]
+        fn chevron_hit_boundary_matches_painted_chevron_advance() {
+            let mut branch = leaf(0, "src");
+            branch.is_expanded = Some(true);
+            let tree = make_tree(vec![branch, leaf(1, "main.rs")]);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
+            let mut surface = RecordingSurface::default();
+            paint(
+                &tree,
+                AREA,
+                &layout,
+                LINE_HEIGHT,
+                false,
+                &mut surface,
+                &Theme::default(),
+            );
+
+            let glyph = super::super::chevron_glyph(&tree.style, true);
+            let (chevron_rect, _, _) = surface
+                .texts
+                .iter()
+                .find(|(_, t, _)| *t == glyph)
+                .expect("the expanded chevron glyph must be painted");
+            // `paint` advances the row cursor by the measured glyph
+            // width plus a 4px gap; everything left of that is the
+            // chevron's click zone.
+            let painted_end = chevron_rect.x + chevron_rect.width + 4.0;
+
+            let row_y = layout.visible_rows[0].bounds.y + 1.0;
+            assert_eq!(
+                layout.hit_test(painted_end - 1.0, row_y),
+                TreeViewHit::Chevron(0),
+                "a click inside the painted chevron zone (end {painted_end}) must be Chevron(0)"
+            );
+            assert_eq!(
+                layout.hit_test(painted_end + 1.0, row_y),
+                TreeViewHit::Row(0),
+                "a click past the painted chevron zone (end {painted_end}) must be Row(0)"
+            );
+
+            let line_height_fraction_end = 2.0 + LINE_HEIGHT * 0.65 + 4.0;
+            assert!(
+                (line_height_fraction_end - painted_end).abs() > 1.0,
+                "this fixture only proves anything if a line_height-derived \
+                 boundary ({line_height_fraction_end}) and the painted one \
+                 ({painted_end}) disagree"
+            );
+        }
+
         /// #1075 regression: before this migration, none of the three
         /// backends' `draw_tree` painted a vertical scrollbar even
         /// though `Backend::tree_vscrollbar` (#1043) already exposed
@@ -817,8 +926,12 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn paints_vertical_scrollbar_track_when_overflowing() {
             let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -858,8 +971,12 @@ pub(crate) mod native_surface_paint {
             let mut rows = vec![leaf(0, "branch")];
             rows[0].is_expanded = Some(true);
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -898,8 +1015,12 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(rows);
             tree.style.chevron_expanded = "+".into();
             tree.style.chevron_collapsed = "-".into();
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -944,8 +1065,12 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -985,8 +1110,12 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1015,8 +1144,12 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = true;
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1052,8 +1185,12 @@ pub(crate) mod native_surface_paint {
             let mut warn_row = leaf(1, "careful");
             warn_row.decoration = Decoration::Warning;
             let tree = make_tree(vec![err_row, warn_row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(
@@ -1089,8 +1226,12 @@ pub(crate) mod native_surface_paint {
             let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
             row.badge = Some(Badge::plain("U"));
             let tree = make_tree(vec![row]);
-            let layout =
-                crate::primitives::layout_metrics::tree_layout(&tree, AREA, LINE_HEIGHT as f64);
+            let layout = crate::primitives::layout_metrics::tree_layout(
+                &tree,
+                AREA,
+                LINE_HEIGHT as f64,
+                &SurfaceMeasure,
+            );
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             paint(

@@ -176,20 +176,46 @@ pub mod pixel {
 /// at `line_height`. Header rows use `(line_height * 1.2).round()`
 /// pitch, leaves/branches use `(line_height * 1.4).round()` unless
 /// [`crate::types::TreeStyle::row_height`] overrides the non-header
-/// pitch (#623). Chevron end-x is an *estimate*
-/// (`line_height * 0.65` for the glyph) since exact glyph metrics
-/// aren't available without laying out each chevron per row — every
-/// backend already made this same tradeoff independently.
+/// pitch (#623).
+///
+/// `measure` supplies the real advance width of the chevron glyph in
+/// the chrome font the tree is painted in — the same glyph
+/// `primitives::tree::chevron_glyph` hands the paint path,
+/// measured through the same seam (`pango::Layout` / `CTFont` /
+/// `DWrite`, or [`BackendTextMeasure`] over
+/// [`crate::Backend::measure_text`] for a caller holding only a
+/// backend). So `chevron_end_x` is the width the backend will actually
+/// advance the paint cursor by, not a fraction of `line_height`: with a
+/// proportional chrome font those two differ, and a chevron hit region
+/// derived from the latter does not line up with the painted glyph.
+/// Only the two distinct glyph strings (expanded, collapsed) are
+/// measured per call, not one per row.
 ///
 /// Coordinate frame: `visible_rows.bounds` and `hit_regions` are in
 /// **tree-local** coords (origin at 0, 0). Callers subtract
 /// `area.x`/`area.y` from absolute click coords before calling
 /// [`TreeViewLayout::hit_test`].
-pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLayout {
+pub fn tree_layout(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    measure: &dyn TextMeasure,
+) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree_row_pitch(tree, line_height);
     let indent_px = (line_height * 0.9).round();
     let show_chevrons = tree.style.show_chevrons;
+    // Measured once per call rather than once per row: a tree has only
+    // these two chevron strings, and `TextMeasure::width_of` is a live
+    // font query on every pixel backend.
+    let (chevron_w_expanded, chevron_w_collapsed) = if show_chevrons {
+        (
+            measure.width_of(&crate::primitives::tree::chevron_glyph(&tree.style, true)),
+            measure.width_of(&crate::primitives::tree::chevron_glyph(&tree.style, false)),
+        )
+    } else {
+        (0.0, 0.0)
+    };
     tree.layout(area.width, area.height, |i| {
         let row = &tree.rows[i];
         let is_header = matches!(row.decoration, Decoration::Header);
@@ -198,13 +224,19 @@ pub fn tree_layout(tree: &TreeView, area: QRect, line_height: f64) -> TreeViewLa
         } else {
             item_height as f32
         };
-        // Approximate chevron end x in tree-local pixels:
-        //   2px left margin + indent levels + estimated chevron glyph width + 4px gap.
-        let chevron_end_x = if row.is_expanded.is_some() && show_chevrons {
-            let est_glyph_w = line_height * 0.65;
-            Some((2.0 + row.indent as f64 * indent_px + est_glyph_w + 4.0) as f32)
-        } else {
-            None
+        // Chevron end x in tree-local pixels, matching what the shared
+        // paint path advances the cursor by:
+        //   2px left margin + indent levels + measured glyph width + 4px gap.
+        let chevron_end_x = match row.is_expanded {
+            Some(expanded) if show_chevrons => {
+                let glyph_w = if expanded {
+                    chevron_w_expanded
+                } else {
+                    chevron_w_collapsed
+                };
+                Some((2.0 + row.indent as f64 * indent_px) as f32 + glyph_w + 4.0)
+            }
+            _ => None,
         };
         TreeRowMeasure {
             height: row_h,
@@ -1394,6 +1426,150 @@ mod tests {
         assert_eq!(tree_row_pitch(&tree, 16.0), 42.0);
         // And it must NOT vary with `line_height` once set.
         assert_eq!(tree_row_pitch(&tree, 100.0), 42.0);
+    }
+
+    /// A measurer whose advance per glyph is deliberately nowhere near
+    /// `line_height * 0.65` — standing in for a proportional chrome
+    /// font, where no fraction of `line_height` is the glyph's width.
+    struct WideGlyphMeasure;
+    impl TextMeasure for WideGlyphMeasure {
+        fn width_of(&self, text: &str) -> f32 {
+            text.chars().count() as f32 * 31.0
+        }
+    }
+
+    /// Records every string handed to the measurer, so a test can
+    /// assert *which* glyph `tree_layout` measured.
+    #[derive(Default)]
+    struct SpyMeasure {
+        seen: std::cell::RefCell<Vec<String>>,
+    }
+    impl TextMeasure for SpyMeasure {
+        fn width_of(&self, text: &str) -> f32 {
+            self.seen.borrow_mut().push(text.to_string());
+            7.0
+        }
+    }
+
+    fn branch_row(idx: u16, indent: u16, expanded: bool) -> crate::primitives::tree::TreeRow {
+        crate::primitives::tree::TreeRow {
+            path: vec![idx],
+            indent,
+            icon: None,
+            text: crate::types::StyledText::plain("node"),
+            badge: None,
+            is_expanded: Some(expanded),
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    #[test]
+    fn tree_layout_chevron_boundary_comes_from_the_measurer_not_line_height() {
+        let mut tree = bare_tree();
+        tree.rows = vec![branch_row(0, 0, true), branch_row(1, 2, false)];
+        let layout = tree_layout(
+            &tree,
+            QRect::new(0.0, 0.0, 400.0, 300.0),
+            16.0,
+            &WideGlyphMeasure,
+        );
+
+        let indent_px = (16.0_f64 * 0.9).round() as f32;
+        // 2px left margin + indent levels + measured glyph + 4px gap.
+        // Each default chevron glyph is one char, so 31.0 wide here.
+        let expect_row0 = 2.0 + 31.0 + 4.0;
+        let expect_row1 = 2.0 + 2.0 * indent_px + 31.0 + 4.0;
+
+        let chevron_x = |i: usize| {
+            layout
+                .hit_regions
+                .iter()
+                .find_map(|(r, hit)| match hit {
+                    crate::primitives::tree::TreeViewHit::Chevron(idx) if *idx == i => {
+                        Some(r.x + r.width)
+                    }
+                    _ => None,
+                })
+                .expect("branch row must expose a chevron hit region")
+        };
+
+        assert!(
+            (chevron_x(0) - expect_row0).abs() < 0.01,
+            "row 0 chevron boundary {} should be {expect_row0}",
+            chevron_x(0)
+        );
+        assert!(
+            (chevron_x(1) - expect_row1).abs() < 0.01,
+            "row 1 chevron boundary {} should be {expect_row1}",
+            chevron_x(1)
+        );
+        // The fixture is only meaningful because a `line_height`-derived
+        // width lands somewhere else entirely.
+        assert!(
+            (expect_row0 - (2.0 + 16.0 * 0.65 + 4.0)).abs() > 1.0,
+            "measured and line_height-derived boundaries must disagree"
+        );
+    }
+
+    #[test]
+    fn tree_layout_measures_the_glyph_the_paint_path_draws() {
+        let mut tree = bare_tree();
+        tree.rows = vec![branch_row(0, 0, true)];
+
+        // Default style: on a pixel build the paint path substitutes a
+        // codicon chevron for the `▾`/`▸` defaults, so the substituted
+        // glyph — not the raw style string — is what must be measured.
+        let spy = SpyMeasure::default();
+        let _ = tree_layout(&tree, QRect::new(0.0, 0.0, 400.0, 300.0), 16.0, &spy);
+        assert_eq!(
+            spy.seen.borrow().as_slice(),
+            &[
+                crate::primitives::tree::chevron_glyph(&tree.style, true),
+                crate::primitives::tree::chevron_glyph(&tree.style, false),
+            ]
+        );
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        assert_ne!(
+            spy.seen.borrow()[0],
+            tree.style.chevron_expanded,
+            "the default `▾` must be measured as its codicon substitute"
+        );
+
+        // A host override is painted verbatim, so it is measured verbatim.
+        tree.style.chevron_expanded = "[-]".into();
+        tree.style.chevron_collapsed = "[+]".into();
+        let spy = SpyMeasure::default();
+        let _ = tree_layout(&tree, QRect::new(0.0, 0.0, 400.0, 300.0), 16.0, &spy);
+        assert_eq!(
+            spy.seen.borrow().as_slice(),
+            &["[-]".to_string(), "[+]".to_string()]
+        );
+    }
+
+    #[test]
+    fn tree_layout_skips_chevron_measurement_when_chevrons_are_hidden() {
+        let mut tree = bare_tree();
+        tree.rows = vec![branch_row(0, 0, true)];
+        tree.style.show_chevrons = false;
+
+        let spy = SpyMeasure::default();
+        let layout = tree_layout(&tree, QRect::new(0.0, 0.0, 400.0, 300.0), 16.0, &spy);
+        assert!(
+            spy.seen.borrow().is_empty(),
+            "no chevron is painted, so none should be measured"
+        );
+        assert!(
+            !layout
+                .hit_regions
+                .iter()
+                .any(|(_, hit)| matches!(hit, crate::primitives::tree::TreeViewHit::Chevron(_))),
+            "hidden chevrons must expose no chevron hit region"
+        );
     }
 
     // ── #1080 pixel_tab_bar_layout ────────────────────────────────────

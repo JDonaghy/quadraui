@@ -2987,11 +2987,13 @@ impl Backend for MacBackend {
         super::multi_section_view::mac_msv_metrics(self.current_line_height, false)
     }
     fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        // No font-role change here (issue #1003) — see `list_layout`'s
-        // comment above; `mac_tree_layout` only takes pitch, and
-        // `GtkBackend::tree_layout` passes its own editor
-        // `current_line_height` too.
-        super::tree::mac_tree_layout(tree, rect, self.current_line_height)
+        // Row pitch stays the editor `current_line_height` (issue #1003
+        // — see `list_layout`'s comment above; `GtkBackend::tree_layout`
+        // passes its own editor line height too), but the chevron glyph
+        // is measured in `chrome_font`: that is the font `Self::draw_tree`
+        // hands the rasteriser, so this no-paint hit-test layout resolves
+        // the same chevron boundary the painted frame did.
+        super::tree::mac_tree_layout(tree, rect, self.current_line_height, &self.chrome_font)
     }
     fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
         // macOS tree vertical-scrollbar rasteriser not yet implemented
